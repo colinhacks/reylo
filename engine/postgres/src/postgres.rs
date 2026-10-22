@@ -1397,7 +1397,12 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
         None => return vec![false; count],
         Some(_) => {}
     }
-    match infer::target_reads(sql).filter(|reads| reads.len() == count) {
+    // The reads line up with the columns only where every target is one column: a `*` among
+    // targets as many as the columns is one wide when it is the only one, but two of them may be
+    // two columns and none (a WITH query `(select)` has no columns), as [`Engine::item_columns`]
+    // refuses too.
+    let aligned = |reads: &Vec<infer::ItemRead>| reads.len() == count && reads.iter().filter(|r| matches!(r, infer::ItemRead::Star { .. })).count() <= 1;
+    match infer::target_reads(sql).filter(aligned) {
         Some(reads) => reads.iter().map(|r| matches!(r, infer::ItemRead::Table)).collect(),
         None => vec![false; count],
     }
@@ -2347,5 +2352,18 @@ mod tests {
         assert!(!a.columns[0].nullable);
         let Type::Composite { fields, .. } = &a.columns[0].ty else { panic!("{:?}", a.columns[0].ty) };
         assert_eq!(fields[1].ty, Type::Enum { name: "text".into(), labels: vec!["click".into(), "key".into()] });
+    }
+
+    #[test]
+    fn own_provenance_lines_up_with_the_columns() {
+        let own = |sql: &str, count: usize| own_provenance(sql, analyze::analyze(sql).ok().as_ref(), count);
+        let with = "WITH a AS (SELECT p.title AS t, p.title AS t2 FROM posts p UNION ALL SELECT u.email, u.email FROM users u), e AS (SELECT)";
+        // A bare column of a table of the statement's own FROM is its own beside a set operation.
+        assert_eq!(own(&format!("{with} SELECT a.t, u.name FROM a, users u"), 2), vec![false, true]);
+        // One `*` among as many targets as columns is one column wide, and among more it is none.
+        assert_eq!(own(&format!("{with}, b AS (SELECT 1 AS n) SELECT b.*, u.name FROM b, users u"), 2), vec![false, true]);
+        assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![false]);
+        // Two may be two columns and none, so no position says which column a target is.
+        assert_eq!(own(&format!("{with} SELECT a.*, u.name, e.* FROM a, users u, e"), 3), vec![false; 3]);
     }
 }
