@@ -102,6 +102,28 @@ test("reylo generate's hint for a run that finds no query names a .reylo.yml pro
   assert.equal(none.out, "No query under .: name the directory that holds them, or set cli.include in .reylo.yml.\n");
 });
 
+test("reylo generate's globs: a directory named like a .sql file is searched, an include may name a directory, and one starting with ! excludes", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-cli-globs-")));
+  writeFileSync(join(root, "package.json"), "{}");
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("create table users (id integer primary key, name text not null)");
+  db.close();
+  for (const dir of ["src/queries/x.sql", "src/legacy"]) mkdirSync(join(root, dir), { recursive: true });
+  writeFileSync(join(root, "src", "queries", "x.sql", "ids.sql"), "select id from users");
+  writeFileSync(join(root, "src", "queries", "names.sql"), "select name from users");
+  writeFileSync(join(root, "src", "legacy", "old.sql"), "select 1 as one");
+  const files = (out: string) => [...out.matchAll(/^  (\S+)\s+✓$/gm)].map((m) => m[1]);
+
+  const all = reylo(root, "generate");
+  assert.equal(all.status, 0, all.err);
+  assert.deepEqual(files(all.out), ["src/legacy/old.sql", "src/queries/names.sql", "src/queries/x.sql/ids.sql"]);
+
+  writeFileSync(join(root, ".reylo.yaml"), `cli:\n  include: ["src", "!src/legacy/**"]\n`);
+  const configured = reylo(root, "generate");
+  assert.equal(configured.status, 0, configured.err);
+  assert.deepEqual(files(configured.out), ["src/queries/names.sql", "src/queries/x.sql/ids.sql"]);
+});
+
 test("reylo generate says once that the type check does not read url, and names the connection it used", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-cli-url-")));
   writeFileSync(join(root, "package.json"), "{}");

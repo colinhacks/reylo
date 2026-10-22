@@ -35,10 +35,18 @@ const shown = (path: string) => relative(process.cwd(), path) || ".";
 const paint = (format: Parameters<typeof styleText>[0], text: string) => styleText(format, text);
 
 // Node's own glob, which does not descend into a symlinked directory, and on macOS and Windows
-// matches without regard to case, hence the check of the extension.
+// matches without regard to case, hence the check of the extension. It also yields directories (a
+// directory named `x.sql` among them), which are dropped. The patterns read as they always have: one
+// that names a directory takes every file under it, and an include that starts with `!` excludes.
 async function sqlFiles(dir: string, include = INCLUDE, exclude: string[] = []): Promise<string[]> {
-  const files = await Array.fromAsync(glob(include, { cwd: dir, exclude: [...EXCLUDE, ...exclude] }), (f) => resolve(dir, f));
-  return files.filter((f) => f.endsWith(".sql"));
+  const negated = (p: string) => p.startsWith("!") && !p.startsWith("!(");
+  const patterns = include.filter((p) => !negated(p)).flatMap((p) => {
+    const q = p.replace(/\/$/, "");
+    return q.endsWith("*") ? [q] : [q, `${q}/**`];
+  });
+  const excluded = [...EXCLUDE, ...exclude, ...include.filter(negated).map((p) => p.slice(1))];
+  const entries = await Array.fromAsync(glob(patterns, { cwd: dir, exclude: excluded, withFileTypes: true }));
+  return entries.filter((e) => !e.isDirectory() && e.name.endsWith(".sql")).map((e) => resolve(e.parentPath, e.name));
 }
 
 /** The files among `files` that git ignores; none where git is missing or `dir` is not in a repository. */
