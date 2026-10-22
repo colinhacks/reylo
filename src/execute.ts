@@ -192,7 +192,7 @@ export function execute<D extends Dialect>(
   params: ParamsInput = {},
 ): unknown[] | Promise<unknown[]> {
   const c = underneath(client as AnyClient);
-  if (query.dialect === "sqlite" && isSyncSqlite(c)) return executeSyncSqlite(c, query, params);
+  if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return executeSyncSqlite(c, query, params);
   return executeAsync(c, query, params);
 }
 
@@ -359,7 +359,6 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
           columns,
         );
       }
-      if (isDurableObjectSql(c)) return runDurableObject(c, text, durableObjectValues(query, names, values), columns);
       if (typeof c.prepare === "function") {
         const prepared = c.prepare(text);
         if (typeof prepared.first === "function") return normalize((await prepared.bind(...values).all()).results, columns, { d1: true });

@@ -755,7 +755,7 @@ test("a Durable Object's ctx.storage.sql: runSync and run take it, its values gi
   assert.equal((db.prepare("select sum(n) as s from items").get() as { s: number }).s, 13);
 });
 
-test("a Durable Object's ctx.storage.sql: the catalog facts are read again through exec()", () => {
+test("a Durable Object's ctx.storage.sql: the catalog facts are read again through exec()", async () => {
   const db = new DatabaseSync(":memory:");
   db.exec("create table users (id integer primary key, email text not null)");
   const sql = durableObjectSql(db);
@@ -764,4 +764,10 @@ test("a Durable Object's ctx.storage.sql: the catalog facts are read again throu
     defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select id, email from users", params: [], fresh: { query, rows: [email, ["users", "id", "INTEGER", "0", "1"]], inserts: [] }, source: "users.sql" });
   assert.deepEqual(built(["users", "email", "TEXT", "1", "0"]).runSync(sql), []);
   assert.throws(() => built(["users", "email", "TEXT", "0", "0"]).runSync(sql), /^Error: The database changed after users\.sql was built: users\.email was/);
+  // run takes the same synchronous path: the check and the statement run before it returns.
+  const ran: string[] = [];
+  const counted = { ...sql, exec: (text: string, ...bindings: unknown[]) => (ran.push(text), sql.exec(text, ...bindings)), databaseSize: 4096 };
+  const pending = built(["users", "email", "TEXT", "1", "0"]).run(counted);
+  assert.deepEqual(ran, [query, "select id, email from users"]);
+  assert.deepEqual(await pending, []);
 });
