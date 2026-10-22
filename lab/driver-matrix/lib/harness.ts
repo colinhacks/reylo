@@ -350,9 +350,9 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   mysql: { big: sc("int8"), ubig: sc("int8"), amount: sc("numeric"), day: sc("date"), at: sc("timestamp"), doc: { kind: "json" }, bit1: sc("bool|int4"), raw: sc("bytea"), tags: sc("text"), kind: sc("text"), flag: sc("bool|int4"), yr: sc("int4"), f8: sc("float8"), tm: sc("time"), s: sc("text") },
   sqlite: { n: sc("integer"), r: sc("real"), s: sc("text"), b: sc("blob"), flag: sc("numeric"), x: { kind: "unknown" } },
 };
-/** The comparison for each column: Postgres's json has no `=`, and MySQL's JSON column is compared with json_extract of the JSON parameter. */
 // An array goes back in without its NULL elements, which a parameter refuses (src/render.ts).
 const ROUND_TRIP_ARRAYS = new Set(["tags", "ints", "moods"]);
+/** The comparison for each column: Postgres's json has no `=`, and MySQL's JSON column is compared with json_extract of the JSON parameter. */
 const ROUND_TRIP_SQL: Record<Dialect, (c: string) => string> = {
   postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
   mysql: (c) => (c === "doc" ? `doc = json_extract(:doc, '$')` : `${c} = :${c}`),
