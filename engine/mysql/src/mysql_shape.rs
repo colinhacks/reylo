@@ -53,9 +53,9 @@ pub struct Plan {
 /// Read one statement's JSON constructors; the probes come back as text for the build to prepare.
 pub fn plan(q: &Query, columns: &Columns) -> Plan {
     let SetExpr::Select(select) = q.body.as_ref() else { return Plan::default() };
-    let with = q.with.as_ref().map(|w| format!("{w} ")).unwrap_or_default();
     let grouped = crate::mysql_nulls::grouped(&select.group_by);
-    let mut b = Builder { stack: vec![(0, select.from.clone())], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped };
+    let top = Level { ctx: 0, from: select.from.clone(), with: q.with.clone() };
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped };
     let mut columns = Vec::new();
     for item in &select.projection {
         // The server names an unaliased expression by its text, which no build reproduces
@@ -74,7 +74,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
             columns.push((alias.value.clone(), shape));
         }
     }
-    let probes = b.drafts.iter().map(|d| Probe { sql: text(&with, &d.items, &d.from), wider: d.wider.as_ref().map(|f| text(&with, &d.items, f)) }).collect();
+    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &d.items, &d.from), wider: d.wider.as_ref().map(|f| text(&d.with, &d.items, f)) }).collect();
     b.wanted.sort_unstable();
     b.wanted.dedup();
     Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
@@ -207,6 +207,33 @@ fn contains_subquery(e: &Expr) -> bool {
     }
 }
 
+/// The WITH queries of every level from the statement down to the innermost, as the one WITH a
+/// probe of the innermost level starts with; empty where no level has one. The levels cannot be
+/// nested as the statement nests them: MySQL hides an outer WITH inside a parenthesized query
+/// that has a WITH of its own (measured on 8.4). One list reads each name as the levels do, the
+/// outermost first: the server refuses a name listed twice, and a WITH query never reads one
+/// listed after it, with RECURSIVE or without. RECURSIVE alone, which one list takes for every
+/// query if any level has it, could change a reading: a query of a level without it that names
+/// itself reads a table or an outer level's query, and with it would read itself. `None` then.
+fn carried(levels: &[Level]) -> Option<String> {
+    let withs: Vec<&ast::With> = levels.iter().filter_map(|l| l.with.as_ref()).collect();
+    let Some(first) = withs.first() else { return Some(String::new()) };
+    let recursive = withs.iter().any(|w| w.recursive);
+    if recursive && withs.iter().filter(|w| !w.recursive).flat_map(|w| &w.cte_tables).any(|c| mentions(&c.query.to_string(), std::slice::from_ref(&c.alias.name.value))) {
+        return None;
+    }
+    let cte_tables = withs.iter().flat_map(|w| w.cte_tables.iter().cloned()).collect();
+    Some(format!("{} ", ast::With { with_token: first.with_token.clone(), recursive, cte_tables }))
+}
+
+/// Whether a text has a word that is one of `names`, in any case, quoted or not; true where it
+/// does not tokenize.
+fn mentions(text: &str, names: &[String]) -> bool {
+    use sqlparser::tokenizer::{Token, Tokenizer};
+    let Ok(tokens) = Tokenizer::new(&sqlparser::dialect::MySqlDialect {}, text).tokenize() else { return true };
+    tokens.iter().any(|t| matches!(t, Token::Word(w) if names.iter().any(|n| n.eq_ignore_ascii_case(&w.value))))
+}
+
 fn text(with: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
     let items: Vec<String> = items.iter().map(|e| e.to_string()).collect();
     if from.is_empty() {
@@ -217,10 +244,20 @@ fn text(with: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
     }
 }
 
+/// One query the builder stands in: the statement, or a scalar subquery inside it.
+#[derive(Clone)]
+struct Level {
+    /// An id of its own, so two sibling subqueries at one depth do not pool their columns into
+    /// one probe.
+    ctx: usize,
+    from: Vec<TableWithJoins>,
+    /// The query's own WITH, which its FROM and its items may read.
+    with: Option<ast::With>,
+}
+
 struct Builder<'a> {
-    /// The `FROM` clauses in scope, outermost first, each with an id of its own so two sibling
-    /// subqueries at one depth do not pool their columns into one probe.
-    stack: Vec<(usize, Vec<TableWithJoins>)>,
+    /// The queries in scope, outermost first.
+    stack: Vec<Level>,
     columns: &'a Columns,
     /// The WITH queries in scope where the builder stands, whose names are no tables'.
     ctes: Vec<Cte>,
@@ -266,6 +303,8 @@ enum Written {
 
 struct Draft {
     ctx: usize,
+    /// The WITH the probe starts with ([`carried`]).
+    with: String,
     from: Vec<TableWithJoins>,
     /// The same `FROM` with every enclosing one appended, for a constructor whose `FROM` reads a
     /// correlated column; tried only when the narrow form fails to prepare.
@@ -429,7 +468,7 @@ impl Builder<'_> {
                 let outer_ctes = self.ctes.len();
                 self.ctes.extend(with_names(q));
                 self.next_ctx += 1;
-                self.stack.push((self.next_ctx, select.from.clone()));
+                self.stack.push(Level { ctx: self.next_ctx, from: select.from.clone(), with: q.with.clone() });
                 let shape = self.walk_as(inner, Reads::Result);
                 self.stack.pop();
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
@@ -504,7 +543,7 @@ impl Builder<'_> {
 
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
     fn leaf(&mut self, e: &Expr) -> Shape {
-        let ctx = self.stack[self.stack.len() - 1].0;
+        let ctx = self.stack[self.stack.len() - 1].ctx;
         let probe = match self.drafts.iter().position(|d| d.ctx == ctx) {
             Some(i) => i,
             None => match self.draft() {
@@ -534,15 +573,30 @@ impl Builder<'_> {
             return None;
         }
         let depth = self.stack.len() - 1;
-        let (ctx, from) = self.stack[depth].clone();
+        let Level { ctx, from, .. } = self.stack[depth].clone();
+        // Without a WITH a query reads, the probe would fail to prepare, or read a table where
+        // the query reads a WITH query of the table's name.
+        let with = carried(&self.stack)?;
+        // An enclosing `FROM` moved into the probe reads the WITH queries of the levels inside
+        // it too, which the statement does not let it see: where it names one of them, it may
+        // read that query in place of its own table, so the wider form is left out.
         let mut wider = from.clone();
+        let mut inner: Vec<String> = Vec::new();
+        let mut sound = true;
         for d in (0..depth).rev() {
-            wider.extend(self.stack[d].1.iter().cloned());
+            inner.extend(self.stack[d + 1].with.iter().flat_map(|w| w.cte_tables.iter().map(|c| c.alias.name.value.clone())));
+            sound &= inner.is_empty() || !self.stack[d].from.iter().any(|t| mentions(&t.to_string(), &inner));
+            wider.extend(self.stack[d].from.iter().cloned());
         }
         // A subquery with no `FROM` of its own only ever resolves against the enclosing one.
-        let (from, wider) = if from.is_empty() && !wider.is_empty() { (wider, None) } else { (from, Some(wider)) };
+        let (from, wider) = match (from.is_empty() && !wider.is_empty(), sound) {
+            (true, true) => (wider, None),
+            (true, false) => return None,
+            (false, true) => (from, Some(wider)),
+            (false, false) => (from, None),
+        };
         let wider = wider.filter(|w| w.len() != from.len());
-        self.drafts.push(Draft { ctx, from, wider, items: Vec::new() });
+        self.drafts.push(Draft { ctx, with, from, wider, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -998,6 +1052,39 @@ mod tests {
         ] {
             assert!(matches!(recent(sql), Some(Shape::Array { non_null: false, .. })), "{sql}");
         }
+    }
+
+    #[test]
+    fn a_subquery_probe_carries_the_with_of_every_level() {
+        let probes = |sql: &str| plan(&query(sql), &Columns::new()).probes.into_iter().map(|p| (p.sql, p.wider)).collect::<Vec<_>>();
+        let probe = |sql: &str, narrow: &str, wider: Option<&str>| assert_eq!(probes(sql), vec![(narrow.to_string(), wider.map(String::from))], "{sql}");
+        let posts = "WITH r AS (SELECT id FROM posts) ";
+        // The subquery's own WITH, the statement's before it, and each nested subquery's after its parent's.
+        probe("select (with r as (select id from posts) select count(id) from r) as n", &format!("{posts}SELECT count(id) FROM r"), None);
+        probe("select (with r as (select id from posts) select count(id) from r) as n from users u", &format!("{posts}SELECT count(id) FROM r"), Some(&format!("{posts}SELECT count(id) FROM r, users u")));
+        probe("with o as (select 1 as a) select (with r as (select id from posts) select count(id) from r, o) as n", "WITH o AS (SELECT 1 AS a), r AS (SELECT id FROM posts) SELECT count(id) FROM r, o", None);
+        probe("select (with a as (select id from posts) select (with b as (select id from a) select count(id) from b)) as n", "WITH a AS (SELECT id FROM posts), b AS (SELECT id FROM a) SELECT count(id) FROM b", None);
+        probe("select (with r as (select id from posts) select count(id) from (select id from r) d) as n", &format!("{posts}SELECT count(id) FROM (SELECT id FROM r) d"), None);
+        // Sibling subqueries each carry their own.
+        assert_eq!(
+            probes("select json_object('a', (with r as (select id from posts) select count(id) from r), 'b', (with s as (select title from posts) select count(title) from s)) as o"),
+            vec![(format!("{posts}SELECT count(id) FROM r"), None), ("WITH s AS (SELECT title FROM posts) SELECT count(title) FROM s".to_string(), None)]
+        );
+        // RECURSIVE, from any level, is the whole list's.
+        probe(
+            "with o as (select 1 as a) select (with recursive r (n) as (select 1 union all select n + 1 from r where n < 3) select count(n) from r, o) as c",
+            "WITH RECURSIVE o AS (SELECT 1 AS a), r (n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r WHERE n < 3) SELECT count(n) FROM r, o",
+            None,
+        );
+        // A WITH query that shadows a table is read in the table's place.
+        probe("select (with posts as (select null as title) select count(title) from posts) as n", "WITH posts AS (SELECT NULL AS title) SELECT count(title) FROM posts", None);
+        // A query without RECURSIVE that names itself reads a table, which a RECURSIVE list would
+        // read as itself: no probe.
+        assert_eq!(probes("with posts as (select id from posts) select (with recursive r (n) as (select 1 union all select n + 1 from r where n < 3) select count(n) from r, posts) as c"), vec![]);
+        // An enclosing FROM that names an inner WITH query would read it in the wider form.
+        probe("select (with posts as (select id from users) select json_object('a', posts.id, 'b', p.title) from posts limit 1) as o from posts p", "WITH posts AS (SELECT id FROM users) SELECT posts.id, p.title FROM posts", None);
+        assert_eq!(probes("select (with posts as (select 1 as id) select json_object('t', p.title)) as o from posts p"), vec![]);
+        probe("select (with r as (select 1 as id) select json_object('t', p.title)) as o from posts p", "WITH r AS (SELECT 1 AS id) SELECT p.title FROM posts p", None);
     }
 
     #[test]

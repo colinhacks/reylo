@@ -1,0 +1,1 @@
+select (with a as (select id, user_id from posts) select coalesce(json_arrayagg(json_object('id', a.id, 'n', (with b as (select user_id from a) select count(user_id) from b))), json_array()) from a) as o

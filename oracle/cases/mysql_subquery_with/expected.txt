@@ -1,0 +1,15 @@
+derived_reads_with.sql: one () -> { n: int8 }
+nested.sql: one () -> { o: [{ id: int4, n: int8 }] }
+nested_correlated.sql: many () -> { id: int4, o: [{ id: unknown?, n: int8 }] }
+outer_and_own.sql: one () -> { n: int8 }
+own_count.sql: one () -> { n: int8 }
+own_count_correlated.sql: many () -> { id: int4, n: int8 }
+own_json.sql: one () -> { recent_posts: [{ id: int4, title: text }] }
+own_json_unguarded.sql: one () -> { recent_posts: [{ id: int4, body: unknown? }]? }
+own_max.sql: one () -> { last: int4|int8? }
+recursive.sql: one () -> { c: int8, s: numeric? }
+recursive_beside_self_named.sql: one () -> { c: int8? }
+shadows_table.sql: one () -> { titles: [{ id: int4, title: text? }] }
+shadows_table_count.sql: one () -> { n: int8 }
+wider_shadowed.sql: many () -> { id: int4, o: { a: unknown?, b: unknown? }? }
+with_inside_derived.sql: one () -> { n: int8 }
