@@ -619,11 +619,12 @@ Bun decodes a `date` before 1 AD as an Invalid Date before Reylo sees it, and so
 A column is `| null` unless Reylo infers it never is. On Postgres, Reylo reads the catalog and the statement:
 
 - **A table's column** is non-null where its `NOT NULL` is valid and holds in every table that inherits from it. A `NOT NULL` added `NOT VALID` tells Reylo nothing, since rows written before it may hold `NULL`.
-- **An outer join** makes the joined table's columns nullable: the right side of a `left join`, the left side of a `right join`, both sides of a `full join`.
+- **An outer join** makes the joined table's columns nullable: the right side of a `left join`, the left side of a `right join`, both sides of a `full join`. A table on both sides is told apart by its alias, so `e.name` of `employees e left join employees m on m.id = e.manager_id` keeps its `NOT NULL`.
 - **A test in the `where`** that fails on `NULL` makes the column non-null, and a later inner join's `on` shows the joined row exists: `where o.total > 0`, `where email is not null`, `where lower(email) = :email`.
 - **An expression** is non-null when Reylo's rules infer it:
   - a literal, a cast, `count`, `exists` and `is null`;
-  - concatenation with `||`, a comparison and arithmetic over non-null operands;
+  - concatenation with `||`, a comparison, arithmetic, `like` and the other pattern matches, and the bit, containment and JSON key operators (`&`, `@>`, `&&`, `?`) over non-null operands;
+  - the values `generate_series` gives, and those of `unnest(array[…])` where every element written is non-null;
   - a built-in function that returns `NULL` only for a `NULL` argument (`length`, `lower`, `round`, …);
   - a `coalesce` with a non-null argument;
   - a `case` whose branches and `else` are all non-null.
@@ -632,7 +633,7 @@ A column is `| null` unless Reylo infers it never is. On Postgres, Reylo reads t
   - those that skip a `NULL`, `sum`, `max`, `string_agg` and the others, are non-null where their argument is;
   - an aggregate with a `filter` stays nullable, since the filter can leave a group no rows.
 - **A table's whole row** (`select e`, `jsonb_agg(e)`) is never `NULL` unless an outer join nulls it, and keeps its columns' `NOT NULL` and their `CHECK` lists.
-- **A scalar subquery** is non-null only when it is an aggregate without a `group by` over a non-null value, as `(select count(*) …)` is.
+- **A scalar subquery** is non-null only when it is one row of a non-null value: an aggregate without a `group by`, as `(select count(*) …)` is, or a `select` with no `from`, as `(select 1)` is.
 - **A column of a `union`** is non-null when it is in every arm.
 - **A column of a `with` query or a derived table** is as nullable as that query's own statement makes it, a `union` or a recursive one included, and a table's column read beside one keeps its `NOT NULL`.
 - **An operator, function or cast your database defines**, or an extension does, tells Reylo nothing: the rules stand down wherever Postgres could pick one of those over the built-in.

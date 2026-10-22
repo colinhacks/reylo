@@ -12,4 +12,4 @@ percentile_cont_empty.sql: one () -> { percentile_cont: float8? }
 percentile_disc.sql: one () -> { percentile_disc: text? }
 rank.sql: one () -> { rank: int8? }
 user_defined.sql: one () -> { first_in_order: text? }
-with_set.sql: many () -> { mode: text?, g: int4? }
+with_set.sql: many () -> { mode: text?, g: int4 }

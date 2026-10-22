@@ -21,7 +21,7 @@ passthrough.sql: maybeOne (id: int8) -> { name: text?, score: int4 }
 renamed.sql: one () -> { a: text?, b: int8 }
 right_join_nulled.sql: many () -> { n: int8?, id: int8 }
 rollup_over.sql: many () -> { n: int8? }
-set_inside.sql: many () -> { g: int4? }
+set_inside.sql: many () -> { g: int4 }
 star_between.sql: one () -> { one: int4, n: int8, top: text?, two: int4 }
 two_stars.sql: one () -> { n: int8?, top: text? }
 union_null.sql: many () -> { n: int8? }

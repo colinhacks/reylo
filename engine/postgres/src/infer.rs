@@ -52,8 +52,24 @@ use pg_query::protobuf::{self, node::Node as NodeEnum, Node, ParseResult, RawStm
 use std::collections::{HashMap, HashSet};
 
 /// The operators whose Postgres built-ins return a value for every pair of non-null operands (or
-/// raise: a division by zero is an error, never NULL). `!=` parses as `<>`.
-pub const POSTGRES_OPERATORS: &[&str] = &["+", "-", "*", "/", "%", "||", "=", "<>", "<", ">", "<=", ">="];
+/// raise: a division by zero is an error, never NULL). `!=` parses as `<>`. Every built-in
+/// overload of each was read in `pg_operator` on PostgreSQL 18: the pattern matches (`LIKE` is
+/// `~~`, `ILIKE` `~~*`, `SIMILAR TO` and the regular expressions `~`), the bit, network and
+/// shift operators, the containment and overlap of arrays, ranges, geometry, JSON and text
+/// search, JSON's key tests and path deletion, and the prefix `|/`, `||/`, `@` and `~`. Not `#`,
+/// whose geometric overloads (`line_interpt`, `lseg_interpt`, `box_intersect`) are NULL where
+/// nothing intersects, nor `->`, `->>` and `#>>`, NULL for a missing key.
+pub const POSTGRES_OPERATORS: &[&str] = &[
+    "+", "-", "*", "/", "%", "||", "=", "<>", "<", ">", "<=", ">=",
+    "~~", "!~~", "~~*", "!~~*", "~", "!~", "~*", "!~*",
+    "&", "|", "<<", ">>", "^", "&&", "@>", "<@", "?", "?|", "?&", "#-", "|/", "||/", "@",
+];
+/// The operators a prefix form of is in [`POSTGRES_OPERATORS`]: the signs, the roots, absolute
+/// value and bitwise not.
+const POSTGRES_PREFIX_OPERATORS: &[&str] = &["-", "+", "|/", "||/", "@", "~"];
+/// The pattern matches, whose result is a truth value: `LIKE`, `ILIKE`, `SIMILAR TO` and the
+/// regular expressions.
+const POSTGRES_MATCH_OPERATORS: &[&str] = &["~~", "!~~", "~~*", "!~~*", "~", "!~", "~*", "!~*"];
 /// SQLite's: concatenation and comparison only. Its arithmetic answers NULL for a division by
 /// zero and for a NaN (`1e999 - 1e999`), so no arithmetic operator is total there.
 const SQLITE_OPERATORS: &[&str] = &["||", "=", "==", "<>", "!=", "<", ">", "<=", ">="];
@@ -79,7 +95,14 @@ pub const POSTGRES_TOTAL: &[&str] = &[
     "date_trunc", "age", "make_date", "make_timestamp", "make_timestamptz", "nextval",
     "cardinality", "array_to_string", "array_append", "array_prepend", "array_cat", "array_remove",
     "to_json", "to_jsonb", "row_to_json", "json_typeof", "jsonb_typeof", "jsonb_strip_nulls", "jsonb_pretty",
+    // What `x SIMILAR TO p` and `x LIKE p ESCAPE e` call on their pattern.
+    "similar_to_escape", "like_escape",
+    // A set-returning function whose rows each hold a value: there may be none, never a NULL.
+    "generate_series", "generate_subscripts",
 ];
+/// The set-returning functions among the ones the rules read: a SELECT with no FROM that calls one
+/// may return no row or several.
+const POSTGRES_SET_RETURNING: &[&str] = &["generate_series", "generate_subscripts", "unnest"];
 /// Postgres built-ins that are [`POSTGRES_TOTAL`] only for some types of their first argument:
 /// `lower` and `upper` of an empty or unbounded range are NULL, and so is `to_char` of an
 /// `'infinity'` timestamp or interval, while their text and number overloads never are. A first
@@ -116,7 +139,10 @@ pub const POSTGRES_FIRST_ARG: &[&str] = &["concat_ws"];
 pub const POSTGRES_ANY: &[&str] = &["greatest", "least"];
 /// Built-in operators that answer NULL for a NULL operand: the comparisons, arithmetic, JSON
 /// access and pattern matching. `||` is not one: `NULL::int[] || ARRAY[1]` is `{1}`.
-pub const POSTGRES_STRICT_OPERATORS: &[&str] = &["=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "^", "->", "->>", "#>", "#>>", "~~", "~~*", "!~~", "!~~*", "~", "~*", "!~", "!~*"];
+pub const POSTGRES_STRICT_OPERATORS: &[&str] = &[
+    "=", "<>", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "^", "->", "->>", "#>", "#>>", "~~", "~~*", "!~~", "!~~*", "~", "~*", "!~", "!~*",
+    "&", "|", "#", "<<", ">>", "&&", "@>", "<@", "?", "?|", "?&", "#-",
+];
 /// Built-in functions that answer NULL for a NULL argument in every overload (`proisstrict`),
 /// which is all a strict predicate asks of them, whatever they answer for other input: `lower` of
 /// an empty range is NULL too, and that only removes more rows.
@@ -563,6 +589,63 @@ pub fn combine(kind: SetKind, left: &[DescribedColumn], right: &[DescribedColumn
 /// something other than one `SELECT`. Postgres: "If a query contains aggregate function calls,
 /// but no GROUP BY clause, grouping still occurs: the result is a single group row". Whether it
 /// does aggregate is the caller's to show.
+/// Whether a SELECT that gives one row keeps it: [`single_row`], with a `LIMIT` of a positive
+/// constant allowed, which keeps the one row an aggregate query gives.
+pub fn keeps_one_row(select: &SelectStmt) -> bool {
+    let limit_keeps = match select.limit_count.as_deref().map(|n| n.node.as_ref()) {
+        None => true,
+        Some(Some(NodeEnum::AConst(c))) => matches!(c.val.as_ref(), Some(protobuf::a_const::Val::Ival(i)) if i.ival >= 1),
+        Some(_) => false,
+    };
+    set_kind(select).is_none() && select.values_lists.is_empty() && select.group_clause.is_empty() && select.having_clause.is_none() && select.limit_offset.is_none() && limit_keeps
+}
+
+/// Whether a SELECT is one row whatever it reads: no FROM, no WHERE, nothing that groups or
+/// limits it, and a target that calls no set-returning function. Every call in the target is one
+/// the rules know for a built-in that returns one value, since an unknown function may return a
+/// set (`coalesce(unnest('{}'::int[]), 0)` is no row at all).
+pub fn one_row(select: &SelectStmt, target: &Node, trust: &Trust) -> bool {
+    fn calls(v: &serde_json::Value, ok: &dyn Fn(&str) -> bool) -> bool {
+        match v {
+            serde_json::Value::Object(map) => {
+                // A subquery is a value of its own, one row or none.
+                if map.contains_key("SubLink") {
+                    return true;
+                }
+                if let Some(f) = map.get("FuncCall") {
+                    let name = f.get("funcname").and_then(|n| n.as_array()).and_then(|n| n.last()).and_then(|n| n.pointer("/node/String/sval")).and_then(|s| s.as_str());
+                    let qualified = f.get("funcname").and_then(|n| n.as_array()).is_some_and(|n| n.len() > 1);
+                    if qualified || !name.is_some_and(ok) {
+                        return false;
+                    }
+                }
+                map.values().all(|v| calls(v, ok))
+            }
+            serde_json::Value::Array(items) => items.iter().all(|v| calls(v, ok)),
+            _ => true,
+        }
+    }
+    let known = |name: &str| {
+        !POSTGRES_SET_RETURNING.contains(&name)
+            && trust.builtin(name)
+            && (POSTGRES_TOTAL.contains(&name) || POSTGRES_NEVER_NULL.contains(&name) || POSTGRES_FIRST_ARG.contains(&name) || POSTGRES_ANY.contains(&name) || POSTGRES_TOTAL_FOR.iter().any(|(n, _)| *n == name) || FUNCTIONS.contains(&name))
+    };
+    select.from_clause.is_empty() && select.where_clause.is_none() && single_row(select) && serde_json::to_value(target).is_ok_and(|v| calls(&v, &known))
+}
+
+/// The elements an `ARRAY[…]` constructor writes, the elements of nested ones flattened.
+fn array_elements(node: &Node) -> Option<Vec<&Node>> {
+    let Some(NodeEnum::AArrayExpr(a)) = node.node.as_ref() else { return None };
+    let mut out = Vec::new();
+    for e in &a.elements {
+        match e.node.as_ref() {
+            Some(NodeEnum::AArrayExpr(_)) => out.extend(array_elements(e)?),
+            _ => out.push(e),
+        }
+    }
+    Some(out)
+}
+
 pub fn single_row(select: &SelectStmt) -> bool {
     set_kind(select).is_none()
         && select.values_lists.is_empty()
@@ -678,11 +761,19 @@ impl Reader<'_> {
             Some(NodeEnum::TypeCast(t)) if self.dialect == Dialect::Postgres && matches!(t.arg.as_deref().and_then(|a| a.node.as_ref()), Some(NodeEnum::RowExpr(_))) => Expr::NonNull(None),
             Some(NodeEnum::TypeCast(t)) => {
                 let (Some(arg), Some(target)) = (t.arg.as_deref(), t.type_name.as_ref()) else { return Expr::Unknown };
-                if !target.array_bounds.is_empty() || target.setof || target.pct_type {
+                if target.setof || target.pct_type {
                     return Expr::Unknown;
                 }
                 let Some(name) = builtin_name(&target.names) else { return Expr::Unknown };
                 let operand = self.read(arg);
+                // A cast to an array of a built-in type casts each element: an array stays an
+                // array (`ARRAY[]::int[]`, `'{}'::text[]`), and NULL only where it was NULL.
+                if !target.array_bounds.is_empty() {
+                    return match self.dialect {
+                        Dialect::Postgres if self.trust.cast(&name) => Expr::Every(vec![operand], Ty::Unknown),
+                        _ => Expr::Unknown,
+                    };
+                }
                 match self.dialect {
                     Dialect::Postgres if self.trust.cast(&name) => {
                         let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { Expr::NotJsonb(Box::new(operand)) } else { operand };
@@ -700,7 +791,10 @@ impl Reader<'_> {
                 if distinct.contains(&a.kind) {
                     return Expr::NonNull(Some(oid::BOOL));
                 }
-                if a.kind != protobuf::AExprKind::AexprOp as i32 {
+                // `LIKE`, `ILIKE` and `SIMILAR TO` are operators the parse marks apart, under the
+                // operator's own name.
+                let matching = [protobuf::AExprKind::AexprLike as i32, protobuf::AExprKind::AexprIlike as i32, protobuf::AExprKind::AexprSimilar as i32];
+                if a.kind != protobuf::AExprKind::AexprOp as i32 && !(self.dialect == Dialect::Postgres && matching.contains(&a.kind)) {
                     return Expr::Unknown;
                 }
                 let Some(op) = builtin_name(&a.name) else { return Expr::Unknown };
@@ -709,10 +803,11 @@ impl Reader<'_> {
                     Dialect::Sqlite | Dialect::Mysql => SQLITE_OPERATORS.contains(&op.as_str()),
                 };
                 let Some(right) = a.rexpr.as_deref() else { return Expr::Unknown };
-                // A prefix operator: only a sign is one of the accepted set.
+                // A prefix operator: a sign, and on Postgres a root, absolute value or bitwise not.
                 let left = match a.lexpr.as_deref() {
                     Some(l) => Some(l),
                     None if op == "-" || op == "+" => None,
+                    None if self.dialect == Dialect::Postgres && POSTGRES_PREFIX_OPERATORS.contains(&op.as_str()) => None,
                     None => return Expr::Unknown,
                 };
                 if !accepted {
@@ -722,6 +817,7 @@ impl Reader<'_> {
                     "||" if self.dialect != Dialect::Postgres => Ty::Is(oid::TEXT),
                     "||" => Ty::Concat,
                     "=" | "==" | "<>" | "!=" | "<" | ">" | "<=" | ">=" => bool_ty,
+                    m if self.dialect == Dialect::Postgres && left.is_some() && POSTGRES_MATCH_OPERATORS.contains(&m) => Ty::Is(oid::BOOL),
                     _ => Ty::Unknown,
                 };
                 let mut operands: Vec<Expr> = left.into_iter().map(|l| self.read(l)).collect();
@@ -852,6 +948,12 @@ impl Reader<'_> {
             // values of its argument.
             (Dialect::Postgres, "array_agg", 1) if self.trust.builtin("array_agg") => Expr::Array { non_null: false, items: f.args.iter().map(|a| self.read(a)).collect() },
             (Dialect::Postgres, n, _) if POSTGRES_NEVER_NULL.contains(&n) && self.trust.builtin(n) => Expr::NonNull(None),
+            // `unnest(ARRAY[…])` gives the elements written, a nested array's flattened: none NULL
+            // where none of them is. Any other array may hold NULL elements whatever its column says.
+            (Dialect::Postgres, "unnest", 1) if self.trust.builtin("unnest") => match array_elements(&f.args[0]) {
+                Some(elements) => Expr::Every(elements.into_iter().map(|e| self.read(e)).collect(), Ty::Unknown),
+                None => Expr::Unknown,
+            },
             (Dialect::Postgres, "uuidv7", 0) if self.trust.builtin("uuidv7") => Expr::NonNull(Some(oid::UUID)),
             (Dialect::Postgres, n, 1..) if POSTGRES_FIRST_ARG.contains(&n) && self.trust.builtin(n) => Expr::Every(f.args.iter().take(1).map(|a| self.read(a)).collect(), Ty::Is(oid::TEXT)),
             (Dialect::Postgres, n, 1..) if self.trust.builtin(n) && POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => {
@@ -891,7 +993,7 @@ impl Reader<'_> {
         let level = Level::of(&select.from_clause, &withs, self.columns);
         let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new() };
         let value = inner_reader.read(inner);
-        if single_row(select) && self.aggregates(inner, false, Some(&level)) {
+        if one_row(select, inner, self.trust) || (keeps_one_row(select) && self.aggregates(inner, false, Some(&level))) {
             value
         } else {
             Expr::Nullable(Box::new(value))
@@ -1685,7 +1787,18 @@ mod tests {
         assert!(first(&pg("SELECT NULL IS DISTINCT FROM 1")).non_null);
         assert!(!first(&pg("SELECT nullif(1, 1)")).non_null);
         assert!(!first(&pg("SELECT 1 IN (1, NULL)")).non_null);
-        assert!(!first(&pg("SELECT 'a' LIKE 'b'")).non_null, "LIKE is outside the accepted set");
+        // LIKE, ILIKE, SIMILAR TO and the regular expressions are operators the parse marks apart.
+        assert!(first(&pg("SELECT 'a' LIKE 'b'")).non_null);
+        assert!(first(&pg("SELECT 'a' NOT ILIKE 'b'")).non_null);
+        assert!(first(&pg("SELECT 'a' SIMILAR TO 'b'")).non_null);
+        assert!(first(&pg("SELECT 'a' LIKE 'b!%' ESCAPE '!'")).non_null);
+        assert!(!first(&pg("SELECT NULL::text LIKE 'b'")).non_null);
+        // The prefix operators of the set, and `#`, whose geometric overloads are NULL where
+        // nothing intersects, left out.
+        assert!(first(&pg("SELECT |/ 4.0::float8")).non_null);
+        assert!(first(&pg("SELECT ~ 5")).non_null);
+        assert!(!first(&pg("SELECT 5 # 3")).non_null);
+        assert!(!first(&pg("SELECT '{\"a\": 1}'::jsonb ->> 'b'")).non_null);
     }
 
     #[test]
@@ -1873,7 +1986,10 @@ mod tests {
         let shadowed = Trust { shadowed: HashSet::new(), cast_targets: Some(["text".to_string()].into_iter().collect()), ..Default::default() };
         assert!(first(&plan("SELECT 1::text", Dialect::Postgres, &shadowed)).non_null);
         assert!(!first(&plan("SELECT 1::int4", Dialect::Postgres, &shadowed)).non_null);
-        assert!(!first(&pg("SELECT '{}'::uuid[]")).non_null, "an array cast is outside the set");
+        // A cast to an array of a built-in type keeps an array an array.
+        assert!(first(&pg("SELECT '{}'::uuid[]")).non_null);
+        assert!(first(&pg("SELECT ARRAY[]::int[]")).non_null);
+        assert!(!first(&pg("SELECT NULL::int[]")).non_null);
     }
 
     #[test]

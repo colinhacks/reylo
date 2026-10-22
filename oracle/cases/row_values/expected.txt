@@ -9,5 +9,5 @@ held_array.sql: one () -> { held_rows: docs{ id: int4?, title: text?, note: text
 scalar.sql: one () -> { o: { first: docs{ id: int4, title: text, note: text? }? } }
 shadowed_name.sql: one () -> { o: { x: docs{ id: int4?, title: text?, note: text? }? } }
 stored.sql: one () -> { stored: [docs{ id: int4, title: text, note: text? }]? }
-view.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }?]? }
+view.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }
 with_query.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }

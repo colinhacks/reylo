@@ -347,7 +347,7 @@ impl Builder<'_> {
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (one over columns of a query around it is that query's, `levels`); anything
                 // else can match nothing and hand back NULL, whatever its value is.
-                if crate::infer::single_row(select) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level))) {
+                if crate::infer::one_row(select, &inner, self.trust) || (crate::infer::keeps_one_row(select) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level)))) {
                     shape
                 } else {
                     force_nullable(shape)
@@ -751,7 +751,7 @@ fn string_node(value: &str) -> Node {
     Node { node: Some(NodeEnum::String(protobuf::String { sval: value.to_string() })) }
 }
 
-fn is_star(node: &Node) -> bool {
+pub(crate) fn is_star(node: &Node) -> bool {
     match node.node.as_ref() {
         Some(NodeEnum::ColumnRef(c)) => {
             c.fields.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))))

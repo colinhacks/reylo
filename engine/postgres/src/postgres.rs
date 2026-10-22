@@ -1006,34 +1006,44 @@ impl<'a> Engine<'a> {
         // Without a parse tree nothing degrades and nothing is nulled by a join, which is
         // wrong in the unsafe direction, so a statement libpg_query cannot read keeps every
         // column nullable.
-        let hidden = match parsed {
-            Some(p) => (p.has_repeated_table && !nullable_tables.is_empty()) || p.has_grouping_sets,
-            None => true,
-        };
+        let grouping = parsed.is_none_or(|p| p.has_grouping_sets);
+        // A table read twice where an outer join nulls one reading: the describe names the table
+        // of a column, never which reading, so provenance alone says nothing.
+        let repeated = parsed.is_some_and(|p| p.has_repeated_table) && !nullable_tables.is_empty();
+        let hidden = grouping || repeated;
         // A set operation anywhere: provenance names the leftmost arm's column, which says
         // nothing about the other arms ([`own_provenance`]). Such a column stays nullable; one
         // read from a WITH query is settled from that query's own probe, whose arms are combined.
         let own = own_provenance(sql, parsed, raw.columns.len());
+        // A table read twice: a top-level `alias.column` names its reading, though, the table the
+        // alias is a reading of and whether an outer join of the top FROM nulls it, where no set
+        // operation leaves the provenance unsure.
+        let aliased = if repeated && !grouping && !parsed.is_some_and(|p| p.has_set_op) { aliased_columns(sql, raw.columns.len()) } else { Vec::new() };
         // A column read straight from a WITH query, a derived table or a function in FROM is as
         // nullable as that item's own result says, whatever the catalog says of the table column
-        // behind it.
-        let item_columns = if hidden { Some(Vec::new()) } else { self.item_columns(sql, raw.columns.len(), trust) };
+        // behind it. Each item answers by its place in the FROM, so a table read twice changes
+        // nothing there.
+        let item_columns = if grouping { Some(Vec::new()) } else { self.item_columns(sql, raw.columns.len(), trust) };
         let Some(item_columns) = item_columns else { return None };
         let registry = self.registry.borrow();
         let columns: Vec<DescribedColumn> = raw
             .columns
             .iter()
             .zip(&own)
-            .map(|(col, own)| {
+            .enumerate()
+            .map(|(i, (col, own))| {
                 let degraded = hidden || !own;
                 // A whole-row reference (attribute 0) of the relation whose row type the column is.
                 let own_row = col.table != 0 && col.attnum == 0 && !degraded && registry.get(col.oid).and_then(|t| t.relid) == Some(col.table);
+                let declared = || match view_columns.get(&col.table) {
+                    Some(columns) => columns.as_ref().and_then(|c| c.get(col.attnum as usize - 1)).is_none_or(|c| c.nullable),
+                    None => !not_null.contains(&(col.table, col.attnum)),
+                };
+                let reading = aliased.get(i).and_then(Option::as_ref).filter(|(relation, _)| known.get(&col.table).is_some_and(|(name, _)| name == relation));
                 let nullable = if col.table != 0 && col.attnum > 0 && !degraded {
-                    let own = match view_columns.get(&col.table) {
-                        Some(columns) => columns.as_ref().and_then(|c| c.get(col.attnum as usize - 1)).is_none_or(|c| c.nullable),
-                        None => !not_null.contains(&(col.table, col.attnum)),
-                    };
-                    own || nulled_rels.contains(&col.table)
+                    declared() || nulled_rels.contains(&col.table)
+                } else if let (Some((_, nulled)), true) = (reading, col.table != 0 && col.attnum > 0) {
+                    declared() || *nulled
                 } else if own_row && known.contains_key(&col.table) {
                     // A row the scan read is a row, whatever its columns hold: NULL only where an
                     // outer join nulls the relation, which the statement names, so its name says.
@@ -1244,6 +1254,14 @@ impl<'a> Engine<'a> {
         let raw = self.host.describe(&pinned)?;
         let Ok(raw) = raw else { return Some(None) };
         let parsed = analyze::analyze(sql).ok();
+        // A view's statement may read relations the top statement does not name, a view among
+        // them, whose own statement then settles its columns: their catalog rows, read as the top
+        // statement's are. A probe over the top statement's relations asks nothing more.
+        let unread: Vec<String> = {
+            let known = self.relations.borrow();
+            relations_of(parsed.as_ref()).into_iter().filter(|n| !known.values().any(|(name, _)| name == n)).collect()
+        };
+        self.prefetch(&unread)?;
         let mut oids: Vec<u32> = raw.columns.iter().map(|c| c.oid).collect();
         oids.extend(raw.params.iter().copied());
         let types = self.types(&oids);
@@ -1881,6 +1899,85 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
         }
     }
     catalog
+}
+
+/// For each result column that the top SELECT's target list writes as `alias.column`, where the
+/// alias is a table of the top FROM: that table's name, and whether an outer join there nulls the
+/// alias (a WHERE that rules the NULLs out is not read, which leaves the column nullable). Nothing
+/// where a `*` hides which target is which column, or the targets are not the columns.
+fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
+    use pg_query::protobuf::{JoinType, Node};
+    fn items(node: &Node, nulled: bool, ctes: &[String], out: &mut HashMap<String, Option<(String, bool)>>) {
+        match node.node.as_ref() {
+            Some(NodeEnum::RangeVar(rv)) => {
+                let alias = rv.alias.as_ref().map_or(rv.relname.clone(), |a| a.aliasname.clone());
+                let table = (!(rv.schemaname.is_empty() && ctes.contains(&rv.relname))).then(|| (rv.relname.clone(), nulled));
+                out.insert(alias, table);
+            }
+            Some(NodeEnum::JoinExpr(j)) => {
+                // A join with an alias of its own hides the names inside it.
+                if j.alias.is_some() {
+                    return;
+                }
+                let (left, right) = match j.jointype {
+                    t if t == JoinType::JoinLeft as i32 => (nulled, true),
+                    t if t == JoinType::JoinRight as i32 => (true, nulled),
+                    t if t == JoinType::JoinFull as i32 => (true, true),
+                    _ => (nulled, nulled),
+                };
+                for (side, nulled) in [(j.larg.as_deref(), left), (j.rarg.as_deref(), right)] {
+                    if let Some(side) = side {
+                        items(side, nulled, ctes, out);
+                    }
+                }
+            }
+            Some(NodeEnum::RangeSubselect(r)) => {
+                if let Some(a) = &r.alias {
+                    out.insert(a.aliasname.clone(), None);
+                }
+            }
+            Some(NodeEnum::RangeFunction(f)) => {
+                if let Some(a) = &f.alias {
+                    out.insert(a.aliasname.clone(), None);
+                }
+            }
+            _ => {}
+        }
+    }
+    let Ok(parsed) = crate::stack::parse(sql) else { return Vec::new() };
+    let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Vec::new() };
+    if (select.op != pg_query::protobuf::SetOperation::SetopNone as i32 && select.op != 0) || select.target_list.len() != count {
+        return Vec::new();
+    }
+    let ctes: Vec<String> = select
+        .with_clause
+        .iter()
+        .flat_map(|w| w.ctes.iter())
+        .filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::CommonTableExpr(c)) => Some(c.ctename.clone()),
+            _ => None,
+        })
+        .collect();
+    let mut readings = HashMap::new();
+    for item in &select.from_clause {
+        items(item, false, &ctes, &mut readings);
+    }
+    let mut out = Vec::with_capacity(count);
+    for target in &select.target_list {
+        let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { return Vec::new() };
+        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+            return Vec::new();
+        }
+        let reading = match rt.val.as_deref().and_then(|v| v.node.as_ref()) {
+            Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 2 => match c.fields[0].node.as_ref() {
+                Some(NodeEnum::String(alias)) => readings.get(&alias.sval).cloned().flatten(),
+                _ => None,
+            },
+            _ => None,
+        };
+        out.push(reading);
+    }
+    out
 }
 
 /// A failed describe as a diagnostic on the author's text: the server's message, at the
