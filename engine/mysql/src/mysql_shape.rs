@@ -53,6 +53,8 @@ pub struct Plan {
 /// Read one statement's JSON constructors; the probes come back as text for the build to prepare.
 pub fn plan(q: &Query, columns: &Columns) -> Plan {
     let SetExpr::Select(select) = q.body.as_ref() else { return Plan::default() };
+    // A probe of a statement read materialized is read so too ([`crate::mysql_derived`]).
+    let hint = if crate::mysql_derived::is_materialized(q) { crate::mysql_derived::hint() } else { String::new() };
     let grouped = crate::mysql_nulls::grouped(&select.group_by);
     let top = Level { ctx: 0, from: select.from.clone(), with: q.with.clone() };
     let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped };
@@ -74,7 +76,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
             columns.push((alias.value.clone(), shape));
         }
     }
-    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &d.items, &d.from), wider: d.wider.as_ref().map(|f| text(&d.with, &d.items, f)) }).collect();
+    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from), wider: d.wider.as_ref().map(|f| text(&d.with, &hint, &d.items, f)) }).collect();
     b.wanted.sort_unstable();
     b.wanted.dedup();
     Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
@@ -234,13 +236,13 @@ fn mentions(text: &str, names: &[String]) -> bool {
     tokens.iter().any(|t| matches!(t, Token::Word(w) if names.iter().any(|n| n.eq_ignore_ascii_case(&w.value))))
 }
 
-fn text(with: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
+fn text(with: &str, hint: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
     let items: Vec<String> = items.iter().map(|e| e.to_string()).collect();
     if from.is_empty() {
-        format!("{with}SELECT {}", items.join(", "))
+        format!("{with}SELECT {hint}{}", items.join(", "))
     } else {
         let from: Vec<String> = from.iter().map(|f| f.to_string()).collect();
-        format!("{with}SELECT {} FROM {}", items.join(", "), from.join(", "))
+        format!("{with}SELECT {hint}{} FROM {}", items.join(", "), from.join(", "))
     }
 }
 

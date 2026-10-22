@@ -287,98 +287,14 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         Some(statement) => crate::mysql_params::column_types(statement, &names, host)?,
         None => HashMap::new(),
     };
-    // JSON shapes: the constructors' value expressions, prepared as columns of their own statements.
-    let mut shaped: Vec<(String, Type, bool)> = Vec::new();
-    let mut outer_not_null: Vec<usize> = Vec::new();
-    // What the WHERE proves (`mysql_nulls`): the columns it tests, and the statement with the outer
-    // joins inner whose null-extended rows it rejects, which every probe below reads in its place.
-    let tested: Vec<usize> = match &parsed {
-        Some(Statement::Query(q)) => crate::mysql_nulls::tested(q),
-        _ => Vec::new(),
+    // What the engine knows of each column being NULL: the server's flags, read where merging
+    // could make them wrong with every derived table materialized, and what the engine proves
+    // beyond them.
+    let proven = match &parsed {
+        Some(Statement::Query(q)) => prove(q, Some(&raw), host, &dialect, 0)?,
+        _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
-    let reduced: Option<Query> = match &parsed {
-        Some(Statement::Query(q)) => crate::mysql_nulls::reduce(q),
-        _ => None,
-    };
-    let mut reduced_not_null: Vec<usize> = Vec::new();
-    if let Some(Statement::Query(q)) = &parsed {
-        let q: &Query = reduced.as_ref().unwrap_or(q);
-        // Whose an aggregate in a scalar subquery is can turn on the columns of the subquery's
-        // tables, which the plan asks for by naming them; the probes are the same either way.
-        let mut plan = crate::mysql_shape::plan(q, &Default::default());
-        let mut pending = false;
-        if !plan.wanted.is_empty() {
-            match table_columns(host, &plan.wanted) {
-                Some(columns) => plan = crate::mysql_shape::plan(q, &columns),
-                None => pending = true,
-            }
-        }
-        let mut outcomes: Vec<Option<MysqlDescribe>> = Vec::with_capacity(plan.probes.len());
-        // Per probe, the JSON Schema a CHECK holds each JSON column it reads to.
-        let mut documents: Vec<Vec<Option<Value>>> = Vec::with_capacity(plan.probes.len());
-        for probe in &plan.probes {
-            let mut described = &probe.sql;
-            let mut outcome = host.describe(&probe.sql);
-            if let (Some(Err(_)), Some(wider)) = (&outcome, &probe.wider) {
-                described = wider;
-                outcome = host.describe(wider);
-            }
-            match outcome {
-                Some(Ok(d)) => {
-                    let read = parse(&dialect, described).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
-                    match self::documents(read.as_ref(), &d, host) {
-                        Some(found) => documents.push(found),
-                        None => {
-                            pending = true;
-                            documents.push(Vec::new());
-                        }
-                    }
-                    outcomes.push(Some(d));
-                }
-                Some(Err(_)) => {
-                    outcomes.push(None);
-                    documents.push(Vec::new());
-                }
-                None => {
-                    pending = true;
-                    outcomes.push(None);
-                    documents.push(Vec::new());
-                }
-            }
-        }
-        // The flags of the statement with its outer joins reduced, by position.
-        if let Some(reduced) = &reduced {
-            match host.describe(&reduced.to_string()) {
-                Some(Ok(d)) if d.columns.len() == raw.columns.len() => reduced_not_null.extend(d.columns.iter().enumerate().filter(|(_, c)| c.flags & 1 != 0).map(|(i, _)| i)),
-                Some(_) => {}
-                None => pending = true,
-            }
-        }
-        // The outer columns' flags without the subquery items' pessimism, by projection position.
-        let outer = crate::mysql_shape::outer_probe(q);
-        if let Some((sql, kept)) = &outer {
-            match host.describe(sql) {
-                Some(Ok(d)) => {
-                    for (k, &i) in kept.iter().enumerate() {
-                        if d.columns.get(k).is_some_and(|c| c.flags & 1 != 0) {
-                            outer_not_null.push(i);
-                        }
-                    }
-                }
-                Some(Err(_)) => {}
-                None => pending = true,
-            }
-        }
-        if pending {
-            return None;
-        }
-        // What may reach each leaf: a placeholder in a document is the value it is given too.
-        let flows: Vec<Vec<u8>> = plan.probes.iter().zip(&outcomes).map(|(probe, outcome)| outcome.as_ref().map(|d| probe_flow(&probe.sql, d, &dialect)).unwrap_or_default()).collect();
-        for (name, shape) in &plan.columns {
-            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents);
-            shaped.push((name.clone(), ty, non_null));
-        }
-    }
+    let never_null = proven.never_null(&raw.columns);
     // A column of a view may be an expression, which the prepare does not tell from a table's.
     let views: Option<HashSet<String>> = match raw.columns.iter().any(|c| (other_width(c).is_some() || flag_width(c)) && c.org_table.as_ref().is_some_and(|t| !t.is_empty())) {
         true => host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()),
@@ -393,7 +309,6 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         Some(Statement::Query(q)) => crate::mysql_shape::truths(q, raw.columns.len()),
         _ => Vec::new(),
     };
-    let mut shapes_used: Vec<bool> = vec![false; shaped.len()];
     let columns = raw
         .columns
         .iter()
@@ -408,16 +323,12 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
             let truth = computed || flag_column(c, views.as_ref());
             let ty = if truth && !matches!(ty, Type::Json { .. }) { Type::Scalar { name: "bool".into() } } else { ty };
             let name = if computed { "boolean" } else { name };
-            let not_null = c.flags & 1 != 0 || outer_not_null.contains(&position) || reduced_not_null.contains(&position) || tested.contains(&position);
-            let shape = shaped.iter().enumerate().find(|(i, (n, _, _))| n == &c.name && !shapes_used[*i]);
-            match shape {
-                // A constructor never returns SQL NULL, whatever the server's flag says; an
-                // aggregate over no rows does, unless guarded. A JSON column takes the shape's
-                // type; any other keeps the server's and only borrows the flag.
-                Some((i, (_, shaped_ty, non_null))) => {
-                    shapes_used[i] = true;
+            let (not_null, shape) = never_null[position];
+            match shape.map(|i| &proven.shaped[i]) {
+                // A JSON column takes the shape's type; any other keeps the server's.
+                Some((_, shaped_ty, _)) => {
                     let ty = if c.r#type == 245 { shaped_ty.clone() } else { ty };
-                    Column { name: c.name.clone(), ty, nullable: !(not_null || *non_null), type_name: name.to_string() }
+                    Column { name: c.name.clone(), ty, nullable: !not_null, type_name: name.to_string() }
                 }
                 None => {
                     let ty = match (ty, documents.get(position).cloned().flatten()) {
@@ -490,6 +401,244 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         // turn on that.
         tables: read.as_ref().map(crate::mysql_params::tables),
     })
+}
+
+/// How deep in derived tables the engine reads a derived table's columns: each level is a round
+/// of prepares after the one inside it.
+const MAX_DERIVED_DEPTH: usize = 3;
+
+/// How many derived tables and WITH queries of one query the engine reads the columns of; past
+/// it, none.
+const MAX_DERIVED: usize = 8;
+
+/// What the engine knows of a query's result columns being NULL ([`prove`]).
+#[derive(Debug, Default)]
+struct Proven {
+    /// The prepare the flags are read from.
+    columns: Vec<crate::api::MysqlColumn>,
+    /// Each column's NOT NULL flag, by position.
+    flags: Vec<bool>,
+    /// The columns the engine proves never NULL beyond the flags, by position.
+    not_null: Vec<usize>,
+    /// The JSON shapes, by result column name: the type, and whether never NULL.
+    shaped: Vec<(String, Type, bool)>,
+}
+
+impl Proven {
+    /// Per column: whether it is never NULL, and its shape, the first of its name that no column
+    /// before it took. A constructor never returns SQL NULL, whatever the server's flag says; an
+    /// aggregate over no rows does, unless guarded.
+    fn never_null(&self, columns: &[crate::api::MysqlColumn]) -> Vec<(bool, Option<usize>)> {
+        let mut used = vec![false; self.shaped.len()];
+        columns
+            .iter()
+            .enumerate()
+            .map(|(position, c)| {
+                let not_null = self.flags.get(position).copied().unwrap_or(false) || self.not_null.contains(&position);
+                match self.shaped.iter().enumerate().position(|(i, (name, _, _))| name == &c.name && !used[i]) {
+                    Some(i) => {
+                        used[i] = true;
+                        (not_null || self.shaped[i].2, Some(i))
+                    }
+                    None => (not_null, None),
+                }
+            })
+            .collect()
+    }
+}
+
+/// What the engine knows of a query's result columns being NULL: the server's flags, from `raw`
+/// (or its own prepare where there is none) or, where merging could make them wrong, from the
+/// copy that materializes what the server would merge ([`crate::mysql_derived`]); and what it
+/// proves beyond them: what the WHERE proves (`mysql_nulls`), the JSON shapes and the scalar
+/// subqueries (`mysql_shape`), and its derived tables' and WITH queries' own columns
+/// ([`through_derived`]). `depth` is how many derived tables the query is inside.
+fn prove(q: &Query, raw: Option<&MysqlDescribe>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
+    let mut pending = false;
+    let materialized = crate::mysql_derived::materialized(q);
+    // A copy the server does not prepare, as a server before SET_VAR would not, leaves the
+    // statement's own flags.
+    let described: Option<Option<MysqlDescribe>> = match materialized.as_ref().map(|m| host.describe(&m.to_string())) {
+        Some(None) => None,
+        Some(Some(Ok(d))) if raw.is_none_or(|raw| raw.columns.len() == d.columns.len()) => Some(Some(d)),
+        _ => match raw {
+            Some(raw) => Some(Some(raw.clone())),
+            None => host.describe(&q.to_string()).map(Result::ok),
+        },
+    };
+    let described = match described {
+        Some(Some(d)) => Some(d),
+        // A query the server does not prepare alone proves nothing.
+        Some(None) => return Some(Proven::default()),
+        None => {
+            pending = true;
+            None
+        }
+    };
+    let count = described.as_ref().map(|d| d.columns.len());
+    let q_read = materialized.as_ref().unwrap_or(q);
+    // What the WHERE proves (`mysql_nulls`): the columns it tests, and the statement with the outer
+    // joins inner whose null-extended rows it rejects, which every probe below reads in its place.
+    let mut not_null: Vec<usize> = crate::mysql_nulls::tested(q);
+    let reduced: Option<Query> = crate::mysql_nulls::reduce(q_read);
+    let q: &Query = reduced.as_ref().unwrap_or(q_read);
+    // JSON shapes: the constructors' value expressions, prepared as columns of their own statements.
+    // Whose an aggregate in a scalar subquery is can turn on the columns of the subquery's
+    // tables, which the plan asks for by naming them; the probes are the same either way.
+    let mut plan = crate::mysql_shape::plan(q, &Default::default());
+    if !plan.wanted.is_empty() {
+        match table_columns(host, &plan.wanted) {
+            Some(columns) => plan = crate::mysql_shape::plan(q, &columns),
+            None => pending = true,
+        }
+    }
+    let mut outcomes: Vec<Option<MysqlDescribe>> = Vec::with_capacity(plan.probes.len());
+    // Per probe, the JSON Schema a CHECK holds each JSON column it reads to.
+    let mut documents: Vec<Vec<Option<Value>>> = Vec::with_capacity(plan.probes.len());
+    for probe in &plan.probes {
+        let mut described = &probe.sql;
+        let mut outcome = host.describe(&probe.sql);
+        if let (Some(Err(_)), Some(wider)) = (&outcome, &probe.wider) {
+            described = wider;
+            outcome = host.describe(wider);
+        }
+        match outcome {
+            Some(Ok(d)) => {
+                let read = parse(dialect, described).ok().and_then(|mut v| if v.len() == 1 { v.pop() } else { None });
+                match self::documents(read.as_ref(), &d, host) {
+                    Some(found) => documents.push(found),
+                    None => {
+                        pending = true;
+                        documents.push(Vec::new());
+                    }
+                }
+                outcomes.push(Some(d));
+            }
+            Some(Err(_)) => {
+                outcomes.push(None);
+                documents.push(Vec::new());
+            }
+            None => {
+                pending = true;
+                outcomes.push(None);
+                documents.push(Vec::new());
+            }
+        }
+    }
+    // The flags of the statement with its outer joins reduced, by position.
+    if let Some(reduced) = &reduced {
+        match host.describe(&reduced.to_string()) {
+            Some(Ok(d)) if Some(d.columns.len()) == count => not_null.extend(d.columns.iter().enumerate().filter(|(_, c)| c.flags & 1 != 0).map(|(i, _)| i)),
+            Some(_) => {}
+            None => pending = true,
+        }
+    }
+    // The outer columns' flags without the subquery items' pessimism, by projection position.
+    match outer_flags(q, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    match through_derived(q, count, host, dialect, depth) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    if pending {
+        return None;
+    }
+    let described = described.expect("a query described when nothing is pending");
+    // What may reach each leaf: a placeholder in a document is the value it is given too.
+    let flows: Vec<Vec<u8>> = plan.probes.iter().zip(&outcomes).map(|(probe, outcome)| outcome.as_ref().map(|d| probe_flow(&probe.sql, d, dialect)).unwrap_or_default()).collect();
+    let shaped = plan
+        .columns
+        .iter()
+        .map(|(name, shape)| {
+            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents);
+            (name.clone(), ty, non_null)
+        })
+        .collect();
+    Some(Proven { flags: described.columns.iter().map(|c| c.flags & 1 != 0).collect(), columns: described.columns, not_null, shaped })
+}
+
+/// The positions of the outer columns the statement without its subquery items flags NOT NULL
+/// ([`crate::mysql_shape::outer_probe`]).
+fn outer_flags(q: &Query, host: &Host) -> Lazy<Vec<usize>> {
+    let Some((sql, kept)) = crate::mysql_shape::outer_probe(q) else { return Some(Vec::new()) };
+    Some(match host.describe(&sql)? {
+        Ok(d) => kept.iter().enumerate().filter(|(k, _)| d.columns.get(*k).is_some_and(|c| c.flags & 1 != 0)).map(|(_, &i)| i).collect(),
+        Err(_) => Vec::new(),
+    })
+}
+
+/// The positions of the columns of a materialized query ([`crate::mysql_derived::materialized`])
+/// that the server flags NOT NULL once each column of its derived tables and WITH queries that
+/// the engine proves never NULL, by analyzing the table's query alone, is written so the server
+/// sees it too ([`crate::mysql_derived::wrapper`]). The server then carries the proof through
+/// whatever reads the table, which an outer join, a ROLLUP or an aggregate over no rows may still
+/// make NULL. `count` is how many columns the query has.
+fn through_derived(q: &Query, count: Option<usize>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
+    use crate::mysql_derived::{each_target, filler, standalone, wrapper};
+    if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) {
+        return Some(Vec::new());
+    }
+    let mut alone: Vec<Option<Query>> = Vec::new();
+    each_target(&mut q.clone(), &mut |t| alone.push(standalone(t.query, t.scope.as_ref())));
+    if alone.is_empty() || alone.len() > MAX_DERIVED {
+        return Some(Vec::new());
+    }
+    let mut pending = false;
+    let proofs: Vec<Proven> = alone
+        .iter()
+        .map(|q| match q {
+            Some(q) => prove(q, None, host, dialect, depth + 1).unwrap_or_else(|| {
+                pending = true;
+                Proven::default()
+            }),
+            None => Proven::default(),
+        })
+        .collect();
+    if pending {
+        return None;
+    }
+    let mut copy = q.clone();
+    let (mut next, mut changed) = (0, false);
+    each_target(&mut copy, &mut |t| {
+        let proven = &proofs[next];
+        next += 1;
+        let columns: Vec<(String, Option<&str>)> = proven
+            .never_null(&proven.columns)
+            .iter()
+            .zip(&proven.columns)
+            .zip(&proven.flags)
+            .map(|(((never, _), c), flag)| (c.name.clone(), if *never && !flag { filler(c) } else { None }))
+            .collect();
+        if columns.iter().all(|(_, filler)| filler.is_none()) {
+            return;
+        }
+        if let Ok(mut parsed) = parse(dialect, &wrapper(t.query, &columns, t.listed)) {
+            if let (Some(Statement::Query(wrapped)), None) = (parsed.pop(), parsed.pop()) {
+                *t.query = *wrapped;
+                changed = true;
+            }
+        }
+    });
+    if !changed {
+        return Some(Vec::new());
+    }
+    let mut not_null = Vec::new();
+    match host.describe(&copy.to_string()) {
+        Some(Ok(d)) if Some(d.columns.len()) == count => not_null.extend(d.columns.iter().enumerate().filter(|(_, c)| c.flags & 1 != 0).map(|(i, _)| i)),
+        Some(_) => {}
+        None => pending = true,
+    }
+    match outer_flags(&copy, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
+    if pending {
+        None
+    } else {
+        Some(not_null)
+    }
 }
 
 /// The functions MySQL reads as built-ins only where the parenthesis follows the name at once
@@ -2330,5 +2479,54 @@ mod tests {
         assert!(nullable("select json_arrayagg(title) as titles from posts"));
         assert!(nullable("select json_arrayagg(title) as titles from posts group by user_id with rollup"));
         assert!(nullable("select json_arrayagg(title) over (rows between 1 following and 1 following) as titles from posts group by title"));
+    }
+
+    #[test]
+    fn a_derived_tables_column_is_as_null_as_its_query_alone_finds_it() {
+        // As 8.4 describes it: a scalar subquery item is nullable, its count is not, and a
+        // derived table's column carries the flag of the item it selects, a coalesce's NOT NULL
+        // too, except on the null-extended side of an outer join.
+        let describe = |sql: &str| {
+            let column = |name: &str, not_null: bool| json!({ "name": name, "type": 8, "flags": if not_null { 1 } else { 0 } });
+            let columns = if sql.starts_with("SELECT count(*)") {
+                vec![column("count(*)", true)]
+            } else if sql == "SELECT id FROM users" {
+                vec![column("id", true)]
+            } else {
+                vec![column("id", true), column("n", sql.contains("coalesce(reylo_derived.reylo_1, 0)") && !sql.contains("LEFT JOIN"))]
+            };
+            json!({ "columns": columns, "params": [] })
+        };
+        let nullable = |sql: &str| analyzed_by(sql, &describe).columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
+        let derived = "(select id, (select count(*) from posts) as n from users)";
+        for sql in [
+            format!("select d.id, d.n from {derived} d"),
+            format!("select id, n from {derived} d"),
+            format!("select * from {derived} d"),
+            format!("select d.id, d.n from (select e.id, e.n from {derived} e) d"),
+            format!("with d as {derived} select d.id, d.n from d"),
+            format!("select d.a, d.b from {derived} d (a, b)"),
+        ] {
+            assert_eq!(nullable(&sql), [false, false], "{sql}");
+        }
+        // The null-extended side of an outer join, and a LATERAL derived table, which reads the
+        // tables before it and is no query of its own.
+        assert_eq!(nullable(&format!("select d.id, d.n from users u left join {derived} d on d.id = u.id")), [false, true]);
+        assert_eq!(nullable("select d.id, d.n from users u, lateral (select u.id, (select count(*) from posts) as n) d"), [false, true]);
+    }
+
+    #[test]
+    fn a_derived_tables_expression_on_the_null_extended_side_is_nullable() {
+        // As 8.4 describes it: merged into the statement, the derived table's expression keeps its
+        // own NOT NULL flag under the outer join; materialized, it is nullable there.
+        let describe = |sql: &str| {
+            let materialized = sql.contains("derived_merge=off");
+            json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }, { "name": "next", "type": 8, "flags": if materialized { 0 } else { 1 } }], "params": [] })
+        };
+        let nullable = |sql: &str| analyzed_by(sql, &describe).columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
+        assert_eq!(nullable("select u.id, d.next from users u left join (select user_id, id + 1 as next from posts) d on d.user_id = u.id"), [false, true]);
+        assert_eq!(nullable("with d as (select user_id, id + 1 as next from posts) select u.id, d.next from users u left join d on d.user_id = u.id"), [false, true]);
+        // Nothing merged: the statement's own flags.
+        assert_eq!(nullable("select id, id + 1 as next from users"), [false, false]);
     }
 }

@@ -9,6 +9,7 @@
 pub mod api;
 pub mod host;
 pub mod mysql;
+pub mod mysql_derived;
 pub mod mysql_nulls;
 pub mod mysql_params;
 pub mod mysql_shape;

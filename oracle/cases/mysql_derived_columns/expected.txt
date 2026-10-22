@@ -1,0 +1,26 @@
+bare_columns.sql: many () -> { id: int4, n: int8 }
+column_list.sql: many () -> { a: int4, b: int8 }
+column_list_wildcard.sql: many () -> { a: int4, b: int4, c: int8? }
+correlated.sql: many () -> { id: int4, n: int8 }
+expression_items.sql: many () -> { next: int8, shout: text?, mail: text? }
+grouped.sql: many () -> { n: int8, c: int8 }
+lateral.sql: many () -> { id: int4, n: int8 }
+left_join.sql: many () -> { id: int4, user_id: int4?, n: int8? }
+left_join_expression.sql: many () -> { id: int4, next: int8?, title: text? }
+left_join_preserved.sql: many () -> { id: int4, n: int8, title: text? }
+limited.sql: many () -> { id: int4, n: int8 }
+nested.sql: many () -> { id: int4, n: int8 }
+nested_correlated.sql: many () -> { id: int4, n: int8, m: int8 }
+nested_join.sql: many () -> { id: int4, n: int8? }
+nullable_column.sql: many () -> { id: int4, email: text? }
+outer_expression.sql: many () -> { m: int8, label: text? }
+plain.sql: many () -> { id: int4, n: int8 }
+right_join.sql: many () -> { id: int4?, n: int8?, name: text }
+rollup.sql: many () -> { n: int8?, c: int8 }
+union.sql: many () -> { id: int4|int8 }
+union_counts.sql: many () -> { n: int8? }
+where_rejects_null.sql: many () -> { id: int4, next: int8 }
+wildcard.sql: many () -> { id: int4, name: text, email: text?, n: int8 }
+with_in_derived.sql: many () -> { n: int8 }
+with_left_join.sql: many () -> { id: int4, next: int8? }
+with_query.sql: many () -> { id: int4, n: int8 }

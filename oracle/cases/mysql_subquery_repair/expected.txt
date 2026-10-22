@@ -20,7 +20,7 @@ subquery_expression_column.sql: many () -> { id: int4, shout: text?, next: int8,
 subquery_for_each_post.sql: many () -> { id: int4, title: text, author: text?, siblings: int8 }
 subquery_group_concat.sql: many () -> { id: int4, titles: text? }
 subquery_grouped_outer.sql: many () -> { name: text, c: int8, n: int8 }
-subquery_in_derived.sql: many () -> { id: int4?, n: int8? }
+subquery_in_derived.sql: many () -> { id: int4, n: int8 }
 subquery_in_expression.sql: many () -> { id: int4, n: int8?, last: int8 }
 subquery_in_where.sql: many () -> { id: int4, name: text }
 subquery_inside_cte.sql: many () -> { id: int4, n: int8? }
