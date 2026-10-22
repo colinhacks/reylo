@@ -8,9 +8,11 @@
 //!   derived table is a temporary table on that side and its columns are flagged as such. So the
 //!   flags are read from a copy of the statement whose first query block sets
 //!   `derived_merge=off` for it ([`materialized`]), which materializes every derived table, WITH
-//!   query and view without an ALGORITHM of its own. The copy is only prepared, never run, so it
-//!   drops the statement's own optimizer hints, which never change a value, and a MERGE among
-//!   them would merge the table again.
+//!   query and view without an ALGORITHM of its own. A view created with `ALGORITHM = MERGE` is
+//!   merged whatever the hint says, NO_MERGE included, and lies alike, so the copy reads each view
+//!   through a derived table of its own, `(SELECT * FROM view)`, which is materialized. The copy
+//!   is only prepared, never run, so it drops the statement's own optimizer hints, which never
+//!   change a value, and a MERGE among them would merge the table again.
 //! - Too little: the server takes a derived table's flags from its own prepare of the table's
 //!   query, without what the engine proves of that query. So the engine analyzes the query on its
 //!   own ([`standalone`]), as the WITH queries it reads are in scope, and writes each column it
@@ -19,22 +21,31 @@
 //!   the proof through whatever reads the derived table, an outer join included.
 
 use crate::api::MysqlColumn;
-use sqlparser::ast::{Cte, JoinOperator, OptimizerHint, OptimizerHintStyle, Query, Select, SetExpr, TableFactor, TableWithJoins, With};
+use sqlparser::ast::{Cte, JoinOperator, ObjectNamePart, OptimizerHint, OptimizerHintStyle, Query, Select, SelectItem, SetExpr, TableAlias, TableFactor, TableWithJoins, With};
+use std::collections::HashSet;
 
 /// The hint the copy's first query block carries: it holds for the whole statement.
 const MATERIALIZE: &str = " SET_VAR(optimizer_switch = 'derived_merge=off') ";
 
 /// The statement with every derived table, WITH query and view the server would merge
 /// materialized instead, and with no optimizer hint of its own in the query blocks this walks;
-/// `None` for a statement that reads no derived table, has no WITH query and no outer join,
-/// which leaves nothing merged that a flag could be wrong about but a view's expression read
-/// alone, or one whose first query block the hint cannot go in.
-pub fn materialized(q: &Query) -> Option<Query> {
+/// `None` for a statement that reads no derived table and no view (`views`, in lower case), has
+/// no WITH query and no outer join, which leaves nothing merged that a flag could be wrong about,
+/// or one whose first query block the hint cannot go in.
+pub fn materialized(q: &Query, views: &HashSet<String>) -> Option<Query> {
     let mut copy = q.clone();
     let mut merged = copy.with.is_some();
     each_block(&mut copy, &mut |select| {
         select.optimizer_hints.clear();
         merged |= select.from.iter().any(reads_merged);
+        // A block that only selects every column of one table has nothing to null-extend the
+        // view's columns with, and is the shape a view is read through.
+        let alone = matches!(select.projection.as_slice(), [SelectItem::Wildcard(_)]) && matches!(select.from.as_slice(), [item] if item.joins.is_empty() && matches!(item.relation, TableFactor::Table { .. }));
+        if !alone {
+            for item in &mut select.from {
+                merged |= views_through_derived(item, views);
+            }
+        }
     });
     if !merged {
         return None;
@@ -69,6 +80,48 @@ fn first_block(body: &mut SetExpr) -> Option<&mut Select> {
         SetExpr::Query(q) => first_block(&mut q.body),
         _ => None,
     }
+}
+
+/// Read each view of a FROM item, inside its nested joins too, through a derived table of its
+/// own, under the name it was read by; whether any was.
+fn views_through_derived(item: &mut TableWithJoins, views: &HashSet<String>) -> bool {
+    fn factor(t: &mut TableFactor, views: &HashSet<String>) -> bool {
+        match t {
+            TableFactor::NestedJoin { table_with_joins, .. } => views_through_derived(table_with_joins, views),
+            TableFactor::Table { name, args: None, .. } => {
+                let Some(ObjectNamePart::Identifier(last)) = name.0.last() else { return false };
+                if !views.contains(&last.value.to_ascii_lowercase()) {
+                    return false;
+                }
+                let last = last.clone();
+                let Some(TableFactor::Derived { lateral, mut subquery, alias: Some(template), sample }) = derived_template() else { return false };
+                let SetExpr::Select(select) = subquery.body.as_mut() else { return false };
+                let mut view = t.clone();
+                let alias = match &mut view {
+                    TableFactor::Table { alias, .. } => alias.take(),
+                    _ => None,
+                };
+                select.from[0].relation = view;
+                let alias = alias.unwrap_or(TableAlias { name: last, ..template });
+                *t = TableFactor::Derived { lateral, subquery, alias: Some(alias), sample };
+                true
+            }
+            _ => false,
+        }
+    }
+    let mut any = factor(&mut item.relation, views);
+    for join in &mut item.joins {
+        any |= factor(&mut join.relation, views);
+    }
+    any
+}
+
+/// `(SELECT * FROM t) AS t`, as the parser reads it.
+fn derived_template() -> Option<TableFactor> {
+    let mut statements = sqlparser::parser::Parser::parse_sql(&sqlparser::dialect::MySqlDialect {}, "SELECT * FROM (SELECT * FROM t) AS t").ok()?;
+    let Some(sqlparser::ast::Statement::Query(q)) = statements.pop() else { return None };
+    let SetExpr::Select(select) = *q.body else { return None };
+    select.from.into_iter().next().map(|item| item.relation)
 }
 
 /// Whether a FROM item is or holds a derived table, or an outer join.
@@ -250,7 +303,7 @@ mod tests {
     }
 
     fn copy(sql: &str) -> Option<String> {
-        materialized(&query(sql)).map(|q| q.to_string())
+        materialized(&query(sql), &HashSet::from(["recent".to_string()])).map(|q| q.to_string())
     }
 
     #[test]
@@ -265,7 +318,13 @@ mod tests {
         // The statement's own hints are dropped, in every query block the copy walks.
         let own = copy("select /*+ MERGE(d) */ d.id from (select /*+ NO_MERGE() */ id from users) d").unwrap();
         assert_eq!(own.matches("/*+").count(), 1, "{own}");
-        assert!(is_materialized(&materialized(&query("select d.id from (select id from users) d")).unwrap()));
+        assert!(is_materialized(&materialized(&query("select d.id from (select id from users) d"), &HashSet::new()).unwrap()));
+        // A view is read through a derived table of its own, under the name it was read by, in
+        // every block but one that selects it alone.
+        assert_eq!(copy("select r.id from recent r").unwrap(), format!("SELECT {hint} r.id FROM (SELECT * FROM recent) r"));
+        assert_eq!(copy("select Recent.id from users u left join app.Recent on Recent.id = u.id").unwrap(), format!("SELECT {hint} Recent.id FROM users u LEFT JOIN (SELECT * FROM app.Recent) AS Recent ON Recent.id = u.id"));
+        assert_eq!(copy("select d.id from (select * from recent) d").unwrap(), format!("SELECT {hint} d.id FROM (SELECT * FROM recent) d"));
+        assert!(copy("select d.id from (select x.id from users x join recent y on y.id = x.id) d").unwrap().contains("JOIN (SELECT * FROM recent) y"));
         // Nothing merged, nothing to read otherwise.
         for sql in ["select id from users", "select u.id from users u join posts p on p.user_id = u.id", "select (select max(id) from (select id from posts) d) from users"] {
             assert_eq!(copy(sql), None, "{sql}");

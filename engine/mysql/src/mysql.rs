@@ -29,8 +29,9 @@ use std::collections::{HashMap, HashSet};
 /// The session's `sql_mode`, asked only for a statement whose reading turns on it.
 const SQL_MODE_QUERY: &str = "select @@session.sql_mode";
 
-/// Every view the session sees, in any schema. Asked once for a session, and only by a statement
-/// that returns an integer column of a table or a view ([`settle`]).
+/// Every view the session sees, in any schema. Asked once for a session, by a SELECT, which reads
+/// each one materialized ([`crate::mysql_derived`]), and by a statement that returns an integer
+/// column of a table or a view ([`settle`]).
 const VIEWS_QUERY: &str = "select table_name from information_schema.views";
 
 /// One row per column of every unique index of the named tables, in key order, with the column's
@@ -301,7 +302,12 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
     // could make them wrong with every derived table materialized, and what the engine proves
     // beyond them.
     let proven = match &parsed {
-        Some(Statement::Query(q)) => prove(q, Some(&raw), host, &dialect, 0)?,
+        Some(Statement::Query(q)) => {
+            // The views of every schema, which the copy reads through derived tables of their
+            // own; asked once for a session.
+            let views: HashSet<String> = host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()).unwrap_or_default();
+            prove(q, Some(&raw), &views, host, &dialect, 0)?
+        }
         _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
     let never_null = proven.never_null(&raw.columns);
@@ -463,9 +469,9 @@ impl Proven {
 /// proves beyond them: what the WHERE proves (`mysql_nulls`), the JSON shapes and the scalar
 /// subqueries (`mysql_shape`), and its derived tables' and WITH queries' own columns
 /// ([`through_derived`]). `depth` is how many derived tables the query is inside.
-fn prove(q: &Query, raw: Option<&MysqlDescribe>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
+fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
     let mut pending = false;
-    let materialized = crate::mysql_derived::materialized(q);
+    let materialized = crate::mysql_derived::materialized(q, views);
     // A copy the server does not prepare, as a server before SET_VAR would not, leaves the
     // statement's own flags.
     let described: Option<Option<MysqlDescribe>> = match materialized.as_ref().map(|m| host.describe(&m.to_string())) {
@@ -548,7 +554,7 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, host: &Host, dialect: &SessionD
         Some(found) => not_null.extend(found),
         None => pending = true,
     }
-    match through_derived(q, count, host, dialect, depth) {
+    match through_derived(q, count, views, host, dialect, depth) {
         Some(found) => not_null.extend(found),
         None => pending = true,
     }
@@ -585,7 +591,7 @@ fn outer_flags(q: &Query, host: &Host) -> Lazy<Vec<usize>> {
 /// sees it too ([`crate::mysql_derived::wrapper`]). The server then carries the proof through
 /// whatever reads the table, which an outer join, a ROLLUP or an aggregate over no rows may still
 /// make NULL. `count` is how many columns the query has.
-fn through_derived(q: &Query, count: Option<usize>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
+fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Vec<usize>> {
     use crate::mysql_derived::{each_target, filler, standalone, wrapper};
     if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) {
         return Some(Vec::new());
@@ -599,7 +605,7 @@ fn through_derived(q: &Query, count: Option<usize>, host: &Host, dialect: &Sessi
     let proofs: Vec<Proven> = alone
         .iter()
         .map(|q| match q {
-            Some(q) => prove(q, None, host, dialect, depth + 1).unwrap_or_else(|| {
+            Some(q) => prove(q, None, views, host, dialect, depth + 1).unwrap_or_else(|| {
                 pending = true;
                 Proven::default()
             }),
