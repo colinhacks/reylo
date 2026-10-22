@@ -361,7 +361,7 @@ test("a binary parameter takes binary data alone, so base64 text is refused befo
   const refused = async (run: () => unknown, message: RegExp) => assert.rejects(Promise.resolve().then(run), (e: Error) => e instanceof TypeError && message.test(e.message));
   await refused(() => execute(client, q, { b: "AQL/", bs: [] }), /^Parameter "b" is binary data, so it takes a Uint8Array \(a Buffer is one\), as `\.run\(\)` returns one; got "AQL\/"\. Decode base64 or hex text into one first\.$/);
   await refused(() => execute(client, q, { b: plain, bs: [plain, "\\x01"] }), /^Parameter "bs" is binary data, .*got "\\\\x01"/);
-  await refused(() => execute(client, q, { b: plain.buffer, bs: [] }), /^Parameter "b" is binary data, .*got an object/);
+  await refused(() => execute(client, q, { b: plain.buffer, bs: [] }), /^Parameter "b" is binary data, .*got an object\. Wrap an ArrayBuffer in one: new Uint8Array\(buffer\)\.$/);
   assert.equal(seen.length, 2);
   // MySQL's BINARY, VARBINARY and BLOB are the engine's bytea; SQLite's BLOB is blob.
   const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :b", params: ["b"], inputs: { b: bytes("bytea") } };

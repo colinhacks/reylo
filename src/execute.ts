@@ -518,7 +518,7 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown): vo
     return;
   }
   if (type.kind !== "scalar" || (type.name !== "bytea" && type.name !== "blob") || v instanceof Uint8Array) return;
-  throw new ParameterError(`Parameter "${name}" is binary data, so it takes a Uint8Array (a Buffer is one), as \`.run()\` returns one; got ${describe(v)}. Decode base64 or hex text into one first.`);
+  throw new ParameterError(`Parameter "${name}" is binary data, so it takes a Uint8Array (a Buffer is one), as \`.run()\` returns one; got ${describe(v)}. ${v instanceof ArrayBuffer ? "Wrap an ArrayBuffer in one: new Uint8Array(buffer)." : "Decode base64 or hex text into one first."}`);
 }
 
 // What `run` returns goes back in as the database reads it (the round-trip rule, src/render.ts):
