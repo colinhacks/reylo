@@ -157,7 +157,6 @@ function grouped(ts: string): string {
   return ts;
 }
 
-/** An object type of JSON-encoded fields, each nullable as the engine says. */
 /**
  * The last of each name: a row a driver builds is an object, which keeps the last of two columns
  * of one name, and so does `JSON.parse` of two keys of one name. The engine reports the columns.
@@ -166,6 +165,7 @@ export function lastOfEachName<T extends { name: string }>(items: readonly T[]):
   return items.filter((item, i) => !items.slice(i + 1).some((later) => later.name === item.name));
 }
 
+/** An object type of JSON-encoded fields, each nullable as the engine says. */
 function renderFields(fields: { name: string; type: EngineType; nullable: boolean }[], dialect: Dialect): string {
   fields = lastOfEachName(fields);
   return fields.length ? `{ ${fields.map((f) => `${ident(f.name)}: ${renderType(f.type, true, dialect)}${f.nullable ? " | null" : ""}`).join("; ")} }` : "Record<never, never>";
