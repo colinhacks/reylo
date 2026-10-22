@@ -59,7 +59,7 @@ param_like.sql: many (pattern: text) -> { id: int4 }
 param_limit.sql: many (n: int4, skip: int4) -> { id: int4 }
 param_negated.sql: one (n: float8) -> { negated: float8|int8|numeric? }
 param_null_test.sql: many (v: text) -> { id: int4 }
-param_order_by.sql: many (col: text) -> { id: int4 }
+param_order_by.sql: many (col: text) -> { id: int4 } !! reylo17: order by :col sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :col when 'name' then name end
 param_pass_aggregate.sql: one (a: text, b: numeric?, c: text, d: int4?, e: date) -> { a: text?, b: numeric|int8|float8|text?, c: text?, d: int8|float8|numeric?, e: date|timestamp|time|text? }
 param_pass_bare.sql: one (a: text, b: text, c: text, d: text?, e: int4?, f: numeric?, g: timestamp?) -> { a: text?, b: text?, c: text?, d: text, e: int8|float8|numeric, f: numeric|int8|float8|text, g: timestamp|date|time|text }
 param_pass_date.sql: many (d: date?, e: timestamp, f: date, g: timestamp, h: time, i: date) -> { a: date|timestamp|time|text?, b: timestamp|date|time|text?, c: date|timestamp|time|text?, d: timestamp|date|time|text?, e: unknown?, f: date|timestamp|time|text? }

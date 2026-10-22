@@ -220,6 +220,10 @@ pub struct Node {
     pub distinct: bool,
     pub infix: bool,
     pub args: Vec<Node>,
+    /// An aggregate's own ORDER BY, or a window call's.
+    pub order_by: Vec<Node>,
+    /// A window call's PARTITION BY.
+    pub partition_by: Vec<Node>,
     // cast
     pub to: Option<String>,
     // operands

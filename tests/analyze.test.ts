@@ -253,6 +253,26 @@ test("a parameter written twice is an error at each later use, which the type ch
   }
 });
 
+test("a parameter as a whole sort key is an error the type check places, and a build still runs the statement it typed", async () => {
+  const { root, env } = project();
+  writeFileSync(join(root, ".env"), `DATABASE_URL=${env.DATABASE_URL}\n`);
+  const sql = "select id, name from users\norder by :sort";
+  try {
+    const session = await Session.for(root);
+    const outcome = await session.analyze(sql);
+    assert.ok(outcome.ok);
+    assert.deepEqual(outcome.analysis.diagnostics.map((d) => [d.code, d.start, d.length]), [[17, sql.indexOf(":sort"), 5]]);
+    assert.deepEqual(outcome.analysis.columns.map((c) => c.name), ["id", "name"]);
+    // As an ON CONFLICT target no key matches, the error is the type check's: the module is built.
+    const file = join(root, "sorted.sql");
+    writeFileSync(file, sql);
+    const { code } = await sqlModule(file, sql);
+    assert.match(code, /export const params = \["sort"\];/);
+  } finally {
+    for (const session of Session.opened()) await session.close();
+  }
+});
+
 test("the Postgres fingerprint runs on the server, holds while nothing changes, and moves with each catalog the analysis reads", { skip: live }, async () => {
   const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
   const admin = postgres(PG, { max: 1, onnotice: () => {} });

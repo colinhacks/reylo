@@ -331,8 +331,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
             tables: None,
         });
     }
-    let diagnostics = Vec::new();
     let parsed = if misread.is_some() { None } else { read.clone() };
+    // A parameter as a whole sort or group key is an error; the rest is typed all the same.
+    let diagnostics = parsed.as_ref().map(|statement| constant_keys(sql, statement, &rewritten)).unwrap_or_default();
     // The parameters the caller may pass null for, which the prepare does not say: by the rules
     // of Postgres and SQLite, read off the tree (`mysql_params`).
     let nullable = match &parsed {
@@ -860,6 +861,167 @@ const PLACEHOLDERS: u8 = INTEGER | FLOAT | DECIMAL | TEMPORAL | OTHER;
 
 /// Whether an expression is a user variable. `sqlparser` reads `@x` as a name and `` @`x` `` as a
 /// placeholder; `@@x` is a system variable, of one type.
+/// The error of each parameter that is, bare or under casts and collations, a whole key of an
+/// ORDER BY (a statement's, a window's, an aggregate's, an UPDATE's or a DELETE's), a GROUP BY or a
+/// window's PARTITION BY, in the statement, its WITH queries, its derived tables and the subqueries
+/// of its expressions, at the placeholder as the author wrote it. A key that only holds a parameter
+/// (`case :sort when 'name' then name end`) is none.
+fn constant_keys(sql: &str, statement: &Statement, rewritten: &lex::Rewritten) -> Vec<Diagnostic> {
+    use crate::analysis::KeyClause;
+    type Found = Vec<((u64, u64), KeyClause, bool)>;
+    fn param(e: &Expr) -> Option<(u64, u64)> {
+        match e {
+            Expr::Value(v) if matches!(&v.value, ast::Value::Placeholder(p) if p == "?") => Some((v.span.start.line, v.span.start.column)),
+            Expr::Nested(inner) | Expr::Cast { expr: inner, .. } | Expr::Convert { expr: inner, .. } | Expr::Collate { expr: inner, .. } => param(inner),
+            _ => None,
+        }
+    }
+    fn keys<'e>(list: impl ExactSizeIterator<Item = &'e Expr>, clause: KeyClause, out: &mut Found) {
+        let alone = list.len() == 1;
+        out.extend(list.filter_map(param).map(|p| (p, clause, alone)));
+    }
+    fn order(list: &[ast::OrderByExpr], out: &mut Found) {
+        keys(list.iter().map(|k| &k.expr), KeyClause::OrderBy, out);
+        list.iter().for_each(|k| expr(&k.expr, out));
+    }
+    fn window(spec: &ast::WindowSpec, out: &mut Found) {
+        keys(spec.partition_by.iter(), KeyClause::PartitionBy, out);
+        spec.partition_by.iter().for_each(|e| expr(e, out));
+        order(&spec.order_by, out);
+    }
+    fn query(q: &Query, out: &mut Found) {
+        for cte in q.with.iter().flat_map(|w| &w.cte_tables) {
+            query(&cte.query, out);
+        }
+        set(&q.body, out);
+        if let Some(ast::OrderBy { kind: ast::OrderByKind::Expressions(list), .. }) = &q.order_by {
+            order(list, out);
+        }
+    }
+    fn set(body: &SetExpr, out: &mut Found) {
+        match body {
+            SetExpr::Select(s) => select(s, out),
+            SetExpr::Query(q) => query(q, out),
+            SetExpr::SetOperation { left, right, .. } => {
+                set(left, out);
+                set(right, out);
+            }
+            _ => {}
+        }
+    }
+    fn select(s: &Select, out: &mut Found) {
+        for item in &s.projection {
+            if let SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } = item {
+                expr(e, out);
+            }
+        }
+        s.from.iter().for_each(|t| from(t, out));
+        s.selection.iter().chain(&s.having).for_each(|e| expr(e, out));
+        if let GroupByExpr::Expressions(list, _) = &s.group_by {
+            keys(list.iter(), KeyClause::GroupBy, out);
+            list.iter().for_each(|e| expr(e, out));
+        }
+        for ast::NamedWindowDefinition(_, w) in &s.named_window {
+            if let ast::NamedWindowExpr::WindowSpec(spec) = w {
+                window(spec, out);
+            }
+        }
+    }
+    fn from(t: &ast::TableWithJoins, out: &mut Found) {
+        factor(&t.relation, out);
+        for join in &t.joins {
+            factor(&join.relation, out);
+            use ast::JoinOperator::*;
+            if let Join(c) | Inner(c) | Left(c) | LeftOuter(c) | Right(c) | RightOuter(c) | CrossJoin(c) | StraightJoin(c) = &join.join_operator {
+                if let ast::JoinConstraint::On(e) = c {
+                    expr(e, out);
+                }
+            }
+        }
+    }
+    fn factor(f: &TableFactor, out: &mut Found) {
+        match f {
+            TableFactor::Derived { subquery, .. } => query(subquery, out),
+            TableFactor::NestedJoin { table_with_joins, .. } => from(table_with_joins, out),
+            _ => {}
+        }
+    }
+    fn expr(e: &Expr, out: &mut Found) {
+        match e {
+            Expr::Subquery(q) => query(q, out),
+            Expr::Exists { subquery, .. } => query(subquery, out),
+            Expr::InSubquery { expr: left, subquery, .. } => {
+                expr(left, out);
+                query(subquery, out);
+            }
+            Expr::Function(f) => {
+                if let ast::FunctionArguments::List(list) = &f.args {
+                    for arg in &list.args {
+                        if let Some(e) = crate::mysql_params::arg_expr(arg) {
+                            expr(e, out);
+                        }
+                    }
+                    for clause in &list.clauses {
+                        if let ast::FunctionArgumentClause::OrderBy(keys) = clause {
+                            order(keys, out);
+                        }
+                    }
+                }
+                if let ast::FunctionArguments::Subquery(q) = &f.args {
+                    query(q, out);
+                }
+                order(&f.within_group, out);
+                if let Some(ast::WindowType::WindowSpec(spec)) = &f.over {
+                    window(spec, out);
+                }
+            }
+            Expr::Case { operand, conditions, else_result, .. } => {
+                for e in operand.iter().chain(else_result).map(|b| b.as_ref()).chain(conditions.iter().flat_map(|w| [&w.condition, &w.result])) {
+                    expr(e, out);
+                }
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                expr(left, out);
+                expr(right, out);
+            }
+            Expr::InList { expr: left, list, .. } => std::iter::once(left.as_ref()).chain(list).for_each(|e| expr(e, out)),
+            Expr::Between { expr: e, low, high, .. } => [e, low, high].into_iter().for_each(|e| expr(e, out)),
+            Expr::Like { expr: e, pattern, .. } | Expr::RLike { expr: e, pattern, .. } => [e, pattern].into_iter().for_each(|e| expr(e, out)),
+            Expr::Tuple(items) => items.iter().for_each(|e| expr(e, out)),
+            Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } | Expr::Convert { expr: inner, .. } | Expr::Collate { expr: inner, .. } | Expr::IsNull(inner) | Expr::IsNotNull(inner) => expr(inner, out),
+            _ => {}
+        }
+    }
+    let mut found = Found::new();
+    match statement {
+        Statement::Query(q) => query(q, &mut found),
+        Statement::Insert(insert) => insert.source.iter().for_each(|q| query(q, &mut found)),
+        Statement::Update(update) => {
+            from(&update.table, &mut found);
+            update.assignments.iter().map(|a| &a.value).chain(&update.selection).for_each(|e| expr(e, &mut found));
+            order(&update.order_by, &mut found);
+        }
+        Statement::Delete(delete) => {
+            delete.selection.iter().for_each(|e| expr(e, &mut found));
+            order(&delete.order_by, &mut found);
+        }
+        _ => {}
+    }
+    // Each `?` of the rewritten text by where the parser finds it (lines and characters from 1),
+    // with its place in the author's text.
+    let mut at: HashMap<(u64, u64), (usize, usize)> = HashMap::new();
+    for &(start, end, rs, _) in &rewritten.spans {
+        let before = &rewritten.sql[..rs.min(rewritten.sql.len())];
+        let line = before.matches('\n').count() as u64 + 1;
+        let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) as u64 + 1;
+        at.insert((line, column), (start, end));
+    }
+    let mut out: Vec<Diagnostic> = found.into_iter().filter_map(|(p, clause, alone)| at.get(&p).map(|&(start, end)| crate::analysis::constant_key(sql, start, end, clause, alone))).collect();
+    out.sort_by_key(|d| d.start);
+    out.dedup_by_key(|d| d.start);
+    out
+}
+
 fn is_variable(e: &Expr) -> bool {
     match e {
         Expr::Identifier(i) => i.quote_style.is_none() && i.value.starts_with('@') && !i.value.starts_with("@@"),
@@ -2258,6 +2420,59 @@ mod tests {
         // The server runs what a version comment holds.
         let (analysis, _) = analyzed("select id from users /*!80000 where id = 1 */", one.clone(), default);
         assert_eq!(analysis.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), vec![(10, 21, 24)]);
+    }
+
+    #[test]
+    fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
+        let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
+        let full = |sql: &str| {
+            let n = lex::lex(sql, Dialect::Mysql).unwrap().placeholders.len();
+            analyzed(sql, json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }], "params": vec![json!({ "type": 253 }); n] }), default).0
+        };
+        let keys = |sql: &str| full(sql).diagnostics.iter().filter(|d| d.code == 17).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        let at = |sql: &str, written: &str| sql.find(written).unwrap();
+        // A `::type` cast is part of the parameter's place, as on every diagnostic at a cast one.
+        for (sql, length) in [
+            ("select id from users order by :sort", 5),
+            ("select id from users order by :sort::text desc", 11),
+            ("select id from users order by :sort::int", 10),
+            ("select id from users order by cast(:sort as char)", 5),
+            ("select id from users order by convert(:sort, char)", 5),
+            ("select id from users order by :sort collate utf8mb4_bin", 5),
+        ] {
+            let found = keys(sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, ":sort"), length)], "{sql}");
+            assert_eq!(found[0].2, "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end");
+        }
+        let sql = "select id from users order by name, ?";
+        assert_eq!(keys(sql).iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, "?"), 1)]);
+        assert!(keys(sql)[0].2.starts_with("order by ? sorts every row"));
+        // GROUP BY, alone and beside another key.
+        assert_eq!(keys("select count(*) as n from users group by :g")[0].2, "group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end");
+        assert!(keys("select count(*) as n from users group by name, :g")[0].2.starts_with("group by :g groups every row by the same value"));
+        // A window's keys, a named window's, an aggregate's ORDER BY, and a write's.
+        let sql = "select row_number() over (partition by :p order by :o) as n from users";
+        let found = keys(sql);
+        assert_eq!(found.iter().map(|(s, _, m)| (*s, m.split(',').next().unwrap().to_string())).collect::<Vec<_>>(), [(at(sql, ":p"), "partition by :p puts every row in one partition".to_string()), (at(sql, ":o"), "order by :o sorts every row by the same value".to_string())]);
+        assert_eq!(keys("select row_number() over w as n from users window w as (partition by :p)").len(), 1);
+        assert_eq!(keys("select group_concat(name order by :o separator ',') as names from users").len(), 1);
+        assert_eq!(keys("delete from users order by :o limit 10").len(), 1);
+        // In a subquery, a WITH query and a set operation's ORDER BY.
+        assert_eq!(keys("select id from (select id from users order by :s limit 3) t").len(), 1);
+        assert_eq!(keys("with t as (select name from users group by :g, name) select name from t").len(), 1);
+        assert_eq!(keys("select id from users where id in (select id from (select id from users order by :s limit 3) x)").len(), 1);
+        assert_eq!(keys("select id from users union select id from users order by :s").len(), 1);
+        // A key that holds a parameter chooses a column with it; a position and a LIMIT are none.
+        for sql in [
+            "select id, name from users order by case :sort when 'name' then name end",
+            "select id from users order by case when :desc then id end desc, id",
+            "select id from users order by 1 limit :n",
+            "select id from users order by concat(lower(:x), name)",
+        ] {
+            assert_eq!(keys(sql), [], "{sql}");
+        }
+        // The rest of the statement is typed all the same.
+        assert_eq!(full("select id from users order by :sort").columns.len(), 1);
     }
 
     #[test]

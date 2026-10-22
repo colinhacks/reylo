@@ -8,7 +8,7 @@
 //! the database goes through [`Host`], which records what it cannot answer yet; `analyze` then
 //! returns `None`, the host answers, and the next call replays with more.
 
-use crate::analysis::{bare, bare_of, diag, lexed};
+use crate::analysis::{bare, bare_of, constant_key, diag, lexed, KeyClause};
 use crate::analyze::{self, Analysis as Parsed};
 use crate::api::{Analysis, Column, DbError, Diagnostic, Param, RawDescribe, Scope};
 use crate::cardinality::{self, Catalog};
@@ -393,6 +393,9 @@ impl<'a> Engine<'a> {
             }
             Err(_) => None,
         };
+        // A parameter as a whole sort or group key is an error the parse alone finds, reported
+        // beside whatever the server says of the statement.
+        diagnostics.extend(constant_key_diagnostics(sql, lexed, &rewritten));
         // The first round asks for everything at once: the session facts, the describe, and
         // what the parse alone names — the relations' columns, column types and unique keys,
         // the functions, and every probe that carries no placeholder. Only what depends on the
@@ -1640,6 +1643,64 @@ fn conflict_targets(sql: &str) -> Vec<ConflictTarget> {
     out
 }
 
+/// Every parameter that is, bare or under casts and collations, a whole key of an ORDER BY (a
+/// statement's, a window's or an aggregate's), a GROUP BY, a window's PARTITION BY or a DISTINCT
+/// ON, anywhere in the statement: its offset in `sql`, the clause, and whether the clause has no
+/// other key. A key that only holds a parameter (`case :sort when 'name' then name end`) is none,
+/// and neither is a grouping set's.
+fn constant_keys(sql: &str) -> Vec<(usize, KeyClause, bool)> {
+    let Ok(parsed) = crate::stack::parse(sql) else { return Vec::new() };
+    let Ok(tree) = serde_json::to_value(&parsed.protobuf) else { return Vec::new() };
+    fn param(wrapper: &Value) -> Option<usize> {
+        let node = wrapper.get("node")?;
+        if let Some(p) = node.get("ParamRef") {
+            return usize::try_from(p.get("location")?.as_i64()?).ok();
+        }
+        node.get("TypeCast").or_else(|| node.get("CollateClause")).and_then(|c| c.get("arg")).and_then(param)
+    }
+    fn keys(list: Option<&Value>, clause: KeyClause, out: &mut Vec<(usize, KeyClause, bool)>) {
+        let items = list.and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        out.extend(items.iter().filter_map(param).map(|at| (at, clause, items.len() == 1)));
+    }
+    fn walk(v: &Value, out: &mut Vec<(usize, KeyClause, bool)>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(sort) = map.get("SortBy") {
+                    out.extend(sort.get("node").and_then(param).map(|at| (at, KeyClause::OrderBy, true)));
+                }
+                if let Some(select) = map.get("SelectStmt") {
+                    keys(select.get("group_clause"), KeyClause::GroupBy, out);
+                    keys(select.get("distinct_clause"), KeyClause::DistinctOn, out);
+                }
+                // A window named in a WINDOW clause, or written in a call's OVER.
+                for window in [map.get("WindowDef"), map.get("FuncCall").and_then(|f| f.get("over"))].into_iter().flatten() {
+                    keys(window.get("partition_clause"), KeyClause::PartitionBy, out);
+                }
+                map.values().for_each(|child| walk(child, out));
+            }
+            Value::Array(items) => items.iter().for_each(|child| walk(child, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(&tree, &mut out);
+    out
+}
+
+/// The errors of [`constant_keys`], at the placeholders as the author wrote them.
+fn constant_key_diagnostics(sql: &str, lexed: &Lexed, rewritten: &Rewritten) -> Vec<Diagnostic> {
+    let mut found = constant_keys(&rewritten.sql);
+    found.sort_by_key(|&(at, ..)| at);
+    found
+        .into_iter()
+        .filter_map(|(at, clause, alone)| {
+            let start = rewritten.to_original(at);
+            let p = lexed.placeholders.iter().find(|p| p.start == start)?;
+            Some(constant_key(sql, p.start, p.end, clause, alone))
+        })
+        .collect()
+}
+
 /// Why the server refuses every execution of an INSERT with this conflict target, when it does:
 /// no unique index of the table has exactly the target's columns as its key, so the planner infers
 /// no arbiter ("there is no unique or exclusion constraint matching the ON CONFLICT
@@ -2562,6 +2623,56 @@ mod tests {
         // The fix reads the value from a WITH.
         let a = replay("with input as (select concat('%', :q::text, '%') as pattern) select 1 as one from input where input.pattern like input.pattern");
         assert!(a.diagnostics.iter().all(|d| d.code != 3), "{:?}", a.diagnostics);
+    }
+
+    #[test]
+    fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
+        let keys = |sql: &str| replay(sql).diagnostics.iter().filter(|d| d.code == 17).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        let at = |sql: &str, written: &str| sql.find(written).unwrap();
+        // Bare, cast either way, collated, named or positional: each sorts every row by one value.
+        for sql in ["select id from users order by :sort", "select id from users order by :sort::text desc", "select id from users order by cast(:sort as text)", "select id from users order by :sort::text collate \"C\""] {
+            let found = keys(sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, ":sort"), 5)], "{sql}");
+            assert_eq!(found[0].2, "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end");
+        }
+        let sql = "select id from users order by $1::text";
+        assert_eq!(keys(sql).iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, "$1"), 2)]);
+        assert!(keys(sql)[0].2.starts_with("order by $1 sorts every row"));
+        // GROUP BY, alone and beside another key.
+        let found = keys("select count(*) as n from users group by :g::text");
+        assert_eq!(found[0].2, "group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end");
+        assert!(keys("select count(*) as n from users group by name, :g::text")[0].2.starts_with("group by :g groups every row by the same value"));
+        // A window's keys, DISTINCT ON, and an aggregate's ORDER BY.
+        let sql = "select row_number() over (partition by :p::text order by :o::text) as n from users";
+        assert_eq!(keys(sql).iter().map(|(s, _, m)| (*s, m.split(',').next().unwrap().to_string())).collect::<Vec<_>>(), [(at(sql, ":p"), "partition by :p puts every row in one partition".to_string()), (at(sql, ":o"), "order by :o sorts every row by the same value".to_string())]);
+        assert_eq!(keys("select row_number() over w as n from users window w as (partition by :p::text)").len(), 1);
+        assert!(keys("select distinct on (:d::text) id from users")[0].2.starts_with("distinct on (:d) keeps a single row"));
+        assert!(keys("select distinct on (:d::text, name) id from users")[0].2.starts_with("distinct on :d compares every row by the same value"));
+        assert_eq!(keys("select string_agg(name, ',' order by :o::text) as names from users").len(), 1);
+        // In a subquery, a WITH query and a set operation's ORDER BY, as the parse finds them.
+        let found = |sql: &str| constant_keys(sql).into_iter().map(|(at, clause, _)| (at, clause)).collect::<Vec<_>>();
+        let sql = "select id from (select id from users order by $1::text limit 3) t";
+        assert_eq!(found(sql), [(at(sql, "$1"), KeyClause::OrderBy)]);
+        let sql = "with t as (select name from users group by $1::text, name) select name from t";
+        assert_eq!(found(sql), [(at(sql, "$1"), KeyClause::GroupBy)]);
+        let sql = "select id from users where id in (select id from users order by $1::text limit 3)";
+        assert_eq!(found(sql), [(at(sql, "$1"), KeyClause::OrderBy)]);
+        assert_eq!(keys("select id from users union select id from users order by :s::text").len(), 1);
+        // A key that holds a parameter chooses a column with it; a position, a LIMIT, a plain
+        // DISTINCT and a grouping set's key are no such key.
+        for sql in [
+            "select id, name from users order by case :sort::text when 'name' then name end",
+            "select id from users order by case when :desc::bool then id end desc, id",
+            "select id from users order by 1 limit :n::int",
+            "select distinct name from users",
+            "select name, count(*) as n from users group by rollup (name)",
+            "select id from users order by lower(:x::text) || name",
+        ] {
+            assert_eq!(keys(sql), [], "{sql}");
+        }
+        // The rest of the statement is typed all the same.
+        let a = replay("select id from users order by :sort::text");
+        assert_eq!(a.columns.len(), 1);
     }
 
     #[test]

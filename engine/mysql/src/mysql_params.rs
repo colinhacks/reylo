@@ -906,7 +906,7 @@ impl Walk<'_> {
     }
 }
 
-fn arg_expr(a: &FunctionArg) -> Option<&Expr> {
+pub(crate) fn arg_expr(a: &FunctionArg) -> Option<&Expr> {
     match a {
         FunctionArg::Unnamed(FunctionArgExpr::Expr(x)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(x), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(x), .. } => Some(x),
         _ => None,

@@ -926,8 +926,10 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     for ((_, _, analysis), tally) in statements.iter().zip(tallies.iter_mut()) {
         // A statement the engine refused has no types to check, and may be one that is not run
-        // lightly: a statement of a migration.
-        if let Some(d) = analysis["diagnostics"].as_array().and_then(|d| d.first()) {
+        // lightly: a statement of a migration. A parameter as a whole sort or group key is an
+        // error that leaves the statement typed, which is checked as any other.
+        let refusal = |d: &&Value| d["code"].as_u64() != Some(u64::from(reylo_engine_core::analysis::CONSTANT_KEY));
+        if let Some(d) = analysis["diagnostics"].as_array().and_then(|d| d.iter().find(refusal)) {
             tally.refused = Some(format!("the engine refused it: reylo{}: {}", d["code"], d["message"].as_str().unwrap_or("")));
         }
     }

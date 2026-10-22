@@ -123,6 +123,27 @@ test("SQLite: a parameter nothing types is an error by default, and strict_param
   await jsonCast(url, "select json_extract(:doc::json, '$.a') as a\n");
 });
 
+test("SQLite: a parameter as a whole sort or group key is error reylo17 at the parameter, and the statement is typed all the same", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-strict-db-"));
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("create table users (id integer primary key, name text not null)");
+  db.close();
+  const url = `file:${join(root, "app.db")}`;
+  const sorted = "select id, name from users order by :sort::text\n";
+  const grouped = "select count(*) as n from users group by :g\n";
+  const chosen = "select id, name from users order by case :sort::text when 'name' then name end, id\n";
+  const out = await transform(project(url, undefined), { "sorted.sql": sorted, "grouped.sql": grouped, "chosen.sql": chosen });
+  const why = "since a parameter is a value and not a column's name; choose the column with";
+  assert.deepEqual(out["sorted.sql"]!.diagnostics, [{ messageText: `order by :sort sorts every row by the same value, ${why} case :sort when 'name' then name end`, start: sorted.indexOf(":sort"), length: ":sort::text".length, code: 17 }]);
+  assert.match(out["sorted.sql"]!.text, /export type Params = \{ sort: string \}/);
+  assert.match(out["sorted.sql"]!.text, /export type Row = \{ id: number; name: string \}/);
+  // A parameter nothing else types stays unknown with no second error: the key is the one to fix.
+  assert.deepEqual(out["grouped.sql"]!.diagnostics.map((d) => [d.code, d.start, d.messageText]), [[17, grouped.indexOf(":g"), `group by :g puts every row in one group, ${why} case :g when 'name' then name end`]]);
+  assert.match(out["grouped.sql"]!.text, /export type Row = \{ n: number \}/);
+  // The case the message suggests chooses the column with the parameter.
+  assert.deepEqual(out["chosen.sql"]!.diagnostics, []);
+});
+
 test("Postgres: a JSON cast without a schema is no untyped parameter", { skip: pgLive }, async () => {
   const require = createRequire(join(DRIVERS, "postgres", "package.json"));
   const postgres = require("postgres");

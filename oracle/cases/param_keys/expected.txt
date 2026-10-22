@@ -1,0 +1,14 @@
+aggregate_order.sql: many (o: text) -> { names: text? } !! reylo17: order by :o sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :o when 'name' then name end
+case_chooses.sql: many (sort: text) -> { id: int4, name: text }
+case_direction.sql: many (desc: bool) -> { id: int4, name: text }
+distinct_on.sql: maybeOne (d: text) -> { id: int4, name: text } !! reylo17: distinct on (:d) keeps a single row, since a parameter is a value and not a column's name; choose the column with case :d when 'name' then name end
+group_alone.sql: maybeOne (g: text) -> { n: int4 } !! reylo17: group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
+group_beside.sql: many (g: text) -> { name: text, n: int4 } !! reylo17: group by :g groups every row by the same value, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
+in_set_operation.sql: many (s: text) -> { id: int4 } !! reylo17: order by :s sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :s when 'name' then name end
+in_subquery.sql: many (s: text) -> { id: int4 } !! reylo17: order by :s sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :s when 'name' then name end
+in_with.sql: many (g: text) -> { name: text, n: int4 } !! reylo17: group by :g groups every row by the same value, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
+order_cast.sql: many (sort: text) -> { id: int4, name: text } !! reylo17: order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end
+order_named.sql: many (sort: text) -> { id: int4, name: text } !! reylo17: order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end
+order_positional.sql: many (1: text) -> { id: int4, name: text } !! reylo17: order by $1 sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case $1 when 'name' then name end
+position_and_limit.sql: many (n: int4) -> { id: int4, name: text }
+window_keys.sql: many (p: text, o: text) -> { id: int4, n: int8 } !! reylo17: partition by :p puts every row in one partition, since a parameter is a value and not a column's name; choose the column with case :p when 'name' then name end !! reylo17: order by :o sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :o when 'name' then name end

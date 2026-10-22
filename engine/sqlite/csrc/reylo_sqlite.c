@@ -227,6 +227,17 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       if( !ExprHasProperty(p, EP_TokenOnly|EP_Reduced) && ExprUseXList(p) ) exprList(s, p->x.pList, pSel);
       else sqlite3_str_appendall(s, "[]");
       sqlite3_str_appendchar(s, 1, ',');
+      /* An aggregate's own ORDER BY, and a window's PARTITION BY and ORDER BY (a named window's
+      ** too, which resolving the call copied into it). */
+#ifndef SQLITE_OMIT_WINDOWFUNC
+      if( IsWindowFunc(p) && p->y.pWin ){
+        key(s, "partitionBy"); exprList(s, p->y.pWin->pPartition, pSel); sqlite3_str_appendchar(s, 1, ',');
+        key(s, "orderBy"); exprList(s, p->y.pWin->pOrderBy, pSel); sqlite3_str_appendchar(s, 1, ',');
+      }else
+#endif
+      if( !ExprHasProperty(p, EP_TokenOnly|EP_Reduced) && p->pLeft && p->pLeft->op==TK_ORDER && ExprUseXList(p->pLeft) ){
+        key(s, "orderBy"); exprList(s, p->pLeft->x.pList, pSel); sqlite3_str_appendchar(s, 1, ',');
+      }
       break;
     }
     case TK_CAST:

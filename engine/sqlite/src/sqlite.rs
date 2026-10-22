@@ -10,7 +10,7 @@
 //! [`analyze_ddl`], for a host that holds a live connection and runs [`DDL_QUERY`] and
 //! [`FUNCTIONS_QUERY`] on it itself, with [`Extras`] naming the scalar functions it registers there.
 
-use crate::analysis::{bare, diag};
+use crate::analysis::{bare, constant_key, diag, KeyClause};
 use crate::api::{Analysis, Column, Param, Scope};
 use crate::dialect::Dialect;
 use crate::fresh::Tables;
@@ -231,6 +231,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     let registered = |name: &str| extras.total.iter().any(|f| f.name.eq_ignore_ascii_case(name)) || extras.host.iter().flatten().any(|f| f.name.eq_ignore_ascii_case(name) && f.arity >= 0);
     let constructors: Vec<&str> = ["json_object", "jsonb_object"].into_iter().filter(|n| !registered(n)).collect();
     diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
+    // A parameter as a whole sort or group key is an error; the rest is typed all the same.
+    diagnostics.extend(constant_keys(sql, lexed, &t));
     let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()) };
     // A command (DDL, a PRAGMA, a transaction's control) has no tree to read: SQLite's prepare
     // says what it takes and returns, and nothing says where a column comes from, so each is of
@@ -359,6 +361,89 @@ fn tables(t: &Tree) -> Tables {
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
     Tables { read, write }
+}
+
+/// The error of each parameter that is, bare or under casts and collations, a whole key of an
+/// ORDER BY (a statement's, a window's or an aggregate's), a GROUP BY or a window's PARTITION BY,
+/// anywhere in the statement, at the placeholder as the author wrote it. A key that only holds a
+/// parameter (`case :sort when 'name' then name end`) is none.
+fn constant_keys(sql: &str, lexed: &Lexed, t: &Tree) -> Vec<crate::api::Diagnostic> {
+    fn param(n: &Node) -> Option<i64> {
+        match n.op.as_str() {
+            "variable" => Some(n.index),
+            "cast" | "collate" => n.left.as_deref().and_then(param),
+            _ => None,
+        }
+    }
+    #[derive(Default)]
+    struct Walk {
+        found: Vec<(i64, KeyClause, bool)>,
+    }
+    impl Walk {
+        fn keys(&mut self, list: &[Node], clause: KeyClause) {
+            self.found.extend(list.iter().filter_map(param).map(|index| (index, clause, list.len() == 1)));
+        }
+        fn node(&mut self, n: &Node) {
+            self.keys(&n.order_by, KeyClause::OrderBy);
+            self.keys(&n.partition_by, KeyClause::PartitionBy);
+            if let Some(q) = &n.select {
+                self.sel(q);
+            }
+            for child in n.left.iter().chain(&n.right) {
+                self.node(child);
+            }
+            for child in n.list.iter().chain(&n.args).chain(&n.order_by).chain(&n.partition_by) {
+                self.node(child);
+            }
+        }
+        fn sel(&mut self, s: &Sel) {
+            self.keys(&s.group_by, KeyClause::GroupBy);
+            self.keys(&s.order_by, KeyClause::OrderBy);
+            for c in &s.columns {
+                self.node(&c.expr);
+            }
+            for f in &s.from {
+                if let Some(q) = &f.subquery {
+                    self.sel(q);
+                }
+                for n in f.args.iter().chain(&f.on) {
+                    self.node(n);
+                }
+            }
+            for n in s.rows.iter().flatten().chain(&s.where_).chain(&s.group_by).chain(&s.having).chain(&s.order_by).chain(&s.limit).chain(&s.offset) {
+                self.node(n);
+            }
+            if let Some(prior) = &s.prior {
+                self.sel(prior);
+            }
+        }
+    }
+    let mut walk = Walk::default();
+    if let Some(s) = &t.statement {
+        walk.sel(s);
+    }
+    for c in t.returning.iter().flatten() {
+        walk.node(&c.expr);
+    }
+    if let Some(dml) = &t.dml {
+        let upsert = dml.upsert.iter().flat_map(|u| u.set.iter().map(|s| &s.expr).chain(&u.where_));
+        for n in dml.values.iter().flatten().chain(dml.set.iter().map(|s| &s.expr)).chain(&dml.where_).chain(upsert) {
+            walk.node(n);
+        }
+    }
+    // SQLite prepared the `?n` rewrite, whose n is the lexer's n-th parameter, which appears once.
+    let mut out: Vec<_> = walk
+        .found
+        .into_iter()
+        .filter_map(|(index, clause, alone)| {
+            let name = lexed.params.get(usize::try_from(index).ok()?.checked_sub(1)?)?;
+            let p = lexed.placeholders.iter().find(|p| &p.name == name)?;
+            Some(constant_key(sql, p.start, p.end, clause, alone))
+        })
+        .collect();
+    out.sort_by_key(|d| d.start);
+    out.dedup_by_key(|d| d.start);
+    out
 }
 
 fn token_len(rest: &str) -> usize {
@@ -3665,6 +3750,64 @@ mod tests {
         let broken = vec!["CREATE TABLE t (id integer primary key)".to_string(), "CREATE TABLE t (id integer primary key)".to_string(), "CREATE VIEW v AS SELECT".to_string()];
         let notes: Vec<String> = a("select nope from t", &broken).diagnostics.iter().map(|d| d.message.clone()).collect();
         assert_eq!(notes, ["no such column: nope", "The schema replay skipped statement 2: table t already exists", "The schema replay skipped statement 3: incomplete input"]);
+    }
+
+    #[test]
+    fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
+        // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
+        let full = |sql: &str| {
+            let ddl = ["create table users (id integer primary key, name text not null, email text unique, score real, avatar blob, created_at text not null default current_timestamp)"];
+            let rows = ddl.iter().map(|d| vec![serde_json::Value::String(d.to_string())]).collect();
+            let answers = HashMap::from([(format!("query:{DDL_QUERY}|[]"), crate::api::Answer::Rows { rows }), (format!("query:{FUNCTIONS_QUERY}|[]"), functions_answer(&[]))]);
+            let host = Host::new(&answers);
+            <crate::api::Sqlite as reylo_engine_core::database::Database>::analyze(sql, &host).expect("answered")
+        };
+        let keys = |sql: &str| full(sql).diagnostics.iter().filter(|d| d.code == 17).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        let at = |sql: &str, written: &str| sql.find(written).unwrap();
+        // A `::type` cast is part of the parameter's place, as on every diagnostic at a cast one.
+        for (sql, length) in [("select id from users order by :sort", 5), ("select id from users order by :sort::text desc", 11), ("select id from users order by cast(:sort as text)", 5), ("select id from users order by :sort collate nocase", 5)] {
+            let found = keys(sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, ":sort"), length)], "{sql}");
+            assert_eq!(found[0].2, "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end");
+        }
+        for (sql, written) in [("select id from users order by ?", "?"), ("select id from users order by ?2", "?2"), ("select id from users order by @s", "@s"), ("select id from users order by $s", "$s")] {
+            let found = keys(sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(at(sql, written), written.len())], "{sql}");
+            assert!(found[0].2.starts_with(&format!("order by {written} sorts every row")), "{sql}");
+        }
+        assert_eq!(keys("select id from users order by ?2, ?1").iter().map(|(s, ..)| *s).collect::<Vec<_>>(), [30, 34]);
+        assert_eq!(keys("select id from users order by name, ?").len(), 1);
+        // GROUP BY, alone and beside another key.
+        assert_eq!(keys("select count(*) as n from users group by :g")[0].2, "group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end");
+        assert!(keys("select count(*) as n from users group by name, :g::text")[0].2.starts_with("group by :g groups every row by the same value"));
+        // A window's keys, a named window's, and an aggregate's ORDER BY.
+        let sql = "select row_number() over (partition by :p order by :o) as n from users";
+        let found = keys(sql);
+        assert_eq!(found.iter().map(|(s, _, m)| (*s, m.split(',').next().unwrap().to_string())).collect::<Vec<_>>(), [(at(sql, ":p"), "partition by :p puts every row in one partition".to_string()), (at(sql, ":o"), "order by :o sorts every row by the same value".to_string())]);
+        assert_eq!(keys("select row_number() over w as n from users window w as (order by :o)").len(), 1);
+        assert_eq!(keys("select group_concat(name, ',' order by :o) as names from users").len(), 1);
+        // In a subquery, a WITH query (read twice, reported once), an expression's subquery and a
+        // set operation's ORDER BY.
+        assert_eq!(keys("select id from (select id from users order by :s limit 3) t").len(), 1);
+        assert_eq!(keys("with t as (select name from users group by :g, name) select a.name from t a, t b").len(), 1);
+        assert_eq!(keys("select id from users where id in (select id from users order by :s limit 3)").len(), 1);
+        // SQLite itself refuses a compound's ORDER BY term that names no column of its result.
+        let refused = full("select id from users union select id from users order by :s");
+        assert_eq!(refused.diagnostics.iter().map(|d| (d.code, d.message.as_str())).collect::<Vec<_>>(), [(6, "1st ORDER BY term does not match any column in the result set")]);
+        assert_eq!(keys("insert into users (name) select name from users order by :s").len(), 1);
+        // A key that holds a parameter chooses a column with it; a position and a LIMIT are none.
+        for sql in [
+            "select id, name from users order by case :sort when 'name' then name end",
+            "select id from users order by case when :desc then id end desc, id",
+            "select id from users order by 1 limit :n",
+            "select id from users order by lower(:x) || name",
+        ] {
+            assert_eq!(keys(sql), [], "{sql}");
+        }
+        // The rest of the statement is typed all the same.
+        let a = full("select id from users order by :sort::text");
+        assert_eq!(a.columns.len(), 1);
+        assert_eq!(a.params[0].type_name, "text");
     }
 
     #[test]

@@ -128,6 +128,44 @@ fn first_word(sql: &str) -> (usize, usize) {
     (start, length.max(1))
 }
 
+/// The diagnostic code of a parameter that is a whole sort, group or partition key.
+pub const CONSTANT_KEY: u32 = 17;
+
+/// The clause a key stands in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyClause {
+    /// A statement's, a window's or an aggregate's `ORDER BY`.
+    OrderBy,
+    GroupBy,
+    /// A window's `PARTITION BY`.
+    PartitionBy,
+    /// Postgres's `DISTINCT ON (…)`.
+    DistinctOn,
+}
+
+/// The error of a parameter that is, whole or under casts, a key of `clause`: the placeholder
+/// written at `start..end` of `sql`, in a clause that has no other key when `alone`. A parameter
+/// is a value, the same for every row, so such a key sorts nothing, puts every row in one group or
+/// partition, or keeps one row; a parameter chooses a column through an expression that holds it,
+/// such as a `case`, which stays allowed.
+pub fn constant_key(sql: &str, start: usize, end: usize, clause: KeyClause, alone: bool) -> Diagnostic {
+    // On MySQL and SQLite the author's placeholder may take in the `::type` written on it.
+    let written = sql.get(start..end).unwrap_or("").split("::").next().unwrap_or("").trim_end();
+    let length = if written.is_empty() { end - start } else { written.len() };
+    let written = if written.is_empty() { "the parameter" } else { written };
+    let effect = match (clause, alone) {
+        (KeyClause::OrderBy, _) => format!("order by {written} sorts every row by the same value"),
+        (KeyClause::GroupBy, true) => format!("group by {written} puts every row in one group"),
+        (KeyClause::GroupBy, false) => format!("group by {written} groups every row by the same value"),
+        (KeyClause::PartitionBy, true) => format!("partition by {written} puts every row in one partition"),
+        (KeyClause::PartitionBy, false) => format!("partition by {written} partitions every row by the same value"),
+        (KeyClause::DistinctOn, true) => format!("distinct on ({written}) keeps a single row"),
+        (KeyClause::DistinctOn, false) => format!("distinct on {written} compares every row by the same value"),
+    };
+    let message = format!("{effect}, since a parameter is a value and not a column's name; choose the column with case {written} when 'name' then name end");
+    diag(message, start, length, CONSTANT_KEY)
+}
+
 /// A diagnostic at least one byte long.
 pub fn diag(message: impl Into<String>, start: usize, length: usize, code: u32) -> Diagnostic {
     Diagnostic { message: message.into(), start, length: length.max(1), code }
