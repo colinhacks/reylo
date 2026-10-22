@@ -9,7 +9,7 @@ import { dirname, relative, resolve } from "node:path";
 import { styleText } from "node:util";
 import { glob } from "tinyglobby";
 import { Session } from "./analyze.ts";
-import { PROJECT_FILE } from "./project.ts";
+import { findProjectFile, PROJECT_FILE } from "./project.ts";
 
 const USAGE = `Usage: reylo generate [paths...] [--force]
 
@@ -185,9 +185,10 @@ async function generate(args: string[]): Promise<number> {
   else if (typed) console.log(`\n${paint("green", "✓")} ${typed} ${typed === 1 ? "query" : "queries"} typed (${seconds} s)`);
   // Nothing to build from: a CI job that carries .reylo/ to a build would fail there instead.
   else {
-    // The hint names the project's own file where the run covered one project that has one.
+    // The hint names the project's own file where the run covered one project that has one; where
+    // no .sql file opened a project, the file of the one directory searched.
     const sessions = [...projects.keys()];
-    const own = sessions.length === 1 ? sessions[0]!.project.file : undefined;
+    const own = sessions.length === 1 ? sessions[0]!.project.file : !sessions.length && paths.length <= 1 ? findProjectFile(resolve(paths[0] ?? ".")) : undefined;
     console.log(`${skipped.length ? "\n" : ""}No query under ${(paths.length ? paths : ["."]).join(", ")}: name the directory that holds them, or set cli.include in ${own ? shown(own) : PROJECT_FILE}.`);
     return 1;
   }
