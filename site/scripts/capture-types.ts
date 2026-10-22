@@ -143,6 +143,7 @@ async function render(session: Session, written: string, sql: string, json: Map<
       `${docComment(prose, shown)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
       `${sqlDoc('  ')}  readonly sql: typeof sql;`,
       `${rawDoc('  ')}  readonly raw: typeof raw;`,
+      `  readonly source: string;`,
       `};`,
       `export default query;`,
       ``,

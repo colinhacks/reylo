@@ -105,6 +105,10 @@ serve({
         `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
         `${sqlDoc("  ")}  readonly sql: typeof sql;`,
         `${rawDoc("  ")}  readonly raw: typeof raw;`,
+        // Every build step writes the file's path into the module, so an import's source is never
+        // missing. Its text is not given: the build reads the root from the file's own project,
+        // which may not be the project the type check opened.
+        `  readonly source: string;`,
         `};`,
         `export default query;`,
         ``,

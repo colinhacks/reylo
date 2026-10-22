@@ -88,7 +88,7 @@ async function declarations(root: string, files: Record<string, string>): Promis
 
 /** The declaration's lines that carry the two texts, their doc comments left out. */
 function texts(declaration: string): string[] {
-  return declaration.split("\n").filter((line) => /^export declare const (sql|raw):|^ {2}readonly (sql|raw):/.test(line) || line.startsWith("declare const query:")).map((line) => line.replace(/^declare const query: Query<.*> & /, "declare const query: Query<…> & "));
+  return declaration.split("\n").filter((line) => /^export declare const (sql|raw):|^ {2}readonly (sql|raw|source):/.test(line) || line.startsWith("declare const query:")).map((line) => line.replace(/^declare const query: Query<.*> & /, "declare const query: Query<…> & "));
 }
 
 const closeAll = async () => {
@@ -140,6 +140,7 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
+      `  readonly source: string;`,
     ]);
     // The query's doc comment is the statement as written; its `sql`'s the statement as sent.
     assert.ok(declared["get_user.sql"]!.includes("/**\n * ```sql\n * select id, name, email from users where id = :id\n * ```\n */\ndeclare const query:"), declared["get_user.sql"]!);
@@ -188,6 +189,7 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
+      `  readonly source: string;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names\\n";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
@@ -233,6 +235,7 @@ test("MySQL: `sql` has `?` placeholders and writes a typed JSON parameter's cast
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
+      `  readonly source: string;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select cast(? as json) as names\\n";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
