@@ -630,6 +630,7 @@ A column is `| null` unless Reylo infers it never is. On Postgres, Reylo reads t
 - **A table's whole row** (`select e`, `jsonb_agg(e)`) is never `NULL` unless an outer join nulls it, and keeps its columns' `NOT NULL` and their `CHECK` lists.
 - **A scalar subquery** is non-null only when it is an aggregate without a `group by` over a non-null value, as `(select count(*) …)` is.
 - **A column of a `union`** is non-null when it is in every arm.
+- **A column of a `with` query or a derived table** is as nullable as that query's own statement makes it, a `union` or a recursive one included, and a table's column read beside one keeps its `NOT NULL`.
 - **An operator, function or cast your database defines**, or an extension does, tells Reylo nothing: the rules stand down wherever Postgres could pick one of those over the built-in.
 
 ```ts twoslash tab="main.ts"

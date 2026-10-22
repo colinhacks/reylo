@@ -699,7 +699,7 @@ impl<'a> Engine<'a> {
         let mut oids: Vec<u32> = raw.params.clone();
         oids.extend(raw.columns.iter().map(|c| c.oid));
         let types = self.types(&oids);
-        let checks = self.checks(&raw, parsed, written, false);
+        let checks = self.checks(sql, &raw, parsed, written, false);
         // Nullability from provenance, then from the SQL.
         let settled = self.settle(sql, &raw, parsed, trust);
         let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
@@ -742,13 +742,13 @@ impl<'a> Engine<'a> {
     /// takes them only where `=` is the built-in one a CHECK resolved to), and the JSON Schema
     /// they hold it to ([`check_documents`]). The describe names a column's table and attribute
     /// only for a bare reference (through a view or a subquery too), so an expression over the
-    /// column is never one. Nothing under a set operation, whose provenance names the leftmost
-    /// arm only. With `checked_only`, only the JSON and string columns, the ones a CHECK says
-    /// something of.
-    fn checks(&self, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool) -> Lazy<Checks> {
-        let usable = parsed.is_some_and(|p| !p.has_set_op);
+    /// column is never one. Nothing read through a set operation, whose provenance names the
+    /// leftmost arm only ([`own_provenance`]). With `checked_only`, only the JSON and string
+    /// columns, the ones a CHECK says something of.
+    fn checks(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool) -> Lazy<Checks> {
+        let own = own_provenance(sql, parsed, raw.columns.len());
         let json = |oid: u32| !checked_only || jsonshape::is_json(&self.registry.borrow(), oid) || matches!(self.registry.borrow().resolve_domain(oid), crate::pgtypes::oid::TEXT | crate::pgtypes::oid::VARCHAR);
-        let mut pairs: Vec<(u32, i32)> = raw.columns.iter().filter(|c| usable && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|c| (c.table, c.attnum)).collect();
+        let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().filter(|p| !pairs.contains(p)).copied().collect::<Vec<_>>());
         self.check_rows(&pairs)
     }
@@ -906,9 +906,9 @@ impl<'a> Engine<'a> {
             None => true,
         };
         // A set operation anywhere: provenance names the leftmost arm's column, which says
-        // nothing about the other arms. The statement's own columns stay nullable; a column read
-        // from a WITH query is settled from that query's own probe, whose arms are combined.
-        let degraded = hidden || parsed.is_some_and(|p| p.has_set_op);
+        // nothing about the other arms ([`own_provenance`]). Such a column stays nullable; one
+        // read from a WITH query is settled from that query's own probe, whose arms are combined.
+        let own = own_provenance(sql, parsed, raw.columns.len());
         // A column read straight from a WITH query, a derived table or a function in FROM is as
         // nullable as that item's own result says, whatever the catalog says of the table column
         // behind it.
@@ -918,7 +918,9 @@ impl<'a> Engine<'a> {
         let columns: Vec<DescribedColumn> = raw
             .columns
             .iter()
-            .map(|col| {
+            .zip(&own)
+            .map(|(col, own)| {
+                let degraded = hidden || !own;
                 // A whole-row reference (attribute 0) of the relation whose row type the column is.
                 let own_row = col.table != 0 && col.attnum == 0 && !degraded && registry.get(col.oid).and_then(|t| t.relid) == Some(col.table);
                 let nullable = if col.table != 0 && col.attnum > 0 && !degraded {
@@ -1027,7 +1029,7 @@ impl<'a> Engine<'a> {
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
-                ItemRead::Other => out.push(None),
+                ItemRead::Other | ItemRead::Table => out.push(None),
                 ItemRead::Column { item, column } => {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|(n, _)| *n == column);
                     out.push(match (named.next(), named.next()) {
@@ -1139,7 +1141,7 @@ impl<'a> Engine<'a> {
         let types = self.types(&oids);
         // A JSON column a JSON constructor reads keeps the schema its CHECKs hold it to, and a
         // string column the strings they keep it to.
-        let checks = self.checks(&raw, parsed.as_ref(), &[], true);
+        let checks = self.checks(sql, &raw, parsed.as_ref(), &[], true);
         let settled = self.settle(sql, &raw, parsed.as_ref(), trust);
         let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
         self.stored_sublinks(sql, &mut described);
@@ -1379,6 +1381,23 @@ struct SublinkRows {
     targets: Vec<Option<(String, String, bool)>>,
     /// Every table a FROM anywhere in the statement names.
     tables: Vec<String>,
+}
+
+/// Per result column of `sql`, whether the provenance the describe reports for it is its own. A
+/// set operation's columns trace to its leftmost arm, so where the statement holds one anywhere,
+/// only a bare reference to a column of a table in its own FROM is sure to be that column,
+/// whatever its WITH queries and subqueries hold: one read through a WITH query, a derived table
+/// or a `*` may come from any arm. A statement libpg_query cannot read owns none.
+fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool> {
+    match parsed {
+        Some(p) if !p.has_set_op => return vec![true; count],
+        None => return vec![false; count],
+        Some(_) => {}
+    }
+    match infer::target_reads(sql).filter(|reads| reads.len() == count) {
+        Some(reads) => reads.iter().map(|r| matches!(r, infer::ItemRead::Table)).collect(),
+        None => vec![false; count],
+    }
 }
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one

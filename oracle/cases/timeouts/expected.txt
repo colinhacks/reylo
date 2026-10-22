@@ -1,4 +1,4 @@
-ancestors.sql: many (id: int4) -> { id: int4?, name: text? }
+ancestors.sql: many (id: int4) -> { id: int4, name: text? }
 forever.sql: one () -> { n: int8 }
 hours.sql: many () -> { id: int4, h: timestamptz? }
 node.sql: maybeOne (id: int4) -> { id: int4, parent_id: int4?, name: text? }

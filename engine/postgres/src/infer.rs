@@ -953,8 +953,13 @@ impl Reader<'_> {
 /// item's own result's.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ItemRead {
-    /// One result column the items say nothing of: an expression, or a column of a table.
+    /// One result column the items say nothing of: an expression, or a column of an item the
+    /// reader cannot name.
     Other,
+    /// One result column: a bare reference to a column of a table in the statement's own FROM,
+    /// whose provenance is that column whatever set operations its WITH queries and subqueries
+    /// hold.
+    Table,
     /// One result column: a bare reference to the column of this name of item `item`.
     Column { item: usize, column: String },
     /// `*` or `item.*`: every column of item `item` in order, or of something else (`None`).
@@ -983,10 +988,18 @@ pub struct ItemQuery {
 /// own, and those items. `None` when the statement is not a plain SELECT that reads one, or when
 /// a `(row).*` hides how many columns a target is.
 pub fn item_reads(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
-    crate::stack::run(|| item_reads_here(sql))
+    let (reads, queries) = crate::stack::run(|| reads_here(sql))?;
+    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
+    (0..queries.len()).any(read).then_some((reads, queries))
 }
 
-fn item_reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
+/// Per target of the select list, what it reads of the statement's FROM items, whether or not
+/// any of them is a statement of its own. `None` where [`item_reads`] cannot tell.
+pub fn target_reads(sql: &str) -> Option<Vec<ItemRead>> {
+    crate::stack::run(|| reads_here(sql)).map(|(reads, _)| reads)
+}
+
+fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     let parsed = crate::stack::parse(sql).ok()?;
     let version = parsed.protobuf.version;
     let top = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref())?;
@@ -1016,20 +1029,23 @@ fn item_reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
                     [name] => ItemRead::Star { item: items.named(name) },
                     _ => ItemRead::Star { item: None },
                 },
-                _ => match strings(&c.fields).as_deref() {
-                    Some([name, column]) => items.named(name).map_or(ItemRead::Other, |item| ItemRead::Column { item, column: column.clone() }),
+                _ => {
                     // A bare name says which item it reads only when there is one.
-                    Some([column]) => items.only().map_or(ItemRead::Other, |item| ItemRead::Column { item, column: column.clone() }),
-                    _ => ItemRead::Other,
-                },
+                    let item = match strings(&c.fields).as_deref() {
+                        Some([name, column]) => items.find(|n| n == Some(name.as_str())).map(|item| (item, column.clone())),
+                        Some([column]) => items.find(|_| true).map(|item| (item, column.clone())),
+                        _ => None,
+                    };
+                    match item {
+                        Some((Item::Query(item), column)) => ItemRead::Column { item, column },
+                        Some((Item::Table, _)) => ItemRead::Table,
+                        _ => ItemRead::Other,
+                    }
+                }
             },
             _ => ItemRead::Other,
         };
         reads.push(read);
-    }
-    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
-    if !(0..items.queries.len()).any(read) {
-        return None;
     }
     Some((reads, items.queries))
 }
@@ -1038,9 +1054,20 @@ fn item_reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
 struct Items<'a> {
     version: i32,
     with: Option<&'a protobuf::WithClause>,
-    /// The name each item goes by, and its statement where it has one ([`ItemQuery`]).
-    names: Vec<(Option<String>, Option<usize>)>,
+    /// The name each item goes by, and what it is.
+    names: Vec<(Option<String>, Item)>,
     queries: Vec<ItemQuery>,
+}
+
+/// What one FROM item is to the reader.
+#[derive(Debug, Clone, Copy)]
+enum Item {
+    /// A statement of its own, by its place in [`Items::queries`].
+    Query(usize),
+    /// A table, a view or anything else the catalog names, read by name and not a WITH query.
+    Table,
+    /// Anything else: a WITH query or a function with no statement of its own, a LATERAL item.
+    Other,
 }
 
 impl Items<'_> {
@@ -1088,7 +1115,12 @@ impl Items<'_> {
                     names.extend(own.into_iter().skip(names.len()));
                     Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: names, with: Some(cte.ctename.clone()), nulled })
                 });
-                (Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone())), query)
+                let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
+                if cte.is_none() {
+                    self.names.push((name, Item::Table));
+                    return Some(());
+                }
+                (name, query)
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let query = r.subquery.as_deref().and_then(as_select).filter(|_| !r.lateral).and_then(|body| {
@@ -1121,27 +1153,38 @@ impl Items<'_> {
             Some(NodeEnum::JsonTable(t)) => (alias(t.alias.as_ref()), None),
             _ => (None, None),
         };
-        let query = query.map(|q| {
-            self.queries.push(q);
-            self.queries.len() - 1
-        });
-        self.names.push((name, query));
+        let item = match query {
+            Some(q) => {
+                self.queries.push(q);
+                Item::Query(self.queries.len() - 1)
+            }
+            None => Item::Other,
+        };
+        self.names.push((name, item));
         Some(())
+    }
+
+    /// The one item whose name `matches`, when exactly one does.
+    fn find(&self, matches: impl Fn(Option<&str>) -> bool) -> Option<Item> {
+        let mut found = self.names.iter().filter(|(n, _)| matches(n.as_deref()));
+        match (found.next(), found.next()) {
+            (Some((_, item)), None) => Some(*item),
+            _ => None,
+        }
     }
 
     /// The statement of the one item of the FROM, when it has one item and that one has one.
     fn only(&self) -> Option<usize> {
-        match self.names.as_slice() {
-            [(_, query)] => *query,
+        match self.find(|_| true) {
+            Some(Item::Query(query)) => Some(query),
             _ => None,
         }
     }
 
     /// The statement of the item that goes by `name`, when one item does and it has one.
     fn named(&self, name: &str) -> Option<usize> {
-        let mut named = self.names.iter().filter(|(n, _)| n.as_deref() == Some(name));
-        match (named.next(), named.next()) {
-            (Some((_, query)), None) => *query,
+        match self.find(|n| n == Some(name)) {
+            Some(Item::Query(query)) => Some(query),
             _ => None,
         }
     }
@@ -2134,10 +2177,29 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_column_of_a_table_is_read_from_that_table() {
+        let reads = |sql: &str| target_reads(sql).unwrap();
+        // By its name or its alias, or bare where the table is the one item, and through joins.
+        assert_eq!(reads("SELECT id, name FROM users"), vec![ItemRead::Table, ItemRead::Table]);
+        assert_eq!(reads("SELECT u.name, public.users.id FROM users u"), vec![ItemRead::Table, ItemRead::Other]);
+        assert_eq!(reads("SELECT u.name, p.title, name FROM users u JOIN posts p ON p.user_id = u.id"), vec![ItemRead::Table, ItemRead::Table, ItemRead::Other]);
+        assert_eq!(reads("SELECT public.users.id FROM public.users"), vec![ItemRead::Other]);
+        assert_eq!(reads("SELECT x.id FROM public.users x"), vec![ItemRead::Table]);
+        // A WITH query of that name is no table, whatever its statement reads; an expression
+        // and a `*` read no one column.
+        assert_eq!(reads("WITH users AS (SELECT 1 AS id UNION SELECT 2) SELECT users.id FROM users"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
+        assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
+        assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::Star { item: None }]);
+        assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Other]);
+        // A set operation at the top hides which arm a column is.
+        assert_eq!(target_reads("SELECT id FROM users UNION SELECT id FROM posts"), None);
+    }
+
+    #[test]
     fn a_derived_table_and_a_function_in_from_are_statements_of_their_own() {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH c AS (SELECT 1 AS one) SELECT s.n, u.id FROM users u LEFT JOIN (SELECT count(*) AS n FROM c) s (total) ON true").unwrap();
-        assert_eq!(reads, vec![column(0, "n"), ItemRead::Other]);
+        assert_eq!(reads, vec![column(0, "n"), ItemRead::Table]);
         assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true }]);
         // The preserved side of an outer join is not nulled; a FULL JOIN nulls both.
         let nulled = |sql: &str| item_reads(sql).unwrap().1.iter().map(|q| q.nulled).collect::<Vec<_>>();

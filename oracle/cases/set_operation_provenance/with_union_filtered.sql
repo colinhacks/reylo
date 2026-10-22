@@ -1,0 +1,1 @@
+with activity as (select 'post' as kind, p.id, p.title as text, p.user_id from posts p union all select 'comment', c.id, c.body, p.user_id from comments c join posts p on p.id = c.post_id) select kind, id, text from activity where user_id = :user_id::bigint
