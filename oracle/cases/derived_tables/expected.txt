@@ -28,7 +28,7 @@ union_null.sql: many () -> { n: int8? }
 values_inside.sql: many () -> { a: int4? }
 where_over.sql: maybeOne (min: int8) -> { n: int8 }
 whole_row.sql: one () -> { s: record? }
-with_insert_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, id: int8?, label: text? }
+with_insert_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, id: int8?, label: text? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
 with_renamed.sql: one () -> { a: text?, b: int8 }
 with_shadows_table.sql: one () -> { label: text? }
 with_star.sql: one () -> { n: int8 }
