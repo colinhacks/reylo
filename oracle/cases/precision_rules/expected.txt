@@ -1,3 +1,4 @@
+array_cast_elements.sql: many () -> { j: (int4?)[], t: (text!)[], i: (int8!)[] }
 arrays.sql: many () -> { c: bool, o: bool, d: bool, t: bool }
 bits.sql: many () -> { a: int4, o: int4, s: int4, r: int4, n: int4, abs: int4 }
 empty_array.sql: many () -> { ids: (int4!)[], e: (text!)[] }
@@ -9,9 +10,12 @@ roots.sql: many () -> { r: float8, c: float8, p: float8 }
 same_table_with.sql: many () -> { last_name: text, v: text? }
 scalar_none.sql: one () -> { g: int4?, u: int4?, l: int8?, a: int4? }
 scalar_one.sql: one () -> { n: int4, c: int8, m: int4 }
+scalar_set_returning.sql: one () -> { g: int4?, p: int8?, t: text?, c: int8 }
 self_join.sql: many () -> { id: int4, first_name: text, boss: text?, boss_id: int4? }
 series.sql: many () -> { g: int4 }
 series_target.sql: many () -> { g: int4 }
 similar.sql: many () -> { s: bool, e: bool, r: bool, n: bool }
+unnest_array_element.sql: many () -> { c: int4? }
 unnest_built.sql: many () -> { u: int4, n: int4? }
+unnest_column_element.sql: many () -> { t: text? }
 unnest_from.sql: many () -> { v: text }

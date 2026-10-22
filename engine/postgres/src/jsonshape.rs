@@ -347,7 +347,7 @@ impl Builder<'_> {
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (one over columns of a query around it is that query's, `levels`); anything
                 // else can match nothing and hand back NULL, whatever its value is.
-                if crate::infer::one_row(select, &inner, self.trust) || (crate::infer::keeps_one_row(select) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level)))) {
+                if crate::infer::one_row(select, &inner, self.dialect, self.trust) || (crate::infer::keeps_one_row(select, &inner, self.dialect, self.trust) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level)))) {
                     shape
                 } else {
                     force_nullable(shape)

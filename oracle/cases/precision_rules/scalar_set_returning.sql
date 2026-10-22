@@ -1,0 +1,1 @@
+select (select generate_series(1, count(*)::int) from member where false) as g, (select count(*) + generate_series(1, 0) from member) as p, (select count(*)::text || (generate_series(1, 0) is null)::text from member) as t, (select count(*) + 1 from member) as c
