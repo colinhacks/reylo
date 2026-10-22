@@ -78,7 +78,7 @@ export function statementAfter(sql: string, leading: Leading): string {
 }
 
 /** What `sql` is, after the statement in its doc comment. */
-export const SQL_NOTE = "The statement as Reylo sends it to the database, as the module's `sql` export: `:id` is `$1` on Postgres and `?` on MySQL and SQLite, and each cast is the dialect's own.";
+export const SQL_NOTE = "The statement as Reylo sends it to the database, as the module's `sql` export: `:id` is `$1` on Postgres and `?` on MySQL and SQLite, each cast is the dialect's own, and a comment naming the file ends it.";
 /** What `raw` is, after the statement in its doc comment. */
 export const RAW_NOTE = "The `.sql` file's contents, exactly as written, as the module's `raw` export.";
 

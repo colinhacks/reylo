@@ -11,7 +11,7 @@
 // is that of the one engine the project installed.
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
@@ -64,6 +64,16 @@ export function packageDir(from: string): string {
     if (existsSync(join(dir, "package.json"))) return dir;
     if (dirname(dir) === dir) return resolve(from);
   }
+}
+
+/**
+ * A `.sql` file's path from the root of its own project (the project file's directory, else its
+ * package's), written with `/`: the query's `source`, and the file its sqlcommenter comment names.
+ */
+export function sourceName(path: string, env: Record<string, string | undefined> = process.env): string {
+  const dir = dirname(path);
+  const file = findProjectFile(dir, env);
+  return relative(file ? dirname(file) : packageDir(dir), path).split(sep).join("/");
 }
 
 /** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` (else `.reylo.yml`) beside the package's `package.json`. */

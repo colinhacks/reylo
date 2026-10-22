@@ -4,8 +4,10 @@
 // database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
-import { dirname, relative, sep } from "node:path";
+import { dirname } from "node:path";
 import { Session } from "./analyze.ts";
+import { sourceName } from "./project.ts";
+import { withSqlcommenter } from "./sqlcommenter.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
 
@@ -57,7 +59,8 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const columns = analysis.columns.map((c) => [c.name, columnKind(c.type, session.project.dialect)]);
   // A structured parameter's lists, at JavaScript's offsets into the statement (the engine's are
   // UTF-8 bytes).
-  const text = analysis.rewritten.sql;
+  const source = sourceName(path);
+  const text = withSqlcommenter(analysis.rewritten.sql, source);
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
   const code = [
     `import { defineQuery } from "reylo";`,
@@ -66,7 +69,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(relative(session.project.root, path).split(sep).join("/"))}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry };

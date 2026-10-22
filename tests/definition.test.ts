@@ -109,7 +109,7 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
     const imported = await hoverAt(at("posts from", 0));
     assert.ok(imported.endsWith(`\nevery post after one\n\n${statementBlock}`), imported);
     const sent = await hoverAt(at("posts.sql;", 7));
-    assert.match(sent, /^\(property\) sql: "\\n-- every post after one\\nselect id, title, body\\nfrom posts\\nwhere id > \?\\n"$/m);
+    assert.match(sent, /^\(property\) sql: "\\n-- every post after one\\nselect id, title, body\\nfrom posts\\nwhere id > \? \/\*file='queries%2Fposts\.sql'\*\/"$/m);
     assert.ok(sent.includes("\nevery post after one\n\n```sql\nselect id, title, body\nfrom posts\nwhere id > ?\n```\n\nThe statement as Reylo sends it"), sent);
     // A line of the statement that starts with `@` stays in the code block, not a tag after it.
     let added = "";

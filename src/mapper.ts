@@ -6,7 +6,8 @@ import { dirname, relative } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, withinFile } from "./module-types.ts";
-import { PROJECT_FILE, PROJECT_FILES, resolveProject, type Dialect } from "./project.ts";
+import { PROJECT_FILE, PROJECT_FILES, resolveProject, sourceName, type Dialect } from "./project.ts";
+import { withSqlcommenter } from "./sqlcommenter.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from "./doc-comment.ts";
 
@@ -87,9 +88,11 @@ serve({
     // rewrite changes placeholders alone, never a comment, so the compiled text starts with the
     // same comments.
     const leading = leadingComment(sql, project.dialect);
-    const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[]) => {
+    // `shown` is the statement the `sql` doc comment shows: the compiled text without its file's
+    // comment, whose `*/` a doc comment cannot hold. The literal type carries it whole.
+    const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], shown = compiled) => {
       const written = statementAfter(sql, leading);
-      const sent = compiled === undefined ? undefined : statementAfter(compiled, leadingComment(compiled, project.dialect));
+      const sent = shown === undefined ? undefined : statementAfter(shown, leadingComment(shown, project.dialect));
       const sqlDoc = (indent = "") => docComment(leading.prose, sent, SQL_NOTE, indent);
       const rawDoc = (indent = "") => docComment(leading.prose, written, RAW_NOTE, indent);
       const text = [
@@ -136,7 +139,8 @@ serve({
     // the docs site's playground shares (src/module-types.ts).
     const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams, project.projectFile);
     diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
-    return emit(analysis.rewritten.sql, types.params, types.row, types.cardinality, types.names);
+    // The statement as the build sends it, its file's comment included (src/sqlcommenter.ts).
+    return emit(withSqlcommenter(analysis.rewritten.sql, sourceName(p.fileName)), types.params, types.row, types.cardinality, types.names, analysis.rewritten.sql);
   },
   async closeProject(params) {
     const handle = (params as { projectHandle: string }).projectHandle;

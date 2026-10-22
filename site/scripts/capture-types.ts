@@ -29,6 +29,7 @@ import mysql from 'mysql2/promise';
 import { Session } from '../../src/analyze.ts';
 import { ident, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from '../../src/doc-comment.ts';
+import { withSqlcommenter } from '../../src/sqlcommenter.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
@@ -119,18 +120,18 @@ function compile(sql: string, dialect: Dialect): string {
  * One change: a typed JSON parameter takes the type computed from its schema (`json`), where the
  * loader says `unknown`.
  */
-async function render(session: Session, written: string, sql: string, json: Map<string, string>, strict = session.project.strictParams): Promise<{ text: string; analysis: Analysis } | { error: string }> {
+async function render(session: Session, source: string, written: string, sql: string, json: Map<string, string>, strict = session.project.strictParams): Promise<{ text: string; analysis: Analysis } | { error: string }> {
   const project = session.project;
   const paramType = (q: Analysis['params'][number], rendered: string): string => {
     if (json.has(q.name)) return json.get(q.name)!;
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? `${rendered} | null` : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[]) => {
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], plain = compiled) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
-    const sent = statementAfter(compiled, leadingComment(compiled, project.dialect));
+    const sent = statementAfter(plain, leadingComment(plain, project.dialect));
     const sqlDoc = (indent = '') => docComment(prose, sent, SQL_NOTE, indent);
     const rawDoc = (indent = '') => docComment(prose, shown, RAW_NOTE, indent);
     return [
@@ -170,7 +171,7 @@ async function render(session: Session, written: string, sql: string, json: Map<
   const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? ' | null' : ''}`);
   const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect))] as const);
   const paramTypes = typed.map(([name, type]) => `${ident(name)}: ${type}`);
-  return { text: emit(analysis.rewritten.sql, paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order), analysis };
+  return { text: emit(withSqlcommenter(analysis.rewritten.sql, source), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, analysis.rewritten.sql), analysis };
 }
 
 // ---- The scratch databases ----
@@ -296,7 +297,7 @@ try {
         // A block that shows what `strict_params: false` gives says so with `strict="false"`, and is
         // analyzed as such a project would be; every other block must type each parameter.
         const strict = !/(?:^|\s)strict="false"(?:\s|$)/.test(block.node.meta ?? '') && session.project.strictParams;
-        const result = await render(session, `${written}\n`, `${sql}\n`, json, strict);
+        const result = await render(session, block.name ?? 'query.sql', `${written}\n`, `${sql}\n`, json, strict);
         if ('error' in result) {
           report(block, result.error);
           return;
