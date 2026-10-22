@@ -267,22 +267,23 @@ Inside JSON, a value can differ from the same value in a column: a boolean is `1
 
 **Built JSON inside built JSON**
 
-JSON you build can nest inside other JSON you build, through `coalesce`, `case` and a scalar subquery.
+JSON you build can nest inside other JSON you build, through `coalesce` and `case`. A scalar subquery's JSON nests too when you wrap the subquery in `json(…)`, which reads it as JSON on every SQLite version.
 
 <Pairs>
 
-- `json_object('n', (select json_object('a', 1)))` → `{ n: { a: 1 } }`
 - `json_object('n', case when 1 then json_object('a', 1) end)` → `{ n: { a: 1 } }`
+- `json_object('n', json((select json_object('a', 1))))` → `{ n: { a: 1 } }`
 
 </Pairs>
 
 **Where it stops being JSON**
 
-Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). Build the JSON in the query that returns it.
+Read through a subquery's column, a view or `lag`, built JSON loses SQLite's JSON marker, so Reylo types it `unknown` (a cast keeps the marker on SQLite 3.53, but not on Turso). A scalar subquery keeps the marker on SQLite 3.53 and loses it on 3.54, so its JSON inside other JSON is `unknown` too. Build the JSON in the query that returns it, or wrap the value in `json(…)`, which reads it as JSON whether the marker survived or not, and Reylo types it from what it builds.
 
 <Pairs>
 
 - `json_object('n', (select j from (select json_object('a', 1) as j)))` → `{ n: "{\"a\":1}" }`
+- `json_object('n', json((select j from (select json_object('a', 1) as j))))` → `{ n: { a: 1 } }`
 
 </Pairs>
 
