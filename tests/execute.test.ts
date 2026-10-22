@@ -207,7 +207,7 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
   // MySQL's drivers bind a boolean as 1 themselves.
   const mq: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :f as f", params: ["f"], inputs: { f: s("int4") } };
   seen.length = 0;
-  await execute({ execute: async (_: string, v?: unknown[]) => (seen.push(v!), [[], []] as [unknown, unknown]) }, mq, { f: true });
+  await execute({ query: async () => [[], []] as [unknown, unknown], execute: async (_: string, v?: unknown[]) => (seen.push(v!), [[], []] as [unknown, unknown]) }, mq, { f: true });
   assert.deepEqual([...seen], [[true]]);
   // Postgres refuses `+010000` and the year 0000, which run returns for years past 9999 and 1 BC.
   const pq: QueryModule<"postgres"> = {
@@ -551,6 +551,10 @@ test("a Drizzle database or transaction runs on the driver client its session ke
   const tx = { select() {}, session: { dialect: {}, client: libsql("base"), tx: { ...libsql("tx"), commit: async () => {}, rollback: async () => {} } } };
   await execute(tx as never, lite, { id: 1, name: "ada" });
   assert.deepEqual(seen.at(-1), ["tx"]);
+  // A MySQL client whose execute() answers without PlanetScale's rows, as TiDB Cloud's transaction inside
+  // drizzle-orm/tidb-serverless answers with the rows themselves, is refused rather than read as no rows.
+  const tidb = { $client: {}, select() {}, rollback() {}, session: { dialect: {}, client: { execute: async () => [row] } } };
+  await assert.rejects(() => execute(tidb as never, my, { id: 1, name: "ada" }) as Promise<unknown>, /^TypeError: reylo ran this statement through execute\(\), as on PlanetScale's @planetscale\/database, and the client answered with an array rather than a result with rows\./);
 });
 
 test("positional placeholders take an object keyed by number, bound by number on every dialect", async () => {

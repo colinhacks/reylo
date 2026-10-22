@@ -281,7 +281,10 @@ export async function planetscale(m: AnyClient, text: string, values: unknown[],
     if (values.length) throw new TypeError(`@planetscale/database 2.0 binds no parameters, so reylo cannot pass this statement's values to it; use its 1.x line, or mysql2 on PlanetScale's MySQL endpoint.`, { cause: error });
     result = await m.execute(text, options);
   }
-  if (!Array.isArray(result?.rows)) return [];
+  // PlanetScale's result always carries its rows, an empty array for a statement that returns
+  // none. Another driver's execute() (TiDB Cloud's answers with the rows themselves) would read
+  // as no rows at all.
+  if (!Array.isArray(result?.rows)) throw new TypeError(`reylo ran this statement through execute(), as on PlanetScale's @planetscale/database, and the client answered with ${Array.isArray(result) ? "an array" : result === null || typeof result !== "object" ? String(result) : "an object"} rather than a result with rows. It takes execute(text, values) as on mysql2 and PlanetScale, or a Drizzle database over one of them.`);
   fixRows(result.rows, columnFixes(columns));
   return result.rows;
 }
