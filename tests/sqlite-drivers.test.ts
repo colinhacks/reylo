@@ -146,3 +146,28 @@ test("a project whose wrangler config binds no D1 database is not asked", { skip
   worker(root, false);
   assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
 });
+
+test("D1 compiles each statement against the schema as it is now, after a migration and in a later session", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, true);
+  const TAGGED = "select id, tag from notes where tag = :tag";
+  const session = await Session.open(root, env);
+  try {
+    assert.deepEqual((await session.analyze("select id from notes")).ok, true);
+    // A migration adds a column and a table while the session runs.
+    const db = new DatabaseSync(join(root, "app.db"));
+    db.exec("alter table notes add column tag text; create table tags (name text primary key)");
+    db.close();
+    assert.equal(await session.recheck(), true);
+    for (const sql of [TAGGED, "select name from tags"]) {
+      const outcome = await session.analyze(sql);
+      assert.ok(outcome.ok, !outcome.ok ? outcome.message : "");
+      assert.deepEqual(outcome.analysis.diagnostics, [], sql);
+    }
+  } finally {
+    await session.close();
+  }
+  // A later session, as a build step opens after a pause, asks D1 again.
+  const pretty = await analyze(root, env, "select json_pretty(tag) as t from notes");
+  assert.match(pretty.analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
+});

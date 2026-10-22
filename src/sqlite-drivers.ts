@@ -124,6 +124,19 @@ const DRIVERS: [string, Open][] = [
 /** How long workerd may take to start before D1 is left out. */
 const D1_START = 30_000;
 
+/** A D1 child process: the version of wrangler it runs, and a statement compiled there against `ddl`. */
+interface D1Process {
+  readonly version: string;
+  explain(sql: string, params: number, ddl: string[]): Promise<string | undefined>;
+}
+
+/**
+ * The D1 child of each project, by wrangler and project directory, kept for the life of the
+ * process: workerd takes a second or more to start, and a build step's session closes its
+ * connection after each pause. A child that ends is started again by the next connection.
+ */
+const d1s = new Map<string, Promise<D1Process>>();
+
 /**
  * D1 as the project's wrangler runs it locally, in a child process (src/d1-proxy.ts), given the
  * schema of the database the type check reads. A project whose wrangler config binds no D1
@@ -131,46 +144,70 @@ const D1_START = 30_000;
  */
 async function openD1(require: Require, path: string): Promise<SqliteDriver> {
   const entry = require.resolve("wrangler");
-  const version = wranglerVersion(entry);
-  // The schema as SQLite keeps it, in the order it was made, without SQLite's own tables, a
-  // virtual table's shadow tables (its module makes them) and D1's `_cf_` tables (D1 refuses
-  // them).
-  const schema = new DatabaseSync(path, { readOnly: true });
-  let ddl: string[];
-  try {
-    ddl = (
-      schema
-        .prepare(
-          `select s.sql from sqlite_schema s where s.sql is not null and substr(s.name, 1, 7) <> 'sqlite_' and substr(s.name, 1, 4) <> '_cf_'
-           and not exists (select 1 from pragma_table_list p where p.name = s.name and p.type = 'shadow') order by s.rowid`,
-        )
-        .all() as { sql: string }[]
-    ).map((r) => r.sql);
-  } finally {
-    schema.close();
+  const dir = dirname(require.resolve("./package.json"));
+  const key = `${entry}\0${dir}`;
+  let started = d1s.get(key);
+  if (!started) {
+    const d1 = startD1(entry, dir, () => {
+      if (d1s.get(key) === d1) d1s.delete(key);
+    });
+    d1s.set(key, (started = d1));
   }
+  const d1 = await started;
+  const schema = new DatabaseSync(path, { readOnly: true });
+  return {
+    name: "wrangler",
+    says: (refusal) => `Cloudflare D1, as wrangler ${d1.version} runs it locally, refuses this statement: ${refusal}`,
+    async refuses(sql, params) {
+      // The schema is read for each statement, so D1 compiles it against the tables the analysis
+      // read, after a migration too.
+      let ddl: string[];
+      try {
+        ddl = schemaDdl(schema);
+      } catch {
+        return undefined;
+      }
+      return d1.explain(sql, params, ddl);
+    },
+    async close() {
+      schema.close();
+    },
+  };
+}
+
+/**
+ * The schema as SQLite keeps it, in the order it was made, without SQLite's own tables, a virtual
+ * table's shadow tables (its module makes them) and D1's `_cf_` tables (D1 refuses them).
+ */
+function schemaDdl(db: DatabaseSync): string[] {
+  return (
+    db
+      .prepare(
+        `select s.sql from sqlite_schema s where s.sql is not null and substr(s.name, 1, 7) <> 'sqlite_' and substr(s.name, 1, 4) <> '_cf_'
+         and not exists (select 1 from pragma_table_list p where p.name = s.name and p.type = 'shadow') order by s.rowid`,
+      )
+      .all() as { sql: string }[]
+  ).map((r) => r.sql);
+}
+
+/** Starts the D1 child of the project in `dir`; `ended` is called when it ends. */
+async function startD1(entry: string, dir: string, ended: () => void): Promise<D1Process> {
+  const version = wranglerVersion(entry);
   const extension = import.meta.url.slice(import.meta.url.lastIndexOf("."));
-  const child = fork(fileURLToPath(new URL(`./d1-proxy${extension}`, import.meta.url)), [entry, dirname(require.resolve("./package.json"))], {
+  const child = fork(fileURLToPath(new URL(`./d1-proxy${extension}`, import.meta.url)), [entry, dir], {
     stdio: ["ignore", "ignore", "ignore", "ipc"],
     env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
   });
   child.unref();
-  type Reply = { kind: "ready"; d1: boolean } | { kind: "schema" } | { kind: "explain"; id: number; error?: string };
+  type Reply = { kind: "ready"; d1: boolean } | { kind: "explain"; id: number; error?: string };
   const pending = new Map<number, (error: string | undefined) => void>();
   let next = 0;
+  // The schema D1 was last given, so it is sent again only when it changes.
+  let sent: string | undefined;
   const gone = new Promise<never>((_, fail) => child.once("exit", () => fail(new Error("D1's process ended"))));
   gone.catch(() => {});
-  const reply = <K extends Reply["kind"]>(kind: K) =>
-    Promise.race([gone, new Promise<Extract<Reply, { kind: K }>>((done) => {
-      const on = (m: Reply) => {
-        if (m.kind !== kind) return;
-        child.off("message", on);
-        done(m as Extract<Reply, { kind: K }>);
-      };
-      child.on("message", on);
-    })]);
   // The channel keeps this process alive only while a statement waits on its answer, so a type
-  // check or a build ends when its own work does.
+  // check or a build ends when its own work does; the child ends with this process.
   child.on("message", (m: Reply) => {
     if (m.kind !== "explain") return;
     pending.get(m.id)?.(m.error);
@@ -178,28 +215,24 @@ async function openD1(require: Require, path: string): Promise<SqliteDriver> {
     if (!pending.size) child.channel?.unref();
   });
   child.once("exit", () => {
+    ended();
     for (const settle of pending.values()) settle(undefined);
     pending.clear();
   });
-  const stop = () => {
-    if (child.connected) child.send({ kind: "close" });
-    setTimeout(() => child.kill(), 2_000).unref();
-  };
   try {
     const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error("workerd did not start")), D1_START).unref());
-    const ready = await Promise.race([reply("ready"), timeout]);
+    const ready = await Promise.race([gone, timeout, new Promise<Extract<Reply, { kind: "ready" }>>((done) => child.once("message", done))]);
     if (!ready.d1) throw new Error("the wrangler config binds no D1 database");
-    child.send({ kind: "schema", ddl });
-    await Promise.race([reply("schema"), timeout]);
   } catch (e) {
-    stop();
+    ended();
+    if (child.connected) child.send({ kind: "close" });
+    setTimeout(() => child.kill(), 2_000).unref();
     throw e;
   }
   child.channel?.unref();
   return {
-    name: "wrangler",
-    says: (refusal) => `Cloudflare D1, as wrangler ${version} runs it locally, refuses this statement: ${refusal}`,
-    refuses: (sql, params) =>
+    version,
+    explain: (sql, params, ddl) =>
       new Promise((done) => {
         if (!child.connected) return done(undefined);
         const id = next++;
@@ -210,11 +243,13 @@ async function openD1(require: Require, path: string): Promise<SqliteDriver> {
           done(message && !/^Wrong number of parameter bindings/.test(message) ? message : undefined);
         });
         child.channel?.ref();
+        const text = JSON.stringify(ddl);
+        if (text !== sent) {
+          child.send({ kind: "schema", ddl });
+          sent = text;
+        }
         child.send({ kind: "explain", id, sql, params });
       }),
-    async close() {
-      stop();
-    },
   };
 }
 
