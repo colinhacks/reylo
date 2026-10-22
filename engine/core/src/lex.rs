@@ -279,7 +279,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             // A MySQL string, unless ANSI_QUOTES makes `"` a name's quote.
             b'\'' | b'"' if c == b'\'' || (mysql && !text.ansi_quotes) => {
                 let Some(end) = quoted_end(b, i, mysql && text.backslash_escapes) else {
-                    return Err(LexError { message: "unterminated string literal".into(), offset: b.len() });
+                    return Err(LexError { message: "unterminated string literal".into(), offset: i });
                 };
                 opaque.push((i, end));
                 i = end;
@@ -289,7 +289,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 i += 2;
                 loop {
                     match b.get(i) {
-                        None => return Err(LexError { message: "unterminated escape string".into(), offset: i }),
+                        None => return Err(LexError { message: "unterminated escape string".into(), offset: start }),
                         Some(b'\\') => i += 2,
                         Some(b'\'') if b.get(i + 1) == Some(&b'\'') => i += 2,
                         Some(b'\'') => {
@@ -303,7 +303,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             }
             b'"' | b'`' => {
                 let Some(end) = quoted_end(b, i, false) else {
-                    return Err(LexError { message: "unterminated quoted identifier".into(), offset: b.len() });
+                    return Err(LexError { message: "unterminated quoted identifier".into(), offset: i });
                 };
                 opaque.push((i, end));
                 i = end;
@@ -327,7 +327,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
             // A MySQL block comment does not nest: it ends at the first `*/`.
             b'/' if b.get(i + 1) == Some(&b'*') && mysql => {
                 let Some(close) = find_bytes(b, b"*/", i + 2) else {
-                    return Err(LexError { message: "unterminated block comment".into(), offset: b.len() });
+                    return Err(LexError { message: "unterminated block comment".into(), offset: i });
                 };
                 opaque.push((i, close + 2));
                 i = close + 2;
@@ -347,7 +347,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                             i += 2;
                         }
                         (Some(_), _) => i += 1,
-                        (None, _) => return Err(LexError { message: "unterminated block comment".into(), offset: i }),
+                        (None, _) => return Err(LexError { message: "unterminated block comment".into(), offset: start }),
                     }
                 }
                 opaque.push((start, i));
@@ -779,7 +779,19 @@ mod tests {
         assert!(lex("select 'abc", Dialect::Postgres).is_err());
         assert!(lex("select $x$abc", Dialect::Postgres).is_err());
         assert!(lex("select /* a", Dialect::Postgres).is_err());
-        assert_eq!(lex("select 'abc", Dialect::Postgres).unwrap_err().to_string(), "unterminated string literal (at byte 11)");
+        assert_eq!(lex("select 'abc", Dialect::Postgres).unwrap_err().to_string(), "unterminated string literal (at byte 7)");
+        // Each error points at what is left open, the quote or the comment's start, which lies
+        // inside the text: an offset at its end placed the error past the end of the file.
+        let at = |sql: &str, dialect| lex(sql, dialect).unwrap_err().offset;
+        assert_eq!(at("select 1, 'abc", Dialect::Sqlite), 10);
+        assert_eq!(at("select 1, \"abc", Dialect::Postgres), 10);
+        assert_eq!(at("select 1, `abc\n", Dialect::Sqlite), 10);
+        assert_eq!(at("select 1, `abc", Dialect::Mysql), 10);
+        assert_eq!(at("select 1, E'abc", Dialect::Postgres), 10);
+        assert_eq!(at("select 1, $x$abc", Dialect::Postgres), 10);
+        assert_eq!(at("select 1, /* a /* b */", Dialect::Postgres), 10);
+        assert_eq!(at("select 1, /* a", Dialect::Sqlite), 10);
+        assert_eq!(at("select 1, /* a", Dialect::Mysql), 10);
     }
 
     #[test]
