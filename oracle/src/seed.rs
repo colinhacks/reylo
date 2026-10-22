@@ -664,8 +664,8 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
             }
             None
         }
-        // An array the statement builds says whether an element may be NULL; any other array is
-        // `T[]` by decision and holds what it holds. Each element is of the element type.
+        // Any array may hold NULL elements unless the statement builds it from values it shows are
+        // not (`nullable_items` false), as `src/render.ts` types it. Each element is of the element type.
         Some("array") => {
             for (i, item) in json.as_array()?.iter().enumerate() {
                 if item.is_null() {
