@@ -141,10 +141,14 @@ test("a statement Cloudflare D1 refuses fails the type check at the call, with D
   }
 });
 
-test("a project whose wrangler config binds no D1 database is not asked", { skip: d1, timeout: 120_000 }, async () => {
+test("a project whose wrangler config binds no D1 database is not asked, until its config binds one", { skip: d1, timeout: 120_000 }, async () => {
   const { root, env } = project(["wrangler"]);
   worker(root, false);
   assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
+  assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
+  // The failed start is remembered only as long as the config it read.
+  worker(root, true);
+  assert.match((await analyze(root, env, PRETTY)).analysis.diagnostics[0]?.message ?? "", /refuses this statement: not authorized to use function: json_pretty$/);
 });
 
 test("D1 compiles each statement against the schema as it is now, after a migration and in a later session", { skip: d1, timeout: 120_000 }, async () => {

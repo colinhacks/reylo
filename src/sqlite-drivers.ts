@@ -14,7 +14,7 @@
 // lists: it refuses `pragma_function_list` too) and lacks others (FTS4, Geopoly), so the only way
 // to know is to compile the statement there (src/d1-proxy.ts).
 import { fork } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -128,14 +128,32 @@ const D1_START = 30_000;
 interface D1Process {
   readonly version: string;
   explain(sql: string, params: number, ddl: string[]): Promise<string | undefined>;
+  close(): void;
 }
 
 /**
  * The D1 child of each project, by wrangler and project directory, kept for the life of the
  * process: workerd takes a second or more to start, and a build step's session closes its
- * connection after each pause. A child that ends is started again by the next connection.
+ * connection after each pause. A start that failed (a config that binds no D1 database, a workerd
+ * that never started) is kept too, so it is not tried again on each connection; an edit of the
+ * wrangler config (`config`) starts another child, and a child that ends after it started is
+ * started again by the next connection.
  */
-const d1s = new Map<string, Promise<D1Process>>();
+const d1s = new Map<string, { config: string; started: Promise<D1Process> }>();
+
+/** The wrangler config files of the project in `dir`, as they are now: their names, sizes and times. */
+function wranglerConfig(dir: string): string {
+  return ["wrangler.json", "wrangler.jsonc", "wrangler.toml"]
+    .map((name) => {
+      try {
+        const { size, mtimeMs } = statSync(join(dir, name));
+        return `${name} ${size} ${mtimeMs}`;
+      } catch {
+        return "";
+      }
+    })
+    .join("\0");
+}
 
 /**
  * D1 as the project's wrangler runs it locally, in a child process (src/d1-proxy.ts), given the
@@ -146,14 +164,17 @@ async function openD1(require: Require, path: string): Promise<SqliteDriver> {
   const entry = require.resolve("wrangler");
   const dir = dirname(require.resolve("./package.json"));
   const key = `${entry}\0${dir}`;
-  let started = d1s.get(key);
-  if (!started) {
-    const d1 = startD1(entry, dir, () => {
-      if (d1s.get(key) === d1) d1s.delete(key);
+  const config = wranglerConfig(dir);
+  let held = d1s.get(key);
+  if (held?.config !== config) {
+    held?.started.then((d) => d.close(), () => {});
+    const started = startD1(entry, dir, () => {
+      if (d1s.get(key)?.started === started) d1s.delete(key);
     });
-    d1s.set(key, (started = d1));
+    started.catch(() => {});
+    d1s.set(key, (held = { config, started }));
   }
-  const d1 = await started;
+  const d1 = await held.started;
   const schema = new DatabaseSync(path, { readOnly: true });
   return {
     name: "wrangler",
@@ -190,7 +211,7 @@ function schemaDdl(db: DatabaseSync): string[] {
   ).map((r) => r.sql);
 }
 
-/** Starts the D1 child of the project in `dir`; `ended` is called when it ends. */
+/** Starts the D1 child of the project in `dir`; `ended` is called when it ends after it started. */
 async function startD1(entry: string, dir: string, ended: () => void): Promise<D1Process> {
   const version = wranglerVersion(entry);
   const extension = import.meta.url.slice(import.meta.url.lastIndexOf("."));
@@ -214,24 +235,29 @@ async function startD1(entry: string, dir: string, ended: () => void): Promise<D
     pending.delete(m.id);
     if (!pending.size) child.channel?.unref();
   });
+  let running = false;
   child.once("exit", () => {
-    ended();
+    if (running) ended();
     for (const settle of pending.values()) settle(undefined);
     pending.clear();
   });
+  const stop = () => {
+    if (child.connected) child.send({ kind: "close" });
+    setTimeout(() => child.kill(), 2_000).unref();
+  };
   try {
     const timeout = new Promise<never>((_, fail) => setTimeout(() => fail(new Error("workerd did not start")), D1_START).unref());
     const ready = await Promise.race([gone, timeout, new Promise<Extract<Reply, { kind: "ready" }>>((done) => child.once("message", done))]);
     if (!ready.d1) throw new Error("the wrangler config binds no D1 database");
   } catch (e) {
-    ended();
-    if (child.connected) child.send({ kind: "close" });
-    setTimeout(() => child.kill(), 2_000).unref();
+    stop();
     throw e;
   }
+  running = true;
   child.channel?.unref();
   return {
     version,
+    close: stop,
     explain: (sql, params, ddl) =>
       new Promise((done) => {
         if (!child.connected) return done(undefined);
