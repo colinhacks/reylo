@@ -1,0 +1,11 @@
+case_json.sql: many () -> { v: unknown? }
+coalesce_untyped.sql: many () -> { v: unknown? }
+compound_integers.sql: many () -> { v: integer }
+compound_json.sql: many () -> { v: unknown? }
+compound_text.sql: many () -> { v: unknown }
+compound_untyped.sql: many () -> { v: unknown? }
+iif_untyped.sql: many () -> { v: unknown? }
+lag_blob_default.sql: many () -> { v: unknown? }
+lag_integer_default.sql: many () -> { v: integer? }
+lead_text_default.sql: many () -> { v: unknown? }
+min_untyped.sql: many () -> { v: unknown? }

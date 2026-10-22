@@ -482,10 +482,17 @@ fn reached(args: &[Fact]) -> &[Fact] {
     &args[..count]
 }
 
-/// The facts of a call's leading arguments `args` that are no NULL literal, which says nothing of
-/// the type.
-fn valued<'f>(n: &Node, args: &'f [Fact]) -> Vec<&'f Fact> {
-    args.iter().zip(&n.args).filter(|(_, e)| e.op != "null").map(|(f, _)| f).collect()
+/// The type of a value SQLite hands back from one of `values` (a compound's arms, `CASE`'s results,
+/// `coalesce`'s arguments): the type [`shared`] finds over them. A value of no known type that is no
+/// parameter, such as a column declared without a type or `json_extract`, may be of any storage
+/// class, so the result is unknown too; a parameter takes the others' type, and a NULL literal says
+/// nothing of the type.
+fn values_type(values: &[(&Node, &Fact)]) -> Type {
+    let valued: Vec<&Fact> = values.iter().filter(|(e, _)| e.op != "null").map(|(_, f)| *f).collect();
+    if values.iter().any(|(e, f)| matches!(f.ty, Type::Unknown) && e.op != "null" && e.op != "variable") {
+        return Type::Unknown;
+    }
+    shared(&valued)
 }
 
 /// Whether a type is JSON a constructor built, which SQLite returns as text.
@@ -965,6 +972,7 @@ impl Analyzer<'_> {
         } else {
             Vec::new()
         };
+        let compound = t.statement.as_ref().is_some_and(|s| s.prior.is_some());
         let columns = t
             .columns
             .iter()
@@ -972,9 +980,10 @@ impl Analyzer<'_> {
             .map(|(i, public)| {
                 let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
                 // A column SQLite could not type but names from a table: its declared affinity. The
-                // fact for a column declared without a type, or `ANY`, is already unknown on purpose.
+                // fact for a column declared without a type, or `ANY`, is already unknown on purpose,
+                // and so is a compound's whose arms differ, for which SQLite names the leftmost arm's.
                 let fact = match (&fact.ty, &public.declared) {
-                    (Type::Unknown, Some(declared)) => Fact { ty: column_type(declared, affinity(declared), true), non_null: fact.non_null },
+                    (Type::Unknown, Some(declared)) if !compound => Fact { ty: column_type(declared, affinity(declared), true), non_null: fact.non_null },
                     _ => fact,
                 };
                 // Built JSON is the text SQLite returns, which the run time parses.
@@ -1075,8 +1084,8 @@ impl Analyzer<'_> {
         }
     }
 
-    /// Column `i` of a select: for a compound, the leftmost arm's type and any arm's nullability.
-    /// Every row of a multi-row VALUES is an arm.
+    /// Column `i` of a select: for a compound, the type every arm's value shares ([`values_type`]),
+    /// and any arm's nullability. Every row of a multi-row VALUES is an arm.
     fn select_column(&self, sel: &Sel, i: usize, scope: &ScopeStack) -> Fact {
         let mut arms: Vec<&Sel> = Vec::new();
         let mut s = Some(sel);
@@ -1085,21 +1094,26 @@ impl Analyzer<'_> {
             s = arm.prior.as_deref();
         }
         arms.reverse();
-        // Each arm's value, and whether it is a NULL literal, which says nothing of the type.
-        let facts: Vec<(bool, Fact)> = arms
+        // Each arm's value, and the expression it is.
+        let facts: Vec<(Option<&Node>, Fact)> = arms
             .iter()
             .flat_map(|arm| {
                 let mut inner = scope.clone();
                 inner.push(&arm.from);
                 let outer = self.level.replace(level_of(arm, self.extras));
                 let rows = std::iter::once(arm.columns.get(i).map(|c| &c.expr)).chain(arm.rows.iter().map(|row| row.get(i)));
-                let facts: Vec<(bool, Fact)> = rows.map(|e| (e.is_some_and(|e| e.op == "null"), e.map(|e| self.type_of(e, &inner)).unwrap_or_else(Fact::unknown))).collect();
+                let facts: Vec<(Option<&Node>, Fact)> = rows.map(|e| (e, e.map(|e| self.type_of(e, &inner)).unwrap_or_else(Fact::unknown))).collect();
                 self.level.replace(outer);
                 facts
             })
             .collect();
         let Some((_, first)) = facts.first() else { return Fact::unknown() };
-        let ty = if facts.iter().all(|(_, f)| f.ty == first.ty) { first.ty.clone() } else { shared(&facts.iter().filter(|(null, _)| !null).map(|(_, f)| f).collect::<Vec<_>>()) };
+        let values: Option<Vec<(&Node, &Fact)>> = facts.iter().map(|(e, f)| Some(((*e)?, f))).collect();
+        let ty = match values {
+            _ if facts.iter().all(|(_, f)| f.ty == first.ty) => first.ty.clone(),
+            Some(values) => values_type(&values),
+            None => Type::Unknown,
+        };
         Fact { ty, non_null: facts.iter().all(|(_, f)| f.non_null) }
     }
 
@@ -1194,8 +1208,8 @@ impl Analyzer<'_> {
                 if let Some(o) = &otherwise {
                     all.push(o);
                 }
-                let typed: Vec<&Fact> = all.iter().filter(|(e, _)| e.op != "null").map(|(_, f)| f).collect();
-                Fact { ty: shared(&typed), non_null: otherwise.is_some() && all.iter().all(|(_, f)| f.non_null) }
+                let values: Vec<(&Node, &Fact)> = all.iter().map(|(e, f)| (*e, f)).collect();
+                Fact { ty: values_type(&values), non_null: otherwise.is_some() && all.iter().all(|(_, f)| f.non_null) }
             }
             "select" => {
                 // A scalar subquery: its first column, NULL when it finds no row, unless it always
@@ -1236,6 +1250,8 @@ impl Analyzer<'_> {
                 "total" => done("real", total_nulls(&first)),
                 "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
+                // `lag` and `lead` hand back their default where the row they read is missing.
+                "lag" | "lead" if args.len() >= 3 => typed(values_type(&[(&n.args[0], &args[0]), (&n.args[2], &args[2])]), Nulls::Always),
                 "min" | "max" | "lag" | "lead" | "first_value" | "last_value" | "nth_value" => typed(first.ty.clone(), Nulls::Always),
                 "group_concat" | "string_agg" => done("text", Nulls::Always),
                 _ => Fact::unknown(),
@@ -1265,17 +1281,16 @@ impl Analyzer<'_> {
         match name {
             // An argument after one that is never NULL is never reached: `coalesce((select
             // json_group_array(…) …), '[]')` is the array.
-            "coalesce" | "ifnull" => Fact { ty: shared(&valued(n, reached(args))), non_null: args.iter().any(|a| a.non_null) },
+            "coalesce" | "ifnull" => Fact { ty: values_type(&n.args.iter().zip(reached(args)).collect::<Vec<_>>()), non_null: args.iter().any(|a| a.non_null) },
             "nullif" => Fact { ty: first.ty.clone(), non_null: false },
             // `iif(c1, v1, c2, v2, …, else)`: NULL where no condition holds and there is no ELSE,
             // an even count of arguments.
             "iif" | "if" => {
                 let values = iif_values(args.len());
-                let arms: Vec<&Fact> = values.iter().filter_map(|i| args.get(*i)).collect();
-                let typed: Vec<&Fact> = values.iter().filter(|i| n.args.get(**i).is_some_and(|e| e.op != "null")).filter_map(|i| args.get(*i)).collect();
-                Fact { ty: shared(&typed), non_null: args.len() >= 3 && args.len() % 2 == 1 && arms.iter().all(|a| a.non_null) }
+                let arms: Vec<(&Node, &Fact)> = values.iter().filter_map(|i| Some((n.args.get(*i)?, args.get(*i)?))).collect();
+                Fact { ty: values_type(&arms), non_null: args.len() >= 3 && args.len() % 2 == 1 && arms.iter().all(|(_, a)| a.non_null) }
             }
-            "min" | "max" => Fact { ty: shared(&valued(n, args)), non_null: all_non_null },
+            "min" | "max" => Fact { ty: values_type(&n.args.iter().zip(args).collect::<Vec<_>>()), non_null: all_non_null },
             // `abs` of the least integer is an error, not NULL; of text, 0.0.
             "abs" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::IfArgs),
             "round" => done("real", Nulls::IfArgs),
@@ -3670,6 +3685,41 @@ mod tests {
         // In a table that is not STRICT, `ANY` is a declared type with NUMERIC affinity, not a wildcard.
         let r = analyze_ddl("SELECT c FROM t", &ddl, &Extras::default());
         assert_eq!(col(&r.analysis, "c"), ("numeric".into(), true));
+    }
+
+    #[test]
+    fn a_value_of_one_of_several_types_is_unknown() {
+        let ddl = vec!["CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, s TEXT, doc TEXT NOT NULL) STRICT".to_string(), "CREATE TABLE u (x)".to_string()];
+        let ty = |sql: &str| {
+            let r = analyze_ddl(sql, &ddl, &Extras::default());
+            assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
+            col(&r.analysis, "v").0
+        };
+        // A compound's column is any arm's value: SQLite names the leftmost arm's declared type,
+        // which is not every arm's.
+        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT 'x'"), "unknown");
+        assert_eq!(ty("SELECT 'x' AS v UNION ALL SELECT n FROM t"), "unknown");
+        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT x FROM u"), "unknown");
+        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT json_extract(doc, '$.a') FROM t"), "unknown");
+        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT id FROM t"), "integer");
+        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT NULL"), "integer");
+        // A parameter arm takes the others' type.
+        let r = analyze_ddl("SELECT n AS v FROM t UNION ALL SELECT :p", &ddl, &Extras::default());
+        assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
+        // So with `coalesce`, `CASE`, `iif` and `min`: a value of no known type may be any.
+        assert_eq!(ty("SELECT coalesce(s, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
+        assert_eq!(ty("SELECT coalesce(s, x) AS v FROM t, u"), "unknown");
+        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n ELSE x END AS v FROM t, u"), "unknown");
+        assert_eq!(ty("SELECT iif(n > 0, n, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
+        assert_eq!(ty("SELECT min(n, x) AS v FROM t, u"), "unknown");
+        assert_eq!(ty("SELECT coalesce(s, 'none') AS v FROM t"), "text");
+        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n END AS v FROM t"), "integer");
+        // `lag` and `lead` hand back their default where the row they read is missing.
+        assert_eq!(ty("SELECT lead(n, 1, 'z') OVER (ORDER BY id) AS v FROM t"), "unknown");
+        assert_eq!(ty("SELECT lag(s, 1, x'00') OVER (ORDER BY id) AS v FROM t"), "unknown");
+        assert_eq!(ty("SELECT lag(n, 1, 0) OVER (ORDER BY id) AS v FROM t"), "integer");
+        assert_eq!(ty("SELECT lag(n, 1, NULL) OVER (ORDER BY id) AS v FROM t"), "integer");
+        assert_eq!(ty("SELECT lag(n) OVER (ORDER BY id) AS v FROM t"), "integer");
     }
 
     #[test]
