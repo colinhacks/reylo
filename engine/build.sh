@@ -10,7 +10,7 @@
 # Inputs: a Rust toolchain with the `wasm32-wasip1` target, and wasi-sdk 34 (set WASI_SDK_PATH,
 # or unpack it under `.wasi-sdk/`). The `pg_query` crate is the Postgres 18 parser: upstream's
 # `pg-18` branch (pganalyze/pg_query.rs, pull request 79, "Release 18.0.0", not on crates.io yet)
-# at the commit pinned below, with the libpg_query commit its submodule names (tag 18.1.0, the
+# at the commit `postgres/vendor/pg_query-source.sh` pins, with the libpg_query commit its submodule names (tag 18.1.0, the
 # grammar of Postgres 18.6), each fetched from GitHub by commit and checked against a SHA-256, and
 # the patch from `postgres/vendor/` applied into `postgres/.patched/pg_query`. SQLite is the 3.53.4
 # amalgamation fetched into `sqlite/.sqlite/` with the hooks of `sqlite/csrc/patch-sqlite.py`
@@ -33,10 +33,7 @@ fi
 if [ ! -f "$SQLITE/sqlite3-patched.c" ] || [ sqlite/csrc/patch-sqlite.py -nt "$SQLITE/sqlite3-patched.c" ]; then
   python3 sqlite/csrc/patch-sqlite.py "$SQLITE/sqlite-amalgamation-3530400/sqlite3.c" "$SQLITE/sqlite3-patched.c"
 fi
-PG_QUERY_COMMIT="ad0c87ed59c84ec6b42c970bb42d7985b7b5878b"
-PG_QUERY_SHA256="de2307fc9beb0c37e8da569b48d69778d5c847e8b80be2620655c032eb800043"
-LIBPG_QUERY_COMMIT="c1546e7e97edc93fe8474d7a59881e91fbf48cfc"
-LIBPG_QUERY_SHA256="7df58cb1d3a65fdb9fe87f64961c3b3664008fb3661d311827da47cb1d313a3e"
+. postgres/vendor/pg_query-source.sh
 PG_QUERY_PATCH="postgres/vendor/pg_query-18.0.0.patch"
 PATCHED=postgres/.patched
 sha256() {
