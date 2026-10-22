@@ -401,7 +401,17 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
             return;
         }
         let Some(name) = node.get("ctename").and_then(|v| v.as_str()) else { return };
-        let read = node.get("ctequery").map(relnames_in).unwrap_or_default();
+        let Some(query) = node.get("ctequery") else { return };
+        let mut read = relnames_in(query);
+        // A data-modifying query's target is a bare `relation`, not a `RangeVar` node, and the
+        // describe traces its RETURNING columns to that table as it does a SELECT's.
+        visit(query, &mut |key, stmt| {
+            if matches!(key, "InsertStmt" | "UpdateStmt" | "DeleteStmt" | "MergeStmt") {
+                if let Some(rel) = stmt.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) {
+                    read.push(rel.to_string());
+                }
+            }
+        });
         match with_tables.iter_mut().find(|(n, _)| n == name) {
             Some((_, tables)) => tables.extend(read),
             None => with_tables.push((name.to_string(), read)),
@@ -874,6 +884,9 @@ mod tests {
         // A query no outer join nulls brings nothing.
         let b = analyze("WITH t AS (SELECT * FROM tags) SELECT * FROM t LEFT JOIN people p ON false").unwrap();
         assert_eq!(b.nulled_tables(b.nullable_tables.clone()), vec!["people"]);
+        // A data-modifying query brings its target, whose RETURNING columns the describe traces.
+        let c = analyze("WITH i AS (INSERT INTO tags VALUES (1, 'a') RETURNING *) SELECT * FROM bar b LEFT JOIN i ON false").unwrap();
+        assert_eq!(c.nulled_tables(c.nullable_tables.clone()), vec!["i", "tags"]);
     }
 
     #[test]
