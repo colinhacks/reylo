@@ -291,6 +291,15 @@ struct CatalogRows {
     triggers: Vec<Vec<Value>>,
 }
 
+/// The comments the main statement's types carry ([`Engine::comments`]).
+#[derive(Default)]
+struct Comments {
+    /// Per result column, its column's comment.
+    columns: Vec<Option<String>>,
+    /// Per column a parameter is written to, by relation and attribute, its comment.
+    written: HashMap<(u32, i32), String>,
+}
+
 struct Engine<'a> {
     host: &'a Host<'a>,
     registry: RefCell<TypeRegistry>,
@@ -319,9 +328,9 @@ struct Engine<'a> {
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
-    /// The comment of each column the main statement reads as it is or writes a parameter to,
-    /// by relation and attribute ([`Engine::comments`]).
-    comments: RefCell<HashMap<(u32, i32), String>>,
+    /// The comment of each result column of the main statement and of each column it writes a
+    /// parameter to ([`Engine::comments`]).
+    comments: RefCell<Comments>,
     budget: Cell<usize>,
 }
 
@@ -334,7 +343,7 @@ const MAX_ITEM_DEPTH: usize = 4;
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), comments: RefCell::new(HashMap::new()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed) -> Lazy<Analysis> {
@@ -452,7 +461,7 @@ impl<'a> Engine<'a> {
                     (with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref()), col.nullable)
                 }
             };
-            let comment = raw.columns.get(position).and_then(|c| comments.get(&(c.table, c.attnum))).cloned();
+            let comment = comments.columns.get(position).cloned().flatten();
             columns.push(Column { name: col.name.clone(), ty, nullable, type_name: col.type_name.clone(), comment });
         }
         let params = lexed
@@ -468,7 +477,7 @@ impl<'a> Engine<'a> {
                 let schemas: Vec<(String, Validators)> = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).flat_map(|(_, rel, att)| sources.get(&(*rel, *att)).cloned().unwrap_or_default()).collect();
                 let document = if schemas.is_empty() { None } else { crate::schema_type::checked_type(&schemas) };
                 // A parameter written to columns that share one comment carries it.
-                let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.get(&(*rel, *att)));
+                let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
                 Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
@@ -873,14 +882,14 @@ impl<'a> Engine<'a> {
         self.check_rows(&pairs)
     }
 
-    /// The comment of each column a result column reads as it is and of each column of `written`,
-    /// by relation and attribute. The describe names a column's table and attribute only for a
+    /// The comment of each result column, by position, that reads a column as it is, and of each
+    /// column of `written`, by relation and attribute. The describe names a column's table and attribute only for a
     /// bare reference, so an expression over the column has none; nothing read through a set
     /// operation, whose provenance names the leftmost arm only ([`own_provenance`]). A column read
     /// through a view names the view's column, whose own comment is the one it takes; one the view
     /// leaves without a comment takes that of the column the view's definition reads it from, where
     /// it reads one as it is.
-    fn comments(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)]) -> Lazy<HashMap<(u32, i32), String>> {
+    fn comments(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)]) -> Lazy<Comments> {
         let own = own_provenance(sql, parsed, raw.columns.len());
         let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().copied());
@@ -910,26 +919,26 @@ impl<'a> Engine<'a> {
             return None;
         }
         if pairs.is_empty() {
-            return Some(HashMap::new());
+            return Some(Comments { columns: vec![None; raw.columns.len()], written: HashMap::new() });
         }
         pairs.sort_unstable();
         pairs.dedup();
         let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
         let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
         let rows = self.host.query(COMMENTS_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)?;
-        let own: HashMap<(u32, i32), String> = rows
+        let stored: HashMap<(u32, i32), String> = rows
             .unwrap_or_default()
             .iter()
             .filter_map(|r| Some(((as_u32(r.first()?)?, as_u32(r.get(1)?)? as i32), as_str(r.get(2)?)?.to_string())))
             .filter(|(_, comment)| !comment.is_empty())
             .collect();
-        let mut out = HashMap::new();
+        let mut by_column = HashMap::new();
         for pair in &pairs {
             let mut at = *pair;
             // A view's source is never itself: a definition reads other relations.
             for _ in 0..=sources.len() {
-                if let Some(comment) = own.get(&at) {
-                    out.insert(*pair, comment.clone());
+                if let Some(comment) = stored.get(&at) {
+                    by_column.insert(*pair, comment.clone());
                     break;
                 }
                 match sources.get(&at) {
@@ -938,7 +947,11 @@ impl<'a> Engine<'a> {
                 }
             }
         }
-        Some(out)
+        // By position, so that a column read through a set operation takes no comment where another
+        // column of the statement reads the one its provenance names.
+        let columns = raw.columns.iter().zip(&own).map(|(c, own)| by_column.get(&(c.table, c.attnum)).filter(|_| *own).cloned()).collect();
+        let written = written.iter().filter_map(|key| Some((*key, by_column.get(key)?.clone()))).collect();
+        Some(Comments { columns, written })
     }
 
     /// What the CHECKs of each column of `pairs`, by relation and attribute, say of its values
@@ -2710,6 +2723,7 @@ mod tests {
                 "SELECT id, years FROM adults" => vec![column("id", 23, ADULTS, 1), column("years", 23, ADULTS, 2)],
                 s if s == definition => vec![column("id", 23, USERS, 1), column("years", 23, USERS, 2)],
                 "SELECT age FROM users UNION ALL SELECT age FROM users" => vec![column("age", 23, USERS, 2)],
+                "WITH a AS (SELECT id FROM users UNION ALL SELECT age FROM users) SELECT a.id, u.id AS uid FROM a, users u" => vec![column("id", 23, USERS, 1), column("uid", 23, USERS, 1)],
                 "UPDATE users SET age = $1, email = $2 WHERE id = $3 RETURNING age" => vec![column("age", 23, USERS, 2)],
                 _ => vec![],
             };
@@ -2767,6 +2781,8 @@ mod tests {
         assert_eq!(columns("SELECT id, years FROM adults"), [some("An adult's id\nfrom users"), some("Age (in years)")]);
         // A set operation's provenance names its leftmost arm only.
         assert_eq!(columns("SELECT age FROM users UNION ALL SELECT age FROM users"), [None]);
+        // Even where another column reads the column that provenance names.
+        assert_eq!(columns("WITH a AS (SELECT id FROM users UNION ALL SELECT age FROM users) SELECT a.id, u.id AS uid FROM a, users u"), [None, some("The user's id")]);
         // A parameter written to a column carries the column's comment; one compared with a column
         // is typed by the server, which names no column.
         let update = analyzed("UPDATE users SET age = :age, email = :email WHERE id = :id RETURNING age");
