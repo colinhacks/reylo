@@ -1,0 +1,3 @@
+ends_early.sql: many () -> {  } !! reylo6: syntax error at end of input (42601)
+odd.sql: many () -> { j: json } !! reylo15: json_build_object takes keys and values in pairs, and this call has 3 arguments, which the database refuses when it runs.
+pairs.sql: many () -> { j: { id: int4, name: text } }

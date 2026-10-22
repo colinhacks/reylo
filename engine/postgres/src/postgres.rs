@@ -403,6 +403,10 @@ impl<'a> Engine<'a> {
                 diagnostics.push(diag(message, start, length, 13));
             }
         }
+        // A JSON object of an odd count of arguments, which Postgres prepares and refuses when it
+        // runs; only the built-in constructors, which a user's function of the name may shadow.
+        let constructors: Vec<&str> = ["json_build_object", "jsonb_build_object"].into_iter().filter(|n| trust.builtin(n)).collect();
+        diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
 
         // JSON shapes: what the statement's own constructors build, and for a JSON column it reads
         // straight from a WITH query or a derived table, what that item's statement builds.
@@ -1882,13 +1886,17 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
 /// A failed describe as a diagnostic on the author's text: the server's message, at the
 /// characters its position points at.
 fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
-    let start = e
-        .position
-        .filter(|p| *p > 0)
-        .and_then(|p| rewritten.sql.char_indices().nth(p - 1).map(|(b, _)| b))
-        .map(|b| rewritten.to_original(b))
-        .unwrap_or(0)
-        .min(sql.len());
+    let at = e.position.filter(|p| *p > 0).map(|p| rewritten.sql.char_indices().nth(p - 1).map_or(sql.len(), |(b, _)| rewritten.to_original(b).min(sql.len())));
+    let start = match at {
+        // A position at the end of the text, or in the whitespace after it, is the end of input
+        // ("syntax error at end of input"): the statement's last word, where it stops short.
+        Some(at) if sql[at..].trim().is_empty() => {
+            let end = sql.trim_end().len();
+            sql[..end].rfind(|c: char| c.is_whitespace() || matches!(c, '(' | ',' | ';')).map_or(0, |i| i + 1).min(end.saturating_sub(1))
+        }
+        Some(at) => at,
+        None => 0,
+    };
     let length = sql[start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"' | b'$' | b':' | b'@')).count();
     let message = match &e.code {
         Some(code) => format!("{} ({code})", e.message),
@@ -2466,5 +2474,25 @@ mod tests {
         assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![false]);
         // Two may be two columns and none, so no position says which column a target is.
         assert_eq!(own(&format!("{with} SELECT a.*, u.name, e.* FROM a, users u, e"), 3), vec![false; 3]);
+    }
+
+    #[test]
+    fn an_error_at_the_end_of_input_is_on_the_last_word() {
+        for sql in ["select id from member where\n", "select id from member where", "select id from t where id = :id and\n\n"] {
+            let lexed = lex::lex(sql, Dialect::Postgres).unwrap();
+            let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
+            let last = sql.trim_end().rsplit(' ').next().unwrap();
+            for position in [rewritten.sql.trim_end().chars().count() + 1, rewritten.sql.chars().count() + 1] {
+                let e = DbError { message: "syntax error at end of input".into(), code: Some("42601".into()), position: Some(position) };
+                let d = db_diagnostic(sql, &rewritten, &e);
+                assert_eq!(&sql[d.start..d.start + d.length], last, "{sql:?} at {position}");
+            }
+        }
+        // A position inside the text stays where it is.
+        let sql = "select idd from t";
+        let lexed = lex::lex(sql, Dialect::Postgres).unwrap();
+        let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
+        let d = db_diagnostic(sql, &rewritten, &DbError { message: "column \"idd\" does not exist".into(), code: None, position: Some(8) });
+        assert_eq!(&sql[d.start..d.start + d.length], "idd");
     }
 }

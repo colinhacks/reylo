@@ -1,0 +1,2 @@
+odd.sql: many () -> { j: json } !! reylo15: json_object takes keys and values in pairs, and this call has 3 arguments, which the database refuses when it runs.
+pairs.sql: many () -> { j: { id: integer, name: text } }

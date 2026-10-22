@@ -162,7 +162,7 @@ const TYPE_QUERY: &str = "SELECT pg_catalog.format_type(t.oid, -1), bt.typcatego
     WHERE t.oid = $1";
 
 async fn tables(client: &Client) -> Result<Vec<Table>, String> {
-    let rows = client.query(TABLES_QUERY, &[]).await.map_err(|e| e.to_string())?;
+    let rows = client.query(TABLES_QUERY, &[]).await.map_err(|e| message(&e))?;
     let mut out: Vec<Table> = Vec::new();
     for row in rows {
         let table: String = row.get(0);
@@ -189,7 +189,7 @@ async fn type_of(client: &Client, oid: u32, known: &mut HashMap<u32, Column>) ->
     if let Some(column) = known.get(&oid) {
         return Ok(column.clone());
     }
-    let row = client.query_opt(TYPE_QUERY, &[&oid]).await.map_err(|e| e.to_string())?.ok_or_else(|| format!("no type has the oid {oid}"))?;
+    let row = client.query_opt(TYPE_QUERY, &[&oid]).await.map_err(|e| message(&e))?.ok_or_else(|| format!("no type has the oid {oid}"))?;
     let column = Column { name: String::new(), ty: row.get(0), category: row.get(1), kind: row.get(2), base: row.get(3), is_array: row.get(4), labels: row.get(5), generated: false };
     known.insert(oid, column.clone());
     Ok(column)
@@ -290,7 +290,7 @@ async fn insert(client: &Client, table: &str, columns: &[&Column], mut row: Vec<
             Ok(()) => return Ok(true),
             Err(e) => e,
         };
-        client.batch_execute("ROLLBACK TO SAVEPOINT s; RELEASE SAVEPOINT s").await.map_err(|e| e.to_string())?;
+        client.batch_execute("ROLLBACK TO SAVEPOINT s; RELEASE SAVEPOINT s").await.map_err(|e| message(&e))?;
         let Some(db) = error.as_db_error() else { return Ok(false) };
         if db.code() != &SqlState::UNIQUE_VIOLATION {
             return Ok(false);
@@ -331,7 +331,7 @@ async fn try_execute(client: &Client, sql: &str) -> Result<bool, String> {
     match client.batch_execute(&format!("SAVEPOINT v; {sql}; RELEASE SAVEPOINT v")).await {
         Ok(()) => Ok(true),
         Err(_) => {
-            client.batch_execute("ROLLBACK TO SAVEPOINT v; RELEASE SAVEPOINT v").await.map_err(|e| e.to_string())?;
+            client.batch_execute("ROLLBACK TO SAVEPOINT v; RELEASE SAVEPOINT v").await.map_err(|e| message(&e))?;
             Ok(false)
         }
     }
@@ -351,7 +351,7 @@ struct Bound {
 async fn parameters(client: &Client, statements: &[(String, String, Value)]) -> Result<Vec<Result<Bound, String>>, String> {
     let mut out = Vec::with_capacity(statements.len());
     let mut known = HashMap::new();
-    client.batch_execute("BEGIN").await.map_err(|e| e.to_string())?;
+    client.batch_execute("BEGIN").await.map_err(|e| message(&e))?;
     let outcome = async {
         for (_, sql, analysis) in statements {
             out.push(bind(client, sql, analysis, &mut known).await?);
@@ -359,7 +359,7 @@ async fn parameters(client: &Client, statements: &[(String, String, Value)]) -> 
         Ok::<(), String>(())
     }
     .await;
-    client.batch_execute("ROLLBACK").await.map_err(|e| e.to_string())?;
+    client.batch_execute("ROLLBACK").await.map_err(|e| message(&e))?;
     outcome?;
     Ok(out)
 }
@@ -374,9 +374,9 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
         return Ok(Ok(Bound { casts: Vec::new(), pools: Vec::new() }));
     }
     let rewritten = analysis["rewritten"]["sql"].as_str().unwrap_or(sql);
-    client.batch_execute("SAVEPOINT p").await.map_err(|e| e.to_string())?;
+    client.batch_execute("SAVEPOINT p").await.map_err(|e| message(&e))?;
     let prepared = client.prepare(rewritten).await;
-    client.batch_execute("ROLLBACK TO SAVEPOINT p; RELEASE SAVEPOINT p").await.map_err(|e| e.to_string())?;
+    client.batch_execute("ROLLBACK TO SAVEPOINT p; RELEASE SAVEPOINT p").await.map_err(|e| message(&e))?;
     let statement = match prepared {
         Ok(statement) => statement,
         Err(e) => return Ok(Err(format!("the server does not prepare it: {}", message(&e)))),
@@ -442,21 +442,21 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
         client
             .batch_execute(&format!("BEGIN; SET LOCAL statement_timeout = {}; SET CONSTRAINTS ALL DEFERRED", timeout_ms.max(SEEDING_TIMEOUT_MS)))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| message(&e))?;
         let outcome = async {
             let mut bare = Vec::new();
             let seeded = seed(client, &tables, scenario, &mut bare).await?;
             let mut counts = Vec::with_capacity(seeded.len());
             for (table, inserted) in &seeded {
                 // A table that refused every row may still hold the rows of setup.sql, or of its partitions.
-                let empty = *inserted == 0 && client.query_one(&format!("SELECT NOT EXISTS (SELECT FROM {table})"), &[]).await.map_err(|e| e.to_string())?.get::<_, bool>(0);
+                let empty = *inserted == 0 && client.query_one(&format!("SELECT NOT EXISTS (SELECT FROM {table})"), &[]).await.map_err(|e| message(&e))?.get::<_, bool>(0);
                 counts.push(format!("{table} {inserted}{}", if empty { EMPTY } else { "" }));
             }
             notes.push(format!("seeded with {}: {}", scenario.name(), counts.join(", ")));
             if scenario == Scenario::Edges && !bare.is_empty() {
                 notes.push(format!("no seed value for {}: the column holds NULL alone", bare.join(", ")));
             }
-            client.batch_execute(&format!("SET LOCAL statement_timeout = {timeout_ms}")).await.map_err(|e| e.to_string())?;
+            client.batch_execute(&format!("SET LOCAL statement_timeout = {timeout_ms}")).await.map_err(|e| message(&e))?;
             for (((file, sql, analysis), tally), bound) in statements.iter().zip(tallies.iter_mut()).zip(&bound) {
                 let Ok(bound) = bound else { continue };
                 let rewritten = analysis["rewritten"]["sql"].as_str().unwrap_or(sql).to_string();
@@ -475,11 +475,13 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 };
                 for values in assignments(&bound.pools) {
                     let text = text_of(&values);
-                    let sql_text = format!("SAVEPOINT q; {text}");
-                    let messages = match client.simple_query(&sql_text).await {
+                    // The savepoint goes first on its own: a statement that does not parse fails
+                    // the whole query text it is sent in, a savepoint written before it included.
+                    client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                    let messages = match client.simple_query(&text).await {
                         Ok(m) => m,
                         Err(e) => {
-                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| e.to_string())?;
+                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                             // A run the timeout stopped says nothing of the statement, sound or not.
                             if e.code() == Some(&SqlState::QUERY_CANCELED) {
                                 tally.timed_out += 1;
@@ -502,16 +504,18 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                 };
                                 let mut blamed: Vec<(usize, String)> = Vec::new();
                                 if !nulls.is_empty() {
-                                    let outcome = client.simple_query(&format!("SAVEPOINT q; {}", text_of(&filled(None)))).await;
-                                    client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| e.to_string())?;
+                                    client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                                    let outcome = client.simple_query(&text_of(&filled(None))).await;
+                                    client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                                     if !outcome.as_ref().is_err_and(refuses_null) {
                                         for &i in &nulls {
                                             if nulls.len() == 1 {
                                                 blamed.push((i, message(&e)));
                                                 continue;
                                             }
-                                            let outcome = client.simple_query(&format!("SAVEPOINT q; {}", text_of(&filled(Some(i))))).await;
-                                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| e.to_string())?;
+                                            client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                                            let outcome = client.simple_query(&text_of(&filled(Some(i)))).await;
+                                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                                             if let Err(alone) = &outcome {
                                                 if refuses_null(alone) {
                                                     blamed.push((i, message(alone)));
@@ -527,7 +531,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             continue;
                         }
                     };
-                    client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| e.to_string())?;
+                    client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
                     tally.ran += 1;
                     let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {
                         tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
@@ -558,7 +562,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
             Ok::<(), String>(())
         }
         .await;
-        client.batch_execute("ROLLBACK").await.map_err(|e| e.to_string())?;
+        client.batch_execute("ROLLBACK").await.map_err(|e| message(&e))?;
         outcome?;
     }
     Ok(report(statements, &tallies, timeout_ms, problems, notes))

@@ -30,6 +30,79 @@ pub fn repeated(sql: &str, lexed: &Lexed) -> Vec<Diagnostic> {
     lex::repeated(sql, lexed).into_iter().map(|r| diag(r.message, r.start, r.end - r.start, 3)).collect()
 }
 
+/// Each call of one of `names` written with an odd number of arguments: the constructors of a JSON
+/// object take keys and values in pairs, and a database prepares a call with an odd count and
+/// refuses it only when it runs. Read from the text outside the lexer's strings and comments
+/// ([`Lexed::opaque`]); a name qualified with a schema is somebody else's function, and a
+/// `VARIADIC` argument is an array whose length the text does not say.
+pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
+    let bytes = sql.as_bytes();
+    let opaque_at = |i: usize| lexed.opaque.iter().find(|(s, e)| *s <= i && i < *e).map(|(_, e)| *e);
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(end) = opaque_at(i) {
+            i = end;
+            continue;
+        }
+        let starts_word = is_name(bytes[i]) && (i == 0 || !(is_name(bytes[i - 1]) || bytes[i - 1] == b'.'));
+        let Some(name) = names.iter().find(|n| starts_word && sql.len() >= i + n.len() && sql.is_char_boundary(i + n.len()) && sql[i..i + n.len()].eq_ignore_ascii_case(n) && !bytes.get(i + n.len()).is_some_and(|b| is_name(*b))) else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + name.len();
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if bytes.get(j) != Some(&b'(') {
+            i += name.len();
+            continue;
+        }
+        // The arguments: the commas at the call's own depth, past every string and comment.
+        let (mut depth, mut commas, mut empty, mut variadic, mut k) = (0usize, 0usize, true, false, j);
+        while k < bytes.len() {
+            if let Some(end) = opaque_at(k) {
+                if depth == 1 {
+                    empty = false;
+                }
+                k = end;
+                continue;
+            }
+            match bytes[k] {
+                b'(' | b'[' => {
+                    if depth == 1 {
+                        empty = false;
+                    }
+                    depth += 1;
+                }
+                b')' | b']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                b',' if depth == 1 => commas += 1,
+                b if depth == 1 && !b.is_ascii_whitespace() => {
+                    empty = false;
+                    if !is_name(bytes[k - 1]) && sql.len() >= k + 8 && sql.is_char_boundary(k + 8) && sql[k..k + 8].eq_ignore_ascii_case("variadic") {
+                        variadic = true;
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        let count = if empty { 0 } else { commas + 1 };
+        if k < bytes.len() && !variadic && count % 2 == 1 {
+            let written = &sql[i..i + name.len()];
+            found.push(diag(format!("{written} takes keys and values in pairs, and this call has {count} argument{}, which the database refuses when it runs.", if count == 1 { "" } else { "s" }), i, name.len(), 15));
+        }
+        i = j + 1;
+    }
+    found
+}
+
 /// A diagnostic at least one byte long.
 pub fn diag(message: impl Into<String>, start: usize, length: usize, code: u32) -> Diagnostic {
     Diagnostic { message: message.into(), start, length: length.max(1), code }
@@ -64,4 +137,35 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
 pub fn bare_of(sql: &str, dialect: Dialect, diagnostics: Vec<Diagnostic>) -> Analysis {
     let lexed = lex::lex(sql, dialect).unwrap_or_else(|_| none());
     bare(sql, &lexed, dialect, diagnostics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_json_object_of_an_odd_count_of_arguments_is_an_error_at_its_name() {
+        let names = ["json_build_object", "jsonb_build_object"];
+        let at = |sql: &str| {
+            let lexed = lex::lex(sql, Dialect::Postgres).unwrap();
+            odd_pairs(sql, &lexed, &names).iter().map(|d| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code)).collect::<Vec<_>>()
+        };
+        let found = at("select json_build_object('a', 1, 'b'), JSONB_BUILD_OBJECT('k')");
+        assert_eq!(found.iter().map(|(w, _, code)| (w.as_str(), *code)).collect::<Vec<_>>(), [("json_build_object", 15), ("JSONB_BUILD_OBJECT", 15)]);
+        assert_eq!(found[0].1, "json_build_object takes keys and values in pairs, and this call has 3 arguments, which the database refuses when it runs.");
+        assert!(found[1].1.contains("this call has 1 argument,"));
+        // Pairs, nested calls, commas inside strings, arrays and comments, no arguments at all,
+        // a VARIADIC array, another schema's function and a name inside a string are all fine.
+        for sql in [
+            "select json_build_object('a', f(1, 2), 'b,c', array[1, 2])",
+            "select json_build_object()",
+            "select json_build_object( )",
+            "select jsonb_build_object(variadic array['a', 'b'])",
+            "select app.json_build_object('a')",
+            "select 'json_build_object(1)' as t",
+            "select json_build_object('a', /* , */ 1)",
+        ] {
+            assert!(at(sql).is_empty(), "{sql}");
+        }
+    }
 }

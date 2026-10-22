@@ -1,0 +1,2 @@
+ends_early.sql: syntax error at end of input (42601)
+odd.sql: argument list must have even number of elements (22023)

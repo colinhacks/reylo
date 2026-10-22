@@ -223,6 +223,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
         }
         return failed(bare(sql, lexed, Dialect::Sqlite, diagnostics));
     }
+    // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs.
+    diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &["json_object", "jsonb_object"]));
     let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()) };
     let (mut columns, kind) = a.columns();
     let booleans = a.booleans();
