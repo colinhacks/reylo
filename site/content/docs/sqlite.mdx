@@ -75,7 +75,7 @@ Each example below pairs a SQL value with the value `.run()` returns for it: `se
 
 ### Declared types and STRICT tables
 
-Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value. Reylo still types each column by its declared type, and `.run()` throws an error naming the column when it reads a value of another kind:
+Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value, and `.run()` throws an error naming the column when it reads one its type doesn't allow:
 
 ```ts twoslash tab="main.ts"
 import loose from "./lite_loose.sql";

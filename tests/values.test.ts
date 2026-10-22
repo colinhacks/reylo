@@ -257,7 +257,7 @@ test("SQLite: a value its column's type does not allow, which a table that is no
   const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select n, r, s, b, big, z, x from loose where id = :id", params: ["id"], columns: [["n", "int"], ["r", "float"], ["s", "text"], ["b", "bytes"], ["big", "int8"], ["z", "int|float|text"], ["x", "unknown"]] };
   assert.deepEqual(execute(db, q, { id: 1 }), [{ n: 1.5, r: 2, s: "hi", b: Uint8Array.of(1), big: 9007199254740993n, z: "abc", x: Uint8Array.of(2) }]);
   const refusals: [number, RegExp][] = [
-    [2, /^TypeError: Column "n" is typed number and holds the text "abc": SQLite stores a value of any type in any column of a table that is not STRICT.*cast\(n as text\)/],
+    [2, /^TypeError: Column "n" is typed number and holds the text "abc": outside a STRICT table SQLite stores a value of any type in any column.* Replace the value, or read what the column holds with cast\(n as text\)\.$/],
     [3, /^TypeError: Column "n" is typed number and holds a BLOB of 2 bytes/],
     [4, /^TypeError: Column "r" is typed number and holds the text "xyz"/],
     [5, /^TypeError: Column "s" is typed string and holds a BLOB of 2 bytes/],

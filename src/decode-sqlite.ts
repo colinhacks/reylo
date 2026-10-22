@@ -216,10 +216,8 @@ function refuseClass(column: string, kinds: string[], v: unknown): never {
       : typeof v === "number" || typeof v === "bigint"
         ? `the number ${v}`
         : `a BLOB of ${byteLength(v)} byte${byteLength(v) === 1 ? "" : "s"}`;
-  // A STRICT table takes no BIGINT column.
-  const strict = kinds.includes("int8") ? "" : ", and declare the table STRICT so that SQLite refuses another like it";
   throw new DecodeError(
-    `Column "${column}" is typed ${type} and holds ${held}: SQLite stores a value of any type in any column of a table that is not STRICT, so Reylo refuses it rather than return a value its type does not allow. Replace the value${strict}, or read what the column holds with cast(${column} as text).`,
+    `Column "${column}" is typed ${type} and holds ${held}: outside a STRICT table SQLite stores a value of any type in any column, and Reylo refuses one its type does not allow rather than return it. Replace the value, or read what the column holds with cast(${column} as text).`,
   );
 }
 
