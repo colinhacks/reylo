@@ -9,7 +9,6 @@ import { dirname, relative, resolve } from "node:path";
 import { styleText } from "node:util";
 import { glob } from "tinyglobby";
 import { Session } from "./analyze.ts";
-import { schemaFiles } from "./schema-files.ts";
 
 const USAGE = `Usage: reylo generate [paths...] [--force]
 
@@ -103,11 +102,10 @@ async function generate(args: string[]): Promise<number> {
     projects.set(session, [...(projects.get(session) ?? []), file]);
   }
   for (const [session, list] of projects) {
-    const { cli: { include, exclude }, schema } = session.project;
-    // The schema files are what the queries are typed from, not queries.
-    const ddl = new Set(schema ? schemaFiles(session.root, schema).files : []);
-    const allowed = include || exclude ? new Set(await sqlFiles(session.root, include, exclude)) : undefined;
-    projects.set(session, list.filter((f) => named.has(f) || (!ddl.has(f) && (!allowed || allowed.has(f)))));
+    const { include, exclude } = session.project.cli;
+    if (!include && !exclude) continue;
+    const allowed = new Set(await sqlFiles(session.root, include, exclude));
+    projects.set(session, list.filter((f) => named.has(f) || allowed.has(f)));
   }
 
   let typed = 0;
@@ -118,9 +116,9 @@ async function generate(args: string[]): Promise<number> {
     if (!list.length) continue;
     const { project } = session;
     const here = session.root === process.cwd() ? "" : `${shown(session.root)}: `;
-    console.log(paint("dim", `${here}${project.dialect} ${project.schema ? "from" : "at"} ${session.where()} (${project.urlSource})`));
+    console.log(paint("dim", `${here}${project.dialect} at ${session.where()} (${project.urlSource})`));
     // A project that cannot be used at all is said once, above its files.
-    let unusable = project.error ?? (project.url || project.schema ? undefined : project.missingUrl);
+    let unusable = project.error ?? (project.url ? undefined : project.missingUrl);
     // A file that sets `url` alone is told once, under the line that names the connection used
     // instead; where there is none, the error says it.
     if (project.notice && project.url) console.log(paint("yellow", project.notice));
@@ -146,13 +144,6 @@ async function generate(args: string[]): Promise<number> {
       }
       const sql = readFileSync(file, "utf8");
       const outcome = await session.analyze(sql, { force });
-      // Schema files that cannot be loaded fail every statement alike: said once, above the files.
-      if (!outcome.ok && outcome.schema) {
-        unusable = outcome.message;
-        errors.push([paint("red", unusable)]);
-        rows.push({ file, ok: false });
-        continue;
-      }
       if (!outcome.ok) {
         fail(`${paint("bold", shown(file))}: ${offline ? (force ? "--force needs the database, which cannot be reached" : "not in .reylo/, and the database cannot be reached") : outcome.message}`);
         continue;

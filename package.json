@@ -44,7 +44,6 @@
     "test": "node --test 'tests/**/*.test.ts'"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.11",
     "@reylosql/mysql": "link:packages/mysql",
     "@reylosql/postgres": "link:packages/postgres",
     "@reylosql/sqlite": "link:packages/sqlite",
@@ -56,7 +55,6 @@
     "tinyglobby": "^0.2.17"
   },
   "peerDependencies": {
-    "@electric-sql/pglite": ">=0.5",
     "@reylosql/mysql": "0.1.0",
     "@reylosql/postgres": "0.1.0",
     "@reylosql/sqlite": "0.1.0",
@@ -65,7 +63,6 @@
     "postgres": ">=3"
   },
   "peerDependenciesMeta": {
-    "@electric-sql/pglite": { "optional": true },
     "@reylosql/mysql": { "optional": true },
     "@reylosql/postgres": { "optional": true },
     "@reylosql/sqlite": { "optional": true },

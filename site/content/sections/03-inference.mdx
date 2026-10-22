@@ -71,7 +71,7 @@ Reylo reads the schema from the database file and [prepares](https://sqlite.org/
 
 <Details summary="In CI, and in builds without a database" id="in-ci">
 
-In CI, start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Or set [`schema`](#schema-files), and the type check and every build step read your schema files instead, with no database. Your tests need the database too, or a filled `.reylo/`.
+In CI, start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too, or a filled `.reylo/`.
 
 Every step that loads a `.sql` file (the type check, a plugin, the preload) keeps its analysis in `.reylo/`, and a later step reads it from there:
 

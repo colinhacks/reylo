@@ -61,7 +61,7 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in beta).** The first release with content mappers.
 - **Node 24 or later.**
-- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it. On Postgres and SQLite, [a schema file](https://reylo.dev/#schema-files) will do instead.
+- **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite file: Reylo reads your current schema from it.
 
 Install Reylo, the engine for your database and TypeScript 7.1:
 

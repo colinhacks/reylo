@@ -13,8 +13,6 @@ direct_url: ${DATABASE_URL}
 env: [.env.local, .env]
 # an error for a parameter whose type cannot be inferred (the default)
 strict_params: true
-# SQL files to read your schema from instead of a database (none by default)
-# schema: db/schema.sql
 ```
 
 ### `direct_url`
@@ -42,35 +40,6 @@ Point it at a direct connection, not a pooler: describing a query through a pool
 # the default is ${DATABASE_URL}
 direct_url: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/app
 ```
-
-### `schema` [#schema-files]
-
-To type your queries with no database at all, as in CI, point `schema` at your schema's SQL files. Reylo loads them into a database of its own and never connects to `DATABASE_URL`:
-
-```yaml title=".reylo.yaml"
-schema: db/schema.sql
-```
-
-Dump the schema from your dev database. On Postgres, also install PGlite, which Reylo loads it into:
-
-```sh tab="Postgres" tab-group="dialect"
-pg_dump --schema-only "$DATABASE_URL" > db/schema.sql
-npm install -D @electric-sql/pglite
-```
-
-```sh tab="SQLite" tab-group="dialect"
-# loaded into an in-memory SQLite, so no package is needed
-sqlite3 app.db .schema > db/schema.sql
-```
-
-Or list your migrations. Reylo applies them in the order your migration tool does, and skips down migrations:
-
-```yaml title=".reylo.yaml"
-# on Prisma, prisma/migrations/*/migration.sql
-schema: migrations/*.sql
-```
-
-MySQL types come from its server, so `schema` works on Postgres and SQLite only. PGlite is Postgres 18 with its contrib extensions: a schema that needs another, such as PostGIS, needs a database at `direct_url`.
 
 ### `env`
 

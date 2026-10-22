@@ -23,10 +23,10 @@ Each setup has a complete, working example project to copy, whose README's "How 
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
 4. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/#editors
-5. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml; or, on Postgres or SQLite without one, at the schema's SQL files with schema in .reylo.yaml: https://reylo.dev/#database
+5. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/#database
 6. Write a first query and run it with the project's own driver: https://reylo.dev/#usage and https://reylo.dev/#supported-drivers
    For more queries, from nested JSON to bulk inserts, see https://reylo.dev/#inference and https://reylo.dev/#advanced
-7. Run the typecheck script. The query's types come from the database, or the schema files; an error in a .sql file shows at its line and column.
+7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 ```
 
 </AgentPrompt>
@@ -342,7 +342,7 @@ Zed doesn't send `.sql` files to the language server, so an error inside one sho
 
 ### Database
 
-**Reylo reads your types from a live dev database.** It retrieves the types of each compiled query, its parameters and its columns, from the database itself. Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
+**Reylo requires a connection to a live dev database.** It retrieves the types of each compiled query, its parameters and its columns, from the database itself. Reylo finds your dev database through the `DATABASE_URL` environment variable, and the URL's scheme tells it which database you use:
 
 ```sh title=".env" tab="Postgres" tab-group="dialect"
 # or postgresql://
@@ -376,11 +376,5 @@ Or specify a set of `.env` files to load:
 ```yaml title=".reylo.yaml"
 # the default is [.env.local, .env]
 env: [.env.development, .env]
-```
-
-To skip the database, point [`schema`](#schema-files) at your schema dump or migrations, on Postgres or SQLite:
-
-```yaml title=".reylo.yaml"
-schema: db/schema.sql
 ```
 

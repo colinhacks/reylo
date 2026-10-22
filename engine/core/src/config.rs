@@ -7,12 +7,11 @@
 //! A host finds the file (beside the project's `package.json`), reads it and hands the text over;
 //! what the file names outside itself (the environment, `.env` files, the database) is the host's
 //! to resolve, and a `${VAR}` in a URL stays as written. There is no dialect key: the URL's scheme
-//! names the dialect, or, under `schema`, the one engine the project installed. A key the library
-//! does not know is an error, so a typo does not pass for a default; the framework's `api` section
-//! and `rest`, the section PorgREST would have read, are accepted as they are, and a top-level
-//! `$schema` (the JSON Schema an editor validates the file against, which `reylo schema --config`
-//! prints) is ignored. `cli` says which files `reylo generate` analyzes, and `schema` the SQL files
-//! the importer types from in place of a database.
+//! names the dialect. A key the library does not know is an error, so a typo does not pass for a
+//! default; the framework's `api` section and `rest`, the section PorgREST would have read, are
+//! accepted as they are, and a top-level `$schema` (the JSON Schema an editor validates the file
+//! against, which `reylo schema --config` prints) is ignored. `cli` says which files `reylo
+//! generate` analyzes.
 
 use serde::{Deserialize, Serialize};
 
@@ -32,12 +31,6 @@ pub struct Project {
     /// pooler can fail. The importer's alone: the framework serves through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
-    /// The SQL files the importer's type check reads the schema from, in place of a database: a
-    /// path or a glob, or a list of them, relative to the project file (a `pg_dump --schema-only`,
-    /// SQLite's `.schema`, or a directory of migrations). The host loads them into a database of
-    /// its own (PGlite for Postgres, an in-memory SQLite) and never connects to `direct_url`.
-    #[serde(rename = "schema", default, deserialize_with = "one_or_many", skip_serializing_if = "Option::is_none")]
-    pub schema_files: Option<Vec<String>>,
     /// The `.env` files the importer and Reylo Framework read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
@@ -74,20 +67,6 @@ impl Cli {
     }
 }
 
-/// A string, or a list of strings: `schema: schema.sql` and `schema: [a.sql, b.sql]` alike.
-fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Vec<String>>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged, expecting = "a path, or a list of paths")]
-    enum OneOrMany {
-        One(String),
-        Many(Vec<String>),
-    }
-    Ok(Some(match OneOrMany::deserialize(d)? {
-        OneOrMany::One(one) => vec![one],
-        OneOrMany::Many(many) => many,
-    }))
-}
-
 /// Why the file does not parse, at byte offsets in its text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ConfigError {
@@ -122,7 +101,7 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
-        for list in [&mut project.env, &mut project.schema_files, &mut project.cli.include, &mut project.cli.exclude].into_iter().flatten() {
+        for list in [&mut project.env, &mut project.cli.include, &mut project.cli.exclude].into_iter().flatten() {
             for item in list.iter_mut() {
                 *item = unmask_placeholders(item);
             }
@@ -211,22 +190,6 @@ mod tests {
         let e = parse(text).unwrap_err();
         assert_eq!(e.message, "unknown field `strict`: the key is `strict_params` since 2026-10-20");
         assert_eq!(&text[e.start..e.end], "strict");
-    }
-
-    #[test]
-    fn schema_is_one_path_or_a_list() {
-        let p = parse("schema: db/schema.sql\n").unwrap();
-        assert_eq!(p.schema_files, Some(vec!["db/schema.sql".to_string()]));
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "schema": ["db/schema.sql"] }));
-        let p = parse("schema: [schema.sql, \"migrations/*.up.sql\"]\n").unwrap();
-        assert_eq!(p.schema_files, Some(vec!["schema.sql".to_string(), "migrations/*.up.sql".to_string()]));
-        let p = parse("schema:\n  - prisma/migrations/*/migration.sql\n").unwrap();
-        assert_eq!(p.schema_files, Some(vec!["prisma/migrations/*/migration.sql".to_string()]));
-        // Neither `$schema` nor a missing key is the importer's schema.
-        assert_eq!(parse("$schema: https://example.test/x.json\n").unwrap().schema_files, None);
-        let text = "schema: { file: schema.sql }\n";
-        let e = parse(text).unwrap_err();
-        assert!(e.message.contains("a path, or a list of paths"), "{}", e.message);
     }
 
     #[test]

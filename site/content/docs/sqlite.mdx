@@ -11,7 +11,7 @@ This page is the reference behind [the main docs](/) for SQLite: the place to lo
 | --- | --- |
 | Versions | The type check prepares each statement in Reylo's own SQLite 3.53, against the schema of your database file; your app runs on its driver's SQLite ([Functions](#functions)) |
 | URL | A `file:` or `sqlite:` URL and a path, which starts at the directory of `package.json`, in `DATABASE_URL` or [`direct_url`](/#direct_url) |
-| Type check | Reads the schema through Node's built-in `node:sqlite`, so it needs no driver, from your database file or [your schema files](/#schema-files) |
+| Type check | Reads the schema through Node's built-in `node:sqlite`, so it needs no driver |
 | Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1, `sqlite3`, `sqlite` and `Bun.sql` ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">

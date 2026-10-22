@@ -3,10 +3,7 @@
 // file, one entry per statement. The cache is only for speed. An entry records the schema it was
 // analyzed against; while the database answers, an entry for another schema is analyzed again,
 // and while it does not, the entries are used as they are, so a build that cannot reach the
-// database runs on what `reylo generate` or an earlier type check wrote. Under `schema` the
-// database is the project's SQL files, loaded in process (src/schema-files.ts): an entry records
-// the files' fingerprint, so a build needs no `reylo generate`, and the files are loaded only for a
-// statement `.reylo/` does not hold.
+// database runs on what `reylo generate` or an earlier type check wrote.
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -15,15 +12,13 @@ import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
 import { openPostgresDescriber } from "./describe.ts";
 import { NotMysql, openMysqlDescriber } from "./mysql-describe.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
-import { openSchemaDatabase, SchemaError, schemaFiles, schemaFingerprint } from "./schema-files.ts";
 
 /** What `.reylo/` holds for one statement. */
 export type Entry = { version: 1; dialect: ResolvedProject["dialect"]; schema: string; analysis: Analysis };
 
 export type Outcome =
   | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
-  /** `schema`: the failure is the schema files', not the statement's, and every statement shares it. */
-  | { ok: false; message: string; code: number; schema?: true };
+  | { ok: false; message: string; code: number };
 
 type Io = EngineIo & { close(): Promise<void> };
 
@@ -38,12 +33,6 @@ const OFFLINE_TTL = 60_000;
 // (`releaseConnections`), and a loader (webpack, Rspack, Turbopack) has no such signal. The type
 // check's session keeps its connection.
 const BUILD_IDLE = 250;
-// The database a schema is loaded into holds half a gigabyte or more (PGlite), and loading it again
-// takes a second, so it closes when no statement has needed it for a while, in an editor too;
-// `.reylo/` answers every statement it has seen meanwhile. A build step's closes sooner: PGlite's
-// statistics timer keeps the process alive for ten seconds, and a loader's build has no end signal.
-const SCHEMA_IDLE = 30_000;
-const SCHEMA_BUILD_IDLE = 2_000;
 
 const sessions = new Map<string, Session>();
 
@@ -75,7 +64,7 @@ export class Session {
     this.#engine = engine;
     this.project = project;
     this.root = project.root;
-    this.#idle = project.schema ? (Number.isFinite(idle) ? SCHEMA_BUILD_IDLE : SCHEMA_IDLE) : idle;
+    this.#idle = idle;
     const ping = engine instanceof MissingEngine ? undefined : engine.call({ op: "ping" });
     this.#engineFingerprint = ping?.status === "ok" ? ping.fingerprint : "unknown";
   }
@@ -126,14 +115,14 @@ export class Session {
 
   async #analyze(sql: string, options: { force?: boolean }): Promise<Outcome> {
     if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
-    if (!this.project.url && !this.project.schema) return { ok: false, message: this.project.missingUrl, code: 4 };
+    if (!this.project.url) return { ok: false, message: this.project.missingUrl, code: 4 };
     // The URL names the database, whose engine package the project has to have installed.
     const engine = this.#engine;
     if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
     const file = this.entryFile(sql);
     const entry = options.force ? undefined : readEntry(file);
     const schema = await this.schema();
-    if (schema.fatal) return { ok: false, message: schema.error!, code: 5, ...(this.project.schema && { schema: true as const }) };
+    if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
     if (entry && (schema.value === null || entry.schema === schema.value)) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     if (schema.value === null) {
       return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run reylo generate where the database can be reached.`, code: 5 };
@@ -142,7 +131,6 @@ export class Session {
     try {
       analysis = await engine.analyze(sql, this.project.dialect, await this.#connection(), this.#answers);
     } catch (e) {
-      if (e instanceof SchemaError) return { ok: false, message: e.message, code: 5, schema: true };
       // A dead connection is reopened by the next call; a server error is reported.
       if (e instanceof Unreachable) {
         this.#io = undefined;
@@ -169,7 +157,6 @@ export class Session {
   async schema(): Promise<{ value: string | null; error?: string; fatal?: boolean }> {
     const now = Date.now();
     if (this.#schema && now - this.#schema.at < (this.#schema.value === null ? OFFLINE_TTL : SCHEMA_TTL)) return this.#schema;
-    if (this.project.schema) return this.#schemaFiles(now);
     let io: Io;
     try {
       io = await this.#connection();
@@ -195,30 +182,6 @@ export class Session {
     return this.#schema;
   }
 
-  /**
-   * The fingerprint of the files `schema` names, read without loading them. When it changes, the
-   * database they were loaded into is dropped, and the next statement that needs one loads them
-   * again.
-   */
-  async #schemaFiles(now: number): Promise<{ value: string | null; error?: string; fatal?: boolean }> {
-    const { root, dialect, schema } = this.project;
-    const found = schemaFiles(root, schema!);
-    let value: string;
-    try {
-      if (found.error) throw new Error(found.error);
-      value = schemaFingerprint(root, found.files, dialect);
-    } catch (e) {
-      this.#schema = { value: null, at: now, error: (e as Error).message, fatal: true };
-      return this.#schema;
-    }
-    if (this.#schema?.value && this.#schema.value !== value) {
-      this.#answers.clear();
-      void this.#release();
-    }
-    this.#schema = { value, at: now };
-    return this.#schema;
-  }
-
   /** Reads the schema's fingerprint again now, however recent the last read; whether it changed. */
   async recheck(): Promise<boolean> {
     const before = this.#schema?.value;
@@ -238,10 +201,9 @@ export class Session {
     return `Cannot type-check against the database at ${this.where()} (${this.project.urlSource}): it is ${e.server}, and Reylo type-checks MySQL statements against MySQL. Point the type check's URL at a MySQL server, 8.4 or later, with the same schema.`;
   }
 
-  /** The database as a person names it: host, port and database, the SQLite file, or the schema files. */
+  /** The database as a person names it: host, port and database, or the SQLite file. */
   where(): string {
-    const { dialect, url, root, schema } = this.project;
-    if (schema) return schema.join(", ");
+    const { dialect, url, root } = this.project;
     if (dialect === "sqlite") return sqlitePath(url ?? "", root);
     try {
       const u = new URL(url ?? "");
@@ -271,9 +233,7 @@ export class Session {
 
   /** The server, without credentials: entries for another database are other entries. */
   #server(): string {
-    const { dialect, url, root, schema } = this.project;
-    // The files' fingerprint, in each entry, says which schema it is.
-    if (schema) return "schema";
+    const { dialect, url, root } = this.project;
     if (dialect === "sqlite") return sqlitePath(url ?? "", root);
     try {
       const u = new URL(url ?? "");
@@ -284,14 +244,8 @@ export class Session {
   }
 
   #connection(): Promise<Io> {
-    const { dialect, url, root, schema } = this.project;
+    const { dialect, url, root } = this.project;
     this.#io ??= (async (): Promise<Io> => {
-      if (schema) {
-        const found = schemaFiles(root, schema);
-        if (found.error) throw new SchemaError(found.error);
-        const db = await openSchemaDatabase(dialect, root, found.files);
-        return { describe: (text) => db.describe(text), query: (text, params) => db.values(text, params), close: () => db.close() };
-      }
       if (dialect === "mysql") {
         const m = await openMysqlDescriber(root, url!);
         return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
@@ -307,10 +261,8 @@ export class Session {
       return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
     })();
     const io = this.#io;
-    // A failed connection is tried again by the next statement. Schema files that failed to load
-    // fail the same way until they change, which drops this one (`#schemaFiles`).
     io.catch(() => {
-      if (this.#io === io && !schema) this.#io = undefined;
+      if (this.#io === io) this.#io = undefined;
     });
     return io;
   }

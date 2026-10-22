@@ -7,14 +7,10 @@
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo generate`, once, and by the error a project with no connection gets; never by an error of
-// its own, since TypeScript makes every content mapper diagnostic one. A file that sets `schema`
-// is typed from those SQL files instead, with no connection (src/schema-files.ts): the dialect is
-// then the URL's, where one is set, and else that of the one engine the project installed.
+// its own, since TypeScript makes every content mapper diagnostic one.
 import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
-import { schemaFiles } from "./schema-files.ts";
+import { type Engine, MissingEngine } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
 
@@ -26,8 +22,6 @@ export type ProjectFile = {
   env?: string[];
   strict_params?: boolean;
   cli?: Cli;
-  /** The SQL files the type check reads the schema from, in place of a database: paths or globs. */
-  schema?: string[];
 };
 
 /** The files `reylo generate` analyzes, as globs relative to the project file's directory. */
@@ -43,13 +37,11 @@ export type ResolvedProject = {
   strictParams: boolean;
   /** Which files `reylo generate` analyzes: `include` replaces every `.sql` file, `exclude` adds to what is left out. */
   cli: Cli;
-  /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. Under `schema`, it only names the dialect. */
+  /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
-  /** The SQL files the type check loads in place of a database, as `schema` writes them (paths or globs, relative to `root`). */
-  schema: string[] | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
   urlSource: string;
-  /** The files a change to which changes the project: the project file, the `.env` files and the schema files. */
+  /** The files a change to which changes the project: the project file and the `.env` files. */
   watched: string[];
   /** Why the project cannot be used, already placed (`.reylo.yaml:3:1: ...`); every transform reports it. */
   error: string | undefined;
@@ -75,16 +67,6 @@ export function findProjectFile(from: string, env: Record<string, string | undef
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
   const candidate = join(packageDir(from), PROJECT_FILE);
   return existsSync(candidate) ? candidate : undefined;
-}
-
-/** Whether the project itself installed `dialect`'s engine, as against reylo's own install. */
-function installedIn(root: string, dialect: Dialect): boolean {
-  try {
-    createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /** The dialect a URL's scheme names, or undefined for a scheme reylo does not read. */
@@ -188,23 +170,9 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     url = hit?.value;
     if (hit) urlSource = hit.source;
   }
-  let dialect = url ? dialectOf(url) : "postgres";
+  const dialect = url ? dialectOf(url) : "postgres";
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
-  const schema = config.schema;
   const watched = [...(file ? [file] : [join(root, PROJECT_FILE)]), ...envFiles];
-  if (schema) {
-    // No URL names the database: the engine the project installed does, when it installed one.
-    if (!url) {
-      const dialects = Object.keys(ENGINE_PACKAGES) as Dialect[];
-      const own = dialects.filter((d) => installedIn(root, d));
-      const installed = own.length ? own : dialects.filter((d) => enginePath(d, root));
-      if (installed.length === 1) dialect = installed[0];
-      else if (installed.length > 1) error ??= `${shown(file!)}: "schema" names a schema of which database? ${installed.map((d) => ENGINE_PACKAGES[d]).join(", ")} are installed, so set DATABASE_URL or direct_url to a URL whose scheme names it (postgres://, file:); Reylo does not connect to it.`;
-    }
-    if (dialect === "mysql") error ??= `${shown(file!)}: "schema" loads a Postgres or SQLite schema, and MySQL needs its server: remove schema, and set DATABASE_URL or direct_url to a MySQL 8.4 server with the same schema.`;
-    watched.push(...schemaFiles(root, schema).files);
-    urlSource = `"schema" in ${shown(file!)}`;
-  }
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, cli: config.cli ?? {}, url, schema, urlSource, watched, error, notice: schema ? undefined : notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
 }
 

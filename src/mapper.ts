@@ -8,14 +8,11 @@ import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes } from "./module-types.ts";
 import { resolveProject, type Dialect } from "./project.ts";
 import { Session } from "./analyze.ts";
-import { schemaFiles, schemaFingerprint } from "./schema-files.ts";
 
 type Project = {
   dialect: Dialect;
   strictParams: boolean;
   session: Promise<Session>;
-  /** The files `schema` names: the schema the queries are typed from, not queries. */
-  schemaFiles: Set<string>;
 };
 const projects = new Map<string, Project>();
 
@@ -43,17 +40,6 @@ function mapToStatement(text: string, sql: string): number[][] {
   return [[0, Buffer.byteLength(text), start, end - start, ATOM, DEFINITION | TYPE_DEFINITION | IMPLEMENTATION]];
 }
 
-/** The fingerprint of the schema files, or why they cannot be read. */
-function schemaOf(root: string, patterns: string[], dialect: Dialect): string {
-  const found = schemaFiles(root, patterns);
-  if (found.error) return found.error;
-  try {
-    return schemaFingerprint(root, found.files, dialect);
-  } catch (e) {
-    return (e as Error).message;
-  }
-}
-
 serve({
   initialize(params) {
     // Builds from 2026-09-18 on send `protocolVersion: 1` and refuse a mapper that does not
@@ -67,11 +53,8 @@ serve({
     // Every setting lives in the project file, which PorgREST and Reylo Framework read too.
     const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from .reylo.yaml, not from the content mapper's options; move "${key}" there.`, code: 104 }));
     const resolved = resolveProject(await anyEngine(projectDir), projectDir);
-    const files = new Set(resolved.schema ? schemaFiles(resolved.root, resolved.schema).files : []);
-    projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, session: Session.open(projectDir), schemaFiles: files });
-    // A schema file is watched, and its text is part of the project: a change to it types every file again.
-    const schema = resolved.schema ? schemaOf(resolved.root, resolved.schema, resolved.dialect) : null;
-    const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, schema, p.options ?? null])).digest("hex");
+    projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, session: Session.open(projectDir) });
+    const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
     return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
   },
   async transform(params) {
@@ -86,8 +69,6 @@ serve({
       const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\ndeclare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
       return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
     }
-    // A schema file in the program (a tsconfig that includes its directory) is no query, and no error.
-    if (project.schemaFiles.has(p.fileName)) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
     // `compiled` is the statement as Reylo sends it to the database (the engine's rewritten text),
     // which an analysis that failed has not given: then `sql` is any string.
     const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[]) => {
