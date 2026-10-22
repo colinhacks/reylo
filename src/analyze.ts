@@ -2,9 +2,9 @@
 // the runtime hook and `reylo generate` — and one cache they share: `.reylo/` beside the project
 // file, one entry per statement. The cache is only for speed. An entry records the schema it was
 // analyzed against; while the database answers, an entry for another schema is analyzed again,
-// and while it does not, the entries are used as they are, so a build that cannot reach the
-// database runs on what `reylo generate` or an earlier type check wrote.
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+// and while it does not, or no URL names it, the entries are used as they are, so a build that
+// cannot reach the database runs on what `reylo generate` or an earlier type check wrote.
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { anyEngine, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
@@ -14,7 +14,14 @@ import { NotMysql, openMysqlDescriber } from "./mysql-describe.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
 
 /** What `.reylo/` holds for one statement. */
-export type Entry = { version: 1; dialect: ResolvedProject["dialect"]; schema: string; analysis: Analysis };
+export type Entry = {
+  version: 1;
+  dialect: ResolvedProject["dialect"];
+  schema: string;
+  analysis: Analysis;
+  /** When it was written, in milliseconds since 1970: a copy of `.reylo/` keeps it where it may not keep the file's time. */
+  at: number;
+};
 
 export type Outcome =
   | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
@@ -95,11 +102,42 @@ export class Session {
     return this.#engine.lex(sql, this.project.dialect);
   }
 
-  /** Where the entry for a statement lives, whether or not it exists yet. */
+  /**
+   * Where this session's entry for a statement lives, whether or not it exists yet: named by the
+   * statement, then by the server. Two databases keep an entry each, since a Postgres fingerprint
+   * holds object ids, so a dev and a test database built by the same migrations still differ. A
+   * session that cannot reach its database, or has no URL, reads another server's entry for the
+   * statement where it has none of its own (`#offlineEntry`).
+   */
   entryFile(sql: string): string {
-    const server = this.#server();
-    const key = createHash("sha256").update(JSON.stringify([ENTRY_VERSION, this.#engineFingerprint, this.project.dialect, server, sql])).digest("hex");
-    return join(this.root, ".reylo", "queries", `${key.slice(0, 32)}.json`);
+    return join(this.root, ".reylo", "queries", `${this.#statementKey(sql)}-${sha256(this.#server()).slice(0, 16)}.json`);
+  }
+
+  #statementKey(sql: string): string {
+    return sha256(JSON.stringify([ENTRY_VERSION, this.#engineFingerprint, this.project.dialect, sql])).slice(0, 32);
+  }
+
+  /** The statement's entry from this session's server, else the newest from any other: for a session that cannot reach its database, or has no URL. */
+  #offlineEntry(sql: string): { file: string; entry: Entry } | undefined {
+    const own = this.entryFile(sql);
+    const entry = readEntry(own);
+    if (entry) return { file: own, entry };
+    const dir = join(this.root, ".reylo", "queries");
+    const prefix = `${this.#statementKey(sql)}-`;
+    let names: string[];
+    try {
+      names = readdirSync(dir).filter((n) => n.startsWith(prefix) && n.endsWith(".json"));
+    } catch {
+      return undefined;
+    }
+    // Newest by the time the entry records, since a copy (`cp -r`, `fs.cpSync`, a CI artifact) may
+    // reset the file's.
+    let newest: { file: string; entry: Entry } | undefined;
+    for (const file of names.map((n) => join(dir, n))) {
+      const other = readEntry(file);
+      if (other && (!newest || (other.at ?? -Infinity) > (newest.entry.at ?? -Infinity))) newest = { file, entry: other };
+    }
+    return newest;
   }
 
   /** The statement's analysis: from `.reylo/` when the entry matches the schema, else from the database. */
@@ -115,18 +153,25 @@ export class Session {
 
   async #analyze(sql: string, options: { force?: boolean }): Promise<Outcome> {
     if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
-    if (!this.project.url) return { ok: false, message: this.project.missingUrl, code: 4 };
+    // With no URL, `.reylo/` answers as it does where the database cannot be reached (the dialect
+    // is the installed engine's), and a statement it lacks needs a URL.
+    if (!this.project.url) {
+      const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
+      return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file } : { ok: false, message: this.project.missingUrl, code: 4 };
+    }
     // The URL names the database, whose engine package the project has to have installed.
     const engine = this.#engine;
     if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
     const file = this.entryFile(sql);
-    const entry = options.force ? undefined : readEntry(file);
     const schema = await this.schema();
     if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
-    if (entry && (schema.value === null || entry.schema === schema.value)) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     if (schema.value === null) {
+      const hit = options.force ? undefined : this.#offlineEntry(sql);
+      if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
       return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run reylo generate where the database can be reached.`, code: 5 };
     }
+    const entry = options.force ? undefined : readEntry(file);
+    if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
     try {
       analysis = await engine.analyze(sql, this.project.dialect, await this.#connection(), this.#answers);
@@ -144,7 +189,7 @@ export class Session {
       }
       return { ok: false, message: (e as Error).message, code: 5 };
     }
-    writeEntry(this.root, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis });
+    writeEntry(this.root, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
     return { ok: true, analysis, source: "database", entry: file };
   }
 
@@ -201,6 +246,19 @@ export class Session {
     return `Cannot type-check against the database at ${this.where()} (${this.project.urlSource}): it is ${e.server}, and Reylo type-checks MySQL statements against MySQL. Point the type check's URL at a MySQL server, 8.4 or later, with the same schema.`;
   }
 
+  /** The server, without credentials, that names this session's entries: none with no URL, which writes none. */
+  #server(): string {
+    const { dialect, url, root } = this.project;
+    if (!url) return "";
+    if (dialect === "sqlite") return sqlitePath(url, root);
+    try {
+      const u = new URL(url);
+      return `${u.protocol}//${u.username}@${u.host}${u.pathname}`;
+    } catch {
+      return url;
+    }
+  }
+
   /** The database as a person names it: host, port and database, or the SQLite file. */
   where(): string {
     const { dialect, url, root } = this.project;
@@ -229,18 +287,6 @@ export class Session {
     const io = this.#io;
     this.#io = undefined;
     if (io) await io.then((i) => i.close()).catch(() => {});
-  }
-
-  /** The server, without credentials: entries for another database are other entries. */
-  #server(): string {
-    const { dialect, url, root } = this.project;
-    if (dialect === "sqlite") return sqlitePath(url ?? "", root);
-    try {
-      const u = new URL(url ?? "");
-      return `${u.protocol}//${u.username}@${u.host}${u.pathname}`;
-    } catch {
-      return url ?? "";
-    }
   }
 
   #connection(): Promise<Io> {
@@ -272,6 +318,8 @@ export class Session {
 export async function releaseConnections(): Promise<void> {
   await Promise.all([...sessions.values()].map((session) => session.release()));
 }
+
+const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
 function readEntry(file: string): Entry | undefined {
   if (!existsSync(file)) return undefined;

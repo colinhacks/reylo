@@ -140,18 +140,24 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).missingUrl, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.');
 });
 
-test(".reylo/ is keyed by the connection used, never by url", async () => {
-  const dev = { DATABASE_URL: "postgres://dev/app" };
+test(".reylo/ names an entry by its statement, then its server: never by url or a password", async () => {
   const entry = async (yaml: string, env: Record<string, string>) => {
     const session = await Session.open(tree({ "package.json": "{}", ".reylo.yaml": yaml }), env);
     await session.close();
-    return session.entryFile("select 1").split("/").pop();
+    return session.entryFile("select 1").split("/").pop()!.replace(/\.json$/, "").split("-");
   };
-  const alone = await entry("url: postgres://prod-pooler/app\n", dev);
-  // url alone keys like no url at all, and like a direct_url that names the same database.
-  assert.equal(alone, await entry("strict_params: true\n", dev));
-  assert.equal(alone, await entry("direct_url: postgres://dev/app\n", {}));
-  // Another url changes nothing; another database is another entry.
-  assert.equal(alone, await entry("url: postgres://other-pooler/app\n", dev));
-  assert.notEqual(alone, await entry("url: postgres://prod-pooler/app\n", { DATABASE_URL: "postgres://other/app" }));
+  const [statement, dev] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://dev/app" });
+  // url alone names it like no url at all, and like a direct_url that names the same database;
+  // the password is not part of it.
+  assert.deepEqual(await entry("url: postgres://prod-pooler/app\n", { DATABASE_URL: "postgres://dev/app" }), [statement, dev]);
+  assert.deepEqual(await entry("direct_url: postgres://:secret@dev/app\n", {}), [statement, dev]);
+  // Another database of the dialect: the same statement, another server.
+  const [same, other] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://ci@127.0.0.1:5432/test" });
+  assert.equal(same, statement);
+  assert.notEqual(other, dev);
+  // With no URL and every engine installed, as reylo's own install has them, the dialect stays
+  // Postgres: the same statement, and no server.
+  assert.equal((await entry("strict_params: true\n", {}))[0], statement);
+  // Another dialect is another statement.
+  assert.notEqual((await entry("strict_params: true\n", { DATABASE_URL: "mysql://root@127.0.0.1:3306/app" }))[0], statement);
 });

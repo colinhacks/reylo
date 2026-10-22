@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
@@ -83,6 +83,61 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   // --force asks the database even for a statement .reylo/ holds.
   const forced = await analyze(root, env, SELECT, { force: true });
   assert.ok(!forced.ok);
+});
+
+test("two databases the project uses in turn keep an entry each, so neither analyzes the other's statements again", async () => {
+  const { root, env } = project();
+  const db = new DatabaseSync(join(root, "test.db"));
+  db.exec("create table users (id integer primary key, name text not null, email text)");
+  db.close();
+  const test = { DATABASE_URL: "file:./test.db" };
+  const sources = [];
+  for (const e of [env, test, env, test]) {
+    const outcome = await analyze(root, e, "select * from users");
+    assert.ok(outcome.ok);
+    sources.push(`${outcome.source} ${outcome.analysis.columns.length}`);
+  }
+  assert.deepEqual(sources, ["database 2", "database 3", "cache 2", "cache 3"]);
+  // Where neither can be reached, a URL with no entry of its own reads the one written last, by
+  // the time it records, which a copy that resets the files' times (cp -r, fs.cpSync) keeps.
+  for (const f of ["app.db", "test.db"]) renameSync(join(root, f), join(root, `${f}.gone`));
+  const queries = join(root, ".reylo", "queries");
+  const [older, newer] = readdirSync(queries).map((n) => join(queries, n)).sort((a, b) => JSON.parse(readFileSync(a, "utf8")).at - JSON.parse(readFileSync(b, "utf8")).at);
+  utimesSync(newer!, new Date(2000, 0, 1), new Date(2000, 0, 1));
+  utimesSync(older!, new Date(), new Date());
+  const offline = await analyze(root, { DATABASE_URL: "file:./elsewhere.db" }, "select * from users");
+  assert.ok(offline.ok);
+  assert.deepEqual([offline.source, offline.entry, offline.analysis.columns.length], ["cache", newer, 3]);
+});
+
+test("a build that cannot reach the database reads .reylo/ with another URL, with none, and in a copy of the project elsewhere", async () => {
+  const { root, env } = project();
+  // The project installs its database's engine, which names the dialect where no URL does.
+  mkdirSync(join(root, "node_modules", "@reylosql"), { recursive: true });
+  symlinkSync(fileURLToPath(new URL("../packages/sqlite", import.meta.url)), join(root, "node_modules", "@reylosql", "sqlite"));
+  const typed = await analyze(root, env, SELECT);
+  assert.ok(typed.ok);
+  assert.equal(typed.source, "database");
+  // No URL: the entries are used as they are, and a statement they lack needs a URL.
+  const bare = await analyze(root, {}, SELECT);
+  assert.ok(bare.ok);
+  assert.deepEqual([bare.source, bare.entry], ["cache", typed.entry]);
+  const lacking = await analyze(root, {}, "select name from users");
+  assert.ok(!lacking.ok);
+  assert.deepEqual([lacking.code, lacking.message], [4, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.']);
+  assert.ok(!(await analyze(root, {}, SELECT, { force: true })).ok);
+  // Another URL, to a database the build cannot open, reads the same entry.
+  const other = await analyze(root, { DATABASE_URL: "file:./elsewhere.db" }, SELECT);
+  assert.ok(other.ok);
+  assert.deepEqual([other.source, other.entry], ["cache", typed.entry]);
+  // A copy of the project at another path, as a container build has it, without its database.
+  const copy = mkdtempSync(join(tmpdir(), "reylo-analyze-copy-"));
+  cpSync(root, copy, { recursive: true, verbatimSymlinks: true });
+  rmSync(join(copy, "app.db"));
+  const moved = await analyze(copy, env, SELECT);
+  assert.ok(moved.ok);
+  assert.equal(moved.source, "cache");
+  assert.ok(moved.entry.startsWith(join(copy, ".reylo")));
 });
 
 test("the module a build step emits carries the analysis and reads nothing at run time", async () => {

@@ -7,10 +7,12 @@
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo generate`, once, and by the error a project with no connection gets; never by an error of
-// its own, since TypeScript makes every content mapper diagnostic one.
+// its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
+// is that of the one engine the project installed.
 import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { type Engine, MissingEngine } from "./engine.ts";
+import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
 
@@ -69,6 +71,23 @@ export function findProjectFile(from: string, env: Record<string, string | undef
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
   const dir = packageDir(from);
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
+}
+
+/** Whether the project itself installed `dialect`'s engine, as against reylo's own install. */
+function installedIn(root: string, dialect: Dialect): boolean {
+  try {
+    createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** The databases whose engine the project installed, else those reylo's own install has. */
+function installedEngines(root: string): Dialect[] {
+  const dialects = Object.keys(ENGINE_PACKAGES) as Dialect[];
+  const own = dialects.filter((d) => installedIn(root, d));
+  return own.length ? own : dialects.filter((d) => enginePath(d, root));
 }
 
 /** The dialect a URL's scheme names, or undefined for a scheme reylo does not read. */
@@ -175,10 +194,14 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     url = hit?.value;
     if (hit) urlSource = hit.source;
   }
-  const dialect = url ? dialectOf(url) : "postgres";
+  let dialect = url ? dialectOf(url) : "postgres";
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
+  // No URL names the database: the engine the project installed does, when it installed one, for
+  // `.reylo/`, which a build with no URL reads (src/analyze.ts).
+  const installed = url ? [] : installedEngines(root);
+  if (installed.length === 1) dialect = installed[0];
   return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
 }
 

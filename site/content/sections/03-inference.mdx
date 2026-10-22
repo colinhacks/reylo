@@ -77,9 +77,9 @@ Every step that loads a `.sql` file (the type check, a plugin, the preload) keep
 
 - The `.reylo/` directory is a cache with its own `.gitignore`, so git skips it.
 - When the database answers, an entry made against another schema is analyzed again. An editor or a dev server checks the schema again at most every 5 seconds.
-- When the database is out of reach, the entries are used as they are, and a statement that `.reylo/` lacks is an error.
+- When the database is out of reach, or no database URL is set, the entries are used as they are, and a statement that `.reylo/` lacks is an error.
 
-A build that can't reach the database, such as a container build, reads the `.reylo/` a type check filled. Set the same database URL in the build, even though it can't connect: the entries are keyed by it.
+A build that can't reach the database, such as a container build, reads the `.reylo/` a type check filled, with any database URL or none: where it has no analysis of its own for a statement, it takes the newest one, whichever database it was read from.
 
 </Details>
 

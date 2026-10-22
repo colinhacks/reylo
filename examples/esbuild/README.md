@@ -59,13 +59,13 @@ A container or CI build that cannot reach the database builds from `.reylo/`, th
 DATABASE_URL=postgres://db.internal:5432/app npx reylo generate   # nubx reylo generate here
 ```
 
-Carry `.reylo/` into the build with the sources (it ignores itself in git, so copy it, or run `reylo generate` in the same CI job), then build with the same `DATABASE_URL`, even though it cannot connect: Reylo keys each analysis by the scheme, user, host, port and database of the URL, not the password.
+Carry `.reylo/` into the build with the sources (it ignores itself in git, so copy it, or run `reylo generate` in the same CI job), then build. The build needs no `DATABASE_URL`: one it cannot reach, or none, reads the analyses in `.reylo/`, whichever database they were read from.
 
 ```sh
-DATABASE_URL=postgres://db.internal:5432/app npm run build
+npm run build
 ```
 
-The type check and the plugin both read `.reylo/`, so both pass without the database, and the dev dependencies (esbuild, TypeScript and `@reylosql/postgres`) must be installed for the build. The image that runs the server needs only `node` and `dist/server.mjs`. A query that `.reylo/` lacks, such as one edited since `reylo generate` ran, fails the type check and the build at that file: `.reylo has no analysis of this statement, so run reylo generate where the database can be reached`. So does a build with another URL, or none.
+The type check and the plugin both read `.reylo/`, so both pass without the database, and the dev dependencies (esbuild, TypeScript and `@reylosql/postgres`) must be installed for the build. The image that runs the server needs only `node` and `dist/server.mjs`. A query that `.reylo/` lacks, such as one edited since `reylo generate` ran, fails the type check and the build at that file: with a `DATABASE_URL` it cannot reach, `.reylo has no analysis of this statement, so run reylo generate where the database can be reached`, and with none, `No database URL`.
 
 ## In your own project
 
