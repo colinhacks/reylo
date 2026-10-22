@@ -110,16 +110,16 @@ function object(fields: readonly { name: string }[], field: (f: number) => Schem
   return { type: "object", properties, required, ...(closed ? { additionalProperties: false } : {}) };
 }
 
-/** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true). */
-export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false): Schema | JsonSchema {
+/** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true), or a structured parameter's member (`inRow`). */
+export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false): Schema | JsonSchema {
   switch (t.kind) {
     case "scalar": return scalar(t.name, dialect, inJson, input);
     case "enum": return { type: "string", enum: t.labels };
     case "array": {
       // A result's elements may be null unless the statement shows they are not; a parameter's
-      // are strict (src/render.ts).
-      const items = typeSchema(t.of, dialect, input, inJson);
-      return { type: "array", items: (input ? t.nullable_items : t.nullable_items !== false) ? nullable(items) : items };
+      // are strict, but a structured parameter's member keeps them (src/render.ts).
+      const items = typeSchema(t.of, dialect, input, inJson, inRow);
+      return { type: "array", items: (input ? inRow || t.nullable_items : t.nullable_items !== false) ? nullable(items) : items };
     }
     case "composite": return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${t.name} as Postgres prints it` };
     case "object": return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true)));
@@ -131,7 +131,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
     // What the caller passes: each key as a parameter of its type takes it.
     case "rows": {
       // A JSON member's schema as written, with its defaults and formats.
-      const row = object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(t.fields[i]!.schema ?? typeSchema(t.fields[i]!.type, dialect, true)), (i) => t.fields[i]!.optional, true);
+      const row = object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(t.fields[i]!.schema ?? typeSchema(t.fields[i]!.type, dialect, true, false, true)), (i) => t.fields[i]!.optional, true);
       return t.one ? row : { type: "array", items: row };
     }
     case "unknown": return {};

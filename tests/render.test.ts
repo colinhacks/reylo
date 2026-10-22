@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
 import { renderParamType, renderType } from "../src/render.ts";
+import { typeSchema } from "../src/schema.ts";
 
 const scalar = (name: string): EngineType => ({ kind: "scalar", name });
 const field = (name: string, type: EngineType, nullable: boolean) => ({ name, type, nullable });
@@ -208,6 +209,11 @@ test("a returned array's elements may be NULL unless the statement shows they ar
   assert.equal(renderParamType({ kind: "array", of: scalar("int4") }), "number[]");
   const member: EngineType = { kind: "rows", one: true, fields: [{ name: "tags", type: texts(), written: "text[]", nullable: false, optional: false }] };
   assert.equal(renderParamType(member), "{ tags: (string | null)[] }");
+  // The JSON Schemas say the same.
+  assert.deepEqual(typeSchema(texts(), "postgres"), { type: "array", items: { type: ["string", "null"] } });
+  assert.deepEqual(typeSchema(texts(false), "postgres"), { type: "array", items: { type: "string" } });
+  assert.deepEqual(typeSchema(texts(), "postgres", true), { type: "array", items: { type: "string" } });
+  assert.deepEqual(typeSchema(member, "postgres", true), { type: "object", properties: { tags: { type: "array", items: { type: ["string", "null"] } } }, required: ["tags"], additionalProperties: false });
 });
 
 test("a JSON column a CHECK holds to a JSON Schema is the type of the values the schema admits", () => {

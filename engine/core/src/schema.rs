@@ -60,6 +60,16 @@ pub fn nullable(schema: Value) -> Value {
     }
 }
 
+/// A structured parameter's member: an array there keeps NULL elements, which the run time binds,
+/// so an array a statement built with NULL elements goes back into a row; a top-level array
+/// parameter's elements stay strict.
+fn member_schema(ty: &Type, opts: SchemaOptions) -> Value {
+    match ty {
+        Type::Array { of, .. } if opts.input => json!({"type": "array", "items": nullable(member_schema(of, opts))}),
+        _ => ty.json_schema(opts),
+    }
+}
+
 impl Type {
     /// The JSON Schema of a value of this type, standing where `opts` says.
     pub fn json_schema(&self, opts: SchemaOptions) -> Value {
@@ -104,7 +114,7 @@ impl Type {
                 let mut properties = Map::new();
                 let mut required = Vec::new();
                 for f in fields {
-                    let schema = f.ty.json_schema(opts);
+                    let schema = member_schema(&f.ty, opts);
                     properties.insert(f.name.clone(), if f.nullable { nullable(schema) } else { schema });
                     if !f.optional {
                         required.push(json!(f.name));
@@ -240,6 +250,10 @@ mod tests {
         assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE), json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(false) }.json_schema(WIRE), json!({"type": "array", "items": {"type": "string"}}));
+        // A structured parameter's member keeps its array's NULL elements, which the run time binds.
+        let texts = Type::Array { of: Box::new(s("text")), nullable_items: None };
+        let member = Type::Rows { one: true, fields: vec![crate::types::RowField { name: "tags".into(), ty: texts, written: "text[]".into(), nullable: false, optional: false, schema: None }] };
+        assert_eq!(member.json_schema(WIRE.as_input())["properties"]["tags"], json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::Json { schema: None }.json_schema(WIRE), json!({}));
         let checked = json!({"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": true});
         assert_eq!(Type::Json { schema: Some(checked.clone()) }.json_schema(WIRE), checked);
