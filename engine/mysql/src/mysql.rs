@@ -471,10 +471,21 @@ impl Proven {
 /// ([`through_derived`]). `depth` is how many derived tables the query is inside.
 fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: &Host, dialect: &SessionDialect, depth: usize) -> Lazy<Proven> {
     let mut pending = false;
-    let materialized = crate::mysql_derived::materialized(q, views);
+    let mut materialized = crate::mysql_derived::materialized(q, views);
+    let mut outcome = materialized.as_ref().map(|m| host.describe(&m.to_string()));
+    // Reading a view through a derived table can break the copy, as where a column is named
+    // through the view's schema (`app.v.x`): the copy without that still materializes the derived
+    // tables and WITH queries.
+    if matches!(outcome, Some(Some(Err(_)))) && !views.is_empty() {
+        let without = crate::mysql_derived::materialized(q, &HashSet::new());
+        if without.as_ref().map(Query::to_string) != materialized.as_ref().map(Query::to_string) {
+            outcome = without.as_ref().map(|m| host.describe(&m.to_string()));
+            materialized = without;
+        }
+    }
     // A copy the server does not prepare, as a server before SET_VAR would not, leaves the
     // statement's own flags.
-    let described: Option<Option<MysqlDescribe>> = match materialized.as_ref().map(|m| host.describe(&m.to_string())) {
+    let described: Option<Option<MysqlDescribe>> = match outcome {
         Some(None) => None,
         Some(Some(Ok(d))) if raw.is_none_or(|raw| raw.columns.len() == d.columns.len()) => Some(Some(d)),
         _ => match raw {
@@ -596,9 +607,18 @@ fn through_derived(q: &Query, count: Option<usize>, views: &HashSet<String>, hos
     if depth >= MAX_DERIVED_DEPTH || !crate::mysql_derived::is_materialized(q) {
         return Some(Vec::new());
     }
-    let mut alone: Vec<Option<Query>> = Vec::new();
-    each_target(&mut q.clone(), &mut |t| alone.push(standalone(t.query, t.scope.as_ref())));
-    if alone.is_empty() || alone.len() > MAX_DERIVED {
+    // A table read whole, as the copy reads each view, proves nothing of its own: it is no target
+    // and takes no share of the bound.
+    let (mut alone, mut whole): (Vec<Option<Query>>, usize) = (Vec::new(), 0);
+    each_target(&mut q.clone(), &mut |t| {
+        if crate::mysql_derived::reads_one_table(t.query) {
+            whole += 1;
+            alone.push(None);
+        } else {
+            alone.push(standalone(t.query, t.scope.as_ref()));
+        }
+    });
+    if alone.len() == whole || alone.len() - whole > MAX_DERIVED {
         return Some(Vec::new());
     }
     let mut pending = false;
@@ -2544,6 +2564,47 @@ mod tests {
         assert_eq!(nullable("with d as (select user_id, id + 1 as next from posts) select u.id, d.next from users u left join d on d.user_id = u.id"), [false, true]);
         // Nothing merged: the statement's own flags.
         assert_eq!(nullable("select id, id + 1 as next from users"), [false, false]);
+    }
+
+    #[test]
+    fn a_view_read_through_a_derived_table_neither_breaks_the_copy_nor_takes_a_target() {
+        // As 8.4 describes it over a view `v`: a column named through the view's schema does not
+        // resolve against the derived table the copy reads the view through, and the derived
+        // table's expression is nullable on the null-extended side once materialized.
+        let described = std::cell::RefCell::new(Vec::<String>::new());
+        let describe = |sql: &str| -> Value {
+            described.borrow_mut().push(sql.to_string());
+            if sql.contains("app.v.x") && sql.contains("(SELECT * FROM app.v) AS v") {
+                return json!({ "error": { "message": "Unknown column 'app.v.x' in 'field list'" } });
+            }
+            let materialized = sql.contains("derived_merge=off");
+            json!({ "mysql": { "columns": [{ "name": "x", "type": 3, "flags": 1 }, { "name": "next", "type": 8, "flags": if materialized { 0 } else { 1 } }], "params": [] } })
+        };
+        let nullable = |sql: &str| {
+            let mut answers: HashMap<String, crate::api::Answer> = HashMap::new();
+            for _ in 0..16 {
+                let host = Host::new(&answers);
+                if let Some(analysis) = analyze_text(sql, &host) {
+                    return analysis.columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
+                }
+                for need in host.needs() {
+                    let (id, answer) = match need {
+                        crate::api::Need::Describe { id, sql } => (id, describe(&sql)),
+                        crate::api::Need::Query { id, sql, .. } if sql == SQL_MODE_QUERY => (id, json!({ "rows": [["ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"]] })),
+                        crate::api::Need::Query { id, sql, .. } if sql == VIEWS_QUERY => (id, json!({ "rows": [["v"]] })),
+                        crate::api::Need::Query { id, .. } => (id, json!({ "rows": [] })),
+                    };
+                    answers.insert(id, serde_json::from_value(answer).unwrap());
+                }
+            }
+            panic!("the analysis never settled")
+        };
+        let derived = "left join (select user_id, id + 1 as next from posts) d on d.user_id = u.id";
+        assert_eq!(nullable(&format!("select app.v.x, d.next from users u join app.v on app.v.id = u.id {derived}")), [false, true]);
+        // The view's derived table is no query of its own to prove.
+        described.borrow_mut().clear();
+        assert_eq!(nullable(&format!("select v.x, d.next from users u join v on v.id = u.id {derived}")), [false, true]);
+        assert!(!described.borrow().iter().any(|sql| sql.starts_with("SELECT * FROM v")), "{:?}", described.borrow());
     }
 
     #[test]

@@ -230,6 +230,16 @@ pub fn each_target(q: &mut Query, f: &mut dyn FnMut(Target)) {
     body(&mut q.body, &scope, f);
 }
 
+/// Whether a query is `SELECT * FROM <one table>` and nothing more, the shape [`materialized`]
+/// reads a view through.
+pub fn reads_one_table(q: &Query) -> bool {
+    let SetExpr::Select(select) = q.body.as_ref() else { return false };
+    match select.from.as_slice() {
+        [item] if item.joins.is_empty() && matches!(item.relation, TableFactor::Table { .. }) => q.to_string() == format!("SELECT * FROM {}", item.relation),
+        _ => false,
+    }
+}
+
 /// A derived table's or a WITH query's query as a statement of its own: with the WITH queries in
 /// scope where it stands, which it may read. `None` where those and its own WITH queries do not
 /// make one WITH without changing what a name reads: where either is RECURSIVE.
