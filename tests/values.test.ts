@@ -363,3 +363,48 @@ test("MySQL: a truth value is a boolean on every driver, whatever form it gives 
   assert.deepEqual(await execute(bun(1) as never, q), expected);
   await assert.rejects(execute(bun(5) as never, q) as Promise<unknown>, /Column "done" is a boolean, stored as 0 or 1, and holds 5/);
 });
+
+test("MySQL: a VECTOR is an array of its floats on every driver that reads one, and its parameter binds their text", async () => {
+  const vector: EngineType = { kind: "array", of: scalar("float4"), nullable_items: false };
+  assert.equal(columnKind(vector, "mysql"), "float[]");
+  assert.equal(renderType(vector), "number[]");
+  assert.equal(renderParamType(vector, "mysql"), "number[]");
+  // The server sends a VECTOR as its floats' bytes, 32-bit and little-endian (MySQL 9.7.2).
+  const floats = [1, 2.5, -3, 0.10000000149011612];
+  const bytes = Buffer.alloc(16);
+  floats.forEach((f, i) => bytes.writeFloatLE(f, i * 4));
+  const columns: Columns = [["v", "float[]"], ["vn", "float[]"]];
+  const q: QueryModule<"mysql"> = { dialect: "mysql", sql: "select 1", params: [], columns };
+  const expected = [{ v: floats, vn: null }];
+  // mysql2 3.x decodes the floats itself; mariadb and PlanetScale give the bytes.
+  const fields = [{ name: "v", columnType: 242, decimals: 0 }, { name: "vn", columnType: 242, decimals: 0 }];
+  assert.deepEqual(await execute({ query: async () => [[], []], execute: async () => [[{ v: floats, vn: null }], fields] } as never, q), expected);
+  assert.deepEqual(await execute({ query: async () => [[], []], execute: async () => [[{ v: Buffer.from(bytes), vn: null }], fields] } as never, q), expected);
+  assert.deepEqual([...((await execute({ batch: async () => ({}), query: async () => [{ v: Buffer.from(bytes), vn: null }] } as never, q)) as unknown[])], expected);
+  const planetscale = {
+    execute: async (_: string, __: unknown, options: { cast: (f: { type: string; charset?: number }, v: string | null) => unknown }) => ({
+      rows: [{ v: options.cast({ type: "VECTOR", charset: 63 }, String.fromCharCode(...bytes)), vn: options.cast({ type: "VECTOR", charset: 63 }, null) }],
+    }),
+  };
+  assert.deepEqual(await execute(planetscale as never, q), expected);
+  // A slice of a larger buffer, as a driver's row may be, reads from its own offset.
+  assert.deepEqual(coerce("float[]", Buffer.concat([Buffer.of(9, 9, 9), bytes]).subarray(3), "v"), floats);
+  assert.throws(() => coerce("float[]", bytes.subarray(0, 5), "v"), (e: Error) => e instanceof DecodeError && /Column "v" is a VECTOR, whose value is 4 bytes per 32-bit float, and holds 5 bytes/.test(e.message));
+  // A Postgres float4[] from Bun.sql is a Float32Array, which is not read as bytes.
+  assert.deepEqual(coerce("float[]", new Float32Array([1, 2.5]), "v"), [1, 2.5]);
+
+  // A parameter binds the text of its floats, which the engine's `to_vector(?)` reads, on every driver.
+  const w: QueryModule<"mysql"> = { dialect: "mysql", sql: "insert into items (v) values (to_vector(:v))", params: ["v"], inputs: { v: { type: vector } } };
+  const seen: unknown[][] = [];
+  await execute({ query: async () => [[], []] as [unknown, unknown], execute: async (_: unknown, v?: unknown[]) => (seen.push(v!), [[], []] as [unknown, unknown]) } as never, w, { v: floats });
+  await execute({ query: async (_: string, v: unknown) => (seen.push(v as unknown[]), []), batch: async () => [] } as never, w, { v: floats });
+  await execute({ unsafe: async (_: string, v?: unknown[]) => (seen.push(v!), []), commitDistributed: async () => {} } as never, w, { v: floats });
+  await execute({ execute: async (_: string, v: unknown[]) => (seen.push(v), { rows: [] }) } as never, w, { v: floats });
+  await execute({ batch: async () => ({}), query: async (_: string, v: unknown) => (seen.push(v as unknown[]), []) } as never, w, { v: null });
+  assert.deepEqual(seen, [...Array(4).fill(["[1,2.5,-3,0.10000000149011612]"]), [null]]);
+  const fake = { query: async () => [[], []], execute: async () => [[], []] } as never;
+  await assert.rejects(execute(fake, w, { v: [1, "2"] }) as Promise<unknown>, /^TypeError: Parameter "v" is a VECTOR, an array of finite numbers, and the element at \[1\] is "2"\.$/);
+  await assert.rejects(execute(fake, w, { v: [1, NaN] }) as Promise<unknown>, /the element at \[1\] is NaN/);
+  await assert.rejects(execute(fake, w, { v: [Infinity] }) as Promise<unknown>, /the element at \[0\] is Infinity/);
+  await assert.rejects(execute(fake, w, { v: [1, null] }) as Promise<unknown>, /^TypeError: Parameter "v" is an array whose elements may not be null, and the element at \[1\] is/);
+});

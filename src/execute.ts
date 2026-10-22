@@ -372,7 +372,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     const cast = query.inputs?.[name]?.cast;
     if (cast !== undefined && type !== undefined) checkCast(name, cast, type, bound.values[i], query.dialect);
     checkTime(type, name, bound.values[i]);
-    bound.values[i] = encode(type, bound.values[i], query.dialect);
+    bound.values[i] = encode(type, bound.values[i], query.dialect, name);
   });
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
@@ -456,13 +456,26 @@ function checkTime(type: EngineType | undefined, name: string, v: unknown): void
 // on Postgres a date or time with an extended or BC year in Postgres's own form, which refuses
 // `+010000` and `0000`; on SQLite a truth value, which a BOOLEAN column returns, as 1 or 0, since
 // better-sqlite3 refuses a boolean ("SQLite3 can only bind numbers, strings, bigints, buffers, and
-// null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither.
-function encode(type: EngineType | undefined, v: unknown, dialect: Dialect): unknown {
+// null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
+// a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
+// `to_vector(?)` reads: drivers left to themselves sent an array as the text "1,2,3" (mysql2's
+// execute()) or expanded it into a list of values (mysql2's query(), mariadb).
+function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {
   if (type === undefined || v == null) return v;
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
-  if (dialect !== "postgres") return v;
-  if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) ? type : type.of, e, dialect)) : v;
+  if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name) : v;
+  if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) ? type : type.of, e, dialect, name)) : v;
   return typeof v === "string" && isTime(type) ? postgresYear(v) : v;
+}
+
+/** A VECTOR's floats as the text `to_vector` reads; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
+function vectorText(v: readonly unknown[], name: string): string {
+  v.forEach((e, i) => {
+    if (typeof e !== "number" || !Number.isFinite(e)) {
+      throw new TypeError(`Parameter "${name}" is a VECTOR, an array of finite numbers, and the element at [${i}] is ${typeof e === "string" ? JSON.stringify(e) : typeof e === "number" ? e : typeof e}.`);
+    }
+  });
+  return JSON.stringify(v);
 }
 
 // sqlite3 6.0.1 binds a BigInt as NULL, with no error (`select cast(? as text)` with

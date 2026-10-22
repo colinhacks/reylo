@@ -421,6 +421,16 @@ function utcText(d: Date, kind: "date" | "timestamp", column: string): string {
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;
 
 /**
+ * A MySQL VECTOR's floats from its bytes, 32-bit and little-endian, which mariadb and PlanetScale
+ * hand over as they are (mysql2 decodes them itself).
+ */
+export function float32s(bytes: Uint8Array, column: string): number[] {
+  if (bytes.byteLength % 4 !== 0) throw new DecodeError(`Column "${column}" is a VECTOR, whose value is 4 bytes per 32-bit float, and holds ${bytes.byteLength} bytes.`);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return Array.from({ length: bytes.byteLength / 4 }, (_, i) => view.getFloat32(i * 4, true));
+}
+
+/**
  * `v` as a value of `kind`, from the form a driver decoded it to; `column` names it in an error. A
  * number past ±(2^53 - 1) in an integer column is one the driver already rounded, and is refused.
  */
@@ -430,6 +440,8 @@ export function coerce(kind: Kind, v: unknown, column: string): unknown {
     const element = kind.slice(0, -2);
     if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column));
     if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column) : coerce(element, e, column)));
+    // A MySQL VECTOR's bytes: no driver gives any other array of floats as bytes.
+    if (element === "float" && isBytes(v)) return float32s(v, column);
     // Bun.sql's int4[] and float4[] are typed arrays.
     if (ArrayBuffer.isView(v) && !(v instanceof DataView)) return Array.from(v as unknown as ArrayLike<unknown>, (e) => coerce(element, e, column));
     return v;

@@ -472,6 +472,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         None if raw.columns.is_empty() && opens_without_result_sets(&rewritten.sql) => ("none".to_string(), None),
         None => ("many".to_string(), Some(misread.unwrap_or_else(|| "the engine could not parse the statement, so nothing bounds its rows".into()))),
     };
+    let rewritten = vectors_as_text(rewritten, &raw);
     Some(Analysis {
         kind: kind.to_string(),
         params,
@@ -1041,6 +1042,10 @@ fn column_type(code: u32, charset: u32) -> (Type, &'static str) {
         10 | 14 => (scalar("date"), "date"),
         11 => (scalar("time"), "time"),
         245 => (Type::Json { schema: None }, "json"),
+        // MySQL 9's VECTOR, a column and the context of a `?` alike: 32-bit floats, none of them
+        // NULL, whose value comes as their little-endian bytes (measured on 9.7.2). A parameter
+        // binds their text instead (`vectors_as_text`).
+        242 => (Type::Array { of: Box::new(scalar("float4")), nullable_items: Some(false) }, "vector"),
         16 => (scalar("bytea"), "bit"),
         249..=254 | 15 => {
             if charset == 63 { (scalar("bytea"), "binary") } else { (scalar("text"), "varchar") }
@@ -1048,6 +1053,37 @@ fn column_type(code: u32, charset: u32) -> (Type, &'static str) {
         6 => (Type::Unknown, "null"),
         _ => (Type::Unknown, "unknown"),
     }
+}
+
+/// Each `?` the prepare typed as a VECTOR wrapped in `to_vector(…)`, so that it binds the text of
+/// its floats (`[1,2.5]`), which the server reads as a VECTOR wherever it stands. A VECTOR's bytes
+/// would not do on every driver: mariadb and PlanetScale write every value into the statement's
+/// text, where bytes are a binary string, which MySQL takes for a VECTOR column or a function's
+/// argument but refuses beside `=` ("Incorrect arguments to =", 9.7.2). `to_vector` is
+/// `string_to_vector`'s other name.
+fn vectors_as_text(rewritten: lex::Rewritten, raw: &MysqlDescribe) -> lex::Rewritten {
+    if !raw.params.iter().any(|p| p.r#type == 242) {
+        return rewritten;
+    }
+    let mut sql = String::with_capacity(rewritten.sql.len() + 11 * raw.params.len());
+    let mut spans = Vec::with_capacity(rewritten.spans.len());
+    let mut from = 0;
+    for (i, &(os, oe, rs, re)) in rewritten.spans.iter().enumerate() {
+        sql.push_str(&rewritten.sql[from..rs]);
+        let start = sql.len();
+        let vector = raw.params.get(i).is_some_and(|p| p.r#type == 242);
+        if vector {
+            sql.push_str("to_vector(");
+        }
+        sql.push_str(&rewritten.sql[rs..re]);
+        if vector {
+            sql.push(')');
+        }
+        spans.push((os, oe, start, sql.len()));
+        from = re;
+    }
+    sql.push_str(&rewritten.sql[from..]);
+    lex::Rewritten { sql, order: rewritten.order, spans }
 }
 
 /// A parameter's type from the server's context guess. Every integer context comes back as
@@ -2066,6 +2102,25 @@ mod tests {
         let (analysis, _) = analyzed("select id from users where bit1 = :b and raw = :r and big = :n", described, "STRICT_TRANS_TABLES");
         let types: Vec<String> = analysis.params.iter().map(|p| format!("{}={:?}", p.name, p.ty)).collect();
         assert_eq!(types, ["b=Scalar { name: \"bool|bytea\" }", "r=Scalar { name: \"bytea\" }", "n=Scalar { name: \"int4\" }"]);
+    }
+
+    #[test]
+    fn a_vector_is_an_array_of_floats() {
+        // MySQL 9.7.2 describes a VECTOR(3) column, a NULL one, and a `?` compared with one, as type 242.
+        let described = json!({ "columns": [{ "name": "v", "type": 242, "flags": 4241, "charset": 63, "length": 12 }, { "name": "vn", "type": 242, "flags": 144, "charset": 63, "length": 8 }], "params": [{ "type": 242, "flags": 128, "charset": 63 }] });
+        let (analysis, _) = analyzed("select v, vn from items where v = :v", described, "STRICT_TRANS_TABLES");
+        let floats = Type::Array { of: Box::new(Type::Scalar { name: "float4".into() }), nullable_items: Some(false) };
+        let columns: Vec<_> = analysis.columns.iter().map(|c| (c.ty.clone(), c.nullable, c.type_name.as_str())).collect();
+        assert_eq!(columns, [(floats.clone(), false, "vector"), (floats.clone(), true, "vector")]);
+        assert_eq!(analysis.params[0].ty, floats);
+        // The parameter binds its floats' text, wrapped where the server reads it as a VECTOR; the
+        // map back to the author's text keeps the placeholder's own place.
+        assert_eq!(analysis.rewritten.sql, "select v, vn from items where v = to_vector(?)");
+        assert_eq!(analysis.rewritten.spans, [(34, 36, 34, 46)]);
+        let described = json!({ "columns": [], "params": [{ "type": 242 }, { "type": 242 }, { "type": 3 }, { "type": 3 }] });
+        let (analysis, _) = analyzed("update items set v = :v, vn = :w where id = :id and n = :n", described, "STRICT_TRANS_TABLES");
+        assert_eq!(analysis.rewritten.sql, "update items set v = to_vector(?), vn = to_vector(?) where id = ? and n = ?");
+        assert_eq!(analysis.rewritten.to_original(analysis.rewritten.sql.find("id = ?").unwrap() + 5), "update items set v = :v, vn = :w where id = :id and n = :n".find(":id").unwrap());
     }
 
     #[test]
