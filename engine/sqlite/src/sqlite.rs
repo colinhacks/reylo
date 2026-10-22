@@ -1313,11 +1313,13 @@ impl Analyzer<'_> {
             "acos" | "acosh" | "asin" | "atanh" | "cos" | "sin" | "tan" | "ln" | "log" | "log10" | "log2" | "mod" | "pow" | "power" | "sqrt" => done("real", Nulls::Always),
             "pi" => done("real", Nulls::Never),
             // The full-text functions, which an FTS table answers for the rows of its own MATCH.
-            // FTS5's `bm25` is a real on every row, 0 where no MATCH ranks it. `highlight` is NULL
+            // FTS5's `bm25` is a real on every row, 0 where no MATCH ranks it; with weights it is
+            // NULL where an infinite or overflowing weight makes the score NaN
+            // (`bm25(t, 1e308, 1.0)` on a row that matches twice). `highlight` is NULL
             // where its column is, and so is FTS5's `snippet` where its column is (every column,
             // for -1); FTS4's `snippet` has the same name. FTS3's and FTS4's `offsets` and
             // `matchinfo` answer every row.
-            "bm25" => done("real", Nulls::Never),
+            "bm25" => done("real", if n.args.len() == 1 { Nulls::Never } else { Nulls::Always }),
             "highlight" | "snippet" => done("text", Nulls::Always),
             "offsets" => done("text", Nulls::Never),
             "matchinfo" => done("blob", Nulls::Never),
@@ -2725,7 +2727,7 @@ mod tests {
     #[test]
     fn the_full_text_functions_are_typed() {
         // Measured on SQLite 3.53.4 over rows with a NULL in each column: `bm25` is a real on
-        // every row (0 with no MATCH), `highlight` and FTS5's `snippet` are NULL where their
+        // every row (0 with no MATCH) and NULL with an infinite weight, `highlight` and FTS5's `snippet` are NULL where their
         // column is, and FTS4's `offsets` and `matchinfo` answer every row.
         let mut schema = ddl();
         schema.push("CREATE VIRTUAL TABLE docs USING fts5(title, body)".into());
@@ -2738,7 +2740,7 @@ mod tests {
         let fts5 = a("select rowid as id, bm25(docs) as rank, bm25(docs, :w, 1.0) as weighted, highlight(docs, :col, :open, '</b>') as hit, \
                       snippet(docs, -1, '<b>', '</b>', '…', 8) as excerpt from docs where docs match :q order by rank");
         assert_eq!(col(&fts5, "rank"), ("real".into(), false));
-        assert_eq!(col(&fts5, "weighted"), ("real".into(), false));
+        assert_eq!(col(&fts5, "weighted"), ("real".into(), true));
         assert_eq!(col(&fts5, "hit"), ("text".into(), true));
         assert_eq!(col(&fts5, "excerpt"), ("text".into(), true));
         assert_eq!((param(&fts5, "w"), param(&fts5, "col"), param(&fts5, "open"), param(&fts5, "q")), ("real".into(), "integer".into(), "text".into(), "text".into()));

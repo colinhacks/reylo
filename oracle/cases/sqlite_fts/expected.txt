@@ -1,6 +1,6 @@
 highlight_unmatched.sql: many (col: integer, open: text, close: text) -> { id: integer, hit: text?, rank: real }
 notes_fts4.sql: many (q: text) -> { id: integer, o: text, m: blob, s: text? }
-rank.sql: many (weight: real, q: text) -> { id: integer, rank: real, weighted: real, body_hit: text?, excerpt: text? }
+rank.sql: many (weight: real, q: text) -> { id: integer, rank: real, weighted: real?, body_hit: text?, excerpt: text? }
 recipe.sql: maybeOne (id: integer) -> { title: text }
 remove.sql: maybeOne (id: integer) -> { id: integer, body: text? }
 retitle.sql: maybeOne (title: text?, id: integer) -> { id: integer, title: text? }

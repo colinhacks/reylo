@@ -539,12 +539,13 @@ The `printf` function returns `NULL` when its format writes nothing, so it is `|
 
 **Full-text search**
 
-FTS5's `bm25` is a `number`, and `highlight` and `snippet` are `string | null`, `NULL` where the column they read is. FTS4's `offsets` is a `string` and `matchinfo` a `Uint8Array`.
+FTS5's `bm25` is a `number`, or `number | null` when it is given weights, since an infinite weight makes it `NULL`, and `highlight` and `snippet` are `string | null`, `NULL` where the column they read is. FTS4's `offsets` is a `string` and `matchinfo` a `Uint8Array`.
 
 <Pairs>
 
 - `highlight(docs, 1, '<b>', '</b>')` where `body` is `NULL` → `null`
 - `bm25(docs)` with no `match` → `0`
+- `bm25(docs, 1e999, 1.0)` on a row that matches → `null`
 
 </Pairs>
 
