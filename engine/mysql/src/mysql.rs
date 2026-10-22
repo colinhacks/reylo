@@ -298,7 +298,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
             .iter()
             .map(|c| {
                 let (ty, name) = column_type(c.r#type, c.charset);
-                Column { name: c.name.clone(), ty, nullable: true, type_name: name.to_string() }
+                Column { name: c.name.clone(), ty, nullable: true, type_name: name.to_string(), comment: None }
             })
             .collect();
         let params = lexed
@@ -309,7 +309,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
                     Some(p) => param_type(p.r#type, p.charset),
                     None => (Type::Unknown, ""),
                 };
-                Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: false, schema: None, cast: None }
+                Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: false, schema: None, cast: None, comment: None }
             })
             .collect();
         let cardinality = if columns.is_empty() { "none" } else { "many" };

@@ -236,7 +236,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     // says what it takes and returns, and nothing says where a column comes from, so each is of
     // no known type and may be NULL. One that returns no rows runs as a write does.
     if let lex::Statement::Command(kind) = statement {
-        let columns: Vec<Column> = t.columns.iter().map(|c| Column { name: c.name.clone(), ty: Type::Unknown, nullable: true, type_name: c.declared.clone().unwrap_or_default() }).collect();
+        let columns: Vec<Column> = t.columns.iter().map(|c| Column { name: c.name.clone(), ty: Type::Unknown, nullable: true, type_name: c.declared.clone().unwrap_or_default(), comment: None }).collect();
         let cardinality = if columns.is_empty() { "none" } else { "many" };
         let analysis = Analysis {
             kind,

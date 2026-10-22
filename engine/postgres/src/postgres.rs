@@ -568,12 +568,12 @@ impl<'a> Engine<'a> {
             return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
         }
         let registry = self.registry.borrow();
-        let columns: Vec<Column> = raw.columns.iter().map(|c| Column { name: c.name.clone(), ty: registry.render(c.oid), nullable: true, type_name: registry.name(c.oid) }).collect();
+        let columns: Vec<Column> = raw.columns.iter().map(|c| Column { name: c.name.clone(), ty: registry.render(c.oid), nullable: true, type_name: registry.name(c.oid), comment: None }).collect();
         let params = lexed
             .params
             .iter()
             .zip(&raw.params)
-            .map(|(name, &o)| Param { name: name.clone(), ty: registry.render(o), type_name: registry.name(o), nullable: false, schema: None, cast: None })
+            .map(|(name, &o)| Param { name: name.clone(), ty: registry.render(o), type_name: registry.name(o), nullable: false, schema: None, cast: None, comment: None })
             .collect();
         let cardinality = if columns.is_empty() { "none" } else { "many" };
         Some(Analysis {
