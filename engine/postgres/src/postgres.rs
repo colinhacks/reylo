@@ -26,8 +26,6 @@ use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-/// The statements the Postgres analysis types (`analyze.rs`), as its refusal names them.
-
 /// How many statements one analysis may synthesize to settle its columns: one per set-operation
 /// arm, one per statement whose expressions read a column, one per JSON constructor context.
 const MAX_PROBES: usize = 8;
