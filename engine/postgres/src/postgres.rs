@@ -102,6 +102,23 @@ pub const COMMENTS_QUERY: &str = "SELECT u.rel::int8, u.att::int4, d.description
     JOIN pg_description d ON d.objoid = u.rel AND d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objsubid = u.att";
 /// `$1` is `oid[]` of relations.
 pub const RELNAMES_QUERY: &str = "SELECT c.oid::int8, c.relname::text FROM pg_class c WHERE c.oid = ANY($1::oid[])";
+/// The columns of the relation an INSERT writes (`$1`, its name as the statement writes it), in
+/// attnum order, each with whether a row must write it: `NOT NULL`, its own or a domain's along the
+/// domain's chain, and nothing to fill it, neither a default, an identity, a generation expression
+/// nor a domain's default. A `NOT NULL` is the one a write meets, valid or not.
+pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
+    "WITH RECURSIVE cols AS (SELECT a.attname, a.attnum, a.attnotnull, a.atthasdef, a.attidentity, a.attgenerated, a.atttypid \
+      FROM pg_catalog.pg_attribute a WHERE a.attrelid = ",
+    crate::cardinality::relation_named!("$1::text"),
+    " AND a.attnum > 0 AND NOT a.attisdropped), \
+    chain(attnum, typ, depth) AS (SELECT attnum, atttypid, 0 FROM cols \
+      UNION ALL SELECT c.attnum, t.typbasetype, c.depth + 1 FROM chain c JOIN pg_catalog.pg_type t ON t.oid = c.typ WHERE t.typtype = 'd' AND c.depth < 32) \
+    SELECT cols.attname::text, cols.attnum::int4, \
+      ((cols.attnotnull OR coalesce(bool_or(t.typnotnull), false)) AND NOT cols.atthasdef AND cols.attidentity = '' AND cols.attgenerated = '' \
+        AND NOT coalesce(bool_or(t.typdefaultbin IS NOT NULL), false)) AS required \
+    FROM cols LEFT JOIN chain ON chain.attnum = cols.attnum LEFT JOIN pg_catalog.pg_type t ON t.oid = chain.typ AND t.typtype = 'd' \
+    GROUP BY cols.attname, cols.attnum, cols.attnotnull, cols.atthasdef, cols.attidentity, cols.attgenerated ORDER BY cols.attnum"
+);
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
 /// relation names. The fourth column is the `NOT NULL` a write meets, which checks every new row
@@ -399,7 +416,13 @@ impl<'a> Engine<'a> {
         } else {
             self.host.query(ARBITERS_QUERY, vec![json!(sorted(conflicts.iter().map(|c| c.relation.clone()).collect()))], Scope::Statement)
         };
-        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written)) = (described, trust, operators, catalog_rows, arbiters, written) else { return None };
+        // The columns an INSERT's rows must write, asked in this first round too.
+        let insert = insert_target(&rewritten.sql);
+        let required = match &insert {
+            Some(target) => self.host.query(REQUIRED_COLUMNS_QUERY, vec![json!(target.relation)], Scope::Statement),
+            None => Some(Ok(Vec::new())),
+        };
+        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required)) = (described, trust, operators, catalog_rows, arbiters, written, required) else { return None };
         let (raw, described) = match described {
             Ok(d) => d,
             Err(e) => {
@@ -423,6 +446,21 @@ impl<'a> Engine<'a> {
         // runs; only the built-in constructors, which a user's function of the name may shadow.
         let constructors: Vec<&str> = ["json_build_object", "jsonb_build_object"].into_iter().filter(|n| trust.builtin(n)).collect();
         diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
+        // An INSERT that leaves out a column its rows must write, or writes DEFAULT to one: the
+        // server prepares it and refuses each row it inserts. A row trigger that runs before the
+        // insert or in its place may fill the column, and a rule may rewrite the insert, so then
+        // nothing is said.
+        if let Some(target) = &insert {
+            let filled_elsewhere = catalog.skipping_triggers.get(&target.relation).is_some_and(|events| events & cardinality::TRIGGER_ROW_INSERT != 0)
+                || catalog.rewritten.get(&target.relation).is_some_and(|events| events & cardinality::TRIGGER_ROW_INSERT != 0);
+            if !filled_elsewhere {
+                if let Some(message) = unwritten(target, &required.unwrap_or_default()) {
+                    let start = rewritten.to_original(target.start).min(sql.len());
+                    let length = rewritten.to_original(target.end).min(sql.len()).saturating_sub(start);
+                    diagnostics.push(diag(message, start, length, 16));
+                }
+            }
+        }
 
         // JSON shapes: what the statement's own constructors build, and for a JSON column it reads
         // straight from a WITH query or a derived table, what that item's statement builds.
@@ -2075,6 +2113,105 @@ fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
         out.push(reading);
     }
     out
+}
+
+/// The relation an INSERT writes and which of its columns each row writes.
+struct InsertTarget {
+    /// As the statement names it (`users`, `archive.users`).
+    relation: String,
+    /// The bytes of the name in the statement's `$n` text.
+    start: usize,
+    end: usize,
+    /// The column list, where the statement writes one.
+    columns: Option<Vec<String>>,
+    /// How many values each row has, where the statement writes no column list: they fill the
+    /// first columns. `None` where a `*` hides the count.
+    width: Option<usize>,
+    /// The positions (in the column list, or among the columns) a row writes `DEFAULT` to.
+    defaults: Vec<usize>,
+}
+
+/// The INSERT the top statement is (a WITH before it allowed), as [`InsertTarget`] reads it.
+fn insert_target(sql: &str) -> Option<InsertTarget> {
+    let parsed = crate::stack::parse(sql).ok()?;
+    let Some(NodeEnum::InsertStmt(insert)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return None };
+    let rv = insert.relation.as_ref()?;
+    let relation = if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) };
+    let start = usize::try_from(rv.location).ok()?;
+    let end = sql[start..].find(|c: char| c.is_whitespace() || c == '(').map_or(sql.len(), |i| start + i);
+    let columns = (!insert.cols.is_empty()).then(|| {
+        insert.cols.iter().filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) => Some(rt.name.clone()),
+            _ => None,
+        }).collect::<Vec<_>>()
+    });
+    let (mut width, mut defaults) = (Some(0), Vec::new());
+    match insert.select_stmt.as_deref().and_then(|n| n.node.as_ref()) {
+        // DEFAULT VALUES writes no column.
+        None => {}
+        Some(NodeEnum::SelectStmt(select)) if !select.values_lists.is_empty() => {
+            width = None;
+            let mut starred = false;
+            for row in &select.values_lists {
+                let Some(NodeEnum::List(items)) = row.node.as_ref() else { return None };
+                width = Some(width.map_or(items.items.len(), |w: usize| w.min(items.items.len())));
+                // The items after a `(composite).*` are not at their own positions.
+                let star = items.items.iter().position(expands);
+                starred |= star.is_some();
+                for (i, item) in items.items.iter().enumerate().take(star.unwrap_or(usize::MAX)) {
+                    if matches!(item.node.as_ref(), Some(NodeEnum::SetToDefault(_))) && !defaults.contains(&i) {
+                        defaults.push(i);
+                    }
+                }
+            }
+            if starred {
+                width = None;
+            }
+        }
+        Some(NodeEnum::SelectStmt(select)) if select.op == pg_query::protobuf::SetOperation::SetopNone as i32 => {
+            let star = select.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(expands)));
+            width = (!star).then_some(select.target_list.len());
+        }
+        _ => width = None,
+    }
+    Some(InsertTarget { relation, start, end, columns, width, defaults })
+}
+
+/// Whether a SELECT's target or a VALUES item stands for as many values as a row has columns:
+/// `t.*`, or `(composite).*`, which parses as an indirection ending in the star.
+fn expands(node: &pg_query::protobuf::Node) -> bool {
+    let last_is_star = |items: &[pg_query::protobuf::Node]| items.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))));
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => last_is_star(&c.fields),
+        Some(NodeEnum::AIndirection(i)) => last_is_star(&i.indirection),
+        _ => false,
+    }
+}
+
+/// What the INSERT leaves unwritten of the columns [`REQUIRED_COLUMNS_QUERY`] says each row must
+/// write, as the message that says so.
+fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
+    let columns: Vec<(String, bool)> = rows.iter().filter_map(|r| Some((as_str(r.first()?)?.to_string(), as_bool(r.get(2)?)?))).collect();
+    let missing: Vec<&str> = columns
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, required))| *required)
+        .filter(|(i, (name, _))| match &target.columns {
+            Some(list) => match list.iter().position(|c| c == name) {
+                Some(at) => target.defaults.contains(&at),
+                None => true,
+            },
+            // Positional values fill the first columns; with no count, nothing is known.
+            None => target.width.is_some_and(|w| *i >= w || target.defaults.contains(i)),
+        })
+        .map(|(_, (name, _))| name.as_str())
+        .collect();
+    let quoted: Vec<String> = missing.iter().map(|m| format!("\"{m}\"")).collect();
+    match quoted.as_slice() {
+        [] => None,
+        [one] => Some(format!("Column {one} of \"{}\" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.", target.relation)),
+        many => Some(format!("Columns {} of \"{}\" are NOT NULL with no default, and this insert leaves them out or writes DEFAULT to them, so Postgres refuses every row it inserts.", many.join(", "), target.relation)),
+    }
 }
 
 /// A failed describe as a diagnostic on the author's text: the server's message, at the

@@ -1,0 +1,23 @@
+default_values.sql: none () -> {  } !! reylo16: Columns "name", "email" of "req" are NOT NULL with no default, and this insert leaves them out or writes DEFAULT to them, so Postgres refuses every row it inserts.
+default_written.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+from_select.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+inherited.sql: none () -> {  } !! reylo16: Column "child_name" of "child_t" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+missing_one.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+missing_two.sql: none () -> {  } !! reylo16: Columns "name", "email" of "req" are NOT NULL with no default, and this insert leaves them out or writes DEFAULT to them, so Postgres refuses every row it inserts.
+not_null_domain.sql: none () -> {  } !! reylo16: Column "code" of "with_nn_domain" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+ok_all.sql: none () -> {  }
+ok_composite_star.sql: none () -> {  }
+ok_composite_star_default.sql: none () -> {  }
+ok_domain_default.sql: none () -> {  }
+ok_generated.sql: none () -> {  }
+ok_identity.sql: none () -> {  }
+ok_params.sql: none (name: text, email: text) -> {  }
+ok_select_star.sql: none () -> {  }
+ok_trigger.sql: none () -> {  }
+ok_values_composite_star.sql: none () -> {  }
+on_conflict.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+overriding.sql: none () -> {  } !! reylo16: Column "name" of "ident" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+positional.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+positional_default.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+several_rows.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
+with_query.sql: none () -> {  } !! reylo16: Column "email" of "req" is NOT NULL with no default, and this insert leaves it out or writes DEFAULT to it, so Postgres refuses every row it inserts.
