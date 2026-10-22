@@ -392,8 +392,8 @@ function indent(text: string) {
 
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
-  const m = /declare const query: Query<([\s\S]*)> & \{ readonly sql/.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", \[.*\]$/, '') : module;
+  const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)"$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);
