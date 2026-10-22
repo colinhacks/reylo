@@ -2,7 +2,7 @@ derived_nested.sql: one () -> { j: { stats: { count: int8 } } }
 derived_object.sql: one () -> { stats: { count: int8, latest: timestamptz? } }
 derived_renamed.sql: many () -> { k: { id: int8 } }
 direct_param.sql: many (p: text) -> { j: { id: int8, p: text? } }
-lateral.sql: many () -> { j: json? }
+lateral.sql: many () -> { j: { id: int8 } }
 with_aggregated.sql: many () -> { id: int8, posts: [{ id: int8, title: text }] }
 with_chain.sql: many () -> { doc: { id: int8, user_id: int8, title: text, published_at: timestamptz? } }
 with_chain_nested.sql: many () -> { k: { js: [{ id: int8 }] } }

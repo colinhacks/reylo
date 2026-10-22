@@ -1,0 +1,1 @@
+select m.id, x.teams from member m left join lateral (select json_agg(json_build_object('id', t.id, 'name', t.name)) as teams from member_team mt join team t on t.id = mt.team_id where mt.member_id = m.id) x on true

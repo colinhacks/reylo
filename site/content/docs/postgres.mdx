@@ -329,7 +329,7 @@ from events
 
 **Through a `with` query or a subquery**
 
-JSON built in a `with` query or a subquery in `from` keeps its type when you select its column as it is. Through a `union`, a `lateral` subquery or a `*`, it's `unknown`.
+JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is. Through a `union` or a `*`, it's `unknown`.
 
 <Inferred>
 
@@ -342,6 +342,21 @@ with totals as (
 select u.name, t.totals
 from users u
 join totals t on t.user_id = u.id
+```
+
+</Inferred>
+
+**Through a `case`**
+
+A `case` whose one branch builds JSON and whose other branches are `null` keeps that branch's type, and is nullable.
+
+<Inferred>
+
+```sql file="pg_json_case.sql"
+select case when total > 100
+  then jsonb_build_object('total', total)
+end as big_order
+from orders
 ```
 
 </Inferred>

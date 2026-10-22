@@ -49,6 +49,11 @@ pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_obje
 /// turning one describe into dozens.
 const MAX_PROBES: usize = 8;
 
+/// How many times one statement may read what a LATERAL subquery's target builds: each read may
+/// read a LATERAL subquery inside it, so nested ones that each read the next twice would otherwise
+/// cost exponentially.
+const MAX_LATERAL: usize = 32;
+
 pub use reylo_engine_core::shape::{Probe, Shape};
 
 /// What one statement's JSON columns need: a shape per result column the build could explain,
@@ -154,12 +159,12 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust) => Some(Vec::new()),
         _ => None,
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0 };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if !is_constructor(val) {
+        if !is_constructor(val) && builder.lateral_target(val).is_none() {
             continue;
         }
         let Some(name) = target_name(rt) else { continue };
@@ -301,6 +306,19 @@ struct Builder<'a> {
     grouping_sets: bool,
     /// Whether the builder stands in the argument of a plain aggregate of the top statement.
     under_aggregate: bool,
+    /// How many LATERAL subqueries' targets have been read, which [`MAX_LATERAL`] bounds.
+    laterals: usize,
+}
+
+/// A target of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]).
+struct Lateral {
+    /// The subquery's statement.
+    body: SelectStmt,
+    target: Node,
+    /// Whether an outer join of the FROM that reads the subquery can null it.
+    nulled: bool,
+    /// The name the subquery goes by.
+    alias: String,
 }
 
 #[derive(Clone)]
@@ -428,6 +446,20 @@ impl Builder<'_> {
             // u.*)`), is the whole row, as `u` is: never the row's columns one by one, which is
             // what it would be in a probe's select list.
             Some(NodeEnum::ColumnRef(_)) if star_alias(expr).is_some() => self.whole(&star_alias(expr).expect("a star alias")),
+            // A column of a LATERAL subquery that the subquery builds: the shape of what it builds
+            // there. A WITH query's or another subquery's is a statement of its own, which the
+            // probe reading the column follows ([`Outcome::built`]).
+            Some(NodeEnum::ColumnRef(_)) => match self.lateral_target(expr) {
+                Some(lateral) => self.lateral(lateral),
+                None => self.leaf(expr),
+            },
+            // A CASE whose one branch builds JSON and whose others are NULL: that branch's shape,
+            // nullable where a branch is NULL. Two branches that build JSON may build two shapes.
+            Some(NodeEnum::CaseExpr(c)) => match case_branch(c) {
+                Some((built, true)) => force_nullable(self.walk(built)),
+                Some((built, false)) => self.walk(built),
+                None => self.leaf(expr),
+            },
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
                 (Some(arg), true) => self.walk(arg),
                 _ => self.leaf(expr),
@@ -496,6 +528,101 @@ impl Builder<'_> {
     /// Whether a value read where the builder stands may be NULL for a grouping set.
     fn nulled_by_grouping(&self) -> bool {
         self.grouping_sets && !self.under_aggregate
+    }
+
+    /// The JSON a column of a LATERAL subquery builds, where `expr` names one: `x.col` of such a
+    /// subquery in the FROM where the builder stands whose target `col` is a JSON constructor, or
+    /// a bare `col` of the one item a FROM holds. Nothing where the subquery is a set operation,
+    /// selects a `*`, groups by grouping sets, or has a WITH of its own, which its probes could not
+    /// carry, nor where two of its columns go by the name, which Postgres refuses.
+    fn lateral_target(&self, expr: &Node) -> Option<Lateral> {
+        let Some(NodeEnum::ColumnRef(c)) = expr.node.as_ref() else { return None };
+        let names: Vec<&str> = c.fields.iter().map(|f| match f.node.as_ref() {
+            Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
+            _ => None,
+        }).collect::<Option<Vec<_>>>()?;
+        let (alias, column) = match names.as_slice() {
+            [column] => (None, *column),
+            [alias, column] => (Some(*alias), *column),
+            _ => return None,
+        };
+        let from = &self.stack.last()?.1;
+        let mut items = Vec::new();
+        for item in from {
+            from_items(item, false, &mut items);
+        }
+        let (item, nulled) = match alias {
+            Some(alias) => {
+                let mut named = items.iter().filter(|(item, _)| item_alias(item).as_deref() == Some(alias));
+                match (named.next(), named.next()) {
+                    (Some(found), None) => *found,
+                    _ => return None,
+                }
+            }
+            None => match items.as_slice() {
+                [only] if from.len() == 1 => *only,
+                _ => return None,
+            },
+        };
+        let Some(NodeEnum::RangeSubselect(r)) = item.node.as_ref() else { return None };
+        if !r.lateral {
+            return None;
+        }
+        let body = r.subquery.as_deref().and_then(as_select)?.clone();
+        let set_op = body.op != protobuf::SetOperation::SetopNone as i32 && body.op != 0;
+        let star = body.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star)));
+        if body.with_clause.is_some() || set_op || star || has_grouping_sets(&body) {
+            return None;
+        }
+        let names = column_names(&body, &[alias_columns(r.alias.as_ref())])?;
+        let mut hits = names.iter().enumerate().filter(|(_, n)| n.as_deref() == Some(column));
+        let (Some((at, _)), None) = (hits.next(), hits.next()) else { return None };
+        let target = match body.target_list.get(at)?.node.as_ref()? {
+            NodeEnum::ResTarget(rt) => rt.val.as_deref()?.clone(),
+            _ => return None,
+        };
+        let alias = r.alias.as_ref()?.aliasname.clone();
+        is_constructor(&target).then_some(Lateral { body, target, nulled, alias })
+    }
+
+    /// What a LATERAL subquery's target builds, read in the subquery's own context: its FROM and
+    /// WHERE, with every FROM around it for its correlated columns. An outer join that can null
+    /// the subquery, or a grouping set of the statement, makes the value nullable.
+    fn lateral(&mut self, l: Lateral) -> Shape {
+        self.laterals += 1;
+        if self.laterals > MAX_LATERAL {
+            self.overflowed = true;
+            return Shape::Unknown;
+        }
+        let nulled = l.nulled || self.nulled_by_grouping();
+        let withs = self.withs.last().cloned().unwrap_or_default();
+        // A correlated column of the subquery is one of an item left of it, which is all it can
+        // read: the wider probe reads those alone, since the join that reads the subquery, an
+        // outer one above all, would null the subquery's own relations there.
+        let parent = self.stack.len() - 1;
+        let around = self.stack[parent].1.clone();
+        if let Some(left) = left_of(&around, &l.alias) {
+            self.stack[parent].1 = left;
+        }
+        self.next_ctx += 1;
+        self.stack.push((self.next_ctx, l.body.from_clause.clone(), l.body.where_clause.as_deref().cloned()));
+        self.withs.push(withs);
+        let rows = self.rows.take();
+        // The subquery's rows are its own, which no grouping set of the statement's nulls.
+        let (grouping_sets, under_aggregate) = (self.grouping_sets, self.under_aggregate);
+        self.grouping_sets = false;
+        let shape = self.walk(&l.target);
+        self.grouping_sets = grouping_sets;
+        self.under_aggregate = under_aggregate;
+        self.rows = rows;
+        self.withs.pop();
+        self.stack.pop();
+        self.stack[parent].1 = around;
+        if nulled {
+            force_nullable(shape)
+        } else {
+            shape
+        }
     }
 
     /// A whole row by its alias: the old or the new row of a RETURNING is the target relation's
@@ -674,6 +801,7 @@ fn is_constructor(expr: &Node) -> bool {
         }
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(is_constructor),
         Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_constructor),
+        Some(NodeEnum::CaseExpr(c)) => case_branch(c).is_some(),
         Some(NodeEnum::SubLink(s)) => {
             s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32
                 && s.subselect
@@ -683,6 +811,117 @@ fn is_constructor(expr: &Node) -> bool {
                     .and_then(|rt| rt.val.clone())
                     .is_some_and(|v| is_constructor(&v))
         }
+        _ => false,
+    }
+}
+
+/// The items of a FROM entry, joins flattened, each with whether an outer join nulls it.
+fn from_items<'n>(node: &'n Node, nulled: bool, out: &mut Vec<(&'n Node, bool)>) {
+    match node.node.as_ref() {
+        Some(NodeEnum::JoinExpr(j)) if j.alias.is_none() => {
+            use protobuf::JoinType;
+            let (left, right) = match j.jointype {
+                t if t == JoinType::JoinLeft as i32 => (nulled, true),
+                t if t == JoinType::JoinRight as i32 => (true, nulled),
+                t if t == JoinType::JoinFull as i32 => (true, true),
+                _ => (nulled, nulled),
+            };
+            for (side, nulled) in [(j.larg.as_deref(), left), (j.rarg.as_deref(), right)] {
+                if let Some(side) = side {
+                    from_items(side, nulled, out);
+                }
+            }
+        }
+        Some(_) => out.push((node, nulled)),
+        None => {}
+    }
+}
+
+/// The FROM items left of the LATERAL subquery `alias`: the entries before the one holding it, and
+/// in that entry the left side of the join whose right side it is. `None` where the subquery is
+/// none of those, a join's left side say, which reads nothing left of it in that entry.
+fn left_of(from: &[Node], alias: &str) -> Option<Vec<Node>> {
+    fn is_it(node: &Node, alias: &str) -> bool {
+        matches!(node.node.as_ref(), Some(NodeEnum::RangeSubselect(r)) if r.alias.as_ref().is_some_and(|a| a.aliasname == alias))
+    }
+    fn left_in(node: &Node, alias: &str) -> Option<Option<Node>> {
+        if is_it(node, alias) {
+            return Some(None);
+        }
+        let Some(NodeEnum::JoinExpr(j)) = node.node.as_ref() else { return None };
+        if j.rarg.as_deref().is_some_and(|r| is_it(r, alias)) {
+            return Some(Some(j.larg.as_deref()?.clone()));
+        }
+        left_in(j.larg.as_deref()?, alias).filter(|left| left.is_some())
+    }
+    let at = from.iter().position(|item| left_in(item, alias).is_some())?;
+    let mut left: Vec<Node> = from[..at].to_vec();
+    left.extend(left_in(&from[at], alias)?);
+    Some(left)
+}
+
+/// The name a FROM item goes by: its alias, or a table's own name.
+fn item_alias(node: &Node) -> Option<String> {
+    match node.node.as_ref()? {
+        NodeEnum::RangeVar(rv) => Some(rv.alias.as_ref().map_or(rv.relname.clone(), |a| a.aliasname.clone())),
+        NodeEnum::RangeSubselect(r) => r.alias.as_ref().map(|a| a.aliasname.clone()),
+        NodeEnum::RangeFunction(f) => f.alias.as_ref().map(|a| a.aliasname.clone()),
+        _ => None,
+    }
+}
+
+/// The columns an alias's column list names, which rename a FROM item's first ones.
+fn alias_columns(alias: Option<&protobuf::Alias>) -> Vec<Node> {
+    alias.map(|a| a.colnames.clone()).unwrap_or_default()
+}
+
+/// The names a FROM item's columns go by: its statement's targets, renamed in order by each
+/// column list, which renames the first ones. A name that is `None` is not known. Nothing where a
+/// list names more columns than there are, which Postgres refuses.
+fn column_names(body: &SelectStmt, lists: &[Vec<Node>]) -> Option<Vec<Option<String>>> {
+    let mut names: Vec<Option<String>> = body
+        .target_list
+        .iter()
+        .map(|t| match t.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) => target_name(rt),
+            _ => None,
+        })
+        .collect();
+    for list in lists {
+        if list.len() > names.len() {
+            return None;
+        }
+        for (name, given) in names.iter_mut().zip(list) {
+            *name = Some(last_string(std::slice::from_ref(given))?);
+        }
+    }
+    Some(names)
+}
+
+/// The one branch of a CASE that builds JSON, where every other branch is NULL, and whether one
+/// is (no `ELSE` is `ELSE NULL`).
+fn case_branch(c: &protobuf::CaseExpr) -> Option<(&Node, bool)> {
+    let mut built: Option<&Node> = None;
+    let mut nullable = c.defresult.is_none();
+    let results = c.args.iter().map(|w| match w.node.as_ref() {
+        Some(NodeEnum::CaseWhen(w)) => w.result.as_deref(),
+        _ => None,
+    });
+    for result in results.chain(c.defresult.as_deref().map(Some)) {
+        match result {
+            Some(r) if is_null_const(r) => nullable = true,
+            Some(r) if built.is_none() && is_constructor(r) => built = Some(r),
+            _ => return None,
+        }
+    }
+    built.map(|b| (b, nullable))
+}
+
+/// A NULL constant, under casts.
+fn is_null_const(node: &Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => c.isnull,
+        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_null_const),
         _ => false,
     }
 }
@@ -1484,6 +1723,39 @@ mod tests {
         // A whole row under a grouping set, and a subquery with a grouping set of its own, are read as nothing.
         assert!(shapes("SELECT to_jsonb(t) AS o FROM team t GROUP BY ROLLUP (t.id)").columns.is_empty());
         assert!(shapes("SELECT (SELECT jsonb_build_object('n', name) FROM team GROUP BY CUBE (name) LIMIT 1) AS o").columns.is_empty());
+    }
+
+    #[test]
+    fn a_lateral_subquery_is_read_in_its_own_context_and_the_items_left_of_it() {
+        let p = shapes("SELECT u.id, x.items FROM users u LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('sku', p.sku)) AS items FROM products p WHERE p.org_id = u.org_id) x ON true");
+        assert_eq!(p.columns.len(), 1);
+        assert_eq!(p.columns[0].0, "items");
+        // On the nullable side of a LEFT JOIN, the whole value may be NULL.
+        assert!(matches!(&p.columns[0].1, Shape::Array { non_null: false, .. }));
+        assert_eq!(p.probes[0].sql, "SELECT p.sku AS a0 FROM products p WHERE p.org_id = u.org_id");
+        // The wider probe reads what the subquery can: the items left of it, and not the join.
+        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT p.sku AS a0 FROM products p, users u WHERE p.org_id = u.org_id"));
+        let p = shapes("SELECT x.o FROM orgs o, users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS o) x, teams t");
+        assert_eq!(p.probes[0].sql, "SELECT u.name AS a0 FROM orgs o, users u");
+        // A subquery that is no LATERAL one is a statement of its own, which the probe follows.
+        let p = shapes("SELECT x.o FROM (SELECT jsonb_build_object('n', name) AS o FROM users) x");
+        assert!(p.columns.is_empty());
+        // Its column list renames its columns in order, and two of a name are none.
+        let p = shapes("SELECT x.b FROM users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS a, '{}'::jsonb AS b) x (b, a)");
+        assert!(matches!(&p.columns[0].1, Shape::Object { .. }));
+        assert!(shapes("SELECT x.a FROM users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS a, jsonb_build_object('m', 1) AS a) x").columns.is_empty());
+    }
+
+    #[test]
+    fn a_case_whose_one_branch_builds_json_and_the_others_are_null_is_that_branch() {
+        let first = |sql: &str| shapes(sql).columns.into_iter().next().map(|(_, s)| s);
+        assert!(matches!(first("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) END AS o FROM t"), Some(Shape::Object { non_null: false, .. })));
+        assert!(matches!(first("SELECT CASE WHEN id > 1 THEN NULL ELSE jsonb_build_object('a', 1) END AS o FROM t"), Some(Shape::Object { non_null: false, .. })));
+        assert!(matches!(first("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) ELSE jsonb_build_object('a', 1) END AS o FROM t"), None));
+        assert!(matches!(first("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) ELSE '{}' END AS o FROM t"), None));
+        // A CASE whose ELSE builds goes by the constructor's name, one whose ELSE is NULL by `case`.
+        assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN NULL ELSE jsonb_build_object('a', 1) END FROM t").columns[0].0, "jsonb_build_object");
+        assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) END FROM t").columns[0].0, "case");
     }
 
     #[test]
