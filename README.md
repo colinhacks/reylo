@@ -71,14 +71,14 @@ npm install -D @reylosql/postgres  # or mysql, sqlite
 npm install -D typescript@beta
 ```
 
-Add Reylo to `tsconfig.json`:
+Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml`:
 
 ```jsonc
 // tsconfig.json
 {
   "compilerOptions": { /* ... */ },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
   ]
 }
 ```

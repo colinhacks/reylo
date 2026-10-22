@@ -12,7 +12,7 @@
     "skipLibCheck": true
   },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
   ],
   "include": ["src", "setup.ts"]
 }

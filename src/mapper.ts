@@ -6,7 +6,7 @@ import { dirname } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes } from "./module-types.ts";
-import { resolveProject, type Dialect } from "./project.ts";
+import { PROJECT_FILE, resolveProject, type Dialect } from "./project.ts";
 import { Session } from "./analyze.ts";
 import { schemaFiles, schemaFingerprint } from "./schema-files.ts";
 
@@ -78,6 +78,9 @@ serve({
     const p = params as { fileName: string; content: string; projectHandle: string };
     const sql = p.content;
     const diagnostics: ReturnType<typeof diag>[] = [];
+    // A project file (`.reylo.yaml`, or `<name>.reylo.yaml`, which `include` takes in) is no query,
+    // and its module declares nothing.
+    if (p.fileName.endsWith(PROJECT_FILE)) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
     const project = projects.get(p.projectHandle);
     if (!project) {
       // A transform for a project this process never opened: answer, never throw, so the file

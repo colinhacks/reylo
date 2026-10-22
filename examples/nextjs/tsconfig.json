@@ -23,7 +23,7 @@
     }
   },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
   ],
   "include": [
     "next-env.d.ts",

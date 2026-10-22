@@ -10,7 +10,7 @@
     "skipLibCheck": true
   },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
   ],
   "include": ["src", "test", "vite.config.ts", "vitest.config.ts", "setup.ts"]
 }

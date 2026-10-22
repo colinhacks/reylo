@@ -11,7 +11,7 @@
   "contentMappers": [
     {
       "package": "reylo",
-      "extensions": [".sql"]
+      "extensions": [".sql", ".reylo.yaml"]
     }
   ],
   "include": ["src", "setup.ts"],

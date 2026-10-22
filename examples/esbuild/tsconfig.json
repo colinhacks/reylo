@@ -9,7 +9,7 @@
     "allowImportingTsExtensions": true
   },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
   ],
   "include": ["src", "build.ts", "setup.ts"]
 }
