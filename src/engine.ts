@@ -19,8 +19,9 @@ export type Analysis = {
   kind: string;
   /** `nullable`: the statement lets the caller pass null (it passes the parameter first to coalesce, or writes it whole and bare, with no cast, to a column that may hold null). */
   /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). */
-  params: { name: string; type: EngineType; type_name: string; nullable: boolean; schema?: import("./engine-type.ts").JsonSchema; cast?: string }[];
-  columns: { name: string; type: EngineType; nullable: boolean; type_name: string }[];
+  /** `comment`: the comment the database keeps on the column a parameter is written to (or, on MySQL, compared with), and on the table column a result column reads as it is; the declaration prints it as the field's doc comment. */
+  params: { name: string; type: EngineType; type_name: string; nullable: boolean; schema?: import("./engine-type.ts").JsonSchema; cast?: string; comment?: string }[];
+  columns: { name: string; type: EngineType; nullable: boolean; type_name: string; comment?: string }[];
   cardinality: "one" | "maybeOne" | "many" | "none";
   cardinalityReason?: string;
   rewritten: { sql: string; order: string[]; spans: [number, number, number, number][] };

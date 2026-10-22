@@ -12,7 +12,7 @@ export type ModuleTypes = {
   diagnostics: FileDiagnostic[];
   /** `{ id: number }`, `Record<never, never>` for none, or `unknown` where the statement failed. */
   params: string;
-  /** `{ id: number; name: string }`, `never` for no columns, or `unknown` where the statement failed. */
+  /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), `never` for no columns, or `unknown` where the statement failed. */
   row: string;
   cardinality: Analysis["cardinality"];
   /** The parameters' names in order of first use: the module's `params` at run time. */
@@ -23,6 +23,29 @@ export type ModuleTypes = {
 function paramType(q: Analysis["params"][number], rendered: string): string {
   if (q.type.kind === "unknown") return "unknown";
   return q.nullable ? `${rendered} | null` : rendered;
+}
+
+/**
+ * A column's comment as the doc comment of the field that reads it, for an editor's hover: one line,
+ * or a block of lines (each after `indent`) where the comment has several, and nothing where there
+ * is none. A star and a slash inside it, which would end the doc comment, are written with a
+ * backslash between them.
+ */
+export function docComment(comment: string | undefined, indent = ""): string {
+  const lines = (comment ?? "").replaceAll("*/", "*\\/").trim().split(/\r?\n/).map((line) => line.trimEnd());
+  if (!lines[0]) return "";
+  if (lines.length === 1) return `/** ${lines[0]} */`;
+  return `/**\n${lines.map((line) => `${indent} *${line ? ` ${line}` : ""}`).join("\n")}\n${indent} */`;
+}
+
+/**
+ * An object type of `fields`, each a field's text and its column's comment: on one line, or a field
+ * per line, each after its doc comment, where any has one. TypeScript reads a doc comment only where
+ * a line starts with it.
+ */
+function objectType(fields: (readonly [text: string, comment: string | undefined])[]): string {
+  if (!fields.some(([, comment]) => docComment(comment))) return `{ ${fields.map(([text]) => text).join("; ")} }`;
+  return `{\n${fields.map(([text, comment]) => `${docComment(comment) ? `  ${docComment(comment, "  ")}\n` : ""}  ${text};`).join("\n")}\n}`;
 }
 
 const utf8 = new TextEncoder();
@@ -74,17 +97,17 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
   }
   const cardinality = analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names };
-  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`);
+  const columns = analysis.columns.map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
-  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect))] as const);
+  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);
   // A typed JSON parameter whose schema has a `default` may be left out (wiki/typed-json-params.md).
   const optional = new Set(analysis.params.filter((q) => q.schema !== null && typeof q.schema === "object" && "default" in q.schema).map((q) => q.name));
-  const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? "?" : ""}: ${type}`);
+  const paramTypes = typed.map(([name, type, comment]) => [`${ident(name)}${optional.has(name) ? "?" : ""}: ${type}`, comment] as const);
   return {
     diagnostics,
-    params: paramTypes.length ? `{ ${paramTypes.join("; ")} }` : "Record<never, never>",
-    row: columns.length ? `{ ${columns.join("; ")} }` : "never",
+    params: paramTypes.length ? objectType(paramTypes) : "Record<never, never>",
+    row: columns.length ? objectType(columns) : "never",
     cardinality,
     names,
   };

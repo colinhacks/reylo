@@ -386,8 +386,8 @@ function writeEntry(root: string, file: string, entry: Entry): void {
 /**
  * One query per dialect whose rows change when anything an analysis reads changes: relations and
  * their columns, inheritance, constraints, indexes, row triggers and rules (nullability and the row
- * count read them), enum labels, domains, functions, user operators (the trust check reads them) and view
- * definitions, and the server settings that change a statement's types. SQLite's whole schema is
+ * count read them), enum labels, domains, functions, user operators (the trust check reads them), view
+ * definitions and column comments (a field's doc comment), and the server settings that change a statement's types. SQLite's whole schema is
  * its `sqlite_schema` table, and the functions of the SQLite that opened it are part of what an
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
  * `text || "char"` is ambiguous, and a query the server refuses leaves every entry unverified.
@@ -408,9 +408,10 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select 't ' || t.oid || ' ' || t.typname || ' ' || t.typtype::text || ' ' || t.typbasetype || ' ' || t.typnotnull from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname ${NS}
     union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
     union all select 'w ' || c.oid || ' ' || md5(pg_get_viewdef(c.oid)) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and n.nspname ${NS}
+    union all select 'd ' || d.objoid || ' ' || d.objsubid || ' ' || md5(d.description) from pg_description d join pg_class c on c.oid = d.objoid join pg_namespace n on n.oid = c.relnamespace where d.classoid = 'pg_class'::regclass and d.objsubid > 0 and n.nspname ${NS}
   ) t`,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
-    select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, is_nullable, column_key, extra, coalesce(generation_expression, '')) as x from information_schema.columns where table_schema = database()
+    select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()
     union all select concat_ws(' ', 'v', table_name, md5(view_definition)) from information_schema.views where table_schema = database()
     union all select concat_ws(' ', 'r', routine_name, routine_type, coalesce(dtd_identifier, ''), md5(coalesce(routine_definition, ''))) from information_schema.routines where routine_schema = database()
