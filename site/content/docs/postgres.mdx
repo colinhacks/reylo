@@ -466,6 +466,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 - A `timestamptz` parameter needs a time zone in its text, as `.run()` returns it: `"2026-10-12T19:06:48Z"`, `"2026-10-12 19:06:48+09"`, `"2026-10-12 19:06:48 Asia/Tokyo"`, or `infinity`. Pass a `Date` as `date.toISOString()`. Text without a zone is rejected before the query runs, since Postgres would read it in the session's time zone.
 - A `timestamp` or `date` parameter rejects a `Date`, since drivers convert a `Date` using different time zones.
+- A `bytea` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since each driver would store a string differently. Decode the text into a `Uint8Array` first.
 - A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`. To pass JSON text you already have, cast it from text: `:data::text::jsonb`.
 - The parameters of `limit` and `offset` are `bigint`s, which accept a `number` too.
 

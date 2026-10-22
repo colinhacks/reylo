@@ -424,6 +424,8 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `NUMERIC`, a `BOOLEAN` or `DATE` column's included | `number`, `string` or `boolean` |
 | A typed JSON parameter | what its schema admits |
 
+A `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since SQLite would store it as `TEXT`. Decode the text into a `Uint8Array` first.
+
 ### Parameters without a type
 
 SQLite can type a parameter only in these places:

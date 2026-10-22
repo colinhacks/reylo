@@ -389,6 +389,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 
 - MySQL reports every integer parameter as a `BIGINT`, so Reylo types it from the column it's compared with (`col = :p`, `in`, `between`) or written to (an `insert` or `update`). Elsewhere it uses what MySQL reports: `limit :n` takes a `number`.
 - A `DATE`, `DATETIME` or `TIMESTAMP` parameter takes the text, `"2026-10-12 19:06:48"`, and rejects a `Date`, since drivers convert a `Date` using different time zones.
+- A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since MySQL would store the text's own bytes. Decode the text into a `Uint8Array` first.
 - A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
 
 ### Parameters that may be null
