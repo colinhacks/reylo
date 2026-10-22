@@ -526,9 +526,11 @@ pub fn repeated(sql: &str, lexed: &Lexed) -> Vec<Repeated> {
         // The name the example selects the value as: the last segment of a dotted name, and `pn`
         // for a position.
         let column = if is_positional(&p.name) { format!("p{}", p.name) } else { p.name.rsplit('.').next().unwrap_or(&p.name).to_string() };
+        // The example casts the value, since nothing else types a parameter a select list reads:
+        // Postgres takes it as text, MySQL as a string, and SQLite leaves it untyped.
         out.push(Repeated {
             message: format!(
-                "The parameter {written} appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select {written} as {column}) select … from input"
+                "The parameter {written} appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select {written}::<type> as {column}) select … from input"
             ),
             start: p.start,
             end: p.end,
@@ -748,7 +750,7 @@ mod tests {
         assert_eq!(r[0].start, sql.rfind(":q").unwrap());
         assert_eq!(
             r[0].message,
-            "The parameter :q appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :q as q) select … from input"
+            "The parameter :q appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :q::<type> as q) select … from input"
         );
         assert_eq!(at("select :a, :b, :a, :a, :b", Dialect::Postgres), [(15, 17), (19, 21), (23, 25)]);
         assert_eq!(at("select $1, $2, $1", Dialect::Postgres), [(15, 17)]);
@@ -761,10 +763,10 @@ mod tests {
         // A dotted global is one name; the example selects it by its last segment, and a
         // position by `p` and its number.
         let sql = "select * from t where owner = :auth.user_id or author = :auth.user_id";
-        assert!(repeated(sql, &lex(sql, Dialect::Postgres).unwrap())[0].message.contains("with input as (select :auth.user_id as user_id)"));
+        assert!(repeated(sql, &lex(sql, Dialect::Postgres).unwrap())[0].message.contains("with input as (select :auth.user_id::<type> as user_id)"));
         let sql = "select $1::int + $1";
         assert!(repeated(sql, &lex(sql, Dialect::Postgres).unwrap())[0].message.starts_with("The parameter $1 appears more than once;"));
-        assert!(repeated(sql, &lex(sql, Dialect::Postgres).unwrap())[0].message.contains("(select $1 as p1)"));
+        assert!(repeated(sql, &lex(sql, Dialect::Postgres).unwrap())[0].message.contains("(select $1::<type> as p1)"));
         // A bare `?` never repeats; distinct names, text and casts are not uses.
         assert!(at("select ?, ?, ?", Dialect::Mysql).is_empty());
         assert!(at("select ?, ?", Dialect::Sqlite).is_empty());

@@ -1,8 +1,8 @@
-bare_then_numbered.sql: many (1: unknown) -> {  } !! reylo3: The parameter ?1 appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select ?1 as p1) select … from input
+bare_then_numbered.sql: many (1: unknown) -> {  } !! reylo3: The parameter ?1 appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select ?1::<type> as p1) select … from input
 coalesce_with.sql: many (age: integer?) -> { id: integer }
-guard_repeated.sql: many (min: unknown) -> {  } !! reylo3: The parameter :min appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :min as min) select … from input
+guard_repeated.sql: many (min: unknown) -> {  } !! reylo3: The parameter :min appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :min::<type> as min) select … from input
 guard_with.sql: many (min: integer) -> { id: integer }
 guard_with_bare.sql: many (min: integer) -> { id: integer }
 key_with.sql: maybeOne (id: integer) -> { id: integer, name: text }
-numbered_repeated.sql: many (1: unknown) -> {  } !! reylo3: The parameter ?1 appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select ?1 as p1) select … from input
+numbered_repeated.sql: many (1: unknown) -> {  } !! reylo3: The parameter ?1 appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select ?1::<type> as p1) select … from input
 pattern_with.sql: many (q: text) -> { id: integer, name: text }

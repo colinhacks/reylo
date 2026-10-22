@@ -1,7 +1,7 @@
 coalesce_with.sql: many (age: int4?) -> { id: int4 }
-guard_repeated.sql: many (min: unknown) -> {  } !! reylo3: The parameter :min appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :min as min) select … from input
+guard_repeated.sql: many (min: unknown) -> {  } !! reylo3: The parameter :min appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :min::<type> as min) select … from input
 guard_with.sql: many (min: int4) -> { id: int4 }
 guard_with_alias.sql: many (min: int4) -> { id: int4 }
 key_with.sql: maybeOne (id: int4) -> { id: int4, name: text }
 pattern_with.sql: many (q: text) -> { id: int4, name: text }
-positional_repeated.sql: many (1: unknown) -> {  } !! reylo3: The parameter $1 appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select $1 as p1) select … from input
+positional_repeated.sql: many (1: unknown) -> {  } !! reylo3: The parameter $1 appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select $1::<type> as p1) select … from input

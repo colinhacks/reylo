@@ -1,2 +1,2 @@
-param_repeated.sql: the engine refused it: reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :n as n) select … from input
+param_repeated.sql: the engine refused it: reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :n::<type> as n) select … from input
 unsigned_overflow.sql: BIGINT UNSIGNED value is out of range in '(`reylo_oracle_mysql_types`.`everything`.`utiny` - `reylo_oracle_mysql_types`.`everything`.`small`)' (1690)

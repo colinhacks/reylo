@@ -6,7 +6,7 @@ numeric_column.sql: many (ready: numeric) -> { name: text }
 values_alone.sql: many (p: real, q: integer) -> { column1: integer, column2: text?, column3: real }
 values_one_row.sql: one () -> { column1: integer, column2: text }
 values_positional.sql: many (name: text, meta: text?, k: integer?, name2: text, meta2: text?, k2: integer?) -> { name: text, meta: text?, k: integer? }
-values_repeated_param.sql: many (x: unknown, y: unknown, z: unknown) -> {  } !! reylo3: The parameter :x appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :x as x) select … from input
+values_repeated_param.sql: many (x: unknown, y: unknown, z: unknown) -> {  } !! reylo3: The parameter :x appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :x::<type> as x) select … from input
 values_rows.sql: none (a: integer, b: text, c: integer, d: text) -> {  }
 values_rows_returning.sql: many (a: text, n: text?, b: text, m: text?, c: text, u: text) -> { id: integer, name: text, nick: text? }
 values_subquery.sql: many () -> { column1: integer }
