@@ -414,9 +414,16 @@ test("SQLite: JSON a statement builds is the object its type says on every drive
     insert into posts values (10, 1, 'hello', null), (11, 1, 'world', 'b')`);
   setup.close();
   const sql = {
+    // A scalar subquery's JSON keeps SQLite's JSON subtype on 3.53 and loses it on 3.54, so
+    // inside other JSON it is the array on one and its text on the other; `json()` around it
+    // nests the array on both.
     profile: `select json_object(
   'user', json_object('id', u.id, 'name', u.name),
-  'posts', (select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id)
+  'posts', json((select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id))
+) as profile
+from users u where u.id = :id::int`,
+    bare: `select json_object(
+  'posts', (select json_group_array(p.id) from posts p where p.user_id = u.id)
 ) as profile
 from users u where u.id = :id::int`,
     // A BIGINT inside JSON is a JSON number, which JSON.parse rounds past 2^53, as on Postgres;
@@ -436,6 +443,7 @@ from users u where u.id = :id::int`,
     }
     assert.deepEqual(types, {
       profile: "profile: { user: { id: number; name: string }; posts: { id: number; title: string }[] }",
+      bare: "profile: { posts: unknown }",
       values: "o: { big: number | null; score: number | null; flag: number | string; more: number; pair: [string, number | null]; doc: string | null }; doc: string | null; glued: string",
     });
   } finally {
@@ -443,6 +451,7 @@ from users u where u.id = :id::int`,
   }
   const profile = await built(root, "file:./app.db", "profile", sql.profile);
   const values = await built(root, "file:./app.db", "values", sql.values);
+  const bare = await built(root, "file:./app.db", "bare", sql.bare);
   const ann = { profile: { user: { id: 1, name: "ann" }, posts: [{ id: 10, title: "hello" }, { id: 11, title: "world" }] } };
   const bob = { profile: { user: { id: 2, name: "bob" }, posts: [] } };
   const rows = [
@@ -453,6 +462,8 @@ from users u where u.id = :id::int`,
     assert.deepEqual(plain(await run(profile, { id: 1 })), ann, `${label}: the profile`);
     assert.deepEqual(plain(await run(profile, { id: 2 })), bob, `${label}: a user with no posts`);
     assert.deepEqual(plain(await run(values)), rows, `${label}: the values`);
+    const { posts } = (plain(await run(bare, { id: 1 })) as any).profile;
+    assert.ok([JSON.stringify([10, 11]), JSON.stringify(JSON.stringify([10, 11]))].includes(JSON.stringify(posts)), `${label}: the bare subquery's JSON, as JSON or its text: ${JSON.stringify(posts)}`);
   };
   for (const safe of [false, true]) {
     const db = new Database(file);

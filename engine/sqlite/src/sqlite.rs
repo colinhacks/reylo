@@ -485,11 +485,13 @@ fn same_json(types: &[&Type]) -> Option<Type> {
 
 /// Whether a value carries SQLite's JSON subtype, which makes a JSON function that reads it nest
 /// it as JSON, where text without it is a string. Every JSON function sets it on what it returns,
-/// and a `jsonb_*` blob is read as JSON alike. On SQLite 3.53.4 it passed through `coalesce`,
-/// `ifnull`, `nullif`, `iif`, `CASE`, `likely`, `COLLATE`, unary plus, a cast to text, `min` and
-/// `max` (the aggregates and the scalars), an aggregate with a FILTER and a scalar subquery, and
-/// was dropped by a subquery's or view's column, a WITH query's, `lag`, a scalar subquery that
-/// sorts its rows and a window call in a statement with a second window.
+/// and a `jsonb_*` blob is read as JSON alike. On SQLite 3.53.4 and 3.54.1 it passed through
+/// `coalesce`, `ifnull`, `nullif`, `iif`, `CASE`, `likely`, `COLLATE`, unary plus, a cast to text,
+/// `min` and `max` (the aggregates and the scalars) and an aggregate with a FILTER, and was dropped
+/// by a subquery's or view's column, a WITH query's, `lag` and a window call in a statement with a
+/// second window. A scalar subquery kept it on 3.53.4 and drops it on 3.54.1, so its value may be
+/// either. `json()` of a value that is the text of built JSON, whether it kept the subtype or not,
+/// is that JSON again ([`Analyzer::reparsed`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Carry {
     /// Never: the value is read as the type it has.
@@ -1119,8 +1121,8 @@ impl Analyzer<'_> {
             "variable" => Fact { ty: Type::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
                 // The JSON a `json_*` constructor builds, which SQLite returns as its text.
-                if let Some(ty) = self.built_text(n, scope) {
-                    return Fact { ty, non_null: true };
+                if let Some(f) = self.built_text(n, scope) {
+                    return f;
                 }
                 let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
                 self.function(n, &args)
@@ -1340,14 +1342,26 @@ impl Analyzer<'_> {
     // others ([`Carry`]).
 
     /// The JSON a call that SQLite answers with text builds: a `json_object`, `json_array`,
-    /// `json_group_array` or `json_group_object` call, or `json()` of one of those or of a
-    /// `jsonb_*` constructor. A `jsonb_*` call is a blob, which stays one.
-    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    /// `json_group_array` or `json_group_object` call, never NULL, or `json()` of built JSON
+    /// ([`Analyzer::reparsed`]). A `jsonb_*` call is a blob, which stays one.
+    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Fact> {
         match self.builtin_name(n)? {
-            "json_object" | "json_array" | "json_group_array" | "json_group_object" => self.shape(n, scope),
-            "json" if n.args.len() == 1 && !n.agg && !n.window => self.shape(&n.args[0], scope),
+            "json_object" | "json_array" | "json_group_array" | "json_group_object" => self.shape(n, scope).map(|ty| Fact { ty, non_null: true }),
+            "json" if n.args.len() == 1 && !n.agg && !n.window => self.reparsed(&n.args[0], scope),
             _ => None,
         }
+    }
+
+    /// What `json()` or `jsonb()` of a value reads, where the value is built JSON: a constructor,
+    /// or what returns the text of one (a scalar subquery, a subquery's or view's column, a
+    /// `coalesce`), with or without the subtype, which `json()` parses back into the same JSON.
+    /// NULL where the value is.
+    fn reparsed(&self, x: &Node, scope: &ScopeStack) -> Option<Fact> {
+        if let Some(ty) = self.shape(x, scope) {
+            return Some(Fact { ty, non_null: true });
+        }
+        let f = self.type_of(x, scope);
+        is_built(&f.ty).then_some(f)
     }
 
     /// The built-in a call resolves to: none where the host registers a scalar function of that
@@ -1461,6 +1475,13 @@ impl Analyzer<'_> {
                 if let Some(ty) = self.shape(n, scope) {
                     return JsonFact { ty, non_null: true, carry: Carry::Yes };
                 }
+                // `json()` and `jsonb()` of the text of built JSON nest it again, whether the text
+                // kept the subtype or not.
+                if matches!(name, "json" | "jsonb") && n.args.len() == 1 && !n.agg && !n.window {
+                    if let Some(f) = self.reparsed(&n.args[0], scope) {
+                        return JsonFact { ty: f.ty, non_null: f.non_null, carry: Carry::Yes };
+                    }
+                }
                 let first = n.args.first().into_iter();
                 let non_null = || self.type_of(n, scope).non_null;
                 match name {
@@ -1483,17 +1504,7 @@ impl Analyzer<'_> {
                     _ => any,
                 }
             }
-            "select" => match self.carry(n, scope) {
-                Carry::No => plain(),
-                Carry::Maybe => any,
-                // A scalar subquery hands back its one value as it is, NULL where it finds no row.
-                Carry::Yes => {
-                    let Some(sub) = n.select.as_deref() else { return any };
-                    let Some(col) = sub.columns.first() else { return any };
-                    let inner = self.within(sub, scope, |inner| self.json_fact(&col.expr, inner));
-                    JsonFact { non_null: inner.non_null && self.exactly_one(sub).is_ok(), ..inner }
-                }
-            },
+            "select" => if self.carry(n, scope) == Carry::No { plain() } else { any },
             "collate" | "pos" => n.left.as_deref().map_or(any, |l| self.json_fact(l, scope)),
             "case" => {
                 let results = n.list.chunks(2).filter_map(|pair| if pair.len() == 2 { Some(&pair[1]) } else { None });
@@ -1552,14 +1563,12 @@ impl Analyzer<'_> {
                     _ => Carry::Maybe,
                 }
             }
-            // A scalar subquery kept the subtype on 3.53.4, but not one that sorts its rows
-            // (`order by`, which an ungrouped aggregate's one row skips), and the engine does not
-            // count on a DISTINCT, a compound or a VALUES list keeping it.
+            // A scalar subquery kept the subtype on 3.53.4, but not one that sorts its rows, and
+            // drops it on 3.54.1 (`json_object('p', (select json_array(1)))` is `{"p":[1]}` on
+            // one and `{"p":"[1]"}` on the other): its value may carry it or not.
             "select" => {
                 let Some(sub) = n.select.as_deref() else { return Carry::No };
-                let inner = self.select_carry(sub, 0, scope);
-                let sorted = !sub.order_by.is_empty() && !(sub.aggregate && sub.group_by.is_empty());
-                if inner == Carry::Yes && (sorted || sub.distinct || sub.prior.is_some() || !sub.rows.is_empty() || sub.values) { Carry::Maybe } else { inner }
+                if self.select_carry(sub, 0, scope) == Carry::No { Carry::No } else { Carry::Maybe }
             }
             "collate" | "pos" => n.left.as_deref().map_or(Carry::No, |l| self.carry(l, scope)),
             "cast" => match n.left.as_deref().map_or(Carry::No, |l| self.carry(l, scope)) {
@@ -3928,9 +3937,12 @@ mod tests {
 
     #[test]
     fn a_json_constructor_is_typed_as_the_json_it_builds() {
-        // The docs' profile: SQLite answers with the text, which the run time parses.
-        let profile = "select json_object('user', json_object('id', u.id, 'name', u.name), 'posts', (select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id)) as profile from users u where u.id = :id";
+        // The docs' profile: SQLite answers with the text, which the run time parses. The posts'
+        // scalar subquery loses SQLite's JSON subtype on 3.54.1, and `json()` nests it on every
+        // SQLite.
+        let profile = "select json_object('user', json_object('id', u.id, 'name', u.name), 'posts', json((select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id))) as profile from users u where u.id = :id";
         assert_eq!(json_typed(profile), "profile: { user: { id: number; name: string }; posts: { id: number; title: string }[] }");
+        assert_eq!(json_typed(&profile.replace("json((select", "((select")), "profile: { user: { id: number; name: string }; posts: unknown }");
         let a = analyze_ddl(profile, &json_ddl(), &Extras::default()).analysis;
         assert_eq!((a.columns[0].type_name.as_str(), a.cardinality.as_str()), ("text", "maybeOne"));
         // Each value as SQLite writes it there: an INTEGER, a BIGINT column's too, as a number
@@ -3971,7 +3983,8 @@ mod tests {
 
     #[test]
     fn a_value_nests_as_json_only_where_it_keeps_sqlites_json_subtype() {
-        // Through what kept the subtype on SQLite 3.53.4 a JSON value nests as the JSON it is.
+        // Through what keeps the subtype on SQLite 3.53.4 and 3.54.1 a JSON value nests as the
+        // JSON it is.
         for (expr, ty) in [
             ("coalesce(json_array(id), 'x')", "[number]"),
             ("ifnull(json_array(id), 'x')", "[number]"),
@@ -3981,13 +3994,17 @@ mod tests {
             ("json_array(id) collate nocase", "[number]"),
             ("+json_array(id)", "[number]"),
             ("likely(json_array(id))", "[number]"),
-            ("(select json_object('n', name) from users u2 where u2.id = users.id)", "{ n: string } | null"),
-            ("(select json_group_array(p.id) from posts p where p.user_id = users.id order by p.id)", "number[]"),
-            ("(select json_array(1))", "[number]"),
             // `coalesce` never reaches an argument after one that is never NULL.
-            ("coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id), '[]')", "number[]"),
             ("coalesce(json_object('e', email), json_array())", "{ e: string | null }"),
-            ("coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id group by p.user_id), json_array())", "number[]"),
+            // `json()` of built JSON, which a scalar subquery or a subquery's column returns with
+            // the subtype or without it, is that JSON again, NULL where the value is.
+            ("json((select json_object('n', name) from users u2 where u2.id = users.id))", "{ n: string } | null"),
+            ("json((select json_group_array(p.id) from posts p where p.user_id = users.id order by p.id))", "number[]"),
+            ("jsonb((select json_array(1)))", "[number]"),
+            ("json(coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id group by p.user_id), json_array()))", "number[]"),
+            ("coalesce(json((select json_group_array(p.id) from posts p where p.user_id = users.id group by p.user_id)), json_array())", "number[]"),
+            ("json((select (select json_array(1))))", "[number]"),
+            ("json(json((select json_array(1))))", "[number]"),
             // A plain value: a TEXT is a string, even one that holds JSON.
             ("doc", "string | null"),
             ("json_array(id) || ''", "string"),
@@ -4003,6 +4020,15 @@ mod tests {
         for expr in [
             "x",
             "post",
+            // A scalar subquery kept the subtype on 3.53.4 and drops it on 3.54.1.
+            "(select json_object('n', name) from users u2 where u2.id = users.id)",
+            "(select json_group_array(p.id) from posts p where p.user_id = users.id)",
+            "(select json_array(1))",
+            "(select jsonb_array(1))",
+            "(select json_extract(doc, '$.a'))",
+            "coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id), json_array())",
+            "case when id > 1 then (select json_array(1)) end",
+            "iif(id > 1, (select json_array(1)), null)",
             "(select json_object('id', id) from users order by name limit 1)",
             "(select distinct json_array(id) from users)",
             "(select json_array(1) union all select json_array(2))",
@@ -4021,6 +4047,12 @@ mod tests {
         ] {
             let sql = format!("select json_object('a', {expr}) as o from (select *, json_array(id) as x from users) users, (select post from titled)");
             assert_eq!(json_typed(&sql), "o: { a: unknown }", "{expr}");
+        }
+        // `json()` nests again the built JSON a subquery's or view's column or `lag` returns as
+        // text.
+        for (expr, ty) in [("json(x)", "[number]"), ("json(post)", "{ id: number; title: string }"), ("json(lag(json_array(id)) over (order by id))", "[number] | null")] {
+            let sql = format!("select json_object('a', {expr}) as o from (select *, json_array(id) as x from users) users, (select post from titled)");
+            assert_eq!(json_typed(&sql), format!("o: {{ a: {ty} }}"), "{expr}");
         }
         // A function the host registers over a built-in is its own, and may set the subtype.
         let host = Extras { total: vec![TotalFunction { name: "json_array".into(), arity: -1, returns: Affinity::Text }, TotalFunction { name: "html".into(), arity: 1, returns: Affinity::Text }], host: None };
