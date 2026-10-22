@@ -8,7 +8,7 @@ on:
   #
   # One run, two release jobs. `stage` puts the four versions in npm's staged queue: the three engines, then reylo, which names them as peers at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
-  # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after the maintainer approved the run.
+  # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
   # This runs in the public repository, colinhacks/reylo, whose history `scripts/public/sync.ts` keeps in step with the private working one, commit by commit. npm's trusted publishers name that repository, this file and the `npm` environment, and provenance needs a public source repository.
   workflow_dispatch:
