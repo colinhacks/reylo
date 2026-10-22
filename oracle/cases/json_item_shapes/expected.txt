@@ -13,6 +13,7 @@ with_nested.sql: many () -> { author: { name: text, posts: [{ id: int8, title: t
 with_nested_coalesced.sql: many () -> { author: { name: text, posts: [{ id: int8, title: text }]? } }
 with_object.sql: many () -> { post: { id: int8, title: text } }
 with_param.sql: many (p: text) -> { j: { id: int8, p: text? } }
+with_probe_budget.sql: many () -> { a: { posts: [{ id: unknown?, title: unknown? }]? }, b1: { id: int8 }?, b2: { id: int8 }?, b3: { id: int8 }?, b4: { id: int8 }?, b5: { id: int8 }?, b6: { id: int8 }? }
 with_renamed.sql: many () -> { j: { id: int8 } }
 with_star.sql: many () -> { j: json }
 with_ungrouped_agg.sql: one () -> { titles: [text]? }
