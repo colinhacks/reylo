@@ -616,9 +616,14 @@ impl ResolveCtx<'_> {
             }
             Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| Some((o.columns.get(*index)?, o.built.get(*index).and_then(Option::as_ref)))) {
                 // JSON a WITH query or a derived table builds, NULL where the item's row has it so
-                // or a join here nulls the item.
+                // or a join here nulls the item. A path the item could not type goes under this
+                // one, a path inside its array (`[].tags`) as this module writes its own.
                 Some((col, Some(built))) => {
-                    unresolved.extend(built.unresolved.iter().map(|p| if p == WHOLE { display_path(path) } else { display_path(&join(path, p)) }));
+                    unresolved.extend(built.unresolved.iter().map(|p| match p.as_str() {
+                        WHOLE => display_path(path),
+                        p if p.starts_with("[]") => display_path(&format!("{path}{p}")),
+                        p => display_path(&join(path, p)),
+                    }));
                     (built.ty.clone(), built.non_null && !col.nullable)
                 }
                 Some((col, None)) if col.type_oid != oid::UNKNOWN => {
@@ -1248,5 +1253,16 @@ mod tests {
         // An outer join in the probe's own analysis is what can null the whole row.
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns, outer_join: true, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
+    }
+
+    #[test]
+    fn a_path_an_item_could_not_type_goes_under_the_path_that_reads_it() {
+        let registry = TypeRegistry::with_builtins();
+        let p = shapes("SELECT jsonb_build_object('posts', ps.posts) AS author FROM ps");
+        let item = Type::List { of: Box::new(Type::Object { fields: vec![field("tags", Type::Unknown, true)] }), nullable_items: false };
+        let built = Built { ty: item, non_null: true, unresolved: vec!["[].tags".into(), "[]".into(), WHOLE.into()] };
+        let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, built: vec![Some(built)] };
+        let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
+        assert_eq!(r.unresolved, vec!["posts[].tags", "posts[]", "posts"]);
     }
 }
