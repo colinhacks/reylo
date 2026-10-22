@@ -3,6 +3,7 @@
 // writes these into the module it hands TypeScript; the docs site's playground shows them as they
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
+import { docComment } from "./doc-comment.ts";
 import { declaredType, ident, renderParamType, renderType } from "./render.ts";
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
@@ -26,16 +27,15 @@ function paramType(q: Analysis["params"][number], rendered: string): string {
 }
 
 /**
- * A column's comment as the doc comment of the field that reads it, for an editor's hover: one line,
- * or a block of lines (each after `indent`) where the comment has several, and nothing where there
- * is none. A star and a slash inside it, which would end the doc comment, are written with a
- * backslash between them.
+ * A column's comment as the doc comment of the field that reads it, for an editor's hover: on one
+ * line where the comment has one, else a block of lines after `indent` (src/doc-comment.ts), and
+ * nothing where there is none.
  */
-export function docComment(comment: string | undefined, indent = ""): string {
-  const lines = (comment ?? "").replaceAll("*/", "*\\/").trim().split(/\r?\n/).map((line) => line.trimEnd());
-  if (!lines[0]) return "";
-  if (lines.length === 1) return `/** ${lines[0]} */`;
-  return `/**\n${lines.map((line) => `${indent} *${line ? ` ${line}` : ""}`).join("\n")}\n${indent} */`;
+export function fieldComment(comment: string | undefined, indent = ""): string {
+  const text = (comment ?? "").replace(/\r\n?/g, "\n").replace(/[ \t]+$/gm, "").trim();
+  if (!text) return "";
+  if (!text.includes("\n")) return `/** ${text.replaceAll("*/", "*\\/")} */`;
+  return docComment(text, undefined, "", indent).trim();
 }
 
 /**
@@ -44,8 +44,9 @@ export function docComment(comment: string | undefined, indent = ""): string {
  * a line starts with it.
  */
 function objectType(fields: (readonly [text: string, comment: string | undefined])[]): string {
-  if (!fields.some(([, comment]) => docComment(comment))) return `{ ${fields.map(([text]) => text).join("; ")} }`;
-  return `{\n${fields.map(([text, comment]) => `${docComment(comment) ? `  ${docComment(comment, "  ")}\n` : ""}  ${text};`).join("\n")}\n}`;
+  const docs = fields.map(([, comment]) => fieldComment(comment, "  "));
+  if (!docs.some(Boolean)) return `{ ${fields.map(([text]) => text).join("; ")} }`;
+  return `{\n${fields.map(([text], i) => `${docs[i] ? `  ${docs[i]}\n` : ""}  ${text};`).join("\n")}\n}`;
 }
 
 const utf8 = new TextEncoder();

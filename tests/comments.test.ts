@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { docComment } from "../src/module-types.ts";
+import { fieldComment } from "../src/module-types.ts";
 
 // A column's comment (Postgres's COMMENT ON COLUMN, MySQL's COMMENT '…') is the doc comment of each
 // field that reads the column as it is, so an editor's hover over the field shows it. The content
@@ -78,7 +78,7 @@ async function transform(root: string, files: Record<string, string>): Promise<R
 /** The `Params` and `Row` a declaration exports. */
 function types(text: string): { params: string; row: string } {
   const params = /^export type Params = ([\s\S]*?);\nexport type Row/m.exec(text)![1]!;
-  const row = /^export type Row = ([\s\S]*?);\nexport declare const sql/m.exec(text)![1]!;
+  const row = /^export type Row = ([\s\S]*?);\n(?=\/\*\*|export )/m.exec(text)![1]!;
   return { params, row };
 }
 
@@ -113,11 +113,11 @@ const POSTGRES_SCHEMA = `create table users (id int primary key, age int, email 
   comment on column adults.id is 'An adult''s id'`;
 
 test("a doc comment is one line, or a block of lines, with a star and a slash kept apart", () => {
-  assert.equal(docComment(undefined), "");
-  assert.equal(docComment(" \n "), "");
-  assert.equal(docComment("Age (in years)"), "/** Age (in years) */");
-  assert.equal(docComment("a */ b"), "/** a *\\/ b */");
-  assert.equal(docComment("Line 1\r\nLine 2\n\nLine 4  \n", "  "), "/**\n   * Line 1\n   * Line 2\n   *\n   * Line 4\n   */");
+  assert.equal(fieldComment(undefined), "");
+  assert.equal(fieldComment(" \n "), "");
+  assert.equal(fieldComment("Age (in years)"), "/** Age (in years) */");
+  assert.equal(fieldComment("a */ b"), "/** a *\\/ b */");
+  assert.equal(fieldComment("Line 1\r\nLine 2\n\nLine 4  \n", "  "), "/**\n   * Line 1\n   * Line 2\n   *\n   * Line 4\n   */");
 });
 
 test("Postgres: a field that reads a column as it is carries the column's comment, which a changed comment re-types", { skip: pgLive }, async () => {
