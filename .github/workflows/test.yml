@@ -135,16 +135,22 @@ jobs:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Install Postgres 18
+        id: pg
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18
-      # The validators take about a quarter of an hour to build, so their staged files are cached, and saved
-      # as soon as they are built rather than only when the job passes.
+          version=$("$PG_BIN/pg_config" --version | cut -d' ' -f2)
+          test -n "$version"
+          test -n "$ImageOS"
+          echo "key=$ImageOS-pg$version" >> "$GITHUB_OUTPUT"
+      # The validators take several minutes to build, so their staged files are cached, and saved as soon as
+      # they are built rather than only when the job passes. They are compiled against the server's headers,
+      # so the key names the exact Postgres release and runner image they were built on.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: validators
         with:
           path: ~/json-schema-validators
-          key: json-schema-validators-${{ runner.os }}-pg18-${{ hashFiles('.github/scripts/json-schema-validators.sh') }}
+          key: json-schema-validators-${{ steps.pg.outputs.key }}-${{ hashFiles('.github/scripts/json-schema-validators.sh') }}
       - name: Build the JSON Schema validators
         if: steps.validators.outputs.cache-hit != 'true'
         run: sh .github/scripts/json-schema-validators.sh ~/json-schema-validators "$RUNNER_TEMP/validators" "$PG_BIN/pg_config"
