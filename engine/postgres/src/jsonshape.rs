@@ -328,7 +328,18 @@ impl Builder<'_> {
                     (Shape::Array { items, .. }, [default]) if is_empty_array(default) => Shape::Array { items, non_null: true },
                     _ => {
                         self.drafts = drafted;
-                        self.leaf(expr)
+                        // An aggregate there goes in a probe of its own, under a context id of its
+                        // own over the same `FROM`: a probe has no GROUP BY, so beside a bare
+                        // column of the context's own probe it would fail that probe whole.
+                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None) {
+                            return self.leaf(expr);
+                        }
+                        let top = self.stack.len() - 1;
+                        self.next_ctx += 1;
+                        let ctx = std::mem::replace(&mut self.stack[top].0, self.next_ctx);
+                        let shape = self.leaf(expr);
+                        self.stack[top].0 = ctx;
+                        shape
                     }
                 }
             }
@@ -947,6 +958,19 @@ mod tests {
         assert_eq!(p.probes[1].sql, "SELECT c.body AS a0 FROM comments c");
         let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
         assert!(matches!(&fields[1].1, Shape::Array { non_null: true, .. }));
+    }
+
+    #[test]
+    fn a_coalesce_read_as_one_value_probes_an_aggregate_apart() {
+        // Under `'{}'` the whole aggregate is one value, which a probe beside `title` would fail:
+        // it has no GROUP BY.
+        let p = shapes("SELECT jsonb_build_object('ids', coalesce(jsonb_agg(p.id), '{}'), 'titles', jsonb_agg(p.title)) AS o FROM posts p");
+        assert_eq!(p.probes.iter().map(|q| q.sql.as_str()).collect::<Vec<_>>(), ["SELECT COALESCE(jsonb_agg(p.id), '{}') AS a0 FROM posts p", "SELECT p.title AS a0 FROM posts p"]);
+        let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
+        assert_eq!(fields[0].1, Shape::Column { probe: 0, index: 0 });
+        // One that does not aggregate stays on its context's probe, so it costs none of the budget.
+        let q = shapes("SELECT jsonb_build_object('id', u.id, 'name', coalesce(u.name, u.email), 'doc', coalesce(u.doc, '{}')) AS o FROM users u");
+        assert_eq!(q.probes.iter().map(|q| q.sql.as_str()).collect::<Vec<_>>(), ["SELECT u.id AS a0, COALESCE(u.name, u.email) AS a1, COALESCE(u.doc, '{}') AS a2 FROM users u"]);
     }
 
     #[test]
