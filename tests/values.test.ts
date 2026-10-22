@@ -41,7 +41,7 @@ test("every Postgres type's decoded value is the type the module declares for it
     const array: EngineType = { kind: "array", of: t };
     const values = textDecoder(columnKind(array, "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
     assert.equal(values[1], null, name);
-    if (declared !== "unknown") assert.equal(`${typeOf(values[0])}[]`, renderType(array, false, "postgres"), name);
+    if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array, false, "postgres"), name);
     // The value written as JSON, a BigInt as the integer it is, has the schema's JSON type.
     const schema = typeSchema(t, "postgres") as { type?: string | string[] };
     if (schema.type !== undefined) {
@@ -205,7 +205,7 @@ test("a truth value: 0 or 1 in every form a driver gives it, and any other value
 test("the kinds: a BIGINT is a BigInt, and an integer a temporary table may widen to one is too; a timestamptz a string; no kind a Date", () => {
   assert.deepEqual(["int8", "int8|int4", "int4|int8", "int8|float8|numeric", "int4|int8|float8|numeric", "bool", "timestamptz"].map((n) => scalarKind(n, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamptz"]);
   assert.deepEqual(["int8", "int8|int4", "int8|float8|numeric", "bool", "timestamptz", "date"].map((n) => kindType(scalarKind(n, "mysql"))), ["bigint", "bigint", "bigint | number | string", "boolean", "string", "string"]);
-  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "bigint[]");
+  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "(bigint | null)[]");
   assert.equal(renderType(scalar("int8"), true), "number", "inside a JSON document, as the database writes it");
   assert.deepEqual(typeSchema(scalar("int8"), "postgres"), { type: "integer", format: "int64" });
   assert.deepEqual(typeSchema(scalar("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");

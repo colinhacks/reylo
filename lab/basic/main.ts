@@ -9,7 +9,7 @@ type ExpectedRow = {
   name: string;
   email: string | null;
   role: "admin" | "member";
-  tags: string[];
+  tags: (string | null)[];
   created_at: string;
   big: bigint | null;
   next_id: number;
@@ -48,7 +48,7 @@ type ExpectedNested = {
   id: number;
   name: string;
   posts: { id: number; title: string; body: string | null; at: string | null }[];
-  row: { id: number; name: string; email: string | null; role: "admin" | "member"; tags: string[]; created_at: string; big: number | null };
+  row: { id: number; name: string; email: string | null; role: "admin" | "member"; tags: (string | null)[]; created_at: string; big: number | null };
   post_count: bigint;
 };
 const n1: ExpectedNested | null = null! as Awaited<ReturnType<typeof nested.run>>;

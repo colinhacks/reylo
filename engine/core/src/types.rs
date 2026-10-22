@@ -15,11 +15,11 @@ pub enum Type {
     /// An enum: a union of its labels.
     Enum { name: String, labels: Vec<String> },
     /// A Postgres array of the element type. Any array may hold NULL elements, whatever a
-    /// column's `NOT NULL`, yet an array is typed `T[]` all the same
-    /// (`wiki/driver-decoding.md`). Only an array the statement builds says more
-    /// (`reylo_engine_postgres::types::DescribedColumn::nullable_items`): `Some(true)` when an element may be NULL, as
-    /// `array_agg(u.email)` over a LEFT JOIN gives `{NULL}` for a team with no users, which
-    /// renders `(T | null)[]`; `Some(false)` when every element is proven non-null.
+    /// column's `NOT NULL`, so a result's array renders `(T | null)[]` unless the statement
+    /// builds it from values it shows are not NULL; a parameter's renders `T[]`. Only an array the
+    /// statement builds says more (`reylo_engine_postgres::types::DescribedColumn::nullable_items`):
+    /// `Some(true)` when an element may be NULL, as `array_agg(u.email)` over a LEFT JOIN gives
+    /// `{NULL}` for a team with no users; `Some(false)` when every element is non-null.
     Array {
         of: Box<Type>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

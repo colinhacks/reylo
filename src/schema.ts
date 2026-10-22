@@ -116,8 +116,10 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
     case "scalar": return scalar(t.name, dialect, inJson, input);
     case "enum": return { type: "string", enum: t.labels };
     case "array": {
+      // A result's elements may be null unless the statement shows they are not; a parameter's
+      // are strict (src/render.ts).
       const items = typeSchema(t.of, dialect, input, inJson);
-      return { type: "array", items: t.nullable_items ? nullable(items) : items };
+      return { type: "array", items: (input ? t.nullable_items : t.nullable_items !== false) ? nullable(items) : items };
     }
     case "composite": return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${t.name} as Postgres prints it` };
     case "object": return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true)));

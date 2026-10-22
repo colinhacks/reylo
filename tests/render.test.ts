@@ -27,7 +27,7 @@ const doc: EngineType = {
   ],
 };
 
-const inJson = `{ id: number; seen: string | null; tags: string[] | null; mood: "ok" | "sad" }`;
+const inJson = `{ id: number; seen: string | null; tags: (string | null)[] | null; mood: "ok" | "sad" }`;
 
 test("a composite is its row's text on the wire", () => {
   assert.equal(renderType(users, false, "postgres"), "string");
@@ -38,7 +38,7 @@ test("a composite is its row's text on the wire", () => {
 test("inside a JSON document a composite is an object of its JSON-encoded fields", () => {
   assert.equal(renderType(users, true, "postgres"), inJson);
   // The renderer parenthesizes an element whose text holds a `|` anywhere, as it does for an object.
-  assert.equal(renderType({ kind: "array", of: users }, true, "postgres"), `(${inJson})[]`);
+  assert.equal(renderType({ kind: "array", of: users }, true, "postgres"), `(${inJson} | null)[]`);
   // A constructor's fields are inside the document, at the top level too.
   const expected = `{ author: ${inJson}; posts: (${inJson} | null)[] | null; n: number }`;
   assert.equal(renderType(doc, false, "postgres"), expected);
@@ -55,9 +55,9 @@ test("one type per SQL type, on every driver: what the run time returns (src/val
   // Every other type is its text: Reylo owns every oid, so no driver parses one.
   assert.deepEqual(["point", "xid", "int4range", "void", "record", "tsvector", "citext"].map((n) => wire(n)), Array(7).fill("string"));
   // An array of each, an enum's labels, a row value's array its text.
-  assert.equal(renderType({ kind: "array", of: scalar("timestamptz") }), "string[]");
-  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "bigint[]");
-  assert.equal(renderType({ kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] } }), `("ok" | "sad")[]`);
+  assert.equal(renderType({ kind: "array", of: scalar("timestamptz") }), "(string | null)[]");
+  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "(bigint | null)[]");
+  assert.equal(renderType({ kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] } }), `("ok" | "sad" | null)[]`);
   // MySQL's types are the same names: a BIGINT a BigInt, a DECIMAL its text, a DATETIME its text, a
   // BIT its bytes, and a truth value (a TINYINT(1), a BIT(1), a comparison) a boolean.
   assert.equal(wire("int8", "mysql"), "bigint");
@@ -73,7 +73,7 @@ test("a scalar that names two types is either", () => {
   assert.equal(renderType(scalar("int8|int4"), false, "mysql"), "bigint");
   assert.equal(renderType(scalar("numeric|float8"), false, "mysql"), "string | number");
   assert.equal(renderType(scalar("date|timestamp"), false, "mysql"), "string");
-  assert.equal(renderType({ kind: "array", of: scalar("numeric|float8") }, false, "mysql"), "(string | number)[]");
+  assert.equal(renderType({ kind: "array", of: scalar("numeric|float8") }, false, "mysql"), "(string | number | null)[]");
   // A truth value a document may hold as `true` or as 1.
   assert.equal(renderType(scalar("bool|int8"), true, "mysql"), "boolean | number");
   assert.equal(renderType({ kind: "list", of: scalar("bool|int8"), nullable_items: true }, false, "mysql"), "(boolean | number | null)[]");
@@ -142,13 +142,18 @@ const ROUND_TRIPS: Record<"postgres" | "mysql" | "sqlite", [column: EngineType, 
 /** An array type's element type, `(a | b)[]` as `a | b`; undefined for any other type. */
 const element = (ts: string) => (ts.endsWith("[]") ? ts.slice(0, -2).replace(/^\((.*)\)$/, "$1") : undefined);
 
-/** Whether every value of the column's type is one the parameter's type takes, member by member of the union, element by element of an array. */
+/**
+ * Whether every value of the column's type is one the parameter's type takes, member by member of
+ * the union, element by element of an array. An array's NULL elements are the one exception: a
+ * column's may hold them, and a parameter's elements are strict, so an array goes back in without
+ * them.
+ */
 function admits(column: EngineType, param: EngineType, dialect: "postgres" | "mysql" | "sqlite"): boolean {
   const returned = renderType(column, false, dialect);
   const taken = renderParamType(param, dialect);
   const members = (ts: string) => ts.split(" | ");
   const [returnedElement, takenElement] = [element(returned), element(taken)];
-  if (returnedElement !== undefined && takenElement !== undefined) return members(returnedElement).every((m) => members(takenElement).includes(m) || members(takenElement).includes("unknown"));
+  if (returnedElement !== undefined && takenElement !== undefined) return members(returnedElement).filter((m) => m !== "null").every((m) => members(takenElement).includes(m) || members(takenElement).includes("unknown"));
   return members(taken).includes("unknown") || members(returned).every((member) => members(taken).includes(member));
 }
 
@@ -185,11 +190,12 @@ test("every date and time parameter takes a string: a timestamptz one the text t
   assert.equal(renderParamType(scalar("date|timestamp"), "mysql"), "string");
 });
 
-test("an array's elements are nullable only where the statement builds it from a value that may be NULL", () => {
-  // `array_agg(u.email)` over a LEFT JOIN is `{NULL}` for a team with no users; a table's array
-  // column, which the statement does not build, is `T[]`.
+test("a returned array's elements may be NULL unless the statement shows they are not; a parameter's are strict", () => {
+  // Postgres lets any array hold NULL elements, whatever a column's NOT NULL says: a table's array
+  // column is `(T | null)[]`, and so is `array_agg(u.email)` over a LEFT JOIN, `{NULL}` for a team
+  // with no users. An array the statement builds from values it shows are not NULL is `T[]`.
   const texts = (nullable_items?: boolean): EngineType => (nullable_items === undefined ? { kind: "array", of: scalar("text") } : { kind: "array", of: scalar("text"), nullable_items });
-  assert.equal(renderType(texts()), "string[]");
+  assert.equal(renderType(texts()), "(string | null)[]");
   assert.equal(renderType(texts(false)), "string[]");
   assert.equal(renderType(texts(true)), "(string | null)[]");
   assert.equal(renderType(texts(true), true), "(string | null)[]");

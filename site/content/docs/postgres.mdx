@@ -475,7 +475,7 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array hold `NULL`, whatever the column's `NOT NULL` says. A `text[]` column is typed `string[]`, and a `NULL` element comes back as `null`. Where the statement builds the array from values that may be `NULL`, as `array_agg` over a `left join` does, the type says so: `(bigint | null)[]`.
+Postgres lets any array hold `NULL`, whatever the column's `NOT NULL` says, so a `text[]` column is typed `(string | null)[]`, and a `NULL` element comes back as `null`. An array the statement builds from values that can't be `NULL`, as `array[id]` over a primary key, is typed `number[]`. An array parameter takes no `NULL` elements: `:ids::int[]` is `number[]`, and a `NULL` in it is refused before the statement runs.
 
 <Pairs>
 
@@ -495,7 +495,7 @@ A quoted `"NULL"` element stays a string.
 
 **Several dimensions**
 
-Postgres does not record how many dimensions an array has, so a two-dimensional `int[]` is typed `number[]` and comes back as nested arrays. On `Bun.sql`, one in a statement with a parameter fails with Bun's own error, "Failed to read data", before Reylo sees it.
+Postgres does not record how many dimensions an array has, so a two-dimensional `int[]` is typed `(number | null)[]` and comes back as nested arrays. On `Bun.sql`, one in a statement with a parameter fails with Bun's own error, "Failed to read data", before Reylo sees it.
 
 <Pairs>
 
@@ -806,7 +806,7 @@ The type check reads the schema through postgres.js or `pg`, so an app on PGlite
 The edges of what Reylo types on Postgres, each with what to write instead:
 
 - **A function's body.** A SQL-language function is typed from its declaration (`returns`), never from its body, and a PL/pgSQL body is not read at all. Declare the result you return.
-- **An array's dimensions and elements.** An `int[]` is `number[]` however many dimensions it holds, and its elements are typed without `null` unless the statement builds it. Keep an array one-dimensional, or build it with `array_agg`.
+- **An array's dimensions and elements.** An `int[]` is `(number | null)[]` however many dimensions it holds, and its elements may be `null` unless the statement builds it from values that can't be. Keep an array one-dimensional, and filter out `null` elements before passing an array back as a parameter.
 - **A row value outside JSON.** It is its text. Select its fields as columns, or build an object with `to_jsonb` or `jsonb_build_object`.
 - **A parameter in place of a name.** A parameter is a value: `select * from :table` is Postgres's syntax error, and `order by :column` sorts by a constant. Choose a column with `case :sort when 'name' then name end`.
 - **A statement nested past 1,000 levels** of the parse tree (about 496 terms of `a + b + …`, or 164 nested subqueries), which Reylo types from the server's description alone: any number of rows, every column nullable.

@@ -351,8 +351,10 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   sqlite: { n: sc("integer"), r: sc("real"), s: sc("text"), b: sc("blob"), flag: sc("numeric"), x: { kind: "unknown" } },
 };
 /** The comparison for each column: Postgres's json has no `=`, and MySQL's JSON column is compared with json_extract of the JSON parameter. */
+// An array goes back in without its NULL elements, which a parameter refuses (src/render.ts).
+const ROUND_TRIP_ARRAYS = new Set(["tags", "ints", "moods"]);
 const ROUND_TRIP_SQL: Record<Dialect, (c: string) => string> = {
-  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : `${c} = :${c}`),
+  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
   mysql: (c) => (c === "doc" ? `doc = json_extract(:doc, '$')` : `${c} = :${c}`),
   sqlite: (c) => `${c} = :${c}`,
 };
@@ -903,9 +905,22 @@ export const SCENARIOS: Scenario[] = [
       // What run returns for each type, which the parameter of that type takes (src/render.ts):
       // a BIGINT's BigInt, a TINYINT(1)'s and a BIT(1)'s boolean on MySQL, a SQLite truth value
       // (bound as 1 or 0), an int8, a numeric's text, a timestamptz's UTC text, parsed JSON, bytes.
+      // A Postgres array may come back with NULL elements, which a parameter refuses: it goes back
+      // in without them, and with them it is refused before the statement runs.
       const row = (await call(ctx, q.typed, client)) as Record<string, unknown>;
-      const params = Object.fromEntries([...Object.keys(ROUND_TRIP[d]).map((c) => [c, row[c]]), ["id", 1]]);
+      const strict = (c: string) => (ROUND_TRIP_ARRAYS.has(c) && Array.isArray(row[c]) ? (row[c] as unknown[]).filter((x) => x !== null) : row[c]);
+      const params = Object.fromEntries([...Object.keys(ROUND_TRIP[d]).map((c) => [c, strict(c)]), ["id", 1]]);
       eq(await call(ctx, q.roundTrip, client, params), Object.fromEntries(Object.keys(ROUND_TRIP[d]).map((c) => [c, true])), "each column equal to the value it returned");
+      const withNulls = Object.keys(ROUND_TRIP[d]).find((c) => ROUND_TRIP_ARRAYS.has(c) && Array.isArray(row[c]) && (row[c] as unknown[]).includes(null));
+      if (withNulls) {
+        try {
+          await call(ctx, q.roundTrip, client, { ...params, [withNulls]: row[withNulls] });
+        } catch (e) {
+          if (e instanceof TypeError && /elements may not be null/.test(e.message)) return;
+          throw new Mismatch(`not the refusal of an array parameter's NULL element: ${describe(e)}`);
+        }
+        throw new Mismatch(`${withNulls}, an array with a NULL element, went back in as a parameter`);
+      }
     },
   },
   {

@@ -21,15 +21,24 @@ pub struct SchemaOptions {
     pub int8_as_number: bool,
     /// The value is inside a JSON document the database wrote.
     pub in_json: bool,
+    /// The value is one the caller passes (a parameter), not one the database returns: an
+    /// array's elements are then non-null unless the statement says otherwise, where a result's
+    /// may be null unless the statement shows they are not.
+    pub input: bool,
 }
 
 impl SchemaOptions {
     /// A value inside a JSON document, where `int8_as_number` has nothing to decide.
-    pub const IN_JSON: SchemaOptions = SchemaOptions { int8_as_number: false, in_json: true };
+    pub const IN_JSON: SchemaOptions = SchemaOptions { int8_as_number: false, in_json: true, input: false };
 
     /// A value the caller decodes itself: a result column, a parameter.
     pub fn wire(int8_as_number: bool) -> SchemaOptions {
-        SchemaOptions { int8_as_number, in_json: false }
+        SchemaOptions { int8_as_number, in_json: false, input: false }
+    }
+
+    /// The same options for a value the caller passes.
+    pub fn as_input(self) -> SchemaOptions {
+        SchemaOptions { input: true, ..self }
     }
 
     /// The same options for a value inside a JSON document.
@@ -57,9 +66,11 @@ impl Type {
         match self {
             Type::Scalar { name } => scalar(name, opts),
             Type::Enum { labels, .. } => json!({"type": "string", "enum": labels}),
+            // Postgres lets any array hold NULL elements, whatever a column's NOT NULL says.
             Type::Array { of, nullable_items } => {
                 let items = of.json_schema(opts);
-                json!({"type": "array", "items": if *nullable_items == Some(true) { nullable(items) } else { items }})
+                let nulls = if opts.input { *nullable_items == Some(true) } else { *nullable_items != Some(false) };
+                json!({"type": "array", "items": if nulls { nullable(items) } else { items }})
             }
             // A composite's columns stand where the row does, and a column the catalog does not
             // mark `NOT NULL` is always spelled as an `anyOf` with null.
@@ -158,8 +169,8 @@ fn scalar(name: &str, opts: SchemaOptions) -> Value {
 mod tests {
     use super::*;
 
-    const WIRE: SchemaOptions = SchemaOptions { int8_as_number: false, in_json: false };
-    const INT8N: SchemaOptions = SchemaOptions { int8_as_number: true, in_json: false };
+    const WIRE: SchemaOptions = SchemaOptions { int8_as_number: false, in_json: false, input: false };
+    const INT8N: SchemaOptions = SchemaOptions { int8_as_number: true, in_json: false, input: false };
     const IN_JSON: SchemaOptions = SchemaOptions::IN_JSON;
 
     fn s(name: &str) -> Type {
@@ -219,12 +230,15 @@ mod tests {
     fn enums_arrays_json_and_unknown() {
         let mood = Type::Enum { name: "mood".into(), labels: vec!["ok".into(), "sad".into()] };
         assert_eq!(mood.json_schema(WIRE), json!({"type": "string", "enum": ["ok", "sad"]}));
-        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None }.json_schema(WIRE), json!({"type": "array", "items": {"type": "integer", "format": "int32"}}));
+        // A result's elements may be NULL, as any Postgres array's may, unless the statement shows
+        // they are not; a parameter's are strict unless the statement says otherwise.
+        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None }.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"type": "integer", "format": "int32"}, {"type": "null"}]}}));
+        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": "integer", "format": "int32"}}));
         // An array's element stands where the array does.
-        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: None }.json_schema(IN_JSON)["items"], json!({"type": "integer", "format": "int64"}));
-        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: None }.json_schema(WIRE)["items"], json!({"type": "string", "format": "int64"}));
-        // Elements are nullable only where the statement builds the array from a value that may be NULL.
+        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false) }.json_schema(IN_JSON)["items"], json!({"type": "integer", "format": "int64"}));
+        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false) }.json_schema(WIRE)["items"], json!({"type": "string", "format": "int64"}));
         assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE), json!({"type": "array", "items": {"type": ["string", "null"]}}));
+        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(false) }.json_schema(WIRE), json!({"type": "array", "items": {"type": "string"}}));
         assert_eq!(Type::Json { schema: None }.json_schema(WIRE), json!({}));
         let checked = json!({"type": "object", "properties": {"a": {"type": "string"}}, "additionalProperties": true});
@@ -250,7 +264,8 @@ mod tests {
         assert_eq!(users.json_schema(IN_JSON)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
         assert_eq!(users.json_schema(INT8N)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
         let many = Type::Array { of: Box::new(users.clone()), nullable_items: None };
-        assert_eq!(many.json_schema(WIRE), json!({"type": "array", "items": users.json_schema(WIRE)}));
+        assert_eq!(many.json_schema(WIRE), json!({"type": "array", "items": nullable(users.json_schema(WIRE))}));
+        assert_eq!(many.json_schema(WIRE.as_input()), json!({"type": "array", "items": users.json_schema(WIRE)}));
     }
 
     #[test]

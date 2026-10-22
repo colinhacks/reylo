@@ -8,7 +8,7 @@ type ExpectedRow = {
   name: string;
   email: string | null;
   role: "admin" | "member";
-  tags: string[];
+  tags: (string | null)[];
   created_at: string;
   big: bigint | null;
 };

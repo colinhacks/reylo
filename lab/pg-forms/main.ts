@@ -30,11 +30,12 @@ const jsonAgg4: JsonAggParams = null! as { id: number };
 import arrays from "./arrays.sql";
 type ArraysRow = {
   id: number;
-  // An ARRAY subquery is never NULL: an empty subquery is `{}`.
-  post_ids: number[];
-  post_titles: string[];
+  // An ARRAY subquery is never NULL: an empty subquery is `{}`. Its elements may be NULL, as any
+  // array's may, where the engine does not show otherwise.
+  post_ids: (number | null)[];
+  post_titles: (string | null)[];
   // array_agg over no rows is NULL.
-  agg_ids: number[] | null;
+  agg_ids: (number | null)[] | null;
   // `record[]` has no driver parser, so the value arrives as the text Postgres prints,
   // `{"(1,hello)","(2,second)"}`.
   agg_rows: string | null;
@@ -60,7 +61,7 @@ type RowsRow = {
     email: string | null;
     slug: string;
     role: "admin" | "member";
-    tags: string[];
+    tags: (string | null)[];
     meta: unknown;
     score: number | null;
     big: number;
@@ -219,7 +220,7 @@ type ColumnsRow = {
   email: string | null;
   slug: string;
   role: "admin" | "member";
-  tags: string[];
+  tags: (string | null)[];
   meta: unknown;
   score: string | null;
   big: bigint;
@@ -230,7 +231,7 @@ const columns1: ColumnsRow[] = null! as Awaited<ReturnType<typeof columns.run>>;
 const columns2: Awaited<ReturnType<typeof columns.run>> = null! as ColumnsRow[];
 // Right throughout: the enum becomes its label union, the domain over text becomes the base
 // type with the column's NOT NULL, uuid, timestamptz and numeric are text and int8 a BigInt
-// (src/values.ts), bytea is Uint8Array, text[] is string[], jsonb is unknown.
+// (src/values.ts), bytea is Uint8Array, text[] is (string | null)[], jsonb is unknown.
 
 // ---------------------------------------------------------------------------
 // 9. Nullability through joins
@@ -392,7 +393,7 @@ type TypesRow = {
   doc: string | null;
   search: string | null;
   pair: string | null;
-  roles: ("admin" | "member")[];
+  roles: ("admin" | "member" | null)[];
 };
 const types1: TypesRow | null = null! as Awaited<ReturnType<typeof types.run>>;
 const types2: Awaited<ReturnType<typeof types.run>> = null! as TypesRow | null;

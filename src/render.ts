@@ -38,9 +38,11 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     case "enum": return t.labels.length ? t.labels.map((l) => JSON.stringify(l)).join(" | ") : "string";
     case "array": {
       if (((t.of.kind === "scalar" && t.of.name === "record") || t.of.kind === "composite") && !inJson) return "string";
-      // An element is nullable only where the statement builds the array from a value that may
-      // be NULL (`array_agg` over a LEFT JOIN); any other array is `T[]`, as decided on 2026-10-03.
-      const inner = renderType(t.of, inJson, dialect) + (t.nullable_items ? " | null" : "");
+      // Postgres lets any array hold NULL elements, whatever a column's NOT NULL says, so a result's
+      // elements may be null unless the statement builds the array from values it shows are not
+      // (`array[1, 2]`, `array_agg` over a NOT NULL column). A parameter's are strict
+      // (`renderParamType`).
+      const inner = renderType(t.of, inJson, dialect) + (t.nullable_items !== false ? " | null" : "");
       return /[|&]/.test(inner) ? `(${inner})[]` : `${inner}[]`;
     }
     // A JSON value whose shape the statement builds.

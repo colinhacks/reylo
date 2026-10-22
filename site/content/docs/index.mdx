@@ -42,7 +42,7 @@ create table users (
   name text not null,                        -- name: string
   email text unique,                         -- email: string | null
   role user_role not null default 'member',  -- role: "admin" | "member"
-  tags text[] not null default '{}',         -- tags: string[]
+  tags text[] not null default '{}',         -- tags: (string | null)[]
   created_at timestamptz                     -- created_at: string
     not null default now()
 );
