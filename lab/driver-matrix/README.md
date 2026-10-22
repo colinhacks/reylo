@@ -31,6 +31,7 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | sqlite3 | 5.1.7, 6.0.1 | SQLite file | Database, BEGIN/COMMIT inside `db.serialize()` |
 | sqlite | 5.1.1 over sqlite3 5.1.7 and 6.0.1 | SQLite file | Database from `open()`, Database inside BEGIN/COMMIT |
 | Cloudflare D1 | miniflare 4.20260730.0 | local workerd | D1Database, `db.withSession()` |
+| drizzle-orm | 0.45.4, over pg, postgres.js, mysql2, better-sqlite3 and @libsql/client | Postgres 14 (local), MySQL 8.4, SQLite file | `drizzle(client)`, `db.transaction(tx)`, the savepoint `tx.transaction(sp)` inside it (not on better-sqlite3, whose transaction is synchronous) |
 
 The packages are installed side by side under npm aliases (`"pg-7": "npm:pg@7.18.2"`) in [package.json](package.json); nub wrote the lockfile as pnpm-lock.yaml. The three old better-sqlite3 lines live in [native-old/](native-old/package.json), a project of their own, because their source build must not block the rest.
 
@@ -201,6 +202,10 @@ The mariadb jobs run on MySQL 8.4 alone: the matrix checks Reylo's run time on M
 ## Re-run (2026-10-20): SQLite's built JSON
 
 S10j is new, after the engine typed the JSON a SQLite statement builds as that JSON, which the run time parses (wiki/driver-decoding.md). It passes on every SQLite job (every better-sqlite3 line, `node:sqlite` on both Nodes, `bun:sqlite`, Bun.sql's SQLite, every libSQL, Turso's engine 0.6.1, 0.7.2 and 0.8.3 through both its APIs, sqlite3, the sqlite wrapper and D1) but Turso's engine 0.4.4, which answers `json_group_array` over no rows with NULL where SQLite and Turso 0.6 and later answer `[]`: its three shapes skip S10j ([drivers/turso.ts](drivers/turso.ts)). The run, on Node 26.11.1 and 24.22.0, Bun 1.4.3 and Miniflare 4.20260730.0, with the containers in colima and a throwaway Postgres 18 standing in for the shared Postgres 14 (`DM_PG_URL`), wrote [RESULTS.md](RESULTS.md): 3805 rows, with 3737 pass, 2 fail (PlanetScale's simulator, as before), 51 unsupported, 12 skip and 3 not run, and 36 of 105 control rows failing as designed (the synchronous SQLite control's S10j passes, since its statements answer at once). [compare.ts](compare.ts) against the RESULTS.md before it: 3844 rows over 52 jobs, and the 43 that differ are S10j's, new.
+
+## Run (2026-10-22): Drizzle
+
+Reylo now takes a Drizzle database and the transactions it hands out, and runs on the driver client Drizzle's session holds: `session.client`, the pool for a database and the transaction's own connection inside one, or `session.tx` inside a libSQL transaction, where `client` stays the base client ([src/execute.ts](../../src/execute.ts)). Run on `session.client` there, the libSQL job failed 13 rows with `SQLITE_BUSY`, the base client waiting on the transaction's lock. Over postgres.js, Drizzle replaces the client's `json` and `jsonb` serializers with ones that pass a value through, so Reylo now gives every postgres.js client a JSON parameter as its JSON text declared `unknown` (`sql.typed(text, 705)`). The harness takes libSQL's own `RangeError` in S10 on Drizzle's libSQL job as on libSQL's. The five Drizzle jobs, on Node 26.11.1 against a throwaway Postgres 18 (`DM_PG_URL`) and MySQL 8.4 (`DM_MYSQL_URL`), add 310 rows to [RESULTS.md](RESULTS.md), all of which pass; every other job's rows are as they were, and the gates run them again.
 
 ## Type check
 

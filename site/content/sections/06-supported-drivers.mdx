@@ -4,7 +4,7 @@ title: "Supported drivers"
 
 ## Supported drivers
 
-Pass `.run()` a client from any of these drivers. Transactions and connections taken from a client work too ([an example](#transactions)).
+Pass `.run()` a client from any of these drivers, or a Drizzle database over one. Transactions and connections taken from a client work too ([an example](#transactions)).
 
 The type check reads your schema through `pg` or postgres.js on Postgres, and `mysql2` on MySQL. If your app uses another driver, add one of these as a dev dependency.
 
@@ -73,6 +73,16 @@ import getUser from "./get_user.sql";
 const user = await getUser.run(sql, { id: 1 });
 ```
 
+```ts twoslash tab="Drizzle" dialect="postgres"
+import { drizzle } from "drizzle-orm/node-postgres";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
+```
+
 ### MySQL
 
 ```ts twoslash tab="mysql2" dialect="mysql"
@@ -101,6 +111,16 @@ import getUser from "./get_user.sql";
 const db = new SQL(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Drizzle" dialect="mysql"
+import { drizzle } from "drizzle-orm/mysql2";
+import getUser from "./get_user.sql";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ### SQLite
@@ -179,4 +199,14 @@ import getUser from "./get_user.sql";
 const db = await open({ filename: "app.db", driver: sqlite3.Database });
 
 const user = await getUser.run(db, { id: 1 });
+```
+
+```ts twoslash tab="Drizzle" dialect="sqlite"
+import { drizzle } from "drizzle-orm/better-sqlite3";
+import getUser from "./get_user.sql";
+
+const db = drizzle("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
 ```

@@ -151,7 +151,7 @@ Each has examples in [Inference](https://reylo.dev/#inference).
 
 ## Supported drivers
 
-Reylo is bring-your-own-driver. Pass `.run()` a client from any of these:
+Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a Drizzle database over one:
 
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `@vercel/postgres`
 - **MySQL** — `mysql2`, PlanetScale, `Bun.sql`

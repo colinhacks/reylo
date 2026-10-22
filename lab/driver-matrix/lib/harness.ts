@@ -863,13 +863,15 @@ export const SCENARIOS: Scenario[] = [
       // engine); where the driver rounds it first, Reylo's error naming the column; libSQL's own
       // error at its default intMode.
       const rounds = /^(sqlite3|sqlite|miniflare D1|Bun\.sql)\b/.test(ctx.job.pkg);
+      // libSQL's job, or Drizzle's over libSQL.
+      const libsql = /^(@libsql\/|drizzle-orm \(libsql\))/.test(ctx.job.pkg);
       try {
         const r = await call(ctx, q.typedWide, client);
-        if (rounds || ctx.job.pkg.startsWith("@libsql")) throw new Mismatch(`expected the BIGINT past 2^53 to be refused, got ${oneLine(safeJson(r))}`);
+        if (rounds || libsql) throw new Mismatch(`expected the BIGINT past 2^53 to be refused, got ${oneLine(safeJson(r))}`);
         typedEq(r, { id: 1, wide: 9007199254740993n }, "a BIGINT past 2^53");
       } catch (e) {
         if (e instanceof Mismatch || e instanceof Violation) throw e;
-        const refused = (rounds && e instanceof TypeError && /^Column "wide" is a 64-bit integer, and the driver already rounded its value to 9007199254740992/.test(e.message)) || (ctx.job.pkg.startsWith("@libsql") && e instanceof RangeError && /cannot be safely represented/.test(e.message));
+        const refused = (rounds && e instanceof TypeError && /^Column "wide" is a 64-bit integer, and the driver already rounded its value to 9007199254740992/.test(e.message)) || (libsql && e instanceof RangeError && /cannot be safely represented/.test(e.message));
         if (!refused) throw new Mismatch(`not the BIGINT past 2^53 read exactly or refused as rounded: ${describe(e)}`);
       }
       // An INTEGER past 2^53, which a number cannot hold: Reylo's error naming the column, or libSQL's own at its default intMode.

@@ -59,6 +59,13 @@ for (const [alias, v] of [["mariadb-3", "3.5.4"], ["mariadb-34", "3.4.5"], ["mar
 for (const [port, target] of mysqlServers) add({ id: `bun-sql-mysql/${target}`, bin: BUN, file: "drivers/bunsql.ts", args: ["--adapter", "mysql", "--url", `mysql://root:porg@127.0.0.1:${port}/driver_matrix`, "--target", target!], meta: { pkg: "Bun.sql (mysql)", version: "1.3.14", target: target!, runtime: "bun" } });
 for (const [alias, v] of [["planetscale-2", "2.0.0"], ["planetscale-1", "1.20.2"]]) add({ id: `planetscale@${v}`, bin: NODE26, file: "drivers/planetscale.ts", args: ["--pkg", alias, "--version", v], meta: { pkg: "@planetscale/database", version: v, target: "MySQL 8.4 via ps-http-sim", runtime: n26 } });
 
+// Drizzle over each of its drivers, which run on the driver packages installed under their own names.
+const drizzleVersion = "0.45.4";
+for (const driver of ["node-postgres", "postgres-js"]) add({ id: `drizzle-orm@${drizzleVersion}/${driver}`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", driver], meta: { pkg: `drizzle-orm (${driver})`, version: drizzleVersion, target: "Postgres 14 (local)", runtime: n26 } });
+add({ id: `drizzle-orm@${drizzleVersion}/mysql2`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "mysql2", "--port", "33406", "--target", "MySQL 8.4"], meta: { pkg: "drizzle-orm (mysql2)", version: drizzleVersion, target: "MySQL 8.4", runtime: n26 } });
+add({ id: `drizzle-orm@${drizzleVersion}/better-sqlite3`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "better-sqlite3"], sqlite: true, meta: { pkg: "drizzle-orm (better-sqlite3)", version: drizzleVersion, target: "SQLite file", runtime: n26 } });
+add({ id: `drizzle-orm@${drizzleVersion}/libsql`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "libsql"], sqlite: true, meta: { pkg: "drizzle-orm (libsql)", version: drizzleVersion, target: "SQLite file (file: URL)", runtime: n26 } });
+
 // SQLite
 for (const [alias, v] of [["bs3-13", "13.0.3"], ["bs3-12", "12.11.1"]]) add({ id: `better-sqlite3@${v}`, bin: NODE26, file: "drivers/sync-sqlite.ts", args: ["--lib", alias, "--version", v], sqlite: true, meta: { pkg: "better-sqlite3", version: v, target: "SQLite file", runtime: n26 } });
 // These lines have no prebuilt binary for Node 24 or 26, and their source does not compile against Node 26's V8

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { arrayLiteral, execute, type QueryModule } from "../src/execute.ts";
+import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { defineQuery } from "../src/index.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
@@ -510,13 +510,32 @@ test("the driver's own error comes through unchanged", async () => {
 
 test("an unsupported client rejects, naming what it has and what reylo takes", async () => {
   await assert.rejects(() => execute({ connect() {}, end() {} } as never, pg) as Promise<unknown>, (e: TypeError) => e instanceof TypeError && /postgres statement on an object with connect, end\. It takes a client with query\(text, values\)/.test(e.message));
-  await assert.rejects(() => execute({ $client: {}, select() {} } as never, pg) as Promise<unknown>, /pass db\.\$client/);
+  // An object with Drizzle's select() but no session over a client is no Drizzle database.
+  await assert.rejects(() => execute({ $client: {}, select() {} } as never, pg) as Promise<unknown>, /object with select\. .*or a Drizzle database over one of them\./);
   // node:sqlite's tag store has all() for templates; it is not sqlite3's database.
   const store = new DatabaseSync(":memory:").createTagStore();
   await assert.rejects(() => execute(store as never, lite, { id: 1, name: "ada" }) as Promise<unknown>, /sqlite statement on an object with .*pass its database, store\.db/);
   await assert.rejects(() => execute(null as never, my) as Promise<unknown>, /mysql statement on null/);
   // A pg pool handed to a SQLite statement matches no SQLite shape.
   await assert.rejects(() => execute({ query: async () => ({ rows: [] }) } as never, lite) as Promise<unknown>, /sqlite statement on an object with query/);
+});
+
+test("a Drizzle database or transaction runs on the driver client its session keeps", async () => {
+  // Drizzle's database and transaction objects: select() beside a session holding the dialect and the client.
+  const drizzle = <C>(client: C) => ({ $client: client, select() {}, execute() {}, session: { dialect: {}, client } });
+  const seen: unknown[][] = [];
+  const pgClient = { query: async (_: string, values: unknown[]) => (seen.push(values), { rows: [row] }) };
+  assert.deepEqual(await execute(drizzle(pgClient) as never, pg, { id: 1, name: "ada" }), [row]);
+  const mysqlPool = { query: async () => [[], []], execute: async (_: unknown, values: unknown[]) => (seen.push(values), [[row], []]) };
+  assert.deepEqual(await execute(drizzle(mysqlPool) as never, my, { id: 1, name: "ada" }), [row]);
+  assert.deepEqual(seen, [[1, "ada"], [1, "ada", 1]]);
+  const db = new DatabaseSync(":memory:");
+  assert.deepEqual(executeSync(drizzle(db) as never, lite, { id: 1, name: "ada" }), [row]);
+  // Inside a libSQL transaction the session keeps the base client on client and the transaction on tx.
+  const libsql = (name: string) => ({ execute: async () => (seen.push([name]), { rows: [row], columns: ["id", "name", "again"], columnTypes: [] }), batch: async () => [], transaction: async () => {} });
+  const tx = { select() {}, session: { dialect: {}, client: libsql("base"), tx: { ...libsql("tx"), commit: async () => {}, rollback: async () => {} } } };
+  await execute(tx as never, lite, { id: 1, name: "ada" });
+  assert.deepEqual(seen.at(-1), ["tx"]);
 });
 
 test("positional placeholders take an object keyed by number, bound by number on every dialect", async () => {

@@ -104,19 +104,34 @@ export type SqlitePromiseClient = {
   getDatabaseInstance(): unknown;
 };
 
+/**
+ * A Drizzle database over one of these clients (`drizzle(pool)`, whose `$client` is the pool):
+ * `run` runs on the driver client underneath, so the values are what Reylo decodes on that driver.
+ */
+export type DrizzleDatabase<C> = { readonly $client: C };
+/**
+ * A transaction or savepoint a Drizzle database hands out (`db.transaction(async (tx) => …)`),
+ * which `run` runs on through the transaction's own connection. Each dialect's is known by what
+ * only it has: `setTransaction()` on Postgres, `get()` and `all()` on SQLite, neither on MySQL.
+ */
+export type DrizzlePgTransaction = { rollback(): never; setTransaction(config: any): Promise<void> };
+export type DrizzleMysqlTransaction = { rollback(): never; execute(query: any): unknown; setTransaction?: never; get?: never };
+export type DrizzleSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown };
+/** A transaction of a synchronous SQLite driver's Drizzle database, whose `all()` returns the rows themselves. */
+export type DrizzleSyncSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown[] };
 /** Every Postgres client `run` takes, or a transaction, savepoint or connection taken from one. */
-export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient;
+export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction;
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
-export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient;
+export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
-export type SqliteClient = SyncSqliteClient | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient;
+export type SqliteClient = SyncSqliteClient | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
 
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
 export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
-export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient : never;
+export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DrizzleDatabase<SyncSqliteClient> | DrizzleSyncSqliteTransaction : never;
 
 export type QueryModule<D extends Dialect = Dialect> = {
   readonly dialect: D;
@@ -168,14 +183,27 @@ export function execute<D extends Dialect>(
   query: QueryModule<D>,
   params: ParamsInput = {},
 ): unknown[] | Promise<unknown[]> {
-  const c = client as AnyClient;
+  const c = underneath(client as AnyClient);
   if (query.dialect === "sqlite" && isSyncSqlite(c)) return executeSyncSqlite(c, query, params);
   return executeAsync(c, query, params);
 }
 
+/**
+ * The driver client a Drizzle database, transaction or savepoint runs on, which its session
+ * keeps on `session.client` (the pool for a database, the transaction's own connection inside
+ * one), or on `session.tx` inside a libSQL transaction, whose `client` stays the base client;
+ * any other client as it is.
+ */
+function underneath(c: AnyClient): AnyClient {
+  const o = c as unknown as { select?: unknown; session?: { client?: unknown; tx?: unknown; dialect?: unknown } } | null | undefined;
+  const session = o != null && typeof o === "object" && typeof o.select === "function" ? o.session : undefined;
+  if (session == null || typeof session !== "object" || session.dialect == null) return c;
+  return ((session.tx ?? session.client) as AnyClient | undefined) ?? c;
+}
+
 /** The synchronous path alone, for `runSync`: any other client is refused before anything runs. */
 export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: QueryModule<D>, params: ParamsInput = {}): unknown[] {
-  const c = client as unknown as AnyClient;
+  const c = underneath(client as unknown as AnyClient);
   const refuse = (why: string) => new TypeError(`runSync takes a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite or the Database of @tursodatabase/database/compat); ${why}. run takes every client.`);
   if (query.dialect !== "sqlite") throw refuse(`a ${query.dialect} statement has none`);
   if (!isSyncSqlite(c)) throw refuse("this client answers through a promise");
@@ -269,9 +297,13 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         // `infinity` or a zone name failed with "Invalid time value". Declared `unknown` (705), it
         // is sent as the text, which the server reads as the parameter's type, as it would an
         // undeclared one. Bun.sql (commitDistributed()) sends the text and has no typed().
+        // A JSON parameter goes to postgres.js as its JSON text declared `unknown` too: its own
+        // serializer would write a value as JSON, but a client Drizzle wraps has that serializer
+        // replaced by one that passes the value through (drizzle-orm/postgres-js), and a
+        // transaction shows neither. Bun.sql serializes the value itself.
         const bun = typeof c.commitDistributed === "function";
         const asText = typeof c.typed === "function" && !bun;
-        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? { toJSON: () => v } : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
+        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(JSON.stringify(v), 705) : { toJSON: () => v }) : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
         return bun ? bunRows(await c.unsafe(text, mapped), query.columns) : await postgresJs(c, text, mapped, query.columns);
       }
       if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
@@ -558,9 +590,9 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 }
 
 const accepted: Record<Dialect, string> = {
-  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; or Neon's neon() function",
-  mysql: "execute(text, values) as on mysql2 and PlanetScale; unsafe(text, values) as on Bun.sql; or a mysql2 callback pool or connection",
-  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; or unsafe(text, values) as on Bun.sql",
+  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; or a Drizzle database over one of them",
+  mysql: "execute(text, values) as on mysql2 and PlanetScale; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database over one of them",
+  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
 };
 
 function unsupported(c: unknown, dialect: Dialect): TypeError {
@@ -576,9 +608,8 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
     }
     seen = names.size ? `an object with ${[...names].slice(0, 12).join(", ")}${names.size > 12 ? ", ..." : ""}` : "an object with no methods";
   }
-  // Drizzle's database keeps its driver client on $client (its transactions keep none), and
   // node:sqlite's tag store keeps its database on db.
-  const o = c as { $client?: unknown; db?: { prepare?: unknown } } | null;
-  const hint = o && typeof o === "object" && "$client" in o ? " A Drizzle database is not a client: pass db.$client." : typeof o?.db?.prepare === "function" ? " A tag store is not a client: pass its database, store.db." : "";
+  const o = c as { db?: { prepare?: unknown } } | null;
+  const hint = typeof o?.db?.prepare === "function" ? " A tag store is not a client: pass its database, store.db." : "";
   return new TypeError(`reylo cannot run a ${dialect} statement on ${seen}. It takes a client with ${accepted[dialect]}.${hint}`);
 }

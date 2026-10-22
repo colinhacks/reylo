@@ -12,7 +12,7 @@ This page is the reference behind [the main docs](/) for SQLite: the place to lo
 | Versions | The type check prepares each statement in Reylo's own SQLite 3.53, against the schema of your database file; your app runs on its driver's SQLite ([Functions](#functions)) |
 | URL | A `file:` or `sqlite:` URL and a path, which starts at the directory of `package.json`, in `DATABASE_URL` or [`direct_url`](/#direct_url) |
 | Type check | Reads the schema through Node's built-in `node:sqlite`, so it needs no driver |
-| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1, `sqlite3`, `sqlite` and `Bun.sql` ([Drivers](#drivers)) |
+| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3` or libSQL ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -772,9 +772,9 @@ Reylo runs its own query on the database you pass and gives each value its type 
 | Cloudflare D1 | The driver's rows; a `BLOB`'s array of numbers made a `Uint8Array` | An integer past 2^53, rounded |
 | `Bun.sql` | The driver's rows | An integer past 2^53, rounded, without `safeIntegers`; no rows, with no error, for a statement with a `"` inside a single-quoted string |
 
-- The drivers `better-sqlite3`, `node:sqlite`, `bun:sqlite` and the `Database` of `@tursodatabase/database/compat` take `.runSync()` too, which returns the result itself, so it works inside their `db.transaction(fn)`.
+- The drivers `better-sqlite3`, `node:sqlite`, `bun:sqlite` and the `Database` of `@tursodatabase/database/compat` take `.runSync()` too, which returns the result itself, so it works inside their `db.transaction(fn)`, and so does a Drizzle database over `better-sqlite3`, with the transaction its `.transaction()` passes.
 - The drivers `sqlite3` and `sqlite` bind a `bigint` as `NULL`, so Reylo passes them one that a `number` holds as that number, and refuses a larger one before the statement runs. Every other SQLite driver binds a `bigint` exactly.
-- Each driver takes its transactions too: libSQL's `.transaction()`, the handle Turso's `.transactionAsync()` passes its function, `Bun.sql`'s `.begin()` and `.savepoint()`, and D1's `.withSession()` sessions.
+- Each driver takes its transactions too: libSQL's `.transaction()`, the handle Turso's `.transactionAsync()` passes its function, `Bun.sql`'s `.begin()` and `.savepoint()`, D1's `.withSession()` sessions, and the `.transaction()` of a Drizzle database over libSQL.
 - On Bun 1.4.3, `Bun.sql` returns no rows for a statement whose text holds a `"` inside a single-quoted string, such as `json_extract('{"a":1}', '$.a')`, so `.run()` throws "Expected exactly one row, got 0" where one row is expected. Pass the document as a parameter: `json_extract(:doc::text, '$.a')`.
 - Turso's engine 0.8 stops the process on a recursive `WITH` whose anchor and recursive member both read a CTE over `json_each`, such as one over a [JSON parameter](/#typed-json), with no Reylo involved. Write that CTE `as materialized`.
 

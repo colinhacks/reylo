@@ -68,7 +68,15 @@ import type * as tu04c from "turso-04/compat";
 import type * as s3v5 from "sqlite3-5";
 import type * as s3v6 from "sqlite3-6";
 import type { Database as SqliteDatabase } from "sqlite";
-import type { D1Database, D1DatabaseSession } from "@cloudflare/workers-types";`;
+import type { D1Database, D1DatabaseSession } from "@cloudflare/workers-types";
+import type { NodePgDatabase, NodePgQueryResultHKT } from "drizzle-orm/node-postgres";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
+import type { MySql2Database } from "drizzle-orm/mysql2";
+import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
+import type { LibSQLDatabase } from "drizzle-orm/libsql";
+import type { PgTransaction } from "drizzle-orm/pg-core";
+import type { MySqlTransaction } from "drizzle-orm/mysql-core";
+import type { SQLiteTransaction } from "drizzle-orm/sqlite-core";`;
 
 const entries: Entry[] = [];
 const pg = (pkg: string, shape: string, type: string, note?: string) => entries.push({ pkg, shape, type, accepts: ["postgres"], ...(note ? { note } : {}) });
@@ -127,6 +135,16 @@ sq("better-sqlite3 (@types/better-sqlite3 9.6.0)", "Database", "BetterSqlite3.Da
 sq("node:sqlite (@types/node 26.6.1)", "DatabaseSync", "DatabaseSync", true);
 entries.push({ pkg: "node:sqlite (@types/node 26.6.1)", shape: "SQLTagStore (createTagStore())", type: "SQLTagStore", accepts: [], note: "run() cannot use it (Node throws on a string), so every dialect should reject it" });
 sq("bun:sqlite (bun-types 1.3.14)", "Database", "BunDatabase", true);
+// Drizzle: each database by its $client, each transaction by what only its dialect's has.
+pg("drizzle-orm@0.45.4 (node-postgres)", "drizzle(pool)", "NodePgDatabase & { $client: pg8.Pool }");
+pg("drizzle-orm@0.45.4 (postgres-js)", "drizzle(sql)", "PostgresJsDatabase & { $client: postgres.Sql }");
+pg("drizzle-orm@0.45.4", "PgTransaction (db.transaction, tx.transaction)", "PgTransaction<NodePgQueryResultHKT, Record<string, never>, Record<string, never>>");
+my("drizzle-orm@0.45.4 (mysql2)", "drizzle(pool)", "MySql2Database & { $client: my3p.Pool }");
+my("drizzle-orm@0.45.4", "MySqlTransaction (db.transaction, tx.transaction)", "MySqlTransaction<any, any, any, any>");
+sq("drizzle-orm@0.45.4 (better-sqlite3)", "drizzle(database)", "BetterSQLite3Database & { $client: BetterSqlite3.Database }", true);
+sq("drizzle-orm@0.45.4", "SQLiteTransaction (db.transaction, over better-sqlite3)", "SQLiteTransaction<'sync', any, any, any>", true);
+sq("drizzle-orm@0.45.4 (libsql)", "drizzle(client)", "LibSQLDatabase & { $client: ls018.Client }");
+sq("drizzle-orm@0.45.4", "SQLiteTransaction (db.transaction, over libSQL)", "SQLiteTransaction<'async', any, any, any>");
 for (const [ns, v] of [["ls017", "0.17.4"], ["ls018", "0.18.0"], ["ls015", "0.15.15"], ["ls014", "0.14.0"]]) {
   sq(`@libsql/client@${v}`, "Client", `${ns}.Client`);
   sq(`@libsql/client@${v}`, "Transaction", `${ns}.Transaction`);

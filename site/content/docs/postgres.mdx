@@ -12,7 +12,7 @@ This page is the reference behind [the main docs](/) for Postgres: the place to 
 | Versions | Postgres 18, 17 and 14 |
 | URL | A `postgres://` or `postgresql://` URL, in `DATABASE_URL` or [`direct_url`](/#direct_url), a direct connection past a pooler such as PgBouncer |
 | Type check | Reads the schema through postgres.js or `pg`, whichever your project has |
-| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres` ([Drivers](#drivers)) |
+| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg` or postgres.js ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -803,7 +803,7 @@ Each driver reads Postgres's protocol as it always does, and Reylo makes only th
 - On `Bun.sql`, a statement with a parameter is read over the binary protocol and one without as text. So a `real` is its exact float, `1.100000023841858`, only with a parameter, and a `timestamp` or a `timestamptz` before 1 AD is refused only without one; a `date` before 1 AD is refused either way.
 - Bun fails with its own error, "Failed to read data", before Reylo sees the value, on a two-dimensional `int[]` in a statement with a parameter and on an array with explicit bounds in one without.
 - The `@vercel/postgres` package is deprecated on npm: Reylo's types accept its client, and its tests do not run it.
-- Each driver takes its transactions and connections too: `pg`'s Pool, Client and PoolClient; postgres.js's and `Bun.sql`'s `.begin()`, `.savepoint()` and `.reserve()`; PGlite's `.transaction()`; Neon's Pool and Client; and `pg-promise`'s `.task()` and `.tx()`.
+- Each driver takes its transactions and connections too: `pg`'s Pool, Client and PoolClient; postgres.js's and `Bun.sql`'s `.begin()`, `.savepoint()` and `.reserve()`; PGlite's `.transaction()`; Neon's Pool and Client; `pg-promise`'s `.task()` and `.tx()`; and a Drizzle database's `.transaction()` and the savepoints inside it, over `pg` or postgres.js.
 
 The type check reads the schema through postgres.js or `pg`, so an app on PGlite, Neon, `Bun.sql`, `pg-promise` or `@vercel/postgres` adds one of them as a dev dependency.
 

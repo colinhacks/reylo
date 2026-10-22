@@ -12,7 +12,7 @@ This page is the reference behind [the main docs](/) for MySQL: the place to loo
 | Versions | MySQL 8.0.22 or later, which types a parameter from its context; checked on MySQL 8.0, 8.4, 9.7 and 26.7 |
 | URL | A `mysql://` URL, in `DATABASE_URL` or [`direct_url`](/#direct_url) |
 | Type check | Reads the schema through `mysql2` |
-| Drivers | `mysql2`, PlanetScale and `Bun.sql` ([Drivers](#drivers)) |
+| Drivers | `mysql2`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -663,7 +663,7 @@ Each driver reads MySQL's protocol as it always does, and Reylo makes only the c
 
 - The `mysql2` driver runs on `.execute()`, the binary protocol, and its callback API through `.promise()`, both on the app's own pool or connection.
 - On `Bun.sql`, an expression that may be a `BIGINT` or a `DECIMAL` by what is bound (`round(:x)`) reads digits without a point as a `BIGINT`, since Bun gives both as text.
-- Each driver takes its transactions and connections too: `mysql2`'s promise or callback API, PlanetScale's `.transaction()`, and `Bun.sql`'s `.begin()`, `.savepoint()` and `.reserve()`.
+- Each driver takes its transactions and connections too: `mysql2`'s promise or callback API, PlanetScale's `.transaction()`, `Bun.sql`'s `.begin()`, `.savepoint()` and `.reserve()`, and a Drizzle database over `mysql2`, with its `.transaction()` and the savepoints inside it.
 
 The type check reads the schema through `mysql2`, so an app on PlanetScale or `Bun.sql` adds `mysql2` as a dev dependency.
 
