@@ -267,12 +267,12 @@ Inside JSON, a value can differ from the same value in a column: a boolean is `1
 
 **Built JSON inside built JSON**
 
-JSON you build can nest inside other JSON you build, through `coalesce`, `case` and a scalar subquery.
+JSON you build can nest inside other JSON you build, directly or through `coalesce` and `case`. To nest a scalar subquery's JSON, wrap the subquery in `json(…)`: without it, newer SQLite versions, such as 3.54.1 in Node 26.11's `node:sqlite`, nest it as text, so Reylo types it `unknown`.
 
 <Pairs>
 
-- `json_object('n', (select json_object('a', 1)))` → `{ n: { a: 1 } }`
 - `json_object('n', case when 1 then json_object('a', 1) end)` → `{ n: { a: 1 } }`
+- `json_object('n', json((select json_object('a', 1))))` → `{ n: { a: 1 } }`
 
 </Pairs>
 

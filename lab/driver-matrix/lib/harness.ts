@@ -310,7 +310,7 @@ export function queries(d: Dialect, typed = true) {
     // (tests/representation.test.ts pins those types): `json` for each column a constructor
     // builds, `text` for one that holds JSON text the statement did not build.
     builtJson: q(
-      `select json_object('user', json_object('id', p.id, 'name', p.name), 'scores', (select json_group_array(json_object('id', s.id, 'score', s.score)) from people s where s.active = 1), 'none', (select json_group_array(s.id) from people s where s.id < 0)) as profile, json_array(p.id, p.name, p.score) as pair, json_object('n', p.name) || '' as glued, t.doc as doc from people p, typed t where p.id = 1`,
+      `select json_object('user', json_object('id', p.id, 'name', p.name), 'scores', json((select json_group_array(json_object('id', s.id, 'score', s.score)) from people s where s.active = 1)), 'none', json((select json_group_array(s.id) from people s where s.id < 0))) as profile, json_array(p.id, p.name, p.score) as pair, json_object('n', p.name) || '' as glued, t.doc as doc from people p, typed t where p.id = 1`,
       [],
       "one",
       { columns: [["profile", "json"], ["pair", "json"], ["glued", "text"], ["doc", "text"]] },

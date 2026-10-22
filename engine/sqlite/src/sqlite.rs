@@ -1150,7 +1150,12 @@ impl Analyzer<'_> {
             "function" => {
                 // The JSON a `json_*` constructor builds, which SQLite returns as its text.
                 if let Some(ty) = self.built_text(n, scope) {
-                    return Fact { ty, non_null: true };
+                    // `json()` of a scalar subquery is NULL where the subquery finds no row.
+                    let non_null = match n.args.first() {
+                        Some(a) if a.op == "select" => self.type_of(a, scope).non_null,
+                        _ => true,
+                    };
+                    return Fact { ty, non_null };
                 }
                 let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
                 self.function(n, &args)
@@ -1376,9 +1381,24 @@ impl Analyzer<'_> {
     fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
         match self.builtin_name(n)? {
             "json_object" | "json_array" | "json_group_array" | "json_group_object" => self.shape(n, scope),
-            "json" if n.args.len() == 1 && !n.agg && !n.window => self.shape(&n.args[0], scope),
+            "json" if n.args.len() == 1 && !n.agg && !n.window => self.shape(&n.args[0], scope).or_else(|| self.subquery_shape(&n.args[0], scope)),
             _ => None,
         }
+    }
+
+    /// The JSON a scalar subquery's one column builds, which `json()` of the subquery marks as
+    /// JSON again whether or not the subquery's value kept SQLite's subtype ([`Analyzer::carry`]).
+    /// None for a compound or a `VALUES` list, whose rows the first arm's column does not type.
+    fn subquery_shape(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+        if n.op != "select" {
+            return None;
+        }
+        let sub = n.select.as_deref()?;
+        if sub.columns.len() != 1 || sub.prior.is_some() || !sub.rows.is_empty() || sub.values {
+            return None;
+        }
+        let col = sub.columns.first()?;
+        self.within(sub, scope, |inner| self.built_text(&col.expr, inner))
     }
 
     /// The built-in a call resolves to: none where the host registers a scalar function of that
@@ -1465,7 +1485,7 @@ impl Analyzer<'_> {
                 let (ty, nullable) = value(&n.args[1]);
                 Some(record(vec![value_schema(&ty, nullable)]))
             }
-            "json" | "jsonb" if !aggregate && n.args.len() == 1 => self.shape(&n.args[0], scope),
+            "json" | "jsonb" if !aggregate && n.args.len() == 1 => self.shape(&n.args[0], scope).or_else(|| self.subquery_shape(&n.args[0], scope)),
             _ => None,
         }
     }
@@ -1490,7 +1510,9 @@ impl Analyzer<'_> {
                     return any;
                 }
                 if let Some(ty) = self.shape(n, scope) {
-                    return JsonFact { ty, non_null: true, carry: Carry::Yes };
+                    // `json()` of a scalar subquery is NULL where the subquery finds no row.
+                    let non_null = !n.args.first().is_some_and(|a| a.op == "select") || self.type_of(n, scope).non_null;
+                    return JsonFact { ty, non_null, carry: Carry::Yes };
                 }
                 let first = n.args.first().into_iter();
                 let non_null = || self.type_of(n, scope).non_null;
@@ -1514,17 +1536,9 @@ impl Analyzer<'_> {
                     _ => any,
                 }
             }
-            "select" => match self.carry(n, scope) {
-                Carry::No => plain(),
-                Carry::Maybe => any,
-                // A scalar subquery hands back its one value as it is, NULL where it finds no row.
-                Carry::Yes => {
-                    let Some(sub) = n.select.as_deref() else { return any };
-                    let Some(col) = sub.columns.first() else { return any };
-                    let inner = self.within(sub, scope, |inner| self.json_fact(&col.expr, inner));
-                    JsonFact { non_null: inner.non_null && self.exactly_one(sub).is_ok(), ..inner }
-                }
-            },
+            // A scalar subquery's JSON may have lost the subtype ([`Analyzer::carry`]): wrapped in
+            // `json()`, it nests as the JSON it is on every SQLite.
+            "select" => if self.carry(n, scope) == Carry::No { plain() } else { any },
             "collate" | "pos" => n.left.as_deref().map_or(any, |l| self.json_fact(l, scope)),
             "case" => {
                 let results = n.list.chunks(2).filter_map(|pair| if pair.len() == 2 { Some(&pair[1]) } else { None });
@@ -1583,14 +1597,16 @@ impl Analyzer<'_> {
                     _ => Carry::Maybe,
                 }
             }
-            // A scalar subquery kept the subtype on 3.53.4, but not one that sorts its rows
-            // (`order by`, which an ungrouped aggregate's one row skips), and the engine does not
-            // count on a DISTINCT, a compound or a VALUES list keeping it.
+            // A scalar subquery kept the subtype on 3.53.4 and drops it on 3.54.1 (the SQLite of
+            // Node 26.11's `node:sqlite`): `json_object('n', (select json_object('a', 1)))` is
+            // `{"n":{"a":1}}` on one and `{"n":"{\"a\":1}"}` on the other, so a JSON value from one may
+            // be either.
             "select" => {
                 let Some(sub) = n.select.as_deref() else { return Carry::No };
-                let inner = self.select_carry(sub, 0, scope);
-                let sorted = !sub.order_by.is_empty() && !(sub.aggregate && sub.group_by.is_empty());
-                if inner == Carry::Yes && (sorted || sub.distinct || sub.prior.is_some() || !sub.rows.is_empty() || sub.values) { Carry::Maybe } else { inner }
+                match self.select_carry(sub, 0, scope) {
+                    Carry::No => Carry::No,
+                    _ => Carry::Maybe,
+                }
             }
             "collate" | "pos" => n.left.as_deref().map_or(Carry::No, |l| self.carry(l, scope)),
             "cast" => match n.left.as_deref().map_or(Carry::No, |l| self.carry(l, scope)) {
@@ -4013,9 +4029,16 @@ mod tests {
 
     #[test]
     fn a_json_constructor_is_typed_as_the_json_it_builds() {
-        // The docs' profile: SQLite answers with the text, which the run time parses.
-        let profile = "select json_object('user', json_object('id', u.id, 'name', u.name), 'posts', (select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id)) as profile from users u where u.id = :id";
+        // The docs' profile: SQLite answers with the text, which the run time parses. A scalar
+        // subquery's JSON nests as JSON in `json()`, on every SQLite.
+        let profile = "select json_object('user', json_object('id', u.id, 'name', u.name), 'posts', json((select json_group_array(json_object('id', p.id, 'title', p.title)) from posts p where p.user_id = u.id))) as profile from users u where u.id = :id";
         assert_eq!(json_typed(profile), "profile: { user: { id: number; name: string }; posts: { id: number; title: string }[] }");
+        // Without `json()`, SQLite 3.54.1 nests it as its text, and 3.53.4 as JSON.
+        let bare = profile.replace("json((select", "((select");
+        assert_eq!(json_typed(&bare), "profile: { user: { id: number; name: string }; posts: unknown }");
+        // At the top, a scalar subquery's JSON is text either way, which the run time parses.
+        assert_eq!(json_typed("select (select json_group_array(id) from posts) as ids"), "ids: number[]");
+        assert_eq!(json_typed("select json((select json_object('n', name) from users where id = 1)) as u"), "u: { n: string } | null");
         let a = analyze_ddl(profile, &json_ddl(), &Extras::default()).analysis;
         assert_eq!((a.columns[0].type_name.as_str(), a.cardinality.as_str()), ("text", "maybeOne"));
         // Each value as SQLite writes it there: an INTEGER, a BIGINT column's too, as a number
@@ -4066,13 +4089,14 @@ mod tests {
             ("json_array(id) collate nocase", "[number]"),
             ("+json_array(id)", "[number]"),
             ("likely(json_array(id))", "[number]"),
-            ("(select json_object('n', name) from users u2 where u2.id = users.id)", "{ n: string } | null"),
-            ("(select json_group_array(p.id) from posts p where p.user_id = users.id order by p.id)", "number[]"),
-            ("(select json_array(1))", "[number]"),
+            // `json()` marks a scalar subquery's JSON again, NULL where it finds no row.
+            ("json((select json_object('n', name) from users u2 where u2.id = users.id))", "{ n: string } | null"),
+            ("json((select json_group_array(p.id) from posts p where p.user_id = users.id order by p.id))", "number[]"),
+            ("json((select json_array(1)))", "[number]"),
             // `coalesce` never reaches an argument after one that is never NULL.
-            ("coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id), '[]')", "number[]"),
+            ("coalesce(json((select json_group_array(p.id) from posts p where p.user_id = users.id)), '[]')", "number[]"),
             ("coalesce(json_object('e', email), json_array())", "{ e: string | null }"),
-            ("coalesce((select json_group_array(p.id) from posts p where p.user_id = users.id group by p.user_id), json_array())", "number[]"),
+            ("coalesce(json((select json_group_array(p.id) from posts p where p.user_id = users.id group by p.user_id)), json_array())", "number[]"),
             // A plain value: a TEXT is a string, even one that holds JSON.
             ("doc", "string | null"),
             ("json_array(id) || ''", "string"),
@@ -4088,6 +4112,9 @@ mod tests {
         for expr in [
             "x",
             "post",
+            // A scalar subquery's JSON kept the subtype on 3.53.4 and lost it on 3.54.1.
+            "(select json_object('n', name) from users u2 where u2.id = users.id)",
+            "(select json_array(1))",
             "(select json_object('id', id) from users order by name limit 1)",
             "(select distinct json_array(id) from users)",
             "(select json_array(1) union all select json_array(2))",
