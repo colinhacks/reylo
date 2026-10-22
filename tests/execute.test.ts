@@ -698,3 +698,70 @@ test("a query's source names its file, and Reylo's own errors about the query st
   assert.equal(bare.source, undefined);
   assert.throws(() => bare.runSync(db), { message: "Expected exactly one row, got 0" });
 });
+
+// A SQLite-backed Durable Object's ctx.storage.sql, as workerd's answers
+// (lab/driver-matrix/probes/durable-object.mjs): exec() runs at once and returns a cursor; a BigInt
+// binding throws; an INTEGER comes back as a number, rounded past 2^53; a BLOB as an ArrayBuffer.
+function durableObjectSql(db: DatabaseSync) {
+  return {
+    exec(sql: string, ...bindings: unknown[]) {
+      if (bindings.some((b) => typeof b === "bigint")) throw new TypeError("Cannot convert a BigInt value to a number");
+      const st = db.prepare(sql);
+      st.setReadBigInts(true);
+      const rows = st.all(...(bindings as never[])).map((row) =>
+        Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === "bigint" ? Number(v) : v instanceof Uint8Array ? v.slice().buffer : v])),
+      );
+      return { toArray: () => rows, columnNames: rows.length ? Object.keys(rows[0]!) : [] };
+    },
+    get databaseSize() {
+      return 4096;
+    },
+  };
+}
+
+test("a Durable Object's ctx.storage.sql: runSync and run take it, its values given their kinds", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table items (id integer primary key, n integer, big bigint, data blob, flag boolean, doc json)");
+  const sql = durableObjectSql(db);
+  const insert = defineQuery<{ n: bigint; big: bigint; data: Uint8Array; flag: boolean; doc: unknown }, { id: number }, "one", "sqlite">({
+    dialect: "sqlite",
+    sql: "insert into items (n, big, data, flag, doc) values (:n, :big, :data, :flag, :doc) returning id",
+    params: ["n", "big", "data", "flag", "doc"],
+    cardinality: "one",
+    inputs: { big: { type: { kind: "scalar", name: "int8" } } },
+    columns: [["id", "int"]],
+  });
+  const select = defineQuery<{ id: number }, unknown, "one", "sqlite">({
+    dialect: "sqlite",
+    sql: "select n, big, data, flag, doc from items where id = :id",
+    params: ["id"],
+    cardinality: "one",
+    columns: [["n", "int"], ["big", "int8"], ["data", "bytes"], ["flag", "bool"], ["doc", "json"]],
+  });
+  // A BigInt a number holds goes as that number; one past 2^53 to a BIGINT column as its digits.
+  const { id } = insert.runSync(sql, { n: 5n, big: 2n ** 53n + 1n, data: new Uint8Array([1, 2]), flag: true, doc: '{"a":1}' });
+  assert.equal(id, 1);
+  assert.deepEqual({ ...db.prepare("select n, cast(big as text) as big, typeof(big) as t, flag from items").get() }, { n: 5, big: "9007199254740993", t: "integer", flag: 1 });
+  // Read back, that BIGINT comes as a rounded number, which Reylo refuses rather than return.
+  assert.throws(() => select.runSync(sql, { id }), /Column "big" is a 64-bit integer, and the driver already rounded its value/);
+  const second = await insert.run(sql, { n: 6n, big: 7n, data: new Uint8Array([3]), flag: false, doc: "[]" });
+  assert.deepEqual(await select.run(sql, second), { n: 6, big: 7n, data: new Uint8Array([3]), flag: false, doc: [] });
+  assert.deepEqual(select.runSync(sql, second), { n: 6, big: 7n, data: new Uint8Array([3]), flag: false, doc: [] });
+  // A BigInt past 2^53 anywhere else is refused before it reaches exec().
+  assert.throws(() => insert.runSync(sql, { n: 2n ** 53n, big: 1n, data: new Uint8Array(), flag: true, doc: "1" }), /^TypeError: A Durable Object's SQL storage binds no BigInt, and 9007199254740992 is past 2\^53 - 1/);
+  // A write without returning gives no rows.
+  const touch = defineQuery<{}, unknown, "none", "sqlite">({ dialect: "sqlite", sql: "update items set n = n + 1", params: [], cardinality: "none" });
+  assert.equal(touch.runSync(sql), undefined);
+  assert.equal((db.prepare("select sum(n) as s from items").get() as { s: number }).s, 13);
+});
+
+test("a Durable Object's ctx.storage.sql: the catalog facts are read again through exec()", () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table users (id integer primary key, email text not null)");
+  const sql = durableObjectSql(db);
+  const query = "select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\"notnull\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2";
+  const built = (email: string[]) =>
+    defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select id, email from users", params: [], fresh: { query, rows: [email, ["users", "id", "INTEGER", "0", "1"]], inserts: [] }, source: "users.sql" });
+  assert.deepEqual(built(["users", "email", "TEXT", "1", "0"]).runSync(sql), []);
+  assert.throws(() => built(["users", "email", "TEXT", "0", "0"]).runSync(sql), /^Error: The database changed after users\.sql was built: users\.email was/);
+});

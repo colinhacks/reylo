@@ -12,7 +12,7 @@ This page is the reference behind [the main docs](/) for SQLite: the place to lo
 | Versions | The type check prepares each statement in Reylo's own SQLite 3.53, against the schema of your database file, and again on each SQLite driver your `package.json` lists ([Functions](#functions)) |
 | URL | A `file:` or `sqlite:` URL and a path, which starts at the directory of `package.json`, in `DATABASE_URL` or [`direct_url`](/#direct_url) |
 | Type check | Reads the schema through Node's built-in `node:sqlite`, so it needs no driver |
-| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3` or libSQL ([Drivers](#drivers)) |
+| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3` or libSQL ([Drivers](#drivers)) |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -141,7 +141,7 @@ Past 2^53, what a `BIGINT` comes back as depends on the driver. The drivers `bet
 
 **Drivers that round it**
 
-The drivers `sqlite3` and `sqlite`, Cloudflare D1, and `Bun.sql` without `safeIntegers` round an integer past 2^53 before Reylo sees it, and Reylo refuses the rounded number, in a `BIGINT` column too. The pair reads `users.github_id`, which holds 9007199254740993.
+The drivers `sqlite3` and `sqlite`, Cloudflare D1 and Durable Objects, and `Bun.sql` without `safeIntegers` round an integer past 2^53 before Reylo sees it, and Reylo refuses the rounded number, in a `BIGINT` column too. The pair reads `users.github_id`, which holds 9007199254740993.
 
 <Pairs>
 
@@ -422,7 +422,7 @@ A typed JSON parameter (`:events::json('…')`) is bound as its JSON text, which
 
 ### Binary
 
-A `BLOB` is a `Uint8Array` on every driver: `better-sqlite3`, Turso's engine, `sqlite3` and `sqlite` give a `Buffer`, which is one, libSQL an `ArrayBuffer` and Cloudflare D1 an array of numbers, which Reylo turns into one.
+A `BLOB` is a `Uint8Array` on every driver: `better-sqlite3`, Turso's engine, `sqlite3` and `sqlite` give a `Buffer`, which is one, libSQL and a Durable Object an `ArrayBuffer`, and Cloudflare D1 an array of numbers, which Reylo turns into one.
 
 <Rules>
 
@@ -553,7 +553,7 @@ Which functions exist is the answer of the SQLite in the Node that runs the type
 
 Your app runs on its driver's SQLite, which may be older: libSQL carries 3.45.1, which has no `json_pretty`. So the type check prepares each statement again on every SQLite driver your `package.json` lists: `better-sqlite3`, `@libsql/client` or `libsql`, `sqlite3` and Turso's `@tursodatabase/database`. A statement one of them refuses is an error with that SQLite's message: "@libsql/client runs SQLite 3.45.1, which refuses this statement: no such function: json_pretty".
 
-The type check cannot ask `bun:sqlite` or Cloudflare D1, which run in another runtime, nor a driver it cannot load or one that cannot open your database file.
+The type check cannot ask `bun:sqlite`, Cloudflare D1 or a Durable Object, which run in another runtime, nor a driver it cannot load or one that cannot open your database file.
 
 **Argument counts**
 
@@ -772,10 +772,11 @@ Reylo runs its own query on the database you pass and gives each value its type 
 | Turso's engine, `@tursodatabase/database` | Reylo's own statement, prepared per call, with its own integer setting, whatever the database's | |
 | `sqlite3`, `sqlite` | The driver's rows; the statement is not kept, since a statement left open makes the app's `close()` fail | An integer past 2^53, rounded |
 | Cloudflare D1 | The driver's rows; a `BLOB`'s array of numbers made a `Uint8Array` | An integer past 2^53, rounded |
+| Cloudflare Durable Objects, `ctx.storage.sql` | The rows of `exec()`'s cursor; a `BLOB`'s `ArrayBuffer` made a `Uint8Array` | An integer past 2^53, rounded |
 | `Bun.sql` | The driver's rows | An integer past 2^53, rounded, without `safeIntegers`; no rows, with no error, for a statement with a `"` inside a single-quoted string |
 
-- The drivers `better-sqlite3`, `node:sqlite`, `bun:sqlite` and the `Database` of `@tursodatabase/database/compat` take `.runSync()` too, which returns the result itself, so it works inside their `db.transaction(fn)`, and so does a Drizzle database over `better-sqlite3`, with the transaction its `.transaction()` passes.
-- The drivers `sqlite3` and `sqlite` bind a `bigint` as `NULL`, so Reylo passes them one that a `number` holds as that number, and refuses a larger one before the statement runs. Every other SQLite driver binds a `bigint` exactly.
+- The drivers `better-sqlite3`, `node:sqlite`, `bun:sqlite` and the `Database` of `@tursodatabase/database/compat` take `.runSync()` too, which returns the result itself, so it works inside their `db.transaction(fn)`, as a Durable Object's `ctx.storage.sql` does inside `ctx.storage.transactionSync(fn)`, and so does a Drizzle database over `better-sqlite3`, with the transaction its `.transaction()` passes.
+- The drivers `sqlite3` and `sqlite` bind a `bigint` as `NULL`, and a Durable Object refuses one, so Reylo passes them one that a `number` holds as that number, and a larger one as its digits to a `BIGINT` column, which stores them as that integer; anywhere else it refuses a larger one before the statement runs. Every other SQLite driver binds a `bigint` exactly.
 - Each driver takes its transactions too: libSQL's `.transaction()`, the handle Turso's `.transactionAsync()` passes its function, `Bun.sql`'s `.begin()` and `.savepoint()`, D1's `.withSession()` sessions, and the `.transaction()` of a Drizzle database over libSQL.
 - On Bun 1.4.3, `Bun.sql` returns no rows for a statement whose text holds a `"` inside a single-quoted string, such as `json_extract('{"a":1}', '$.a')`, so `.run()` throws "Expected exactly one row, got 0" where one row is expected. Pass the document as a parameter: `json_extract(:doc::text, '$.a')`.
 - Turso's engine 0.8 stops the process on a recursive `WITH` whose anchor and recursive member both read a CTE over `json_each`, such as one over a [JSON parameter](/#typed-json), with no Reylo involved. Write that CTE `as materialized`.

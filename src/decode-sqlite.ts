@@ -23,6 +23,8 @@
 //   with it and a 0.4 statement run twice could lose its rows; the promise API's statement is
 //   awaited, the compat Database's answers at once. Its BLOB is a Buffer and its BOOLEAN 0 or 1, as
 //   on better-sqlite3; at its defaults an INTEGER past 2^53 comes back rounded, with no error.
+// - A Durable Object's `ctx.storage.sql`: exec()'s cursor, read whole. An INTEGER past 2^53 comes
+//   back rounded, with no error, and a BLOB as an ArrayBuffer.
 // - sqlite3 and the sqlite wrapper, libSQL, D1 and Bun.SQL's SQLite: the rows the driver gives,
 //   normalized. sqlite3 and sqlite are not cached: a statement left open makes the app's close()
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
@@ -132,6 +134,15 @@ export async function runTurso(db: AnyClient, text: string, values: unknown[], c
   } finally {
     if (typeof st.close === "function") st.close();
   }
+}
+
+/**
+ * Runs `text` on a SQLite-backed Durable Object's SQL storage (`ctx.storage.sql`), whose exec()
+ * answers at once with a cursor, and returns its normalized rows. Its integers are numbers, so one
+ * past 2^53 in an INTEGER column can only be a rounded one, and is refused.
+ */
+export function runDurableObject(sql: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] {
+  return normalize(sql.exec(text, ...values).toArray(), columns);
 }
 
 type Plan = {

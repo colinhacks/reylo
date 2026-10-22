@@ -182,6 +182,19 @@ export default {
 };
 ```
 
+```ts twoslash tab="Durable Objects" dialect="sqlite"
+/// <reference types="@cloudflare/workers-types" />
+// ---cut---
+import { DurableObject } from "cloudflare:workers";
+import getUser from "./get_user.sql";
+
+export class Board extends DurableObject {
+  user(id: number) {
+    return getUser.runSync(this.ctx.storage.sql, { id });
+  }
+}
+```
+
 ```ts twoslash tab="sqlite3" dialect="sqlite"
 import sqlite3 from "sqlite3";
 import getUser from "./get_user.sql";

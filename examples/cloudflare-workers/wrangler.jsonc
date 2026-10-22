@@ -7,6 +7,9 @@
     // `wrangler d1 create reylo-example` prints the real database_id; locally any id names a database.
     { "binding": "DB", "database_name": "reylo-example", "database_id": "00000000-0000-0000-0000-000000000000" }
   ],
+  // A board is a Durable Object with a SQLite database of its own (src/worker.ts).
+  "durable_objects": { "bindings": [{ "name": "BOARD", "class_name": "Board" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Board"] }],
   // Wrangler makes every imported .sql file a text module by default. This list keeps its other
   // text types and leaves .sql to Reylo, for the tests: Vitest's Workers pool applies these rules.
   "rules": [{ "type": "Text", "globs": ["**/*.txt", "**/*.html"] }]

@@ -1,6 +1,6 @@
 # Reylo example: Cloudflare Workers
 
-A Cloudflare Worker whose `fetch` handler runs `.sql` files as typed queries on a D1 database. Vite builds it, with the Cloudflare Vite plugin and `reylo/vite`, and serves it in workerd, the Workers runtime, as `wrangler dev` does; the tests run inside workerd too, through Cloudflare's Vitest plugin. Everything here runs locally, with no Cloudflare account: D1 is the local database wrangler keeps under `.wrangler/`.
+A Cloudflare Worker whose `fetch` handler runs `.sql` files as typed queries on a D1 database, and on the SQLite database of a Durable Object, a board, which the same migration makes. Vite builds it, with the Cloudflare Vite plugin and `reylo/vite`, and serves it in workerd, the Workers runtime, as `wrangler dev` does; the tests run inside workerd too, through Cloudflare's Vitest plugin. Everything here runs locally, with no Cloudflare account: D1 is the local database wrangler keeps under `.wrangler/`.
 
 ## Run it
 
@@ -9,9 +9,9 @@ A Cloudflare Worker whose `fetch` handler runs `.sql` files as typed queries on 
 nub install                  # or pnpm install (npm refuses link: dependencies)
 nub run setup                # wrangler d1 migrations apply DB --local, from scratch: prints "created users and posts"
 nub run typecheck            # tsc --noEmit --runExternalCode: prints nothing
-nub run test                 # vitest run, inside workerd: Tests 3 passed (3)
+nub run test                 # vitest run, inside workerd: Tests 5 passed (5)
 nub run dev                  # vite dev: the Worker on http://localhost:5173
-nub run build                # the type check, then vite build: dist/reylo_example/index.js (about 110 kB) and its wrangler.json
+nub run build                # the type check, then vite build: dist/reylo_example/index.js (about 120 kB) and its wrangler.json
 nub run preview              # vite preview: the built Worker on http://localhost:4173
 ```
 
@@ -28,9 +28,11 @@ $ curl -d '{"user_id":2,"title":"From curl"}' localhost:5173/posts
 {"id":3,"title":"From curl"}
 $ curl 'localhost:5173/posts?role=member'
 [{"id":3,"title":"From curl","body":null,"author":"bob"}]
+$ curl localhost:5173/boards/demo/users/1
+{"id":1,"name":"ada","email":"ada@example.com","role":"admin","created_at":"2026-10-22 21:18:58"}
 ```
 
-Each insert stays in the local database; `nub run setup` starts over. The tests get a database of their own. While `nub run dev` runs, an edit to a `.sql` file is picked up on the next request, with no restart.
+Each insert stays in the local database; `nub run setup` starts over. Each board, named in the path, has a database of its own, which wrangler keeps under `.wrangler/` too. The tests get databases of their own. While `nub run dev` runs, an edit to a `.sql` file is picked up on the next request, with no restart.
 
 Misspell a column in `queries/get_user.sql` and `nub run typecheck` reports it at the file's line and column, and `nub run build` stops there:
 
@@ -48,7 +50,8 @@ To deploy, with an account: `wrangler d1 create reylo-example`, put the `databas
 - The `migrations/` directory holds the schema as D1 migrations, which `wrangler d1 migrations apply` runs locally (`setup`) and on the remote database (`deploy`), and the tests apply to their own database.
 - In `tsconfig.json`, `contentMappers` names `reylo` for `.sql`, which types each import from the database, and for the project file, `.reylo.yaml` or `.reylo.yml`. The `types` are Workers' (`@cloudflare/workers-types`), the Vitest plugin's (`cloudflare:test`) and Node's, for the config files and `setup.ts`. The file `src/env.d.ts` declares the binding `DB: D1Database`, the type of `env`, and the Worker's module, the type of `exports` in the tests.
 - The `queries/*.sql` files hold one statement per file, with `:name` parameters, imported from `src/worker.ts` with a relative path. The query `get_user.sql` resolves to a row or `null`, `list_posts.sql` to an array, and `create_post.sql`, an insert with `returning`, to the row it wrote.
-- In `vitest.config.ts`, `reylo()` sits beside `cloudflareTest()`, which runs the tests inside workerd with the bindings of `wrangler.jsonc`; it reads `migrations/` into a binding that `test/apply-migrations.ts` applies before the tests. The file `test/queries.test.ts` runs the three queries on `env.DB` and calls the Worker through `exports.default.fetch`.
+- In `src/worker.ts`, the Durable Object `Board` runs the same queries on its own SQLite database with `.runSync(this.ctx.storage.sql, …)`, which returns the result itself and works inside `ctx.storage.transactionSync(fn)`. Its constructor runs `migrations/0001_users_and_posts.sql`, imported as its text with Vite's `?raw` (which `src/env.d.ts` declares), on a database that has no `users` table yet, so the type check's schema, D1's, is the board's too. In `wrangler.jsonc`, `durable_objects` binds it as `BOARD` and `migrations` makes it a SQLite-backed class.
+- In `vitest.config.ts`, `reylo()` sits beside `cloudflareTest()`, which runs the tests inside workerd with the bindings of `wrangler.jsonc`; it reads `migrations/` into a binding that `test/apply-migrations.ts` applies before the tests. The file `test/queries.test.ts` runs the three queries on `env.DB`, calls a board's methods and the Worker through `exports.default.fetch`, and runs the queries inside a board with `runInDurableObject`, in a `transactionSync` that rolls back.
 - In `wrangler.jsonc`, `rules` lists Wrangler's default text types without `.sql`. Wrangler makes every imported `.sql` file a text module, and the Vitest plugin applies that rule before Vite runs any plugin, so without this line each query in a test is the statement's text and `.run` is undefined. The app's build needs no such line, but the rule is Wrangler's own, so it lives there.
 - The `.vscode/` and `.zed/` directories hold the editor settings from [Editors](https://reylo.dev/#editors).
 
@@ -64,4 +67,5 @@ To deploy, with an account: `wrangler d1 create reylo-example`, put the `databas
 - **Node's globals.** The Worker sets no `nodejs_compat` flag: Reylo's run time and D1 need none. A compatibility date from August 2026 on gives a Worker `Buffer` and `process` anyway, which Reylo uses where they exist; on an earlier date without the flag the same answers come back. A Postgres driver over TCP (postgres.js or `pg` through Hyperdrive) or `mysql2` needs `nodejs_compat`; Neon's serverless driver, libSQL's web client and PlanetScale's driver do not.
 - **Alias imports.** Import `.sql` files by a relative path. A path through an alias (a tsconfig `paths` entry or a Vite alias) reaches the Cloudflare plugin's text rule before Reylo, which resolves relative paths only.
 - **Without Vite.** Wrangler's own bundler takes no plugins, but its custom build does: `"build": { "command": "node build.ts", "watch_dir": ["src", "queries"] }` with `"main": "dist/worker.js"` in `wrangler.jsonc`, and a `build.ts` that runs `esbuild.build` with `plugins: [reylo()]` from `reylo/esbuild`, `bundle: true`, `format: "esm"` and `platform: "neutral"`, as in [the esbuild example](../esbuild). Then `wrangler dev` and `wrangler deploy` run that build first. The tests still go through Vitest and `reylo/vite`, so this example uses Vite for both.
+- **A Durable Object with tables of its own.** The type check reads one database per package, the one its `.reylo.yaml` names, which is why the board runs D1's migration. A Durable Object whose tables differ from D1's goes in a package of its own, whose `.reylo.yaml` names a SQLite file made from that Durable Object's schema.
 - SQLite infers no union from a `check` constraint, so `role` is a `string` here, where Postgres's enum gives `"admin" | "member"`. D1 returns `created_at` as SQLite's text, `2026-10-21 05:12:50`.

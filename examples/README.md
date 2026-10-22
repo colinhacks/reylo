@@ -13,7 +13,7 @@ One complete, working project for each setup the [docs](https://reylo.dev/#setup
 | [webpack](./webpack) | `reylo/webpack` ([webpack](https://reylo.dev/#setup-webpack)) | MySQL, mysql2 | an HTTP server, bundled into one ES module |
 | [rspack](./rspack) | `reylo/webpack` ([Rspack](https://reylo.dev/#setup-rspack)) | Postgres, pg | an HTTP server, bundled into one ES module |
 | [jest](./jest) | `reylo/jest` ([Jest](https://reylo.dev/#setup-jest)) | SQLite, better-sqlite3 | Jest, in an ES module run and a CommonJS run |
-| [cloudflare-workers](./cloudflare-workers) | `reylo/vite` beside the Cloudflare Vite plugin | SQLite, Cloudflare D1 (the local database wrangler keeps) | a Worker in workerd: `vite dev`, the build and `vite preview`, Vitest inside workerd, and `wrangler deploy --dry-run`, all without a Cloudflare account |
+| [cloudflare-workers](./cloudflare-workers) | `reylo/vite` beside the Cloudflare Vite plugin | SQLite, Cloudflare D1 (the local database wrangler keeps) and a Durable Object's own database | a Worker in workerd: `vite dev`, the build and `vite preview`, Vitest inside workerd, and `wrangler deploy --dry-run`, all without a Cloudflare account |
 
 Every example has the same two tables, `users` and `posts`, and the same three queries: `get_user.sql` (a row or `null`), `list_posts.sql` (an array) and `create_post.sql` (an insert). Every one also carries the editor settings of [Editors](https://reylo.dev/#editors) for VS Code, Cursor and Zed.
 

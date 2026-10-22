@@ -7,7 +7,7 @@
 
 import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
-import { normalize, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
+import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { ParameterError, postgresYear, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
@@ -72,6 +72,14 @@ export type MariadbCallbackClient = {
 export type SyncSqliteClient = {
   prepare(sql: string): { all(...params: any[]): unknown[] };
 };
+/**
+ * A SQLite-backed Durable Object's SQL storage, `ctx.storage.sql`: exec(sql, ...values) answers at
+ * once with a cursor, so `runSync` takes it, inside `ctx.storage.transactionSync(fn)` too.
+ */
+export type DurableObjectSql = {
+  exec(query: string, ...bindings: any[]): { toArray(): unknown[] };
+  readonly databaseSize: number;
+};
 /** Cloudflare D1's database and sessions: prepare(sql).bind(...values).all() → { results }. */
 export type D1Client = {
   prepare(sql: string): { bind(...values: any[]): { all(): Promise<{ results: unknown[] }> } };
@@ -124,14 +132,14 @@ export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | Cal
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
-export type SqliteClient = SyncSqliteClient | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
+export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
 
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
 export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
-export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DrizzleDatabase<SyncSqliteClient> | DrizzleSyncSqliteTransaction : never;
+export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DurableObjectSql | DrizzleDatabase<SyncSqliteClient> | DrizzleSyncSqliteTransaction : never;
 
 export type QueryModule<D extends Dialect = Dialect> = {
   readonly dialect: D;
@@ -204,9 +212,9 @@ function underneath(c: AnyClient): AnyClient {
 /** The synchronous path alone, for `runSync`: any other client is refused before anything runs. */
 export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: QueryModule<D>, params: ParamsInput = {}): unknown[] {
   const c = underneath(client as unknown as AnyClient);
-  const refuse = (why: string) => new TypeError(`runSync takes a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite or the Database of @tursodatabase/database/compat); ${why}. run takes every client.`);
+  const refuse = (why: string) => new TypeError(`runSync takes a synchronous SQLite client (better-sqlite3, node:sqlite, bun:sqlite, the Database of @tursodatabase/database/compat or a Durable Object's ctx.storage.sql); ${why}. run takes every client.`);
   if (query.dialect !== "sqlite") throw refuse(`a ${query.dialect} statement has none`);
-  if (!isSyncSqlite(c)) throw refuse("this client answers through a promise");
+  if (!isSyncSqlite(c) && !isDurableObjectSql(c)) throw refuse("this client answers through a promise");
   const rows = executeSyncSqlite(c, query, params);
   if (Array.isArray(rows)) return rows;
   rows.catch(() => {});
@@ -218,14 +226,26 @@ function executeSyncSqlite(c: AnyClient, query: QueryModule, params: ParamsInput
   if (query.fresh && due(query)) {
     let rows: unknown[] | undefined;
     try {
-      rows = c.prepare(query.fresh.query).all();
+      rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : c.prepare(query.fresh.query).all();
     } catch {}
     const lines = (rows && differences(query.fresh, rows, query.dialect)) ?? [];
     if (lines.length) throw staleError(query.source, lines);
     passed(query);
   }
-  const { text, values } = statement(query, params);
+  const { text, values, names } = statement(query, params);
+  if (isDurableObjectSql(c)) return runDurableObject(c, text, durableObjectValues(query, names, values), query.columns);
   return runSyncSqlite(c, text, values, query.columns);
+}
+
+// A SQLite-backed Durable Object's `ctx.storage.sql`: exec() and databaseSize, and no prepare().
+// sqlite3's Database has exec() too, beside all().
+function isDurableObjectSql(c: AnyClient | null | undefined): boolean {
+  return c != null && typeof c.exec === "function" && typeof c.prepare !== "function" && typeof c.all !== "function" && "databaseSize" in c;
+}
+
+// A Durable Object's exec() refuses a BigInt ("Cannot convert a BigInt value to a number").
+function durableObjectValues(query: QueryModule, names: readonly string[], values: unknown[]): unknown[] {
+  return values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object"));
 }
 
 // A SQLite client with prepare() whose statements answer at once. D1 (batch()), sqlite3 and
@@ -331,14 +351,15 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       if (typeof c.execute === "function") return normalize((await c.execute({ sql: text, args: values })).rows, columns);
       if (isTurso(c)) return await runTurso(c, text, values, columns);
       // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
-      if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => sqlite3Value(v, type(i)))), columns);
+      if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
       if (typeof c.all === "function" && typeof c.exec === "function") {
-        const bound = values.map((v, i) => sqlite3Value(v, type(i)));
+        const bound = values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"));
         return normalize(
           await new Promise<unknown[]>((resolve, reject) => c.all(text, bound, (error: Error | null, rows: unknown[]) => (error ? reject(error) : resolve(rows)))),
           columns,
         );
       }
+      if (isDurableObjectSql(c)) return runDurableObject(c, text, durableObjectValues(query, names, values), columns);
       if (typeof c.prepare === "function") {
         const prepared = c.prepare(text);
         if (typeof prepared.first === "function") return normalize((await prepared.bind(...values).all()).results, columns, { d1: true });
@@ -512,15 +533,18 @@ function vectorText(v: readonly unknown[], name: string): string {
 }
 
 // sqlite3 6.0.1 binds a BigInt as NULL, with no error (`select cast(? as text)` with
-// 9007199254740993n gave null), where every other SQLite driver binds it exactly. A BigInt a
-// number holds exactly goes as that number. A larger one goes as its digits to a parameter of a
-// BIGINT column (the engine's int8), whose INTEGER affinity reads the text as that integer in an
-// insert and a comparison alike, and is refused anywhere else, where the text would stay text.
-function sqlite3Value(v: unknown, type: EngineType | undefined): unknown {
+// 9007199254740993n gave null), and a Durable Object's exec() refuses one, where every other
+// SQLite driver binds it exactly. A BigInt a number holds exactly goes as that number. A larger
+// one goes as its digits to a parameter of a BIGINT column (the engine's int8), whose INTEGER
+// affinity reads the text as that integer in an insert and a comparison alike, and is refused
+// anywhere else, where the text would stay text.
+function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object"): unknown {
   if (typeof v !== "bigint") return v;
   if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
   if (type?.kind === "scalar" && type.name === "int8") return String(v);
-  throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: pass it as a string of digits, which SQLite stores as that integer in an INTEGER column, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
+  const digits = "pass it as a string of digits, which SQLite stores as that integer in an INTEGER column";
+  if (driver === "durable-object") throw new ParameterError(`A Durable Object's SQL storage binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
 }
 
 function asByteaHex(v: unknown) {
@@ -593,7 +617,7 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; or a Drizzle database over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database over one of them",
-  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
+  sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
 };
 
 function unsupported(c: unknown, dialect: Dialect): TypeError {
