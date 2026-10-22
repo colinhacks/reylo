@@ -323,7 +323,7 @@ const rows = await events.run(db);
 select kind, payload from events
 ```
 
-JSON the statement builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg` or `to_jsonb` of a whole row is typed from its arguments, each value as JSON writes it:
+JSON the statement builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg` or `to_jsonb` of a whole row is typed from its arguments, each value as JSON writes it, and so is a column that reads it from a `with` query, a subquery in `from` or a `lateral` join, or a `case` whose other branches are `null`:
 
 ```ts twoslash tab="main.ts"
 import orderSummaries from "./pg_order_summaries.sql";

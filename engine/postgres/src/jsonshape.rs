@@ -125,12 +125,21 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     // A plain GROUP BY: every group has a row. A grouping set can make one of none (`GROUP BY ()`
     // over no rows is one row), so it is no plain one.
     let grouped = matches!(top, NodeEnum::SelectStmt(s) if !s.group_clause.is_empty() && !s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_)))));
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped };
+    let ctes = with
+        .iter()
+        .filter(|w| !w.recursive)
+        .flat_map(|w| w.ctes.iter())
+        .filter_map(|c| match c.node.as_ref() {
+            Some(NodeEnum::CommonTableExpr(c)) if c.aliascolnames.is_empty() => c.ctequery.as_deref().and_then(as_select).map(|s| (c.ctename.clone(), s.clone())),
+            _ => None,
+        })
+        .collect();
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, ctes };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if !is_constructor(val) {
+        if !is_constructor(val) && builder.derived_target(val).is_none() {
             continue;
         }
         let Some(name) = target_name(rt) else { continue };
@@ -219,6 +228,9 @@ struct Builder<'a> {
     overflowed: bool,
     /// Whether the top statement is a SELECT with a plain `GROUP BY`, where no group is empty.
     grouped: bool,
+    /// The top statement's WITH queries that are plain SELECTs, by name: a column read from one
+    /// is built in its own context ([`Builder::derived_target`]).
+    ctes: Vec<(String, SelectStmt)>,
 }
 
 struct Draft {
@@ -312,6 +324,19 @@ impl Builder<'_> {
             // u.*)`), is the whole row, as `u` is: never the row's columns one by one, which is
             // what it would be in a probe's select list.
             Some(NodeEnum::ColumnRef(_)) if star_alias(expr).is_some() => self.whole(&star_alias(expr).expect("a star alias")),
+            // A column of a subquery in FROM, a WITH query or a LATERAL subquery that the item
+            // builds: the shape of what it builds there.
+            Some(NodeEnum::ColumnRef(_)) => match self.derived_target(expr) {
+                Some((body, target, nulled)) => self.derived(&body, &target, nulled),
+                None => self.leaf(expr),
+            },
+            // A CASE whose one branch builds JSON and whose others are NULL: that branch's shape,
+            // nullable. Two branches that build JSON may build two shapes.
+            Some(NodeEnum::CaseExpr(c)) => match case_branch(c) {
+                Some((built, true)) => force_nullable(self.walk(built)),
+                Some((built, false)) => self.walk(built),
+                None => self.leaf(expr),
+            },
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
                 (Some(arg), true) => self.walk(arg),
                 _ => self.leaf(expr),
@@ -343,6 +368,75 @@ impl Builder<'_> {
                 }
             }
             _ => self.leaf(expr),
+        }
+    }
+
+    /// The JSON a column of a FROM item builds, where `expr` names one: `x.col` of a subquery in
+    /// FROM, a WITH query or a LATERAL subquery whose target `col` is a JSON constructor, or a
+    /// bare `col` of the one item a FROM holds. That item's statement, the target, and whether
+    /// an outer join of this FROM can null the item. Nothing where the item's statement is a set
+    /// operation or selects a `*`, which hides which target a name is.
+    fn derived_target(&self, expr: &Node) -> Option<(SelectStmt, Node, bool)> {
+        let Some(NodeEnum::ColumnRef(c)) = expr.node.as_ref() else { return None };
+        let names: Vec<&str> = c.fields.iter().map(|f| match f.node.as_ref() {
+            Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
+            _ => None,
+        }).collect::<Option<Vec<_>>>()?;
+        let (alias, column) = match names.as_slice() {
+            [column] => (None, *column),
+            [alias, column] => (Some(*alias), *column),
+            _ => return None,
+        };
+        let from = &self.stack.last()?.1;
+        let mut items = Vec::new();
+        for item in from {
+            from_items(item, false, &mut items);
+        }
+        let (item, nulled) = match alias {
+            Some(alias) => {
+                let mut named = items.iter().filter(|(item, _)| item_alias(item).as_deref() == Some(alias));
+                match (named.next(), named.next()) {
+                    (Some(found), None) => *found,
+                    _ => return None,
+                }
+            }
+            None => match items.as_slice() {
+                [only] if from.len() == 1 => *only,
+                _ => return None,
+            },
+        };
+        let body = match item.node.as_ref()? {
+            NodeEnum::RangeSubselect(r) => r.subquery.as_deref().and_then(as_select)?.clone(),
+            NodeEnum::RangeVar(rv) if rv.schemaname.is_empty() => self.ctes.iter().find(|(name, _)| *name == rv.relname)?.1.clone(),
+            _ => return None,
+        };
+        if (body.op != protobuf::SetOperation::SetopNone as i32 && body.op != 0) || body.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star))) {
+            return None;
+        }
+        let target = body.target_list.iter().find_map(|t| match t.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) if target_name(rt).as_deref() == Some(column) => rt.val.as_deref().cloned(),
+            _ => None,
+        })?;
+        is_constructor(&target).then_some((body, target, nulled))
+    }
+
+    /// What a FROM item's target builds, read in the item's own context: its FROM and WHERE, and
+    /// every FROM around it for a LATERAL one's correlated columns. An outer join that can null
+    /// the item makes the value nullable.
+    fn derived(&mut self, body: &SelectStmt, target: &Node, nulled: bool) -> Shape {
+        let withs = self.withs.last().cloned().unwrap_or_default().with(body.with_clause.as_ref(), self.columns);
+        self.next_ctx += 1;
+        self.stack.push((self.next_ctx, body.from_clause.clone(), body.where_clause.as_deref().cloned()));
+        self.withs.push(withs);
+        let rows = self.rows.take();
+        let shape = self.walk(target);
+        self.rows = rows;
+        self.withs.pop();
+        self.stack.pop();
+        if nulled {
+            force_nullable(shape)
+        } else {
+            shape
         }
     }
 
@@ -486,6 +580,7 @@ fn is_constructor(expr: &Node) -> bool {
         }
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(is_constructor),
         Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_constructor),
+        Some(NodeEnum::CaseExpr(c)) => case_branch(c).is_some(),
         Some(NodeEnum::SubLink(s)) => {
             s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32
                 && s.subselect
@@ -506,6 +601,66 @@ fn aggregates(expr: &Node, level: &Level, trust: &Trust) -> bool {
         Some(NodeEnum::FuncCall(f)) => f.over.is_none() && crate::infer::builtin_name(&f.funcname).is_some_and(|n| AGG_FNS.contains(&n.as_str()) && trust.builtin(&n)) && level.owns(f),
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|first| aggregates(first, level, trust)),
         Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(|arg| aggregates(arg, level, trust)),
+        _ => false,
+    }
+}
+
+/// The items of a FROM entry, joins flattened, each with whether an outer join nulls it.
+fn from_items<'n>(node: &'n Node, nulled: bool, out: &mut Vec<(&'n Node, bool)>) {
+    match node.node.as_ref() {
+        Some(NodeEnum::JoinExpr(j)) if j.alias.is_none() => {
+            use protobuf::JoinType;
+            let (left, right) = match j.jointype {
+                t if t == JoinType::JoinLeft as i32 => (nulled, true),
+                t if t == JoinType::JoinRight as i32 => (true, nulled),
+                t if t == JoinType::JoinFull as i32 => (true, true),
+                _ => (nulled, nulled),
+            };
+            for (side, nulled) in [(j.larg.as_deref(), left), (j.rarg.as_deref(), right)] {
+                if let Some(side) = side {
+                    from_items(side, nulled, out);
+                }
+            }
+        }
+        Some(_) => out.push((node, nulled)),
+        None => {}
+    }
+}
+
+/// The name a FROM item goes by: its alias, or a table's own name.
+fn item_alias(node: &Node) -> Option<String> {
+    match node.node.as_ref()? {
+        NodeEnum::RangeVar(rv) => Some(rv.alias.as_ref().map_or(rv.relname.clone(), |a| a.aliasname.clone())),
+        NodeEnum::RangeSubselect(r) => r.alias.as_ref().map(|a| a.aliasname.clone()),
+        NodeEnum::RangeFunction(f) => f.alias.as_ref().map(|a| a.aliasname.clone()),
+        _ => None,
+    }
+}
+
+/// The one branch of a CASE that builds JSON, where every other branch is NULL, and whether one
+/// is (no `ELSE` is `ELSE NULL`).
+fn case_branch(c: &protobuf::CaseExpr) -> Option<(&Node, bool)> {
+    let mut built: Option<&Node> = None;
+    let mut nullable = c.defresult.is_none();
+    let results = c.args.iter().map(|w| match w.node.as_ref() {
+        Some(NodeEnum::CaseWhen(w)) => w.result.as_deref(),
+        _ => None,
+    });
+    for result in results.chain(c.defresult.as_deref().map(Some)) {
+        match result {
+            Some(r) if is_null_const(r) => nullable = true,
+            Some(r) if built.is_none() && is_constructor(r) => built = Some(r),
+            _ => return None,
+        }
+    }
+    built.map(|b| (b, nullable))
+}
+
+/// A NULL constant, under casts.
+fn is_null_const(node: &Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => c.isnull,
+        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_null_const),
         _ => false,
     }
 }
@@ -727,6 +882,9 @@ fn default_name(node: &Node) -> Option<String> {
         NodeEnum::CoalesceExpr(_) => Some("coalesce".to_string()),
         NodeEnum::TypeCast(t) => t.type_name.as_ref().and_then(|tn| last_string(&tn.names)),
         NodeEnum::SubLink(s) => target_name(single_target(as_select(s.subselect.as_deref()?)?)?),
+        // A column is named after itself, and a CASE `case`, as Postgres names them.
+        NodeEnum::ColumnRef(c) => last_string(&c.fields),
+        NodeEnum::CaseExpr(_) => Some("case".to_string()),
         _ => None,
     }
 }
@@ -943,6 +1101,35 @@ mod tests {
         assert_eq!(p.probes[1].sql, "SELECT c.body AS a0 FROM comments c");
         let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
         assert!(matches!(&fields[1].1, Shape::Array { non_null: true, .. }));
+    }
+
+    #[test]
+    fn a_column_of_a_from_item_takes_the_shape_the_item_builds() {
+        // A subquery in FROM and a WITH query: the target the name reads, built in the item's
+        // own context, and nullable where an outer join can null the item.
+        let p = shapes("SELECT x.o FROM (SELECT jsonb_build_object('n', email) AS o FROM users) x");
+        assert_eq!(p.columns, vec![("o".to_string(), Shape::Object { fields: vec![("n".into(), Shape::Column { probe: 0, index: 0 })], non_null: true })]);
+        assert_eq!(p.probes[0].sql, "SELECT email AS a0 FROM users");
+        let w = shapes("WITH x AS (SELECT jsonb_build_object('n', email) AS o FROM users) SELECT o FROM x");
+        assert!(matches!(&w.columns[0].1, Shape::Object { non_null: true, .. }));
+        let l = shapes("SELECT u.id, x.o FROM users u LEFT JOIN LATERAL (SELECT json_agg(p.title) AS o FROM posts p WHERE p.author_id = u.id) x ON true");
+        assert_eq!(l.columns[0].1, Shape::Array { items: Box::new(Shape::Column { probe: 0, index: 0 }), non_null: false });
+        let o = shapes("SELECT u.id, x.o FROM users u LEFT JOIN (SELECT author_id, jsonb_build_object('t', title) AS o FROM posts) x ON x.author_id = u.id");
+        assert!(matches!(&o.columns[0].1, Shape::Object { non_null: false, .. }));
+        // A star or a set operation in the item hides which target a name is.
+        assert!(shapes("SELECT x.o FROM (SELECT *, jsonb_build_object('n', email) AS o FROM users) x").columns.is_empty());
+        assert!(shapes("SELECT x.o FROM (SELECT jsonb_build_object('n', email) AS o FROM users UNION ALL SELECT NULL) x").columns.is_empty());
+    }
+
+    #[test]
+    fn a_case_of_one_constructor_is_its_shape_or_null() {
+        let p = shapes("SELECT CASE WHEN u.id > 1 THEN jsonb_build_object('n', u.email) ELSE NULL END AS o FROM users u");
+        assert!(matches!(&p.columns[0].1, Shape::Object { non_null: false, .. }));
+        let q = shapes("SELECT CASE WHEN u.id > 1 THEN jsonb_build_object('n', u.email) END AS o FROM users u");
+        assert!(matches!(&q.columns[0].1, Shape::Object { non_null: false, .. }));
+        // Two constructors may build two shapes, and a branch that is no constructor any JSON.
+        assert!(shapes("SELECT CASE WHEN u.id > 1 THEN jsonb_build_object('a', 1) ELSE jsonb_build_object('b', 2) END AS o FROM users u").columns.is_empty());
+        assert!(shapes("SELECT CASE WHEN u.id > 1 THEN jsonb_build_object('a', 1) ELSE u.doc END AS o FROM users u").columns.is_empty());
     }
 
     #[test]

@@ -1,0 +1,12 @@
+case_no_else.sql: many () -> { o: { n: text }? }
+case_object.sql: many () -> { o: { n: text }? }
+case_two_shapes.sql: many () -> { o: json }
+cte_object.sql: many () -> { o: { n: text, m: text? } }
+cte_star.sql: many () -> { o: json }
+derived_left.sql: many () -> { id: int4, o: { n: text }? }
+derived_object.sql: many () -> { o: { n: text } }
+inside_object.sql: many () -> { j: { teams: [text?]? } }
+lateral_coalesce.sql: many () -> { id: int4, teams: [{ id: int4 }] }
+lateral_left.sql: many () -> { id: int4, teams: [{ id: int4?, name: text? }]? }
+lateral_object_inner.sql: many () -> { snapshot: { name: text } }
+lateral_object_left.sql: many () -> { snapshot: { name: text? }? }
