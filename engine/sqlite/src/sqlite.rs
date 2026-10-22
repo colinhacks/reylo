@@ -954,7 +954,7 @@ impl Analyzer<'_> {
                 };
                 // Built JSON is the text SQLite returns, which the run time parses.
                 let type_name = if is_built(&fact.ty) { "text".to_string() } else { scalar_name(&fact.ty).unwrap_or("").to_string() };
-                Column { name: public.name.clone(), ty: fact.ty, nullable: !fact.non_null, type_name }
+                Column { name: public.name.clone(), ty: fact.ty, nullable: !fact.non_null, type_name, comment: None }
             })
             .collect();
         (columns, kind)
@@ -1697,7 +1697,7 @@ impl Analyzer<'_> {
                 let fact = Fact { ty: textual(&fact.ty), ..fact };
                 let type_name = scalar_name(&fact.ty).unwrap_or("").to_string();
                 let nullable = fills.get(&numbered).copied().unwrap_or(false) || self.nullable_params.contains(&numbered);
-                Param { name: name.clone(), ty: fact.ty, type_name, nullable, schema: None, cast: None }
+                Param { name: name.clone(), ty: fact.ty, type_name, nullable, schema: None, cast: None, comment: None }
             })
             .collect()
     }

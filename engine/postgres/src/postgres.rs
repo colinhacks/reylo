@@ -96,6 +96,10 @@ pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, o
         WHERE d.attrelid = a.attrelid AND d.attnum = a.attnum), '{}'::text[]) \
     FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
     WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid)";
+/// The comment of each column that has one (`COMMENT ON COLUMN`): `(relation, attnum, the
+/// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them.
+pub const COMMENTS_QUERY: &str = "SELECT u.rel::int8, u.att::int4, d.description FROM unnest($1::oid[], $2::int2[]) AS u(rel, att) \
+    JOIN pg_description d ON d.objoid = u.rel AND d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objsubid = u.att";
 /// `$1` is `oid[]` of relations.
 pub const RELNAMES_QUERY: &str = "SELECT c.oid::int8, c.relname::text FROM pg_class c WHERE c.oid = ANY($1::oid[])";
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
@@ -315,6 +319,9 @@ struct Engine<'a> {
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
+    /// The comment of each column the main statement reads as it is or writes a parameter to,
+    /// by relation and attribute ([`Engine::comments`]).
+    comments: RefCell<HashMap<(u32, i32), String>>,
     budget: Cell<usize>,
 }
 
@@ -327,7 +334,7 @@ const MAX_ITEM_DEPTH: usize = 4;
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), comments: RefCell::new(HashMap::new()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed) -> Lazy<Analysis> {
@@ -424,7 +431,8 @@ impl<'a> Engine<'a> {
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
         let mut shapes_used: HashSet<usize> = HashSet::new();
-        for (col, built) in described.columns.iter().zip(&built) {
+        let comments = self.comments.borrow();
+        for (position, (col, built)) in described.columns.iter().zip(&built).enumerate() {
             let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
             let (ty, nullable) = match (shape, built) {
                 (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
@@ -444,7 +452,8 @@ impl<'a> Engine<'a> {
                     (with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref()), col.nullable)
                 }
             };
-            columns.push(Column { name: col.name.clone(), ty, nullable, type_name: col.type_name.clone() });
+            let comment = raw.columns.get(position).and_then(|c| comments.get(&(c.table, c.attnum))).cloned();
+            columns.push(Column { name: col.name.clone(), ty, nullable, type_name: col.type_name.clone(), comment });
         }
         let params = lexed
             .params
@@ -458,7 +467,11 @@ impl<'a> Engine<'a> {
                 let sources = self.written.borrow();
                 let schemas: Vec<(String, Validators)> = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).flat_map(|(_, rel, att)| sources.get(&(*rel, *att)).cloned().unwrap_or_default()).collect();
                 let document = if schemas.is_empty() { None } else { crate::schema_type::checked_type(&schemas) };
-                Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None }
+                // A parameter written to columns that share one comment carries it.
+                let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.get(&(*rel, *att)));
+                let first = noted.next().flatten();
+                let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
+                Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
             })
             .collect();
 
@@ -805,9 +818,11 @@ impl<'a> Engine<'a> {
         oids.extend(raw.columns.iter().map(|c| c.oid));
         let types = self.types(&oids);
         let checks = self.checks(sql, &raw, parsed, written, false);
+        let comments = self.comments(sql, &raw, parsed, written);
         // Nullability from provenance, then from the SQL.
         let settled = self.settle(sql, &raw, parsed, trust);
-        let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
+        let (Some(()), Some(mut described), Some(checks), Some(comments)) = (types, settled, checks, comments) else { return None };
+        *self.comments.borrow_mut() = comments;
         self.stored_sublinks(sql, &mut described);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
             if trust.builtin("=") {
@@ -856,6 +871,74 @@ impl<'a> Engine<'a> {
         let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().filter(|p| !pairs.contains(p)).copied().collect::<Vec<_>>());
         self.check_rows(&pairs)
+    }
+
+    /// The comment of each column a result column reads as it is and of each column of `written`,
+    /// by relation and attribute. The describe names a column's table and attribute only for a
+    /// bare reference, so an expression over the column has none; nothing read through a set
+    /// operation, whose provenance names the leftmost arm only ([`own_provenance`]). A column read
+    /// through a view names the view's column, whose own comment is the one it takes; one the view
+    /// leaves without a comment takes that of the column the view's definition reads it from, where
+    /// it reads one as it is.
+    fn comments(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)]) -> Lazy<HashMap<(u32, i32), String>> {
+        let own = own_provenance(sql, parsed, raw.columns.len());
+        let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0).map(|(c, _)| (c.table, c.attnum)).collect();
+        pairs.extend(written.iter().copied());
+        // Each view column's source, through views of views as far as the definitions are known.
+        let mut sources: HashMap<(u32, i32), (u32, i32)> = HashMap::new();
+        let mut pending = false;
+        let mut i = 0;
+        while i < pairs.len() {
+            let (relation, attnum) = pairs[i];
+            i += 1;
+            let Some(definition) = self.views.borrow().get(&relation).cloned() else { continue };
+            match self.host.describe(&definition) {
+                Some(Ok(view)) => {
+                    let own = own_provenance(&definition, analyze::analyze(&definition).ok().as_ref(), view.columns.len());
+                    let at = attnum as usize - 1;
+                    let Some(source) = view.columns.get(at).filter(|c| own[at] && c.table != 0 && c.attnum > 0).map(|c| (c.table, c.attnum)) else { continue };
+                    sources.insert((relation, attnum), source);
+                    if !pairs.contains(&source) {
+                        pairs.push(source);
+                    }
+                }
+                Some(Err(_)) => {}
+                None => pending = true,
+            }
+        }
+        if pending {
+            return None;
+        }
+        if pairs.is_empty() {
+            return Some(HashMap::new());
+        }
+        pairs.sort_unstable();
+        pairs.dedup();
+        let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
+        let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
+        let rows = self.host.query(COMMENTS_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)?;
+        let own: HashMap<(u32, i32), String> = rows
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|r| Some(((as_u32(r.first()?)?, as_u32(r.get(1)?)? as i32), as_str(r.get(2)?)?.to_string())))
+            .filter(|(_, comment)| !comment.is_empty())
+            .collect();
+        let mut out = HashMap::new();
+        for pair in &pairs {
+            let mut at = *pair;
+            // A view's source is never itself: a definition reads other relations.
+            for _ in 0..=sources.len() {
+                if let Some(comment) = own.get(&at) {
+                    out.insert(*pair, comment.clone());
+                    break;
+                }
+                match sources.get(&at) {
+                    Some(source) => at = *source,
+                    None => break,
+                }
+            }
+        }
+        Some(out)
     }
 
     /// What the CHECKs of each column of `pairs`, by relation and attribute, say of its values
@@ -2606,5 +2689,88 @@ mod tests {
         let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
         let d = db_diagnostic(sql, &rewritten, &DbError { message: "column \"idd\" does not exist".into(), code: None, position: Some(8) });
         assert_eq!(&sql[d.start..d.start + d.length], "idd");
+    }
+
+    #[test]
+    fn a_column_read_as_it_is_carries_its_comment() {
+        // A server with a table `users (id int, age int, email text)` and a view `adults` of
+        // `SELECT id, age AS years FROM users`, with `COMMENT ON COLUMN` on `users.id`,
+        // `users.age` and `adults.id`. The describe names each column's origin as Postgres does:
+        // the view's own column for a read through the view, nothing for an expression.
+        const USERS: u32 = 16400;
+        const ADULTS: u32 = 16500;
+        let definition = "SELECT id, age AS years FROM users";
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let describe = |sql: &str| -> RawDescribe {
+            let count = lex::lex(sql, Dialect::Postgres).map(|l| l.placeholders.len()).unwrap_or(0);
+            let columns = match sql {
+                "SELECT id, age, age AS years, lower(email), count(*) OVER () FROM users" => {
+                    vec![column("id", 23, USERS, 1), column("age", 23, USERS, 2), column("years", 23, USERS, 2), column("lower", 25, 0, 0), column("count", 20, 0, 0)]
+                }
+                "SELECT id, years FROM adults" => vec![column("id", 23, ADULTS, 1), column("years", 23, ADULTS, 2)],
+                s if s == definition => vec![column("id", 23, USERS, 1), column("years", 23, USERS, 2)],
+                "SELECT age FROM users UNION ALL SELECT age FROM users" => vec![column("age", 23, USERS, 2)],
+                "UPDATE users SET age = $1, email = $2 WHERE id = $3 RETURNING age" => vec![column("age", 23, USERS, 2)],
+                _ => vec![],
+            };
+            RawDescribe { params: vec![23; count], columns }
+        };
+        let relation = |oid: u32, name: &str, columns: &[&str], view: Option<&str>| -> Vec<Vec<Value>> {
+            columns.iter().enumerate().map(|(i, c)| vec![json!(oid), json!(name), json!(i + 1), json!(false), if i == 0 { json!(view) } else { Value::Null }, json!(c), json!(false)]).collect()
+        };
+        let comments: HashMap<(u32, i32), &str> = HashMap::from([((USERS, 1), "The user's id"), ((USERS, 2), "Age (in years)"), ((ADULTS, 1), "An adult's id\nfrom users")]);
+        let analyzed = |sql: &str| {
+            let mut answers: HashMap<String, Answer> = HashMap::new();
+            for _ in 0..64 {
+                let host = Host::new(&answers);
+                if let Some(a) = analyze(sql, &host) {
+                    assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+                    return a;
+                }
+                for need in host.needs() {
+                    match need {
+                        crate::api::Need::Describe { id, sql } => {
+                            answers.insert(id, Answer::Describe { describe: describe(&sql) });
+                        }
+                        crate::api::Need::Query { id, sql, params, .. } => {
+                            let rows = match sql.as_str() {
+                                RELATION_COLUMNS_QUERY => {
+                                    let names: Vec<String> = serde_json::from_value(params[0].clone()).unwrap();
+                                    let mut rows = Vec::new();
+                                    if names.iter().any(|n| n == "users") {
+                                        rows.extend(relation(USERS, "users", &["id", "age", "email"], None));
+                                    }
+                                    if names.iter().any(|n| n == "adults") {
+                                        rows.extend(relation(ADULTS, "adults", &["id", "years"], Some(definition)));
+                                    }
+                                    rows
+                                }
+                                COMMENTS_QUERY => {
+                                    let rels: Vec<u32> = serde_json::from_value(params[0].clone()).unwrap();
+                                    let atts: Vec<i32> = serde_json::from_value(params[1].clone()).unwrap();
+                                    rels.iter().zip(&atts).filter_map(|(r, a)| comments.get(&(*r, *a)).map(|c| vec![json!(r), json!(a), json!(c)])).collect()
+                                }
+                                _ => vec![],
+                            };
+                            answers.insert(id, Answer::Rows { rows });
+                        }
+                    }
+                }
+            }
+            panic!("the replay did not converge");
+        };
+        let columns = |sql: &str| analyzed(sql).columns.into_iter().map(|c| c.comment).collect::<Vec<_>>();
+        let some = |c: &str| Some(c.to_string());
+        // A column keeps its comment under an alias; an expression over it has none.
+        assert_eq!(columns("SELECT id, age, age AS years, lower(email), count(*) OVER () FROM users"), [some("The user's id"), some("Age (in years)"), some("Age (in years)"), None, None]);
+        // Through a view: the view's column's own comment, else the one of the column it reads.
+        assert_eq!(columns("SELECT id, years FROM adults"), [some("An adult's id\nfrom users"), some("Age (in years)")]);
+        // A set operation's provenance names its leftmost arm only.
+        assert_eq!(columns("SELECT age FROM users UNION ALL SELECT age FROM users"), [None]);
+        // A parameter written to a column carries the column's comment; one compared with a column
+        // is typed by the server, which names no column.
+        let update = analyzed("UPDATE users SET age = :age, email = :email WHERE id = :id RETURNING age");
+        assert_eq!(update.columns.iter().map(|c| c.comment.clone()).collect::<Vec<_>>(), [some("Age (in years)")]);
+        assert_eq!(update.params.iter().map(|p| (p.name.as_str(), p.comment.clone())).collect::<Vec<_>>(), [("age", some("Age (in years)")), ("email", None), ("id", None)]);
     }
 }

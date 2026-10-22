@@ -282,10 +282,20 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         None => HashSet::new(),
     };
     // A parameter's type from the column it is written to or compared with, where the prepare's
-    // says less (`mysql_params::column_types`).
-    let column_typed = match &parsed {
-        Some(statement) => crate::mysql_params::column_types(statement, &names, host)?,
-        None => HashMap::new(),
+    // says less, and the comments of those columns and of the ones the result columns read
+    // (`mysql_params::typed`).
+    let typed = match &parsed {
+        Some(statement) => crate::mysql_params::typed(statement, &names, host)?,
+        None => Default::default(),
+    };
+    // A result column's comment is its origin's, where the prepare names the column itself.
+    let traced = parsed.as_ref().and_then(crate::mysql_params::traced_from);
+    let comment_of = |c: &crate::api::MysqlColumn| -> Option<String> {
+        let (table, column) = (c.org_table.as_deref()?, c.org_name.as_deref()?);
+        if column.is_empty() || !traced.as_ref()?.iter().any(|t| t.eq_ignore_ascii_case(table)) {
+            return None;
+        }
+        typed.columns.get(&(table.to_ascii_lowercase(), column.to_ascii_lowercase())).cloned()
     };
     // What the engine knows of each column being NULL: the server's flags, read where merging
     // could make them wrong with every derived table materialized, and what the engine proves
@@ -328,14 +338,14 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
                 // A JSON column takes the shape's type; any other keeps the server's.
                 Some((_, shaped_ty, _)) => {
                     let ty = if c.r#type == 245 { shaped_ty.clone() } else { ty };
-                    Column { name: c.name.clone(), ty, nullable: !not_null, type_name: name.to_string() }
+                    Column { name: c.name.clone(), ty, nullable: !not_null, type_name: name.to_string(), comment: comment_of(c) }
                 }
                 None => {
                     let ty = match (ty, documents.get(position).cloned().flatten()) {
                         (Type::Json { schema: None }, Some(schema)) => Type::Json { schema: Some(schema) },
                         (ty, _) => ty,
                     };
-                    Column { name: c.name.clone(), ty, nullable: !not_null, type_name: name.to_string() }
+                    Column { name: c.name.clone(), ty, nullable: !not_null, type_name: name.to_string(), comment: comment_of(c) }
                 }
             }
         })
@@ -351,11 +361,11 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
                 None => (Type::Unknown, ""),
             };
             // Only an integer or a BIT context is narrowed: those are the ones the prepare describes alike for every column.
-            let ty = match (&ty, column_typed.get(name)) {
+            let ty = match (&ty, typed.types.get(name)) {
                 (Type::Scalar { name: server }, Some(column)) if server == "int4" || server == "bool|bytea" => Type::Scalar { name: (*column).to_string() },
                 _ => ty,
             };
-            Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: nullable.contains(name), schema: None, cast: None }
+            Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: nullable.contains(name), schema: None, cast: None, comment: typed.comments.get(name).cloned() }
         })
         .collect();
     let kind = match &read {
@@ -2528,5 +2538,55 @@ mod tests {
         assert_eq!(nullable("with d as (select user_id, id + 1 as next from posts) select u.id, d.next from users u left join d on d.user_id = u.id"), [false, true]);
         // Nothing merged: the statement's own flags.
         assert_eq!(nullable("select id, id + 1 as next from users"), [false, false]);
+    }
+
+    #[test]
+    fn a_column_read_as_it_is_carries_its_comment() {
+        // As 8.4 prepares them over `users (id int primary key comment 'The id', age int comment
+        // 'Age (in years)', email varchar(100))` and `o (other int comment 'Other', doc int comment
+        // 'Doc')`: an expression has no origin, an alias keeps its column's, and through a derived
+        // table the origin is the base table beside the derived column's own name.
+        let column = |name: &str, table: &str, org: &str| json!({ "name": name, "type": 3, "flags": 0, "org_table": table, "org_name": org });
+        let describe = |sql: &str| {
+            let columns = match sql {
+                "select id, age as years, lower(email) from users where id = ?" => vec![column("id", "users", "id"), column("years", "users", "age"), column("lower(email)", "", "")],
+                "select doc from (select other as doc from o) s" => vec![column("doc", "o", "doc")],
+                _ => vec![],
+            };
+            let params = sql.matches('?').map(|_| json!({ "type": 8 })).collect::<Vec<_>>();
+            json!({ "columns": columns, "params": params })
+        };
+        let comments = [("users", "id", "The id"), ("users", "age", "Age (in years)"), ("users", "email", ""), ("o", "other", "Other"), ("o", "doc", "Doc")];
+        let analyzed = |sql: &str| {
+            let mut answers: HashMap<String, crate::api::Answer> = HashMap::new();
+            for _ in 0..16 {
+                let host = Host::new(&answers);
+                if let Some(analysis) = analyze_text(sql, &host) {
+                    return analysis;
+                }
+                for need in host.needs() {
+                    let (id, answer) = match need {
+                        crate::api::Need::Describe { id, sql } => (id, json!({ "mysql": describe(&sql) })),
+                        crate::api::Need::Query { id, sql, .. } if sql == SQL_MODE_QUERY => (id, json!({ "rows": [["ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION"]] })),
+                        crate::api::Need::Query { id, sql, params, .. } if sql == crate::mysql_params::TYPES_QUERY => {
+                            let tables = params[0].as_str().unwrap().split(',').map(String::from).collect::<Vec<_>>();
+                            let rows = comments.iter().filter(|(t, _, _)| tables.iter().any(|n| n == t)).map(|(t, c, comment)| json!([t, c, "int", "int", "", comment])).collect::<Vec<_>>();
+                            (id, json!({ "rows": rows }))
+                        }
+                        crate::api::Need::Query { id, .. } => (id, json!({ "rows": [] })),
+                    };
+                    answers.insert(id, serde_json::from_value(answer).unwrap());
+                }
+            }
+            panic!("the analysis never settled")
+        };
+        let some = |c: &str| Some(c.to_string());
+        let a = analyzed("select id, age as years, lower(email) from users where id = :id");
+        assert_eq!(a.columns.iter().map(|c| c.comment.clone()).collect::<Vec<_>>(), [some("The id"), some("Age (in years)"), None]);
+        // A parameter compared with a column carries its comment.
+        assert_eq!(a.params.iter().map(|p| p.comment.clone()).collect::<Vec<_>>(), [some("The id")]);
+        // `o.doc` is not the column `doc` reads.
+        let a = analyzed("select doc from (select other as doc from o) s");
+        assert_eq!(a.columns.iter().map(|c| c.comment.clone()).collect::<Vec<_>>(), [None]);
     }
 }

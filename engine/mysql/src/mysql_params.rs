@@ -35,9 +35,10 @@ const CHECKS_QUERY: &str = "select tc.table_name, cc.check_clause from informati
     join information_schema.check_constraints cc on cc.constraint_schema = tc.constraint_schema and cc.constraint_name = tc.constraint_name \
     where tc.table_schema = database() and tc.constraint_type = 'CHECK' and tc.enforced = 'YES' and find_in_set(tc.table_name, ?)";
 
-/// Each column's type of the named tables of the current schema, for [`column_types`]: its
-/// `data_type`, its `column_type` (`tinyint(1)`, `bit(1)`, `bigint unsigned`) and its `extra`.
-const TYPES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.column_type, c.extra from information_schema.columns c \
+/// Each column's type of the named tables of the current schema, for [`typed`]: its
+/// `data_type`, its `column_type` (`tinyint(1)`, `bit(1)`, `bigint unsigned`), its `extra` and
+/// its comment, empty for none (a view's column has its table column's).
+pub(crate) const TYPES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.column_type, c.extra, c.column_comment from information_schema.columns c \
     where c.table_schema = database() and find_in_set(c.table_name, ?) order by c.table_name, c.ordinal_position";
 
 /// The parameter each `?` of the rewritten text is, by where it stands as the parser counts:
@@ -65,10 +66,54 @@ pub(crate) fn prefetch(statement: &Statement, names: &Names, host: &Host) {
         let _ = host.query(COLUMNS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
         let _ = host.query(CHECKS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
     }
-    let typed = typed_targets(statement, names);
+    let typed = typed_tables(statement, names);
     if !typed.is_empty() {
-        let _ = host.query(TYPES_QUERY, vec![json!(written_tables(&typed).join(","))], Scope::Statement);
+        let _ = host.query(TYPES_QUERY, vec![json!(typed.join(","))], Scope::Statement);
     }
+}
+
+/// The tables whose columns [`typed`] reads: those a parameter is written to or compared with,
+/// and those whose columns the result columns read ([`traced_from`]).
+fn typed_tables(statement: &Statement, names: &Names) -> Vec<String> {
+    let mut tables = written_tables(&typed_targets(statement, names));
+    tables.extend(traced_from(statement).unwrap_or_default());
+    tables.sort();
+    tables.dedup();
+    tables
+}
+
+/// The tables of a SELECT whose result columns' origins in the prepare are the columns
+/// themselves: one with no WITH and no set operation, over tables (or views) of the current schema
+/// alone. Through a derived table or a WITH query MySQL gives the base table and the derived
+/// column's own name as a column's origin (`select doc from (select other as doc from o) s` reads
+/// `o.doc`), which may be another column of that table; an expression has no origin.
+pub(crate) fn traced_from(statement: &Statement) -> Option<Vec<String>> {
+    fn factors(factor: &TableFactor, out: &mut Vec<String>) -> Option<()> {
+        match factor {
+            TableFactor::Table { name, args: None, .. } => out.push(table_name(name)?),
+            TableFactor::NestedJoin { table_with_joins, .. } => {
+                factors(&table_with_joins.relation, out)?;
+                for join in &table_with_joins.joins {
+                    factors(&join.relation, out)?;
+                }
+            }
+            _ => return None,
+        }
+        Some(())
+    }
+    let Statement::Query(q) = statement else { return None };
+    if q.with.is_some() {
+        return None;
+    }
+    let SetExpr::Select(select) = q.body.as_ref() else { return None };
+    let mut tables = Vec::new();
+    for from in &select.from {
+        factors(&from.relation, &mut tables)?;
+        for join in &from.joins {
+            factors(&join.relation, &mut tables)?;
+        }
+    }
+    Some(tables)
 }
 
 /// The parameters written whole to a column or compared whole with one, each with that column.
@@ -78,21 +123,37 @@ fn typed_targets(statement: &Statement, names: &Names) -> Vec<(String, String, T
     targets
 }
 
+/// What the columns the statement names say of its parameters and its result columns ([`typed`]).
+#[derive(Debug, Default)]
+pub(crate) struct Typed {
+    /// Per parameter, the type its columns give it where it differs from the prepare's.
+    pub types: HashMap<String, &'static str>,
+    /// Per parameter, the comment of the columns it is written to or compared with, where they
+    /// share one.
+    pub comments: HashMap<String, String>,
+    /// Per column of the tables the result columns read ([`traced_from`]), by table and column in
+    /// lower case, its comment where it has one.
+    pub columns: HashMap<(String, String), String>,
+}
+
 /// The type of each parameter whose column the statement names directly, where it differs from
 /// what MySQL's prepare says: the server describes every integer context as a BIGINT and a BIT
 /// context as BIT(64), whatever the column, so a parameter written to or compared with a BIGINT
 /// column is `int8`, one with a TINYINT(1) or BIT(1) column, which a row returns as a truth
 /// value, `bool|int4`, and one with a wider BIT column `bytea`. A row's value then goes back in
 /// as a parameter of its type (the round-trip rule). A parameter whose
-/// columns disagree keeps the prepare's type.
-pub(crate) fn column_types(statement: &Statement, names: &Names, host: &Host) -> Lazy<HashMap<String, &'static str>> {
+/// columns disagree keeps the prepare's type. And the comments of those columns and of the columns
+/// the result columns read, for their doc comments.
+pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<Typed> {
     let targets = typed_targets(statement, names);
-    if targets.is_empty() {
-        return Some(HashMap::new());
+    let tables = typed_tables(statement, names);
+    if tables.is_empty() {
+        return Some(Typed::default());
     }
-    let rows = host.query(TYPES_QUERY, vec![json!(written_tables(&targets).join(","))], Scope::Statement)?;
-    // Per table as the server names it: each column in lower case, its type, and whether it is INVISIBLE.
-    let mut columns: HashMap<String, Vec<(String, Option<&'static str>, bool)>> = HashMap::new();
+    let rows = host.query(TYPES_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
+    let mut out = Typed::default();
+    // Per table as the server names it: each column in lower case, its type, whether it is INVISIBLE, and its comment.
+    let mut columns: HashMap<String, Vec<(String, Option<&'static str>, bool, Option<String>)>> = HashMap::new();
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(column), Some(data_type), Some(column_type)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { continue };
         let invisible = row.get(4).and_then(as_str).is_some_and(|extra| extra.to_ascii_uppercase().contains("INVISIBLE"));
@@ -104,9 +165,14 @@ pub(crate) fn column_types(statement: &Statement, names: &Names, host: &Host) ->
             "bit" => Some("bytea"),
             _ => None,
         };
-        columns.entry(table.to_string()).or_default().push((column.to_ascii_lowercase(), ty, invisible));
+        let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
+        if let Some(comment) = &comment {
+            out.columns.insert((table.to_ascii_lowercase(), column.to_ascii_lowercase()), comment.clone());
+        }
+        columns.entry(table.to_string()).or_default().push((column.to_ascii_lowercase(), ty, invisible, comment));
     }
     let mut found: HashMap<String, Option<&'static str>> = HashMap::new();
+    let mut noted: HashMap<String, Option<String>> = HashMap::new();
     for (param, table, target) in targets {
         let known = match columns.get(&table) {
             Some(known) => Some(known),
@@ -118,15 +184,19 @@ pub(crate) fn column_types(statement: &Statement, names: &Names, host: &Host) ->
                 }
             }
         };
-        let ty = known.and_then(|known| match &target {
-            Target::Name(name) => known.iter().find(|(c, _, _)| c == name).map(|(_, ty, _)| *ty),
-            Target::Position(i) => known.iter().filter(|(_, _, invisible)| !invisible).nth(*i).map(|(_, ty, _)| *ty),
+        let column = known.and_then(|known| match &target {
+            Target::Name(name) => known.iter().find(|(c, _, _, _)| c == name),
+            Target::Position(i) => known.iter().filter(|(_, _, invisible, _)| !invisible).nth(*i),
         });
         // A column nothing narrows, or one the statement names that the table lacks, keeps the prepare's type.
-        let ty = ty.flatten();
-        found.entry(param).and_modify(|seen| if *seen != ty { *seen = None }).or_insert(ty);
+        let ty = column.and_then(|(_, ty, _, _)| *ty);
+        let comment = column.and_then(|(_, _, _, comment)| comment.clone());
+        found.entry(param.clone()).and_modify(|seen| if *seen != ty { *seen = None }).or_insert(ty);
+        noted.entry(param).and_modify(|seen| if *seen != comment { *seen = None }).or_insert(comment);
     }
-    Some(found.into_iter().filter_map(|(param, ty)| ty.map(|ty| (param, ty))).collect())
+    out.types = found.into_iter().filter_map(|(param, ty)| ty.map(|ty| (param, ty))).collect();
+    out.comments = noted.into_iter().filter_map(|(param, comment)| comment.map(|comment| (param, comment))).collect();
+    Some(out)
 }
 
 /// Every parameter compared whole with a column of the table the statement reads, in its WHERE

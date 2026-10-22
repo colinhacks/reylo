@@ -119,6 +119,10 @@ pub struct Param {
     /// cannot read into 0, so the run time checks the parameter's value against its type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<String>,
+    /// The comment the database keeps on the column the parameter is written to (or, on MySQL,
+    /// compared with), for the parameter's doc comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -128,6 +132,11 @@ pub struct Column {
     pub ty: Type,
     pub nullable: bool,
     pub type_name: String,
+    /// The comment the database keeps on the table column the result column reads as it is
+    /// (`COMMENT ON COLUMN`, MySQL's `COMMENT '…'`), for the field's doc comment; none for an
+    /// expression.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

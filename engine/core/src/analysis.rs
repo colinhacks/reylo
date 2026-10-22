@@ -121,7 +121,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
     let rewritten = lex::rewrite(sql, lexed, dialect.binds());
     Analysis {
         kind: String::new(),
-        params: lexed.params.iter().map(|n| Param { name: n.clone(), ty: Type::Unknown, type_name: String::new(), nullable: false, schema: None, cast: None }).collect(),
+        params: lexed.params.iter().map(|n| Param { name: n.clone(), ty: Type::Unknown, type_name: String::new(), nullable: false, schema: None, cast: None, comment: None }).collect(),
         columns: Vec::new(),
         cardinality: "many".to_string(),
         cardinality_reason: None,
