@@ -408,7 +408,7 @@ Inside a document a value is what JSON writes: integers and `numeric` are number
 
 **Aggregates over no rows**
 
-Over no rows, `jsonb_agg` is `null`, and its type says so: `coalesce(jsonb_agg(…), '[]')` is the array alone.
+Over no rows, `jsonb_agg` is `null`, and its type says so: `coalesce(jsonb_agg(…), '[]')` is the array alone. Under any other default the value may be that default, so the column is `unknown`.
 
 <Pairs>
 

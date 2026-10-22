@@ -630,7 +630,8 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
         }
         // A row value inside a document is an object of its fields.
         Some("object") | Some("composite") => {
-            let obj = json.as_object()?;
+            let at = if path.is_empty() { "the top" } else { path };
+            let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             for f in ty["fields"].as_array()? {
                 let name = f["name"].as_str()?;
                 let v = obj.get(name).unwrap_or(&Value::Null);
@@ -648,7 +649,9 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
             None
         }
         Some("list") => {
-            for (i, item) in json.as_array()?.iter().enumerate() {
+            let at = if path.is_empty() { "the top" } else { path };
+            let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed a list")) };
+            for (i, item) in items.iter().enumerate() {
                 if item.is_null() && !(ty["of"]["kind"] == "json" && ty["of"].get("schema").is_some_and(|s| reylo_engine_core::schema_type::admits(s, item))) {
                     if !ty["nullable_items"].as_bool().unwrap_or(true) {
                         return Some(format!("has a null item at {path}[{i}], typed non-null"));
@@ -1234,6 +1237,20 @@ mod tests {
         assert!(built_contradiction(&ty, &text(r#"{"id":1,"r":1,"doc":1,"tags":[],"pair":[1,2]}"#)).is_some_and(|why| why.contains("does not admit")));
         assert!(built_contradiction(&ty, &text("not json")).is_some_and(|why| why.contains("which is no JSON")));
         assert_eq!(built_contradiction(&ty, &Integer(1)).as_deref(), Some("typed as built JSON holds Integer(1), which is no text"));
+    }
+
+    #[test]
+    fn a_postgres_document_is_of_the_kind_its_type_says() {
+        let scalar = |name: &str| json!({"kind": "scalar", "name": name});
+        let list = json!({"kind": "list", "of": scalar("int8"), "nullable_items": false});
+        let object = json!({"kind": "object", "fields": [{"name": "ids", "type": list.clone(), "nullable": false}]});
+        assert_eq!(contradiction(&list, "[1, 2]"), None);
+        assert_eq!(contradiction(&object, r#"{"ids": []}"#), None);
+        // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.
+        assert_eq!(contradiction(&list, "{}").as_deref(), Some("holds {} at the top, typed a list"));
+        assert_eq!(contradiction(&object, "[]").as_deref(), Some("holds [] at the top, typed an object"));
+        assert_eq!(contradiction(&object, r#"{"ids": {}}"#).as_deref(), Some("holds {} at .ids, typed a list"));
+        assert_eq!(contradiction(&object, "null").as_deref(), Some("holds null at the top, typed an object"));
     }
 
     #[test]

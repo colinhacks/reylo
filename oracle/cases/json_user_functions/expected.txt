@@ -1,6 +1,6 @@
 captured_object.sql: many () -> { j: json? }
 captured_row.sql: many () -> { j: json? }
 named_like_a_users_function.sql: many () -> { j: json? }
-qualified_aggregate.sql: many () -> { j: json? }
+qualified_aggregate.sql: many () -> { j: json }
 qualified_object.sql: many () -> { j: json? }
 subquery_captured.sql: one () -> { j: json? }

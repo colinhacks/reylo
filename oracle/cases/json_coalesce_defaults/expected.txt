@@ -1,0 +1,8 @@
+agg_column_default.sql: many () -> { ids: json? }
+agg_empty_array.sql: one () -> { ids: [int8] }
+agg_empty_array_cast.sql: one () -> { ids: [int8] }
+agg_object_default.sql: one () -> { ids: json }
+nested_empty_array.sql: many () -> { j: { ids: [int8] } }
+nested_object_default.sql: many () -> { j: { ids: json } }
+object_never_null.sql: many () -> { j: { id: int8 } }
+subquery_object_default.sql: many () -> { j: json }

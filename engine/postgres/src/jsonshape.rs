@@ -234,6 +234,7 @@ struct Builder<'a> {
     grouped: bool,
 }
 
+#[derive(Clone)]
 struct Draft {
     ctx: usize,
     /// A `to_jsonb(alias)` probe, whose every column is one field.
@@ -314,13 +315,21 @@ impl Builder<'_> {
                     self.leaf(expr)
                 }
             }
+            // `coalesce(x, …)` is `x` where `x` stands alone or is never NULL, and an array under
+            // `'[]'` is that array or an empty one, so never NULL. Under any other default it may be
+            // that default, of any shape, so it is one value the build reads as it is.
             Some(NodeEnum::CoalesceExpr(c)) => {
                 let Some(first) = c.args.first() else { return Shape::Unknown };
-                let guarded = c.args[1..].iter().any(is_non_null_const);
-                match (self.walk(first), guarded) {
-                    (Shape::Object { fields, .. }, true) => Shape::Object { fields, non_null: true },
-                    (Shape::Array { items, .. }, true) => Shape::Array { items, non_null: true },
-                    (shape, _) => shape,
+                // What the walk drafts for `x` goes unread where the whole is one value.
+                let drafted = self.drafts.clone();
+                match (self.walk(first), &c.args[1..]) {
+                    (shape, []) => shape,
+                    (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
+                    (Shape::Array { items, .. }, [default]) if is_empty_array(default) => Shape::Array { items, non_null: true },
+                    _ => {
+                        self.drafts = drafted;
+                        self.leaf(expr)
+                    }
                 }
             }
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
@@ -771,13 +780,11 @@ fn string_const(node: &Node) -> Option<String> {
     }
 }
 
-/// A constant that is not NULL, which is what makes a `coalesce` non-null.
-fn is_non_null_const(node: &Node) -> bool {
+/// `'[]'`, as JSON text or cast to `json` or `jsonb`: the default that keeps an array an array.
+fn is_empty_array(node: &Node) -> bool {
     match node.node.as_ref() {
-        Some(NodeEnum::AConst(c)) => !c.isnull,
-        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_non_null_const),
-        Some(NodeEnum::AArrayExpr(_)) => true,
-        _ => false,
+        Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_empty_array),
+        _ => string_const(node).as_deref() == Some("[]"),
     }
 }
 
