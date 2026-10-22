@@ -325,7 +325,7 @@ impl Builder<'_> {
                 match (self.walk(first), &c.args[1..]) {
                     (shape, []) => shape,
                     (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
-                    (Shape::Array { items, .. }, [default]) if is_empty_array(default) => Shape::Array { items, non_null: true },
+                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) => Shape::Array { items, non_null: true },
                     // A placeholder is the whole's type under a default that cannot widen it, and it
                     // resolves nullable. Under any other one the whole is no probe's to read, since a
                     // probe binds nothing: `coalesce($1::int, 1.5)` is a numeric.
@@ -807,14 +807,6 @@ fn string_const(node: &Node) -> Option<String> {
 fn keeps_param_type(node: &Node) -> bool {
     use protobuf::a_const::Val;
     matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull || matches!(c.val, Some(Val::Sval(_) | Val::Ival(_) | Val::Boolval(_))))
-}
-
-/// `'[]'`, as JSON text or cast to `json` or `jsonb`: the default that keeps an array an array.
-fn is_empty_array(node: &Node) -> bool {
-    match node.node.as_ref() {
-        Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_empty_array),
-        _ => string_const(node).as_deref() == Some("[]"),
-    }
 }
 
 fn casts_to_json(t: &protobuf::TypeCast) -> bool {

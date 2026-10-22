@@ -1242,8 +1242,9 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     Some((reads, items.queries))
 }
 
-/// `'[]'`, as JSON text or cast to `json` or `jsonb`.
-fn is_empty_array(node: &Node) -> bool {
+/// `'[]'`, as JSON text or cast to `json` or `jsonb`: the default that keeps an array an array, here
+/// and in [`crate::jsonshape`].
+pub(crate) fn is_empty_array(node: &Node) -> bool {
     match node.node.as_ref() {
         Some(NodeEnum::AConst(c)) => matches!(&c.val, Some(protobuf::a_const::Val::Sval(s)) if s.sval == "[]"),
         Some(NodeEnum::TypeCast(t)) => {
