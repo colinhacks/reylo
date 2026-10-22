@@ -349,6 +349,27 @@ test("every other driver gets a binary value as it is, pg-promise included, sinc
   for (const v of seen) assert.equal(v, plain);
 });
 
+test("a binary parameter takes binary data alone, so base64 text is refused before the statement runs", async () => {
+  const { plain } = binary();
+  const bytes = (name: string) => ({ type: { kind: "scalar" as const, name } });
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :b::bytea, :bs::bytea[]", params: ["b", "bs"], inputs: { b: bytes("bytea"), bs: { type: { kind: "array", of: bytes("bytea").type } } } };
+  const seen: unknown[][] = [];
+  const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [] }) };
+  await execute(client, q, { b: Buffer.from([1]), bs: [plain] });
+  await execute(client, q, { b: null, bs: null });
+  assert.equal(seen.length, 2);
+  const refused = async (run: () => unknown, message: RegExp) => assert.rejects(Promise.resolve().then(run), (e: Error) => e instanceof TypeError && message.test(e.message));
+  await refused(() => execute(client, q, { b: "AQL/", bs: [] }), /^Parameter "b" is binary data, so it takes a Uint8Array \(a Buffer is one\), as `\.run\(\)` returns one; got "AQL\/"\. Decode base64 or hex text into one first\.$/);
+  await refused(() => execute(client, q, { b: plain, bs: [plain, "\\x01"] }), /^Parameter "bs" is binary data, .*got "\\\\x01"/);
+  await refused(() => execute(client, q, { b: plain.buffer, bs: [] }), /^Parameter "b" is binary data, .*got an object/);
+  assert.equal(seen.length, 2);
+  // MySQL's BINARY, VARBINARY and BLOB are the engine's bytea; SQLite's BLOB is blob.
+  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :b", params: ["b"], inputs: { b: bytes("bytea") } };
+  await refused(() => execute({ query: async () => [[], []] as [unknown, unknown], execute: async () => [[], []] as [unknown, unknown] }, my, { b: "AQL/" }), /^Parameter "b" is binary data/);
+  const lite: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :b", params: ["b"], inputs: { b: bytes("blob") } };
+  await refused(() => execute({ prepare: () => ({ all: () => [] }) }, lite, { b: "AQL/" }), /^Parameter "b" is binary data/);
+});
+
 test("mysql: PlanetScale 2.0, which binds no parameters, runs a statement without any and refuses one with some", async () => {
   const calls: unknown[][] = [];
   // 2.0's execute(query, options) refuses anything past them, or a second argument that is not its options.

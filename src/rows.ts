@@ -369,7 +369,7 @@ export function variant(text: string, structured: Structured, fields: readonly R
   return out;
 }
 
-function describe(v: unknown): string {
+export function describe(v: unknown): string {
   if (v === null) return "null";
   if (v instanceof Date) return "a Date";
   if (Array.isArray(v)) return "an array";

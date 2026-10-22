@@ -13,7 +13,7 @@ import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import { cloneJson, validate, withDefaults } from "./json-schema.ts";
-import { checkCast, prepareRows, variant, zoned, type Structured } from "./rows.ts";
+import { checkCast, describe, prepareRows, variant, zoned, type Structured } from "./rows.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite";
@@ -425,6 +425,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     const cast = query.inputs?.[name]?.cast;
     if (cast !== undefined && type !== undefined) checkCast(name, cast, type, bound.values[i], query.dialect);
     checkTime(type, name, bound.values[i]);
+    checkBinary(type, name, bound.values[i]);
     bound.values[i] = encode(type, bound.values[i], query.dialect, name);
   });
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
@@ -503,6 +504,21 @@ function checkTime(type: EngineType | undefined, name: string, v: unknown): void
   } else if (v instanceof Date && type.name.split("|").every((part) => part === "timestamp" || part === "date")) {
     throw new ParameterError(`Parameter "${name}" is a ${type.name === "date" ? "date" : "timestamp"} without a time zone, so it takes the wall-clock text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones (the app's, the server's or UTC).`);
   }
+}
+
+// A binary parameter takes a Uint8Array (a Buffer is one), as `.run()` returns binary data and
+// as a structured parameter's binary member does (src/rows.ts). Anything else would reach the
+// driver as it is, and a string means something different on each database: Postgres reads it
+// as bytea's hex or escape text, MySQL stores the bytes of its UTF-8, and SQLite stores it as
+// TEXT, which comes back a string. So base64 text was stored as its own letters.
+function checkBinary(type: EngineType | undefined, name: string, v: unknown): void {
+  if (type === undefined || v == null) return;
+  if (type.kind === "array") {
+    if (Array.isArray(v)) for (const e of v) checkBinary(Array.isArray(e) ? type : type.of, name, e);
+    return;
+  }
+  if (type.kind !== "scalar" || (type.name !== "bytea" && type.name !== "blob") || v instanceof Uint8Array) return;
+  throw new ParameterError(`Parameter "${name}" is binary data, so it takes a Uint8Array (a Buffer is one), as \`.run()\` returns one; got ${describe(v)}. Decode base64 or hex text into one first.`);
 }
 
 // What `run` returns goes back in as the database reads it (the round-trip rule, src/render.ts):
