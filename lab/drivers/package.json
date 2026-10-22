@@ -30,6 +30,7 @@
     "postgres": "^3.4.9",
     "sqlite": "^5.1.1",
     "sqlite3": "^6.0.1",
-    "typescript": "^7.1.0-dev.20260918.1"
+    "typescript": "^7.1.0-dev.20260918.1",
+    "wrangler": "^4.151.3"
   }
 }

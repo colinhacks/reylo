@@ -104,3 +104,45 @@ test("a refusal is placed at the call or the text it names, in UTF-8 bytes", () 
   // A message that names nothing in the statement points at its first word.
   assert.deepEqual(placeRefusal("  select 1", "unrecognized token"), { start: 2, length: 6 });
 });
+
+// Cloudflare D1 through the project's wrangler, which runs it locally in workerd: D1 refuses
+// functions its SQLite has (`json_pretty`, the alias `ceiling` where `ceil` is allowed), and says so
+// only when a statement compiles.
+const d1 = skip || (!existsSync(join(DRIVERS, "wrangler")) && "lab/drivers has no wrangler installed");
+
+function worker(root: string, d1Binding: boolean) {
+  const config = { name: "reylo-test", main: "worker.js", compatibility_date: "2026-10-01", ...(d1Binding && { d1_databases: [{ binding: "DB", database_name: "reylo-test", database_id: "00000000-0000-0000-0000-000000000000" }] }) };
+  writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config));
+  writeFileSync(join(root, "worker.js"), "export default { fetch() { return new Response(''); } };\n");
+}
+
+test("a statement Cloudflare D1 refuses fails the type check at the call, with D1's message", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, true);
+  const session = await Session.open(root, env);
+  try {
+    const CEILING = "select id, ceiling(id / 2.0) as half from notes";
+    for (const [sql, fn] of [[PRETTY, "json_pretty"], [CEILING, "ceiling"]] as const) {
+      const outcome = await session.analyze(sql);
+      assert.ok(outcome.ok);
+      const [diagnostic, ...rest] = outcome.analysis.diagnostics;
+      assert.deepEqual(rest, []);
+      assert.match(diagnostic?.message ?? "", new RegExp(`^Cloudflare D1, as wrangler \\d+\\.\\d+\\.\\d+ runs it locally, refuses this statement: not authorized to use function: ${fn}$`));
+      assert.deepEqual([diagnostic?.start, diagnostic?.length, diagnostic?.code], [sql.indexOf(fn), fn.length, 6]);
+    }
+    // What D1 allows compiles against the schema the type check read, its parameters bound.
+    for (const sql of ["select id, ceil(id / 2.0) as half from notes where id = :id", "insert into notes (body, meta) values (:body, :meta) returning id", IIF]) {
+      const outcome = await session.analyze(sql);
+      assert.ok(outcome.ok);
+      assert.deepEqual(outcome.analysis.diagnostics, [], sql);
+    }
+  } finally {
+    await session.close();
+  }
+});
+
+test("a project whose wrangler config binds no D1 database is not asked", { skip: d1, timeout: 120_000 }, async () => {
+  const { root, env } = project(["wrangler"]);
+  worker(root, false);
+  assert.deepEqual((await analyze(root, env, PRETTY)).analysis.diagnostics, []);
+});

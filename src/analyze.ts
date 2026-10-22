@@ -166,10 +166,10 @@ export class Session {
     if (analysis.diagnostics.length || this.#schema?.value == null) return outcome;
     const io = await this.#connection().catch(() => undefined);
     for (const driver of io?.drivers ?? []) {
-      const refusal = await driver.refuses(analysis.rewritten.sql);
+      const refusal = await driver.refuses(analysis.rewritten.sql, analysis.rewritten.order.length);
       if (refusal === undefined) continue;
       const { start, length } = placeRefusal(sql, refusal);
-      const message = `${driver.name} runs SQLite ${driver.version}, which refuses this statement: ${refusal}`;
+      const message = driver.says(refusal);
       return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: 6 }] } };
     }
     return outcome;
