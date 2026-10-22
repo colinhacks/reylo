@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { dirname, relative } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
-import { moduleTypes } from "./module-types.ts";
+import { moduleTypes, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject, type Dialect } from "./project.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from "./doc-comment.ts";
@@ -19,8 +19,9 @@ type Project = {
 };
 const projects = new Map<string, Project>();
 
-function diag(messageText: string, start: number, length: number, code = 1) {
-  return { messageText, start, length, code };
+/** A diagnostic of the file, its range kept inside the file's `size` bytes (`withinFile`). */
+function diag(size: number, messageText: string, start: number, length: number, code = 1) {
+  return { messageText, ...withinFile(start, length, size), code };
 }
 
 /**
@@ -64,6 +65,7 @@ serve({
   async transform(params) {
     const p = params as { fileName: string; content: string; projectHandle: string };
     const sql = p.content;
+    const size = Buffer.byteLength(sql);
     const diagnostics: ReturnType<typeof diag>[] = [];
     // A project file (`.reylo.yaml` or `.reylo.yml`, or a `<name>.reylo.yaml` that `include` takes
     // in) is no query, and its module declares nothing.
@@ -72,7 +74,7 @@ serve({
     if (!project) {
       // A transform for a project this process never opened: answer, never throw, so the file
       // keeps its default export instead of becoming an empty module.
-      diagnostics.push(diag(`The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, 9));
+      diagnostics.push(diag(size, `The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, 9));
       const leading = leadingComment(sql);
       const doc = docComment(leading.prose, statementAfter(sql, leading));
       const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
@@ -126,14 +128,14 @@ serve({
     } catch {}
     const outcome = await session.analyze(sql);
     if (!outcome.ok) {
-      diagnostics.push(diag(outcome.message, 0, 1, outcome.code));
+      diagnostics.push(diag(size, outcome.message, 0, 1, outcome.code));
       return emit(undefined, "unknown", "unknown", "many", lexed?.params ?? []);
     }
     const { analysis } = outcome;
     // The types, the diagnostics the analysis gives and the untyped parameters' are one function
     // the docs site's playground shares (src/module-types.ts).
     const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams, project.projectFile);
-    diagnostics.push(...types.diagnostics.map((d) => diag(d.message, d.start, d.length, d.code)));
+    diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
     return emit(analysis.rewritten.sql, types.params, types.row, types.cardinality, types.names);
   },
   async closeProject(params) {

@@ -29,6 +29,16 @@ const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 
 /**
+ * A diagnostic's range kept inside a text of `size` UTF-8 bytes. TypeScript refuses a content
+ * mapper's whole transform when a diagnostic runs past the end of the file ("returned an invalid
+ * transform response"), and the module becomes `any`; a range that does is cut at the end.
+ */
+export function withinFile(start: number, length: number, size: number): { start: number; length: number } {
+  const from = Math.max(0, Math.min(start, size));
+  return { start: from, length: Math.max(0, Math.min(length, size - from)) };
+}
+
+/**
  * The module's types for a statement the engine analyzed. `lexed` is the engine's lexer's reading of
  * the statement, which names the parameters (absent where the lexer refused it); `strictParams` is
  * the project file's `strict_params`, and `projectFile` the file the error about it names: the
