@@ -1,6 +1,6 @@
 {
   "name": "@reylosql/sqlite",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Reylo's analysis engine for SQLite: the WebAssembly artifact reylo loads to type .sql files against a SQLite database. Install it beside reylo, at reylo's version.",
   "license": "MIT",

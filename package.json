@@ -1,6 +1,6 @@
 {
   "name": "reylo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Import SQL files as fully typed queries. A TypeScript content mapper plus a runtime loader.",
   "license": "MIT",
@@ -55,9 +55,9 @@
     "tinyglobby": "^0.2.17"
   },
   "peerDependencies": {
-    "@reylosql/mysql": "0.2.0",
-    "@reylosql/postgres": "0.2.0",
-    "@reylosql/sqlite": "0.2.0",
+    "@reylosql/mysql": "0.3.0",
+    "@reylosql/postgres": "0.3.0",
+    "@reylosql/sqlite": "0.3.0",
     "mysql2": ">=3",
     "pg": ">=8",
     "postgres": ">=3"
