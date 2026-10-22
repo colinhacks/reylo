@@ -30,6 +30,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 - `.runSync()` returns the result itself on a synchronous SQLite client (`better-sqlite3`, `node:sqlite`, a Durable Object's `ctx.storage.sql`), so it works inside their synchronous transactions. `.with(client)` binds the query to a client.
 - The result's shape follows the row count Reylo infers: an array, one row, a row or `null`, or nothing for a write without `returning`.
 - Every driver gives the same types: a 64-bit integer is a `bigint`, a decimal its exact text, an instant its ISO 8601 text in UTC, and no value is a `Date`. Pass a parameter in the form `.run()` returns for its type (https://reylo.dev/#data-types).
+- On SQLite, a table that is not `STRICT` can hold a value of another kind than its column's declared type, such as the text `'abc'` in an `INTEGER` column; `.run()` throws an error naming the column rather than return it. Replace the value, or read the column with `cast(col as text)` (https://reylo.dev/sqlite#declared-types-and-strict-tables).
 - A database error is the driver's own error, passed through as it is.
 
 ## After a change
