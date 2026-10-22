@@ -537,6 +537,17 @@ The `printf` function returns `NULL` when its format writes nothing, so it is `|
 
 </Pairs>
 
+**Full-text search**
+
+FTS5's `bm25` is a `number`, and `highlight` and `snippet` are `string | null`, `NULL` where the column they read is. FTS4's `offsets` is a `string` and `matchinfo` a `Uint8Array`.
+
+<Pairs>
+
+- `highlight(docs, 1, '<b>', '</b>')` where `body` is `NULL` → `null`
+- `bm25(docs)` with no `match` → `0`
+
+</Pairs>
+
 **Functions the table lacks**
 
 A built-in function the table lacks, such as `unhex`, is `unknown`. Cast its result to type it: `cast(unhex(hash) as blob)`.

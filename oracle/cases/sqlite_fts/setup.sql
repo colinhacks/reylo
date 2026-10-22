@@ -19,3 +19,4 @@ create trigger articles_au after update on articles begin
 end;
 create virtual table words using fts5(word);
 create virtual table bare using fts5(word, content='');
+create virtual table notes using fts4(body);

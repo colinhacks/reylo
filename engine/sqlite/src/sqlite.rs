@@ -540,6 +540,7 @@ const PLAIN: &[&str] = &[
     "soundex", "sqlite_version", "sqlite_source_id", "current_date", "current_time", "current_timestamp", "random", "last_insert_rowid", "changes", "total_changes",
     "randomblob", "zeroblob", "->>", "atan", "atan2", "asinh", "sinh", "cosh", "tanh", "exp", "degrees", "radians", "ceil", "ceiling", "floor", "trunc", "sign", "acos", "acosh",
     "asin", "atanh", "cos", "sin", "tan", "ln", "log", "log10", "log2", "mod", "pow", "power", "sqrt", "pi",
+    "bm25", "highlight", "snippet", "offsets", "matchinfo",
 ];
 
 /// A value without the subtype, as SQLite writes it into JSON: an INTEGER (a 64-bit column's too)
@@ -1311,6 +1312,15 @@ impl Analyzer<'_> {
             // `pow(-1, 0.5)`) and for an infinite argument (`sin(1e999)`).
             "acos" | "acosh" | "asin" | "atanh" | "cos" | "sin" | "tan" | "ln" | "log" | "log10" | "log2" | "mod" | "pow" | "power" | "sqrt" => done("real", Nulls::Always),
             "pi" => done("real", Nulls::Never),
+            // The full-text functions, which an FTS table answers for the rows of its own MATCH.
+            // FTS5's `bm25` is a real on every row, 0 where no MATCH ranks it. `highlight` is NULL
+            // where its column is, and so is FTS5's `snippet` where its column is (every column,
+            // for -1); FTS4's `snippet` has the same name. FTS3's and FTS4's `offsets` and
+            // `matchinfo` answer every row.
+            "bm25" => done("real", Nulls::Never),
+            "highlight" | "snippet" => done("text", Nulls::Always),
+            "offsets" => done("text", Nulls::Never),
+            "matchinfo" => done("blob", Nulls::Never),
             _ => Fact::unknown(),
         }
     }
@@ -1976,6 +1986,11 @@ impl Analyzer<'_> {
                 }
             }
             "sum" | "avg" | "total" => real(),
+            // After the FTS table: `highlight(t, column, open, close)` and `bm25(t, weight, …)`.
+            // `snippet` takes its arguments in another order on FTS4 than on FTS5.
+            "highlight" if i == 1 => integer(),
+            "highlight" if i > 1 => text(),
+            "bm25" if i > 0 => real(),
             _ => Ctx::None,
         }
     }
@@ -2705,6 +2720,35 @@ mod tests {
     fn param(a: &Analysis, name: &str) -> String {
         let p = a.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no param {name}"));
         scalar_name(&p.ty).unwrap_or("unknown").to_string()
+    }
+
+    #[test]
+    fn the_full_text_functions_are_typed() {
+        // Measured on SQLite 3.53.4 over rows with a NULL in each column: `bm25` is a real on
+        // every row (0 with no MATCH), `highlight` and FTS5's `snippet` are NULL where their
+        // column is, and FTS4's `offsets` and `matchinfo` answer every row.
+        let mut schema = ddl();
+        schema.push("CREATE VIRTUAL TABLE docs USING fts5(title, body)".into());
+        schema.push("CREATE VIRTUAL TABLE notes USING fts4(body)".into());
+        let a = |sql: &str| {
+            let a = analyze_ddl(sql, &schema, &Extras::default()).analysis;
+            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+            a
+        };
+        let fts5 = a("select rowid as id, bm25(docs) as rank, bm25(docs, :w, 1.0) as weighted, highlight(docs, :col, :open, '</b>') as hit, \
+                      snippet(docs, -1, '<b>', '</b>', '…', 8) as excerpt from docs where docs match :q order by rank");
+        assert_eq!(col(&fts5, "rank"), ("real".into(), false));
+        assert_eq!(col(&fts5, "weighted"), ("real".into(), false));
+        assert_eq!(col(&fts5, "hit"), ("text".into(), true));
+        assert_eq!(col(&fts5, "excerpt"), ("text".into(), true));
+        assert_eq!((param(&fts5, "w"), param(&fts5, "col"), param(&fts5, "open"), param(&fts5, "q")), ("real".into(), "integer".into(), "text".into(), "text".into()));
+        let fts4 = a("select offsets(notes) as o, matchinfo(notes) as m, snippet(notes) as s from notes where notes match :q");
+        assert_eq!(col(&fts4, "o"), ("text".into(), false));
+        assert_eq!(col(&fts4, "m"), ("blob".into(), false));
+        assert_eq!(col(&fts4, "s"), ("text".into(), true));
+        // Inside built JSON, each nests as the value it is.
+        let built = a("select json_object('hit', highlight(docs, 0, '<b>', '</b>'), 'rank', bm25(docs)) as j from docs where docs match :q");
+        assert_eq!(shown(&built), "j: { hit: string | null; rank: number }");
     }
 
     #[test]

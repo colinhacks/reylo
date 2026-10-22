@@ -1,0 +1,1 @@
+select rowid as id, bm25(recipe_index) as rank, bm25(recipe_index, :weight, 1.0) as weighted, highlight(recipe_index, 1, '<b>', '</b>') as body_hit, snippet(recipe_index, -1, '<b>', '</b>', '…', 8) as excerpt from recipe_index where recipe_index match :q order by rank
