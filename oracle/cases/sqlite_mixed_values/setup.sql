@@ -5,3 +5,4 @@
 -- type can only come from the statement.
 create table t (id integer primary key, n integer not null, s text, b blob) strict;
 create table u (id integer primary key, x);
+create view w as select 'x' as v union all select n from t;

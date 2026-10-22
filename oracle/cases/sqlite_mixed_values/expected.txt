@@ -7,5 +7,9 @@ compound_untyped.sql: many () -> { v: unknown? }
 iif_untyped.sql: many () -> { v: unknown? }
 lag_blob_default.sql: many () -> { v: unknown? }
 lag_integer_default.sql: many () -> { v: integer? }
+lag_parameter_default.sql: many (p: integer) -> { v: integer? }
 lead_text_default.sql: many () -> { v: unknown? }
 min_untyped.sql: many () -> { v: unknown? }
+subquery_compound.sql: many () -> { v: unknown }
+view_compound.sql: many () -> { v: unknown }
+with_compound.sql: many () -> { v: unknown }

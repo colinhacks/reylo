@@ -972,20 +972,12 @@ impl Analyzer<'_> {
         } else {
             Vec::new()
         };
-        let compound = t.statement.as_ref().is_some_and(|s| s.prior.is_some());
         let columns = t
             .columns
             .iter()
             .enumerate()
             .map(|(i, public)| {
                 let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
-                // A column SQLite could not type but names from a table: its declared affinity. The
-                // fact for a column declared without a type, or `ANY`, is already unknown on purpose,
-                // and so is a compound's whose arms differ, for which SQLite names the leftmost arm's.
-                let fact = match (&fact.ty, &public.declared) {
-                    (Type::Unknown, Some(declared)) if !compound => Fact { ty: column_type(declared, affinity(declared), true), non_null: fact.non_null },
-                    _ => fact,
-                };
                 // Built JSON is the text SQLite returns, which the run time parses.
                 let type_name = if is_built(&fact.ty) { "text".to_string() } else { scalar_name(&fact.ty).unwrap_or("").to_string() };
                 Column { name: public.name.clone(), ty: fact.ty, nullable: !fact.non_null, type_name, comment: None }
@@ -2016,6 +2008,11 @@ impl Analyzer<'_> {
             "abs" | "round" | "acos" | "acosh" | "asin" | "asinh" | "atan" | "atan2" | "atanh" | "ceil" | "ceiling" | "cos" | "cosh" | "degrees" | "exp"
             | "floor" | "ln" | "log" | "log10" | "log2" | "mod" | "pow" | "power" | "radians" | "sin" | "sinh" | "sqrt" | "tan" | "tanh" | "trunc" => real(),
             "coalesce" | "ifnull" | "nullif" | "min" | "max" => others(),
+            // `lag` and `lead` hand back their default where the row they read is missing.
+            "lag" | "lead" if i == 2 => {
+                let first = n.args.first().map(|a| self.type_of(a, scope)).unwrap_or_else(Fact::unknown);
+                Ctx::Typed(if matches!(first.ty, Type::Unknown) { None } else { Some(Fact { ty: first.ty, non_null: true }) })
+            }
             // A condition is a truth value; a value shares the other values' type.
             "iif" | "if" => {
                 let values = iif_values(n.args.len());
@@ -3689,7 +3686,11 @@ mod tests {
 
     #[test]
     fn a_value_of_one_of_several_types_is_unknown() {
-        let ddl = vec!["CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, s TEXT, doc TEXT NOT NULL) STRICT".to_string(), "CREATE TABLE u (x)".to_string()];
+        let ddl = vec![
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, s TEXT, doc TEXT NOT NULL) STRICT".to_string(),
+            "CREATE TABLE u (x)".to_string(),
+            "CREATE VIEW w AS SELECT 'x' AS v UNION ALL SELECT n FROM t".to_string(),
+        ];
         let ty = |sql: &str| {
             let r = analyze_ddl(sql, &ddl, &Extras::default());
             assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
@@ -3703,6 +3704,10 @@ mod tests {
         assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT json_extract(doc, '$.a') FROM t"), "unknown");
         assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT id FROM t"), "integer");
         assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT NULL"), "integer");
+        // Read through a subquery, a view or a WITH query, for which SQLite names the rightmost arm's.
+        assert_eq!(ty("SELECT v FROM (SELECT 'x' AS v UNION ALL SELECT n FROM t)"), "unknown");
+        assert_eq!(ty("SELECT v FROM w"), "unknown");
+        assert_eq!(ty("WITH c(v) AS (SELECT 'x' UNION ALL SELECT n FROM t) SELECT v FROM c"), "unknown");
         // A parameter arm takes the others' type.
         let r = analyze_ddl("SELECT n AS v FROM t UNION ALL SELECT :p", &ddl, &Extras::default());
         assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
@@ -3720,6 +3725,9 @@ mod tests {
         assert_eq!(ty("SELECT lag(n, 1, 0) OVER (ORDER BY id) AS v FROM t"), "integer");
         assert_eq!(ty("SELECT lag(n, 1, NULL) OVER (ORDER BY id) AS v FROM t"), "integer");
         assert_eq!(ty("SELECT lag(n) OVER (ORDER BY id) AS v FROM t"), "integer");
+        // A parameter as the default takes the first argument's type.
+        let r = analyze_ddl("SELECT lag(n, 1, :p) OVER (ORDER BY id) AS v FROM t", &ddl, &Extras::default());
+        assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
     }
 
     #[test]
