@@ -248,6 +248,38 @@ test("SQLite: the asynchronous drivers' rows normalized: libSQL's BigInt, string
   assert.deepEqual(await execute(ok, q), [{ n: 1, b: Uint8Array.of(1, 2), doc: {} }]);
 });
 
+test("SQLite: a value its column's type does not allow, which a table that is not STRICT stores, refused naming the column; a NUMERIC's text, an untyped column's BLOB and an INTEGER column's REAL kept", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec(`create table loose (id integer primary key, n integer, r real, s text, b blob, big bigint, z numeric, x);
+    insert into loose values (1, 1.5, 2, 'hi', x'01', 9007199254740993, 'abc', x'02'), (2, 'abc', null, null, null, null, null, null), (3, x'0102', null, null, null, null, null, null),
+      (4, null, 'xyz', null, null, null, null, null), (5, null, null, x'0203', null, null, null, null), (6, null, null, null, 'plain', null, null, null), (7, null, null, null, 5, null, null, null),
+      (8, null, null, null, null, 1.5, null, null), (9, null, null, null, null, 'x', null, null), (10, null, null, null, null, null, x'01', null)`);
+  const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select n, r, s, b, big, z, x from loose where id = :id", params: ["id"], columns: [["n", "int"], ["r", "float"], ["s", "text"], ["b", "bytes"], ["big", "int8"], ["z", "int|float|text"], ["x", "unknown"]] };
+  assert.deepEqual(execute(db, q, { id: 1 }), [{ n: 1.5, r: 2, s: "hi", b: Uint8Array.of(1), big: 9007199254740993n, z: "abc", x: Uint8Array.of(2) }]);
+  const refusals: [number, RegExp][] = [
+    [2, /^TypeError: Column "n" is typed number and holds the text "abc": SQLite stores a value of any type in any column of a table that is not STRICT.*cast\(n as text\)/],
+    [3, /^TypeError: Column "n" is typed number and holds a BLOB of 2 bytes/],
+    [4, /^TypeError: Column "r" is typed number and holds the text "xyz"/],
+    [5, /^TypeError: Column "s" is typed string and holds a BLOB of 2 bytes/],
+    [6, /^TypeError: Column "b" is typed Uint8Array and holds the text "plain"/],
+    [7, /^TypeError: Column "b" is typed Uint8Array and holds the number 5/],
+    [8, /^TypeError: Column "big" is typed bigint and holds the number 1.5: .* Replace the value, or read what the column holds with cast\(big as text\)\.$/],
+    [9, /^TypeError: Column "big" is typed bigint and holds the text "x"/],
+    [10, /^TypeError: Column "z" is typed number \| string and holds a BLOB of 1 byte:/],
+  ];
+  for (const [id, refused] of refusals) assert.throws(() => execute(db, q, { id }), (e: Error) => e instanceof DecodeError && refused.test(String(e)), `row ${id}`);
+  // The drivers that read integers as numbers or strings: libSQL's digits are its INTEGER, any other text in a number's column is refused, and so is D1's BLOB in a string's.
+  const libsql = (rows: unknown[]) => ({ execute: async () => ({ rows }), executeMultiple: async () => {} });
+  const ints: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select n, big, b from loose", params: [], columns: [["n", "int"], ["big", "int8"], ["b", "bytes"]] };
+  assert.deepEqual(await execute(libsql([{ n: "5", big: "9007199254740993", b: null }]), ints), [{ n: 5, big: 9007199254740993n, b: null }], "intMode: string");
+  await assert.rejects(execute(libsql([{ n: "abc", big: null, b: null }]), ints) as Promise<unknown>, /Column "n" is typed number and holds the text "abc"/);
+  await assert.rejects(execute(libsql([{ n: 5, big: 1.5, b: null }]), ints) as Promise<unknown>, /Column "big" is typed bigint and holds the number 1.5/);
+  await assert.rejects(execute(libsql([{ n: Uint8Array.of(1).buffer, big: null, b: null }]), ints) as Promise<unknown>, /Column "n" is typed number and holds a BLOB of 1 byte/);
+  await assert.rejects(execute(libsql([{ n: null, big: null, b: "5" }]), ints) as Promise<unknown>, /Column "b" is typed Uint8Array and holds the text "5"/);
+  const d1 = { batch: async () => [], prepare: () => ({ first: async () => null, bind: () => ({ all: async () => ({ results: [{ s: [1, 2] }] }) }) }) };
+  await assert.rejects(execute(d1, { dialect: "sqlite", sql: "select s from loose", params: [], columns: [["s", "text"]] }) as Promise<unknown>, /Column "s" is typed string and holds a BLOB of 2 bytes/);
+});
+
 test("mysql2: per-query options and Reylo's typeCast, never decimalNumbers; a DECIMAL and JSON as their text, a date's dropped fraction and its T, TIME's digits", async () => {
   let sent: Record<string, any> = {};
   const field = (type: string, text: string | null) => ({ type, string: () => text, buffer: () => (text === null ? null : Buffer.from(text)) });

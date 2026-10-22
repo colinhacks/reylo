@@ -30,7 +30,7 @@
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
 //   without safeIntegers) is refused in an INTEGER or BIGINT column, where a number past 2^53 can
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
-import { bigInteger, coerce, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
+import { bigInteger, coerce, DecodeError, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
 type Statement = AnyClient;
@@ -153,36 +153,80 @@ type Plan = {
   num: ((v: number) => unknown) | undefined;
   /** A string, where it may need converting: JSON, a truth value, libSQL's integer under intMode "string". */
   str: ((v: string) => unknown) | undefined;
-  /** A BLOB in a column that cannot hold one: a column declared BOOLEAN. */
-  blob?: () => never;
+  /** A BLOB in a column whose type holds none. */
+  blob?: ((v: object) => never) | undefined;
 };
 
+/** An integer's digits, as libSQL under intMode "string" hands one over. */
+const DIGITS = /^[+-]?\d+$/;
+
 /**
- * What each column's values need, worked out once per call rather than per value. A truth value is
- * 0 or 1 in every SQLite driver, and a column declared BOOLEAN holds whatever was stored in it, which
- * SQLite does not check: any other value is refused, naming the column (src/values.ts, `truth`).
+ * What each column's values need, worked out once per call rather than per value. SQLite holds a
+ * column to its declared type only in a STRICT table: elsewhere it stores a value of any storage
+ * class in any column, the text 'abc' in an INTEGER column and a BLOB in a TEXT one, and a column
+ * declared BOOLEAN holds whatever was stored in it. A value the column's type does not allow is
+ * refused, naming the column, rather than returned as what the type says it is not (`refuseClass`,
+ * and `truth` in src/values.ts, since a truth value is 0 or 1 in every SQLite driver).
  */
 function plan(name: string, kind: Kind, exact: boolean): Plan {
   if (kind === "bool") return { name, big: (v) => truth(v, name), num: (v) => truth(v, name), str: (v) => truth(v, name), blob: () => refuseTruth(name, "a BLOB") };
+  if (kind === "json") return { name, big: (v) => exactInteger(v, name), num: undefined, str: (v) => JSON.parse(v) };
+  const kinds = kind.split("|");
+  const refuse = (v: unknown): never => refuseClass(name, kinds, v);
+  // A column with no type, or ANY in a STRICT table, is `unknown`, and takes any value.
+  const any = kinds.includes("unknown");
+  const texts = any || kinds.includes("text");
+  const numbers = any || kinds.some((k) => k === "int" || k === "float" || k === "int8");
+  const blob = any || kinds.includes("bytes") ? undefined : refuse;
   // A column declared BIGINT, INT8 or UNSIGNED BIG INT, and what passes one through: a BigInt. A
   // number past 2^53 is a rounded one where the driver did not read integers exact (sqlite3, D1,
-  // libSQL's intMode "number"), and is refused; a number is a REAL where it did.
-  if (kind === "int8") return { name, big: (v) => v, num: exact ? undefined : (v) => bigInteger(v, name), str: (v) => bigInteger(v, name) };
-  if (kind === "json") return { name, big: (v) => exactInteger(v, name), num: undefined, str: (v) => JSON.parse(v) };
-  if (kind === "text") return { name, big: String, num: undefined, str: undefined };
-  if (kind === "int") return { name, big: (v) => exactInteger(v, name), num: exact ? undefined : (v) => exactInteger(v, name), str: (v) => coerce(kind, v, name) };
+  // libSQL's intMode "number"), and is refused; a number is a REAL where it did, and a REAL with a
+  // fraction is one either way, which no BigInt holds.
+  if (kind === "int8") return { name, big: (v) => v, num: exact ? refuse : (v) => (Number.isInteger(v) ? bigInteger(v, name) : refuse(v)), str: (v) => (DIGITS.test(v) ? BigInt(v) : refuse(v)), blob };
+  if (kind === "text") return { name, big: String, num: undefined, str: undefined, blob };
+  if (kind === "int") return { name, big: (v) => exactInteger(v, name), num: exact ? undefined : (v) => exactInteger(v, name), str: (v) => (DIGITS.test(v) ? exactInteger(BigInt(v), name) : refuse(v)), blob };
   // libSQL under intMode "string" hands an INTEGER over as its digits, and says nothing of the storage
   // class or of its mode. Where the column is a REAL's, or a NUMERIC's, those digits can only be an
   // INTEGER's: SQLite stores text that reads as an integer as that integer in a column of REAL or
   // NUMERIC affinity, and a REAL reaches JavaScript as a number. So they are the integer, exact or
   // refused. In a column with no type, or one built from what may be TEXT, the digits may be a
-  // TEXT's, and stay as the driver gave them (wiki/driver-decoding.md).
-  const kinds = kind.split("|");
-  const digits = kinds.includes("int") || kinds.includes("float") ? (v: string) => (/^[+-]?\d+$/.test(v) ? exactInteger(BigInt(v), name) : v) : undefined;
+  // TEXT's, and stay as the driver gave them (wiki/driver-decoding.md). Any other text in a column of
+  // numbers or BLOBs alone is a TEXT the column's type does not allow.
+  const digits = (v: string) => (DIGITS.test(v) ? exactInteger(BigInt(v), name) : texts ? v : refuse(v));
+  const str = numericOnly(kinds) || (numbers && !texts) ? digits : texts ? undefined : refuse;
   // A NUMERIC's either: read as numbers, one past 2^53 may be a rounded INTEGER, which is refused.
-  if (!exact && kinds.includes("int")) return { name, big: (v) => exactInteger(v, name), num: (v) => (Number.isInteger(v) ? exactInteger(v, name) : v), str: numericOnly(kinds) ? digits : undefined };
-  // A REAL, a NUMERIC read exact, a BLOB, a column with no type: an integer is exact or refused, a number is as it is.
-  return { name, big: (v) => exactInteger(v, name), num: undefined, str: numericOnly(kinds) ? digits : undefined };
+  if (!exact && kinds.includes("int")) return { name, big: (v) => exactInteger(v, name), num: (v) => (Number.isInteger(v) ? exactInteger(v, name) : v), str, blob };
+  // A REAL, a NUMERIC read exact, a column with no type: an integer is exact or refused, a number is
+  // as it is. A BLOB's column holds no number.
+  if (!numbers && !texts) return { name, big: refuse, num: refuse, str, blob };
+  return { name, big: (v) => exactInteger(v, name), num: undefined, str, blob };
+}
+
+const TYPE_NAMES: Readonly<Record<string, string>> = { int: "number", float: "number", int8: "bigint", text: "string", bytes: "Uint8Array" };
+
+/**
+ * The error for a value of a storage class the column's type does not allow, which SQLite stores in
+ * a table that is not STRICT, as the type and the value the message names them.
+ */
+function refuseClass(column: string, kinds: string[], v: unknown): never {
+  const type = [...new Set(kinds.map((k) => TYPE_NAMES[k] ?? k))].join(" | ");
+  const held =
+    typeof v === "string"
+      ? `the text ${JSON.stringify(v.length > 40 ? `${v.slice(0, 40)}…` : v)}`
+      : typeof v === "number" || typeof v === "bigint"
+        ? `the number ${v}`
+        : `a BLOB of ${byteLength(v)} byte${byteLength(v) === 1 ? "" : "s"}`;
+  // A STRICT table takes no BIGINT column.
+  const strict = kinds.includes("int8") ? "" : ", and declare the table STRICT so that SQLite refuses another like it";
+  throw new DecodeError(
+    `Column "${column}" is typed ${type} and holds ${held}: SQLite stores a value of any type in any column of a table that is not STRICT, so Reylo refuses it rather than return a value its type does not allow. Replace the value${strict}, or read what the column holds with cast(${column} as text).`,
+  );
+}
+
+/** A BLOB's length, as each driver hands one over: a Uint8Array or Buffer, libSQL's ArrayBuffer, D1's array of numbers. */
+function byteLength(v: unknown): number {
+  if (v instanceof ArrayBuffer || ArrayBuffer.isView(v)) return v.byteLength;
+  return Array.isArray(v) ? v.length : 0;
 }
 
 /** A REAL's, an INTEGER's or a NUMERIC's column (`int|float|text`, the one kind a NUMERIC has), where integer digits can only be an INTEGER's. */
@@ -219,7 +263,7 @@ export function normalize(rows: unknown[], columns: Columns | undefined, { exact
           if (p.str) row[p.name] = p.str(v);
           break;
         case "object":
-          if (p.blob) p.blob();
+          if (p.blob) p.blob(v);
           // libSQL's ArrayBuffer, D1's array of numbers.
           if (!(v instanceof Uint8Array) && (v instanceof ArrayBuffer || (d1 && Array.isArray(v)))) row[p.name] = coerce("bytes", v, p.name);
           break;

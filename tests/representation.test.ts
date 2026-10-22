@@ -211,7 +211,7 @@ test("MySQL: one row on mysql2 and mariadb, however the app set them up; mysql2'
   }
 });
 
-test("SQLite: one row on every driver, whatever its integer setting; an integer past 2^53 and a BOOLEAN column's 2 an error naming its column", { skip: drivers === true ? false : drivers, timeout: 60_000 }, async () => {
+test("SQLite: one row on every driver, whatever its integer setting; an integer past 2^53, a BOOLEAN column's 2 and a value its column's type does not allow an error naming its column", { skip: drivers === true ? false : drivers, timeout: 60_000 }, async () => {
   const Database = require("better-sqlite3");
   const { createClient } = require("@libsql/client");
   const sqlite3 = require("sqlite3");
@@ -222,12 +222,18 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   setup.exec(`create table t (id integer primary key, n integer not null, r real, s text, b blob, flag boolean, x, z numeric);
     insert into t values (1, 5, 1.5, 'hi', x'0102ff', 1, 7, 2.5), (2, 6, null, null, null, 0, x'01', 'abc');
     create table big (id integer primary key, v integer); insert into big values (1, 9007199254740993);
-    create table odd (id integer primary key, ok boolean); insert into odd values (1, 2)`);
+    create table odd (id integer primary key, ok boolean); insert into odd values (1, 2);
+    create table loose (id integer primary key, n integer, s text); insert into loose values (1, 'abc', x'0102')`);
   setup.close();
   // A column declared BOOLEAN and a comparison are booleans.
   const q = await built(root, "file:./app.db", "all_types", "select *, n > 5 as more from t order by id");
   const big = await built(root, "file:./app.db", "big", "select id, v from big");
   const odd = await built(root, "file:./app.db", "odd", "select ok from odd");
+  // A table that is not STRICT stores the text 'abc' in an INTEGER column and a BLOB in a TEXT one.
+  const looseN = await built(root, "file:./app.db", "loose_n", "select n from loose");
+  const looseS = await built(root, "file:./app.db", "loose_s", "select s from loose");
+  const textInN = /Column "n" is typed number and holds the text "abc"/;
+  const blobInS = /Column "s" is typed string and holds a BLOB of 2 bytes/;
   // libSQL's intMode "string" hands the 2 over as its digits.
   const refused = /Column "ok" is a boolean, stored as 0 or 1, and holds "?2"?, which is neither/;
   const rows = [
@@ -244,17 +250,24 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   assert.throws(() => big.runSync(db), bigError);
   assert.throws(() => odd.runSync(db), refused);
   assert.equal(db.prepare("select ok from odd").get().ok, 2n, "the control: SQLite lets the 2 in");
+  assert.throws(() => looseN.runSync(db), textInN);
+  assert.throws(() => looseS.runSync(db), blobInS);
+  assert.equal(db.prepare("select n from loose").get().n, "abc", "the control: SQLite lets the text in");
   db.close();
   const node = new DatabaseSync(file, { readBigInts: true });
   assert.deepEqual(plain(await q.run(node)), rows, "node:sqlite with readBigInts");
   await assert.rejects(big.run(node), bigError);
   await assert.rejects(odd.run(node), refused);
+  await assert.rejects(looseN.run(node), textInN);
+  await assert.rejects(looseS.run(node), blobInS);
   node.close();
   for (const intMode of ["number", "bigint", "string"]) {
     const client = createClient({ url: `file:${file}`, intMode });
     // Under intMode "string" an integer in a column with no type is its digits (wiki/driver-decoding.md).
     if (intMode !== "string") assert.deepEqual(plain(await q.run(client)), rows, `libSQL with intMode ${intMode}`);
     await assert.rejects(odd.run(client), refused);
+    await assert.rejects(looseN.run(client), textInN);
+    await assert.rejects(looseS.run(client), blobInS);
     client.close();
   }
   // Turso's new engine on the same file: its promise API through run, in transactionAsync too, and
@@ -268,6 +281,8 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
     assert.deepEqual(plain(await tdb.transactionAsync((tx: unknown) => q.run(tx))()), rows, "Turso's engine in transactionAsync");
     await assert.rejects(big.run(tdb), bigError);
     await assert.rejects(odd.run(tdb), refused);
+    await assert.rejects(looseN.run(tdb), textInN);
+    await assert.rejects(looseS.run(tdb), blobInS);
     assert.equal((await tdb.prepare("select v from big").get()).v, safe ? 9007199254740993n : 9007199254740992, "the control: the app's own statement");
     await tdb.close();
   }
@@ -276,14 +291,20 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   assert.deepEqual(plain(compat.transaction(() => q.runSync(compat))()), rows, "Turso's compat Database in db.transaction");
   assert.throws(() => big.runSync(compat), bigError);
   assert.throws(() => odd.runSync(compat), refused);
+  assert.throws(() => looseN.runSync(compat), textInN);
+  assert.throws(() => looseS.runSync(compat), blobInS);
   compat.close();
   const s3 = new sqlite3.Database(file);
   assert.deepEqual(plain(await q.run(s3)), rows, "sqlite3");
   await assert.rejects(big.run(s3), /Column "v" holds an integer past .* already rounded to 9007199254740992/);
   await assert.rejects(odd.run(s3), refused);
+  await assert.rejects(looseN.run(s3), textInN);
+  await assert.rejects(looseS.run(s3), blobInS);
   await new Promise((resolve) => s3.close(resolve));
   const wrapper = await open({ filename: file, driver: sqlite3.Database });
   assert.deepEqual(plain(await q.run(wrapper)), rows, "sqlite");
+  await assert.rejects(looseN.run(wrapper), textInN);
+  await assert.rejects(looseS.run(wrapper), blobInS);
   await wrapper.close();
 });
 

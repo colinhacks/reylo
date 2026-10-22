@@ -75,7 +75,7 @@ Each example below pairs a SQL value with the value `.run()` returns for it: `se
 
 ### Declared types and STRICT tables
 
-Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value, and the types say so:
+Reylo types a column by its declared type, following [SQLite's affinity rules](https://sqlite.org/datatype3.html#determination_of_column_affinity), as in the table above. Outside a `STRICT` table, any column can hold any kind of value. Reylo still types each column by its declared type, and `.run()` throws an error naming the column when it reads a value of another kind:
 
 ```ts twoslash tab="main.ts"
 import loose from "./lite_loose.sql";
@@ -90,6 +90,7 @@ select name, nick from users
 ```
 
 - **A `STRICT` table** enforces its column types, so the types above are exact there. Make tables `strict` wherever you can. A `STRICT` table can't declare `BOOLEAN`, `BIGINT`, `DATE` or `NUMERIC` columns, so a flag there is an `INTEGER`, typed `number`.
+- **A value of another kind**, such as the text `'abc'` in an `INTEGER` column or a `BLOB` in a `TEXT` one, makes `.run()` throw a `DecodeError` that names the column, rather than return it. Replace the value, or read whatever the column holds with `cast(nick as text)`.
 - **A `CHECK` constraint** doesn't narrow a type, since `pragma ignore_check_constraints` lets any connection skip it. A column with `check (role in ('admin', 'member'))` is still a `string`.
 
 ### Integers
@@ -508,7 +509,7 @@ Type checking needs no driver: it reads your schema with `node:sqlite`, built in
 
 What Reylo can't type on SQLite, and what to write instead:
 
-- **Declared types outside a `STRICT` table**, which SQLite doesn't enforce. Make tables `strict`.
+- **Declared types outside a `STRICT` table**, which SQLite doesn't enforce, so a value of another kind makes `.run()` throw ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Make tables `strict` where you can.
 - **Functions your app registers, or an extension's.** Reylo checks queries with its own SQLite, which doesn't have them, so the type check fails with "no such function: slugify". Call the function in TypeScript on what `.run()` returns instead.
 - **Attached databases.** The type check reads one database file, and `ATTACH` only happens on your app's connection, so `select … from other.users` is an error. The same goes for `TEMP` tables.
 - **Virtual table modules.** Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat`, but the type check doesn't verify that your driver's SQLite has them.
