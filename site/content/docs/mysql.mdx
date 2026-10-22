@@ -79,6 +79,7 @@ Reylo decodes every value of its own queries itself, on every driver, so each SQ
 | `json_object(…)`, `json_arrayagg(…)` | the object or array it builds | `{ total: 12.5 }` |
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
 | `GEOMETRY` | `unknown` | its bytes, a `Uint8Array` |
+| `VECTOR` | `number[]` | `[1, 2.5, -3]` |
 
 ### Integers
 
@@ -444,6 +445,28 @@ Compared with a value that is no label, an `ENUM` matches nothing, and an insert
 
 </Rules>
 
+### Vectors
+
+A `VECTOR`, which MySQL 9 added, is a `number[]` of its 32-bit floats.
+
+<Pairs>
+
+- `STRING_TO_VECTOR('[1, 2.5, 0.1]')` → `[1, 2.5, 0.10000000149011612]`
+
+</Pairs>
+
+<Rules>
+
+**A vector parameter**
+
+A vector parameter takes a `number[]`, which Reylo sends as its text through `to_vector(?)`, so the parameter works wherever MySQL takes a `VECTOR`: written to a column, passed to a function, or compared with `=`. Reylo refuses `NaN` and the infinities before the statement runs, and MySQL refuses a number too large for a 32-bit float.
+
+**On `Bun.sql`**
+
+Bun 1.4 can't read a `VECTOR`: a statement that returns one fails inside Bun with `ERR_MYSQL_UNSUPPORTED_COLUMN_TYPE`. Select `vector_to_string(v)` instead, or run the statement on `mysql2`.
+
+</Rules>
+
 ### Values Reylo refuses
 
 Each driver hands Reylo exact integers and dates as text, so one value is refused, with an error that names its column:
@@ -561,6 +584,7 @@ Every value `.run()` returns goes back in as a parameter of its type, on every d
 | `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` | `string` |
 | `JSON` | any JSON value |
 | `BINARY`, `VARBINARY`, `BLOB` | `Uint8Array` |
+| `VECTOR` | `number[]` |
 
 - MySQL describes every integer parameter as a `BIGINT`, and every `BIT` one alike. So where the statement names the column, Reylo types a parameter by the column it is compared with or written to:
   - in a comparison such as `col = :p`, an `in` or a `between`;

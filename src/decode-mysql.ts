@@ -100,13 +100,18 @@ const toBool: Fix = truth;
 // A BIGINT's text is always its digits: BigInt reads it straight.
 const toBigInt: Fix = (v, name) => (typeof v === "string" ? BigInt(v) : typeof v === "number" || typeof v === "bigint" ? bigInteger(v, name) : v);
 
+// A VECTOR is MySQL's one array: mysql2 decodes its floats, mariadb and PlanetScale give its bytes.
+const toFloats: Fix = (v, name) => coerce("float[]", v, name);
+
 /**
  * The fix a column of `kind` needs, if any: `bool` a boolean, `int8` (a BIGINT, or an integer a
- * temporary table may widen to one) a BigInt from whatever the driver gave, a SET's members joined.
+ * temporary table may widen to one) a BigInt from whatever the driver gave, `float[]` (a VECTOR)
+ * its floats.
  */
 function byKind(kind: Kind | undefined): Fix | undefined {
   if (kind === "bool") return toBool;
   if (kind === "int8") return toBigInt;
+  if (kind === "float[]") return toFloats;
   return undefined;
 }
 
