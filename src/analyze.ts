@@ -158,12 +158,13 @@ export class Session {
    * A SQLite statement prepared on the app's own drivers too, whose SQLite may be older than the
    * engine's: the first that refuses it is an error at the place SQLite names. Not kept in
    * `.reylo/`, since the drivers are the project's and not the database's; a session that cannot
-   * open the database checks nothing.
+   * open the database checks nothing. One whose connection was released while its schema is still
+   * trusted opens it again, so a `.reylo/` hit is checked however long the session sat idle.
    */
   async #onDrivers(sql: string, outcome: Extract<Outcome, { ok: true }>): Promise<Outcome> {
     const { analysis } = outcome;
-    if (analysis.diagnostics.length || !this.#io) return outcome;
-    const io = await this.#io.catch(() => undefined);
+    if (analysis.diagnostics.length || this.#schema?.value == null) return outcome;
+    const io = await this.#connection().catch(() => undefined);
     for (const driver of io?.drivers ?? []) {
       const refusal = await driver.refuses(analysis.rewritten.sql);
       if (refusal === undefined) continue;

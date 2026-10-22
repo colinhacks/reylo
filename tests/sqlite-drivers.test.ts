@@ -79,6 +79,23 @@ test("an analysis read from .reylo/ is checked on the drivers too", { skip }, as
   assert.match(second.analysis.diagnostics[0]?.message ?? "", /^@libsql\/client runs SQLite 3\.45\.1, which refuses this statement: no such function: json_pretty$/);
 });
 
+test("a session whose connection was released checks a statement it reads from .reylo/ all the same", { skip }, async () => {
+  const { root, env } = project(["@libsql/client"]);
+  const session = await Session.open(root, env);
+  try {
+    const first = await session.analyze(PRETTY);
+    assert.ok(first.ok && first.analysis.diagnostics.length === 1);
+    // A build step's session releases its connection once idle, while the schema it read is still trusted.
+    await session.release();
+    const second = await session.analyze(PRETTY);
+    assert.ok(second.ok, !second.ok ? second.message : "");
+    assert.equal(second.source, "cache");
+    assert.match(second.analysis.diagnostics[0]?.message ?? "", /^@libsql\/client runs SQLite 3\.45\.1, which refuses this statement: no such function: json_pretty$/);
+  } finally {
+    await session.close();
+  }
+});
+
 test("a refusal is placed at the call or the text it names, in UTF-8 bytes", () => {
   const sql = "-- café\nselect n.id from notes n right join notes m on m.id = n.id";
   const bytes = (s: string) => new TextEncoder().encode(s).length;
