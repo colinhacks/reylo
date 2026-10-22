@@ -22,6 +22,6 @@
     "strict": true
   },
   "contentMappers": [
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] }
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] }
   ]
 }

@@ -18,7 +18,7 @@ Set up Reylo in this project. Reylo lets TypeScript import .sql files, with type
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
 
 1. Check the requirements and install Reylo, the engine of the project's database (@reylosql/postgres, @reylosql/mysql or @reylosql/sqlite) and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
-2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql and .reylo.yaml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
+2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
 3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/#plugins
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
@@ -43,13 +43,13 @@ npm install -D typescript@beta
 
 ### TypeScript
 
-Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml`:
+Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml` or `.reylo.yml`:
 
 ```jsonc title="tsconfig.json"
 {
   "compilerOptions": { /* ... */ },
   "contentMappers": [ // [!code ++]
-    { "package": "reylo", "extensions": [".sql", ".reylo.yaml"] } // [!code ++]
+    { "package": "reylo", "extensions": [".sql", ".reylo.yaml", ".reylo.yml"] } // [!code ++]
   ] // [!code ++]
 }
 ```
