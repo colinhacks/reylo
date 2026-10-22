@@ -1,6 +1,6 @@
 {
   "name": "@reylosql/postgres",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Reylo's analysis engine for Postgres: the WebAssembly artifact reylo loads to type .sql files against a Postgres database. Install it beside reylo, at reylo's version.",
   "license": "MIT",
