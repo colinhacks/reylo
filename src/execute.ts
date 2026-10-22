@@ -282,11 +282,12 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         const t = type(i);
         return Array.isArray(v) && t?.kind === "array" ? arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v) : v;
       });
-      // A JSON parameter goes to pg's family, PGlite and Neon as its JSON text. postgres.js and
-      // Bun.sql serialize a value for a JSON parameter themselves, so JSON text would be stored
-      // as a JSON string; and they type a boolean, a number (Bun.sql) or an array of either by
-      // its JavaScript type ("cannot cast type boolean to jsonb"). An object whose toJSON()
-      // returns the value is bound as JSON and serialized to exactly its JSON text.
+      // A JSON parameter goes to pg's family, PGlite and Neon as its JSON text, and to postgres.js
+      // as its JSON text declared `unknown` (below). Bun.sql serializes a value for a JSON
+      // parameter itself, so JSON text would be stored as a JSON string, and it types a boolean,
+      // a number or an array of either by its JavaScript type ("cannot cast type boolean to
+      // jsonb"): it gets an object whose toJSON() returns the value, which it binds as JSON and
+      // serializes to exactly its JSON text. So does an unsafe() client without typed().
       const json = () => bound.map((v, i) => (isJsonParam(v, i) ? JSON.stringify(v) : v));
       // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
       // for a template instead of running anything. Reylo decodes every value itself (decode.ts).

@@ -58,7 +58,7 @@ const typed: QueryModule<"postgres"> = {
 };
 const typedValues = { ids: [1, 3], name: "ada", data: [1, { a: "b" }] };
 
-test("postgres: every client gets an array for a SQL array parameter as its literal text; postgres.js and Bun.sql get a JSON parameter as an object they serialize to its JSON text", async () => {
+test("postgres: every client gets an array for a SQL array parameter as its literal text; Bun.sql gets a JSON parameter as an object it serializes to its JSON text, postgres.js as its JSON text declared unknown", async () => {
   const seen: unknown[][] = [];
   const unsafe = async (_: string, values?: unknown[]) => (seen.push(values!), []);
   const bun = { unsafe, commitDistributed: async () => {} };
@@ -72,6 +72,10 @@ test("postgres: every client gets an array for a SQL array parameter as its lite
     assert.ok(!Array.isArray(data));
     assert.equal(JSON.stringify(data), '[1,{"a":"b"}]');
   }
+  // postgres.js (typed() beside unsafe()), whose JSON serializer Drizzle replaces with one that passes the value through.
+  const postgresJs = { unsafe, typed: (value: unknown, type: number) => ({ value, type }) };
+  await execute(postgresJs, typed, typedValues);
+  assert.deepEqual(seen.at(-1), ['{"1","3"}', "ada", { value: '[1,{"a":"b"}]', type: 705 }]);
 });
 
 // Every kind of JSON value, null, and a jsonb[] parameter, whose elements are JSON values.
@@ -94,7 +98,11 @@ test("postgres: a JSON parameter's value is a JavaScript value, which every driv
   const bun = { unsafe, commitDistributed: async () => {} };
   await execute({ unsafe }, jsonQuery, jsonValues);
   await execute(bun, jsonQuery, jsonValues);
-  assert.equal(seen.length, 5);
+  // postgres.js gets each JSON value as its text declared unknown (705), and null as null.
+  const unwrap = (v: unknown) => (v !== null && typeof v === "object" ? (assert.equal((v as { type: number }).type, 705), (v as { value: unknown }).value) : v);
+  const postgresJs = { unsafe: async (_: string, values?: unknown[]) => (seen.push(values!.map(unwrap)), []), typed: (value: unknown, type: number) => ({ value, type }) };
+  await execute(postgresJs, jsonQuery, jsonValues);
+  assert.equal(seen.length, 6);
   for (const values of seen) assert.deepEqual(values, jsonTexts);
 });
 
