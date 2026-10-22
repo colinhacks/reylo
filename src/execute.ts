@@ -608,8 +608,18 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
     }
     seen = names.size ? `an object with ${[...names].slice(0, 12).join(", ")}${names.size > 12 ? ", ..." : ""}` : "an object with no methods";
   }
-  // node:sqlite's tag store keeps its database on db.
-  const o = c as { db?: { prepare?: unknown } } | null;
-  const hint = typeof o?.db?.prepare === "function" ? " A tag store is not a client: pass its database, store.db." : "";
+  // node:sqlite's tag store keeps its database on db. Kysely and Prisma decode every value of a
+  // raw query themselves, by their own rules or the driver's parsers, before it returns.
+  // Neither hands out a transaction's connection.
+  const o = c as { db?: { prepare?: unknown }; selectFrom?: unknown; executeQuery?: unknown; isTransaction?: unknown; $queryRawUnsafe?: unknown; $transaction?: unknown } | null;
+  const inTx = " and does not hand out its transaction's connection: take the transaction from the driver's client instead.";
+  const hint =
+    typeof o?.db?.prepare === "function"
+      ? " A tag store is not a client: pass its database, store.db."
+      : typeof o?.selectFrom === "function" && typeof o.executeQuery === "function"
+        ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`
+        : typeof o?.$queryRawUnsafe === "function"
+          ? ` Prisma decodes the values of its queries itself${typeof o.$transaction !== "function" ? inTx : ": pass a client of your database's driver, such as the pool its driver adapter was made with."}`
+          : "";
   return new TypeError(`reylo cannot run a ${dialect} statement on ${seen}. It takes a client with ${accepted[dialect]}.${hint}`);
 }
