@@ -326,6 +326,12 @@ impl Builder<'_> {
                     (shape, []) => shape,
                     (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
                     (Shape::Array { items, .. }, [default]) if is_empty_array(default) => Shape::Array { items, non_null: true },
+                    // An `x` the build cannot explain leaves the whole unexplained too, and it
+                    // costs no probe: one may aggregate in a way no probe without a GROUP BY takes.
+                    (Shape::Unknown, _) => {
+                        self.drafts = drafted;
+                        Shape::Unknown
+                    }
                     _ => {
                         self.drafts = drafted;
                         // An aggregate there goes in a probe of its own, under a context id of its
@@ -971,6 +977,11 @@ mod tests {
         // One that does not aggregate stays on its context's probe, so it costs none of the budget.
         let q = shapes("SELECT jsonb_build_object('id', u.id, 'name', coalesce(u.name, u.email), 'doc', coalesce(u.doc, '{}')) AS o FROM users u");
         assert_eq!(q.probes.iter().map(|q| q.sql.as_str()).collect::<Vec<_>>(), ["SELECT u.id AS a0, COALESCE(u.name, u.email) AS a1, COALESCE(u.doc, '{}') AS a2 FROM users u"]);
+        // One over an `x` the build cannot explain is unexplained too, and probes nothing.
+        let r = shapes("SELECT jsonb_build_object('name', u.name, 'titles', coalesce(to_jsonb(array_agg(p.title)), '[]')) AS o FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.name");
+        assert_eq!(r.probes.iter().map(|q| q.sql.as_str()).collect::<Vec<_>>(), ["SELECT u.name AS a0 FROM users u JOIN posts p ON p.author_id = u.id"]);
+        let Shape::Object { fields, .. } = &r.columns[0].1 else { panic!() };
+        assert_eq!(fields[1].1, Shape::Unknown);
     }
 
     #[test]

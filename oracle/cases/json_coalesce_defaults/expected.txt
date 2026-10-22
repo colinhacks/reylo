@@ -8,3 +8,4 @@ nested_object_default.sql: many () -> { j: { ids: json } }
 object_never_null.sql: many () -> { j: { id: int8 } }
 sibling_aggregate.sql: one () -> { j: { ids: json, titles: [text]? } }
 subquery_object_default.sql: many () -> { j: json }
+unexplained_beside_column.sql: many () -> { j: { name: text, titles: unknown? } }
