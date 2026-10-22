@@ -33,7 +33,7 @@ returning_update_named_old.sql: maybeOne (name: text, id: int4) -> { from_table:
 returning_using.sql: many (id: int4) -> { other_name: text, old_name: text, new_name: text?, name: text }
 returning_with_query.sql: maybeOne (id: int4) -> { was: text?, now: text? }
 returning_with_query_json.sql: many () -> { j: { now: text?, was: text? }, up: text?, was: text? }
-returning_with_query_param.sql: maybeOne (id: int4) -> { j: { now: unknown?, was: unknown? }, up: text? }
+returning_with_query_param.sql: maybeOne (id: int4) -> { j: { now: text?, was: text? }, up: text? }
 temporal_conflict.sql: maybeOne (room: int4, during: int4range, who: text) -> { who: text } !! reylo13: ON CONFLICT (room, during) matches no unique index or constraint of `bookings`: none has exactly (room, during) as its key. The server prepares this statement and refuses every execution (42P10).
 temporal_conflict_any.sql: maybeOne (room: int4, during: int4range, who: text) -> { who: text }
 temporal_full_key.sql: many (room: int4, during: int4range) -> { who: text }

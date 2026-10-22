@@ -129,6 +129,11 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         return Plan::default();
     };
     let Some((targets, from, with)) = top_context(top) else { return Plan::default() };
+    // A write whose WITH clause has a query named like its target writes the table, where a probe
+    // carrying the clause would read the query by that name: its shapes are left as they are.
+    if target_named_by_with(top, with.as_ref()) {
+        return Plan::default();
+    }
     // Every row the select list reads passed the WHERE, so the top context's probe filters by it.
     let filter = match top {
         NodeEnum::SelectStmt(s) => s.where_clause.as_deref().cloned(),
@@ -167,9 +172,8 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
             columns.push((name, shape));
         }
     }
-    // Every probe carries the statement's own CTEs, so a constructor reading one still
-    // resolves; a CTE holding a placeholder is left out, because a probe binds nothing.
-    let with = with.filter(|w| !contains_param(w));
+    // A probe that reads one of the statement's own CTEs carries them, so a constructor reading
+    // one still resolves ([`select_text`]).
     let probes = builder
         .drafts
         .iter()
@@ -579,6 +583,19 @@ pub fn top_context(top: &NodeEnum) -> Option<(Vec<Node>, Vec<Node>, Option<proto
     }
 }
 
+/// Whether a write's target goes by the name of one of its WITH queries.
+fn target_named_by_with(top: &NodeEnum, with: Option<&protobuf::WithClause>) -> bool {
+    let relation = match top {
+        NodeEnum::InsertStmt(s) => s.relation.as_ref(),
+        NodeEnum::UpdateStmt(s) => s.relation.as_ref(),
+        NodeEnum::DeleteStmt(s) => s.relation.as_ref(),
+        NodeEnum::MergeStmt(s) => s.relation.as_ref(),
+        _ => None,
+    };
+    let (Some(relation), Some(with)) = (relation, with) else { return false };
+    relation.schemaname.is_empty() && with.ctes.iter().any(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(c)) if c.ctename == relation.relname))
+}
+
 /// A RETURNING clause's expressions: PostgreSQL 18 holds them beside the clause's `WITH (OLD AS …,
 /// NEW AS …)` options, where earlier parsers had the bare list.
 pub(crate) fn returning(clause: &Option<protobuf::ReturningClause>) -> Vec<Node> {
@@ -670,29 +687,67 @@ fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Opti
         .collect();
     // Every enumerated field has to carry a value the deparser knows: a protobuf zero means
     // "unset", and libpg_query asserts rather than guessing.
-    let select = SelectStmt {
+    let mut select = SelectStmt {
         target_list,
         from_clause: from.to_vec(),
         where_clause: filter.map(|f| Box::new(f.clone())),
         group_clause: group.to_vec(),
-        with_clause: with.cloned(),
         op: protobuf::SetOperation::SetopNone as i32,
         limit_option: protobuf::LimitOption::Default as i32,
         ..Default::default()
     };
-    let result = ParseResult {
-        version,
-        stmts: vec![RawStmt {
-            stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select))) })),
-            stmt_location: 0,
-            stmt_len: 0,
-        }],
+    let deparse = |select: &SelectStmt| {
+        let result = ParseResult {
+            version,
+            stmts: vec![RawStmt {
+                stmt: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })),
+                stmt_location: 0,
+                stmt_len: 0,
+            }],
+        };
+        crate::stack::deparse(&result).ok()
     };
-    let text = crate::stack::deparse(&result).ok()?;
+    let body = deparse(&select)?;
     // A probe binds nothing, so a placeholder in its condition is NULL there: a test that is
     // strict in a column stays strict (`u.id = NULL`), which is all the probe reads of it, and a
     // condition the server cannot type proves nothing, the probe failing to describe.
-    Some(without_placeholders(&text))
+    let nulled = without_placeholders(&body);
+    // The statement's WITH queries go with a probe that reads one, and with nothing else, so a
+    // probe that reads none can be described before the statement is. They keep their
+    // placeholders, which the describe pins to the types the statement's own describe gave them:
+    // a query that reads one is then the very text the statement's own read of it settled, and
+    // its columns come back settled, at no cost. Written NULL, it would be another statement,
+    // settled again, and a column selecting a placeholder would be nullable there.
+    let Some(with) = with.filter(|w| reads_with(&select, w)) else { return Some(nulled) };
+    select.with_clause = Some(with.clone());
+    let text = deparse(&select)?;
+    match text.strip_suffix(body.as_str()) {
+        Some(head) => Some(format!("{head}{nulled}")),
+        None => Some(without_placeholders(&text)),
+    }
+}
+
+/// Whether `select` names one of the queries of `with`: a relation by the name of one, without a
+/// schema, anywhere in it. A subquery's own WITH query of that name is read as one too, which
+/// only ever carries the clause where it is not needed.
+fn reads_with(select: &SelectStmt, with: &protobuf::WithClause) -> bool {
+    let names: Vec<&str> = with.ctes.iter().filter_map(|c| match c.node.as_ref() {
+        Some(NodeEnum::CommonTableExpr(c)) => Some(c.ctename.as_str()),
+        _ => None,
+    }).collect();
+    fn hunt(v: &Value, names: &[&str]) -> bool {
+        match v {
+            Value::Object(map) => {
+                let named = map.get("RangeVar").is_some_and(|r| {
+                    r.get("schemaname").and_then(Value::as_str).is_none_or(str::is_empty) && r.get("relname").and_then(Value::as_str).is_some_and(|n| names.contains(&n))
+                });
+                named || map.values().any(|child| hunt(child, names))
+            }
+            Value::Array(items) => items.iter().any(|child| hunt(child, names)),
+            _ => false,
+        }
+    }
+    serde_json::to_value(select).is_ok_and(|v| hunt(&v, &names))
 }
 
 /// `sql` with every `$n` outside strings, quoted identifiers and comments written as `NULL`.
@@ -1302,11 +1357,20 @@ mod tests {
     }
 
     #[test]
-    fn a_cte_travels_with_the_probe_unless_it_binds() {
+    fn a_cte_travels_with_the_probe_that_reads_it() {
         let p = shapes("WITH recent AS (SELECT id, body FROM comments) SELECT jsonb_build_object('b', r.body) AS x FROM recent r");
         assert_eq!(p.probes[0].sql, "WITH recent AS (SELECT id, body FROM comments) SELECT r.body AS a0 FROM recent r");
-        let q = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT jsonb_build_object('b', c.body) AS x FROM comments c, input i WHERE c.id = i.id");
-        assert_eq!(q.probes[0].sql, "SELECT c.body AS a0 FROM comments c, input i WHERE c.id = i.id");
+        // Its placeholders stay, for the describe to pin; the probe's own condition reads NULL.
+        let q = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT jsonb_build_object('b', c.body) AS x FROM comments c, input i WHERE c.id = i.id AND c.at > $2");
+        assert_eq!(q.probes[0].sql, "WITH input AS (SELECT $1::uuid AS id) SELECT c.body AS a0 FROM comments c, input i WHERE c.id = i.id AND c.at > NULL");
+        // A probe that reads none of them goes without, and so binds nothing.
+        let r = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT (SELECT json_agg(json_build_object('b', c.body)) FROM comments c) AS x FROM input i");
+        assert_eq!(r.probes[0].sql, "SELECT c.body AS a0 FROM comments c");
+        // A write to a table its WITH clause names a query after reads the table, not the query.
+        assert!(shapes("WITH users AS (SELECT $1::int AS id) UPDATE users SET name = 'x' RETURNING jsonb_build_object('n', name) AS j").columns.is_empty());
+        // `public.input` is the table, whatever the WITH clause calls `input`.
+        let s = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT jsonb_build_object('b', c.body) AS x FROM public.input c");
+        assert_eq!(s.probes[0].sql, "SELECT c.body AS a0 FROM public.input c");
     }
 
     #[test]

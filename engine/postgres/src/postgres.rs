@@ -1551,19 +1551,25 @@ impl<'a> Engine<'a> {
         Some(Some(described))
     }
 
-    /// A probe reads the main statement's placeholders, and the server cannot type `$2` in a
-    /// statement that never mentions `$1`: pin the type the main describe settled on each.
+    /// A probe reads the main statement's placeholders, some of them only, and the server cannot
+    /// type `$2` in a statement that never mentions `$1`: pin the type the main describe settled
+    /// on each, and number them from 1 in their order, which a probe that is only described is
+    /// free to.
     fn pin(&self, sql: &str) -> String {
         let Ok(lexed) = lex::lex(sql, Dialect::Postgres) else { return sql.to_string() };
         if lexed.placeholders.is_empty() {
             return sql.to_string();
         }
+        let mut numbers: Vec<usize> = lexed.placeholders.iter().filter_map(|p| p.name.parse::<usize>().ok()).collect();
+        numbers.sort_unstable();
+        numbers.dedup();
         let casts = self.casts.borrow();
         lex::rewrite_with(sql, &lexed, Target::Dollar, &|name, rendered| {
-            let cast = name.parse::<usize>().ok().and_then(|n| casts.get(n.wrapping_sub(1)).cloned().flatten());
-            match cast {
-                Some(c) => format!("({rendered}::{c})"),
-                None => rendered.to_string(),
+            let Some(n) = name.parse::<usize>().ok() else { return rendered.to_string() };
+            let at = numbers.iter().position(|m| *m == n).map_or(n, |i| i + 1);
+            match casts.get(n.wrapping_sub(1)).cloned().flatten() {
+                Some(c) => format!("(${at}::{c})"),
+                None => format!("${at}"),
             }
         })
         .sql
@@ -2507,6 +2513,18 @@ mod tests {
         }
         panic!("the replay did not converge");
     }
+
+    #[test]
+    fn a_probe_numbers_its_placeholders_from_one_and_pins_their_types() {
+        // A probe that reads only the statement's `$2` and `$3` would leave `$1` untyped.
+        let none = HashMap::new();
+        let host = Host::new(&none);
+        let engine = Engine::new(&host);
+        *engine.casts.borrow_mut() = vec![Some("int4".into()), Some("text".into()), None];
+        assert_eq!(engine.pin("WITH a AS (SELECT $2 AS x) SELECT x FROM a WHERE x = $3"), "WITH a AS (SELECT ($1::text) AS x) SELECT x FROM a WHERE x = $2");
+        assert_eq!(engine.pin("SELECT $1 + $1"), "SELECT ($1::int4) + ($1::int4)");
+    }
+
 
     #[test]
     fn each_parameter_appears_once() {

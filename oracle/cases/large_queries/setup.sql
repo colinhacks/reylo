@@ -1,7 +1,8 @@
 -- Statements of a hundred lines over a small shop: WITH queries over WITH queries, scalar
 -- subqueries building JSON beside a window function, a table read again in a subquery beside an
 -- outer join. Each is typed as precisely as the same constructs in a short statement, every probe
--- it needs being within the analysis's budget. A chain of WITH queries past the budget
+-- it needs being within the analysis's budget, and a probe that reads a WITH query carrying the
+-- statement's WITH clause, placeholders and all. A chain of WITH queries past the budget
 -- (`budget_spent.sql`) is left nullable where its probes stop, never typed wrong.
 create type user_role as enum ('admin', 'member');
 create type org_plan as enum ('free', 'pro', 'enterprise');
