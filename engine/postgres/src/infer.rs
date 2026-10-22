@@ -141,8 +141,6 @@ pub const POSTGRES_NEVER_NULL: &[&str] = &[
 /// Postgres built-ins that answer NULL only when their first argument is NULL: `concat_ws` skips
 /// a NULL value but not a NULL separator.
 pub const POSTGRES_FIRST_ARG: &[&str] = &["concat_ws"];
-/// Postgres built-ins that answer NULL only when every argument is NULL.
-pub const POSTGRES_ANY: &[&str] = &["greatest", "least"];
 /// Built-in operators that answer NULL for a NULL operand: the comparisons, arithmetic, JSON
 /// access and pattern matching. `||` is not one: `NULL::int[] || ARRAY[1]` is `{1}`.
 pub const POSTGRES_STRICT_OPERATORS: &[&str] = &[
@@ -178,7 +176,7 @@ pub const POSTGRES_GROUPED_JSON: &[&str] = &["json_agg", "jsonb_agg", "json_obje
 pub fn postgres_function_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
     let typed = POSTGRES_TOTAL_FOR.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-    for list in [FUNCTIONS, POSTGRES_TOTAL, &typed, POSTGRES_NEVER_NULL, POSTGRES_FIRST_ARG, POSTGRES_ANY, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON, POSTGRES_STRICT, POSTGRES_WINDOW, POSTGRES_SET_RETURNING, crate::jsonshape::POSTGRES_FUNCTIONS] {
+    for list in [FUNCTIONS, POSTGRES_TOTAL, &typed, POSTGRES_NEVER_NULL, POSTGRES_FIRST_ARG, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON, POSTGRES_STRICT, POSTGRES_WINDOW, POSTGRES_SET_RETURNING, crate::jsonshape::POSTGRES_FUNCTIONS] {
         for name in list {
             if !names.contains(name) {
                 names.push(name);
@@ -1038,7 +1036,6 @@ impl Reader<'_> {
                 operands[0] = Expr::Guarded(Box::new(operands[0].clone()), types);
                 Expr::Every(operands, Ty::Unknown)
             }
-            (Dialect::Postgres, n, _) if POSTGRES_ANY.contains(&n) && self.trust.builtin(n) => Expr::Any(f.args.iter().map(|a| self.read(a)).collect(), Ty::Shared),
             (Dialect::Postgres, n, _) if POSTGRES_TOTAL.contains(&n) && self.trust.builtin(n) => {
                 let ty = if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown };
                 Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), ty)
@@ -1862,6 +1859,8 @@ mod tests {
         assert!(first(&pg("SELECT greatest(NULL, 0)")).non_null);
         assert!(first(&pg("SELECT least(1, NULL, 2)")).non_null);
         assert!(!first(&pg("SELECT greatest(NULL::int, NULL)")).non_null);
+        // Quoted, the name can only be a user's function, which proves nothing.
+        assert!(!first(&pg("SELECT \"greatest\"(NULL, 0)")).non_null);
         // MySQL's are NULL where any argument is.
         let mysql = plan("SELECT greatest(NULL, 0)", Dialect::Mysql, &Trust::default());
         assert!(mysql.head[0].as_ref().is_none_or(|e| !resolve(e, None).non_null));
