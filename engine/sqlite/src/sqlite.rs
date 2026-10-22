@@ -375,6 +375,15 @@ fn constant_keys(sql: &str, lexed: &Lexed, t: &Tree) -> Vec<crate::api::Diagnost
             _ => None,
         }
     }
+    /// Every parameter an expression reads, at any depth.
+    fn reads(n: &Node, out: &mut HashSet<i64>) {
+        if n.op == "variable" {
+            out.insert(n.index);
+        }
+        for child in n.left.iter().chain(&n.right).map(|b| b.as_ref()).chain(&n.list).chain(&n.args).chain(&n.order_by).chain(&n.partition_by) {
+            reads(child, out);
+        }
+    }
     #[derive(Default)]
     struct Walk {
         found: Vec<(i64, KeyClause, bool)>,
@@ -382,6 +391,18 @@ fn constant_keys(sql: &str, lexed: &Lexed, t: &Tree) -> Vec<crate::api::Diagnost
     impl Walk {
         fn keys(&mut self, list: &[Node], clause: KeyClause) {
             self.found.extend(list.iter().filter_map(param).map(|index| (index, clause, list.len() == 1)));
+        }
+        /// A select's own ORDER BY and GROUP BY. SQLite resolves a key that is a position or a
+        /// result column's alias (`order by 2`, `group by tag`) to a copy of that column's
+        /// expression, so a key that is a parameter the select list reads is such a copy: the
+        /// author writes each parameter once.
+        fn select_keys(&mut self, s: &Sel) {
+            let mut listed = HashSet::new();
+            s.columns.iter().for_each(|c| reads(&c.expr, &mut listed));
+            for (list, clause) in [(&s.group_by, KeyClause::GroupBy), (&s.order_by, KeyClause::OrderBy)] {
+                let alone = list.len() == 1;
+                self.found.extend(list.iter().filter_map(param).filter(|index| !listed.contains(index)).map(|index| (index, clause, alone)));
+            }
         }
         fn node(&mut self, n: &Node) {
             self.keys(&n.order_by, KeyClause::OrderBy);
@@ -397,8 +418,7 @@ fn constant_keys(sql: &str, lexed: &Lexed, t: &Tree) -> Vec<crate::api::Diagnost
             }
         }
         fn sel(&mut self, s: &Sel) {
-            self.keys(&s.group_by, KeyClause::GroupBy);
-            self.keys(&s.order_by, KeyClause::OrderBy);
+            self.select_keys(s);
             for c in &s.columns {
                 self.node(&c.expr);
             }
@@ -3795,8 +3815,13 @@ mod tests {
         let refused = full("select id from users union select id from users order by :s");
         assert_eq!(refused.diagnostics.iter().map(|d| (d.code, d.message.as_str())).collect::<Vec<_>>(), [(6, "1st ORDER BY term does not match any column in the result set")]);
         assert_eq!(keys("insert into users (name) select name from users order by :s").len(), 1);
-        // A key that holds a parameter chooses a column with it; a position and a LIMIT are none.
+        // A key that holds a parameter chooses a column with it; a position and a LIMIT are none,
+        // and so is a position or an alias of a result column that is a parameter, which SQLite
+        // resolves to a copy of the parameter.
         for sql in [
+            "select id, :tag as tag from users order by 2",
+            "select id, :tag as tag from users order by tag",
+            "select :tenant as tenant, name, count(*) as n from users group by 1, 2",
             "select id, name from users order by case :sort when 'name' then name end",
             "select id from users order by case when :desc then id end desc, id",
             "select id from users order by 1 limit :n",

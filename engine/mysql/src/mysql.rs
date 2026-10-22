@@ -859,8 +859,6 @@ const PASSED: u8 = 64;
 /// Every kind of placeholder.
 const PLACEHOLDERS: u8 = INTEGER | FLOAT | DECIMAL | TEMPORAL | OTHER;
 
-/// Whether an expression is a user variable. `sqlparser` reads `@x` as a name and `` @`x` `` as a
-/// placeholder; `@@x` is a system variable, of one type.
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
 /// ORDER BY (a statement's, a window's, an aggregate's, an UPDATE's or a DELETE's), a GROUP BY or a
 /// window's PARTITION BY, in the statement, its WITH queries, its derived tables and the subqueries
@@ -1022,6 +1020,8 @@ fn constant_keys(sql: &str, statement: &Statement, rewritten: &lex::Rewritten) -
     out
 }
 
+/// Whether an expression is a user variable. `sqlparser` reads `@x` as a name and `` @`x` `` as a
+/// placeholder; `@@x` is a system variable, of one type.
 fn is_variable(e: &Expr) -> bool {
     match e {
         Expr::Identifier(i) => i.quote_style.is_none() && i.value.starts_with('@') && !i.value.starts_with("@@"),
@@ -2467,6 +2467,8 @@ mod tests {
             "select id, name from users order by case :sort when 'name' then name end",
             "select id from users order by case when :desc then id end desc, id",
             "select id from users order by 1 limit :n",
+            "select id, :tag as tag from users order by 2",
+            "select id, :tag as tag from users order by tag",
             "select id from users order by concat(lower(:x), name)",
         ] {
             assert_eq!(keys(sql), [], "{sql}");

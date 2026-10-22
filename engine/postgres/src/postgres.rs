@@ -2664,6 +2664,7 @@ mod tests {
             "select id, name from users order by case :sort::text when 'name' then name end",
             "select id from users order by case when :desc::bool then id end desc, id",
             "select id from users order by 1 limit :n::int",
+            "select id, :tag::text as tag from users order by 2",
             "select distinct name from users",
             "select name, count(*) as n from users group by rollup (name)",
             "select id from users order by lower(:x::text) || name",
