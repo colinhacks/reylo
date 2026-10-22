@@ -28,6 +28,7 @@ import postgres from 'postgres';
 import mysql from 'mysql2/promise';
 import { Session } from '../../src/analyze.ts';
 import { ident, renderParamType, renderType } from '../../src/render.ts';
+import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from '../../src/doc-comment.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
@@ -125,18 +126,28 @@ async function render(session: Session, written: string, sql: string, json: Map<
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? `${rendered} | null` : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[]) =>
-    [
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[]) => {
+    const leading = leadingComment(written, project.dialect);
+    const prose = leading.prose;
+    const shown = statementAfter(written, leading);
+    const sent = statementAfter(compiled, leadingComment(compiled, project.dialect));
+    const sqlDoc = (indent = '') => docComment(prose, sent, SQL_NOTE, indent);
+    const rawDoc = (indent = '') => docComment(prose, shown, RAW_NOTE, indent);
+    return [
       `import type { Query } from "reylo";`,
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
-      `export declare const sql: ${JSON.stringify(compiled)};`,
-      `export declare const raw: ${JSON.stringify(written)};`,
+      `${sqlDoc()}export declare const sql: ${JSON.stringify(compiled)};`,
+      `${rawDoc()}export declare const raw: ${JSON.stringify(written)};`,
       `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(', ')}];`,
-      `declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & { readonly sql: typeof sql; readonly raw: typeof raw };`,
+      `${docComment(prose, shown)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
+      `${sqlDoc('  ')}  readonly sql: typeof sql;`,
+      `${rawDoc('  ')}  readonly raw: typeof raw;`,
+      `};`,
       `export default query;`,
       ``,
     ].join('\n');
+  };
   let names: string[] = [];
   try {
     ({ params: names } = session.lex(sql));
