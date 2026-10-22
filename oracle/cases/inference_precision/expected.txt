@@ -21,4 +21,4 @@ whole_row_outer_joined.sql: many () -> { id: int4, posts: [posts{ id: int4, user
 whole_row_outer_reduced.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }] }
 whole_row_preserved_side.sql: one () -> { users: [users{ id: int4, name: text, email: text? }]? }
 whole_row_read.sql: many () -> { e: events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }, doc: { id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? } }
-whole_row_self_join.sql: many () -> { id: int4, later: [users{ id: int4?, name: text?, email: text? }?] }
+whole_row_self_join.sql: many () -> { id: int4, later: [users{ id: int4, name: text, email: text? }?] }

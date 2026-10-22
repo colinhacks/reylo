@@ -1263,9 +1263,12 @@ impl<'a> Engine<'a> {
         // column nullable.
         let grouping = parsed.is_none_or(|p| p.has_grouping_sets);
         // A table read twice where an outer join nulls one reading: the describe names the table
-        // of a column, never which reading, so provenance alone says nothing.
+        // of a column, never which reading. An outer join nulls a table by its name, though, so
+        // every reading of it, and the relations of a WITH query it nulls: a column of a nulled
+        // table is nullable whichever reading it comes from, and one of a table no join nulls is
+        // as the catalog says.
         let repeated = parsed.is_some_and(|p| p.has_repeated_table) && !nullable_tables.is_empty();
-        let hidden = grouping || repeated;
+        let hidden = grouping;
         // A set operation anywhere: provenance names the leftmost arm's column, which says
         // nothing about the other arms ([`own_provenance`]). Such a column stays nullable; one
         // read from a WITH query is settled from that query's own probe, whose arms are combined.
@@ -1296,9 +1299,7 @@ impl<'a> Engine<'a> {
                 };
                 let reading = aliased.get(i).and_then(Option::as_ref).filter(|(relation, _)| known.get(&col.table).is_some_and(|(name, _)| name == relation));
                 let nullable = if col.table != 0 && col.attnum > 0 && !degraded {
-                    declared() || nulled_rels.contains(&col.table)
-                } else if let (Some((_, nulled)), true) = (reading, col.table != 0 && col.attnum > 0) {
-                    declared() || *nulled
+                    declared() || reading.map_or(nulled_rels.contains(&col.table), |(_, nulled)| *nulled)
                 } else if own_row && known.contains_key(&col.table) {
                     // A row the scan read is a row, whatever its columns hold: NULL only where an
                     // outer join nulls the relation, which the statement names, so its name says.
