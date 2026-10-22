@@ -9,7 +9,7 @@ This page is the reference behind [the main docs](/) for SQLite: the place to lo
 
 | | |
 | --- | --- |
-| Versions | The type check prepares each statement in Reylo's own SQLite 3.53, against the schema of your database file; your app runs on its driver's SQLite ([Functions](#functions)) |
+| Versions | The type check prepares each statement in Reylo's own SQLite 3.53, against the schema of your database file, and again on each SQLite driver your `package.json` lists ([Functions](#functions)) |
 | URL | A `file:` or `sqlite:` URL and a path, which starts at the directory of `package.json`, in `DATABASE_URL` or [`direct_url`](/#direct_url) |
 | Type check | Reads the schema through Node's built-in `node:sqlite`, so it needs no driver |
 | Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso's engine, Cloudflare D1, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3` or libSQL ([Drivers](#drivers)) |
@@ -551,11 +551,13 @@ Which functions exist is the answer of the SQLite in the Node that runs the type
 
 **Your app's SQLite**
 
-Your app runs on its driver's SQLite, which may be older: `better-sqlite3` 12.11 carries 3.53.2, and libSQL, Cloudflare D1 and `bun:sqlite` carry their own. Turso's engine is a rewrite of SQLite, not a build of it, with functions of its own.
+Your app runs on its driver's SQLite, which may be older: libSQL carries 3.45.1, which has no `json_pretty`. So the type check prepares each statement again on every SQLite driver your `package.json` lists: `better-sqlite3`, `@libsql/client` or `libsql`, `sqlite3` and Turso's `@tursodatabase/database`. A statement one of them refuses is an error with that SQLite's message: "@libsql/client runs SQLite 3.45.1, which refuses this statement: no such function: json_pretty".
+
+The type check cannot ask `bun:sqlite` or Cloudflare D1, which run in another runtime, nor a driver it cannot load or one that cannot open your database file.
 
 **Argument counts**
 
-The type check knows a function by its name alone, so an argument count only a newer SQLite takes (`iif` with two arguments, before 3.48) is not caught.
+On those, an argument count only a newer SQLite takes (`iif` with two arguments, before 3.48) is not caught: the type check knows a function by its name alone.
 
 **Functions in the schema**
 

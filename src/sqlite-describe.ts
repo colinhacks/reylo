@@ -3,7 +3,8 @@
 // DDL from `sqlite_schema` and the functions this SQLite has from `pragma_function_list`. The
 // engine replays that DDL into its embedded SQLite and prepares the statement there, so no
 // describe goes through this file. The function list is that of the SQLite inside the Node that
-// runs the type check; a project that runs on another driver runs on that driver's SQLite.
+// runs the type check; a project that runs on another driver runs on that driver's SQLite, which
+// src/sqlite-drivers.ts prepares each statement on too.
 import { fileURLToPath } from "node:url";
 import { isAbsolute, resolve } from "node:path";
 

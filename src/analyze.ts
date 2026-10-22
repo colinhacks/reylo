@@ -12,6 +12,7 @@ import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
 import { openPostgresDescriber } from "./describe.ts";
 import { NotMysql, openMysqlDescriber } from "./mysql-describe.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
+import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
 /** What `.reylo/` holds for one statement. */
 export type Entry = {
@@ -27,7 +28,8 @@ export type Outcome =
   | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
   | { ok: false; message: string; code: number };
 
-type Io = EngineIo & { close(): Promise<void> };
+/** On SQLite, `drivers` are the app's own, which each statement is prepared on too (src/sqlite-drivers.ts). */
+type Io = EngineIo & { close(): Promise<void>; drivers?: SqliteDriver[] };
 
 const ENTRY_VERSION = 1;
 // How long a schema fingerprint is trusted, as long as a statement answer: a migration shows up
@@ -145,10 +147,31 @@ export class Session {
     clearTimeout(this.#timer);
     this.#busy++;
     try {
-      return await this.#analyze(sql, options);
+      const outcome = await this.#analyze(sql, options);
+      return outcome.ok && this.project.dialect === "sqlite" ? await this.#onDrivers(sql, outcome) : outcome;
     } finally {
       if (--this.#busy === 0 && this.#io && Number.isFinite(this.#idle)) this.#timer = setTimeout(() => this.#release(), this.#idle).unref();
     }
+  }
+
+  /**
+   * A SQLite statement prepared on the app's own drivers too, whose SQLite may be older than the
+   * engine's: the first that refuses it is an error at the place SQLite names. Not kept in
+   * `.reylo/`, since the drivers are the project's and not the database's; a session that cannot
+   * open the database checks nothing.
+   */
+  async #onDrivers(sql: string, outcome: Extract<Outcome, { ok: true }>): Promise<Outcome> {
+    const { analysis } = outcome;
+    if (analysis.diagnostics.length || !this.#io) return outcome;
+    const io = await this.#io.catch(() => undefined);
+    for (const driver of io?.drivers ?? []) {
+      const refusal = await driver.refuses(analysis.rewritten.sql);
+      if (refusal === undefined) continue;
+      const { start, length } = placeRefusal(sql, refusal);
+      const message = `${driver.name} runs SQLite ${driver.version}, which refuses this statement: ${refusal}`;
+      return { ...outcome, analysis: { ...analysis, diagnostics: [{ message, start, length, code: 6 }] } };
+    }
+    return outcome;
   }
 
   async #analyze(sql: string, options: { force?: boolean }): Promise<Outcome> {
@@ -300,8 +323,17 @@ export class Session {
         // A file that cannot be opened is a database that cannot be reached: a build without it
         // runs on `.reylo/`.
         const s = await openSqliteDescriber(url!, root).catch((e) => Promise.reject(new Unreachable(e)));
+        const drivers = await openProjectDrivers(root, sqlitePath(url!, root));
         // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
-        return { describe: () => Promise.reject(new Error("SQLite is described inside the engine")), query: (text, params) => s.values(text, params), close: () => s.close() };
+        return {
+          describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
+          query: (text, params) => s.values(text, params),
+          close: async () => {
+            await Promise.all(drivers.map((d) => d.close().catch(() => {})));
+            await s.close();
+          },
+          drivers,
+        };
       }
       const d = await openPostgresDescriber(root, url!);
       return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
