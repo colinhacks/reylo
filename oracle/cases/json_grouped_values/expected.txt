@@ -1,0 +1,14 @@
+agg_and_items.sql: many () -> { j: { name: text, n: int8, titles: [text] } }
+aggregate_alone.sql: one () -> { j: { n: int8 } }
+array_agg_beside.sql: many () -> { j: { name: text, scores: (int4?)[] } }
+column_alone.sql: many () -> { j: { name: text } }
+count_beside_column.sql: many () -> { j: { name: text, posts: int8 } }
+count_star_beside_column.sql: many () -> { j: { name: text, n: int8 } }
+expr_beside.sql: many () -> { j: { upper: text, n: int8 } }
+group_by_alias.sql: many () -> { j: { n: int8, best: text? }, t: text }
+group_by_alias_beside.sql: many () -> { j: { name: unknown?, n: unknown? }, uid: int8 }
+group_by_position.sql: many () -> { j: { name: unknown?, n: unknown? }, id: int8 }
+left_join_sum.sql: many () -> { j: { name: text, total: int8?, best: text? } }
+max_beside_column.sql: many () -> { j: { name: text, best: text } }
+sum_beside_column.sql: many () -> { j: { name: text, total: int8? } }
+ungrouped_mix.sql: one () -> { j: { titles: [text]?, n: int8 } }

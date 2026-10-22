@@ -138,7 +138,17 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     // A plain GROUP BY: every group has a row. A grouping set can make one of none (`GROUP BY ()`
     // over no rows is one row), so it is no plain one.
     let grouped = matches!(top, NodeEnum::SelectStmt(s) if !s.group_clause.is_empty() && !s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_)))));
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped };
+    // A statement that groups or aggregates keeps every expression of its select list outside an
+    // aggregate's arguments valid under its GROUP BY, which a probe of them carries; the
+    // arguments themselves go in a probe without one. A GROUP BY that may name a column of the
+    // select list ([`names_output`]) would name one of the probe's own, so it is none a probe can
+    // carry.
+    let group = match top {
+        NodeEnum::SelectStmt(s) if grouped && !s.group_clause.iter().any(|g| names_output(g, &targets)) => Some(s.group_clause.clone()),
+        NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust) => Some(Vec::new()),
+        _ => None,
+    };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0 };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -163,9 +173,12 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     let probes = builder
         .drafts
         .iter()
-        .map(|d| Probe {
-            sql: select_text(version, &d.items, &d.from, d.filter.as_ref(), with.as_ref()).unwrap_or_default(),
-            wider: d.wider.as_ref().and_then(|f| select_text(version, &d.items, f, d.filter.as_ref(), with.as_ref())),
+        .map(|d| {
+            let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
+            Probe {
+                sql: grouped_select_text(version, &d.items, &d.from, d.filter.as_ref(), group, with.as_ref()).unwrap_or_default(),
+                wider: d.wider.as_ref().and_then(|f| grouped_select_text(version, &d.items, f, d.filter.as_ref(), group, with.as_ref())),
+            }
         })
         .collect();
     Plan { columns, probes }
@@ -197,6 +210,45 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
         }
         Shape::Param(n) => out.extend(param_oids.get((*n as usize).saturating_sub(1)).copied()),
         Shape::Unknown => {}
+    }
+}
+
+/// Whether a select list aggregates outside any subquery, so that without a GROUP BY every
+/// expression of it outside an aggregate's arguments is one row's.
+fn aggregating(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
+    targets.iter().any(|t| match t.node.as_ref() {
+        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|v| crate::infer::aggregates(v, dialect, trust, None) || constructs_aggregate(v)),
+        _ => false,
+    })
+}
+
+/// Whether a GROUP BY item may name a column of the select list rather than an expression over
+/// the FROM: a position (`GROUP BY 1`), or a bare name that is a target's own, its alias or the
+/// name Postgres derives for one that is no bare column (`lower(p.title) AS t … GROUP BY t`).
+/// Postgres takes a bare name for a column of the FROM first, which the planning cannot see, so
+/// a name that is both counts too: it only leaves the probe without the GROUP BY.
+fn names_output(item: &Node, targets: &[Node]) -> bool {
+    match item.node.as_ref() {
+        Some(NodeEnum::AConst(_)) => true,
+        Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => {
+            let Some(NodeEnum::String(name)) = c.fields[0].node.as_ref() else { return false };
+            targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if target_name(rt).as_deref() == Some(name.sval.as_str())))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a JSON constructor aggregates at the top of the statement: `jsonb_agg(…)`, or an
+/// aggregate as one of `jsonb_build_object`'s values.
+fn constructs_aggregate(expr: &Node) -> bool {
+    match expr.node.as_ref() {
+        Some(NodeEnum::FuncCall(f)) if f.over.is_none() => {
+            let name = func_name(f).unwrap_or_default();
+            AGG_FNS.contains(&name.as_str()) || f.agg_star || f.agg_distinct || f.agg_within_group || !f.agg_order.is_empty() || f.agg_filter.is_some() || f.args.iter().any(constructs_aggregate)
+        }
+        Some(NodeEnum::CoalesceExpr(c)) => c.args.iter().any(constructs_aggregate),
+        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(constructs_aggregate),
+        _ => false,
     }
 }
 
@@ -232,6 +284,11 @@ struct Builder<'a> {
     overflowed: bool,
     /// Whether the top statement is a SELECT with a plain `GROUP BY`, where no group is empty.
     grouped: bool,
+    /// For a top statement that groups or aggregates, its GROUP BY (empty for one that only
+    /// aggregates): what the probe of its own expressions outside an aggregate carries.
+    group: Option<Vec<Node>>,
+    /// How many aggregates of the top statement the walk is inside the arguments of.
+    in_aggregate: usize,
 }
 
 #[derive(Clone)]
@@ -245,6 +302,8 @@ struct Draft {
     filter: Option<Node>,
     /// The same `FROM` with every enclosing one appended, for a correlated constructor.
     wider: Option<Vec<Node>>,
+    /// Whether the probe carries the top statement's GROUP BY ([`Builder::group`]).
+    grouped: bool,
     items: Vec<Node>,
 }
 
@@ -283,7 +342,10 @@ impl Builder<'_> {
                     // context of its own whose probe filters by it too, so `FILTER (WHERE p.id IS
                     // NOT NULL)` over a LEFT JOIN reads `p` as a row that exists.
                     let Some(filter) = f.agg_filter.as_deref() else {
-                        return Shape::Array { items: Box::new(self.walk(&f.args[0])), non_null };
+                        self.in_aggregate += 1;
+                        let items = self.walk(&f.args[0]);
+                        self.in_aggregate -= 1;
+                        return Shape::Array { items: Box::new(items), non_null };
                     };
                     let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
                     let both = match outer {
@@ -337,9 +399,10 @@ impl Builder<'_> {
                     _ => {
                         self.drafts = drafted;
                         // An aggregate there goes in a probe of its own, under a context id of its
-                        // own over the same `FROM`: a probe has no GROUP BY, so beside a bare
-                        // column of the context's own probe it would fail that probe whole.
-                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None) {
+                        // own over the same `FROM`: a probe without the statement's GROUP BY
+                        // would fail beside a bare column of the context's own probe. Where the
+                        // statement's own expressions have a probe that carries it, that one does.
+                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None) || self.outside_aggregates() {
                             return self.leaf(expr);
                         }
                         let top = self.stack.len() - 1;
@@ -419,11 +482,18 @@ impl Builder<'_> {
             Some(rows) => rows.rewrite(expr, &|name| self.no_column(name)),
             None => (expr.clone(), false),
         };
+        // An expression of the statement's own outside an aggregate's arguments may aggregate, so
+        // it goes in the probe that carries the GROUP BY. A bare column is valid without it, and
+        // stays beside the arguments.
+        let grouped = self.outside_aggregates() && !matches!(expr.node, Some(NodeEnum::ColumnRef(_)));
         let ctx = self.stack[self.stack.len() - 1].0;
-        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && !d.row) {
+        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && !d.row && d.grouped == grouped) {
             Some(i) => i,
             None => match self.draft(false) {
-                Some(i) => i,
+                Some(i) => {
+                    self.drafts[i].grouped = grouped;
+                    i
+                }
                 None => return Shape::Unknown,
             },
         };
@@ -435,6 +505,12 @@ impl Builder<'_> {
         } else {
             shape
         }
+    }
+
+    /// Whether the walk stands in the select list of a top statement that groups or aggregates,
+    /// outside the arguments of its aggregates.
+    fn outside_aggregates(&self) -> bool {
+        self.group.is_some() && self.stack.len() == 1 && self.in_aggregate == 0
     }
 
     /// Whether no FROM in scope shows a column of this name, for certain.
@@ -469,7 +545,7 @@ impl Builder<'_> {
         // A subquery with no `FROM` of its own only ever resolves against the enclosing one.
         let (from, wider) = if from.is_empty() && !wider.is_empty() { (wider, None) } else { (from, Some(wider)) };
         let wider = wider.filter(|w| w.len() != from.len());
-        self.drafts.push(Draft { ctx, row, from, filter, wider, items: Vec::new() });
+        self.drafts.push(Draft { ctx, row, from, filter, wider, grouped: false, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -570,6 +646,11 @@ fn force_nullable(shape: Shape) -> Shape {
 /// `SELECT <items> FROM <from>`, deparsed by the same library that parsed the original. The
 /// statement is only ever prepared, never executed, so it needs no `WHERE` to stay cheap.
 pub(crate) fn select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, with: Option<&protobuf::WithClause>) -> Option<String> {
+    grouped_select_text(version, items, from, filter, &[], with)
+}
+
+/// [`select_text`] with a GROUP BY.
+fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
     if items.is_empty() {
         return None;
     }
@@ -593,6 +674,7 @@ pub(crate) fn select_text(version: i32, items: &[Node], from: &[Node], filter: O
         target_list,
         from_clause: from.to_vec(),
         where_clause: filter.map(|f| Box::new(f.clone())),
+        group_clause: group.to_vec(),
         with_clause: with.cloned(),
         op: protobuf::SetOperation::SetopNone as i32,
         limit_option: protobuf::LimitOption::Default as i32,
@@ -910,6 +992,39 @@ mod tests {
                 ],
                 non_null: true,
             }
+        );
+    }
+
+    #[test]
+    fn an_aggregate_beside_a_column_is_probed_under_the_group_by() {
+        let probes = |sql: &str| shapes(sql).probes.into_iter().map(|p| p.sql).collect::<Vec<_>>();
+        // The statement's own expressions under its GROUP BY, its bare columns and the arguments
+        // of its aggregates without it.
+        assert_eq!(
+            probes("SELECT jsonb_build_object('name', u.name, 'n', count(p.id), 'titles', jsonb_agg(p.title)) AS j FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.id"),
+            vec![
+                "SELECT u.name AS a0, p.title AS a1 FROM users u JOIN posts p ON p.author_id = u.id",
+                "SELECT count(p.id) AS a0 FROM users u JOIN posts p ON p.author_id = u.id GROUP BY u.id",
+            ]
+        );
+        // A statement that aggregates without a GROUP BY probes its aggregates without one.
+        assert_eq!(
+            probes("SELECT jsonb_build_object('titles', jsonb_agg(p.title), 'n', count(*)) AS j FROM posts p"),
+            vec!["SELECT p.title AS a0 FROM posts p", "SELECT count(*) AS a0 FROM posts p"]
+        );
+        // One that neither groups nor aggregates keeps its one probe, and a GROUP BY by position
+        // or by a name of the select list names the probe's own columns, so it is not carried.
+        assert_eq!(probes("SELECT jsonb_build_object('n', lower(u.name), 'id', u.id) AS j FROM users u"), vec!["SELECT lower(u.name) AS a0, u.id AS a1 FROM users u"]);
+        assert_eq!(probes("SELECT jsonb_build_object('n', count(*), 'name', u.name) AS j FROM users u GROUP BY 1").len(), 1);
+        assert_eq!(
+            probes("SELECT jsonb_build_object('n', count(*), 'm', max(p.title)) AS j, lower(p.title) AS t FROM posts p GROUP BY t"),
+            vec!["SELECT count(*) AS a0, max(p.title) AS a1 FROM posts p"]
+        );
+        assert_eq!(probes("SELECT jsonb_build_object('n', count(*)) AS j, lower(p.title) FROM posts p GROUP BY lower"), vec!["SELECT count(*) AS a0 FROM posts p"]);
+        // A bare name no target carries, or a column's own, is the FROM's, and is carried.
+        assert_eq!(
+            probes("SELECT jsonb_build_object('n', count(*)) AS j, p.title FROM posts p GROUP BY title"),
+            vec!["SELECT count(*) AS a0 FROM posts p GROUP BY title"]
         );
     }
 

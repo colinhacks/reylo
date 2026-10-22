@@ -274,6 +274,10 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 </Pairs>
 
+**Aggregates beside the statement's columns**
+
+Inside the JSON a statement builds, an aggregate can sit beside the statement's own columns wherever its `GROUP BY` allows: `jsonb_build_object('name', u.name, 'posts', count(p.id))` with `group by u.id` is `{ name: string; posts: number }`. With `GROUP BY` by position (`group by 1`) or by a name from the select list (`lower(u.name) as n … group by n`), an object that mixes aggregates with columns has `unknown` values.
+
 **Aggregates over no rows**
 
 Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `unknown`.
