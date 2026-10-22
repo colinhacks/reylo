@@ -8,8 +8,10 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Go-to-definition from what a `.sql` module declares opens the `.sql` file at its statement, through
-// the span map the content mapper returns (src/mapper.ts). The language server runs as an editor runs
-// it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so no server is needed.
+// the span map the content mapper returns (src/mapper.ts), and a hover shows the file's comment and
+// statement, from the doc comments the module carries (src/doc-comment.ts). The language server
+// runs as an editor runs it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so
+// no server is needed.
 const ROOT = join(import.meta.dirname, "..");
 const TSC = join(ROOT, "node_modules", ".bin", "tsc");
 
@@ -30,7 +32,7 @@ function project(): string {
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
   mkdirSync(join(root, "queries"));
   writeFileSync(join(root, "queries", "posts.sql"), "\n-- every post after one\nselect id, title, body\nfrom posts\nwhere id > :after\n");
-  writeFileSync(join(root, "main.ts"), `import posts from "@/queries/posts.sql";\nimport type { Row } from "@/queries/posts.sql";\nexport const query = posts;\nexport type Title = Row["title"];\n`);
+  writeFileSync(join(root, "main.ts"), `import posts from "@/queries/posts.sql";\nimport type { Row } from "@/queries/posts.sql";\nexport const query = posts;\nexport type Title = Row["title"];\nexport const sent = posts.sql;\n`);
   return root;
 }
 
@@ -74,7 +76,7 @@ function server(root: string) {
   return { request, notify, close };
 }
 
-test("go-to-definition on a query, its import's path, its Row and a column opens the .sql file at its statement", async () => {
+test("go-to-definition on a query, its import's path, its Row and a column opens the .sql file at its statement, and a hover shows its comment and statement", async () => {
   const root = project();
   const main = join(root, "main.ts");
   const text = readFileSync(main, "utf8");
@@ -84,7 +86,7 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
   };
   const lsp = server(root);
   try {
-    await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { definition: { linkSupport: true } } }, initializationOptions: { runExternalCode: true } });
+    await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { definition: { linkSupport: true }, hover: { contentFormat: ["markdown"] } } }, initializationOptions: { runExternalCode: true } });
     lsp.notify("initialized", {});
     const uri = pathToFileURL(main).href;
     lsp.notify("textDocument/didOpen", { textDocument: { uri, languageId: "typescript", version: 1, text } });
@@ -95,6 +97,18 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
       hover = (await lsp.request("textDocument/hover", { textDocument: { uri }, position: at("query = posts", 0) }))?.contents?.value ?? "";
     }
     assert.match(hover, /title: string;\s+body: string \| null;/);
+
+    // The hover over the import shows the comment at the top of the file as prose, then the
+    // statement as written; the one over its `.sql` the statement as Reylo sends it, the comment
+    // taken off both. The doc comments' lines in the module move nothing the definitions below
+    // land on.
+    const hoverAt = async (position: Position): Promise<string> => (await lsp.request("textDocument/hover", { textDocument: { uri }, position }))?.contents?.value ?? "";
+    const statementBlock = "```sql\nselect id, title, body\nfrom posts\nwhere id > :after\n```";
+    const imported = await hoverAt(at("posts from", 0));
+    assert.ok(imported.endsWith(`\nevery post after one\n\n${statementBlock}`), imported);
+    const sent = await hoverAt(at("posts.sql;", 7));
+    assert.match(sent, /^\(property\) sql: "\\n-- every post after one\\nselect id, title, body\\nfrom posts\\nwhere id > \?\\n"$/m);
+    assert.ok(sent.includes("\nevery post after one\n\n```sql\nselect id, title, body\nfrom posts\nwhere id > ?\n```\n\nThe statement as Reylo sends it"), sent);
 
     const sql = pathToFileURL(join(root, "queries", "posts.sql")).href;
     // Lines 2 to 5 of the file: the comment above the statement, through `:after`.

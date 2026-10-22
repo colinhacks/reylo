@@ -38,15 +38,13 @@ export type ReyloTypes<Params, Row, C extends Cardinality> = {
 export interface Query<Params, Row, C extends Cardinality, D extends Dialect>
   extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>> {
   readonly dialect: D;
-  // The base text: a structured parameter (`::rows`, `::row`, src/rows.ts) in a MySQL insert has
-  // its column lists written again for the keys each call carries. Said here and not in the doc
-  // comment, whose text the docs site shows in its hovers, which leave structured parameters out.
-  /**
-   * The statement as Reylo sends it to the database, as the module's `sql` export: `:id` is `$1`
-   * on Postgres and `?` on MySQL and SQLite, and each cast is the dialect's own.
-   */
+  // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
+  // and what they are (src/doc-comment.ts, `SQL_NOTE` and `RAW_NOTE`), and TypeScript would show
+  // this one first, run together with that one. `sql` is the base text: a structured parameter
+  // (`::rows`, `::row`, src/rows.ts) in a MySQL insert has its column lists written again for the
+  // keys each call carries. Said here and not in `SQL_NOTE`, whose text the docs site shows in its
+  // hovers, which leave structured parameters out.
   readonly sql: string;
-  /** The `.sql` file's contents, exactly as written, as the module's `raw` export. */
   readonly raw: string;
   /** Parameter names in binding order. */
   readonly params: readonly string[];

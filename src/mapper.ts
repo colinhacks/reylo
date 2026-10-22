@@ -8,6 +8,7 @@ import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject, type Dialect } from "./project.ts";
 import { Session } from "./analyze.ts";
+import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from "./doc-comment.ts";
 
 type Project = {
   dialect: Dialect;
@@ -72,24 +73,39 @@ serve({
       // A transform for a project this process never opened: answer, never throw, so the file
       // keeps its default export instead of becoming an empty module.
       diagnostics.push(diag(`The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, 9));
-      const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\ndeclare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
+      const leading = leadingComment(sql);
+      const doc = docComment(leading.prose, statementAfter(sql, leading));
+      const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
       return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
     }
     // `compiled` is the statement as Reylo sends it to the database (the engine's rewritten text),
-    // which an analysis that failed has not given: then `sql` is any string.
+    // which an analysis that failed has not given: then `sql` is any string. The comment at the top
+    // of the file and the statement go into doc comments, so a hover over the import shows the
+    // prose and the statement as written, and one over its `sql` the statement as sent. The
+    // rewrite changes placeholders alone, never a comment, so the compiled text starts with the
+    // same comments.
+    const leading = leadingComment(sql, project.dialect);
     const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[]) => {
+      const written = statementAfter(sql, leading);
+      const sent = compiled === undefined ? undefined : statementAfter(compiled, leadingComment(compiled, project.dialect));
+      const sqlDoc = (indent = "") => docComment(leading.prose, sent, SQL_NOTE, indent);
+      const rawDoc = (indent = "") => docComment(leading.prose, written, RAW_NOTE, indent);
       const text = [
         `import type { Query } from "reylo";`,
         `export type Params = ${paramsType};`,
         `export type Row = ${rowType};`,
-        `export declare const sql: ${compiled === undefined ? "string" : JSON.stringify(compiled)};`,
-        `export declare const raw: ${JSON.stringify(sql)};`,
+        `${sqlDoc()}export declare const sql: ${compiled === undefined ? "string" : JSON.stringify(compiled)};`,
+        `${rawDoc()}export declare const raw: ${JSON.stringify(sql)};`,
         `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(", ")}];`,
         // The literal types go in the Query type directly rather than through the aliases, so a
         // hover shows the row's shape (`{ id: number; ... } | null`) and not `Row | null`. The two
         // texts go in by `typeof`, so a hover over the query names them and one over its `sql`
-        // shows the statement.
-        `declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & { readonly sql: typeof sql; readonly raw: typeof raw };`,
+        // shows the statement, with the doc comment of the property here (Query's own `sql` and
+        // `raw` carry none, since TypeScript would show it first and run the two together).
+        `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
+        `${sqlDoc("  ")}  readonly sql: typeof sql;`,
+        `${rawDoc("  ")}  readonly raw: typeof raw;`,
+        `};`,
         `export default query;`,
         ``,
       ].join("\n");
