@@ -154,9 +154,13 @@ fn scalar(name: &str, opts: SchemaOptions) -> Value {
         "int2" | "int4" => json!({"type": "integer", "format": "int32"}),
         "int8" if opts.in_json || opts.int8_as_number => json!({"type": "integer", "format": "int64"}),
         "int8" => json!({"type": "string", "format": "int64"}),
+        // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's
+        // inside a document as text.
+        "float4" if opts.in_json => json!({"anyOf": [{"type": "number", "format": "float"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}),
+        "float8" if opts.in_json => json!({"anyOf": [{"type": "number", "format": "double"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}),
         "float4" => json!({"type": "number", "format": "float"}),
         "float8" => json!({"type": "number", "format": "double"}),
-        "numeric" if opts.in_json => json!({"type": "number", "format": "decimal"}),
+        "numeric" if opts.in_json => json!({"anyOf": [{"type": "number", "format": "decimal"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}),
         "numeric" => json!({"type": "string", "format": "decimal"}),
         "text" | "varchar" | "bpchar" | "name" => json!({"type": "string"}),
         "uuid" => json!({"type": "string", "format": "uuid"}),
@@ -165,6 +169,8 @@ fn scalar(name: &str, opts: SchemaOptions) -> Value {
         "time" => json!({"type": "string", "format": "time"}),
         // Postgres writes its own hex inside a document.
         "bytea" if opts.in_json => json!({"type": "string", "format": "hex"}),
+        // A row whose columns were not read (a subquery's) is an object of them inside a document.
+        "record" if opts.in_json => json!({"type": "object"}),
         // `format: byte` is the table's word; `contentEncoding` is the JSON Schema 2020-12
         // spelling of the same base64, kept beside it for validators.
         "bytea" => json!({"type": "string", "format": "byte", "contentEncoding": "base64"}),
@@ -230,7 +236,10 @@ mod tests {
     #[test]
     fn inside_json_the_database_spells_int8_numeric_and_bytea() {
         assert_eq!(s("int8").json_schema(IN_JSON), json!({"type": "integer", "format": "int64"}));
-        assert_eq!(s("numeric").json_schema(IN_JSON), json!({"type": "number", "format": "decimal"}));
+        // A non-finite float or decimal is text inside a document: `{"f": "Infinity"}`.
+        assert_eq!(s("numeric").json_schema(IN_JSON), json!({"anyOf": [{"type": "number", "format": "decimal"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}));
+        assert_eq!(s("float8").json_schema(IN_JSON), json!({"anyOf": [{"type": "number", "format": "double"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}));
+        assert_eq!(s("float8").json_schema(WIRE), json!({"type": "number", "format": "double"}));
         assert_eq!(s("bytea").json_schema(IN_JSON), json!({"type": "string", "format": "hex"}));
         assert_eq!(s("uuid").json_schema(IN_JSON), s("uuid").json_schema(WIRE));
         assert_eq!(s("timestamptz").json_schema(IN_JSON), s("timestamptz").json_schema(WIRE));
@@ -300,7 +309,7 @@ mod tests {
         assert_eq!(post.json_schema(INT8N), expected);
         assert_eq!(post.json_schema(IN_JSON), expected);
         let list = Type::List { of: Box::new(s("numeric")), nullable_items: true };
-        assert_eq!(list.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"type": "number", "format": "decimal"}, {"type": "null"}]}}));
+        assert_eq!(list.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"anyOf": [{"type": "number", "format": "decimal"}, {"enum": ["NaN", "Infinity", "-Infinity"]}]}, {"type": "null"}]}}));
         let texts = Type::List { of: Box::new(s("text")), nullable_items: true };
         assert_eq!(texts.json_schema(WIRE), json!({"type": "array", "items": {"type": ["string", "null"]}}));
         let posts = Type::List { of: Box::new(post), nullable_items: false };

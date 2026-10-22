@@ -28,7 +28,7 @@ subquery_min_string.sql: many () -> { id: int4, first: text? }
 subquery_no_alias.sql: many () -> { id: int4, (select count(*) from posts p where p.user_id = u.id): int8? }
 subquery_no_from.sql: many () -> { id: int4, one: int8|int4, same: text, c: int8 }
 subquery_reads_joined.sql: many () -> { id: int4, post: int4?, n: int8 }
-subquery_same_alias_twice.sql: many () -> { n: int4, n: int8? }
+subquery_same_alias_twice.sql: many () -> { n: int4, n: int8? } !! reylo14: Columns 1 and 2 are both named "n", and a row keeps only the last of them. Give one of them another name with `as`.
 subquery_std.sql: many () -> { id: int4, spread: float8? }
 subquery_union.sql: many () -> { id: int4, n: int8 }
 subquery_where_false.sql: many () -> { id: int4, n: int8, m: int4|int8? }

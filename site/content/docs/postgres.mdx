@@ -261,12 +261,13 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), and a `bytea` is hex text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), and a `bytea` is hex text.
 
 <Pairs>
 
 - `jsonb_build_object('n', 9007199254740993::bigint)` → `{ n: 9007199254740992 }`
 - `jsonb_build_object('n', 12.50::numeric)` → `{ n: 12.5 }`
+- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
 - `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
@@ -362,7 +363,7 @@ Every column is typed `| null` unless Reylo can tell it never is null. On Postgr
   - the aggregates `array_agg`, `json_agg`, `jsonb_agg` and `jsonb_object_agg` are non-null;
   - the others, such as `sum`, `max` and `string_agg`, are non-null when their argument is;
   - an aggregate with a `filter` stays nullable, since the filter can leave a group empty.
-- **A whole row** (`select e`, `jsonb_agg(e)`) is non-null unless an outer join can null it, and its columns keep their types.
+- **A whole row** (`select e`, `jsonb_agg(e)`, `jsonb_agg(e.*)`) is non-null unless an outer join can null it, and its columns keep their types.
 - **A scalar subquery** is non-null only when it always returns one non-null value: an aggregate without `group by`, like `(select count(*) …)`, or a `select` without `from`, like `(select 1)`.
 - **A `union` column** is non-null when it's non-null in every branch.
 - **A column of a `with` query or a subquery in `from`** is as nullable as it is in that query.

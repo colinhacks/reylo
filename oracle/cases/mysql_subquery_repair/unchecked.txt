@@ -1,1 +1,2 @@
 subquery_any_value.sql: Subquery returns more than 1 row (1242)
+subquery_same_alias_twice.sql: the engine refused it: reylo14: Columns 1 and 2 are both named "n", and a row keeps only the last of them. Give one of them another name with `as`.

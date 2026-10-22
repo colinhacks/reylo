@@ -525,7 +525,8 @@ impl<'a> Engine<'a> {
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
 
-        Some(Analysis {
+        let spans = column_spans(sql, &rewritten);
+        let mut analysis = Analysis {
             kind: parsed.as_ref().map(|p| p.statement.to_string()).unwrap_or_default(),
             params,
             columns,
@@ -538,7 +539,9 @@ impl<'a> Engine<'a> {
             structured: Vec::new(),
             fresh: None,
             tables: None,
-        })
+        };
+        crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
+        Some(analysis)
     }
 
     fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (String, Option<String>) {
@@ -2214,6 +2217,81 @@ fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
     }
 }
 
+/// Where each result column is written, by its index, as far as the top statement's target list
+/// says: the name an alias gives it (`as x`), else a column's own name (the `id` of `mt.id`), else
+/// the target's first word. Nothing from a `*` on, which stands for columns the list does not name.
+fn column_spans(sql: &str, rewritten: &Rewritten) -> Vec<(usize, usize)> {
+    let Ok(parsed) = crate::stack::parse(&rewritten.sql) else { return Vec::new() };
+    let Some(top) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Vec::new() };
+    let Some((items, _, _)) = jsonshape::top_context(top) else { return Vec::new() };
+    let targets: Vec<&pg_query::protobuf::ResTarget> = items.iter().map_while(|i| match i.node.as_ref() {
+        Some(NodeEnum::ResTarget(rt)) => Some(&**rt),
+        _ => None,
+    }).collect();
+    let starts: Vec<usize> = targets.iter().map(|rt| rewritten.to_original(rt.location.max(0) as usize).min(sql.len())).collect();
+    let mut spans = Vec::new();
+    for (k, rt) in targets.iter().enumerate() {
+        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+            break;
+        }
+        let start = starts[k];
+        let text = &sql[start..starts.get(k + 1).copied().unwrap_or(sql.len()).max(start)];
+        let found = if !rt.name.is_empty() {
+            word_after_as(text, &rt.name)
+        } else {
+            match rt.val.as_deref().and_then(|v| v.node.as_ref()) {
+                Some(NodeEnum::ColumnRef(c)) => jsonshape::last_string(&c.fields).and_then(|name| word(text, &name)),
+                _ => None,
+            }
+        };
+        spans.push(match found {
+            Some((at, length)) => (start + at, length),
+            None => (start, sql[start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"')).count()),
+        });
+    }
+    spans
+}
+
+/// The first place `name` stands in `text` as a whole word, unquoted in any case or quoted as it is.
+fn word(text: &str, name: &str) -> Option<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let quoted = format!("\"{}\"", name.replace('"', "\"\""));
+    let mut i = 0;
+    while i < bytes.len() {
+        if text[i..].starts_with(&quoted) {
+            return Some((i, quoted.len()));
+        }
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_' || bytes[i - 1] == b'"');
+        if boundary && text.len() >= i + name.len() && text.is_char_boundary(i + name.len()) && text[i..i + name.len()].eq_ignore_ascii_case(name) {
+            let next = bytes.get(i + name.len());
+            if !next.is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_' || *c == b'"') {
+                return Some((i, name.len()));
+            }
+        }
+        i += text[i..].chars().next().map_or(1, char::len_utf8);
+    }
+    None
+}
+
+/// The alias `name` where `as` gives it: the first `as` in `text` followed by the name.
+fn word_after_as(text: &str, name: &str) -> Option<(usize, usize)> {
+    let lower = text.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(at) = lower[from..].find("as") {
+        let i = from + at;
+        let before = i == 0 || !(lower.as_bytes()[i - 1].is_ascii_alphanumeric() || lower.as_bytes()[i - 1] == b'_');
+        let rest = &text[i + 2..];
+        let gap = rest.len() - rest.trim_start().len();
+        if before && gap > 0 {
+            if let Some((0, length)) = word(&rest[gap..], name) {
+                return Some((i + 2 + gap, length));
+            }
+        }
+        from = i + 2;
+    }
+    None
+}
+
 /// A failed describe as a diagnostic on the author's text: the server's message, at the
 /// characters its position points at.
 fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
@@ -2306,6 +2384,24 @@ mod tests {
         assert_eq!(a.params.iter().map(|p| (p.name.as_str(), &p.ty)).collect::<Vec<_>>(), [("q", &Type::Unknown)]);
         let a = analyze("select $1::int + $1", &host).unwrap();
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start)).collect::<Vec<_>>(), [(3, 17)]);
+    }
+
+    #[test]
+    fn a_column_is_placed_at_the_name_it_takes() {
+        let spans = |sql: &str| {
+            let lexed = lex::lex(sql, Dialect::Postgres).unwrap();
+            column_spans(sql, &lex::rewrite(sql, &lexed, Target::Dollar)).into_iter().map(|(start, length)| sql[start..start + length].to_string()).collect::<Vec<_>>()
+        };
+        // A column's own name, an alias, a quoted alias, and a function's first word.
+        assert_eq!(spans("select m.id, mt.id, count(*) from member m join member_team mt on true"), ["id", "id", "count"]);
+        assert_eq!(spans("select a AS X, b as \"X\", c y from t"), ["X", "\"X\"", "c"]);
+        // Through placeholders, whose rewritten text is shorter or longer than the author's.
+        assert_eq!(spans("select :first::int as x, :second::text as x"), ["x", "x"]);
+        // Nothing from a star on, and nothing for a set operation, which names no one target list.
+        assert_eq!(spans("select id, *, id from t"), ["id"]);
+        assert!(spans("select 1 as x union select 2").is_empty());
+        // A RETURNING list.
+        assert_eq!(spans("insert into t (a) values (1) returning id, a as id"), ["id", "id"]);
         // The fix reads the value from a WITH.
         let a = replay("with input as (select concat('%', :q::text, '%') as pattern) select 1 as one from input where input.pattern like input.pattern");
         assert!(a.diagnostics.iter().all(|d| d.code != 3), "{:?}", a.diagnostics);

@@ -246,7 +246,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     }
     let params = a.params(lexed);
     let (cardinality, reason) = a.cardinality();
-    let analysis = Analysis {
+    let mut analysis = Analysis {
         kind,
         params,
         columns,
@@ -260,6 +260,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
         fresh: None,
         tables: Some(tables(&t)),
     };
+    crate::analysis::clashes(sql, &mut analysis, &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
 }

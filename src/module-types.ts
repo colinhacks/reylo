@@ -4,7 +4,7 @@
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
-import { declaredType, ident, renderParamType, renderType } from "./render.ts";
+import { declaredType, ident, lastOfEachName, renderParamType, renderType } from "./render.ts";
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
 export type FileDiagnostic = { message: string; start: number; length: number; code: number };
@@ -98,7 +98,7 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
   }
   const cardinality = analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names };
-  const columns = analysis.columns.map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
+  const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
   const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);

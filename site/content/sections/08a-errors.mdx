@@ -35,6 +35,14 @@ insert into events (kind, payload)
 values ('click', :payload::json('{ "type": object }'))
 ```
 
+Two columns of one name are an error, since each row is an object and keeps only the last:
+
+```sql tab="post_ids.sql" dialect="all" errors
+select u.id, p.id, p.title
+from users u
+join posts p on p.user_id = u.id
+```
+
 A [parameter whose type cannot be inferred](#a-parameter-nothing-types) is Reylo's error too, which says to cast it. When a query changes, its types change with it, and code that reads a column the query no longer selects is an error:
 
 ```ts twoslash tab="main.ts"

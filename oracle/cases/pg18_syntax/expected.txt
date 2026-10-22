@@ -5,7 +5,7 @@ returning_alias_delete.sql: maybeOne (id: int4) -> { old_name: text, new_name: t
 returning_alias_exprs.sql: maybeOne (name: text, id: int4) -> { change: text, changed: bool, up: text, nick: text, old_nick: text? }
 returning_alias_insert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text }
 returning_alias_one.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
-returning_alias_stars.sql: maybeOne (id: int4) -> { id: int4?, name: text?, nick: text?, o: text?, id: int4, name: text, nick: text?, o: text? }
+returning_alias_stars.sql: maybeOne (id: int4) -> { id: int4?, name: text?, nick: text?, o: text?, id: int4, name: text, nick: text?, o: text? } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 2 and 6 are both named "name", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 3 and 7 are both named "nick", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 4 and 8 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
 returning_alias_update.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
 returning_alias_upsert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text, inserted: bool, was: text }
 returning_cast.sql: one (id: int4, name: text) -> { old_name: text?, old_v: varchar?, new_name: text }

@@ -7,10 +7,12 @@ import { kindType as typeOfKind, scalarKind, type Dialect } from "./values.ts";
 
 // What a database writes inside a JSON document (`json_build_object`, `json_agg`, a composite
 // inside one): a number for the integers and decimals, the text of a date, hexadecimal for bytes.
+// JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text.
+const nonFinite = `number | "NaN" | "Infinity" | "-Infinity"`;
 const json: Record<string, string> = {
   bool: "boolean",
-  int2: "number", int4: "number", oid: "number", float4: "number", float8: "number",
-  int8: "number", numeric: "number",
+  int2: "number", int4: "number", oid: "number", float4: nonFinite, float8: nonFinite,
+  int8: "number", numeric: nonFinite,
   text: "string", varchar: "string", bpchar: "string", name: "string", char: "string", citext: "string",
   uuid: "string", time: "string", timetz: "string", interval: "string",
   date: "string", timestamp: "string", timestamptz: "string",
@@ -20,8 +22,11 @@ const json: Record<string, string> = {
   int4range: "string", int8range: "string", numrange: "string", tsrange: "string", tstzrange: "string", daterange: "string",
   int4multirange: "string", int8multirange: "string", nummultirange: "string", tsmultirange: "string", tstzmultirange: "string", datemultirange: "string",
   hstore: "string", ltree: "string", lquery: "string", ltxtquery: "string",
-  record: "string",
+  // A row whose columns were not read (a subquery's): an object of them inside a document.
+  record: "Record<string, unknown>",
 };
+// MySQL stores no infinity and no NaN, so its numbers inside a document are numbers.
+const mysqlJson: Record<string, string> = { ...json, float4: "number", float8: "number", numeric: "number" };
 const sqliteJson: Record<string, string> = { integer: "number", int8: "number", real: "number", numeric: "number | string", text: "string", bool: "boolean" };
 
 export const ident = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
@@ -32,7 +37,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // `a|b` is either: a MySQL column whose type the execution decides (`:n + 1` is a BIGINT
       // or a DOUBLE by what is bound), or a truth value a document holds as `true` or as 1.
       if (!inJson) return typeOfKind(scalarKind(t.name, dialect));
-      const parts = t.name.split("|").map((name) => (dialect === "sqlite" ? sqliteJson[name] : json[name]) ?? "unknown");
+      const parts = t.name.split("|").map((name) => (dialect === "sqlite" ? sqliteJson : dialect === "mysql" ? mysqlJson : json)[name] ?? "unknown");
       return parts.includes("unknown") ? "unknown" : [...new Set(parts.flatMap((part) => part.split(" | ")))].join(" | ");
     }
     case "enum": return t.labels.length ? t.labels.map((l) => JSON.stringify(l)).join(" | ") : "string";
@@ -153,7 +158,16 @@ function grouped(ts: string): string {
 }
 
 /** An object type of JSON-encoded fields, each nullable as the engine says. */
+/**
+ * The last of each name: a row a driver builds is an object, which keeps the last of two columns
+ * of one name, and so does `JSON.parse` of two keys of one name. The engine reports the columns.
+ */
+export function lastOfEachName<T extends { name: string }>(items: readonly T[]): T[] {
+  return items.filter((item, i) => !items.slice(i + 1).some((later) => later.name === item.name));
+}
+
 function renderFields(fields: { name: string; type: EngineType; nullable: boolean }[], dialect: Dialect): string {
+  fields = lastOfEachName(fields);
   return fields.length ? `{ ${fields.map((f) => `${ident(f.name)}: ${renderType(f.type, true, dialect)}${f.nullable ? " | null" : ""}`).join("; ")} }` : "Record<never, never>";
 }
 

@@ -176,7 +176,17 @@ test("parameters take what every driver binds, whatever Reylo returns", () => {
   assert.equal(renderType(built, false, "mysql"), "{ id: number }");
   // Inside a JSON value the database wrote the bytes and the number already.
   const inner: EngineType = { kind: "object", fields: [{ name: "b", type: scalar("bytea"), nullable: false }, { name: "n", type: scalar("numeric"), nullable: false }] };
-  assert.equal(renderType(inner, false, "postgres"), "{ b: string; n: number }");
+  // A non-finite decimal or float is the text Postgres writes inside a document (`{"n": "NaN"}`);
+  // MySQL stores none.
+  assert.equal(renderType(inner, false, "postgres"), '{ b: string; n: number | "NaN" | "Infinity" | "-Infinity" }');
+  assert.equal(renderType(inner, false, "mysql"), "{ b: string; n: number }");
+});
+
+test("two columns or keys of one name keep the last, as a row object and JSON.parse do", () => {
+  const object: EngineType = { kind: "object", fields: [{ name: "x", type: scalar("text"), nullable: false }, { name: "x", type: scalar("int4"), nullable: true }] };
+  assert.equal(renderType(object, false, "postgres"), "{ x: number | null }");
+  // A row whose columns were not read (a subquery's) is an object of them inside a document.
+  assert.equal(renderType({ kind: "list", of: scalar("record"), nullable_items: false }, false, "postgres"), "Record<string, unknown>[]");
 });
 
 test("every date and time parameter takes a string: a timestamptz one the text that names its zone, which run returns, and no Date", () => {

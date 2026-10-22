@@ -1,0 +1,9 @@
+agg_star.sql: one () -> { teams: [{ id: int8, name: text, score: float8? }]? }
+agg_star_filter.sql: many () -> { id: int8, members: [{ id: int8, team_id: int8?, name: text, rating: numeric? }]? }
+array_non_null.sql: many () -> { j: { names: (text!)[] } }
+array_null.sql: many () -> { j: { names: (text?)[] } }
+non_finite.sql: many () -> { j: { score: float8?, rating: numeric? } }
+object_star.sql: many () -> { j: { team: { id: int8, name: text, score: float8? } } }
+same_name.sql: many () -> { id: int8, id: int8 } !! reylo14: Columns 1 and 2 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+subquery_row.sql: one () -> { rows: [record?]? }
+to_jsonb_star.sql: many () -> { j: { id: int8, name: text, score: float8? } }

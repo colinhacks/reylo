@@ -105,6 +105,29 @@ pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
     found
 }
 
+/// Two result columns of one name. A driver builds each row as an object keyed by name, so it
+/// keeps the last of them, and nothing a type says of the first is true of the row. One diagnostic
+/// at each later column of a name: at the bytes `at` gives for that column (its index in
+/// `analysis.columns`), which the database's own parse knows, else on the statement's first word.
+pub fn clashes(sql: &str, analysis: &mut Analysis, at: &dyn Fn(usize) -> Option<(usize, usize)>) {
+    let mut found = Vec::new();
+    for (i, column) in analysis.columns.iter().enumerate() {
+        if let Some(first) = analysis.columns[..i].iter().position(|c| c.name == column.name) {
+            let (start, length) = at(i).unwrap_or_else(|| first_word(sql));
+            let message = format!("Columns {} and {} are both named \"{}\", and a row keeps only the last of them. Give one of them another name with `as`.", first + 1, i + 1, column.name);
+            found.push(diag(message, start, length, 14));
+        }
+    }
+    analysis.diagnostics.extend(found);
+}
+
+/// The statement's first word, past any whitespace.
+fn first_word(sql: &str) -> (usize, usize) {
+    let start = sql.len() - sql.trim_start().len();
+    let length = sql[start..].bytes().take_while(|b| b.is_ascii_alphanumeric() || *b == b'_').count();
+    (start, length.max(1))
+}
+
 /// A diagnostic at least one byte long.
 pub fn diag(message: impl Into<String>, start: usize, length: usize, code: u32) -> Diagnostic {
     Diagnostic { message: message.into(), start, length: length.max(1), code }
@@ -144,6 +167,7 @@ pub fn bare_of(sql: &str, dialect: Dialect, diagnostics: Vec<Diagnostic>) -> Ana
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::api::Column;
 
     #[test]
     fn a_json_object_of_an_odd_count_of_arguments_is_an_error_at_its_name() {
@@ -175,5 +199,19 @@ mod tests {
         // A name past ASCII among the arguments is one argument, and the scan never splits it.
         assert_eq!(at("select json_build_object('a', café, 'b')").len(), 1);
         assert_eq!(at("select json_build_object(variadicé, 'a', 1)").len(), 1);
+    }
+
+    #[test]
+    fn two_columns_of_one_name_are_an_error_at_the_later() {
+        let mut a = bare_of("select a.x, b.x, a.x from a, b", Dialect::Postgres, Vec::new());
+        a.columns = ["x", "x", "x"].iter().map(|n| Column { name: n.to_string(), ty: Type::Unknown, nullable: true, type_name: String::new(), comment: None }).collect();
+        clashes("  select a.x, b.x, a.x from a, b", &mut a, &|i| (i == 1).then_some((14, 1)));
+        assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(14, 14, 1), (14, 2, 6)]);
+        assert_eq!(a.diagnostics[0].message, "Columns 1 and 2 are both named \"x\", and a row keeps only the last of them. Give one of them another name with `as`.");
+        assert!(a.diagnostics[1].message.starts_with("Columns 1 and 3 are both named"));
+        let mut b = bare_of("select 1 as x, 2 as y", Dialect::Postgres, Vec::new());
+        b.columns = ["x", "y"].iter().map(|n| Column { name: n.to_string(), ty: Type::Unknown, nullable: true, type_name: String::new(), comment: None }).collect();
+        clashes("select 1 as x, 2 as y", &mut b, &|_| None);
+        assert!(b.diagnostics.is_empty());
     }
 }
