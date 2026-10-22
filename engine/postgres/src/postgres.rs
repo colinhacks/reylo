@@ -1801,7 +1801,8 @@ pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
 
 /// The tables on the nullable side of an outer join, with the ones a strict WHERE reduced only by
 /// operators the catalog says a user or an extension also defined put back: such an operator may
-/// be true of NULL, so its conjunct does not prove the joined row exists.
+/// be true of NULL, so its conjunct does not prove the joined row exists. A WITH query among them
+/// brings the relations it reads, which is where the describe traces its columns.
 fn unreduced(parsed: &Parsed, trust: &Trust) -> Vec<String> {
     let mut tables = parsed.nullable_tables.clone();
     for (relation, witnesses) in &parsed.reductions {
@@ -1809,7 +1810,7 @@ fn unreduced(parsed: &Parsed, trust: &Trust) -> Vec<String> {
             tables.push(relation.clone());
         }
     }
-    tables
+    parsed.nulled_tables(tables)
 }
 
 /// The relations a statement reads or writes, as the parse names them, sorted. libpg_query

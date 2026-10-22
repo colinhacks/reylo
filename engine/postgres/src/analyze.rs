@@ -68,6 +68,10 @@ pub struct Analysis {
     /// built-in ones, which the parse alone cannot know: a host with the catalog's word puts back
     /// a table no witness holds for.
     pub reductions: Vec<(String, Vec<Vec<String>>)>,
+    /// Each WITH query's name beside every relation it reads, through the WITH queries it reads
+    /// in turn. The describe traces a column read through the query to its table, so an outer
+    /// join that nulls the query nulls those tables too ([`Analysis::nulled_tables`]).
+    pub with_tables: Vec<(String, Vec<String>)>,
     pub has_repeated_table: bool,
     pub has_set_op: bool,
     /// `GROUP BY ROLLUP`, `CUBE`, or `GROUPING SETS` anywhere: a grouping column is NULL in the
@@ -388,6 +392,43 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         });
     }
 
+    // The relations each WITH query reads, by name: its own, then those of the WITH queries it
+    // reads, until nothing new is added. A name is read as a WITH query wherever one has it,
+    // which nulls more than the query's scope does, never less.
+    let mut with_tables: Vec<(String, Vec<String>)> = Vec::new();
+    visit(&tree, &mut |key, node| {
+        if key != "CommonTableExpr" {
+            return;
+        }
+        let Some(name) = node.get("ctename").and_then(|v| v.as_str()) else { return };
+        let read = node.get("ctequery").map(relnames_in).unwrap_or_default();
+        match with_tables.iter_mut().find(|(n, _)| n == name) {
+            Some((_, tables)) => tables.extend(read),
+            None => with_tables.push((name.to_string(), read)),
+        }
+    });
+    loop {
+        let mut grown = false;
+        for i in 0..with_tables.len() {
+            let more: Vec<String> = with_tables[i]
+                .1
+                .iter()
+                .filter_map(|t| with_tables.iter().find(|(n, _)| n == t))
+                .flat_map(|(_, tables)| tables.iter().cloned())
+                .filter(|t| !with_tables[i].1.contains(t))
+                .collect();
+            for t in more {
+                if !with_tables[i].1.contains(&t) {
+                    with_tables[i].1.push(t);
+                    grown = true;
+                }
+            }
+        }
+        if !grown {
+            break;
+        }
+    }
+
     let read_set = parsed.select_tables();
     let write_set = parsed.dml_tables();
 
@@ -405,10 +446,27 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         has_outer_join,
         nullable_tables,
         reductions,
+        with_tables,
         has_repeated_table,
         has_set_op,
         has_grouping_sets,
     })
+}
+
+impl Analysis {
+    /// `tables`, the names an outer join nulls, with every relation a WITH query among them reads.
+    pub fn nulled_tables(&self, mut tables: Vec<String>) -> Vec<String> {
+        for (query, read) in &self.with_tables {
+            if tables.iter().any(|t| t == query) {
+                for t in read {
+                    if !tables.contains(t) {
+                        tables.push(t.clone());
+                    }
+                }
+            }
+        }
+        tables
+    }
 }
 
 /// The parameter numbers a Postgres error at `position` (the 1-based character offset the
@@ -805,6 +863,17 @@ mod tests {
         // A table the statement reads by its own name.
         let (nullable, _) = reduced("SELECT posts.id FROM posts LEFT JOIN users ON users.id = posts.author_id WHERE users.name = 'x'");
         assert!(nullable.is_empty(), "{nullable:?}");
+    }
+
+    #[test]
+    fn an_outer_join_that_nulls_a_with_query_nulls_what_it_reads() {
+        // The describe traces `t.label` through both queries to `tags`, so `tags` is nulled too.
+        let a = analyze("WITH t AS (SELECT * FROM tags), u AS (SELECT * FROM t JOIN bar ON true) SELECT * FROM people p LEFT JOIN u ON false").unwrap();
+        assert_eq!(a.nullable_tables, vec!["u"]);
+        assert_eq!(a.nulled_tables(a.nullable_tables.clone()), vec!["u", "t", "bar", "tags"]);
+        // A query no outer join nulls brings nothing.
+        let b = analyze("WITH t AS (SELECT * FROM tags) SELECT * FROM t LEFT JOIN people p ON false").unwrap();
+        assert_eq!(b.nulled_tables(b.nullable_tables.clone()), vec!["people"]);
     }
 
     #[test]

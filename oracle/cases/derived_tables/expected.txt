@@ -31,3 +31,5 @@ whole_row.sql: one () -> { s: record? }
 with_renamed.sql: one () -> { a: text?, b: int8 }
 with_shadows_table.sql: one () -> { label: text? }
 with_star.sql: one () -> { n: int8 }
+with_star_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, tag_id: int8?, label: text? }
+with_star_nested_nulled.sql: many () -> { id: int8, name: text?, score: int4, tag_id: int8?, label: text? }
