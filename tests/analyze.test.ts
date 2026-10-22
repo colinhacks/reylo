@@ -157,6 +157,13 @@ test("the module a build step emits carries the analysis and reads nothing at ru
       `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"scalar","name":"integer"}}}, columns: [["id","int"],["name","text"]], fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
       ``,
     ].join("\n"));
+    // A statement that relies on no catalog fact carries its file too, written with `/`.
+    mkdirSync(join(root, "queries"));
+    const one = join(root, "queries", "one.sql");
+    writeFileSync(one, "select 1 as n");
+    const { code: plain } = await sqlModule(one, "select 1 as n");
+    assert.ok(!plain.includes("fresh:"));
+    assert.ok(plain.includes(`, source: "queries/one.sql", `));
     // A build (a process of its own) that has neither the database nor the entry fails instead of guessing.
     for (const session of Session.opened()) await session.close();
     renameSync(join(root, "app.db"), join(root, "gone.db"));

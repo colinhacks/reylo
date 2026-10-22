@@ -4,7 +4,7 @@
 // database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
-import { dirname, relative } from "node:path";
+import { dirname, relative, sep } from "node:path";
 import { Session } from "./analyze.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
@@ -66,7 +66,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}, source: ${JSON.stringify(relative(session.project.root, path))}` : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(relative(session.project.root, path).split(sep).join("/"))}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry };

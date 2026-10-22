@@ -668,3 +668,33 @@ test("run: on an asynchronous client every failure is a rejection, never a throw
   await assert.rejects(q.run({} as never, { id: 1 }), TypeError);
   assert.deepEqual(await q.with({ query: async () => ({ rows: [] }) })({ id: 1 }), null);
 });
+
+test("a query's source names its file, and Reylo's own errors about the query start with it", async () => {
+  const db = new DatabaseSync(":memory:");
+  db.exec("create table users (id integer primary key, email text unique)");
+  const one = defineQuery<{}, unknown, "one", "sqlite">({ dialect: "sqlite", sql: "select 1 where 0", params: [], cardinality: "one", source: "queries/none.sql" });
+  assert.equal(one.source, "queries/none.sql");
+  assert.throws(() => one.runSync(db), /^Error: queries\/none\.sql: Expected exactly one row, got 0$/m);
+  await assert.rejects(one.run(db), { message: "queries/none.sql: Expected exactly one row, got 0" });
+  // A parameter's value: thrown in runSync, rejected by run, the stack's first line named too.
+  const at = defineQuery<{ at: string }, unknown, "many", "postgres">({ dialect: "postgres", sql: "select :at::timestamptz as at", params: ["at"], inputs: { at: { type: { kind: "scalar", name: "timestamptz" } } }, source: "at.sql" });
+  const rejected = await at.run({ query: async () => ({ rows: [] }) }, { at: "2026-10-12 19:06:48" }).then(() => undefined, (e: Error) => e);
+  assert.ok(rejected instanceof TypeError);
+  assert.match(rejected.message, /^at\.sql: Parameter "at" is a timestamptz/);
+  assert.match(rejected.stack!, /^TypeError: at\.sql: Parameter "at"/);
+  const viaWith = await at.with({ query: async () => ({ rows: [] }) })({ at: new Date() as never }).then(() => undefined, (e: Error) => e);
+  assert.match(viaWith!.stack!, /^TypeError: at\.sql: Parameter "at" is a timestamptz, which takes the instant as a string/);
+  // A column's value Reylo cannot give its kind.
+  const truth = defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select 2 as b", params: [], columns: [["b", "bool"]], source: "truth.sql" });
+  assert.throws(() => truth.runSync(db), (e: Error) => e instanceof TypeError && /^truth\.sql: Column "b" is a boolean/.test(e.message));
+  await assert.rejects(truth.run(db), (e: Error) => /^truth\.sql: Column "b" is a boolean/.test(e.message));
+  // The driver's own error passes through as it is.
+  const insert = defineQuery<{ email: string }, unknown, "none", "sqlite">({ dialect: "sqlite", sql: "insert into users (email) values (:email)", params: ["email"], cardinality: "none", source: "insert.sql" });
+  insert.runSync(db, { email: "ada@example.com" });
+  assert.throws(() => insert.runSync(db, { email: "ada@example.com" }), (e: Error) => /^UNIQUE constraint failed/.test(e.message));
+  await assert.rejects(insert.run(db, { email: "ada@example.com" }), (e: Error) => /^UNIQUE constraint failed/.test(e.message));
+  // A query defined by hand, with no file, keeps its messages as they are.
+  const bare = defineQuery<{}, unknown, "one", "sqlite">({ dialect: "sqlite", sql: "select 1 where 0", params: [], cardinality: "one" });
+  assert.equal(bare.source, undefined);
+  assert.throws(() => bare.runSync(db), { message: "Expected exactly one row, got 0" });
+});

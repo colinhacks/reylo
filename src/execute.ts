@@ -8,7 +8,7 @@
 import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
-import { postgresYear, type Columns } from "./values.ts";
+import { ParameterError, postgresYear, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import type { JsonSchema } from "./engine-type.ts";
@@ -151,7 +151,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
   readonly fresh?: Fresh | undefined;
-  /** The `.sql` file the module was built from, relative to the project, for messages. */
+  /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
 };
 
@@ -357,7 +357,7 @@ function checkParams(query: QueryModule, input: unknown): asserts input is Recor
   if (input !== null && typeof input === "object" && !Array.isArray(input)) return;
   const keys = query.params.map((name) => `${/^(?:[A-Za-z_$][\w$]*|\d+)$/.test(name) ? name : JSON.stringify(name)}: ...`);
   const takes = keys.length ? `This statement takes { ${keys.join(", ")} }.` : "This statement takes none: leave them out.";
-  throw new TypeError(`The parameters must be an object keyed by parameter name, or by number for positional placeholders ({ 1: ..., 2: ... }); got ${Array.isArray(input) ? "an array" : String(input)}. ${takes}`);
+  throw new ParameterError(`The parameters must be an object keyed by parameter name, or by number for positional placeholders ({ 1: ..., 2: ... }); got ${Array.isArray(input) ? "an array" : String(input)}. ${takes}`);
 }
 
 // The rows are bound positionally in every dialect. A value left out binds NULL, as pg,
@@ -379,7 +379,7 @@ function statement(query: QueryModule, params: ParamsInput) {
       if (v !== undefined && v !== null) {
         v = withDefaults(schema, v);
         const failure = validate(schema, v);
-        if (failure) throw new TypeError(`Parameter "${name}"${failure.path ? ` at ${failure.path}` : ""} ${failure.message}.`);
+        if (failure) throw new ParameterError(`Parameter "${name}"${failure.path ? ` at ${failure.path}` : ""} ${failure.message}.`);
       }
       bound.values[i] = v === undefined ? null : v;
       return;
@@ -398,7 +398,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     // structured parameter's member keeps its NULL elements (src/rows.ts).
     if (type?.kind === "array" && Array.isArray(bound.values[i])) {
       const at = nullElement(bound.values[i] as unknown[]);
-      if (at !== undefined) throw new TypeError(`Parameter "${name}" is an array whose elements may not be null, and the element at ${at} is. Leave it out of the array.`);
+      if (at !== undefined) throw new ParameterError(`Parameter "${name}" is an array whose elements may not be null, and the element at ${at} is. Leave it out of the array.`);
     }
     // A `::type` written on MySQL or SQLite, whose cast turns a value it cannot read into 0 or
     // NULL: the value is checked against the type as written.
@@ -475,13 +475,13 @@ function checkTime(type: EngineType | undefined, name: string, v: unknown): void
   if (type.kind !== "scalar") return;
   if (type.name === "timestamptz") {
     if (v instanceof Date) {
-      throw new TypeError(`Parameter "${name}" is a timestamptz, which takes the instant as a string that names its zone, as \`.run()\` returns one, not a Date: pass date.toISOString() ("2026-10-12T19:06:48.282Z").`);
+      throw new ParameterError(`Parameter "${name}" is a timestamptz, which takes the instant as a string that names its zone, as \`.run()\` returns one, not a Date: pass date.toISOString() ("2026-10-12T19:06:48.282Z").`);
     }
     if (typeof v === "string" && !zoned.test(v.trim())) {
-      throw new TypeError(`Parameter "${name}" is a timestamptz, an instant, so a string for it names its zone ("2026-10-12T19:06:48.282Z", "2026-10-12 19:06:48+09", "2026-10-12 19:06:48 America/Los_Angeles"); got ${JSON.stringify(v)}, which the server would read in the session's time zone.`);
+      throw new ParameterError(`Parameter "${name}" is a timestamptz, an instant, so a string for it names its zone ("2026-10-12T19:06:48.282Z", "2026-10-12 19:06:48+09", "2026-10-12 19:06:48 America/Los_Angeles"); got ${JSON.stringify(v)}, which the server would read in the session's time zone.`);
     }
   } else if (v instanceof Date && type.name.split("|").every((part) => part === "timestamp" || part === "date")) {
-    throw new TypeError(`Parameter "${name}" is a ${type.name === "date" ? "date" : "timestamp"} without a time zone, so it takes the wall-clock text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones (the app's, the server's or UTC).`);
+    throw new ParameterError(`Parameter "${name}" is a ${type.name === "date" ? "date" : "timestamp"} without a time zone, so it takes the wall-clock text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones (the app's, the server's or UTC).`);
   }
 }
 
@@ -505,7 +505,7 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
 function vectorText(v: readonly unknown[], name: string): string {
   v.forEach((e, i) => {
     if (typeof e !== "number" || !Number.isFinite(e)) {
-      throw new TypeError(`Parameter "${name}" is a VECTOR, an array of finite numbers, and the element at [${i}] is ${typeof e === "string" ? JSON.stringify(e) : typeof e === "number" ? e : typeof e}.`);
+      throw new ParameterError(`Parameter "${name}" is a VECTOR, an array of finite numbers, and the element at [${i}] is ${typeof e === "string" ? JSON.stringify(e) : typeof e === "number" ? e : typeof e}.`);
     }
   });
   return JSON.stringify(v);
@@ -520,7 +520,7 @@ function sqlite3Value(v: unknown, type: EngineType | undefined): unknown {
   if (typeof v !== "bigint") return v;
   if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
   if (type?.kind === "scalar" && type.name === "int8") return String(v);
-  throw new TypeError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: pass it as a string of digits, which SQLite stores as that integer in an INTEGER column, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
+  throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: pass it as a string of digits, which SQLite stores as that integer in an INTEGER column, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
 }
 
 function asByteaHex(v: unknown) {

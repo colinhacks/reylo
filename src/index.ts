@@ -4,7 +4,7 @@ import { compile, execute, executeSync, type ClientFor, type Dialect, type Input
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import type { Structured } from "./rows.ts";
 import type { Fresh } from "./fresh.ts";
-import type { Columns } from "./values.ts";
+import { DecodeError, ParameterError, type Columns } from "./values.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 
@@ -48,6 +48,11 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect>
   readonly raw: string;
   /** Parameter names in binding order. */
   readonly params: readonly string[];
+  /**
+   * The `.sql` file the query was built from, relative to the project's root: a name for logs and
+   * traces. Reylo's own errors about the query start with it. A query defined by hand has none.
+   */
+  readonly source: string | undefined;
   readonly cardinality: C;
   /** The JSON Schema (2020-12) of the parameters, as the object `run` takes. */
   readonly inputSchema: Record<string, unknown>;
@@ -94,7 +99,7 @@ export type QueryDefinition = {
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
   fresh?: Fresh;
-  /** The `.sql` file, relative to the project, for messages. */
+  /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
   cardinality?: Cardinality;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
@@ -107,6 +112,8 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   const missingSchema = () => {
     throw new Error(`No JSON Schema is available for this query: a module a build step writes carries it, and a query defined by hand has none.`);
   };
+  // Reylo's own errors about the query start with its file.
+  const where = def.source ? `${def.source}: ` : "";
   // What the run time reads, kept off the query object, whose `sql` is the compiled statement.
   const module: QueryModule<D> = {
     dialect: def.dialect,
@@ -130,6 +137,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     },
     raw: def.sql,
     params: def.params,
+    source: def.source,
     cardinality,
     get inputSchema() {
       return def.jsonSchema?.input ?? missingSchema();
@@ -147,7 +155,13 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
-    runSync: ((client: SyncClientFor<D>, params?: Params) => materialize(executeSync(client, module, (params ?? {}) as Record<string, unknown>) as Row[])) as Query<Params, Row, C, D>["runSync"],
+    runSync: ((client: SyncClientFor<D>, params?: Params) => {
+      try {
+        return materialize(executeSync(client, module, (params ?? {}) as Record<string, unknown>) as Row[]);
+      } catch (error) {
+        throw named(error);
+      }
+    }) as Query<Params, Row, C, D>["runSync"],
     with: ((client: ClientFor<D>) => (params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["with"],
   };
   // A synchronous client answers before run returns, but its rows and its error still come
@@ -155,10 +169,27 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   function run(client: ClientFor<D>, params: Params): Promise<Materialize<Row, C>> {
     try {
       const rows = execute(client, module, params as Record<string, unknown>);
-      return Array.isArray(rows) ? Promise.resolve(materialize(rows as Row[])) : rows.then((rows) => materialize(rows as Row[]));
+      return Array.isArray(rows)
+        ? Promise.resolve(materialize(rows as Row[]))
+        : rows.then(
+            (rows) => materialize(rows as Row[]),
+            (error) => Promise.reject(named(error)),
+          );
     } catch (error) {
-      return Promise.reject(error);
+      return Promise.reject(named(error));
     }
+  }
+  // Reylo's errors about a parameter's value or a column's value take the file, as the row counts'
+  // below do. The driver's own errors, and Reylo's about the client, pass through as they are.
+  function named(error: unknown): unknown {
+    if (where && (error instanceof ParameterError || error instanceof DecodeError) && !error.message.startsWith(where)) {
+      const message = error.message;
+      error.message = where + message;
+      // V8 writes the stack when it is first read, with the message as it is then; a stack written
+      // earlier (read before, or on Bun) still has the old message in its first line.
+      if (typeof error.stack === "string" && !error.stack.includes(error.message)) error.stack = error.stack.replace(message, () => error.message);
+    }
+    return error;
   }
   function materialize(rows: Row[]): Materialize<Row, C> {
     switch (cardinality) {
@@ -167,10 +198,10 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
       case "many":
         return rows as Materialize<Row, C>;
       case "one":
-        if (rows.length !== 1) throw new Error(`Expected exactly one row, got ${rows.length}`);
+        if (rows.length !== 1) throw new Error(`${where}Expected exactly one row, got ${rows.length}`);
         return rows[0] as Materialize<Row, C>;
       default:
-        if (rows.length > 1) throw new Error(`Expected at most one row, got ${rows.length}`);
+        if (rows.length > 1) throw new Error(`${where}Expected at most one row, got ${rows.length}`);
         return (rows[0] ?? null) as Materialize<Row, C>;
     }
   }

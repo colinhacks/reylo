@@ -8,7 +8,7 @@
 // nobody chose is refused.
 import type { EngineType } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { postgresYear } from "./values.ts";
+import { ParameterError, postgresYear } from "./values.ts";
 
 type Dialect = "postgres" | "mysql" | "sqlite";
 export type RowsType = Extract<EngineType, { kind: "rows" }>;
@@ -61,7 +61,7 @@ class Raw {
  */
 export function prepareRows(name: string, type: RowsType, value: unknown, dialect: Dialect, inserted: boolean): { value: unknown; present: ReadonlySet<string> } {
   const fail = (message: string): never => {
-    throw new TypeError(`Parameter "${name}": ${message}`);
+    throw new ParameterError(`Parameter "${name}": ${message}`);
   };
   if (value === undefined || value === null) fail(type.one ? "pass one object, whose keys the column list names." : "pass an array of objects, whose keys the column list names; an empty array inserts nothing.");
   const rows = type.one ? [value] : Array.isArray(value) ? value : fail(`pass an array of objects, one per row; got ${describe(value)}.`);
@@ -259,7 +259,7 @@ const MYSQL_INTEGERS: Record<string, readonly [bigint, bigint]> = {
 export function checkCast(name: string, written: string, type: EngineType, v: unknown, dialect: Dialect): void {
   if (v === null || v === undefined) return;
   const fail = (message: string): never => {
-    throw new TypeError(`Parameter "${name}" ${message}`);
+    throw new ParameterError(`Parameter "${name}" ${message}`);
   };
   const base = written.replace(/\s*\(.*$/, "");
   const signed = dialect === "sqlite" ? (/int/i.test(base) ? INTEGERS.integer : undefined) : MYSQL_INTEGERS[base.replace(/\s*unsigned$/, "") || "bigint"];

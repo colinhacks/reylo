@@ -320,6 +320,9 @@ export function textDecoder(kind: Kind, delim = ","): Decoder {
 /** Why a value cannot be given its kind: Reylo's error, naming the column. */
 export class DecodeError extends TypeError {}
 
+/** Why a parameter's value cannot be bound: Reylo's error, naming the parameter. */
+export class ParameterError extends TypeError {}
+
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 /** An integer as a number, refused where a number cannot hold it exactly. */
