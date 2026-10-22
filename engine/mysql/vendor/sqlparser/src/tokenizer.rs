@@ -1653,7 +1653,6 @@ impl<'a> Tokenizer<'a> {
                         Some('^') if self.dialect.supports_geometric_types() => {
                             self.consume_for_binop(chars, "<^", Token::LeftAngleBracketCaret)
                         }
-                        Some('@') => self.consume_for_binop(chars, "<@", Token::ArrowAt),
                         _ => self.start_binop(chars, "<", Token::Lt),
                     }
                 }

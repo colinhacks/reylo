@@ -79,7 +79,7 @@ object_right_join.sql: many () -> { o: { user: int4?, post: int4 } }
 object_through_function.sql: many () -> { merged: json?, inserted: json? }
 object_truth_all_aggregated.sql: one () -> { o: { c: bool?, n: int8, l: bool, t: bool|int8, both: bool? } }
 object_truth_any_value.sql: many () -> { o: { any_value: bool|int8 } }
-object_truth_bang.sql: many () -> { o: json? }
+object_truth_bang.sql: many () -> { o: { bang: bool|int8, bang_sum: int8 } }
 object_truth_beside_aggregate.sql: many () -> { o: { t: unknown?, m: unknown?, c: unknown?, l: unknown? } }
 object_truth_beside_list.sql: many () -> { o: { t: bool|int8, titles: [text] } }
 object_truth_beside_outer_aggregate.sql: many () -> { o: { e: bool|int8, n: unknown? } }
@@ -88,7 +88,7 @@ object_truth_beside_window.sql: many () -> { o: { t: bool|int8, w: int8 } }
 object_truth_collate.sql: many () -> { o: { collate: bool?, whole: text? } }
 object_truth_functions.sql: many () -> { o: { isnull: bool|int8, regexp_like: bool|int8, strcmp: bool|int8, json_valid: bool|int8?, json_contains: bool|int8?, length: int8, bit_count: bool|int8 } }
 object_truth_in_nested_object.sql: many () -> { o: { o: { t: unknown? }, m: unknown? } }
-object_truth_interval.sql: many () -> { o: json? }
+object_truth_interval.sql: many () -> { o: { interval: bool|int8 } }
 object_truth_member.sql: many () -> { o: { member: bool|int8? } }
 object_truth_numbers.sql: many () -> { o: { if: int8, case: int8, coalesce: int8, plus: int8, flag: int2, cast: int8, ifnull: int8, nullif: int8?, least: bool|int8, nested: bool, minus: int8 } }
 object_truth_operators.sql: many () -> { o: { regexp: bool, not_like: bool, not_in: bool, not_between: bool, is_false: bool, is_not_true: bool, is_unknown: bool, exists: bool, in_sub: bool?, unary_plus: bool, tuple: bool } }

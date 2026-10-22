@@ -3565,8 +3565,9 @@ impl fmt::Display for Fetch {
 pub struct LockClause {
     /// The kind of lock requested (e.g. `SHARE`, `UPDATE`).
     pub lock_type: LockType,
-    /// Optional object name after `OF` (e.g. `FOR UPDATE OF t1`).
-    pub of: Option<ObjectName>,
+    /// The tables after `OF` (e.g. `FOR UPDATE OF t1`); in Reylo's copy a list, as MySQL's
+    /// `FOR SHARE OF t1, t2`.
+    pub of: Vec<ObjectName>,
     /// Optional non-blocking behavior (`NOWAIT` / `SKIP LOCKED`).
     pub nonblock: Option<NonBlock>,
 }
@@ -3574,8 +3575,8 @@ pub struct LockClause {
 impl fmt::Display for LockClause {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "FOR {}", self.lock_type)?;
-        if let Some(ref of) = self.of {
-            write!(f, " OF {of}")?;
+        if !self.of.is_empty() {
+            write!(f, " OF {}", display_comma_separated(&self.of))?;
         }
         if let Some(ref nb) = self.nonblock {
             write!(f, " {nb}")?;

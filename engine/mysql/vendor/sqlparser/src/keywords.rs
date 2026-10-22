@@ -1301,6 +1301,58 @@ pub const RESERVED_FOR_COLUMN_ALIAS: &[Keyword] = &[
     Keyword::END,
 ];
 
+/// Reylo's copy: MySQL 8.4's reserved words that are keywords here
+/// (`information_schema.KEYWORDS` where `RESERVED = 1`), none of which MySQL reads as an
+/// alias without `AS`.
+pub const MYSQL_RESERVED: &[Keyword] = &[
+    Keyword::ADD, Keyword::ALL, Keyword::ALTER, Keyword::ANALYZE, Keyword::AND, Keyword::AS,
+    Keyword::ASC, Keyword::ASENSITIVE, Keyword::BEFORE, Keyword::BETWEEN, Keyword::BIGINT,
+    Keyword::BINARY, Keyword::BLOB, Keyword::BOTH, Keyword::BY, Keyword::CALL, Keyword::CASCADE,
+    Keyword::CASE, Keyword::CHANGE, Keyword::CHAR, Keyword::CHARACTER, Keyword::CHECK,
+    Keyword::COLLATE, Keyword::COLUMN, Keyword::CONDITION, Keyword::CONSTRAINT, Keyword::CONTINUE,
+    Keyword::CONVERT, Keyword::CREATE, Keyword::CROSS, Keyword::CUBE, Keyword::CUME_DIST,
+    Keyword::CURRENT_DATE, Keyword::CURRENT_TIME, Keyword::CURRENT_TIMESTAMP,
+    Keyword::CURRENT_USER, Keyword::CURSOR, Keyword::DATABASE, Keyword::DATABASES, Keyword::DEC,
+    Keyword::DECIMAL, Keyword::DECLARE, Keyword::DEFAULT, Keyword::DELAYED, Keyword::DELETE,
+    Keyword::DENSE_RANK, Keyword::DESC, Keyword::DESCRIBE, Keyword::DETERMINISTIC,
+    Keyword::DISTINCT, Keyword::DISTINCTROW, Keyword::DIV, Keyword::DOUBLE, Keyword::DROP,
+    Keyword::EACH, Keyword::ELSE, Keyword::ELSEIF, Keyword::EMPTY, Keyword::ESCAPED,
+    Keyword::EXCEPT, Keyword::EXISTS, Keyword::EXPLAIN, Keyword::FALSE, Keyword::FETCH,
+    Keyword::FIRST_VALUE, Keyword::FLOAT, Keyword::FLOAT4, Keyword::FLOAT8, Keyword::FOR,
+    Keyword::FORCE, Keyword::FOREIGN, Keyword::FROM, Keyword::FULLTEXT, Keyword::FUNCTION,
+    Keyword::GENERATED, Keyword::GET, Keyword::GRANT, Keyword::GROUP, Keyword::GROUPING,
+    Keyword::GROUPS, Keyword::HAVING, Keyword::HIGH_PRIORITY, Keyword::IF, Keyword::IGNORE,
+    Keyword::IN, Keyword::INDEX, Keyword::INNER, Keyword::INOUT, Keyword::INSENSITIVE,
+    Keyword::INSERT, Keyword::INT, Keyword::INT2, Keyword::INT4, Keyword::INT8, Keyword::INTEGER,
+    Keyword::INTERSECT, Keyword::INTERVAL, Keyword::INTO, Keyword::IS, Keyword::JOIN,
+    Keyword::JSON_TABLE, Keyword::KEY, Keyword::KEYS, Keyword::KILL, Keyword::LAG,
+    Keyword::LAST_VALUE, Keyword::LATERAL, Keyword::LEAD, Keyword::LEADING, Keyword::LEFT,
+    Keyword::LIKE, Keyword::LIMIT, Keyword::LINES, Keyword::LOAD, Keyword::LOCALTIME,
+    Keyword::LOCALTIMESTAMP, Keyword::LOCK, Keyword::LONG, Keyword::LONGBLOB, Keyword::LONGTEXT,
+    Keyword::LOW_PRIORITY, Keyword::MATCH, Keyword::MAXVALUE, Keyword::MEDIUMBLOB,
+    Keyword::MEDIUMINT, Keyword::MEDIUMTEXT, Keyword::MOD, Keyword::MODIFIES, Keyword::NATURAL,
+    Keyword::NO_WRITE_TO_BINLOG, Keyword::NOT, Keyword::NTH_VALUE, Keyword::NTILE, Keyword::NULL,
+    Keyword::NUMERIC, Keyword::OF, Keyword::ON, Keyword::OPTIMIZE, Keyword::OPTIMIZER_COSTS,
+    Keyword::OPTION, Keyword::OR, Keyword::ORDER, Keyword::OUT, Keyword::OUTER, Keyword::OVER,
+    Keyword::PARTITION, Keyword::PERCENT_RANK, Keyword::PRECISION, Keyword::PRIMARY,
+    Keyword::PROCEDURE, Keyword::PURGE, Keyword::QUALIFY, Keyword::RANGE, Keyword::RANK,
+    Keyword::READ, Keyword::READS, Keyword::REAL, Keyword::RECURSIVE, Keyword::REFERENCES,
+    Keyword::REGEXP, Keyword::RELEASE, Keyword::RENAME, Keyword::REPLACE, Keyword::REQUIRE,
+    Keyword::RESTRICT, Keyword::RETURN, Keyword::REVOKE, Keyword::RIGHT, Keyword::RLIKE,
+    Keyword::ROW, Keyword::ROW_NUMBER, Keyword::ROWS, Keyword::SCHEMA, Keyword::SCHEMAS,
+    Keyword::SELECT, Keyword::SENSITIVE, Keyword::SEPARATOR, Keyword::SET, Keyword::SHOW,
+    Keyword::SMALLINT, Keyword::SPATIAL, Keyword::SPECIFIC, Keyword::SQL, Keyword::SQL_BIG_RESULT,
+    Keyword::SQL_CALC_FOUND_ROWS, Keyword::SQL_SMALL_RESULT, Keyword::SQLEXCEPTION,
+    Keyword::SQLSTATE, Keyword::SQLWARNING, Keyword::STORED, Keyword::STRAIGHT_JOIN,
+    Keyword::SYSTEM, Keyword::TABLE, Keyword::TABLESAMPLE, Keyword::TERMINATED, Keyword::THEN,
+    Keyword::TINYBLOB, Keyword::TINYINT, Keyword::TINYTEXT, Keyword::TO, Keyword::TRAILING,
+    Keyword::TRIGGER, Keyword::TRUE, Keyword::UNION, Keyword::UNIQUE, Keyword::UNLOCK,
+    Keyword::UNSIGNED, Keyword::UPDATE, Keyword::USAGE, Keyword::USE, Keyword::USING,
+    Keyword::VALUES, Keyword::VARBINARY, Keyword::VARCHAR, Keyword::VARYING, Keyword::VIRTUAL,
+    Keyword::WHEN, Keyword::WHERE, Keyword::WHILE, Keyword::WINDOW, Keyword::WITH, Keyword::WRITE,
+    Keyword::XOR,
+];
+
 /// Global list of reserved keywords allowed after FROM.
 /// Parser should call Dialect::get_reserved_keyword_after_from
 /// to allow for each dialect to customize the list.

@@ -121,8 +121,9 @@ pub use self::trigger::{
 };
 
 pub use self::value::{
-    escape_double_quote_string, escape_quoted_string, DateTimeField, DollarQuotedString,
-    NormalizationForm, QuoteDelimitedString, TrimWhereField, Value, ValueWithSpan,
+    escape_double_quote_string, escape_quoted_string, set_backslash_escapes, DateTimeField,
+    DollarQuotedString, NormalizationForm, QuoteDelimitedString, TrimWhereField, Value,
+    ValueWithSpan,
 };
 
 use crate::ast::helpers::key_value_options::KeyValueOptions;
@@ -1123,6 +1124,9 @@ pub enum Expr {
         ///
         /// [BigQuery]: https://cloud.google.com/bigquery/docs/reference/standard-sql/format-elements#formatting_syntax
         format: Option<CastFormat>,
+        /// Reylo's copy: MySQL's character set after the type, `CAST(x AS CHAR CHARACTER SET latin1)`
+        /// (`ASCII`, `UNICODE` and `BINARY` read as `latin1`, `ucs2` and `binary`).
+        charset: Option<ObjectName>,
     },
     /// AT a timestamp to a different timezone e.g. `FROM_UNIXTIME(0) AT TIME ZONE 'UTC-06:00'`
     AtTimeZone {
@@ -2002,9 +2006,13 @@ impl fmt::Display for Expr {
                 expr,
                 data_type,
                 format,
+                charset,
             } => match kind {
                 CastKind::Cast => {
                     write!(f, "CAST({expr} AS {data_type}")?;
+                    if let Some(charset) = charset {
+                        write!(f, " CHARACTER SET {charset}")?;
+                    }
                     if let Some(format) = format {
                         write!(f, " FORMAT {format}")?;
                     }
@@ -5533,6 +5541,8 @@ pub enum FunctionArgumentClause {
     ///
     /// [`GROUP_CONCAT`]: https://dev.mysql.com/doc/refman/8.0/en/aggregate-functions.html#function_group-concat
     Separator(ValueWithSpan),
+    /// Reylo's copy: the `USING charset` of MySQL's `CHAR(N, … USING charset)`.
+    Using(ObjectName),
     /// The `ON NULL` clause for some JSON functions.
     ///
     /// [MSSQL `JSON_ARRAY`](https://learn.microsoft.com/en-us/sql/t-sql/functions/json-array-transact-sql?view=sql-server-ver16)
@@ -5559,6 +5569,7 @@ impl fmt::Display for FunctionArgumentClause {
             FunctionArgumentClause::OnOverflow(on_overflow) => write!(f, "{on_overflow}"),
             FunctionArgumentClause::Having(bound) => write!(f, "{bound}"),
             FunctionArgumentClause::Separator(sep) => write!(f, "SEPARATOR {sep}"),
+            FunctionArgumentClause::Using(charset) => write!(f, "USING {charset}"),
             FunctionArgumentClause::JsonNullClause(null_clause) => write!(f, "{null_clause}"),
             FunctionArgumentClause::JsonReturningClause(returning_clause) => {
                 write!(f, "{returning_clause}")

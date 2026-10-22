@@ -81,7 +81,7 @@ param_with.sql: many (n: int4) -> { doubled: int8|float8|numeric? }
 removed_hashes.sql: many () -> { m: text? }
 replace_values.sql: none (id: int4, body: text) -> {  }
 signed_plus_unsigned.sql: many () -> { mixed: int8?, past: int8?, under: int8|int4? }
-string_functions.sql: many () -> { u: text?, c: text?, l: int8?, cl: int8?, sub: text?, h: text?, uh: bytea?, bc: bytea?, lv: bytea?, r: text?, lk: int8|int4?, sc: int8|int4?, a: int8|int4?, bn: text?, fm: text?, ia: int8?, id: text?, b64: text?, fb: bytea?, cv: text?, z: bytea?, ch: bytea?, chu: text?, q: text?, ws: bytea?, enc: bytea? }
+string_functions.sql: many () -> { u: text?, c: text?, l: int8?, cl: int8?, sub: text?, h: text?, uh: bytea?, bc: bytea?, lv: bytea?, r: text?, lk: bool?, sc: int8|int4?, a: int8|int4?, bn: text?, fm: text?, ia: int8?, id: text?, b64: text?, fb: bytea?, cv: text?, z: bytea?, ch: bytea?, chu: text?, q: text?, ws: bytea?, enc: bytea? }
 sums.sql: one () -> { s: numeric?, a: numeric?, sp: numeric?, sf: float8?, sd: float8?, mx: int4|int8?, mn: text?, c: int8, st: numeric?, ad: float8?, sb: numeric? }
 text_columns.sql: many () -> { c: text?, v: text?, tt: text?, tx: text?, mt: text?, lt: text?, kind: text?, flags: text? }
 time_columns.sql: many () -> { day: date?, at: timestamp?, at6: timestamp?, ts: timestamp?, t: time?, y: int2? }

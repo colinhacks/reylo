@@ -231,6 +231,9 @@ impl sqlparser::dialect::Dialect for SessionDialect {
 /// turns on it.
 pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -> Lazy<Analysis> {
     let dialect = SessionDialect(text.unwrap_or_default());
+    // What the engine prints of the statement, for the probes it describes, writes its strings
+    // as the session reads them back.
+    sqlparser::ast::set_backslash_escapes(dialect.0.backslash_escapes);
     let statement = match lex::one_statement(sql, lexed, KINDS) {
         Ok(statement) => statement,
         Err(message) => return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 10 }])),
@@ -436,6 +439,8 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         _ => "",
     };
     let (cardinality, reason) = match &parsed {
+        // Its rows go into variables or a file: it returns none.
+        Some(Statement::Query(q)) if assigns(q) => ("none".to_string(), None),
         Some(Statement::Query(q)) => {
             let tables = tables_of(q);
             let keys = if tables.is_empty() { Keys::default() } else { unique_keys(host, &tables)? };
@@ -1149,6 +1154,15 @@ fn opens_without_result_sets(sql: &str) -> bool {
         _ => Some(None),
     });
     matches!(first, Some(Some(Keyword::DELETE | Keyword::UPDATE | Keyword::INSERT | Keyword::REPLACE | Keyword::SELECT | Keyword::WITH)))
+}
+
+/// Whether a query's rows go into variables or a file (`select … into @n`), so it returns none.
+fn assigns(q: &ast::Query) -> bool {
+    match q.body.as_ref() {
+        SetExpr::Select(s) => s.into.is_some(),
+        SetExpr::Query(q) => assigns(q),
+        _ => false,
+    }
 }
 
 /// Parse with a depth bound of a fifth of [`crate::stack::MAX_DEPTH`] in place of sqlparser's
@@ -2307,13 +2321,19 @@ mod tests {
     }
 
     #[test]
-    fn a_write_the_parser_does_not_read_returns_no_rows() {
-        // sqlparser reads neither MySQL's multi-table DELETE nor its multi-table UPDATE, nor a
-        // SELECT … INTO after its WHERE; the prepare has no columns, so none returns a row.
+    fn a_write_or_a_select_into_returns_no_rows() {
+        // MySQL's multi-table DELETE and UPDATE return no rows, and neither does a SELECT whose
+        // rows go into variables, its INTO after the columns or after the whole statement.
         let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
         let none = json!({ "columns": [], "params": [{ "type": 3 }] });
-        for sql in ["delete u.*, e.* from users u join emails e on e.user_id = u.id where u.id = :id", "update users, emails set users.name = 'a', emails.email = 'b' where users.id = :id", "select id from users where id = :id into @found"] {
-            assert!(parse(&MySqlDialect {}, sql).is_err(), "{sql}");
+        for sql in [
+            "delete u.*, e.* from users u join emails e on e.user_id = u.id where u.id = :id",
+            "update users, emails set users.name = 'a', emails.email = 'b' where users.id = :id",
+            "select id from users where id = :id into @found",
+            "select id into @found from users where id = :id",
+            "select id from users where id = :id for update into @found",
+        ] {
+            assert!(parse(&MySqlDialect {}, sql).is_ok(), "{sql}");
             let analysis = analyzed(sql, none.clone(), default).0;
             assert_eq!((analysis.cardinality.as_str(), analysis.columns.len(), analysis.params.len()), ("none", 0, 1), "{sql}");
         }
@@ -2337,7 +2357,10 @@ mod tests {
             let mysql = Parser::parse_sql(&MySqlDialect {}, sql).map(|v| format!("{v:?}"));
             assert_eq!(Parser::parse_sql(&SessionDialect(MysqlText::default()), sql).map(|v| format!("{v:?}")), mysql, "{sql}");
         }
-        let one = |sql: &str, text: MysqlText| Parser::parse_sql(&SessionDialect(text), sql).unwrap().pop().unwrap().to_string();
+        let one = |sql: &str, text: MysqlText| {
+            sqlparser::ast::set_backslash_escapes(text.backslash_escapes);
+            Parser::parse_sql(&SessionDialect(text), sql).unwrap().pop().unwrap().to_string()
+        };
         let plain = MysqlText { backslash_escapes: false, ansi_quotes: false };
         let ansi = MysqlText { backslash_escapes: true, ansi_quotes: true };
         assert_eq!(one(r"select 'C:\' as p, id from t where id = ?", plain), r"SELECT 'C:\' AS p, id FROM t WHERE id = ?");

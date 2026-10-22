@@ -531,12 +531,7 @@ impl<'a> Parser<'a> {
 
             match &self.peek_token_ref().token {
                 Token::EOF => break,
-                // end of statement
-                Token::Word(word)
-                    if expecting_statement_delimiter && word.keyword == Keyword::END =>
-                {
-                    break;
-                }
+                // Reylo's copy: `END` closed a `BEGIN … END` block, which this copy does not read.
                 _ => {}
             }
 
@@ -624,7 +619,7 @@ impl<'a> Parser<'a> {
             Token::Word(w) => match w.keyword {
                 Keyword::SELECT | Keyword::WITH | Keyword::VALUES | Keyword::FROM => {
                     self.prev_token();
-                    self.parse_query().map(Into::into)
+                    self.parse_statement_query()
                 }
                 Keyword::DELETE => self.parse_delete(next_token),
                 Keyword::INSERT => self.parse_insert(next_token),
@@ -634,10 +629,24 @@ impl<'a> Parser<'a> {
             },
             Token::LParen => {
                 self.prev_token();
-                self.parse_query().map(Into::into)
+                self.parse_statement_query()
             }
             _ => self.expected("an SQL statement", next_token),
         }
+    }
+
+    /// Reylo's copy: a query that is a whole statement, whose `INTO` MySQL also takes after the
+    /// rest of it, before or after its locking clause; the tree holds it on the SELECT, MySQL's
+    /// other place for it. A subquery takes no `INTO`.
+    fn parse_statement_query(&mut self) -> Result<Statement, ParserError> {
+        let mut query = self.parse_query()?;
+        if let Some(into) = self.parse_trailing_into()? {
+            while self.parse_keyword(Keyword::FOR) {
+                query.locks.push(self.parse_lock()?);
+            }
+            place_into(&mut query.body, into)?;
+        }
+        Ok(query.into())
     }
 
     /// Parse a `CASE` statement.
@@ -1208,6 +1217,11 @@ impl<'a> Parser<'a> {
             }
             Keyword::OVERLAY => Ok(Some(self.parse_overlay_expr()?)),
             Keyword::TRIM => Ok(Some(self.parse_trim_expr()?)),
+            // Reylo's copy: MySQL's `INTERVAL(N, N1, …)`, a function of two or more arguments;
+            // `INTERVAL (1 + 1) DAY` is an interval.
+            Keyword::INTERVAL if self.peek_parenthesized_list() => {
+                Ok(Some(self.parse_function(ObjectName::from(vec![w.to_ident(w_span)]))?))
+            }
             Keyword::INTERVAL => Ok(Some(self.parse_interval()?)),
             // Treat ARRAY[1,2,3] as an array [1,2,3], otherwise try as subquery or a function call
             Keyword::ARRAY if *self.peek_token_ref() == Token::LBracket => {
@@ -1429,6 +1443,7 @@ impl<'a> Parser<'a> {
                         expr: Box::new(parser.parse_expr()?),
                         data_type: DataType::Binary(None),
                         format: None,
+                        charset: None,
                     })
                 }
                 data_type => Ok(Expr::TypedString(TypedString {
@@ -1519,9 +1534,11 @@ impl<'a> Parser<'a> {
                     ),
                 })
             }
+            // Reylo's copy: MySQL's `!` binds tighter than any binary operator (`!0 = 1` is
+            // `(!0) = 1`), unlike `NOT`.
             Token::ExclamationMark if dialect.supports_bang_not_operator() => Ok(Expr::UnaryOp {
                 op: UnaryOperator::BangNot,
-                expr: Box::new(self.parse_subexpr(self.dialect.prec_value(Precedence::UnaryNot))?),
+                expr: Box::new(self.parse_subexpr(self.dialect.prec_value(Precedence::DoubleColon))?),
             }),
             tok @ Token::DoubleExclamationMark
             | tok @ Token::PGSquareRoot
@@ -2495,11 +2512,7 @@ impl<'a> Parser<'a> {
         }
         self.expect_token(&Token::Comma)?;
         let data_type = self.parse_data_type()?;
-        let charset = if self.parse_keywords(&[Keyword::CHARACTER, Keyword::SET]) {
-            Some(self.parse_object_name(false)?)
-        } else {
-            None
-        };
+        let charset = self.parse_cast_charset()?;
         self.expect_token(&Token::RParen)?;
         Ok(Expr::Convert {
             is_try,
@@ -2511,12 +2524,32 @@ impl<'a> Parser<'a> {
         })
     }
 
+    /// Reylo's copy: MySQL's character set after a CAST or CONVERT type: `CHARACTER SET cs`,
+    /// `CHARSET cs`, or `ASCII`, `UNICODE` or `BINARY`, which stand for `latin1`, `ucs2` and `binary`.
+    fn parse_cast_charset(&mut self) -> Result<Option<ObjectName>, ParserError> {
+        if self.parse_keywords(&[Keyword::CHARACTER, Keyword::SET]) || self.parse_keyword(Keyword::CHARSET) {
+            return Ok(Some(self.parse_object_name(false)?));
+        }
+        let name = match &self.peek_token_ref().token {
+            Token::Word(w) if w.quote_style.is_none() => match w.value.to_ascii_uppercase().as_str() {
+                "ASCII" => "latin1",
+                "UNICODE" => "ucs2",
+                "BINARY" => "binary",
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        };
+        self.next_token();
+        Ok(Some(ObjectName::from(vec![Ident::new(name)])))
+    }
+
     /// Parse a SQL CAST function e.g. `CAST(expr AS FLOAT)`
     pub fn parse_cast_expr(&mut self, kind: CastKind) -> Result<Expr, ParserError> {
         self.expect_token(&Token::LParen)?;
         let expr = self.parse_expr()?;
         self.expect_keyword_is(Keyword::AS)?;
         let data_type = self.parse_data_type()?;
+        let charset = self.parse_cast_charset()?;
         let format = self.parse_optional_cast_format()?;
         self.expect_token(&Token::RParen)?;
         Ok(Expr::Cast {
@@ -2524,6 +2557,7 @@ impl<'a> Parser<'a> {
             expr: Box::new(expr),
             data_type,
             format,
+            charset,
         })
     }
 
@@ -2918,13 +2952,37 @@ impl<'a> Parser<'a> {
         self.expected("an expression", token)
     }
 
+    /// Reylo's copy: whether the next tokens are `(`, then a comma at that depth before its `)`.
+    fn peek_parenthesized_list(&self) -> bool {
+        if self.peek_token_ref().token != Token::LParen {
+            return false;
+        }
+        let mut depth = 0usize;
+        for n in 0.. {
+            match &self.peek_nth_token_ref(n).token {
+                Token::LParen => depth += 1,
+                Token::RParen if depth == 1 => return false,
+                Token::RParen => depth -= 1,
+                Token::Comma if depth == 1 => return true,
+                Token::EOF => return false,
+                _ => {}
+            }
+        }
+        false
+    }
+
     /// Parses fulltext expressions [`sqlparser::ast::Expr::MatchAgainst`]
     ///
     /// # Errors
     /// This method will raise an error if the column list is empty or with invalid identifiers,
     /// the match expression is not a literal string, or if the search modifier is not valid.
     pub fn parse_match_against(&mut self) -> Result<Expr, ParserError> {
-        let columns = self.parse_parenthesized_qualified_column_list(Mandatory, false)?;
+        // Reylo's copy: MySQL takes the columns with or without parentheses (`MATCH a AGAINST …`).
+        let columns = if self.peek_token_ref().token == Token::LParen {
+            self.parse_parenthesized_qualified_column_list(Mandatory, false)?
+        } else {
+            self.parse_comma_separated(|p| p.parse_object_name(true))?
+        };
 
         self.expect_keyword_is(Keyword::AGAINST)?;
 
@@ -3807,6 +3865,7 @@ impl<'a> Parser<'a> {
                 expr: Box::new(expr),
                 data_type: self.parse_data_type()?,
                 format: None,
+                charset: None,
             })
         } else if Token::ExclamationMark == *tok && self.dialect.supports_factorial_operator() {
             Ok(Expr::UnaryOp {
@@ -4065,6 +4124,7 @@ impl<'a> Parser<'a> {
             expr: Box::new(expr),
             data_type: self.parse_data_type()?,
             format: None,
+            charset: None,
         })
     }
 
@@ -11431,6 +11491,21 @@ impl<'a> Parser<'a> {
         Ok(Box::new(SetExpr::Delete(self.parse_delete(delete_token)?)))
     }
 
+    /// Reylo's copy: a table a MySQL multiple-table DELETE deletes from, which may end in `.*`.
+    fn parse_delete_target(&mut self) -> Result<ObjectName, ParserError> {
+        let mut parts = vec![ObjectNamePart::Identifier(self.parse_identifier()?)];
+        while self.peek_token_ref().token == Token::Period {
+            if self.peek_nth_token_ref(1).token == Token::Mul {
+                self.next_token();
+                self.next_token();
+                break;
+            }
+            self.next_token();
+            parts.push(ObjectNamePart::Identifier(self.parse_identifier()?));
+        }
+        Ok(ObjectName(parts))
+    }
+
     /// Parse a `DELETE` statement and return `Statement::Delete`.
     pub fn parse_delete(&mut self, delete_token: TokenWithSpan) -> Result<Statement, ParserError> {
         let optimizer_hints = self.maybe_parse_optimizer_hints()?;
@@ -11440,7 +11515,7 @@ impl<'a> Parser<'a> {
             if dialect_of!(self is BigQueryDialect | OracleDialect | GenericDialect) {
                 (vec![], false)
             } else {
-                let tables = self.parse_comma_separated(|p| p.parse_object_name(false))?;
+                let tables = self.parse_comma_separated(Parser::parse_delete_target)?;
                 self.expect_keyword_is(Keyword::FROM)?;
                 (tables, true)
             }
@@ -11448,7 +11523,25 @@ impl<'a> Parser<'a> {
             (vec![], true)
         };
 
-        let from = self.parse_comma_separated(Parser::parse_table_and_joins)?;
+        // Reylo's copy: MySQL's `DELETE FROM t1.*, t2 USING …`, whose targets may end in `.*`.
+        let targets = if tables.is_empty() && with_from_keyword {
+            self.maybe_parse(|p| {
+                let names = p.parse_comma_separated(Parser::parse_delete_target)?;
+                match p.peek_keyword(Keyword::USING) {
+                    true => Ok(names),
+                    false => p.expected_ref("USING", p.peek_token_ref()),
+                }
+            })?
+        } else {
+            None
+        };
+        let from = match targets {
+            Some(names) => names
+                .into_iter()
+                .map(|name| TableWithJoins { relation: TableFactor::Table { name, alias: None, args: None, with_hints: vec![], version: None, with_ordinality: false, partitions: vec![], json_path: None, sample: None, index_hints: vec![] }, joins: vec![] })
+                .collect(),
+            None => self.parse_comma_separated(Parser::parse_table_and_joins)?,
+        };
 
         let output = self.maybe_parse_output_clause()?;
 
@@ -11576,12 +11669,18 @@ impl<'a> Parser<'a> {
 
             let mut for_clause = None;
             let mut locks = Vec::new();
-            while self.parse_keyword(Keyword::FOR) {
-                if let Some(parsed_for_clause) = self.parse_for_clause()? {
-                    for_clause = Some(parsed_for_clause);
-                    break;
-                } else {
+            loop {
+                if self.parse_keyword(Keyword::FOR) {
+                    if let Some(parsed_for_clause) = self.parse_for_clause()? {
+                        for_clause = Some(parsed_for_clause);
+                        break;
+                    }
                     locks.push(self.parse_lock()?);
+                } else if self.parse_keywords(&[Keyword::LOCK, Keyword::IN, Keyword::SHARE, Keyword::MODE]) {
+                    // Reylo's copy: MySQL's older spelling of `FOR SHARE`.
+                    locks.push(LockClause { lock_type: LockType::Share, of: vec![], nonblock: None });
+                } else {
+                    break;
                 }
             }
 
@@ -11625,6 +11724,14 @@ impl<'a> Parser<'a> {
                 pipe_operators,
             }
             .into())
+        }
+    }
+
+    /// Reylo's copy: MySQL's `INTO` after a whole query.
+    fn parse_trailing_into(&mut self) -> Result<Option<SelectInto>, ParserError> {
+        match self.parse_keyword(Keyword::INTO) {
+            true => Ok(Some(self.parse_select_into()?)),
+            false => Ok(None),
         }
     }
 
@@ -12864,17 +12971,27 @@ impl<'a> Parser<'a> {
                 };
                 let mut relation = self.parse_table_factor()?;
 
+                // Reylo's copy: MySQL reads a join with no ON or USING of its own as the left
+                // operand of the joins after it (`a JOIN b RIGHT JOIN c ON x` is
+                // `(a JOIN b) RIGHT JOIN c ON x`), and nests those joins inside it only where an
+                // ON or USING is left over for it (`a JOIN b JOIN c ON x ON y` is
+                // `a JOIN (b JOIN c ON x) ON y`).
                 if !self
                     .dialect
                     .supports_left_associative_joins_without_parens()
                     && !natural
                     && self.peek_parens_less_nested_join()
                 {
-                    let joins = self.parse_joins()?;
-                    relation = TableFactor::NestedJoin {
-                        table_with_joins: Box::new(TableWithJoins { relation, joins }),
-                        alias: None,
-                    };
+                    let index = self.index;
+                    match self.parse_joins() {
+                        Ok(joins) if self.peek_one_of_keywords(&[Keyword::ON, Keyword::USING]).is_some() => {
+                            relation = TableFactor::NestedJoin {
+                                table_with_joins: Box::new(TableWithJoins { relation, joins }),
+                                alias: None,
+                            };
+                        }
+                        _ => self.index = index,
+                    }
                 }
 
                 let join_constraint = self.parse_join_constraint(natural)?;
@@ -12995,14 +13112,20 @@ impl<'a> Parser<'a> {
             // Inside the parentheses we expect to find an (A) table factor
             // followed by some joins or (B) another level of nesting.
             let mut table_and_joins = self.parse_table_and_joins()?;
+            // Reylo's copy: or MySQL's `(t1, t2 JOIN t3 …)`, a list of table references.
+            let mut rest = Vec::new();
+            while self.consume_token(&Token::Comma) {
+                rest.push(self.parse_table_and_joins()?);
+            }
+            table_and_joins = comma_joined(table_and_joins, rest);
 
+            // Reylo's copy: MySQL takes no alias after a join in parentheses.
             #[allow(clippy::if_same_then_else)]
             if !table_and_joins.joins.is_empty() {
                 self.expect_token(&Token::RParen)?;
-                let alias = self.maybe_parse_table_alias()?;
                 Ok(TableFactor::NestedJoin {
                     table_with_joins: Box::new(table_and_joins),
-                    alias,
+                    alias: None,
                 }) // (A)
             } else if let TableFactor::NestedJoin {
                 table_with_joins: _,
@@ -13012,10 +13135,9 @@ impl<'a> Parser<'a> {
                 // (B): `table_and_joins` (what we found inside the parentheses)
                 // is a nested join `(foo JOIN bar)`, not followed by other joins.
                 self.expect_token(&Token::RParen)?;
-                let alias = self.maybe_parse_table_alias()?;
                 Ok(TableFactor::NestedJoin {
                     table_with_joins: Box::new(table_and_joins),
-                    alias,
+                    alias: None,
                 })
             } else if self.dialect.supports_parens_around_table_factor() {
                 // Dialect-specific behavior: Snowflake diverges from the
@@ -15153,6 +15275,12 @@ impl<'a> Parser<'a> {
         let optimizer_hints = self.maybe_parse_optimizer_hints()?;
         let or = self.parse_conflict_clause();
         let table = self.parse_table_and_joins()?;
+        // Reylo's copy: MySQL's multiple-table UPDATE, `UPDATE t1, t2 SET …`.
+        let mut rest = Vec::new();
+        while self.consume_token(&Token::Comma) {
+            rest.push(self.parse_table_and_joins()?);
+        }
+        let table = comma_joined(table, rest);
         let from_before_set = if self.parse_keyword(Keyword::FROM) {
             Some(UpdateTableFromKind::BeforeSet(
                 self.parse_table_with_joins()?,
@@ -15456,6 +15584,11 @@ impl<'a> Parser<'a> {
             && self.parse_keyword(Keyword::SEPARATOR)
         {
             clauses.push(FunctionArgumentClause::Separator(self.parse_value()?));
+        }
+
+        // Reylo's copy: MySQL's `CHAR(N, … USING charset)`.
+        if self.parse_keyword(Keyword::USING) {
+            clauses.push(FunctionArgumentClause::Using(self.parse_object_name(false)?));
         }
 
         if let Some(on_overflow) = self.parse_listagg_on_overflow()? {
@@ -16034,9 +16167,9 @@ impl<'a> Parser<'a> {
             )),
         };
         let of = if self.parse_keyword(Keyword::OF) {
-            Some(self.parse_object_name(false)?)
+            self.parse_comma_separated(|p| p.parse_object_name(false))?
         } else {
-            None
+            vec![]
         };
         let nonblock = if self.parse_keyword(Keyword::NOWAIT) {
             Some(NonBlock::Nowait)
@@ -16623,3 +16756,31 @@ impl Word {
     }
 }
 
+/// Reylo's copy: MySQL's comma between table references, which binds looser than any JOIN, as a
+/// CROSS JOIN of each later reference, in parentheses where it has joins of its own
+/// (`a, b RIGHT JOIN c ON x` is `a CROSS JOIN (b RIGHT JOIN c ON x)`, which never null-extends `a`).
+fn comma_joined(mut first: TableWithJoins, rest: Vec<TableWithJoins>) -> TableWithJoins {
+    for t in rest {
+        let relation = if t.joins.is_empty() {
+            t.relation
+        } else {
+            TableFactor::NestedJoin { table_with_joins: Box::new(t), alias: None }
+        };
+        first.joins.push(Join { relation, global: false, join_operator: JoinOperator::CrossJoin(JoinConstraint::None) });
+    }
+    first
+}
+
+/// Reylo's copy: an `INTO` read after a whole query, put on the SELECT it assigns from: the
+/// query's own, or the one in its parentheses. Elsewhere (a UNION's, or one that has an `INTO`
+/// already) it is an error, as in MySQL.
+fn place_into(body: &mut SetExpr, into: SelectInto) -> Result<(), ParserError> {
+    match body {
+        SetExpr::Select(select) if select.into.is_none() => {
+            select.into = Some(into);
+            Ok(())
+        }
+        SetExpr::Query(query) => place_into(&mut query.body, into),
+        _ => Err(ParserError::ParserError("Misplaced INTO clause".to_string())),
+    }
+}

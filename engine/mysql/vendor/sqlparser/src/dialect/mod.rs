@@ -887,6 +887,8 @@ pub trait Dialect: Debug + Any {
             Token::Word(w) if w.keyword == Keyword::MEMBER => Ok(p!(Like)),
             Token::Word(w) if w.keyword == Keyword::OPERATOR => Ok(p!(Between)),
             Token::Word(w) if w.keyword == Keyword::DIV => Ok(p!(MulDivModOp)),
+            // Reylo's copy: MySQL's `a MOD b`, which is `a % b`.
+            Token::Word(w) if w.keyword == Keyword::MOD => Ok(p!(MulDivModOp)),
             Token::Period => Ok(p!(Period)),
             Token::Assignment
             | Token::Eq
@@ -940,9 +942,10 @@ pub trait Dialect: Debug + Any {
                 // string columns. See `JsonAccess`.
                 _ => Ok(p!(Colon)),
             },
-            Token::Arrow
-            | Token::LongArrow
-            | Token::HashArrow
+            // Reylo's copy: in MySQL `col->'path'` and `col->>'path'` are simple expressions, so they
+            // bind tighter than every operator (`c->'$.a' + 1` adds 1 to the extracted value).
+            Token::Arrow | Token::LongArrow => Ok(p!(DoubleColon)),
+            Token::HashArrow
             | Token::HashLongArrow
             | Token::AtArrow
             | Token::ArrowAt
@@ -1099,7 +1102,9 @@ pub trait Dialect: Debug + Any {
     ///
     /// [Snowflake](https://docs.snowflake.com/en/sql-reference/constructs/from)
     fn supports_parens_around_table_factor(&self) -> bool {
-        false
+        // Reylo's copy: MySQL's, for the engine's dialect, which takes this default:
+        // `t1 LEFT JOIN (t2) ON …` reads a table in parentheses.
+        true
     }
 
     /// Returns true if this dialect supports `VALUES` as a table factor
@@ -1207,7 +1212,8 @@ pub trait Dialect: Debug + Any {
 
     /// Returns true if the dialect supports `!a` syntax for boolean `NOT` expressions.
     fn supports_bang_not_operator(&self) -> bool {
-        false
+        // Reylo's copy: MySQL's, for every dialect, as the engine's dialect takes this default.
+        true
     }
 
     /// Returns true if the dialect supports the `LISTEN`, `UNLISTEN` and `NOTIFY` statements
@@ -1381,7 +1387,8 @@ pub trait Dialect: Debug + Any {
     /// Returns true if the specified keyword should be parsed as a column identifier.
     /// See [keywords::RESERVED_FOR_COLUMN_ALIAS]
     fn is_column_alias(&self, kw: &Keyword, _parser: &mut Parser) -> bool {
-        !keywords::RESERVED_FOR_COLUMN_ALIAS.contains(kw)
+        // Reylo's copy: MySQL's reserved words are never an alias without `AS`.
+        !keywords::RESERVED_FOR_COLUMN_ALIAS.contains(kw) && !keywords::MYSQL_RESERVED.contains(kw)
     }
 
     /// Returns true if the specified keyword should be parsed as a select item alias.

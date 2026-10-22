@@ -19,7 +19,7 @@
 use alloc::string::String;
 
 use core::{
-    fmt,
+    fmt::{self, Write},
     ops::{Deref, DerefMut},
 };
 
@@ -262,8 +262,8 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Value::Number(v, l) => write!(f, "{}{long}", v, long = if *l { "L" } else { "" }),
-            Value::DoubleQuotedString(v) => write!(f, "\"{}\"", escape_double_quote_string(v)),
-            Value::SingleQuotedString(v) => write!(f, "'{}'", escape_single_quote_string(v)),
+            Value::DoubleQuotedString(v) => write!(f, "\"{}\"", EscapeMysqlString { string: v, quote: '"' }),
+            Value::SingleQuotedString(v) => write!(f, "'{}'", EscapeMysqlString { string: v, quote: '\'' }),
             Value::TripleSingleQuotedString(v) => {
                 write!(f, "'''{v}'''")
             }
@@ -273,9 +273,11 @@ impl fmt::Display for Value {
             Value::DollarQuotedString(v) => write!(f, "{v}"),
             Value::EscapedStringLiteral(v) => write!(f, "E'{}'", escape_escaped_string(v)),
             Value::UnicodeStringLiteral(v) => write!(f, "U&'{}'", escape_unicode_string(v)),
-            Value::NationalStringLiteral(v) => write!(f, "N'{}'", escape_single_quote_string(v)),
+            Value::NationalStringLiteral(v) => write!(f, "N'{}'", EscapeMysqlString { string: v, quote: '\'' }),
             Value::QuoteDelimitedStringLiteral(v) => v.fmt(f),
             Value::NationalQuoteDelimitedStringLiteral(v) => write!(f, "N{v}"),
+            // Reylo's copy: `0x5ff` is the bytes of `X'05ff'`; `X'5ff'` is a syntax error.
+            Value::HexStringLiteral(v) if v.len() % 2 == 1 => write!(f, "X'0{v}'"),
             Value::HexStringLiteral(v) => write!(f, "X'{v}'"),
             Value::Boolean(v) => write!(f, "{v}"),
             Value::SingleQuotedByteStringLiteral(v) => write!(f, "B'{v}'"),
@@ -590,6 +592,43 @@ impl fmt::Display for EscapeQuotedString<'_> {
             previous_char = ch;
         }
         f.write_str(&self.string[start_idx..])?;
+        Ok(())
+    }
+}
+
+std::thread_local! {
+    static BACKSLASH_ESCAPES: core::cell::Cell<bool> = const { core::cell::Cell::new(true) };
+}
+
+/// Reylo's copy: whether a printed string literal escapes its backslashes, as a MySQL session
+/// that reads backslash escapes needs (the default; not under `NO_BACKSLASH_ESCAPES`). The
+/// engine sets it, on its thread, for the session it reads.
+pub fn set_backslash_escapes(on: bool) {
+    BACKSLASH_ESCAPES.with(|c| c.set(on));
+}
+
+/// Reylo's copy: a string literal's value, which the tokenizer has unescaped, printed so MySQL
+/// reads it back the same: the quote doubled, and a backslash and NUL escaped where the session
+/// reads backslash escapes.
+struct EscapeMysqlString<'a> {
+    string: &'a str,
+    quote: char,
+}
+
+impl fmt::Display for EscapeMysqlString<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let escapes = BACKSLASH_ESCAPES.with(|c| c.get());
+        for ch in self.string.chars() {
+            match ch {
+                c if c == self.quote => {
+                    f.write_char(c)?;
+                    f.write_char(c)?;
+                }
+                '\\' if escapes => f.write_str("\\\\")?,
+                '\0' if escapes => f.write_str("\\0")?,
+                c => f.write_char(c)?,
+            }
+        }
         Ok(())
     }
 }

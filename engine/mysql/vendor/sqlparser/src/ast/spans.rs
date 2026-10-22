@@ -1417,6 +1417,7 @@ impl Spanned for Expr {
                 expr,
                 data_type: _,
                 format: _,
+                charset: _,
             } => expr.span(),
             Expr::AtTimeZone {
                 timestamp,
@@ -1622,6 +1623,7 @@ impl Spanned for FunctionArgumentClause {
             FunctionArgumentClause::OnOverflow(_) => Span::empty(),
             FunctionArgumentClause::Having(HavingBound(_kind, expr)) => expr.span(),
             FunctionArgumentClause::Separator(value) => value.span(),
+            FunctionArgumentClause::Using(charset) => charset.span(),
             FunctionArgumentClause::JsonNullClause(_) => Span::empty(),
             FunctionArgumentClause::JsonReturningClause(_) => Span::empty(),
         }

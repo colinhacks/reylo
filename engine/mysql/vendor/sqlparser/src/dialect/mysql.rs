@@ -114,6 +114,14 @@ impl Dialect for MySqlDialect {
                 op: BinaryOperator::MyIntegerDivide,
                 right,
             }))
+        } else if parser.parse_keyword(Keyword::MOD) {
+            // Reylo's copy: MySQL's `a MOD b`, which is `a % b`.
+            let left = Box::new(expr.clone());
+            let right = Box::new(match parser.parse_subexpr(precedence) {
+                Ok(expr) => expr,
+                Err(e) => return Some(Err(e)),
+            });
+            Some(Ok(Expr::BinaryOp { left, op: BinaryOperator::Modulo, right }))
         } else {
             None
         }
@@ -144,9 +152,11 @@ impl Dialect for MySqlDialect {
     }
 
     fn is_table_factor_alias(&self, explicit: bool, kw: &Keyword, _parser: &mut Parser) -> bool {
+        // Reylo's copy: MySQL's reserved words are never an alias without `AS`.
         explicit
             || (!keywords::RESERVED_FOR_TABLE_ALIAS.contains(kw)
-                && !RESERVED_FOR_TABLE_ALIAS_MYSQL.contains(kw))
+                && !RESERVED_FOR_TABLE_ALIAS_MYSQL.contains(kw)
+                && !keywords::MYSQL_RESERVED.contains(kw))
     }
 
     fn supports_table_hints(&self) -> bool {
