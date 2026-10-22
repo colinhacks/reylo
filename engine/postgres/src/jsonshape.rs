@@ -67,6 +67,19 @@ pub struct Outcome {
     /// Whether the probe's own analysis saw an outer join, which is the one thing that can null
     /// a whole row under `to_jsonb(alias)`.
     pub outer_join: bool,
+    /// Per column, the JSON a WITH query or a derived table builds in it, for one the probe reads
+    /// straight from such an item: it stands for the column's type. Empty where there is none.
+    pub built: Vec<Option<Built>>,
+}
+
+/// The JSON a column read from a WITH query or a derived table holds, as that item's own
+/// statement builds it: its type, whether the item's result never has it NULL, and the paths
+/// inside it whose type the engine could not derive.
+#[derive(Debug, Clone)]
+pub struct Built {
+    pub ty: Type,
+    pub non_null: bool,
+    pub unresolved: Vec<String>,
 }
 
 /// A resolved shape: the column's type, whether the column can be SQL NULL, and the paths
@@ -601,8 +614,14 @@ impl ResolveCtx<'_> {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
                 (Type::List { of: Box::new(of), nullable_items: !items_non_null }, *non_null)
             }
-            Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
-                Some(col) if col.type_oid != oid::UNKNOWN => {
+            Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| Some((o.columns.get(*index)?, o.built.get(*index).and_then(Option::as_ref)))) {
+                // JSON a WITH query or a derived table builds, NULL where the item's row has it so
+                // or a join here nulls the item.
+                Some((col, Some(built))) => {
+                    unresolved.extend(built.unresolved.iter().map(|p| if p == WHOLE { display_path(path) } else { display_path(&join(path, p)) }));
+                    (built.ty.clone(), built.non_null && !col.nullable)
+                }
+                Some((col, None)) if col.type_oid != oid::UNKNOWN => {
                     let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
                     (crate::postgres::with_document(crate::postgres::with_values(ty, col.values.as_deref()), col.document.as_ref()), !col.nullable)
                 }
@@ -662,9 +681,12 @@ fn join(path: &str, key: &str) -> String {
     }
 }
 
+/// The path [`display_path`] gives the value itself.
+const WHOLE: &str = "the whole value";
+
 fn display_path(path: &str) -> String {
     if path.is_empty() {
-        "the whole value".to_string()
+        WHOLE.to_string()
     } else {
         path.to_string()
     }
@@ -943,7 +965,7 @@ mod tests {
     fn a_scalar_subquery_that_may_find_no_row_is_nullable_whatever_its_value() {
         let registry = TypeRegistry::with_builtins();
         let found = vec![column("a0", oid::TEXT, "text", false)];
-        let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false })], &registry, &[]);
+        let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false, built: Vec::new() })], &registry, &[]);
         // Whether the column is nullable, and whether the first field of the object it is.
         let whole = |sql: &str| !resolved(sql).non_null;
         let field = |sql: &str| match resolved(sql).ty {
@@ -1150,6 +1172,7 @@ mod tests {
                 column("a2", oid::INT4, "int4", true),
             ],
             outer_join: false,
+            built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.non_null);
@@ -1183,6 +1206,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("a0", oid::UUID, "uuid", false), column("a1", oid::UNKNOWN, "unknown", true)],
             outer_join: false,
+            built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert_eq!(r.unresolved, vec!["n"]);
@@ -1201,6 +1225,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("a0", oid::INT8, "int8", false), column("a1", NUMERIC, "numeric", false), column("a2", BYTEA, "bytea", false)],
             outer_join: false,
+            built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.unresolved.is_empty());
@@ -1217,11 +1242,11 @@ mod tests {
         let registry = TypeRegistry::with_builtins();
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false })], &registry, &[]);
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
         assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
         // An outer join in the probe's own analysis is what can null the whole row.
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns, outer_join: true })], &registry, &[]);
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns, outer_join: true, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
     }
 }

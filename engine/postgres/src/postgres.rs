@@ -321,6 +321,10 @@ struct Engine<'a> {
 /// The validators one CHECK's call is read by ([`crate::schema_type::postgres_validator`]).
 type Validators = &'static [&'static crate::schema_type::Validator];
 
+/// How many WITH queries or derived tables deep a JSON column is followed into the statement that
+/// builds it: `WITH a AS (…), b AS (SELECT j FROM a) SELECT j FROM b` is two.
+const MAX_ITEM_DEPTH: usize = 4;
+
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
         Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), budget: Cell::new(MAX_PROBES) }
@@ -400,66 +404,36 @@ impl<'a> Engine<'a> {
             }
         }
 
-        // JSON shapes.
-        let plan = jsonshape::plan(&rewritten.sql, Dialect::Postgres, &trust, &catalog.columns);
-        let mut outcomes: Vec<Option<jsonshape::Outcome>> = Vec::with_capacity(plan.probes.len());
-        let mut pending = false;
-        for probe in &plan.probes {
-            let mut outcome = self.probe(&probe.sql, &trust);
-            if let (Some(None), Some(wider)) = (&outcome, &probe.wider) {
-                outcome = self.probe(wider, &trust);
-            }
-            match outcome {
-                Some(Some(d)) => {
-                    let outer_join = analyze::analyze(&probe.sql).map(|a| a.has_outer_join).unwrap_or(true);
-                    outcomes.push(Some(jsonshape::Outcome { columns: d.columns, outer_join }));
-                }
-                Some(None) => outcomes.push(None),
-                None => {
-                    pending = true;
-                    outcomes.push(None);
-                }
-            }
-        }
-        if pending {
-            return None;
-        }
+        // JSON shapes: what the statement's own constructors build, and for a JSON column it reads
+        // straight from a WITH query or a derived table, what that item's statement builds.
+        let (plan, outcomes) = self.shapes(&rewritten.sql, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)?;
+        let open = described.columns.iter().any(|c| !plan.columns.iter().any(|(n, _)| *n == c.name));
+        let built = if open { self.built(&rewritten.sql, &described.columns, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)? } else { vec![None; described.columns.len()] };
         let mut shape_oids = Vec::new();
         for (_, shape) in &plan.columns {
             jsonshape::oids(shape, &outcomes, &raw.params, &mut shape_oids);
         }
         self.types(&shape_oids)?;
-        // A stored row, read whole or inside a JSON document, keeps the JSON Schema a CHECK holds
-        // its JSON columns to and the strings a CHECK keeps its string columns to, as a bare read
-        // of them does. The strings only where `=` is the built-in one a CHECK resolved to.
-        let stored: Vec<u32> = outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(&described.columns).filter(|c| c.whole_row).map(|c| c.type_oid).collect();
-        let mut rows: Vec<(u32, i32)> = stored.iter().flat_map(|o| self.registry.borrow().row_json_columns(*o)).collect();
-        if trust.builtin("=") {
-            for key in stored.iter().flat_map(|o| self.registry.borrow().row_string_columns(*o)) {
-                if !rows.contains(&key) {
-                    rows.push(key);
-                }
-            }
-        }
-        if !rows.is_empty() {
-            let checks = self.check_rows(&rows)?;
-            let mut registry = self.registry.borrow_mut();
-            registry.documents.extend(checks.documents);
-            registry.values.extend(checks.values);
-        }
+        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(&described.columns), &trust)?;
 
         let registry = self.registry.borrow();
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
         let mut shapes_used: HashSet<usize> = HashSet::new();
-        for col in &described.columns {
+        for (col, built) in described.columns.iter().zip(&built) {
             let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
-            let (ty, nullable) = match shape {
-                Some((i, (_, shape))) if jsonshape::is_json(&registry, col.type_oid) => {
+            let (ty, nullable) = match (shape, built) {
+                (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
                     shapes_used.insert(i);
                     let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     (resolved.ty, !resolved.non_null)
+                }
+                // The item's own result settled whether the column is NULL, an outer join here
+                // included; what it builds is its document.
+                (None, Some(built)) => {
+                    unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
+                    (built.ty.clone(), col.nullable || !built.non_null)
                 }
                 _ => {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render(col.type_oid) };
@@ -652,6 +626,131 @@ impl<'a> Engine<'a> {
             }
         }
         Some(out)
+    }
+
+    /// The JSON shapes `sql`'s own constructors build, with the describes of the probes they read
+    /// and the JSON each probe column reads from a WITH query or a derived table ([`Engine::built`]).
+    fn shapes(&self, sql: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<(jsonshape::Plan, Vec<Option<jsonshape::Outcome>>)> {
+        let plan = jsonshape::plan(sql, Dialect::Postgres, trust, columns);
+        let mut outcomes: Vec<Option<jsonshape::Outcome>> = Vec::with_capacity(plan.probes.len());
+        let mut pending = false;
+        for probe in &plan.probes {
+            let mut described = (probe.sql.as_str(), self.probe(&probe.sql, trust));
+            if let (Some(None), Some(wider)) = (&described.1, &probe.wider) {
+                described = (wider.as_str(), self.probe(wider, trust));
+            }
+            match described {
+                (text, Some(Some(d))) => {
+                    let outer_join = analyze::analyze(&probe.sql).map(|a| a.has_outer_join).unwrap_or(true);
+                    let built = match self.built(text, &d.columns, trust, columns, params, depth) {
+                        Some(built) => built,
+                        None => {
+                            pending = true;
+                            Vec::new()
+                        }
+                    };
+                    outcomes.push(Some(jsonshape::Outcome { columns: d.columns, outer_join, built }));
+                }
+                (_, Some(None)) => outcomes.push(None),
+                (_, None) => {
+                    pending = true;
+                    outcomes.push(None);
+                }
+            }
+        }
+        if pending {
+            return None;
+        }
+        Some((plan, outcomes))
+    }
+
+    /// Per column of `sql`, described as `described`, the JSON a WITH query or a derived table
+    /// builds in it, for a JSON column `sql` reads straight from one ([`infer::ItemRead::Column`]):
+    /// the shape of the item's constructor, resolved, or for a column the item reads the same way
+    /// from an item of its own, that one's, `depth` levels down at most. Such a column is as
+    /// nullable as the item's result and the joins of `sql` make it, which settling it already
+    /// says; `coalesce(c, '[]')` of one is its array and never NULL. The item's column goes by the
+    /// name its alias or the WITH clause gives it and is found by its place, so a name the item's
+    /// result holds twice finds none.
+    fn built(&self, sql: &str, described: &[DescribedColumn], trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Vec<Option<jsonshape::Built>>> {
+        let none = vec![None; described.len()];
+        let json = |c: &DescribedColumn| jsonshape::is_json(&self.registry.borrow(), c.type_oid);
+        if depth == 0 || !described.iter().any(json) {
+            return Some(none);
+        }
+        let Some((reads, queries)) = infer::item_reads(sql).filter(|(reads, _)| reads.len() == described.len()) else { return Some(none) };
+        let mut out = Vec::with_capacity(described.len());
+        let mut pending = false;
+        for (read, col) in reads.into_iter().zip(described) {
+            let (item, column, defaulted) = match read {
+                infer::ItemRead::Column { item, column } if json(col) => (item, column, false),
+                infer::ItemRead::Defaulted { item, column } if json(col) => (item, column, true),
+                _ => {
+                    out.push(None);
+                    continue;
+                }
+            };
+            match self.item_built(&queries[item], &column, trust, columns, params, depth) {
+                Some(found) => out.push(found.and_then(|b| match defaulted {
+                    false => Some(b),
+                    true => matches!(b.ty, Type::List { .. }).then_some(jsonshape::Built { non_null: true, ..b }),
+                })),
+                None => {
+                    pending = true;
+                    out.push(None);
+                }
+            }
+        }
+        if pending {
+            return None;
+        }
+        Some(out)
+    }
+
+    /// The JSON one item's column `column` holds ([`Engine::built`]).
+    fn item_built(&self, query: &infer::ItemQuery, column: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Option<jsonshape::Built>> {
+        let Some(described) = self.probe(&query.sql, trust)? else { return Some(None) };
+        let named = |i: usize, c: &DescribedColumn| query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone());
+        let mut at = described.columns.iter().enumerate().filter(|(i, c)| named(*i, c) == column).map(|(i, _)| i);
+        let (Some(at), None) = (at.next(), at.next()) else { return Some(None) };
+        let own = &described.columns[at].name;
+        if described.columns.iter().filter(|c| c.name == *own).count() != 1 {
+            return Some(None);
+        }
+        let (plan, outcomes) = self.shapes(&query.sql, trust, columns, params, depth - 1)?;
+        let Some((_, shape)) = plan.columns.iter().find(|(n, _)| n == own) else {
+            let mut inner = self.built(&query.sql, &described.columns, trust, columns, params, depth - 1)?;
+            return Some(inner.swap_remove(at));
+        };
+        let mut oids = Vec::new();
+        jsonshape::oids(shape, &outcomes, params, &mut oids);
+        self.types(&oids)?;
+        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()), trust)?;
+        let resolved = jsonshape::resolve(shape, &outcomes, &self.registry.borrow(), params);
+        Some(Some(jsonshape::Built { ty: resolved.ty, non_null: resolved.non_null, unresolved: resolved.unresolved }))
+    }
+
+    /// A stored row among `columns`, read whole or inside a JSON document, keeps the JSON Schema
+    /// a CHECK holds its JSON columns to and the strings a CHECK keeps its string columns to, as a
+    /// bare read of them does: the registry learns them. The strings only where `=` is the
+    /// built-in one a CHECK resolved to.
+    fn stored_checks<'c>(&self, columns: impl Iterator<Item = &'c DescribedColumn>, trust: &Trust) -> Lazy<()> {
+        let stored: Vec<u32> = columns.filter(|c| c.whole_row).map(|c| c.type_oid).collect();
+        let mut rows: Vec<(u32, i32)> = stored.iter().flat_map(|o| self.registry.borrow().row_json_columns(*o)).collect();
+        if trust.builtin("=") {
+            for key in stored.iter().flat_map(|o| self.registry.borrow().row_string_columns(*o)) {
+                if !rows.contains(&key) {
+                    rows.push(key);
+                }
+            }
+        }
+        if !rows.is_empty() {
+            let checks = self.check_rows(&rows)?;
+            let mut registry = self.registry.borrow_mut();
+            registry.documents.extend(checks.documents);
+            registry.values.extend(checks.values);
+        }
+        Some(())
     }
 
     /// Ask for a probe's describe ahead of the round that reads it, when nothing has to be
@@ -1032,7 +1131,7 @@ impl<'a> Engine<'a> {
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
-                ItemRead::Other | ItemRead::Table => out.push(None),
+                ItemRead::Other | ItemRead::Table | ItemRead::Defaulted { .. } => out.push(None),
                 ItemRead::Column { item, column } => {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|(n, _)| *n == column);
                     out.push(match (named.next(), named.next()) {

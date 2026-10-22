@@ -962,6 +962,9 @@ pub enum ItemRead {
     Table,
     /// One result column: a bare reference to the column of this name of item `item`.
     Column { item: usize, column: String },
+    /// One result column: `coalesce(c, '[]')` of such a reference `c`, which is that column's
+    /// array or an empty one, and never NULL.
+    Defaulted { item: usize, column: String },
     /// `*` or `item.*`: every column of item `item` in order, or of something else (`None`).
     Star { item: Option<usize> },
 }
@@ -989,7 +992,7 @@ pub struct ItemQuery {
 /// a `(row).*` hides how many columns a target is.
 pub fn item_reads(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     let (reads, queries) = crate::stack::run(|| reads_here(sql))?;
-    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
+    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Defaulted { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
     (0..queries.len()).any(read).then_some((reads, queries))
 }
 
@@ -1020,7 +1023,21 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     let mut reads = Vec::with_capacity(select.target_list.len());
     for target in &select.target_list {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { return None };
+        // A bare reference to a column of an item with a statement of its own.
+        let column_of = |c: &protobuf::ColumnRef| match strings(&c.fields).as_deref() {
+            Some([name, column]) => items.named(name).map(|item| (item, column.clone())),
+            // A bare name says which item it reads only when there is one.
+            Some([column]) => items.only().map(|item| (item, column.clone())),
+            _ => None,
+        };
         let read = match rt.val.as_deref()?.node.as_ref() {
+            Some(NodeEnum::CoalesceExpr(c)) => match c.args.as_slice() {
+                [first, default] if is_empty_array(default) => match first.node.as_ref() {
+                    Some(NodeEnum::ColumnRef(c)) => column_of(c).map_or(ItemRead::Other, |(item, column)| ItemRead::Defaulted { item, column }),
+                    _ => ItemRead::Other,
+                },
+                _ => ItemRead::Other,
+            },
             // `(row).*` is as many columns as the row's type has.
             Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_)))) => return None,
             Some(NodeEnum::ColumnRef(c)) => match c.fields.split_last() {
@@ -1048,6 +1065,18 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
         reads.push(read);
     }
     Some((reads, items.queries))
+}
+
+/// `'[]'`, as JSON text or cast to `json` or `jsonb`.
+fn is_empty_array(node: &Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => matches!(&c.val, Some(protobuf::a_const::Val::Sval(s)) if s.sval == "[]"),
+        Some(NodeEnum::TypeCast(t)) => {
+            let json = t.type_name.as_ref().and_then(|n| last_string(&n.names)).is_some_and(|n| n == "json" || n == "jsonb");
+            json && t.arg.as_deref().is_some_and(is_empty_array)
+        }
+        _ => false,
+    }
 }
 
 /// The FROM items of one SELECT, through its joins.
@@ -2193,6 +2222,18 @@ mod tests {
         assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Other]);
         // A set operation at the top hides which arm a column is.
         assert_eq!(target_reads("SELECT id FROM users UNION SELECT id FROM posts"), None);
+    }
+
+    #[test]
+    fn an_empty_array_default_of_a_column_read_from_a_with_query_reads_it() {
+        let defaulted = |item: usize, column: &str| ItemRead::Defaulted { item, column: column.into() };
+        let (reads, _) = item_reads("WITH a AS (SELECT jsonb_agg(1) AS xs) SELECT coalesce(a.xs, '[]'), coalesce(xs, '[]'::jsonb) FROM a").unwrap();
+        assert_eq!(reads, vec![defaulted(0, "xs"), defaulted(0, "xs")]);
+        // Any other default, a third argument or an expression is no read of the column.
+        let (reads, _) = item_reads("WITH a AS (SELECT jsonb_agg(1) AS xs) SELECT xs, coalesce(xs, '{}'), coalesce(xs, '[]', '[]'), coalesce(xs || '[]', '[]') FROM a").unwrap();
+        assert_eq!(reads, vec![ItemRead::Column { item: 0, column: "xs".into() }, ItemRead::Other, ItemRead::Other, ItemRead::Other]);
+        // A defaulted read is a read of the item.
+        assert!(item_reads("WITH a AS (SELECT jsonb_agg(1) AS xs) SELECT coalesce(a.xs, '[]') FROM a").is_some());
     }
 
     #[test]

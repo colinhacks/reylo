@@ -387,6 +387,10 @@ An expression over the column (`payload -> 'x'`) is `unknown`, and so is a colum
 
 One value turned to JSON by `to_jsonb` is `unknown`, and a whole row is the row's object.
 
+**Through a `with` query or a derived table**
+
+JSON a `with` query or a derived table builds keeps its type where the statement reads its column as it is, in a select list or inside JSON the statement builds, and an array keeps it under `coalesce(…, '[]')`. An outer join over the query makes the column nullable, and a `union` inside it, a `lateral` one or a `*` over it leaves the column `unknown`.
+
 **Values inside a document**
 
 Inside a document a value is what JSON writes: integers and `numeric` are numbers, which `JSON.parse` rounds past 2^53 on every driver; a `date` is its text, and a `timestamptz` its text in the session's time zone, here `America/Los_Angeles`; a `bytea` is its hex text; a `boolean` is `true` or `false`.
