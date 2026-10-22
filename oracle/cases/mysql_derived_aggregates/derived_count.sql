@@ -1,0 +1,1 @@
+select u.id, (select count(p.id) from (select id, user_id from posts) p where p.user_id = u.id) as n, (select max(p.id) from (select id, user_id from posts) p where p.user_id = u.id) as last from users u

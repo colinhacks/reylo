@@ -19,7 +19,7 @@ array_agg_literal.sql: many () -> { l: [bool] }
 array_agg_nullable_items.sql: one () -> { emails: [text?]? }
 array_agg_objects.sql: one () -> { list: [{ id: int4, name: text }]? }
 array_agg_of_json_column.sql: one () -> { docs: [json?]?, wrapped: [{ doc: json? }]? }
-array_agg_ordered_subquery.sql: many () -> { titles: [unknown?]? }
+array_agg_ordered_subquery.sql: many () -> { titles: [unknown?] }
 array_agg_placeholder_passed.sql: one (p: numeric?) -> { l: [numeric|int8|float8|text?]? }
 array_agg_truth.sql: one () -> { l: [bool|int8]? }
 array_agg_truth_buffered.sql: one () -> { l: [bool|int8]? }

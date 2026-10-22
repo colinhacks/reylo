@@ -16,7 +16,7 @@ bare_outer_with_shadows.sql: many () -> { n: int8? }
 bare_own.sql: many () -> { n: int8 }
 bare_own_case.sql: many () -> { n: int8? }
 bare_own_correlated.sql: many () -> { id: int8, n: int8 }
-bare_own_derived.sql: many () -> { n: int8? }
+bare_own_derived.sql: many () -> { n: int8 }
 bare_own_distinct.sql: many () -> { n: int8 }
 bare_own_empty.sql: many () -> { n: int8 }
 bare_own_expression.sql: many () -> { n: int8 }
@@ -26,7 +26,7 @@ bare_own_json_object.sql: many () -> { titles: [{ title: text }] }
 bare_own_mixed.sql: many () -> { n: int8? }
 bare_own_sum.sql: many () -> { n: numeric }
 bare_own_view.sql: many () -> { n: int8 }
-bare_own_with.sql: many () -> { n: int8? }
+bare_own_with.sql: many () -> { n: int8 }
 bit_or_outer.sql: many () -> { n: int8? }
 bit_or_own.sql: many () -> { n: int8 }
 constant.sql: many () -> { n: int8 }

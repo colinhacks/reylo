@@ -80,9 +80,54 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
 }
 
-/// The names of a query's own WITH queries, in lower case.
-fn with_names(q: &Query) -> Vec<String> {
-    q.with.iter().flat_map(|w| w.cte_tables.iter().map(|c| c.alias.name.value.to_ascii_lowercase())).collect()
+/// A WITH query in scope: its name as written, and the names of its columns.
+struct Cte {
+    name: String,
+    columns: HashSet<String>,
+}
+
+/// A query's own WITH queries.
+fn with_names(q: &Query) -> Vec<Cte> {
+    q.with.iter().flat_map(|w| w.cte_tables.iter().map(|c| Cte { name: c.alias.name.value.clone(), columns: output_columns(&c.query, &c.alias.columns) })).collect()
+}
+
+/// The names, in lower case, of the columns of a derived table or a WITH query that are certain:
+/// its column list, or else each item of its (first) select list that is a column or has an
+/// alias. An item named by its expression's text, and a wildcard, are left out, which only
+/// leaves a read of them unproven.
+fn output_columns(q: &Query, list: &[ast::TableAliasColumnDef]) -> HashSet<String> {
+    if !list.is_empty() {
+        return list.iter().map(|c| c.name.value.to_ascii_lowercase()).collect();
+    }
+    let mut body = q.body.as_ref();
+    let select = loop {
+        match body {
+            SetExpr::Select(select) => break select,
+            SetExpr::Query(q) => body = q.body.as_ref(),
+            SetExpr::SetOperation { left, .. } => body = left.as_ref(),
+            _ => return HashSet::new(),
+        }
+    };
+    select
+        .projection
+        .iter()
+        .filter_map(|item| match item {
+            SelectItem::ExprWithAlias { alias, .. } => Some(&alias.value),
+            SelectItem::UnnamedExpr(Expr::Identifier(i)) => Some(&i.value),
+            SelectItem::UnnamedExpr(Expr::CompoundIdentifier(parts)) => parts.last().map(|p| &p.value),
+            _ => None,
+        })
+        .map(|name| name.to_ascii_lowercase())
+        .collect()
+}
+
+/// Where the columns of a table in a FROM are known.
+enum Source {
+    /// The catalog's table of this name.
+    Catalog(String),
+    /// A derived table's or a WITH query's, in lower case.
+    Columns(HashSet<String>),
+    Unknown,
 }
 
 /// The statement without its subquery items, and the projection indexes it keeps: prepared, it
@@ -178,7 +223,7 @@ struct Builder<'a> {
     stack: Vec<(usize, Vec<TableWithJoins>)>,
     columns: &'a Columns,
     /// The WITH queries in scope where the builder stands, whose names are no tables'.
-    ctes: Vec<String>,
+    ctes: Vec<Cte>,
     wanted: Vec<String>,
     next_ctx: usize,
     drafts: Vec<Draft>,
@@ -234,10 +279,12 @@ impl Builder<'_> {
     /// comes from, so one over columns of an outer query alone is that query's, and the subquery
     /// is then a row per row of its FROM: NULL as a scalar where that is empty. The call is the
     /// subquery's when it reads no column, a column qualified with the name of one of the FROM's
-    /// tables, or a bare column one of those tables has (`columns`). Everything else proves
-    /// nothing: a derived table, a WITH query, a table of another schema, an alias with a column
-    /// list, a qualifier in another case than the alias, and a call with a part this does not
-    /// read, unless it reads a column of the FROM beside it.
+    /// tables (a derived table's alias too), or a bare column one of those tables has: a table's
+    /// by the catalog (`columns`), a derived table's or a WITH query's by the names its select
+    /// list or its column list gives. Everything else proves nothing: a table of another schema,
+    /// an alias with a column list on a table, a qualifier in another case than the alias, a
+    /// column a derived table selects by an expression's text or a wildcard, and a call with a
+    /// part this does not read, unless it reads a column of the FROM beside it.
     fn owns(&mut self, f: &ast::Function, from: &[TableWithJoins]) -> bool {
         let mut reads: Vec<Vec<String>> = Vec::new();
         let mut whole = f.filter.is_none() && f.within_group.is_empty();
@@ -256,29 +303,57 @@ impl Builder<'_> {
             }
             FunctionArguments::Subquery(_) => whole = false,
         }
-        // The FROM's tables: the name that qualifies each one's columns, and the table where its
-        // columns are the catalog's to say.
-        let mut items: Vec<(String, Option<String>)> = Vec::new();
-        for factor in from.iter().flat_map(|t| std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation))) {
-            if let TableFactor::Table { name, alias, args: None, .. } = factor {
-                let table = match name.0.as_slice() {
-                    [ast::ObjectNamePart::Identifier(i)] => Some(i.value.clone()),
-                    _ => None,
-                };
-                let known = table.clone().filter(|t| alias.as_ref().is_none_or(|a| a.columns.is_empty()) && !self.ctes.contains(&t.to_ascii_lowercase()));
-                if let Some(qualifier) = alias.as_ref().map(|a| a.name.value.clone()).or(table) {
-                    items.push((qualifier, known));
+        // The FROM's tables: the name that qualifies each one's columns, and where its columns
+        // are known.
+        let mut items: Vec<(String, Source)> = Vec::new();
+        let mut factors: Vec<&TableFactor> = from.iter().flat_map(|t| std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation))).collect();
+        while let Some(factor) = factors.pop() {
+            match factor {
+                TableFactor::Table { name, alias, args: None, .. } => {
+                    let table = match name.0.as_slice() {
+                        [ast::ObjectNamePart::Identifier(i)] => Some(i.value.clone()),
+                        _ => None,
+                    };
+                    let listed = alias.as_ref().is_some_and(|a| !a.columns.is_empty());
+                    let source = match &table {
+                        Some(_) if listed => Source::Unknown,
+                        // A WITH query hides a table of its name. Only the one named exactly as
+                        // the reference names it is surely the one read: a name in another case
+                        // may be a table where table names are compared as written.
+                        Some(t) => match self.ctes.iter().rev().find(|c| c.name.eq_ignore_ascii_case(t)) {
+                            Some(cte) if cte.name == *t => Source::Columns(cte.columns.clone()),
+                            Some(_) => Source::Unknown,
+                            None => Source::Catalog(t.clone()),
+                        },
+                        None => Source::Unknown,
+                    };
+                    if let Some(qualifier) = alias.as_ref().map(|a| a.name.value.clone()).or(table) {
+                        items.push((qualifier, source));
+                    }
                 }
+                // A derived table's columns are the ones its select list names.
+                TableFactor::Derived { subquery, alias: Some(alias), .. } => items.push((alias.name.value.clone(), Source::Columns(output_columns(subquery, &alias.columns)))),
+                TableFactor::JsonTable { alias: Some(alias), .. } => items.push((alias.name.value.clone(), Source::Unknown)),
+                TableFactor::NestedJoin { table_with_joins, alias: None } => {
+                    factors.push(&table_with_joins.relation);
+                    factors.extend(table_with_joins.joins.iter().map(|j| &j.relation));
+                }
+                _ => {}
             }
         }
         let mut own = false;
         for read in &reads {
             match read.as_slice() {
                 [column] => {
-                    for table in items.iter().filter_map(|(_, table)| table.as_ref()) {
-                        match self.columns.get(table) {
-                            Some(columns) => own |= columns.contains(&column.to_ascii_lowercase()),
-                            None => self.wanted.push(table.clone()),
+                    let column = column.to_ascii_lowercase();
+                    for (_, source) in &items {
+                        match source {
+                            Source::Catalog(table) => match self.columns.get(table) {
+                                Some(columns) => own |= columns.contains(&column),
+                                None => self.wanted.push(table.clone()),
+                            },
+                            Source::Columns(columns) => own |= columns.contains(&column),
+                            Source::Unknown => {}
                         }
                     }
                 }
@@ -844,6 +919,19 @@ mod tests {
             "select (select count(length(name) + length(title)) from posts) as n from users u",
             "select (select coalesce(json_arrayagg(title), json_array()) from posts) as titles from users u",
             "select (select group_concat(title order by name) from posts) as n from users u",
+            // A derived table's or a WITH query's columns, by its alias or by the names it gives them.
+            "select (select coalesce(json_arrayagg(json_object('id', p.id, 'title', p.title)), json_array()) from (select id, title from posts order by id desc limit 5) p) as recent from users u",
+            "select (select ifnull(json_arrayagg(p.id), json_array()) from (select id from posts) p) as ids from users u",
+            "select (select count(title) from (select title from posts) p) as n from users u",
+            "select (select count(t) from (select p.title as t from posts p) p) as n from users u",
+            "select (select count(n) from (select id from posts) p (n)) as n from users u",
+            "select (select count(id) from (select id from posts union select id from users) p) as n from users u",
+            "select (select count(x.id) from (posts p join (select id from users) x on x.id = p.user_id)) as n from users u",
+            "with recent as (select id, title from posts limit 5) select (select count(r.title) from recent r) as n from users u",
+            "with recent as (select id, title from posts limit 5) select (select count(title) from recent) as n from users u",
+            "with recent (a, b) as (select id, title from posts) select (select count(b) from recent) as n from users u",
+            "select (select count(n) from (with recent as (select id as n from posts) select n from recent) p) as n from users u",
+            "select (with recent as (select id from posts) select count(id) from recent) as n from users u",
         ] {
             assert!(kept(sql), "{sql}");
         }
@@ -857,9 +945,16 @@ mod tests {
             // The qualifier is another name than the alias, in case too.
             "select (select count(posts.id) from posts p) as n from users posts",
             "select (select count(P.id) from posts p) as n from users P",
-            // A WITH query, a derived table and a table of another schema do not say their columns here.
+            // A WITH query or a derived table that lacks the column, one that selects it by its
+            // text or a wildcard, a WITH query named in another case, and a table of another
+            // schema do not say the column is theirs.
             "with posts as (select id from users) select (select count(title) from posts) as n from users u",
-            "select (select count(title) from (select title from posts) p) as n from users u",
+            "select (select count(name) from (select title from posts) p) as n from users u",
+            "select (select count(title) from (select title from posts) p (t)) as n from users u",
+            "select (select count(name) from (select upper(title) from posts) p) as n from users u",
+            "select (select count(name) from (select * from posts) p) as n from users u",
+            "select (select count(u.name) from (select title from posts) p) as n from users u",
+            "with Recent as (select name from posts) select (select count(name) from recent) as n from users u",
             "select (select count(title) from app.posts) as n from users u",
             "select (select count(title) from posts p (a, b, c)) as n from users u",
             // A part of the call this does not read.
@@ -876,6 +971,33 @@ mod tests {
         assert_eq!(first(bare, &Columns::new()), (None, vec!["posts".to_string()]));
         assert_eq!(first(bare, &columns).1, Vec::<String>::new());
         assert_eq!(first("select (select count(p.id) from posts p) as n from users u", &Columns::new()).1, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_json_aggregate_over_a_derived_table_is_typed_like_one_over_a_with_query() {
+        // The shape of the column named `recent`.
+        let recent = |sql: &str| plan(&query(sql), &Columns::new()).columns.into_iter().find(|(name, _)| name == "recent").map(|(_, shape)| shape);
+        let never_null = |sql: &str| matches!(recent(sql), Some(Shape::Array { non_null: true, .. }));
+        let object = "json_object('id', p.id, 'title', p.title)";
+        for sql in [
+            format!("select (select count(*) from users) as user_count, (select coalesce(json_arrayagg({object}), json_array()) from (select id, title from posts order by id desc limit 5) p) as recent"),
+            format!("with p as (select id, title from posts order by id desc limit 5) select (select count(*) from users) as user_count, (select coalesce(json_arrayagg({object}), json_array()) from p) as recent"),
+            format!("select (select coalesce(json_arrayagg({object}), json_array()) from (select id, title from posts) p) as recent"),
+            format!("select (select ifnull(json_arrayagg({object}), json_array()) from (select id, title from posts limit 5) p) as recent"),
+            format!("select coalesce(json_arrayagg({object}), json_array()) as recent from (select id, title from posts limit 5) p"),
+            "select (select coalesce(json_arrayagg(json_object('id', id, 'title', title)), json_array()) from (select id, title from posts limit 5) p) as recent".to_string(),
+        ] {
+            assert!(never_null(&sql), "{sql}");
+        }
+        // Unguarded, the aggregate over no rows is NULL; an aggregate of the outer query's leaves
+        // the subquery a row per row of its FROM, which may be none.
+        for sql in [
+            "select (select json_arrayagg(json_object('id', p.id)) from (select id from posts limit 5) p) as recent",
+            "select (select coalesce(json_arrayagg(u.name), json_array()) from (select id from posts limit 1) p) as recent from users u",
+            "select (select coalesce(json_arrayagg(name), json_array()) from (select id from posts limit 1) p) as recent from users u",
+        ] {
+            assert!(matches!(recent(sql), Some(Shape::Array { non_null: false, .. })), "{sql}");
+        }
     }
 
     #[test]

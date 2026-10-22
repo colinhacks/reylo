@@ -1,0 +1,11 @@
+derived_bare_columns.sql: one () -> { recent_posts: [{ id: int4, title: text }] }
+derived_column_list.sql: one () -> { ids: [{ n: int4 }] }
+derived_count.sql: many () -> { id: int4, n: int8, last: int4|int8? }
+derived_ifnull.sql: one () -> { recent_posts: [{ id: int4, title: text }] }
+derived_limit.sql: one () -> { user_count: int8, recent_posts: [{ id: int4, title: text }] }
+derived_no_limit.sql: one () -> { all_posts: [{ id: int4, title: text }] }
+derived_outer_aggregate.sql: many () -> { n: int8? }
+derived_outer_from.sql: one () -> { recent_posts: [{ id: int4, title: text }] }
+derived_unguarded.sql: one () -> { recent_posts: [{ id: int4 }]? }
+with_bare_columns.sql: one () -> { recent_posts: [{ id: int4, title: text }] }
+with_limit.sql: one () -> { user_count: int8, recent_posts: [{ id: int4, title: text }] }
