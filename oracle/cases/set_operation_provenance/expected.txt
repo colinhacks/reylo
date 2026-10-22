@@ -1,5 +1,6 @@
 derived_union_beside_table.sql: many () -> { name: text, n: int8 }
 recursive.sql: many (root: int8) -> { id: int8, name: text, depth: int4 }
+recursive_counter.sql: many (root: int8) -> { id: int8, name: text, depth: int4 }
 recursive_parent.sql: many () -> { n: int8, parent: int8? }
 where_union.sql: many () -> { name: text }
 with_union.sql: many () -> { id: int8, text: text }

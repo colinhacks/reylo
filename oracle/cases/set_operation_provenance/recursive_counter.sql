@@ -1,0 +1,1 @@
+with recursive tree as (select id, name, 0 as depth from categories where id = :root::bigint union all select c.id, c.name, t.depth + 1 from categories c join tree t on c.parent_id = t.id where c.id > t.id) select id, name, depth from tree

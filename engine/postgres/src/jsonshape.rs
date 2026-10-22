@@ -555,7 +555,7 @@ pub(crate) fn select_text(version: i32, items: &[Node], from: &[Node], filter: O
 }
 
 /// `sql` with every `$n` outside strings, quoted identifiers and comments written as `NULL`.
-fn without_placeholders(sql: &str) -> String {
+pub(crate) fn without_placeholders(sql: &str) -> String {
     let Ok(lexed) = crate::lex::lex(sql, crate::dialect::Dialect::Postgres) else { return sql.to_string() };
     let mut out = String::with_capacity(sql.len());
     let mut at = 0;

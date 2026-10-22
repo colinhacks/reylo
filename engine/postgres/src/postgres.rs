@@ -988,8 +988,11 @@ impl<'a> Engine<'a> {
         let mut pending = false;
         for (i, query) in queries.iter().enumerate().filter(|(i, _)| read(*i)) {
             // The query reading itself: the answer is the assumption it is being settled under,
-            // for the columns it reads by name. A `*` there finds no column list of its width.
-            if let Some(entry) = self.with_stack.borrow_mut().iter_mut().find(|(text, _, _)| *text == query.sql) {
+            // for the columns it reads by name. A `*` there finds no column list of its width. A
+            // probe binds nothing, so the statement read from may be one with NULL in place of the
+            // query's placeholders (`jsonshape::select_text`): it is the same query.
+            let same = jsonshape::without_placeholders(&query.sql);
+            if let Some(entry) = self.with_stack.borrow_mut().iter_mut().find(|(text, _, _)| *text == query.sql || jsonshape::without_placeholders(text) == same) {
                 entry.2 = true;
                 let assumed = &entry.1;
                 let named = reads.iter().filter_map(|r| match r {
