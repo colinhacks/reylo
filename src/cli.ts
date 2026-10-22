@@ -14,7 +14,7 @@ import { findProjectFile, PROJECT_FILE } from "./project.ts";
 const USAGE = `Usage: reylo generate [paths...] [--force]
 
 Analyzes every .sql file under the paths (by default the current directory) into .reylo/: the
-cache that the type check and the build steps read. A file that is not one query (a migration)
+cache that the type check and the build steps read. A file of several statements (a migration)
 is skipped, and a run that finds no query fails. --force analyzes each file against the database
 even when .reylo/ holds it.
 
@@ -72,10 +72,13 @@ function located(text: string, start: number, length: number): { at: string; fra
   };
 }
 
-// A file of several statements, or one whose DDL the database refuses (a CREATE TABLE of a table
-// the database has), is a migration or a schema file, which nothing imports: the engine's error
-// says how to leave it out of the type check (or the server refuses to prepare several commands).
-const NOT_A_QUERY = /, so if it is a migration or a schema file, leave it out of the type check|^cannot insert multiple commands into a prepared statement/;
+// A file of several statements is a migration or a schema file, which nothing imports: the
+// engine's error says so (or the server refuses to prepare several commands), and the file is
+// skipped. A file of one command is typed like a query, and one the database refuses (a typo in an
+// imported CREATE INDEX, or a migration's CREATE TABLE of a table the database has) is an error
+// like any other, which fails the run and is printed: the database cannot tell a migration from a
+// command someone imports, and its message still says how to leave a migration out of the check.
+const NOT_A_QUERY = /^A typed \.sql file holds one statement and this one holds several, |^cannot insert multiple commands into a prepared statement/;
 
 async function generate(args: string[]): Promise<number> {
   const force = args.includes("--force");

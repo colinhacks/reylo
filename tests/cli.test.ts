@@ -27,11 +27,15 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
   writeFileSync(join(root, "src", "queries", "count.sql"), "select count(*) as n from users");
   writeFileSync(join(root, "src", "queries", "bad.sql"), "select id\nfrom nope");
   writeFileSync(join(root, "src", "queries", "typo.sql"), "selec id from users");
+  // A file of one command is typed like a query, and one the database refuses is an error like any
+  // other: the database cannot tell a migration from a command someone imports.
+  writeFileSync(join(root, "src", "queries", "index.sql"), "create index users_name on users (name)");
+  writeFileSync(join(root, "src", "queries", "stale.sql"), "create index users_email on users (email)");
   // React Router's server-only directory is the one dot directory searched.
   writeFileSync(join(root, "app", ".server", "queries", "names.sql"), "select name from users");
-  // A migration is skipped: it is not one query.
+  // A migration of several statements is skipped: it is not one query.
   writeFileSync(join(root, "migrations", "0001.sql"), "create table posts (id integer primary key);\ncreate index posts_id on posts (id);");
-  writeFileSync(join(root, "migrations", "0002.sql"), "alter table posts add column title text");
+  writeFileSync(join(root, "migrations", "0002.sql"), "alter table posts add column title text;\nalter table posts add column body text;");
   // Dependencies, build output and what git ignores are not the project's queries.
   writeFileSync(join(root, "node_modules", "dep", "x.sql"), "select 1");
   writeFileSync(join(root, ".next", "y.sql"), "select 1");
@@ -48,11 +52,18 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
     `  app/.server/queries/names.sql  ✓`,
     `  src/queries/bad.sql            ✗`,
     `  src/queries/count.sql          ✓`,
+    `  src/queries/index.sql          ✓`,
+    `  src/queries/stale.sql          ✗`,
     `  src/queries/typo.sql           ✗`,
     `  src/queries/user.sql           ✓`,
     ``,
     // SQLite names no place for this error, so no line of the statement is shown.
     `src/queries/bad.sql:1:1: no such table: nope`,
+    ``,
+    // A command the database refuses fails, and its message says how to leave a migration out.
+    `src/queries/stale.sql:1:36: no such column: email, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].`,
+    `  1 | create index users_email on users (email)`,
+    `    |                                    ^^^^^`,
     ``,
     // A misspelt keyword is an error, not a statement that is not a query.
     `src/queries/typo.sql:1:1: near "selec": syntax error`,
@@ -61,7 +72,7 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
     ``,
     `Skipped 2 files that are not one query (a migration?): migrations/0001.sql, migrations/0002.sql`,
     ``,
-    `✗ 2 of 5 queries failed (_ s)`,
+    `✗ 3 of 7 queries failed (_ s)`,
     ``,
   ].join("\n"));
 
@@ -71,10 +82,10 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
   assert.match(none.out, /^Skipped 2 files that are not one query \(a migration\?\): .*\n\nNo query under migrations: name the directory that holds them, or set cli\.include in \.reylo\.yaml\.\n$/m);
 
   // .reylo.yaml narrows the files; a file named on the command line is analyzed as named.
-  writeFileSync(join(root, ".reylo.yaml"), `cli:\n  include: ["src/**/*.sql"]\n  exclude: ["**/bad.sql", "**/typo.sql"]\n`);
+  writeFileSync(join(root, ".reylo.yaml"), `cli:\n  include: ["src/**/*.sql"]\n  exclude: ["**/bad.sql", "**/stale.sql", "**/typo.sql"]\n`);
   const configured = reylo(root, "generate");
   assert.equal(configured.status, 0, configured.err);
-  assert.match(configured.out, /^  src\/queries\/count\.sql  ✓\n  src\/queries\/user\.sql   ✓\n\n✓ 2 queries typed \(_ s\)\n$/m);
+  assert.match(configured.out, /^  src\/queries\/count\.sql  ✓\n  src\/queries\/index\.sql  ✓\n  src\/queries\/user\.sql   ✓\n\n✓ 3 queries typed \(_ s\)\n$/m);
   assert.equal(reylo(root, "generate", "src/queries/bad.sql").status, 1);
 
   // Without the database the cache still answers, and --force cannot.
