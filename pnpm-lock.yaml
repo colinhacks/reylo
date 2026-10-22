@@ -7,10 +7,6 @@ settings:
 importers:
 
   .:
-    dependencies:
-      tinyglobby:
-        specifier: ^0.2.17
-        version: 0.2.17
     devDependencies:
       '@reylosql/mysql':
         specifier: link:packages/mysql
@@ -239,23 +235,6 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
-  fdir@6.5.0:
-    resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
-    engines: {node: '>=12.0.0'}
-    peerDependencies:
-      picomatch: ^3 || ^4
-    peerDependenciesMeta:
-      picomatch:
-        optional: true
-
-  picomatch@4.0.7:
-    resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
-    engines: {node: '>=12'}
-
-  tinyglobby@0.2.17:
-    resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
-    engines: {node: '>=12.0.0'}
-
   typescript@7.1.0-dev.20260918.1:
     resolution: {integrity: sha512-/HzGzVht3sKVAGPQeCoTC5dm6pjH7ebpmqe0FXSFJ5UFL58Zjy7UHbDAn1lv6Y8JNzgDoW2GtKUVHBLbbV17ZQ==}
     engines: {node: '>=16.20.0'}
@@ -397,17 +376,6 @@ snapshots:
       '@esbuild/win32-arm64': 0.28.2
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
-
-  fdir@6.5.0(picomatch@4.0.7):
-    dependencies:
-      picomatch: 4.0.7
-
-  picomatch@4.0.7: {}
-
-  tinyglobby@0.2.17:
-    dependencies:
-      fdir: 6.5.0(picomatch@4.0.7)
-      picomatch: 4.0.7
 
   typescript@7.1.0-dev.20260918.1:
     optionalDependencies:

@@ -5,9 +5,9 @@
 // it wrote; where the database can be reached, it only saves the build the round trips.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
+import { glob } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { styleText } from "node:util";
-import { glob } from "tinyglobby";
 import { Session } from "./analyze.ts";
 import { findProjectFile, PROJECT_FILE } from "./project.ts";
 
@@ -34,8 +34,10 @@ const EXCLUDE = ["**/node_modules/**", "**/{dist,build,out,target,coverage}/**"]
 const shown = (path: string) => relative(process.cwd(), path) || ".";
 const paint = (format: Parameters<typeof styleText>[0], text: string) => styleText(format, text);
 
+// Node's own glob, which does not descend into a symlinked directory, and on macOS and Windows
+// matches without regard to case, hence the check of the extension.
 async function sqlFiles(dir: string, include = INCLUDE, exclude: string[] = []): Promise<string[]> {
-  const files = await glob(include, { cwd: dir, ignore: [...EXCLUDE, ...exclude], absolute: true });
+  const files = await Array.fromAsync(glob(include, { cwd: dir, exclude: [...EXCLUDE, ...exclude] }), (f) => resolve(dir, f));
   return files.filter((f) => f.endsWith(".sql"));
 }
 

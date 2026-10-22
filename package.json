@@ -51,9 +51,6 @@
     "esbuild": "^0.28.2",
     "typescript": "^7.1.0-dev.20260918.1"
   },
-  "dependencies": {
-    "tinyglobby": "^0.2.17"
-  },
   "peerDependencies": {
     "@reylosql/mysql": "0.3.0",
     "@reylosql/postgres": "0.3.0",
