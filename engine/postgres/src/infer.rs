@@ -1322,13 +1322,23 @@ impl Items<'_> {
                 });
                 let query = cte.and_then(|cte| {
                     let body = cte.ctequery.as_deref().and_then(as_select)?;
+                    // A WITH query's body sees the queries before it, and in a recursive WITH
+                    // every one: a later query's name, or its own, is a table's there.
+                    let scope = self.with.map(|w| {
+                        let mut w = w.clone();
+                        if !w.recursive {
+                            let at = w.ctes.iter().position(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(c)) if c.ctename == cte.ctename)).unwrap_or(0);
+                            w.ctes.truncate(at);
+                        }
+                        w
+                    }).filter(|w| !w.ctes.is_empty());
                     let mut names = columns(rv.alias.as_ref());
                     let own: Vec<String> = cte.aliascolnames.iter().filter_map(|n| match n.node.as_ref() {
                         Some(NodeEnum::String(s)) => Some(s.sval.clone()),
                         _ => None,
                     }).collect();
                     names.extend(own.into_iter().skip(names.len()));
-                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: names, with: Some(cte.ctename.clone()), nulled })
+                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
@@ -1709,8 +1719,12 @@ fn set_kind(s: &SelectStmt) -> Option<SetKind> {
 /// arm reading a CTE still resolves.
 fn arm_text(version: i32, arm: &SelectStmt, with: Option<&protobuf::WithClause>) -> Option<String> {
     let mut arm = arm.clone();
-    if arm.with_clause.is_none() {
-        arm.with_clause = with.cloned();
+    match (&arm.with_clause, with) {
+        (None, _) => arm.with_clause = with.cloned(),
+        // The arm's own WITH would take the place of the one around it, whose queries the arm may
+        // read: a name of one would be a table's.
+        (Some(_), Some(_)) => return None,
+        (Some(_), None) => {}
     }
     let result = ParseResult {
         version,
@@ -2463,10 +2477,17 @@ mod tests {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH pub AS (SELECT id, at FROM posts WHERE at IS NOT NULL), other AS (SELECT 1 AS one) SELECT id, pub.at, id + 1 AS next FROM pub").unwrap();
         assert_eq!(reads, vec![column(0, "id"), column(0, "at"), ItemRead::Other]);
-        // Only the query that is read, with the whole WITH clause still in front of it.
+        // Only the query that is read, with the queries before it in front of it: none here.
         assert_eq!(queries.len(), 1);
         assert_eq!(queries[0].with.as_deref(), Some("pub"));
-        assert_eq!(queries[0].sql, "WITH pub AS (SELECT id, at FROM posts WHERE at IS NOT NULL), other AS (SELECT 1 AS one) SELECT id, at FROM posts WHERE at IS NOT NULL");
+        assert_eq!(queries[0].sql, "SELECT id, at FROM posts WHERE at IS NOT NULL");
+        // A query's body sees the queries before it, not the ones after it nor itself, whose
+        // names are tables' there.
+        let (_, queries) = item_reads("WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a), c AS (SELECT x FROM c) SELECT b.x, c.x FROM b, c").unwrap();
+        assert_eq!(queries[0].sql, "WITH a AS (SELECT 1 AS x) SELECT x FROM a");
+        assert_eq!(queries[1].sql, "WITH a AS (SELECT 1 AS x), b AS (SELECT x FROM a) SELECT x FROM c");
+        // A subquery's own WITH would hide the statement's, so it is no statement of its own.
+        assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT s.x FROM (WITH b AS (SELECT 2 AS y) SELECT a.x FROM a, b) s"), None);
         // A recursive one keeps its own name in scope, and its column list renames its columns.
         let (reads, queries) = item_reads("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 5) SELECT n FROM t").unwrap();
         assert_eq!(reads, vec![column(0, "n")]);

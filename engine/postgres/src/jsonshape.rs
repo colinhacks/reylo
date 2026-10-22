@@ -142,7 +142,8 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     let withs = vec![Withs::default().with(with.as_ref(), columns)];
     // A plain GROUP BY: every group has a row. A grouping set can make one of none (`GROUP BY ()`
     // over no rows is one row), so it is no plain one.
-    let grouped = matches!(top, NodeEnum::SelectStmt(s) if !s.group_clause.is_empty() && !s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_)))));
+    let grouping_sets = matches!(top, NodeEnum::SelectStmt(s) if has_grouping_sets(s));
+    let grouped = matches!(top, NodeEnum::SelectStmt(s) if !s.group_clause.is_empty() && !grouping_sets);
     // A statement that groups or aggregates keeps every expression of its select list outside an
     // aggregate's arguments valid under its GROUP BY, which a probe of them carries; the
     // arguments themselves go in a probe without one. A GROUP BY that may name a column of the
@@ -153,7 +154,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust) => Some(Vec::new()),
         _ => None,
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0 };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -174,16 +175,14 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     }
     // A probe that reads one of the statement's own CTEs carries them, so a constructor reading
     // one still resolves ([`select_text`]).
+    let text = |from: &[Node], d: &Draft| {
+        let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
+        grouped_select_text(version, &d.items, from, d.filter.as_ref(), group, with.as_ref())
+    };
     let probes = builder
         .drafts
         .iter()
-        .map(|d| {
-            let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
-            Probe {
-                sql: grouped_select_text(version, &d.items, &d.from, d.filter.as_ref(), group, with.as_ref()).unwrap_or_default(),
-                wider: d.wider.as_ref().and_then(|f| grouped_select_text(version, &d.items, f, d.filter.as_ref(), group, with.as_ref())),
-            }
-        })
+        .map(|d| Probe { sql: text(&d.from, d).unwrap_or_default(), wider: d.wider.as_ref().and_then(|f| text(f, d)) })
         .collect();
     Plan { columns, probes }
 }
@@ -236,7 +235,10 @@ fn names_output(item: &Node, targets: &[Node]) -> bool {
         Some(NodeEnum::AConst(_)) => true,
         Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => {
             let Some(NodeEnum::String(name)) = c.fields[0].node.as_ref() else { return false };
-            targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if target_name(rt).as_deref() == Some(name.sval.as_str())))
+            // A bare column with no alias goes by its own name, which reads that column whether
+            // Postgres takes the name for the FROM's or the select list's.
+            let own = |rt: &ResTarget| rt.name.is_empty() && matches!(rt.val.as_deref().and_then(|v| v.node.as_ref()), Some(NodeEnum::ColumnRef(_)));
+            targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if !own(rt) && target_name(rt).as_deref() == Some(name.sval.as_str())))
         }
         _ => false,
     }
@@ -293,6 +295,12 @@ struct Builder<'a> {
     group: Option<Vec<Node>>,
     /// How many aggregates of the top statement the walk is inside the arguments of.
     in_aggregate: usize,
+    /// Whether the top statement groups by grouping sets, which null a grouping column in the
+    /// super-aggregate rows: what it reads is NULL there, but for an aggregate's argument, which
+    /// is read from the rows before they are grouped.
+    grouping_sets: bool,
+    /// Whether the builder stands in the argument of a plain aggregate of the top statement.
+    under_aggregate: bool,
 }
 
 #[derive(Clone)]
@@ -342,27 +350,13 @@ impl Builder<'_> {
                     // ([`crate::levels`]), which says nothing of its rows.
                     let grouped = self.dialect == Dialect::Postgres && self.grouped && self.stack.len() == 1 && f.over.is_none() && f.agg_filter.is_none();
                     let non_null = TOTAL_AGG_FNS.contains(&name.as_str()) || grouped;
-                    // Only rows its FILTER passes reach an aggregate: its argument is read in a
-                    // context of its own whose probe filters by it too, so `FILTER (WHERE p.id IS
-                    // NOT NULL)` over a LEFT JOIN reads `p` as a row that exists.
-                    let Some(filter) = f.agg_filter.as_deref() else {
-                        self.in_aggregate += 1;
-                        let items = self.walk(&f.args[0]);
-                        self.in_aggregate -= 1;
-                        return Shape::Array { items: Box::new(items), non_null };
-                    };
-                    let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
-                    let both = match outer {
-                        Some(outer) => and(outer, filter.clone()),
-                        None => filter.clone(),
-                    };
-                    self.next_ctx += 1;
-                    self.stack.push((self.next_ctx, from, Some(both)));
-                    self.withs.push(self.withs.last().cloned().unwrap_or_default());
-                    let items = self.walk(&f.args[0]);
-                    self.withs.pop();
-                    self.stack.pop();
-                    Shape::Array { items: Box::new(items), non_null }
+                    // A plain aggregate of the top statement reads its argument from the rows
+                    // before a grouping set nulls them; a window call reads the grouped rows.
+                    let outer = self.under_aggregate;
+                    self.under_aggregate |= f.over.is_none() && self.stack.len() == 1;
+                    let shape = self.aggregate(f, non_null);
+                    self.under_aggregate = outer;
+                    shape
                 } else if ROW_FNS.contains(&name.as_str()) {
                     // A bare name is a column before it is a FROM item, of the innermost query
                     // that has one of that name: it is the item's whole row only when no FROM in
@@ -431,6 +425,12 @@ impl Builder<'_> {
                     return Shape::Unknown;
                 }
                 let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                // A probe carries the statement's WITH, so a subquery's own WITH, whose queries
+                // hide the statement's and its tables of their names, is no context a probe can
+                // stand in; nor is a subquery's grouping set, which nulls what it groups by.
+                if select.with_clause.is_some() || has_grouping_sets(select) {
+                    return Shape::Unknown;
+                }
                 let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
                 let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
                 let level = Level::of(&select.from_clause, &withs, self.columns);
@@ -454,6 +454,37 @@ impl Builder<'_> {
             }
             _ => self.leaf(expr),
         }
+    }
+
+    /// `json_agg(x)` and its kin, `non_null` where no group is empty.
+    fn aggregate(&mut self, f: &protobuf::FuncCall, non_null: bool) -> Shape {
+
+            // Only rows its FILTER passes reach an aggregate: its argument is read in a
+            // context of its own whose probe filters by it too, so `FILTER (WHERE p.id IS
+            // NOT NULL)` over a LEFT JOIN reads `p` as a row that exists.
+            let Some(filter) = f.agg_filter.as_deref() else {
+                self.in_aggregate += 1;
+                let items = self.walk(&f.args[0]);
+                self.in_aggregate -= 1;
+                return Shape::Array { items: Box::new(items), non_null };
+            };
+            let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
+            let both = match outer {
+                Some(outer) => and(outer, filter.clone()),
+                None => filter.clone(),
+            };
+            self.next_ctx += 1;
+            self.stack.push((self.next_ctx, from, Some(both)));
+            self.withs.push(self.withs.last().cloned().unwrap_or_default());
+            let items = self.walk(&f.args[0]);
+            self.withs.pop();
+            self.stack.pop();
+            Shape::Array { items: Box::new(items), non_null }
+    }
+
+    /// Whether a value read where the builder stands may be NULL for a grouping set.
+    fn nulled_by_grouping(&self) -> bool {
+        self.grouping_sets && !self.under_aggregate
     }
 
     /// A whole row by its alias: the old or the new row of a RETURNING is the target relation's
@@ -504,7 +535,7 @@ impl Builder<'_> {
         let index = self.drafts[probe].items.len();
         self.drafts[probe].items.push(expr);
         let shape = Shape::Column { probe, index };
-        if missing {
+        if missing || self.nulled_by_grouping() {
             Shape::Nullable(Box::new(shape))
         } else {
             shape
@@ -524,6 +555,10 @@ impl Builder<'_> {
 
     /// `to_jsonb(u)`: a probe of its own, selecting `u.*`, so the row's own columns are the shape.
     fn row(&mut self, alias: &str) -> Shape {
+        // A grouping set nulls the grouping columns of a row, which a probe's row type never shows.
+        if self.nulled_by_grouping() {
+            return Shape::Unknown;
+        }
         let Some(probe) = self.draft(true) else { return Shape::Unknown };
         let star = Node {
             node: Some(NodeEnum::ColumnRef(ColumnRef {
@@ -611,6 +646,11 @@ fn relation_from(relation: Option<&protobuf::RangeVar>, extra: &[Node]) -> Vec<N
     }
     out.extend(extra.iter().cloned());
     out
+}
+
+/// Whether a SELECT groups by grouping sets: `ROLLUP`, `CUBE` or `GROUPING SETS`.
+pub(crate) fn has_grouping_sets(s: &SelectStmt) -> bool {
+    s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_))))
 }
 
 /// Whether this expression is a JSON constructor the build speaks for, rather than an ordinary
@@ -916,12 +956,42 @@ fn target_name(rt: &ResTarget) -> Option<String> {
     default_name(rt.val.as_deref()?)
 }
 
+/// The name Postgres gives a target with no alias, as its `FigureColname` does for the
+/// expressions a constructor target is: a function's own name, `coalesce`, a cast's operand's
+/// name before the type's, and a scalar subquery's column's. `?column?` where it finds none.
 fn default_name(node: &Node) -> Option<String> {
+    Some(figure(node).map_or_else(|| "?column?".to_string(), |(name, _)| name))
+}
+
+/// The name `FigureColnameInternal` finds for an expression and how strongly: 2 for a name of
+/// its own, 1 for a cast's type, which an outer cast's operand name outranks.
+fn figure(node: &Node) -> Option<(String, u8)> {
     match node.node.as_ref()? {
-        NodeEnum::FuncCall(f) => func_name(f),
-        NodeEnum::CoalesceExpr(_) => Some("coalesce".to_string()),
-        NodeEnum::TypeCast(t) => t.type_name.as_ref().and_then(|tn| last_string(&tn.names)),
-        NodeEnum::SubLink(s) => target_name(single_target(as_select(s.subselect.as_deref()?)?)?),
+        NodeEnum::ColumnRef(c) => match c.fields.last()?.node.as_ref()? {
+            NodeEnum::String(s) => Some((s.sval.clone(), 2)),
+            _ => None,
+        },
+        NodeEnum::FuncCall(f) => Some((func_name(f)?, 2)),
+        NodeEnum::CoalesceExpr(_) => Some(("coalesce".to_string(), 2)),
+        NodeEnum::TypeCast(t) => match t.arg.as_deref().and_then(figure) {
+            Some((name, 2)) => Some((name, 2)),
+            _ => Some((t.type_name.as_ref().and_then(|tn| last_string(&tn.names))?, 1)),
+        },
+        NodeEnum::CollateClause(c) => figure(c.arg.as_deref()?),
+        // The subquery's one column, by the name it goes by there.
+        NodeEnum::SubLink(s) if s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32 => {
+            let rt = single_target(as_select(s.subselect.as_deref()?)?)?;
+            Some((target_name(rt)?, 2))
+        }
+        NodeEnum::SubLink(s) if s.sub_link_type == protobuf::SubLinkType::ExistsSublink as i32 => Some(("exists".to_string(), 2)),
+        NodeEnum::SubLink(s) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => Some(("array".to_string(), 2)),
+        NodeEnum::CaseExpr(c) => match c.defresult.as_deref().and_then(figure) {
+            Some((name, 2)) => Some((name, 2)),
+            _ => Some(("case".to_string(), 1)),
+        },
+        NodeEnum::AArrayExpr(_) => Some(("array".to_string(), 2)),
+        NodeEnum::RowExpr(_) => Some(("row".to_string(), 2)),
+        NodeEnum::MinMaxExpr(m) => Some((if m.op == protobuf::MinMaxOp::IsGreatest as i32 { "greatest" } else { "least" }.to_string(), 2)),
         _ => None,
     }
 }
@@ -1372,6 +1442,44 @@ mod tests {
         // `public.input` is the table, whatever the WITH clause calls `input`.
         let s = shapes("WITH input AS (SELECT $1::uuid AS id) SELECT jsonb_build_object('b', c.body) AS x FROM public.input c");
         assert_eq!(s.probes[0].sql, "SELECT c.body AS a0 FROM public.input c");
+    }
+
+    #[test]
+    fn a_dml_statement_whose_with_names_its_target_has_no_shapes() {
+        assert!(shapes("WITH team AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
+        assert!(!shapes("WITH other AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
+        // A qualified target is the relation, whatever the WITH calls its name.
+        assert!(!shapes("WITH team AS (SELECT 1 AS motto) UPDATE public.team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
+    }
+
+    #[test]
+    fn a_grouping_set_nulls_a_value_but_a_plain_aggregates_argument() {
+        let leaf = |sql: &str| match &shapes(sql).columns[0].1 {
+            Shape::Object { fields, .. } => fields[0].1.clone(),
+            Shape::Array { items, .. } => (**items).clone(),
+            other => other.clone(),
+        };
+        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
+        assert!(matches!(leaf("SELECT jsonb_agg(name) OVER () AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
+        assert!(matches!(leaf("SELECT jsonb_agg(name) AS o FROM team GROUP BY ROLLUP (id)"), Shape::Column { .. }));
+        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY name"), Shape::Column { .. }));
+        // A whole row under a grouping set, and a subquery with a grouping set of its own, are read as nothing.
+        assert!(shapes("SELECT to_jsonb(t) AS o FROM team t GROUP BY ROLLUP (t.id)").columns.is_empty());
+        assert!(shapes("SELECT (SELECT jsonb_build_object('n', name) FROM team GROUP BY CUBE (name) LIMIT 1) AS o").columns.is_empty());
+    }
+
+    #[test]
+    fn a_subquery_with_a_with_of_its_own_is_read_as_nothing() {
+        assert!(shapes("SELECT (WITH team AS (SELECT 1 AS name) SELECT jsonb_agg(team.name) FROM team) AS v").columns.is_empty());
+    }
+
+    #[test]
+    fn a_target_without_an_alias_goes_by_the_name_postgres_gives_it() {
+        let names = |sql: &str| shapes(sql).columns.into_iter().map(|(n, _)| n).collect::<Vec<_>>();
+        assert_eq!(names("SELECT jsonb_build_object('k', 1)::jsonb FROM team"), vec!["jsonb_build_object"]);
+        assert_eq!(names("SELECT coalesce(jsonb_agg(id), '[]')::json FROM team"), vec!["coalesce"]);
+        assert_eq!(names("SELECT (SELECT jsonb_agg(id) AS ids FROM team)::jsonb"), vec!["ids"]);
+        assert_eq!(names("SELECT (SELECT jsonb_agg(id) FROM team)"), vec!["jsonb_agg"]);
     }
 
     #[test]

@@ -552,7 +552,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                 }
                                 continue;
                             }
-                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default()) {
+                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(true)) {
                                 problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
                             }
                         }
@@ -569,8 +569,9 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
 }
 
 /// Why a non-NULL value contradicts its type, if it does: a NULL element in an array typed without
-/// one, or a null where a JSON object or list typed a value.
-fn contradiction(ty: &Value, text: &str) -> Option<String> {
+/// one, or a null where a JSON object or list typed a value. A JSON `null` at the top is the
+/// column's null to the run time, so it contradicts a column typed non-null.
+fn contradiction(ty: &Value, text: &str, nullable: bool) -> Option<String> {
     match ty["kind"].as_str() {
         // A union of literals, from an enum or a CHECK list: the value is one of them.
         Some("enum") => {
@@ -580,6 +581,9 @@ fn contradiction(ty: &Value, text: &str) -> Option<String> {
         Some("array") if !ty["nullable_items"].as_bool().unwrap_or(true) => array_has_null(text).then(|| "typed with non-null elements holds a NULL element".to_string()),
         Some("object") | Some("list") => {
             let json: Value = serde_json::from_str(text).ok()?;
+            if json.is_null() {
+                return (!nullable).then(|| "holds the JSON null, typed non-null".to_string());
+            }
             json_contradiction(ty, &json, "")
         }
         Some("json") if ty.get("schema").is_some() => {
@@ -628,13 +632,13 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
             let at = if path.is_empty() { "the top" } else { path };
             (!reylo_engine_core::schema_type::admits(schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
         }
-        // A row value inside a document is an object of its fields.
+        // A row value inside a document is an object of its fields, each key there.
         Some("object") | Some("composite") => {
             let at = if path.is_empty() { "the top" } else { path };
             let Some(obj) = json.as_object() else { return Some(format!("holds {json} at {at}, typed an object")) };
             for f in ty["fields"].as_array()? {
                 let name = f["name"].as_str()?;
-                let v = obj.get(name).unwrap_or(&Value::Null);
+                let Some(v) = obj.get(name) else { return Some(format!("has no key {path}.{name}")) };
                 // A null where the field's own schema admits one is the column's value.
                 if v.is_null() && !(f["type"]["kind"] == "json" && f["type"].get("schema").is_some_and(|s| reylo_engine_core::schema_type::admits(s, v))) {
                     if !f["nullable"].as_bool().unwrap_or(true) {
@@ -667,7 +671,9 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
         // Any array may hold NULL elements unless the statement builds it from values it shows are
         // not (`nullable_items` false), as `src/render.ts` types it. Each element is of the element type.
         Some("array") => {
-            for (i, item) in json.as_array()?.iter().enumerate() {
+            let at = if path.is_empty() { "the top" } else { path };
+            let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed an array")) };
+            for (i, item) in items.iter().enumerate() {
                 if item.is_null() {
                     if ty["nullable_items"].as_bool() == Some(false) {
                         return Some(format!("has a null element at {path}[{i}], typed non-null"));
@@ -914,7 +920,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     }
                                 }
                                 Some(rusqlite::types::Value::Text(text)) => {
-                                    if let Some(why) = contradiction(&col["type"], text) {
+                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(true)) {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -1287,13 +1293,19 @@ mod tests {
         let scalar = |name: &str| json!({"kind": "scalar", "name": name});
         let list = json!({"kind": "list", "of": scalar("int8"), "nullable_items": false});
         let object = json!({"kind": "object", "fields": [{"name": "ids", "type": list.clone(), "nullable": false}]});
-        assert_eq!(contradiction(&list, "[1, 2]"), None);
-        assert_eq!(contradiction(&object, r#"{"ids": []}"#), None);
+        assert_eq!(contradiction(&list, "[1, 2]", false), None);
+        assert_eq!(contradiction(&object, r#"{"ids": []}"#, false), None);
         // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.
-        assert_eq!(contradiction(&list, "{}").as_deref(), Some("holds {} at the top, typed a list"));
-        assert_eq!(contradiction(&object, "[]").as_deref(), Some("holds [] at the top, typed an object"));
-        assert_eq!(contradiction(&object, r#"{"ids": {}}"#).as_deref(), Some("holds {} at .ids, typed a list"));
-        assert_eq!(contradiction(&object, "null").as_deref(), Some("holds null at the top, typed an object"));
+        assert_eq!(contradiction(&list, "{}", false).as_deref(), Some("holds {} at the top, typed a list"));
+        assert_eq!(contradiction(&object, "[]", false).as_deref(), Some("holds [] at the top, typed an object"));
+        assert_eq!(contradiction(&object, r#"{"ids": {}}"#, false).as_deref(), Some("holds {} at .ids, typed a list"));
+        // The JSON null at the top is the column's null to the run time: wrong only where the column is non-null.
+        assert_eq!(contradiction(&object, "null", false).as_deref(), Some("holds the JSON null, typed non-null"));
+        assert_eq!(contradiction(&object, "null", true), None);
+        // Every key is there, and an array is an array.
+        assert_eq!(contradiction(&object, "{}", false).as_deref(), Some("has no key .ids"));
+        let array = json!({"kind": "array", "of": scalar("int4"), "nullable_items": true});
+        assert_eq!(json_contradiction(&array, &json!({"a": 1}), ".xs").as_deref(), Some(r#"holds {"a":1} at .xs, typed an array"#));
     }
 
     #[test]

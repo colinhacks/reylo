@@ -1,0 +1,20 @@
+alias_list.sql: many () -> { a: json }
+cast_name.sql: many () -> { jsonb: json }
+cast_name_top.sql: many () -> { jsonb_build_object: { k: int4 }, jsonb: json }
+cte_alias_list.sql: many () -> { a: json }
+cte_earlier_sibling.sql: many () -> { o: { n: text } }
+cte_later_sibling.sql: many () -> { o: { n: int4 } }
+cte_reads_table_of_its_name.sql: many () -> { o: { n: int4? } }
+cte_reference_alias_list.sql: many () -> { a: json }
+derived_with_reads_outer.sql: many () -> { v: json? }
+dml_target.sql: many () -> { motto: text? }
+dml_target_expr.sql: many () -> { m: text? }
+dml_target_probe.sql: many () -> { j: json? }
+grouping_set.sql: many () -> { o: { n: text }? }
+inner_with_hides.sql: one () -> { v: json? }
+param_with_table.sql: one (n: int4) -> { o: { n: unknown? } }
+rollup_aggregate.sql: many () -> { o: [text]? }
+rollup_leaf.sql: many () -> { o: { n: text? } }
+rollup_window.sql: many () -> { o: [text?]? }
+sublink_inner_with.sql: one () -> { v: json? }
+subquery_with_hides.sql: one () -> { v: json? }
