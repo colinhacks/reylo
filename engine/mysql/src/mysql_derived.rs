@@ -216,7 +216,7 @@ pub fn filler(c: &MysqlColumn) -> Option<&'static str> {
 
 /// The text of a derived table's or a WITH query's query with the columns given a filler written
 /// `coalesce(column, filler)`: the query as a derived table of its own, whose columns are read by
-/// position, each item named as the column was (`names`), or by position where a column list
+/// position, each item named as the column was (`columns`), or by position where a column list
 /// names them.
 pub fn wrapper(q: &Query, columns: &[(String, Option<&str>)], listed: bool) -> String {
     let items: Vec<String> = columns
