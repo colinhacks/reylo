@@ -326,6 +326,10 @@ impl Builder<'_> {
                     (shape, []) => shape,
                     (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
                     (Shape::Array { items, .. }, [default]) if is_empty_array(default) => Shape::Array { items, non_null: true },
+                    // A placeholder is the whole's type under a default that cannot widen it, and it
+                    // resolves nullable. Under any other one the whole is no probe's to read, since a
+                    // probe binds nothing: `coalesce($1::int, 1.5)` is a numeric.
+                    (shape @ Shape::Param(_), defaults) if defaults.iter().all(keeps_param_type) => shape,
                     // An `x` the build cannot explain leaves the whole unexplained too, and it
                     // costs no probe: one may aggregate in a way no probe without a GROUP BY takes.
                     (Shape::Unknown, _) => {
@@ -797,6 +801,14 @@ fn string_const(node: &Node) -> Option<String> {
     }
 }
 
+/// A default that leaves a `coalesce` over a placeholder the placeholder's type, as JSON writes it:
+/// a NULL or an untyped string, which take that type, and an integer or a boolean, which coalesce
+/// only with a type of their own kind (`int2` widens to `int4`, an integer all the same).
+fn keeps_param_type(node: &Node) -> bool {
+    use protobuf::a_const::Val;
+    matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull || matches!(c.val, Some(Val::Sval(_) | Val::Ival(_) | Val::Boolval(_))))
+}
+
 /// `'[]'`, as JSON text or cast to `json` or `jsonb`: the default that keeps an array an array.
 fn is_empty_array(node: &Node) -> bool {
     match node.node.as_ref() {
@@ -1118,6 +1130,11 @@ mod tests {
         assert_eq!(fields[0].1, Shape::Param(1));
         assert_eq!(fields[1].1, Shape::Column { probe: 0, index: 0 });
         assert_eq!(p.probes[0].sql, "SELECT t.id AS a0 FROM todos t");
+        // Under a default that cannot widen it, a coalesce of one is the placeholder; under a
+        // decimal it is a numeric, which no probe can read.
+        let c = shapes("SELECT jsonb_build_object('q', coalesce($1::text, 'd'), 'n', coalesce($2::int, 0, NULL), 'x', coalesce($3::int, 1.5)) AS x FROM todos t");
+        let Shape::Object { fields, .. } = &c.columns[0].1 else { panic!() };
+        assert_eq!(fields.iter().map(|f| f.1.clone()).collect::<Vec<_>>(), [Shape::Param(1), Shape::Param(2), Shape::Unknown]);
         // An expression merely containing one cannot go in a probe, which binds nothing.
         let q = shapes("SELECT jsonb_build_object('q', 'x' || $1::text) AS x FROM todos t");
         let Shape::Object { fields, .. } = &q.columns[0].1 else { panic!() };
