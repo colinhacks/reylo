@@ -105,3 +105,59 @@ jobs:
           cargo build --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/build.log"
           ! grep -E '^warning' "$RUNNER_TEMP/build.log"
       - run: cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle
+
+  # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
+  # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
+  # fails the case. Postgres 18 runs on the runner rather than in a container, because the json_schema_*
+  # cases call five validator extensions built into it.
+  oracle:
+    if: ${{ !github.event.repository.private }}
+    name: Soundness oracle on Postgres 18 and MySQL 8.4
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+        ports:
+          - 53306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 --silent"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 60
+    env:
+      PG_BIN: /usr/lib/postgresql/18/bin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install Postgres 18
+        run: |
+          sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18
+      # The validators take about a quarter of an hour to build, so their staged files are cached, and saved
+      # as soon as they are built rather than only when the job passes.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: validators
+        with:
+          path: ~/json-schema-validators
+          key: json-schema-validators-${{ runner.os }}-pg18-${{ hashFiles('.github/scripts/json-schema-validators.sh') }}
+      - name: Build the JSON Schema validators
+        if: steps.validators.outputs.cache-hit != 'true'
+        run: sh .github/scripts/json-schema-validators.sh ~/json-schema-validators "$RUNNER_TEMP/validators" "$PG_BIN/pg_config"
+      - if: steps.validators.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/json-schema-validators
+          key: ${{ steps.validators.outputs.cache-primary-key }}
+      - name: Install the validators and start Postgres 18
+        run: |
+          sudo cp -R ~/json-schema-validators/. /
+          "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
+          "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
+      - run: engine/build.sh --prepare
+      - name: Run the oracle
+        run: cargo run -q -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres --mysql-url mysql://root@127.0.0.1:53306 --strict-coverage oracle/cases
