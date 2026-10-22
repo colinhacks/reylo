@@ -899,6 +899,9 @@ impl Reader<'_> {
             // names the element type, and its elements are the expressions listed.
             Some(NodeEnum::AArrayExpr(a)) => Expr::Array { non_null: true, items: a.elements.iter().map(|e| self.read(e)).collect() },
             Some(NodeEnum::CoalesceExpr(c)) if !c.args.is_empty() => Expr::Any(c.args.iter().map(|a| self.read(a)).collect(), Ty::Shared),
+            // Postgres parses `greatest(…)` and `least(…)` as syntax, which no function of the name
+            // shadows: NULL only where every argument is. MySQL's are NULL where any is.
+            Some(NodeEnum::MinMaxExpr(m)) if self.dialect == Dialect::Postgres && !m.args.is_empty() => Expr::Any(m.args.iter().map(|a| self.read(a)).collect(), Ty::Shared),
             Some(NodeEnum::CaseExpr(c)) => {
                 // In a searched CASE an arm runs only where its WHEN is true, so a column the WHEN
                 // is strict in is not NULL there (`WHEN x > 0 THEN x`); every later arm runs only
@@ -1105,6 +1108,7 @@ impl Reader<'_> {
             Some(NodeEnum::AExpr(a)) => a.lexpr.iter().chain(a.rexpr.iter()).map(|b| b.as_ref()).collect(),
             Some(NodeEnum::TypeCast(t)) => t.arg.iter().map(|b| b.as_ref()).collect(),
             Some(NodeEnum::CoalesceExpr(c)) => c.args.iter().collect(),
+            Some(NodeEnum::MinMaxExpr(m)) => m.args.iter().collect(),
             Some(NodeEnum::BoolExpr(b)) => b.args.iter().collect(),
             Some(NodeEnum::CaseExpr(c)) => {
                 let mut out: Vec<&Node> = c.defresult.iter().map(|b| b.as_ref()).collect();
@@ -1851,6 +1855,16 @@ mod tests {
         // No `ELSE` is `ELSE NULL`.
         assert!(!first(&pg("SELECT CASE WHEN true THEN 1 END")).non_null);
         assert!(!first(&pg("SELECT CASE 1 WHEN 1 THEN 'a' END")).non_null);
+    }
+
+    #[test]
+    fn greatest_and_least_need_one_non_null_argument_on_postgres_alone() {
+        assert!(first(&pg("SELECT greatest(NULL, 0)")).non_null);
+        assert!(first(&pg("SELECT least(1, NULL, 2)")).non_null);
+        assert!(!first(&pg("SELECT greatest(NULL::int, NULL)")).non_null);
+        // MySQL's are NULL where any argument is.
+        let mysql = plan("SELECT greatest(NULL, 0)", Dialect::Mysql, &Trust::default());
+        assert!(mysql.head[0].as_ref().is_none_or(|e| !resolve(e, None).non_null));
     }
 
     #[test]

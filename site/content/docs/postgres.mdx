@@ -362,7 +362,7 @@ Every column is typed `| null` unless Reylo can tell it never is null. On Postgr
   - concatenation (`||`), comparisons, arithmetic, `like` and the other pattern matches, and the bit, containment and JSON key operators (`&`, `@>`, `&&`, `?`) are non-null over non-null operands;
   - so are built-in functions that return `NULL` only for a `NULL` argument (`length`, `lower`, `round`, …);
   - so are the values of `generate_series`, and of `unnest(array[…])` over non-null elements;
-  - a `coalesce` is non-null if one of its arguments is, and a `case` if every branch is.
+  - a `coalesce`, `greatest` or `least` is non-null if one of its arguments is, and a `case` if every branch is.
 - **An aggregate** other than `count` returns `NULL` over no rows, so it's nullable without a `group by`. With a `group by`, every group has rows:
   - the aggregates `array_agg`, `json_agg`, `jsonb_agg` and `jsonb_object_agg` are non-null;
   - the others, such as `sum`, `max` and `string_agg`, are non-null when their argument is;

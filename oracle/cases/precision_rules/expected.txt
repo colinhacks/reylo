@@ -2,6 +2,7 @@ array_cast_elements.sql: many () -> { j: (int4?)[], t: (text!)[], i: (int8!)[] }
 arrays.sql: many () -> { c: bool, o: bool, d: bool, t: bool }
 bits.sql: many () -> { a: int4, o: int4, s: int4, r: int4, n: int4, abs: int4 }
 empty_array.sql: many () -> { ids: (int4!)[], e: (text!)[] }
+greatest_least.sql: many () -> { a: int4, b: text, c: int4?, d: int4, e: int8 }
 jsonb.sql: many () -> { h: bool, a: bool, l: bool, d: json }
 like.sql: many () -> { l: bool, n: bool, i: bool }
 nested_view.sql: many () -> { id: int4, first_name: text }
