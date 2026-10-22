@@ -1,6 +1,6 @@
-// The project file, `.reylo.yaml`, and the connection it names. The file sits beside the project's
-// `package.json` (the nearest one at or above the tsconfig's directory; `REYLO_CONFIG` names
-// another file), is parsed by the engine so that every reylo tool reads the same YAML, and is
+// The project file, `.reylo.yaml` (or `.reylo.yml`), and the connection it names. The file sits
+// beside the project's `package.json` (the nearest one at or above the tsconfig's directory;
+// `REYLO_CONFIG` names another file), is parsed by the engine so that every reylo tool reads the same YAML, and is
 // resolved here against the environment: the process environment first, then the `.env` files the
 // project file names under `env` (by default `.env.local`, then `.env`, beside it), and a `${VAR}`
 // in a URL is replaced from that. The URL's scheme names the dialect. The connection is
@@ -52,6 +52,8 @@ export type ResolvedProject = {
 };
 
 export const PROJECT_FILE = ".reylo.yaml";
+/** The names the project file may take; the first is the one messages name. */
+export const PROJECT_FILES = [PROJECT_FILE, ".reylo.yml"] as const;
 const DEFAULT_ENV_FILES = [".env.local", ".env"];
 
 /** The package directory: the nearest one at or above `from` that holds a `package.json`, else `from`. */
@@ -62,11 +64,11 @@ export function packageDir(from: string): string {
   }
 }
 
-/** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` beside the package's `package.json`. */
+/** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` (else `.reylo.yml`) beside the package's `package.json`. */
 export function findProjectFile(from: string, env: Record<string, string | undefined> = process.env): string | undefined {
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
-  const candidate = join(packageDir(from), PROJECT_FILE);
-  return existsSync(candidate) ? candidate : undefined;
+  const dir = packageDir(from);
+  return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
 /** The dialect a URL's scheme names, or undefined for a scheme reylo does not read. */
@@ -132,6 +134,9 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
       }
     }
   }
+  // Both names beside one package.json: whichever were read, edits to the other would do nothing.
+  const both = PROJECT_FILES.map((name) => join(root, name));
+  if (!env.REYLO_CONFIG && both.every((path) => existsSync(path))) error = `${both.map(shown).join(" and ")} are both project files; keep one.`;
   const envFiles = (config.env ?? DEFAULT_ENV_FILES).map((f) => resolve(root, f));
   // The process environment wins; among the files, the first that sets a variable does.
   const lookup = (name: string): { value: string; source: string } | undefined => {
@@ -172,7 +177,8 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   }
   const dialect = url ? dialectOf(url) : "postgres";
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
-  const watched = [...(file ? [file] : [join(root, PROJECT_FILE)]), ...envFiles];
+  // Either name, created or removed, changes the project.
+  const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
   return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
 }
 

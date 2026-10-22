@@ -136,7 +136,7 @@ test("a parameter written twice is an error at each later use, which the type ch
     // Byte offsets, as the content mapper hands them to the type check: the second and third :q.
     const second = twice.indexOf(":q or id");
     assert.deepEqual(outcome.analysis.diagnostics.map((d) => [d.code, d.start, d.length]), [[3, second, 2], [3, twice.lastIndexOf(":q"), 2]]);
-    assert.equal(outcome.analysis.diagnostics[0]!.message, "The parameter :q appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :q as q) select … from input");
+    assert.equal(outcome.analysis.diagnostics[0]!.message, "The parameter :q appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :q::<type> as q) select … from input");
     const file = join(root, "search.sql");
     writeFileSync(file, twice);
     await assert.rejects(sqlModule(file, twice), /search\.sql: The parameter :q appears more than once/);

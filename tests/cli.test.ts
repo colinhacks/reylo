@@ -92,6 +92,16 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
   assert.equal(reylo(root, "frobnicate").status, 2);
 });
 
+test("reylo generate's hint for a run that finds no query names a .reylo.yml project's own file", () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-cli-yml-")));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".reylo.yml"), "strict_params: true\n");
+  // No .sql file opens a project here, so the hint reads the project file of the directory searched.
+  const none = reylo(root, "generate");
+  assert.equal(none.status, 1, none.err);
+  assert.equal(none.out, "No query under .: name the directory that holds them, or set cli.include in .reylo.yml.\n");
+});
+
 test("reylo generate says once that the type check does not read url, and names the connection it used", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-cli-url-")));
   writeFileSync(join(root, "package.json"), "{}");

@@ -31,9 +31,10 @@ const fromUtf8 = new TextDecoder();
 /**
  * The module's types for a statement the engine analyzed. `lexed` is the engine's lexer's reading of
  * the statement, which names the parameters (absent where the lexer refused it); `strictParams` is
- * the project file's `strict_params`.
+ * the project file's `strict_params`, and `projectFile` the file the error about it names: the
+ * project's own file, which may be `.reylo.yml` or another path REYLO_CONFIG names.
  */
-export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean): ModuleTypes {
+export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
   let names = lexed?.params ?? [];
   let placeholders = lexed?.placeholders ?? [];
   // A MySQL session reads its strings by its sql_mode, which the analysis asked for and the
@@ -57,7 +58,7 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
       const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
       const written = span.replace(/\s*::[\s\S]*$/, "");
       const length = at ? utf8.encode(written).length : 1;
-      const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in .reylo.yaml.`;
+      const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${projectFile}.`;
       diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
     }
   }

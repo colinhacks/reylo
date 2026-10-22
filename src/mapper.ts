@@ -2,16 +2,18 @@
 // database, the engine, the `.reylo/` cache shared with the bundler plugins and `reylo generate`)
 // is `src/analyze.ts`; this file renders it as types and places its diagnostics in the file.
 import { createHash } from "node:crypto";
-import { dirname } from "node:path";
+import { dirname, relative } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes } from "./module-types.ts";
-import { PROJECT_FILE, resolveProject, type Dialect } from "./project.ts";
+import { PROJECT_FILE, PROJECT_FILES, resolveProject, type Dialect } from "./project.ts";
 import { Session } from "./analyze.ts";
 
 type Project = {
   dialect: Dialect;
   strictParams: boolean;
+  /** The project file as its messages name it: relative to the project, or `.reylo.yaml` where there is none. */
+  projectFile: string;
   session: Promise<Session>;
 };
 const projects = new Map<string, Project>();
@@ -51,9 +53,10 @@ serve({
     const p = params as { projectHandle: string; options?: Record<string, unknown>; configFileName: string };
     const projectDir = dirname(p.configFileName);
     // Every setting lives in the project file, which PorgREST and Reylo Framework read too.
-    const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from .reylo.yaml, not from the content mapper's options; move "${key}" there.`, code: 104 }));
     const resolved = resolveProject(await anyEngine(projectDir), projectDir);
-    projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, session: Session.open(projectDir) });
+    const projectFile = resolved.file ? relative(projectDir, resolved.file) || resolved.file : PROJECT_FILE;
+    const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
+    projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, projectFile, session: Session.open(projectDir) });
     const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
     return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
   },
@@ -61,9 +64,9 @@ serve({
     const p = params as { fileName: string; content: string; projectHandle: string };
     const sql = p.content;
     const diagnostics: ReturnType<typeof diag>[] = [];
-    // A project file (`.reylo.yaml`, or `<name>.reylo.yaml`, which `include` takes in) is no query,
-    // and its module declares nothing.
-    if (p.fileName.endsWith(PROJECT_FILE)) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
+    // A project file (`.reylo.yaml` or `.reylo.yml`, or a `<name>.reylo.yaml` that `include` takes
+    // in) is no query, and its module declares nothing.
+    if (PROJECT_FILES.some((name) => p.fileName.endsWith(name))) return { extension: ".ts" as const, diagnostics, text: "export {};\n", mappings: [] };
     const project = projects.get(p.projectHandle);
     if (!project) {
       // A transform for a project this process never opened: answer, never throw, so the file
@@ -109,7 +112,7 @@ serve({
     const { analysis } = outcome;
     // The types, the diagnostics the analysis gives and the untyped parameters' are one function
     // the docs site's playground shares (src/module-types.ts).
-    const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams);
+    const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams, project.projectFile);
     diagnostics.push(...types.diagnostics.map((d) => diag(d.message, d.start, d.length, d.code)));
     return emit(analysis.rewritten.sql, types.params, types.row, types.cardinality, types.names);
   },

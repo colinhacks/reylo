@@ -66,6 +66,22 @@ test("the project file sits beside package.json, and its direct_url, env files a
   assert.equal(resolveProject(e, join(root, "src/db"), { REYLO_CONFIG: join(other, "elsewhere.yaml") }).dialect, "sqlite");
 });
 
+test("the project file may be named .reylo.yml, and both names beside one package.json are an error", async () => {
+  const e = await engine("postgres", ROOT);
+  const yml = tree({ "package.json": "{}", ".reylo.yml": "direct_url: file:./x.db\n" });
+  const r = resolveProject(e, yml, {});
+  assert.deepEqual([r.file, r.dialect, r.error], [join(yml, ".reylo.yml"), "sqlite", undefined]);
+  // Creating the other name would make the project an error, so the type check watches it.
+  assert.ok(r.watched.includes(join(yml, ".reylo.yaml")));
+  const none = resolveProject(e, tree({ "package.json": "{}" }), {});
+  assert.equal(none.file, undefined);
+  assert.equal(none.watched.filter((path) => /\.reylo\.ya?ml$/.test(path)).length, 2);
+  const both = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./a.db\n", ".reylo.yml": "direct_url: file:./b.db\n" });
+  assert.equal(resolveProject(e, both, {}).error, ".reylo.yaml and .reylo.yml are both project files; keep one.");
+  // REYLO_CONFIG names the one file, whatever sits beside it.
+  assert.equal(resolveProject(e, both, { REYLO_CONFIG: join(both, ".reylo.yml") }).error, undefined);
+});
+
 test("a types section, removed on 2026-10-20, is refused where it stands, whatever it holds; package.json decides no type", async () => {
   const e = await engine("postgres", ROOT);
   for (const types of ["types:\n  dates: temporal\n", "types: {}\n", "types:\n  datez: Date\n"]) {

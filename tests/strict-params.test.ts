@@ -21,11 +21,11 @@ const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join
 
 type Diagnostic = { messageText: string; start: number; length: number; code: number };
 
-function project(url: string, reylo: string | undefined, driver?: string): string {
+function project(url: string, reylo: string | undefined, driver?: string, name = ".reylo.yaml"): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-strict-"));
   writeFileSync(join(root, "package.json"), "{}");
   writeFileSync(join(root, ".env"), `DATABASE_URL=${url}\n`);
-  if (reylo !== undefined) writeFileSync(join(root, ".reylo.yaml"), reylo);
+  if (reylo !== undefined) writeFileSync(join(root, name), reylo);
   if (driver) {
     mkdirSync(join(root, "node_modules"));
     symlinkSync(join(DRIVERS, driver), join(root, "node_modules", driver));
@@ -74,7 +74,7 @@ async function transform(root: string, files: Record<string, string>): Promise<R
   }
 }
 
-const message = (written: string) => `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in .reylo.yaml.`;
+const message = (written: string, file = ".reylo.yaml") => `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${file}.`;
 
 /** On MySQL every `::` cast types its parameter, through the server's describe of the cast. */
 const CASTS = {
@@ -107,6 +107,9 @@ test("SQLite: a parameter nothing types is an error by default, and strict_param
   for (const file of ["env: [.env]\n", "strict_params: true\n"]) {
     assert.deepEqual((await transform(project(url, file), sql))["bare.sql"]!.diagnostics.map((d) => d.code), [12, 12], file);
   }
+  // A project whose file is `.reylo.yml` is told to set the key there, not in a `.reylo.yaml` it lacks.
+  const yml = await transform(project(url, "strict_params: true\n", undefined, ".reylo.yml"), sql);
+  assert.deepEqual(yml["bare.sql"]!.diagnostics.map((d) => d.messageText), [message(":x", ".reylo.yml"), message(":y", ".reylo.yml")]);
   // `strict_params: false` keeps such a parameter `unknown`, with no error.
   const loose = await transform(project(url, "strict_params: false\n"), sql);
   assert.deepEqual(loose["bare.sql"]!.diagnostics, []);

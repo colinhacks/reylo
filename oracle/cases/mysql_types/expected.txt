@@ -67,7 +67,7 @@ param_pass_decimal.sql: many (p: numeric?, q: numeric, r: numeric, s: numeric, t
 param_pass_window.sql: many (a: text, b: int4?, c: numeric) -> { a: text?, b: int8|float8|numeric?, c: numeric|int8|float8|text? }
 param_plus_column.sql: many (n: int4) -> { sum: int8|float8|numeric? }
 param_plus_one.sql: one (n: int4) -> { next: int8|float8|numeric? }
-param_repeated.sql: many (n: unknown) -> {  } !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :n as n) select … from input !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, as in: with input as (select :n as n) select … from input
+param_repeated.sql: many (n: unknown) -> {  } !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :n::<type> as n) select … from input !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :n::<type> as n) select … from input
 param_string_functions.sql: many (a: text, b: text, c: text, d: text) -> { c: text?, u: text?, l: int8?, wc: text? }
 param_subquery.sql: one (n: int4, m: text) -> { sub: int8|float8|numeric?, mx: text? }
 param_text.sql: many (v: text, c: text, tx: text, kind: text, flags: text) -> { id: int4 }
