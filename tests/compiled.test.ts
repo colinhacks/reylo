@@ -86,9 +86,9 @@ async function declarations(root: string, files: Record<string, string>): Promis
   }
 }
 
-/** The declaration's lines that carry the two texts. */
+/** The declaration's lines that carry the two texts, their doc comments left out. */
 function texts(declaration: string): string[] {
-  return declaration.split("\n").filter((line) => /^export declare const (sql|raw):/.test(line) || line.startsWith("declare const query:")).map((line) => line.replace(/^declare const query: Query<.*> & /, "declare const query: Query<…> & "));
+  return declaration.split("\n").filter((line) => /^export declare const (sql|raw):|^ {2}readonly (sql|raw):/.test(line) || line.startsWith("declare const query:")).map((line) => line.replace(/^declare const query: Query<.*> & /, "declare const query: Query<…> & "));
 }
 
 const closeAll = async () => {
@@ -137,8 +137,13 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
     assert.deepEqual(texts(declared["get_user.sql"]!), [
       `export declare const sql: "select id, name, email from users where id = ?\\n";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
-      `declare const query: Query<…> & { readonly sql: typeof sql; readonly raw: typeof raw };`,
+      `declare const query: Query<…> & {`,
+      `  readonly sql: typeof sql;`,
+      `  readonly raw: typeof raw;`,
     ]);
+    // The query's doc comment is the statement as written; its `sql`'s the statement as sent.
+    assert.ok(declared["get_user.sql"]!.includes("/**\n * ```sql\n * select id, name, email from users where id = :id\n * ```\n */\ndeclare const query:"), declared["get_user.sql"]!);
+    assert.ok(declared["get_user.sql"]!.includes("  /**\n   * ```sql\n   * select id, name, email from users where id = ?\n   * ```\n   *\n   * The statement as Reylo sends it"), declared["get_user.sql"]!);
     // The parameters are one object type, with no tuple beside it.
     const lines = declared["get_user.sql"]!.split("\n");
     assert.ok(lines.includes("export type Params = { id: number };"), declared["get_user.sql"]!);
@@ -180,7 +185,9 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
     assert.deepEqual(texts(declared["get_user.sql"]!), [
       `export declare const sql: "select id, name, email from users where id = $1\\n";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
-      `declare const query: Query<…> & { readonly sql: typeof sql; readonly raw: typeof raw };`,
+      `declare const query: Query<…> & {`,
+      `  readonly sql: typeof sql;`,
+      `  readonly raw: typeof raw;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names\\n";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
@@ -223,7 +230,9 @@ test("MySQL: `sql` has `?` placeholders and writes a typed JSON parameter's cast
     assert.deepEqual(texts(declared["get_user.sql"]!), [
       `export declare const sql: "select id, name, email from users where id = ?\\n";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
-      `declare const query: Query<…> & { readonly sql: typeof sql; readonly raw: typeof raw };`,
+      `declare const query: Query<…> & {`,
+      `  readonly sql: typeof sql;`,
+      `  readonly raw: typeof raw;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select cast(? as json) as names\\n";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
