@@ -1890,9 +1890,11 @@ fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
     let start = match at {
         // A position at the end of the text, or in the whitespace after it, is the end of input
         // ("syntax error at end of input"): the statement's last word, where it stops short.
-        Some(at) if sql[at..].trim().is_empty() => {
-            let end = sql.trim_end().len();
-            sql[..end].rfind(|c: char| c.is_whitespace() || matches!(c, '(' | ',' | ';')).map_or(0, |i| i + 1).min(end.saturating_sub(1))
+        // Postgres's whitespace is ASCII alone (a no-break space is part of a name to it), which
+        // also keeps the start after the separator on a character's boundary.
+        Some(at) if sql[at..].trim_matches(is_space).is_empty() => {
+            let end = sql.trim_end_matches(is_space).len();
+            sql[..end].rfind(|c: char| is_space(c) || matches!(c, '(' | ',' | ';')).map_or(0, |i| i + 1).min(end.saturating_sub(1))
         }
         Some(at) => at,
         None => 0,
@@ -1903,6 +1905,12 @@ fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
         None => e.message.clone(),
     };
     diag(message, start, length, 6)
+}
+
+/// Whitespace as Postgres's scanner reads it: space, tab, newline, carriage return, form feed and
+/// vertical tab.
+fn is_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
 }
 
 #[cfg(test)]
@@ -2488,6 +2496,12 @@ mod tests {
                 assert_eq!(&sql[d.start..d.start + d.length], last, "{sql:?} at {position}");
             }
         }
+        // A no-break space is part of a name to Postgres, and the start never lands inside one.
+        let sql = "select 1 +\u{a0}-";
+        let lexed = lex::lex(sql, Dialect::Postgres).unwrap();
+        let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
+        let d = db_diagnostic(sql, &rewritten, &DbError { message: "syntax error at end of input".into(), code: Some("42601".into()), position: Some(sql.chars().count() + 1) });
+        assert_eq!(&sql[d.start..d.start + d.length], "+");
         // A position inside the text stays where it is.
         let sql = "select idd from t";
         let lexed = lex::lex(sql, Dialect::Postgres).unwrap();

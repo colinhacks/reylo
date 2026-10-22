@@ -38,7 +38,9 @@ pub fn repeated(sql: &str, lexed: &Lexed) -> Vec<Diagnostic> {
 pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
     let bytes = sql.as_bytes();
     let opaque_at = |i: usize| lexed.opaque.iter().find(|(s, e)| *s <= i && i < *e).map(|(_, e)| *e);
-    let is_name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$';
+    // Postgres and SQLite read every byte past ASCII as part of a name (`café`, `éjson_build_object`).
+    // The scan steps byte by byte and compares bytes, so it never slices inside a character.
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80;
     let mut found = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
@@ -47,7 +49,7 @@ pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
             continue;
         }
         let starts_word = is_name(bytes[i]) && (i == 0 || !(is_name(bytes[i - 1]) || bytes[i - 1] == b'.'));
-        let Some(name) = names.iter().find(|n| starts_word && sql.len() >= i + n.len() && sql.is_char_boundary(i + n.len()) && sql[i..i + n.len()].eq_ignore_ascii_case(n) && !bytes.get(i + n.len()).is_some_and(|b| is_name(*b))) else {
+        let Some(name) = names.iter().find(|n| starts_word && bytes.get(i..i + n.len()).is_some_and(|w| w.eq_ignore_ascii_case(n.as_bytes())) && !bytes.get(i + n.len()).is_some_and(|b| is_name(*b))) else {
             i += 1;
             continue;
         };
@@ -85,7 +87,7 @@ pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
                 b',' if depth == 1 => commas += 1,
                 b if depth == 1 && !b.is_ascii_whitespace() => {
                     empty = false;
-                    if !is_name(bytes[k - 1]) && sql.len() >= k + 8 && sql.is_char_boundary(k + 8) && sql[k..k + 8].eq_ignore_ascii_case("variadic") {
+                    if !is_name(bytes[k - 1]) && bytes.get(k..k + 8).is_some_and(|w| w.eq_ignore_ascii_case(b"variadic")) && !bytes.get(k + 8).is_some_and(|b| is_name(*b)) {
                         variadic = true;
                     }
                 }
@@ -164,8 +166,14 @@ mod tests {
             "select app.json_build_object('a')",
             "select 'json_build_object(1)' as t",
             "select json_build_object('a', /* , */ 1)",
+            "select json_build_object('a', café, 'b', 1)",
+            "select éjson_build_object('a')",
+            "select json_build_objecté('a')",
         ] {
             assert!(at(sql).is_empty(), "{sql}");
         }
+        // A name past ASCII among the arguments is one argument, and the scan never splits it.
+        assert_eq!(at("select json_build_object('a', café, 'b')").len(), 1);
+        assert_eq!(at("select json_build_object(variadicé, 'a', 1)").len(), 1);
     }
 }

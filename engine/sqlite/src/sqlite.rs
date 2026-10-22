@@ -223,8 +223,12 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
         }
         return failed(bare(sql, lexed, Dialect::Sqlite, diagnostics));
     }
-    // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs.
-    diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &["json_object", "jsonb_object"]));
+    // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs;
+    // only the built-in constructors, which a function the host registers under the name overrides
+    // (`Extras::function`). The host's list names the built-ins with any argument count (-1).
+    let registered = |name: &str| extras.total.iter().any(|f| f.name.eq_ignore_ascii_case(name)) || extras.host.iter().flatten().any(|f| f.name.eq_ignore_ascii_case(name) && f.arity >= 0);
+    let constructors: Vec<&str> = ["json_object", "jsonb_object"].into_iter().filter(|n| !registered(n)).collect();
+    diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
     let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()) };
     let (mut columns, kind) = a.columns();
     let booleans = a.booleans();
@@ -4005,6 +4009,18 @@ mod tests {
         let a = analyze_ddl("select coalesce(:doc, json_array()) as d, json_object('a', :a) as o from users where json_array(id) = :j", &json_ddl(), &Extras::default()).analysis;
         assert_eq!(shown(&a), "d: string; o: { a: unknown }");
         assert_eq!(a.params.iter().map(|p| format!("{} {} {}", p.name, ts(&p.ty, false), p.type_name)).collect::<Vec<_>>(), ["doc string text", "a unknown ", "j string text"]);
+    }
+
+    #[test]
+    fn a_json_object_of_an_odd_count_of_arguments_is_built_in_alone() {
+        let sql = "select json_object('id', id, 'name') as j from users";
+        let odd = |extras: &Extras| analyze_ddl(sql, &ddl(), extras).analysis.diagnostics.iter().filter(|d| d.code == 15).count();
+        assert_eq!(odd(&Extras::default()), 1);
+        let listed = |arities: &[i32]| Extras { total: vec![], host: Some(arities.iter().map(|&arity| HostFunction { name: "json_object".into(), arity, kind: 's' }).collect()) };
+        assert_eq!(odd(&listed(&[-1])), 1);
+        // A function of the name the host registers is called in the built-in's place.
+        assert_eq!(odd(&listed(&[-1, 3])), 0);
+        assert_eq!(odd(&Extras { total: vec![TotalFunction { name: "JSON_OBJECT".into(), arity: 3, returns: Affinity::Text }], host: None }), 0);
     }
 
     #[test]
