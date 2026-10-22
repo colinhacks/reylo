@@ -385,16 +385,17 @@ An expression over the column (`payload -> 'x'`) is `unknown`, and so is a colum
 
 **Built with `to_jsonb`**
 
-One value turned to JSON by `to_jsonb` is `unknown`, and a whole row is the row's object.
+One value turned to JSON by `to_jsonb` is `unknown`, and a whole row, `u` or `u.*`, is the row's object.
 
 **Values inside a document**
 
-Inside a document a value is what JSON writes: integers and `numeric` are numbers, which `JSON.parse` rounds past 2^53 on every driver; a `date` is its text, and a `timestamptz` its text in the session's time zone, here `America/Los_Angeles`; a `bytea` is its hex text; a `boolean` is `true` or `false`.
+Inside a document a value is what JSON writes: integers and `numeric` are numbers, which `JSON.parse` rounds past 2^53 on every driver, and a float or `numeric` that is not finite is its text, since JSON has no number for it; a `date` is its text, and a `timestamptz` its text in the session's time zone, here `America/Los_Angeles`; a `bytea` is its hex text; a `boolean` is `true` or `false`.
 
 <Pairs>
 
 - `jsonb_build_object('n', 9007199254740993::bigint)` → `{ n: 9007199254740992 }`
 - `jsonb_build_object('n', 12.50::numeric)` → `{ n: 12.5 }`
+- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
 - `jsonb_build_object('d', '2026-10-20'::date)` → `{ d: "2026-10-20" }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`

@@ -287,13 +287,11 @@ impl Builder<'_> {
                     // A bare name is a column before it is a FROM item, of the innermost query
                     // that has one of that name: it is the item's whole row only when no FROM in
                     // scope has such a column, for certain.
-                    match f.args.first().and_then(bare_alias) {
-                        // The old or the new row of a RETURNING is the target relation's row, or
-                        // NULL where the statement has no such row.
-                        Some(alias) if f.args.len() == 1 && self.no_column(&alias) => match self.rows.as_ref().and_then(|r| r.whole(&alias)).map(|(target, missing)| (target.to_string(), missing)) {
-                            Some((target, true)) => force_nullable(self.row(&target)),
-                            Some((target, false)) => self.row(&target),
-                            None => self.row(&alias),
+                    // `u.*` says the whole row outright.
+                    match f.args.first() {
+                        Some(arg) if f.args.len() == 1 => match star_alias(arg).or_else(|| bare_alias(arg).filter(|alias| self.no_column(alias))) {
+                            Some(alias) => self.whole(&alias),
+                            None => Shape::Unknown,
                         },
                         _ => Shape::Unknown,
                     }
@@ -310,6 +308,10 @@ impl Builder<'_> {
                     (shape, _) => shape,
                 }
             }
+            // `u.*` as a value, a function's argument (`jsonb_agg(u.*)`, `jsonb_build_object('u',
+            // u.*)`), is the whole row, as `u` is: never the row's columns one by one, which is
+            // what it would be in a probe's select list.
+            Some(NodeEnum::ColumnRef(_)) if star_alias(expr).is_some() => self.whole(&star_alias(expr).expect("a star alias")),
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
                 (Some(arg), true) => self.walk(arg),
                 _ => self.leaf(expr),
@@ -344,8 +346,22 @@ impl Builder<'_> {
         }
     }
 
+    /// A whole row by its alias: the old or the new row of a RETURNING is the target relation's
+    /// row, or NULL where the statement has no such row.
+    fn whole(&mut self, alias: &str) -> Shape {
+        match self.rows.as_ref().and_then(|r| r.whole(alias)).map(|(target, missing)| (target.to_string(), missing)) {
+            Some((target, true)) => force_nullable(self.row(&target)),
+            Some((target, false)) => self.row(&target),
+            None => self.row(alias),
+        }
+    }
+
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
     fn leaf(&mut self, expr: &Node) -> Shape {
+        // A star expands to several columns of the probe, so it cannot be one of them.
+        if is_star(expr) {
+            return Shape::Unknown;
+        }
         if let Some(n) = param_number(expr) {
             return Shape::Param(n);
         }
@@ -584,6 +600,14 @@ struct ResolveCtx<'a> {
 }
 
 impl ResolveCtx<'_> {
+    /// A probe's column as a type: what the catalog says of it, with what the probe's own
+    /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
+    /// values and the document a CHECK keeps it to, as a result column gets them.
+    fn column(&self, col: &DescribedColumn) -> Type {
+        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
+        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref())
+    }
+
     /// One shape as (type, whether the value can never be null).
     fn node(&self, shape: &Shape, path: &str, unresolved: &mut Vec<String>) -> (Type, bool) {
         match shape {
@@ -602,10 +626,7 @@ impl ResolveCtx<'_> {
                 (Type::List { of: Box::new(of), nullable_items: !items_non_null }, *non_null)
             }
             Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
-                Some(col) if col.type_oid != oid::UNKNOWN => {
-                    let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-                    (crate::postgres::with_document(crate::postgres::with_values(ty, col.values.as_deref()), col.document.as_ref()), !col.nullable)
-                }
+                Some(col) if col.type_oid != oid::UNKNOWN => (self.column(col), !col.nullable),
                 _ => {
                     unresolved.push(display_path(path));
                     (Type::Unknown, false)
@@ -621,13 +642,14 @@ impl ResolveCtx<'_> {
                                 unresolved.push(display_path(&join(path, &col.name)));
                                 Type::Unknown
                             } else {
-                                let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-                                crate::postgres::with_document(crate::postgres::with_values(ty, col.values.as_deref()), col.document.as_ref())
+                                self.column(col)
                             };
                             Field { name: col.name.clone(), ty, nullable: col.nullable }
                         })
                         .collect();
-                    (Type::Object { fields }, !outcome.outer_join)
+                    // An outer join can null the whole row, which is then every column NULL: a
+                    // column the probe proved non-null says the row is there.
+                    (Type::Object { fields }, !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
                 }
                 None => {
                     unresolved.push(display_path(path));
@@ -724,7 +746,7 @@ fn string_node(value: &str) -> Node {
     Node { node: Some(NodeEnum::String(protobuf::String { sval: value.to_string() })) }
 }
 
-fn is_star(node: &Node) -> bool {
+pub(crate) fn is_star(node: &Node) -> bool {
     match node.node.as_ref() {
         Some(NodeEnum::ColumnRef(c)) => {
             c.fields.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))))
@@ -759,6 +781,14 @@ fn casts_to_json(t: &protobuf::TypeCast) -> bool {
         .as_ref()
         .and_then(|tn| last_string(&tn.names))
         .is_some_and(|n| n == "json" || n == "jsonb")
+}
+
+/// The `u` of `u.*`, a whole row by its alias.
+fn star_alias(node: &Node) -> Option<String> {
+    match node.node.as_ref()? {
+        NodeEnum::ColumnRef(c) if c.fields.len() == 2 && is_star(node) => last_string(&c.fields[..1]),
+        _ => None,
+    }
 }
 
 /// A bare `u`, the alias form `to_jsonb` takes for a whole row.
@@ -920,6 +950,19 @@ mod tests {
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         assert_eq!(p.probes[0].sql, "SELECT u.* FROM users u");
         assert_eq!(p.columns[0].1, Shape::Row { probe: 0 });
+        // `u.*` as a function's argument is the whole row too, never the row's first column,
+        // under an aggregate, its FILTER, an object and `to_jsonb` alike.
+        for sql in [
+            "SELECT jsonb_agg(u.*) AS authors FROM users u",
+            "SELECT json_agg(u.*) FILTER (WHERE u.id IS NOT NULL) AS authors FROM users u",
+        ] {
+            let p = shapes(sql);
+            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false }, "{sql}");
+            assert!(p.probes[0].sql.starts_with("SELECT u.* FROM users u"), "{sql}: {}", p.probes[0].sql);
+        }
+        let o = shapes("SELECT jsonb_build_object('author', u.*) AS j FROM users u");
+        assert_eq!(o.columns[0].1, Shape::Object { fields: vec![("author".into(), Shape::Row { probe: 0 })], non_null: true });
+        assert_eq!(shapes("SELECT to_jsonb(u.*) AS author FROM users u").columns[0].1, Shape::Row { probe: 0 });
         let r = shapes("SELECT row_to_json(u) AS author FROM users u");
         assert_eq!(r.columns[0].1, Shape::Row { probe: 0 });
         // A bare name is a column before it is a FROM item: `doc` is a column of `users`, here
@@ -1220,8 +1263,12 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false })], &registry, &[]);
         assert!(r.non_null);
         assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
-        // An outer join in the probe's own analysis is what can null the whole row.
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns, outer_join: true })], &registry, &[]);
+        // An outer join in the probe's own analysis is what can null the whole row, unless a
+        // column it proved non-null says the row is there (an unmatched row is every column NULL).
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true })], &registry, &[]);
+        assert!(r.non_null);
+        let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true })], &registry, &[]);
         assert!(!r.non_null);
     }
 }

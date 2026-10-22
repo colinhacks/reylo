@@ -1,0 +1,1 @@
+object_two_same_alias.sql: the engine refused it: reylo14: Columns 1 and 2 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.

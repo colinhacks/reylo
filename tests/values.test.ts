@@ -122,6 +122,9 @@ test("SQLite: a column declared BIGINT, INT8 or UNSIGNED BIG INT (the engine's i
   assert.equal(renderParamType(scalar("int8"), "sqlite"), "number | bigint");
   assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
   assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), typeSchema(scalar("int8"), "postgres"));
+  // Inside a document a non-finite float or decimal is the text Postgres writes; MySQL stores none.
+  assert.deepEqual(typeSchema(scalar("float8"), "postgres", false, true), { anyOf: [{ type: "number", format: "double" }, { enum: ["NaN", "Infinity", "-Infinity"] }] });
+  assert.deepEqual(typeSchema(scalar("numeric"), "mysql", false, true), { type: "number", format: "decimal" });
   assert.deepEqual(typeSchema(scalar("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
 });
 

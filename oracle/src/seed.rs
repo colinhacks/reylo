@@ -657,8 +657,51 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
             }
             None
         }
-        Some("array") if !ty["nullable_items"].as_bool().unwrap_or(true) => json.as_array()?.iter().any(Value::is_null).then(|| format!("has a null element at {path}, typed non-null")),
+        // An array the statement builds says whether an element may be NULL; any other array is
+        // `T[]` by decision and holds what it holds. Each element is of the element type.
+        Some("array") => {
+            for (i, item) in json.as_array()?.iter().enumerate() {
+                if item.is_null() {
+                    if ty["nullable_items"].as_bool() == Some(false) {
+                        return Some(format!("has a null element at {path}[{i}], typed non-null"));
+                    }
+                    continue;
+                }
+                if let Some(why) = json_contradiction(&ty["of"], item, &format!("{path}[{i}]")) {
+                    return Some(why);
+                }
+            }
+            None
+        }
+        // A value of a base type is of the kind the database writes it as inside a document, which
+        // is what `src/render.ts` types it as there: its table `json`, mirrored by `json_admits`.
+        Some("scalar") => {
+            let name = ty["name"].as_str()?;
+            let at = if path.is_empty() { "the top" } else { path };
+            (!name.split('|').any(|part| json_admits(part, json))).then(|| format!("holds {json} at {at}, typed as {name}"))
+        }
+        Some("enum") => {
+            let labels: Vec<&str> = ty["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let at = if path.is_empty() { "the top" } else { path };
+            (!labels.is_empty() && !json.as_str().is_some_and(|s| labels.contains(&s))).then(|| format!("holds {json} at {at}, typed as one of {labels:?}"))
+        }
         _ => None,
+    }
+}
+
+/// Whether a JSON value inside a document is of the kind a value of the base type `name` is
+/// written as there, as `src/render.ts` types it (its table `json`): a number for the integers, a
+/// number or the text of a non-finite one for the floats and `numeric`, a boolean, an object for a
+/// row whose columns were not read, text for the rest it names. A type the table does not name renders `unknown`, which admits any value.
+fn json_admits(name: &str, json: &Value) -> bool {
+    match name {
+        "bool" => json.is_boolean(),
+        "int2" | "int4" | "int8" | "oid" => json.is_number(),
+        "float4" | "float8" | "numeric" => json.is_number() || matches!(json.as_str(), Some("NaN" | "Infinity" | "-Infinity")),
+        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "hstore" | "ltree" | "lquery" | "ltxtquery" => json.is_string(),
+        // A row whose columns were not read (a subquery's): an object of them.
+        "record" => json.is_object(),
+        _ => true,
     }
 }
 

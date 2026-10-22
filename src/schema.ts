@@ -52,10 +52,17 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
   }
   if (inJson) {
     // As the database writes the value inside a document.
+    // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text;
+    // MySQL stores none.
+    const nonFinite = { enum: ["NaN", "Infinity", "-Infinity"] };
     switch (name) {
       case "int8": return { type: "integer", format: "int64" };
-      case "numeric": return { type: "number", format: "decimal" };
+      case "float4": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "float" }, nonFinite] } : { type: "number", format: "float" };
+      case "float8": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "double" }, nonFinite] } : { type: "number", format: "double" };
+      case "numeric": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "decimal" }, nonFinite] } : { type: "number", format: "decimal" };
       case "bytea": return { type: "string", format: "hex" };
+      // A row whose columns were not read (a subquery's): an object of them.
+      case "record": return { type: "object" };
     }
   } else if (input) {
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
@@ -103,8 +110,11 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
 function object(fields: readonly { name: string }[], field: (f: number) => Schema | JsonSchema, optional: (f: number) => boolean = () => false, closed = false): Schema {
   const properties: Record<string, unknown> = {};
   const required: string[] = [];
+  // A later field of a name replaces an earlier one, as a row object and `JSON.parse` keep the last.
   fields.forEach((f, i) => {
     properties[f.name] = field(i);
+    const at = required.indexOf(f.name);
+    if (at >= 0) required.splice(at, 1);
     if (!optional(i)) required.push(f.name);
   });
   return { type: "object", properties, required, ...(closed ? { additionalProperties: false } : {}) };

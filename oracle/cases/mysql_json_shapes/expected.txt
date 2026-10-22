@@ -96,7 +96,7 @@ object_truth_quantified.sql: many () -> { o: { any: bool|int8?, all: bool|int8? 
 object_truth_sounds.sql: many () -> { o: json? }
 object_truth_subquery.sql: many () -> { o: { sub: unknown?, max: int8?, lit: unknown?, cmp: unknown?, count: bool|int8 } }
 object_truth_values.sql: many () -> { o: { lit: bool, cmp: bool, eq: bool, in: bool, not: bool, and: bool, or: bool, xor: bool, isnull: bool, notnull: bool, between: bool, like: bool, safe: bool, istrue: bool, ne: bool } }
-object_two_same_alias.sql: many () -> { o: { id: int4 }, o: { name: text } }
+object_two_same_alias.sql: many () -> { o: { id: int4 }, o: { name: text } } !! reylo14: Columns 1 and 2 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
 object_unaliased.sql: many () -> { json_object('id', id): json? }
 object_window.sql: many () -> { o: { id: int4, rank: int8, previous: bool|int4? } }
 scalar_guarded_by_object.sql: one () -> { o: text? }

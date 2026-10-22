@@ -473,7 +473,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         None => ("many".to_string(), Some(misread.unwrap_or_else(|| "the engine could not parse the statement, so nothing bounds its rows".into()))),
     };
     let rewritten = vectors_as_text(rewritten, &raw);
-    Some(Analysis {
+    let mut analysis = Analysis {
         kind: kind.to_string(),
         params,
         columns,
@@ -489,7 +489,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
         // turn on that.
         tables: read.as_ref().map(crate::mysql_params::tables),
-    })
+    };
+    crate::analysis::clashes(sql, &mut analysis, &|_| None);
+    Some(analysis)
 }
 
 /// The functions MySQL reads as built-ins only where the parenthesis follows the name at once

@@ -17,6 +17,22 @@
         }
       ]
     },
+    "post_ids.sql": {
+      "1cff64606724e47e": [
+        {
+          "start": {
+            "line": 1,
+            "column": 16
+          },
+          "end": {
+            "line": 1,
+            "column": 18
+          },
+          "source": "reylo(14)",
+          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
+        }
+      ]
+    },
     "record_click.sql": {
       "57123fa582c9c7a7": [
         {
@@ -51,6 +67,22 @@
         }
       ]
     },
+    "post_ids.sql": {
+      "1cff64606724e47e": [
+        {
+          "start": {
+            "line": 1,
+            "column": 1
+          },
+          "end": {
+            "line": 1,
+            "column": 7
+          },
+          "source": "reylo(14)",
+          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
+        }
+      ]
+    },
     "record_click.sql": {
       "57123fa582c9c7a7": [
         {
@@ -82,6 +114,22 @@
           },
           "source": "reylo(6)",
           "message": "no such column: nmae"
+        }
+      ]
+    },
+    "post_ids.sql": {
+      "1cff64606724e47e": [
+        {
+          "start": {
+            "line": 1,
+            "column": 1
+          },
+          "end": {
+            "line": 1,
+            "column": 7
+          },
+          "source": "reylo(14)",
+          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
         }
       ]
     },
