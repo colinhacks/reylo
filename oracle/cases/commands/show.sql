@@ -1,0 +1,1 @@
+show work_mem

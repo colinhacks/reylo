@@ -596,9 +596,8 @@ const NOT_QUERIES: &[&str] = &[
     "vacuum", "xa",
 ];
 
-/// How a file the type check refuses because it is not one query (a migration or a schema file,
-/// which nothing imports, but which tsconfig.json's `include` hands to the content mapper all the
-/// same) is left out of it.
+/// How a file the type check refuses (a migration or a schema file, which nothing imports, but
+/// which tsconfig.json's `include` hands to the content mapper all the same) is left out of it.
 const LEAVE_OUT: &str = "so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"]";
 
 /// The error of a file that holds several statements, on every database.
@@ -606,23 +605,34 @@ pub fn several_statements() -> String {
     format!("A typed .sql file holds one statement and this one holds several, {LEAVE_OUT}.")
 }
 
-/// The error of a file whose one statement is not of the `kinds` a database types (DDL, a
-/// session setting, a transaction's control), on every database.
-pub fn not_a_query(kinds: &[&str]) -> String {
-    let named: Vec<String> = kinds.iter().filter(|k| **k != "with").map(|k| k.to_ascii_uppercase()).collect();
-    let (last, rest) = named.split_last().map_or(("", &[][..]), |(l, r)| (l.as_str(), r));
-    format!("A typed .sql file holds one {} or {last} statement and this one holds another kind, {LEAVE_OUT}.", rest.join(", "))
+/// The database's error on a command ([`Statement::Command`]), with how to leave the file out of
+/// the type check: a migration's `CREATE TABLE` prepares against a schema that already has the
+/// table on SQLite, and fails there.
+pub fn refused_command(message: &str) -> String {
+    format!("{}, {LEAVE_OUT}.", message.trim_end().trim_end_matches('.'))
 }
 
-/// Whether the text is one statement whose first keyword (past whitespace and comments) is one
-/// of `kinds`, or an opening parenthesis: nothing but whitespace, semicolons and comments may
-/// follow its first semicolon outside the text spans. SQLite prepares only the first statement
-/// of the text, and a MySQL server prepares DDL, so a migration file would otherwise come back
-/// typed; Postgres's parse refuses both (`AnalyzeError` in `analyze.rs`).
-pub fn one_statement(sql: &str, lexed: &Lexed, kinds: &[&str]) -> Result<(), String> {
+/// What the one statement of a typed file is.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Statement {
+    /// One of the kinds the database's analysis reads, or a first word it leaves to the database.
+    Query,
+    /// Any other statement, by its first keyword, lowercased: DDL, a session setting, a
+    /// transaction's control, `EXPLAIN`. It is typed from the database's describe alone.
+    Command(String),
+}
+
+/// The first word of the text past whitespace and comments, lowercased.
+pub fn first_word(sql: &str, lexed: &Lexed) -> String {
+    let start = past_comments(sql, lexed, 0);
+    sql[start..].chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_lowercase()
+}
+
+/// The first byte at or after `i` that is neither whitespace nor inside a comment.
+fn past_comments(sql: &str, lexed: &Lexed, mut i: usize) -> usize {
     let bytes = sql.as_bytes();
     let is_comment = |start: usize| sql[start..].starts_with("--") || sql[start..].starts_with("/*") || sql[start..].starts_with('#');
-    let past_comments = |mut i: usize| loop {
+    loop {
         while i < bytes.len() && bytes[i].is_ascii_whitespace() {
             i += 1;
         }
@@ -630,12 +640,22 @@ pub fn one_statement(sql: &str, lexed: &Lexed, kinds: &[&str]) -> Result<(), Str
             Some(&(_, end)) => i = end,
             None => return i,
         }
-    };
+    }
+}
+
+/// Whether the text is one statement, and of which kind: a query when its first keyword (past
+/// whitespace and comments) is one of `kinds`, or an opening parenthesis, and a command when it is
+/// another statement's. Nothing but whitespace, semicolons and comments may follow its first
+/// semicolon outside the text spans: SQLite prepares only the first statement of the text, so a
+/// migration file would otherwise come back typed from its first statement alone; Postgres's
+/// parse refuses several (`AnalyzeError` in `analyze.rs`).
+pub fn one_statement(sql: &str, lexed: &Lexed, kinds: &[&str]) -> Result<Statement, String> {
+    let bytes = sql.as_bytes();
     let in_text = |i: usize| lexed.opaque.iter().any(|&(start, end)| start <= i && i < end);
     if let Some(semicolon) = (0..bytes.len()).find(|&i| bytes[i] == b';' && !in_text(i)) {
         let mut i = semicolon + 1;
         loop {
-            i = past_comments(i);
+            i = past_comments(sql, lexed, i);
             if i < bytes.len() && bytes[i] == b';' {
                 i += 1;
             } else {
@@ -646,12 +666,11 @@ pub fn one_statement(sql: &str, lexed: &Lexed, kinds: &[&str]) -> Result<(), Str
             return Err(several_statements());
         }
     }
-    let start = past_comments(0);
-    let word = sql[start..].chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_lowercase();
-    if kinds.contains(&word.as_str()) || sql[start..].starts_with('(') || !NOT_QUERIES.contains(&word.as_str()) {
-        return Ok(());
+    let word = first_word(sql, lexed);
+    if kinds.contains(&word.as_str()) || sql[past_comments(sql, lexed, 0)..].starts_with('(') || !NOT_QUERIES.contains(&word.as_str()) {
+        return Ok(Statement::Query);
     }
-    Err(not_a_query(kinds))
+    Ok(Statement::Command(word))
 }
 
 #[cfg(test)]
@@ -931,30 +950,31 @@ mod tests {
         assert_eq!(text, ["'a\\'b'':c'", "\"c\\\"\"", "`d`", "# f", "/* g /* */"]);
         assert_eq!(l.params, ["e"]);
         // A comment that starts with `#` is a comment to the statement check too.
-        assert_eq!(one_statement("select 1; # done", &lex("select 1; # done", Dialect::Mysql).unwrap(), &["select"]), Ok(()));
+        assert_eq!(one_statement("select 1; # done", &lex("select 1; # done", Dialect::Mysql).unwrap(), &["select"]), Ok(Statement::Query));
         assert_eq!(MysqlText::of_mode("STRICT_TRANS_TABLES,NO_BACKSLASH_ESCAPES"), plain);
         assert_eq!(MysqlText::of_mode("REAL_AS_FLOAT,PIPES_AS_CONCAT,ANSI_QUOTES,IGNORE_SPACE,ONLY_FULL_GROUP_BY,ANSI"), ansi);
         assert_eq!(MysqlText::of_mode(""), MysqlText::default());
     }
 
     #[test]
-    fn one_statement_of_a_typed_kind() {
+    fn one_statement_of_any_kind() {
         const SQLITE: &[&str] = &["select", "with", "values", "insert", "replace", "update", "delete"];
         let check = |sql: &str| one_statement(sql, &lex(sql, Dialect::Sqlite).unwrap(), SQLITE);
-        assert_eq!(check("select 1"), Ok(()));
-        assert_eq!(check("-- the user\n/* by id */ SELECT id from users where id = :id;"), Ok(()));
-        assert_eq!(check("select 1;\n-- a trailing comment\n;\n"), Ok(()));
-        assert_eq!(check("select ';' as a"), Ok(()));
-        assert_eq!(check("with x as (select 1) delete from t where id in (select * from x)"), Ok(()));
-        // A migration or a schema file: the error says what a typed file holds, and how to leave
-        // such a file out of the type check.
+        assert_eq!(check("select 1"), Ok(Statement::Query));
+        assert_eq!(check("-- the user\n/* by id */ SELECT id from users where id = :id;"), Ok(Statement::Query));
+        assert_eq!(check("select 1;\n-- a trailing comment\n;\n"), Ok(Statement::Query));
+        assert_eq!(check("select ';' as a"), Ok(Statement::Query));
+        assert_eq!(check("with x as (select 1) delete from t where id in (select * from x)"), Ok(Statement::Query));
+        // A statement of another kind is a command, named by its first keyword.
+        assert_eq!(check("create table t (id integer primary key)"), Ok(Statement::Command("create".into())));
+        assert_eq!(check("/* the schema */ PRAGMA table_info(t);"), Ok(Statement::Command("pragma".into())));
+        // A migration or a schema file of several statements: the error says what a typed file
+        // holds, and how to leave such a file out of the type check.
         let several = "A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"].";
         assert_eq!(check("select 1; select 2").unwrap_err(), several);
         assert_eq!(check("create table t (id integer primary key);\ncreate index i on t (id);").unwrap_err(), several);
-        let other = "A typed .sql file holds one SELECT, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"].";
-        assert_eq!(check("create table t (id integer primary key)").unwrap_err(), other);
-        assert_eq!(check("pragma table_info(t)").unwrap_err(), other);
         // A misspelt keyword is a syntax error the database reports, not a statement of another kind.
-        assert_eq!(check("selec id from users"), Ok(()));
+        assert_eq!(check("selec id from users"), Ok(Statement::Query));
+        assert_eq!(refused_command("table t already exists"), "table t already exists, so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"].");
     }
 }

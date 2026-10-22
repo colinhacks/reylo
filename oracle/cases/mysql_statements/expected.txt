@@ -1,32 +1,32 @@
-alter_table.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+alter_table.sql: none () -> {  }
 ambiguous.sql: many () -> {  } !! reylo6: Column 'id' in field list is ambiguous (ER_NON_UNIQ_ERROR)
 backslash_quote.sql: maybeOne (id: int4) -> { id: int4, said: text }
 backslash_quote_filter.sql: maybeOne (id: int4) -> { id: int4 }
 backticks.sql: maybeOne (id: int4) -> { id: int4, the name: text }
-begin.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+begin.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 block_comment.sql: maybeOne (id: int4) -> { id: int4 }
-call_procedure.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-create_table.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+call_procedure.sql: many () -> {  } !! reylo10: A CALL returns the result sets its procedure makes, which MySQL does not describe before the procedure runs, so its rows cannot be typed: select from a function or a view instead
+create_table.sql: none () -> {  }
 delete_all.sql: none () -> {  }
-describe.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-do_statement.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+describe.sql: many () -> { Field: text?, Type: text?, Null: text?, Key: text?, Default: text?, Extra: text? }
+do_statement.sql: none () -> {  }
 double_quoted_key.sql: many () -> { o: { id: int4, name: text } }
 double_quoted_string.sql: maybeOne () -> { id: int4 }
-drop_table.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+drop_table.sql: none () -> {  }
 empty_second.sql: maybeOne (id: int4) -> { id: int4 }
 executable_comment_ddl.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_filter.sql: many (id: unknown) -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_future.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_versioned.sql: many (id: unknown) -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_whole.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
-explain.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+explain.sql: many () -> {  } !! reylo10: MySQL does not describe the rows of EXPLAIN before it runs, so they cannot be typed
 hash_comment.sql: maybeOne (id: int4) -> { id: int4 }
 insert_fires_trigger.sql: none (id: int4, name: text) -> {  }
 insert_select_same_table.sql: none () -> {  }
 interval_syntax.sql: maybeOne (n: int4, id: int4) -> { id: int4, later: timestamp? }
 json_table_statement.sql: many () -> { a: int4? }
 leading_comment.sql: maybeOne (id: int4) -> { id: int4 }
-lock_tables.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+lock_tables.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 match_against.sql: many (q: text) -> { id: int4 }
 match_against_score.sql: many (q: text) -> { id: int4, score: float8 }
 member_of.sql: many () -> { id: int4 }
@@ -53,20 +53,20 @@ select_into_variable.sql: none (id: int4) -> {  }
 select_one.sql: maybeOne (id: int4) -> { id: int4, name: text }
 select_sql_calc.sql: maybeOne () -> { id: int4 }
 select_stored_function.sql: one () -> { n: int4|int8? }
-set_variable.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-show_tables.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+set_variable.sql: none () -> {  }
+show_tables.sql: many () -> { Tables_in_reylo_oracle_mysql_statements: text? }
 syntax_error.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '' at line 1 (ER_PARSE_ERROR)
 table_statement.sql: many () -> { id: int4, name: text, email: text?, doc: json? }
 trailing_comment.sql: maybeOne (id: int4) -> { id: int4 }
 trailing_semicolon.sql: maybeOne (id: int4) -> { id: int4 }
-truncate.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+truncate.sql: none () -> {  }
 two_statements.sql: many () -> {  } !! reylo10: A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 unknown_column.sql: many () -> {  } !! reylo6: Unknown column 'nope' in 'field list' (ER_BAD_FIELD_ERROR)
 unknown_function.sql: many () -> {  } !! reylo6: FUNCTION reylo_oracle_mysql_statements.nope does not exist (ER_SP_DOES_NOT_EXIST)
 unknown_keyword.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec id from users' at line 1 (ER_PARSE_ERROR)
 unknown_table.sql: many () -> {  } !! reylo6: Table 'reylo_oracle_mysql_statements.nowhere' doesn't exist (ER_NO_SUCH_TABLE)
 update_all.sql: none () -> {  }
-use_database.sql: many () -> {  } !! reylo10: A typed .sql file holds one SELECT, TABLE, VALUES, INSERT, REPLACE, UPDATE or DELETE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+use_database.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 user_variable_read.sql: maybeOne (id: int4) -> { x: unknown?, id: int4 }
 values_statement.sql: many () -> { column_0: int8|int4, column_1: text }
 window_named.sql: many () -> { id: int4, r: int8 }

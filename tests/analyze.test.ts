@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { notMysql } from "../src/mysql-describe.ts";
+import { defineQuery } from "../src/index.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
 // test makes a database of its own there and drops it after. The driver is the labs', never the
@@ -171,6 +172,32 @@ test("the module a build step emits carries the analysis and reads nothing at ru
   } finally {
     for (const session of Session.opened()) await session.close();
   }
+});
+
+test("one statement of another kind is a command: DDL resolves to nothing and runs, and a PRAGMA returns its rows", async () => {
+  const { root, env } = project();
+  const ddl = "create index users_name on users (name)";
+  const created = await analyze(root, env, ddl);
+  assert.ok(created.ok);
+  const { kind, cardinality, columns, params, diagnostics } = created.analysis;
+  assert.deepEqual({ kind, cardinality, columns, params, diagnostics }, { kind: "create", cardinality: "none", columns: [], params: [], diagnostics: [] });
+  const db = new DatabaseSync(join(root, "app.db"));
+  try {
+    assert.equal(await defineQuery({ dialect: "sqlite", sql: ddl, params: [], cardinality }).run(db), undefined);
+    // A command that returns rows has the columns SQLite names, of no known type and nullable.
+    const listed = await analyze(root, env, "pragma index_list(users)");
+    assert.ok(listed.ok);
+    assert.equal(listed.analysis.cardinality, "many");
+    assert.deepEqual(listed.analysis.columns.map((c) => [c.name, c.type.kind, c.nullable]), ["seq", "name", "unique", "origin", "partial"].map((name) => [name, "unknown", true]));
+    const rows = await defineQuery({ dialect: "sqlite", sql: "pragma index_list(users)", params: [], cardinality: "many" }).run(db);
+    assert.deepEqual(rows.map((r) => (r as { name: string }).name), ["users_name"]);
+  } finally {
+    db.close();
+  }
+  // A CREATE of a table the database has is SQLite's error, with how to leave a migration out.
+  const existing = await analyze(root, env, "create table users (id integer primary key)");
+  assert.ok(existing.ok);
+  assert.deepEqual(existing.analysis.diagnostics.map((d) => [d.code, d.message]), [[6, 'table users already exists, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].']]);
 });
 
 test("a build fails on a statement the database refuses, at its line and column as the type check places it", async () => {

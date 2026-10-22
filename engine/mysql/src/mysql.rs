@@ -54,9 +54,12 @@ const CHECKS_QUERY: &str = "select tc.table_name, cc.check_clause from informati
     where tc.table_schema = database() and tc.constraint_type = 'CHECK' and tc.enforced = 'YES' and find_in_set(tc.table_name, ?) \
     order by tc.table_name, tc.constraint_name";
 
-/// The statements the MySQL analysis types. A server prepares DDL too, so a migration would
-/// otherwise come back typed as a statement that returns no rows.
+/// The statements the MySQL analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "table", "values", "insert", "replace", "update", "delete"];
+
+/// The commands that may return rows. Where the prepare describes no columns for one, it still
+/// returns them when it runs: an EXPLAIN prepares with none and returns twelve.
+const MAY_RETURN_ROWS: &[&str] = &["analyze", "cache", "check", "checksum", "desc", "describe", "execute", "explain", "handler", "help", "load", "optimize", "repair", "show"];
 
 /// The analysis of a statement as the session reads its text. A backslash in a string escapes the
 /// character after it unless the session's `sql_mode` has NO_BACKSLASH_ESCAPES, and `"` quotes a
@@ -228,7 +231,14 @@ impl sqlparser::dialect::Dialect for SessionDialect {
 /// turns on it.
 pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -> Lazy<Analysis> {
     let dialect = SessionDialect(text.unwrap_or_default());
-    if let Err(message) = lex::one_statement(sql, lexed, KINDS) {
+    let statement = match lex::one_statement(sql, lexed, KINDS) {
+        Ok(statement) => statement,
+        Err(message) => return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 10 }])),
+    };
+    // A CALL prepares with no columns and returns whatever result sets the procedure makes when
+    // it runs, which a command typed from its prepare would drop.
+    if statement == lex::Statement::Command("call".into()) {
+        let message = "A CALL returns the result sets its procedure makes, which MySQL does not describe before the procedure runs, so its rows cannot be typed: select from a function or a view instead".to_string();
         return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 10 }]));
     }
     // The server runs the text of a `/*! … */` comment where its version allows, and the lexer
@@ -260,6 +270,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
                 Some(code) => format!("{} ({code})", e.message),
                 None => e.message.clone(),
             };
+            let message = if matches!(statement, lex::Statement::Command(_)) { lex::refused_command(&message) } else { message };
             return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 6 }]));
         }
     };
@@ -273,6 +284,49 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
             rewritten.order.len()
         );
         return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 1 }]));
+    }
+    // A command (DDL, a session setting, SHOW, EXPLAIN) has no tree to read: the prepare says what
+    // it takes and returns, and nothing says where a column comes from, so each may be NULL. One
+    // that returns no rows runs as a write does.
+    if let lex::Statement::Command(kind) = statement {
+        if raw.columns.is_empty() && MAY_RETURN_ROWS.contains(&kind.as_str()) {
+            let message = format!("MySQL does not describe the rows of {} before it runs, so they cannot be typed", kind.to_ascii_uppercase());
+            return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: 10 }]));
+        }
+        let columns: Vec<Column> = raw
+            .columns
+            .iter()
+            .map(|c| {
+                let (ty, name) = column_type(c.r#type, c.charset);
+                Column { name: c.name.clone(), ty, nullable: true, type_name: name.to_string() }
+            })
+            .collect();
+        let params = lexed
+            .params
+            .iter()
+            .map(|name| {
+                let (ty, type_name) = match rewritten.order.iter().position(|n| n == name).and_then(|i| raw.params.get(i)) {
+                    Some(p) => param_type(p.r#type, p.charset),
+                    None => (Type::Unknown, ""),
+                };
+                Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: false, schema: None, cast: None }
+            })
+            .collect();
+        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        return Some(Analysis {
+            kind,
+            params,
+            columns,
+            cardinality: cardinality.into(),
+            cardinality_reason: None,
+            rewritten: vectors_as_text(rewritten, &raw),
+            style: lexed.style,
+            diagnostics: Vec::new(),
+            unresolved: Vec::new(),
+            structured: Vec::new(),
+            fresh: None,
+            tables: None,
+        });
     }
     let diagnostics = Vec::new();
     let parsed = if misread.is_some() { None } else { read.clone() };

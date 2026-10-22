@@ -171,14 +171,15 @@ fn analyze_ddl_here(sql: &str, ddl: &[String], extras: &Extras) -> SqliteAnalysi
     }
 }
 
-/// The statements the SQLite analysis types: what a `.sql` query file holds, and never a migration.
+/// The statements the SQLite analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "values", "insert", "replace", "update", "delete"];
 
 fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnalysis {
     let failed = |analysis: Analysis| SqliteAnalysis { analysis, declared: Vec::new(), readonly: false, unique_keys: HashMap::new(), booleans: Vec::new() };
-    if let Err(message) = lex::one_statement(sql, lexed, KINDS) {
-        return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 10)]));
-    }
+    let statement = match lex::one_statement(sql, lexed, KINDS) {
+        Ok(statement) => statement,
+        Err(message) => return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 10)])),
+    };
     // SQLite prepares the `?n` rewrite, not the author's text: its own `:name` ends at the first
     // dot, so `:auth.user_id` survives only as a number. `?n` is the lexer's n-th parameter, which
     // is how `params` matches them back, and an error offset maps back through the rewrite.
@@ -212,6 +213,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
             (None, Some(schema)) => format!("{}: the database has no schema `{schema}`. A database the application attaches at run time (ATTACH ... AS {schema}) is not in the file the type check reads, so a table in it cannot be typed", err.message),
             (None, None) => err.message.clone(),
         };
+        let message = if matches!(statement, lex::Statement::Command(_)) { lex::refused_command(&message) } else { message };
         diagnostics.push(diag(message, start, length, 6));
         // A statement that fails against the replayed schema often fails because a replay step did.
         for e in &t.schema_errors {
@@ -230,6 +232,28 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     let constructors: Vec<&str> = ["json_object", "jsonb_object"].into_iter().filter(|n| !registered(n)).collect();
     diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
     let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()) };
+    // A command (DDL, a PRAGMA, a transaction's control) has no tree to read: SQLite's prepare
+    // says what it takes and returns, and nothing says where a column comes from, so each is of
+    // no known type and may be NULL. One that returns no rows runs as a write does.
+    if let lex::Statement::Command(kind) = statement {
+        let columns: Vec<Column> = t.columns.iter().map(|c| Column { name: c.name.clone(), ty: Type::Unknown, nullable: true, type_name: c.declared.clone().unwrap_or_default() }).collect();
+        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        let analysis = Analysis {
+            kind,
+            params: a.params(lexed),
+            columns,
+            cardinality: cardinality.into(),
+            cardinality_reason: None,
+            rewritten: lex::rewrite(sql, lexed, Target::Question),
+            style: lexed.style,
+            diagnostics,
+            unresolved: Vec::new(),
+            structured: Vec::new(),
+            fresh: None,
+            tables: None,
+        };
+        return SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys: HashMap::new(), booleans: vec![false; t.columns.len()] };
+    }
     let (mut columns, kind) = a.columns();
     let booleans = a.booleans();
     // A truth value, and a column declared BOOLEAN, are booleans to the loader's run time, which

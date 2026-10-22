@@ -513,3 +513,4 @@ What Reylo can't type on SQLite, and what to write instead:
 - **Virtual table modules.** Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat`, but the type check doesn't verify that your driver's SQLite has them.
 - **`REAL` arithmetic with no answer.** SQLite returns `NULL` when floating-point arithmetic has no result, as in `1e999 * 0`, but Reylo types `+`, `-` and `*` over non-null values, and `/` and `%` by a nonzero literal, as non-null. Where a `REAL` may hold an infinity, write `coalesce(price * qty, 0)`.
 - **Very deep queries.** Past 350 nested expressions, SQLite itself fails with "Expression tree is too large".
+- **Statements other than queries.** A statement such as `create index` or `pragma table_info(users)` is typed from what SQLite reports: it returns nothing, or rows whose columns are all `unknown` and nullable. A file of several statements, such as a migration, is an error.

@@ -27,7 +27,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// The statements the Postgres analysis types (`analyze.rs`), as its refusal names them.
-const KINDS: &[&str] = &["select", "insert", "update", "delete", "merge"];
 
 /// How many statements one analysis may synthesize to settle its columns: one per set-operation
 /// arm, one per statement whose expressions read a column, one per JSON constructor context.
@@ -368,16 +367,12 @@ impl<'a> Engine<'a> {
         let rewritten = lex::rewrite(sql, lexed, Target::Dollar);
         let parsed = match analyze::analyze(&rewritten.sql) {
             Ok(p) => Some(p),
-            // A statement the engine does not type (a cursor, a DO block, DDL) says so on the
-            // whole statement, rather than coming back as `unknown` with no word, and so does a
-            // file of several statements, which the server would refuse to describe; each says
-            // what a typed file holds and how to leave a migration out of the type check, as on
-            // the other databases. `AnalyzeError` words both for Reylo Framework, which has no
-            // tsconfig.json to leave a file out of.
-            Err(analyze::AnalyzeError::UnsupportedStatement) => {
-                diagnostics.push(diag(lex::not_a_query(KINDS), 0, sql.trim_end().len(), 10));
-                None
-            }
+            // A statement of a kind the analysis does not read (DDL, a session setting, EXPLAIN)
+            // is a command, typed from the describe alone. A file of several statements, which
+            // the server would refuse to describe, says what a typed file holds and how to leave
+            // a migration out of the type check, as on the other databases. `AnalyzeError` words
+            // both for Reylo Framework, which has no tsconfig.json to leave a file out of.
+            Err(analyze::AnalyzeError::UnsupportedStatement) => return self.command(sql, lexed, rewritten),
             Err(analyze::AnalyzeError::NotOneStatement(n)) if n > 1 => {
                 diagnostics.push(diag(lex::several_statements(), 0, sql.trim_end().len(), 10));
                 return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
@@ -542,6 +537,61 @@ impl<'a> Engine<'a> {
         };
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
+    }
+
+    /// A statement of a kind the analysis does not read (DDL, a session setting, a transaction's
+    /// control, EXPLAIN, CALL), typed from the server's describe alone: its parameters take the
+    /// types the server gives them, and its columns, where it returns rows, may each be NULL, since
+    /// nothing reads where they come from. One that returns none runs as a write does.
+    fn command(&self, sql: &str, lexed: &Lexed, rewritten: Rewritten) -> Lazy<Analysis> {
+        if copies_through_the_connection(&rewritten.sql) {
+            let message = "COPY ... FROM STDIN and COPY ... TO STDOUT move their data through the connection, outside a statement's parameters and rows, so a typed .sql file cannot hold one: run it through the driver's own COPY support";
+            return Some(bare(sql, lexed, Dialect::Postgres, vec![diag(message, 0, sql.trim_end().len(), 10)]));
+        }
+        let raw = match self.host.describe(&rewritten.sql)? {
+            Ok(raw) => raw,
+            Err(e) => {
+                let mut d = db_diagnostic(sql, &rewritten, &e);
+                d.message = lex::refused_command(&d.message);
+                return Some(bare(sql, lexed, Dialect::Postgres, vec![d]));
+            }
+        };
+        let mut oids = raw.params.clone();
+        oids.extend(raw.columns.iter().map(|c| c.oid));
+        self.types(&oids)?;
+        let kind = lex::first_word(sql, lexed);
+        // Postgres binds a parameter only in the commands it analyzes when it prepares them
+        // (EXPLAIN, CALL, CREATE TABLE ... AS); in any other the server takes none, and a run that
+        // passes one fails.
+        let mut diagnostics = Vec::new();
+        if let Some(at) = lexed.params.get(raw.params.len()).and_then(|name| lexed.placeholders.iter().find(|p| &p.name == name)) {
+            let written = &sql[at.start..at.end];
+            diagnostics.push(diag(format!("Postgres binds no parameter in this {} statement, so {written} cannot be passed: write its value into the statement", kind.to_ascii_uppercase()), at.start, at.end - at.start, 1));
+            return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
+        }
+        let registry = self.registry.borrow();
+        let columns: Vec<Column> = raw.columns.iter().map(|c| Column { name: c.name.clone(), ty: registry.render(c.oid), nullable: true, type_name: registry.name(c.oid) }).collect();
+        let params = lexed
+            .params
+            .iter()
+            .zip(&raw.params)
+            .map(|(name, &o)| Param { name: name.clone(), ty: registry.render(o), type_name: registry.name(o), nullable: false, schema: None, cast: None })
+            .collect();
+        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        Some(Analysis {
+            kind,
+            params,
+            columns,
+            cardinality: cardinality.into(),
+            cardinality_reason: None,
+            rewritten,
+            style: lexed.style,
+            diagnostics,
+            unresolved: Vec::new(),
+            structured: Vec::new(),
+            fresh: None,
+            tables: None,
+        })
     }
 
     fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (String, Option<String>) {
@@ -2292,6 +2342,13 @@ fn word_after_as(text: &str, name: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Whether the statement is a COPY that streams through the connection (`FROM STDIN`, `TO
+/// STDOUT`), which no driver's query call carries.
+fn copies_through_the_connection(sql: &str) -> bool {
+    let Ok(parsed) = crate::stack::parse(sql) else { return false };
+    matches!(parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()), Some(NodeEnum::CopyStmt(c)) if c.filename.is_empty())
+}
+
 /// A failed describe as a diagnostic on the author's text: the server's message, at the
 /// characters its position points at.
 fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
@@ -2341,6 +2398,8 @@ mod tests {
         let parsed = crate::stack::parse(sql).expect("the probe parses");
         match parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) {
             Some(pg_query::NodeEnum::SelectStmt(s)) => arm(s).max(1),
+            // DDL describes with no columns, as Postgres does.
+            Some(pg_query::NodeEnum::CreateStmt(_) | pg_query::NodeEnum::AlterTableStmt(_) | pg_query::NodeEnum::CopyStmt(_)) => 0,
             _ => 1,
         }
     }
@@ -2408,9 +2467,9 @@ mod tests {
     }
 
     #[test]
-    fn a_migration_says_what_a_typed_file_holds_and_how_to_leave_it_out() {
+    fn several_statements_say_how_to_leave_a_migration_out_and_one_command_is_typed() {
         // Several statements are refused before the server is asked, which would refuse to
-        // describe them; one statement of another kind is refused on its whole text.
+        // describe them.
         let sql = "create table users (id integer primary key);\ncreate table posts (id integer primary key);\n";
         let none = HashMap::new();
         let host = Host::new(&none);
@@ -2418,9 +2477,21 @@ mod tests {
         assert!(host.needs().is_empty());
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(10, 0, sql.trim_end().len())]);
         assert_eq!(a.diagnostics[0].message, "A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"].");
-        let a = replay("create table tags (id integer primary key)");
+        // One statement of another kind is a command, typed from the describe: no rows here.
+        let a = replay("/* the tags */ CREATE TABLE tags (id integer primary key)");
+        assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
+        assert_eq!((a.kind.as_str(), a.cardinality.as_str(), a.columns.len(), a.params.len()), ("create", "none", 0, 0));
+        // A placeholder the server does not bind in it is an error at the placeholder.
+        let sql = "alter table tags alter id set default :id";
+        let a = replay(sql);
+        assert_eq!(a.diagnostics.iter().map(|d| (d.code, &sql[d.start..d.start + d.length])).collect::<Vec<_>>(), [(1, ":id")]);
+        assert_eq!(a.diagnostics[0].message, "Postgres binds no parameter in this ALTER statement, so :id cannot be passed: write its value into the statement");
+        // A COPY through the connection is refused without a round trip; one from a file is a command.
+        let host = Host::new(&none);
+        let a = analyze("copy tags from stdin", &host).expect("refused without a round trip");
+        assert!(host.needs().is_empty());
         assert_eq!(a.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [10]);
-        assert_eq!(a.diagnostics[0].message, "A typed .sql file holds one SELECT, INSERT, UPDATE, DELETE or MERGE statement and this one holds another kind, so if it is a migration or a schema file, leave it out of the type check with \"exclude\" in tsconfig.json, as in \"exclude\": [\"db/**\"].");
+        assert!(replay("copy tags from '/tmp/tags.csv'").diagnostics.is_empty());
     }
 
     #[test]

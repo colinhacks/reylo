@@ -456,3 +456,4 @@ What Reylo can't type on MySQL, and what to write instead:
 - **`/*! … */` comments.** MySQL runs the SQL inside them, so a query with one is an error. Write it as plain SQL.
 - **`with` before `insert`.** MySQL 8.4 rejects `with … insert`, so put the `with` after `insert into … (…)`, as in [JSON parameters](/#typed-json).
 - **Very large queries.** Past 500 operators (`a + b + …`, `x = 1 or x = 2 or …`), or 200 levels of nesting, Reylo uses only what MySQL reports: any number of rows.
+- **Statements other than queries.** A statement such as `create index`, `truncate` or `show tables` is typed from what MySQL reports: it returns nothing, or rows whose columns are all nullable. `explain` and `call` are errors, because MySQL doesn't describe their rows before they run. A file of several statements, such as a migration, is an error.

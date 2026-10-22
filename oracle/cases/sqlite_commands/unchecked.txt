@@ -1,0 +1,1 @@
+create_existing.sql: table users already exists in create table users (id integer primary key) at offset 13

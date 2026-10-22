@@ -1,0 +1,14 @@
+call.sql: none (n: int4) -> {  }
+call_out.sql: many () -> { n: int8? }
+comment.sql: none () -> {  }
+create_existing.sql: none () -> {  }
+create_index.sql: none () -> {  }
+create_table_as.sql: none (min: int4) -> {  }
+declare_cursor.sql: none () -> {  }
+do_block.sql: none () -> {  }
+explain.sql: many (id: int4) -> { QUERY PLAN: text? }
+notify.sql: none () -> {  }
+refresh.sql: none () -> {  }
+set_local.sql: none () -> {  }
+show.sql: many () -> { work_mem: text? }
+truncate.sql: none () -> {  }

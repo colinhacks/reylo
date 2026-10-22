@@ -1,5 +1,7 @@
--- What is a statement the engine types: one SELECT, INSERT, UPDATE, DELETE, REPLACE, VALUES or
--- TABLE. A statement of a migration, or two statements, is an error and is never run; what the
+-- What is a statement the engine types: one statement. A SELECT, INSERT, UPDATE, DELETE, REPLACE,
+-- VALUES or TABLE is read; any other is a command, typed from the prepare alone, with no rows
+-- where it returns none and every column nullable where it returns some. Two statements, and a
+-- CALL, whose result sets the prepare does not describe, are errors and are never run; what the
 -- server refuses to prepare is an error with the server's message; and a statement the engine's
 -- own parser cannot read keeps its types from the server and loses the row count and the JSON
 -- shapes. MySQL runs the text of a `/*! … */` comment as SQL.

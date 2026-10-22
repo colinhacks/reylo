@@ -1,0 +1,9 @@
+alter_add_column.sql: none () -> {  }
+analyze.sql: none () -> {  }
+create_existing.sql: many () -> {  } !! reylo6: table users already exists, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
+create_index.sql: none () -> {  }
+drop_index.sql: none () -> {  }
+explain_query_plan.sql: many (id: integer) -> { id: unknown?, parent: unknown?, notused: unknown?, detail: unknown? }
+pragma_set.sql: none () -> {  }
+pragma_table_info.sql: many () -> { cid: unknown?, name: unknown?, type: unknown?, notnull: unknown?, dflt_value: unknown?, pk: unknown? }
+reindex.sql: none () -> {  }

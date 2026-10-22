@@ -397,3 +397,20 @@ type TypesRow = {
 };
 const types1: TypesRow | null = null! as Awaited<ReturnType<typeof types.run>>;
 const types2: Awaited<ReturnType<typeof types.run>> = null! as TypesRow | null;
+
+// ---------------------------------------------------------------------------
+// 14. Commands: a statement of another kind, typed from the server's describe
+// ---------------------------------------------------------------------------
+import commandDo from "./command_do.sql";
+import commandExplain from "./command_explain.sql";
+import type { Params as CommandExplainParams } from "./command_explain.sql";
+// A command that returns no rows resolves to nothing.
+const commandDo1: void = null! as Awaited<ReturnType<typeof commandDo.run>>;
+const commandDo2: Awaited<ReturnType<typeof commandDo.run>> = null! as void;
+// One that returns rows has the server's columns, each nullable: nothing says where they come from.
+type CommandExplainRow = { "QUERY PLAN": string | null };
+const commandExplain1: CommandExplainRow[] = null! as Awaited<ReturnType<typeof commandExplain.run>>;
+const commandExplain2: Awaited<ReturnType<typeof commandExplain.run>> = null! as CommandExplainRow[];
+// EXPLAIN is one of the commands Postgres binds parameters in.
+const commandExplain3: { id: number } = null! as CommandExplainParams;
+const commandExplain4: CommandExplainParams = null! as { id: number };

@@ -1,0 +1,3 @@
+lab/pg-forms/untyped/copy.sql(1,1): error reylo10: COPY ... FROM STDIN and COPY ... TO STDOUT move their data through the connection, outside a statement's parameters and rows, so a typed .sql file cannot hold one: run it through the driver's own COPY support
+lab/pg-forms/untyped/default_param.sql(1,46): error reylo1: Postgres binds no parameter in this ALTER statement, so :name cannot be passed: write its value into the statement
+lab/pg-forms/untyped/repeated.sql(2,34): error reylo3: The parameter :q appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :q::<type> as q) select … from input
