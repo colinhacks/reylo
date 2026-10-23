@@ -3123,6 +3123,10 @@ mod tests {
         assert_eq!(a.params.iter().map(|p| p.nullable).collect::<Vec<_>>(), [true; 5]);
         let said = |p: &str, column: &str| format!("The parameter {p} is cast to nullable(…), but it is written to users.{column}, which refuses null: cast it to its type alone.");
         assert_eq!(a.diagnostics.iter().map(|d| (&sql[d.start..d.start + d.length], d.message.clone())).collect::<Vec<_>>(), [(":name", said(":name", "name")), (":nick", said(":nick", "nick")), (":meta", said(":meta", "meta"))]);
+        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
+        let sql = "insert into users (name, email) select CAST(:name AS TEXT), CAST(:email AS TEXT)";
+        let a = marked(sql, &ddl, &["name", "email"]);
+        assert_eq!(a.diagnostics.iter().map(|d| (&sql[d.start..d.start + d.length], d.message.clone())).collect::<Vec<_>>(), [(":name", said(":name", "name"))]);
         let a = marked("update users set email = CAST(:e AS TEXT), n = coalesce(CAST(:n AS INTEGER), n) where id = 1", &ddl, &["e", "n"]);
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
         assert_eq!(a.params.iter().map(|p| p.nullable).collect::<Vec<_>>(), [true, true]);

@@ -114,7 +114,7 @@ pub(crate) fn traced_from(statement: &Statement) -> Option<Vec<String>> {
 
 /// The parameters written whole to a column or compared whole with one, each with that column.
 fn typed_targets(statement: &Statement, names: &Names) -> Vec<(String, String, Target)> {
-    let mut targets = filled(statement, names, false);
+    let mut targets = filled(statement, names, Fill::Typed);
     targets.extend(compared(statement, names));
     targets
 }
@@ -286,8 +286,8 @@ pub(crate) struct Nullable {
 /// and the bare ones written whole to a column that may hold null.
 pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked: &[String]) -> Lazy<Nullable> {
     let mut out = Nullable { params: marked.iter().cloned().collect(), refused: Vec::new() };
-    let filled_all = filled(statement, names, false);
-    let bare = filled(statement, names, true);
+    let filled_all = filled(statement, names, Fill::Written);
+    let bare = filled(statement, names, Fill::Bare);
     let marked_writes: Vec<&(String, String, Target)> = filled_all.iter().filter(|(param, _, _)| marked.contains(param)).collect();
     if bare.is_empty() && marked_writes.is_empty() {
         return Some(out);
@@ -406,8 +406,7 @@ enum Target {
 /// Every table `statement` writes a parameter to whole, bare or cast, the SELECT that feeds an
 /// INSERT included: the tables whose columns [`nullable`] reads.
 fn written(statement: &Statement, names: &Names) -> Vec<String> {
-    let mut tables = written_tables(&filled(statement, names, false));
-    tables.extend(written_tables(&filled(statement, names, true)));
+    let mut tables = written_tables(&filled(statement, names, Fill::Written));
     tables.sort();
     tables.dedup();
     tables
@@ -464,12 +463,24 @@ fn bare(e: &Expr, names: &Names) -> Option<String> {
     }
 }
 
-/// Every parameter written whole to a column: (parameter, table as the statement names it,
-/// column). With `bare`, only one with no cast, which takes the column's nullability, and the
-/// columns of the one SELECT that feeds an INSERT too; otherwise one under the casts too, which
-/// takes the column's type.
-fn filled(statement: &Statement, names: &Names, bare_only: bool) -> Vec<(String, String, Target)> {
-    let direct = |e: &Expr, names: &Names| if bare_only { bare(e, names) } else { direct(e, names) };
+/// Which parameters written whole to a column [`filled`] lists.
+#[derive(Clone, Copy, PartialEq)]
+enum Fill {
+    /// Bare or under the casts, the SELECT that feeds an INSERT aside: those that take the
+    /// column's type.
+    Typed,
+    /// Only one with no cast, the columns of the one SELECT that feeds an INSERT included: those
+    /// that take the column's nullability.
+    Bare,
+    /// Bare or under the casts, the columns of the one SELECT that feeds an INSERT included: every
+    /// write a parameter cast to `nullable(…)` is checked against.
+    Written,
+}
+
+/// Every parameter written whole to a column, as `fill` picks them: (parameter, table as the
+/// statement names it, column).
+fn filled(statement: &Statement, names: &Names, fill: Fill) -> Vec<(String, String, Target)> {
+    let direct = |e: &Expr, names: &Names| if fill == Fill::Bare { bare(e, names) } else { direct(e, names) };
     let mut out = Vec::new();
     let column = |target: &ast::AssignmentTarget| match target {
         ast::AssignmentTarget::ColumnName(name) => name.0.last().and_then(|p| p.as_ident()).map(|i| (name.0.len(), i.value.to_ascii_lowercase())),
@@ -496,7 +507,7 @@ fn filled(statement: &Statement, names: &Names, bare_only: bool) -> Vec<(String,
                     }
                 }
                 // The SELECT that feeds the INSERT writes its columns whole, as a VALUES row does.
-                Some(SetExpr::Select(select)) if bare_only => {
+                Some(SetExpr::Select(select)) if fill != Fill::Typed => {
                     for (i, item) in select.projection.iter().enumerate() {
                         let (SelectItem::UnnamedExpr(value) | SelectItem::ExprWithAlias { expr: value, .. }) = item else { break };
                         let Some(param) = direct(value, names) else { continue };
@@ -993,6 +1004,8 @@ mod tests {
     fn a_parameter_cast_to_nullable_and_written_to_a_column_that_refuses_null_is_an_error() {
         let messages = |sql: &str| analyzed(sql).0.diagnostics.into_iter().map(|d| d.message).collect::<Vec<_>>();
         assert_eq!(messages("insert into users (name, email) values (:name::nullable(text), :email::nullable(text))"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
+        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
+        assert_eq!(messages("insert into users (name, email) select :name::nullable(text), :email::nullable(text)"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
         // A CHECK that tests the column IS NOT NULL refuses it as NOT NULL does; one that tests
         // anything else lets NULL pass.
         assert_eq!(messages("update accounts set nick = :nick::nullable(text), note = :note::nullable(text) where id = 1"), ["The parameter :nick is cast to nullable(…), but it is written to accounts.nick, which refuses null: cast it to its type alone."]);

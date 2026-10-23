@@ -732,7 +732,7 @@ impl<'a> Engine<'a> {
     fn nullable_params(&self, parsed: Option<&Parsed>, relations: &[String], marked: &HashSet<i32>) -> Lazy<Nullable> {
         let mut out = Nullable { params: marked.clone(), refused: Vec::new() };
         let Some(parsed) = parsed else { return Some(out) };
-        let checked: Vec<&(i32, String, analyze::Filled)> = parsed.filled.iter().filter(|(n, _, _)| marked.contains(n)).collect();
+        let checked: Vec<&(i32, String, analyze::Filled)> = parsed.filled.iter().chain(&parsed.selected).filter(|(n, _, _)| marked.contains(n)).collect();
         if parsed.bare.is_empty() && checked.is_empty() {
             return Some(out);
         }
@@ -3034,6 +3034,11 @@ mod tests {
             (":nick::nullable(text)".to_string(), said(":nick", "nick"), crate::structured::CODE),
             (":mail::nullable(text)".to_string(), said(":mail", "mail"), crate::structured::CODE),
         ]);
+        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
+        let sql = "INSERT INTO users (name, email) SELECT :name::nullable(text), :email::nullable(text)";
+        let refused = analyzed(sql);
+        let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
+        assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
     }
 
     #[test]

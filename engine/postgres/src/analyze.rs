@@ -43,6 +43,10 @@ pub struct Analysis {
     /// CONFLICT's SET, a row value's element. Such a parameter takes the column's nullability;
     /// a cast one is its cast's type, never null.
     pub bare: Vec<(i32, String, Filled)>,
+    /// Each parameter that is, bare or under a cast, a whole column of the one SELECT that feeds
+    /// an INSERT: written whole, as a VALUES item is, which the check of a parameter cast to
+    /// `nullable(…)` against a column that refuses null reads beside `filled`.
+    pub selected: Vec<(i32, String, Filled)>,
     /// Whether RETURNING produces rows (for defaulting `returns`).
     pub has_returning: bool,
     /// Nullability degradation triggers: an outer join anywhere, a repeated table, a set op.
@@ -141,6 +145,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
     let mut functions: Vec<String> = Vec::new();
     let mut filled: Vec<(i32, String, Filled)> = Vec::new();
     let mut bare: Vec<(i32, String, Filled)> = Vec::new();
+    let mut selected: Vec<(i32, String, Filled)> = Vec::new();
 
     let outer_joins = [
         protobuf::JoinType::JoinLeft as i32,
@@ -218,8 +223,10 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
                     let plain = select.is_some_and(|s| s.get("op").and_then(|o| o.as_i64()).is_none_or(|op| op == setop_none as i64 || op == 0));
                     let targets = select.filter(|_| plain && rows.is_none_or(|r| r.is_empty())).and_then(|s| s.get("target_list")).and_then(|t| t.as_array());
                     for (i, target) in targets.into_iter().flatten().enumerate() {
-                        let Some(n) = target.get("node").and_then(|n| n.get("ResTarget")).and_then(|rt| rt.get("val")).and_then(bare_param_number) else { continue };
-                        if let Some(column) = column_at(i) {
+                        let val = target.get("node").and_then(|n| n.get("ResTarget")).and_then(|rt| rt.get("val"));
+                        let (Some(n), Some(column)) = (val.and_then(direct_param_number), column_at(i)) else { continue };
+                        selected.push((n, relation.to_string(), column.clone()));
+                        if val.and_then(bare_param_number).is_some() {
                             bare.push((n, relation.to_string(), column));
                         }
                     }
@@ -387,6 +394,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         functions,
         filled,
         bare,
+        selected,
         has_returning,
         has_outer_join,
         nullable_tables,
