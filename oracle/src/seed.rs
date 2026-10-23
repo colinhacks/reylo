@@ -137,12 +137,15 @@ struct Column {
     kind: String,
     base: String,
     is_array: bool,
+    /// The base type's `typdelim`, which separates an array's elements: `,` for most types, `;`
+    /// for `box`, `:` for PostGIS's geometry and geography.
+    delimiter: String,
     labels: Vec<String>,
     generated: bool,
 }
 
 const TABLES_QUERY: &str = "SELECT c.oid::regclass::text, a.attname::text, pg_catalog.format_type(a.atttypid, a.atttypmod), \
-    bt.typcategory::text, bt.typtype::text, bt.typname::text, t.typcategory = 'A', \
+    bt.typcategory::text, bt.typtype::text, bt.typname::text, t.typcategory = 'A', bt.typdelim::text, \
     coalesce((SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = bt.oid), '{}'), \
     a.attgenerated <> '' OR a.attidentity = 'a' \
     FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace \
@@ -155,7 +158,7 @@ const TABLES_QUERY: &str = "SELECT c.oid::regclass::text, a.attname::text, pg_ca
 /// One type by its oid, as `TABLES_QUERY` answers a column's. The name is asked for with no
 /// type modifier (`-1`): without that argument `bpchar` comes back as `character`, which as a
 /// cast is `character(1)`.
-const TYPE_QUERY: &str = "SELECT pg_catalog.format_type(t.oid, -1), bt.typcategory::text, bt.typtype::text, bt.typname::text, t.typcategory = 'A', \
+const TYPE_QUERY: &str = "SELECT pg_catalog.format_type(t.oid, -1), bt.typcategory::text, bt.typtype::text, bt.typname::text, t.typcategory = 'A', bt.typdelim::text, \
     coalesce((SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = bt.oid), '{}') \
     FROM pg_type t \
     JOIN pg_type bt ON bt.oid = CASE WHEN t.typcategory = 'A' THEN t.typelem WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END \
@@ -173,8 +176,9 @@ async fn tables(client: &Client) -> Result<Vec<Table>, String> {
             kind: row.get(4),
             base: row.get(5),
             is_array: row.get(6),
-            labels: row.get(7),
-            generated: row.get(8),
+            delimiter: row.get(7),
+            labels: row.get(8),
+            generated: row.get(9),
         };
         match out.last_mut() {
             Some(t) if t.name == table => t.columns.push(column),
@@ -184,22 +188,49 @@ async fn tables(client: &Client) -> Result<Vec<Table>, String> {
     Ok(out)
 }
 
+/// The array types whose elements are not separated by a comma, by name, each with its element
+/// type's delimiter: `_box` with `;`, PostGIS's `_geometry` and `_geography` with `:`.
+async fn delimiters(client: &Client) -> Result<HashMap<String, char>, String> {
+    let rows = client
+        .query("SELECT t.typname::text, e.typdelim::text FROM pg_type t JOIN pg_type e ON e.oid = t.typelem WHERE t.typcategory = 'A' AND e.typdelim <> ','", &[])
+        .await
+        .map_err(|e| message(&e))?;
+    Ok(rows.iter().filter_map(|r| Some((r.get::<_, String>(0), r.get::<_, String>(1).chars().next()?))).collect())
+}
+
 /// The type a placeholder was given, read from the catalog by its oid.
 async fn type_of(client: &Client, oid: u32, known: &mut HashMap<u32, Column>) -> Result<Column, String> {
     if let Some(column) = known.get(&oid) {
         return Ok(column.clone());
     }
     let row = client.query_opt(TYPE_QUERY, &[&oid]).await.map_err(|e| message(&e))?.ok_or_else(|| format!("no type has the oid {oid}"))?;
-    let column = Column { name: String::new(), ty: row.get(0), category: row.get(1), kind: row.get(2), base: row.get(3), is_array: row.get(4), labels: row.get(5), generated: false };
+    let column = Column { name: String::new(), ty: row.get(0), category: row.get(1), kind: row.get(2), base: row.get(3), is_array: row.get(4), delimiter: row.get(5), labels: row.get(6), generated: false };
     known.insert(oid, column.clone());
     Ok(column)
 }
 
-/// The edge values of one column's type in a state, as SQL literals, NULL first.
+/// The edge values of one scalar column's type in a state, as SQL literals, NULL first. An
+/// array column's pool is built by `accepted_pool`, which checks its element first.
 fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
+    with_casts(col, scalars(col, scenario))
+}
+
+/// The values of a type's pool, NULL first, each cast to the type.
+fn with_casts(col: &Column, values: Vec<String>) -> Vec<String> {
+    let mut out = vec!["NULL".to_string()];
+    out.extend(values.into_iter().map(|v| format!("{v}::{}", col.ty)));
+    out
+}
+
+/// The literals of the element type's pool in a state, uncast: an array column's are its
+/// element's.
+fn scalars(col: &Column, scenario: Scenario) -> Vec<String> {
     let literals: &[&str] = match (col.kind.as_str(), col.category.as_str(), col.base.as_str()) {
         ("e", _, _) => &[],
         ("r", _, _) => &["'empty'", "'(,5)'", "'[1,)'", "'[1,3)'"],
+        // No range, one, two with a gap between them, and one of dates for the multiranges of
+        // dates and times.
+        ("m", _, _) => &["'{}'", "'{[1,3)}'", "'{(,5), [7,)}'", "'{[2026-01-01,2026-02-01)}'"],
         (_, "N", _) => &["1", "2", "0", "0.1", "0.10000000000000000001", "'NaN'"],
         (_, "S", _) => &["'a'", "'A'", "'b'", "''", "'a '"],
         (_, "B", _) => &["true", "false"],
@@ -214,20 +245,74 @@ fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
         (_, "U", "macaddr8") => &["'08:00:2b:01:02:03:04:05'", "'08:00:2b:01:02:03'", "'00:00:00:00:00:00:00:00'", "'ff:ff:ff:ff:ff:ff:ff:ff'"],
         // No key, one key, a NULL value, and a key that needs quoting.
         (_, "U", "hstore") => &["''", "'a=>1'", "'a=>1, b=>NULL'", "'\"k e\"=>\"v\"'"],
+        // pgvector's vectors, of one, two and three dimensions (a typmod keeps the ones of its
+        // own), and a zero vector, which has no direction for `<=>` to measure.
+        (_, "U", "vector" | "halfvec") => &["'[1]'", "'[1,2]'", "'[1,2,3]'", "'[0,0,0]'"],
+        (_, "U", "sparsevec") => &["'{1:1}/3'", "'{}/3'", "'{}/5'"],
+        // PostGIS: a point with no SRID (which a typmod's SRID is applied to), one with an SRID,
+        // an empty point, another geometry type, and an empty collection.
+        (_, "U", "geometry") => &["'POINT(1 2)'", "'SRID=4326;POINT(1 2)'", "'SRID=4326;POINT EMPTY'", "'LINESTRING(0 0,1 1)'", "'GEOMETRYCOLLECTION EMPTY'"],
+        (_, "U", "geography") => &["'POINT(1 2)'", "'SRID=4326;POINT EMPTY'", "'LINESTRING(0 0,1 1)'"],
+        (_, "U", "box2d") => &["'BOX(0 0,1 1)'", "'BOX(1 2,1 2)'"],
+        (_, "U", "box3d") => &["'BOX3D(0 0 0,1 1 1)'"],
+        // A point of one and two dimensions, a box, and the point earthdistance's earth domain
+        // takes, `ll_to_earth(1, 2)` as the server writes it.
+        (_, "U", "cube") => &["'(1,2)'", "'(0)'", "'(0,0),(1,1)'", "'(6373311.758273381, 222560.95080971014, 111314.3802612757)'"],
+        (_, "U", "seg") => &["'1 .. 2'", "'0.5'", "'1 ..'"],
+        // A valid number of each isn type, short and thirteen digits long: each type takes those
+        // it can hold, ean13 every thirteen-digit one, a UPC's included.
+        (_, "U", "isbn" | "isbn13" | "ismn" | "ismn13" | "issn" | "issn13" | "ean13" | "upc") => {
+            &["'0-306-40615-2'", "'978-0-306-40615-7'", "'M-2306-7118-7'", "'979-0-2306-7118-7'", "'0317-8471'", "'977-0317-847-00-1'", "'012345678905'", "'0012345678905'"]
+        }
         _ => &["'1'", "'a'"],
     };
-    let mut scalars: Vec<String> = if col.kind == "e" { col.labels.iter().map(|l| quote(l)).collect() } else { literals.iter().map(|v| v.to_string()).collect() };
+    let mut out: Vec<String> = if col.kind == "e" { col.labels.iter().map(|l| quote(l)).collect() } else { literals.iter().map(|v| v.to_string()).collect() };
     if scenario == Scenario::Plain {
-        scalars.retain(|v| !EXTREMES.contains(&v.as_str()));
+        out.retain(|v| !EXTREMES.contains(&v.as_str()));
     }
-    if col.is_array {
-        let element = |v: &str| v.trim_matches('\'').to_string();
-        let first = scalars.first().map(|v| element(v)).unwrap_or_else(|| "1".into());
-        scalars = vec!["'{}'".into(), format!("'{{{first}}}'"), format!("'{{{first},NULL}}'"), "'{NULL}'".into()];
-    }
-    let mut out = vec!["NULL".to_string()];
-    out.extend(scalars.into_iter().map(|v| format!("{v}::{}", col.ty)));
     out
+}
+
+/// An array type's values, uncast: an empty array, one of an element, the element beside a NULL,
+/// and a NULL alone. The element is quoted, so a comma inside it (`'[1,2]'` of a vector) is not
+/// a separator, and stands beside the NULL with the type's delimiter. With no element there are
+/// the empty array and the NULL alone.
+fn arrays(col: &Column, element: Option<&str>) -> Vec<String> {
+    let mut out = vec!["'{}'".to_string()];
+    if let Some(element) = element {
+        let text = element.strip_prefix('\'').and_then(|e| e.strip_suffix('\'')).unwrap_or(element);
+        let quoted = format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+        out.push(format!("'{{{quoted}}}'"));
+        out.push(format!("'{{{quoted}{}NULL}}'", col.delimiter));
+    }
+    out.push("'{NULL}'".to_string());
+    out
+}
+
+/// A column's pool less the values its type refuses, NULL first. An array's elements are the
+/// first value of the element type's pool that the element type, its typmod included, accepts:
+/// `vector(3)[]` refuses `'{"[1]"}'`.
+async fn accepted_pool(client: &Client, col: &Column, scenario: Scenario) -> Result<Vec<String>, String> {
+    let candidates = if col.is_array {
+        let element_ty = col.ty.strip_suffix("[]").unwrap_or(&col.ty);
+        let mut first = None;
+        for value in scalars(col, scenario) {
+            if try_execute(client, &format!("SELECT {value}::{element_ty}")).await? {
+                first = Some(value);
+                break;
+            }
+        }
+        with_casts(col, arrays(col, first.as_deref()))
+    } else {
+        pool(col, scenario)
+    };
+    let mut out = Vec::with_capacity(candidates.len());
+    for value in candidates {
+        if value == "NULL" || try_execute(client, &format!("SELECT {value}")).await? {
+            out.push(value);
+        }
+    }
+    Ok(out)
 }
 
 fn quote(s: &str) -> String {
@@ -241,12 +326,7 @@ async fn seed(client: &Client, tables: &[Table], scenario: Scenario, bare: &mut 
     for table in tables {
         let mut columns = Vec::new();
         for column in table.columns.iter().filter(|c| !c.generated) {
-            let mut accepted = Vec::new();
-            for value in pool(column, scenario) {
-                if value == "NULL" || try_execute(client, &format!("SELECT {value}")).await? {
-                    accepted.push(value);
-                }
-            }
+            let accepted = accepted_pool(client, column, scenario).await?;
             if accepted.len() == 1 {
                 bare.push(format!("{}.{} ({})", table.name, column.name, column.ty));
             }
@@ -395,11 +475,10 @@ async fn bind(client: &Client, sql: &str, analysis: &Value, known: &mut HashMap<
             pools.push(vec!["NULL".to_string()]);
             continue;
         };
-        let mut values = Vec::new();
-        for value in pool(column, Scenario::Edges).into_iter().chain(fresh_value(column, 900_000)) {
-            let accepted = if value == "NULL" { p["nullable"].as_bool().unwrap_or(false) } else { try_execute(client, &format!("SELECT {value}")).await? };
-            if accepted {
-                values.push(value);
+        let mut values: Vec<String> = accepted_pool(client, column, Scenario::Edges).await?.into_iter().filter(|v| v != "NULL" || p["nullable"].as_bool().unwrap_or(false)).collect();
+        if let Some(fresh) = fresh_value(column, 900_000) {
+            if try_execute(client, &format!("SELECT {fresh}")).await? {
+                values.push(fresh);
             }
         }
         if values.iter().all(|v| v == "NULL") {
@@ -435,6 +514,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
     let mut notes = Vec::new();
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     let tables = tables(client).await?;
+    let delimiters = delimiters(client).await?;
     let bound = parameters(client, statements).await?;
     for (tally, bound) in tallies.iter_mut().zip(&bound) {
         tally.refused = bound.as_ref().err().cloned();
@@ -554,7 +634,8 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                 }
                                 continue;
                             }
-                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(true)) {
+                            let delimiter = col["type_name"].as_str().and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
+                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(true), delimiter) {
                                 problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
                             }
                         }
@@ -571,16 +652,17 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
 }
 
 /// Why a non-NULL value contradicts its type, if it does: a NULL element in an array typed without
-/// one, or a null where a JSON object or list typed a value. A JSON `null` at the top is the
-/// column's null to the run time, so it contradicts a column typed non-null.
-fn contradiction(ty: &Value, text: &str, nullable: bool) -> Option<String> {
+/// one, its elements separated by `delimiter`, or a null where a JSON object or list typed a
+/// value. A JSON `null` at the top is the column's null to the run time, so it contradicts a
+/// column typed non-null.
+fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
     match ty["kind"].as_str() {
         // A union of literals, from an enum or a CHECK list: the value is one of them.
         Some("enum") => {
             let labels: Vec<&str> = ty["labels"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             (!labels.is_empty() && !labels.contains(&text)).then(|| format!("typed as one of {labels:?} holds {text:?}"))
         }
-        Some("array") if !ty["nullable_items"].as_bool().unwrap_or(true) => array_has_null(text).then(|| "typed with non-null elements holds a NULL element".to_string()),
+        Some("array") if !ty["nullable_items"].as_bool().unwrap_or(true) => array_has_null(text, delimiter).then(|| "typed with non-null elements holds a NULL element".to_string()),
         Some("object") | Some("list") => {
             let json: Value = serde_json::from_str(text).ok()?;
             if json.is_null() {
@@ -596,7 +678,7 @@ fn contradiction(ty: &Value, text: &str, nullable: bool) -> Option<String> {
     }
 }
 
-fn array_has_null(text: &str) -> bool {
+fn array_has_null(text: &str, delimiter: char) -> bool {
     // An unquoted NULL between delimiters is a NULL element; a quoted "NULL" is a string.
     let mut in_quotes = false;
     let mut token = String::new();
@@ -616,7 +698,8 @@ fn array_has_null(text: &str) -> bool {
         match c {
             '\\' => escaped = true,
             '"' => in_quotes = !in_quotes,
-            ',' | '{' | '}' if !in_quotes => check(&mut token),
+            '{' | '}' if !in_quotes => check(&mut token),
+            _ if c == delimiter && !in_quotes => check(&mut token),
             _ if in_quotes => {}
             _ => token.push(c),
         }
@@ -930,7 +1013,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     }
                                 }
                                 Some(rusqlite::types::Value::Text(text)) => {
-                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(true)) {
+                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(true), ',') {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -1265,7 +1348,7 @@ mod tests {
     use serde_json::json;
 
     fn column(category: &str, base: &str) -> Column {
-        Column { name: "c".into(), ty: base.into(), category: category.into(), kind: "b".into(), base: base.into(), is_array: false, labels: Vec::new(), generated: false }
+        Column { name: "c".into(), ty: base.into(), category: category.into(), kind: "b".into(), base: base.into(), is_array: false, delimiter: ",".into(), labels: Vec::new(), generated: false }
     }
 
     #[test]
@@ -1303,17 +1386,17 @@ mod tests {
         let scalar = |name: &str| json!({"kind": "scalar", "name": name});
         let list = json!({"kind": "list", "of": scalar("int8"), "nullable_items": false});
         let object = json!({"kind": "object", "fields": [{"name": "ids", "type": list.clone(), "nullable": false}]});
-        assert_eq!(contradiction(&list, "[1, 2]", false), None);
-        assert_eq!(contradiction(&object, r#"{"ids": []}"#, false), None);
+        assert_eq!(contradiction(&list, "[1, 2]", false, ','), None);
+        assert_eq!(contradiction(&object, r#"{"ids": []}"#, false, ','), None);
         // `coalesce(jsonb_agg(…), '{}')` over no rows is `{}`, which no list type admits.
-        assert_eq!(contradiction(&list, "{}", false).as_deref(), Some("holds {} at the top, typed a list"));
-        assert_eq!(contradiction(&object, "[]", false).as_deref(), Some("holds [] at the top, typed an object"));
-        assert_eq!(contradiction(&object, r#"{"ids": {}}"#, false).as_deref(), Some("holds {} at .ids, typed a list"));
+        assert_eq!(contradiction(&list, "{}", false, ',').as_deref(), Some("holds {} at the top, typed a list"));
+        assert_eq!(contradiction(&object, "[]", false, ',').as_deref(), Some("holds [] at the top, typed an object"));
+        assert_eq!(contradiction(&object, r#"{"ids": {}}"#, false, ',').as_deref(), Some("holds {} at .ids, typed a list"));
         // The JSON null at the top is the column's null to the run time: wrong only where the column is non-null.
-        assert_eq!(contradiction(&object, "null", false).as_deref(), Some("holds the JSON null, typed non-null"));
-        assert_eq!(contradiction(&object, "null", true), None);
+        assert_eq!(contradiction(&object, "null", false, ',').as_deref(), Some("holds the JSON null, typed non-null"));
+        assert_eq!(contradiction(&object, "null", true, ','), None);
         // Every key is there, and an array is an array.
-        assert_eq!(contradiction(&object, "{}", false).as_deref(), Some("has no key .ids"));
+        assert_eq!(contradiction(&object, "{}", false, ',').as_deref(), Some("has no key .ids"));
         let array = json!({"kind": "array", "of": scalar("int4"), "nullable_items": true});
         assert_eq!(json_contradiction(&array, &json!({"a": 1}), ".xs").as_deref(), Some(r#"holds {"a":1} at .xs, typed an array"#));
     }
@@ -1351,8 +1434,68 @@ mod tests {
         assert!(pool(&column("U", "macaddr"), Scenario::Edges).contains(&"'08:00:2b:01:02:03'::macaddr".to_string()));
         assert!(pool(&column("U", "macaddr8"), Scenario::Edges).contains(&"'08:00:2b:01:02:03:04:05'::macaddr8".to_string()));
         // A type with no pool gets the two generic literals, which the type itself then accepts or refuses.
-        assert_eq!(pool(&column("U", "vector"), Scenario::Edges), ["NULL", "'1'::vector", "'a'::vector"]);
+        assert_eq!(pool(&column("U", "tsm_handler"), Scenario::Edges), ["NULL", "'1'::tsm_handler", "'a'::tsm_handler"]);
         assert_eq!(fresh_value(&column("I", "inet"), 900_000).as_deref(), Some("'172.29.187.160'::inet"));
+    }
+
+    #[test]
+    fn the_extension_types_have_pools_of_their_own() {
+        // Vectors of several dimensions share a pool: a typmod keeps the ones of its own.
+        let mut vector = column("U", "vector");
+        vector.ty = "vector(3)".into();
+        assert_eq!(pool(&vector, Scenario::Edges), ["NULL", "'[1]'::vector(3)", "'[1,2]'::vector(3)", "'[1,2,3]'::vector(3)", "'[0,0,0]'::vector(3)"]);
+        assert!(pool(&column("U", "halfvec"), Scenario::Edges).contains(&"'[1,2,3]'::halfvec".to_string()));
+        assert!(pool(&column("U", "sparsevec"), Scenario::Edges).contains(&"'{1:1}/3'::sparsevec".to_string()));
+        assert!(pool(&column("U", "geometry"), Scenario::Edges).contains(&"'SRID=4326;POINT EMPTY'::geometry".to_string()));
+        assert!(pool(&column("U", "geography"), Scenario::Edges).contains(&"'POINT(1 2)'::geography".to_string()));
+        assert!(pool(&column("U", "box2d"), Scenario::Edges).contains(&"'BOX(0 0,1 1)'::box2d".to_string()));
+        assert!(pool(&column("U", "box3d"), Scenario::Edges).contains(&"'BOX3D(0 0 0,1 1 1)'::box3d".to_string()));
+        assert!(pool(&column("U", "seg"), Scenario::Edges).contains(&"'1 .. 2'::seg".to_string()));
+        // earthdistance's earth is a domain over cube, so its pool is cube's, the earth point included.
+        let mut earth = column("U", "cube");
+        earth.ty = "earth".into();
+        assert!(pool(&earth, Scenario::Edges).contains(&"'(6373311.758273381, 222560.95080971014, 111314.3802612757)'::earth".to_string()));
+        for isn in ["isbn", "isbn13", "ean13", "issn", "ismn", "upc"] {
+            assert!(pool(&column("U", isn), Scenario::Edges).contains(&format!("'0-306-40615-2'::{isn}")), "{isn}");
+        }
+        // A multirange, built-in or an extension's, has a pool of its own as a range has.
+        let mut multirange = column("R", "int4multirange");
+        multirange.kind = "m".into();
+        assert_eq!(pool(&multirange, Scenario::Edges), ["NULL", "'{}'::int4multirange", "'{[1,3)}'::int4multirange", "'{(,5), [7,)}'::int4multirange", "'{[2026-01-01,2026-02-01)}'::int4multirange"]);
+    }
+
+    #[test]
+    fn an_array_quotes_its_element_and_separates_it_with_the_types_delimiter() {
+        let mut vectors = column("U", "vector");
+        vectors.ty = "vector(2)[]".into();
+        vectors.is_array = true;
+        assert_eq!(with_casts(&vectors, arrays(&vectors, Some("'[1]'"))), ["NULL", "'{}'::vector(2)[]", "'{\"[1]\"}'::vector(2)[]", "'{\"[1]\",NULL}'::vector(2)[]", "'{NULL}'::vector(2)[]"]);
+        assert_eq!(arrays(&vectors, Some("'[1,2]'")), ["'{}'", "'{\"[1,2]\"}'", "'{\"[1,2]\",NULL}'", "'{NULL}'"]);
+        let mut geometries = column("U", "geometry");
+        geometries.delimiter = ":".into();
+        assert_eq!(arrays(&geometries, Some("'POINT(1 2)'"))[2], "'{\"POINT(1 2)\":NULL}'");
+        let mut boxes = column("G", "box");
+        boxes.delimiter = ";".into();
+        assert_eq!(arrays(&boxes, Some("'(1,1),(0,0)'"))[2], "'{\"(1,1),(0,0)\";NULL}'");
+        // A quote or a backslash inside the element is escaped for the array's own syntax.
+        assert_eq!(arrays(&column("S", "text"), Some(r#"'a"b\c'"#))[1], r#"'{"a\"b\\c"}'"#);
+        // With no element the type accepts there is the empty array and the NULL alone.
+        assert_eq!(arrays(&vectors, None), ["'{}'", "'{NULL}'"]);
+    }
+
+    #[test]
+    fn a_null_element_is_found_between_the_types_own_delimiters() {
+        let points = json!({"kind": "array", "of": {"kind": "scalar", "name": "geometry"}, "nullable_items": false});
+        let point = "0101000000000000000000F03F0000000000000040";
+        // An array of geometries separates its elements with a colon, of boxes with a semicolon.
+        assert_eq!(contradiction(&points, &format!("{{{point}:NULL}}"), false, ':').as_deref(), Some("typed with non-null elements holds a NULL element"));
+        assert_eq!(contradiction(&points, &format!("{{{point}:{point}}}"), false, ':'), None);
+        assert!(array_has_null("{(1,1),(0,0);NULL}", ';'));
+        assert!(!array_has_null("{(1,1),(0,0);(2,2),(1,1)}", ';'));
+        // A comma is no separator there, nor a colon in an array of text.
+        assert!(!array_has_null("{NULL:x}", ','));
+        assert!(array_has_null("{a,NULL}", ','));
+        assert!(!array_has_null(r#"{"NULL",b}"#, ','));
     }
 
     #[test]

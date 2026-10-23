@@ -1,0 +1,10 @@
+add.sql: maybeOne (id: int4, dims: cube, spot: cube?, span: seg?, isbn13: isbn13, issn: issn?, ismn: ismn?, upc: upc?, blob: oid?, ref: oid?) -> { id: int4, dims: cube, spot: cube?, span: seg?, isbn13: isbn13, issn: issn?, ismn: ismn?, upc: upc?, blob: oid?, ref: oid? }
+by_ean.sql: many (eans: ean13[]) -> { id: int4, ean: ean13?, upc: upc? }
+by_isbn.sql: many (isbn: isbn13) -> { id: int4, printed: text, weak: bool?, valid: bool?, fixed: isbn13? }
+by_ref.sql: many (ref: oid, blob: oid) -> { id: int4, blob: oid?, ref: oid? }
+cube_ops.sql: many (c: cube, c2: cube) -> { id: int4, n: int4?, low: float8?, distance: float8?, holds: bool? }
+earth_ops.sql: many (lat: float8, lng: float8) -> { id: int4, meters: float8?, lat: float8?, lng: float8?, made: cube? }
+json_object.sql: many () -> { doc: { dims: cube, spot: cube?, span: seg?, isbn13: isbn13, upc: upc?, blob: oid?, ref: oid?, boxes: cube[]? } }
+plain.sql: many () -> { id: int4, dims: cube, spot: cube?, span: seg?, isbn: isbn?, isbn13: isbn13, ean: ean13?, issn: issn?, ismn: ismn?, upc: upc?, blob: oid?, ref: oid?, boxes: cube[]? }
+seg_ops.sql: many (s: seg) -> { id: int4, low: float4?, high: float4?, overlaps: bool? }
+whole_row.sql: many () -> { doc: { id: int4, dims: cube, spot: cube?, span: seg?, isbn: isbn?, isbn13: isbn13, ean: ean13?, issn: issn?, ismn: ismn?, upc: upc?, blob: oid?, ref: oid?, boxes: cube[]? } }

@@ -1,0 +1,12 @@
+add.sql: maybeOne (id: int4, embedding: vector, draft: vector?, sparse: sparsevec?) -> { id: int4, embedding: vector, draft: vector?, sparse: sparsevec? }
+aggregates.sql: one () -> { mean: vector?, total: vector?, embeddings: (vector!)[]?, drafts: (vector!)[]? }
+any_vector.sql: many (qs: vector[]) -> { id: int4 }
+by_vector.sql: many (q: vector) -> { id: int4, dims: int4?, norm: float8?, parts: float4[]?, unit: vector? }
+cosine.sql: many (q: vector) -> { id: int4, distance: float8?, draft_distance: float8? }
+half_nearest.sql: many (h: halfvec, s: sparsevec) -> { id: int4, distance: float8?, cosine: float8?, sparse_distance: float8? }
+inner_product.sql: many (q: vector, threshold: float8) -> { id: int4, score: float8? }
+json_agg.sql: one () -> { embeddings: [vector]?, halves: [{ half: halfvec? }]? }
+json_object.sql: many () -> { doc: { id: int4, embedding: vector, draft: vector?, sparse: sparsevec?, history: vector[]? } }
+nearest.sql: many (q: vector) -> { id: int4, distance: float8? }
+plain.sql: many () -> { id: int4, embedding: vector, draft: vector?, half: halfvec?, sparse: sparsevec?, history: vector[]?, halves: halfvec[] }
+whole_row.sql: many () -> { doc: { id: int4, embedding: vector, draft: vector?, half: halfvec?, sparse: sparsevec?, history: vector[]?, halves: halfvec[] } }

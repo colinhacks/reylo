@@ -137,11 +137,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Install Postgres 18
+      # pgvector and PostGIS, the extensions Supabase and Neon users install most, for the pgvector_types and
+      # postgis_types cases; PostGIS's package pulls in its scripts package, which holds the extension's SQL.
+      - name: Install Postgres 18, pgvector and PostGIS
         id: pg
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18
+          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 postgresql-18-pgvector postgresql-18-postgis-3
           version=$("$PG_BIN/pg_config" --version | cut -d' ' -f2)
           test -n "$version"
           test -n "$ImageOS"
