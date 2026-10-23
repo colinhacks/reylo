@@ -65,6 +65,15 @@ for (const driver of ["node-postgres", "postgres-js"]) add({ id: `drizzle-orm@${
 add({ id: `drizzle-orm@${drizzleVersion}/mysql2`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "mysql2", "--port", "33406", "--target", "MySQL 8.4"], meta: { pkg: "drizzle-orm (mysql2)", version: drizzleVersion, target: "MySQL 8.4", runtime: n26 } });
 add({ id: `drizzle-orm@${drizzleVersion}/better-sqlite3`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "better-sqlite3"], sqlite: true, meta: { pkg: "drizzle-orm (better-sqlite3)", version: drizzleVersion, target: "SQLite file", runtime: n26 } });
 add({ id: `drizzle-orm@${drizzleVersion}/libsql`, bin: NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", "libsql"], sqlite: true, meta: { pkg: "drizzle-orm (libsql)", version: drizzleVersion, target: "SQLite file (file: URL)", runtime: n26 } });
+const drizzleJob = (driver: string, target: string, opts: { bun?: boolean; sqlite?: boolean } = {}) =>
+  add({ id: `drizzle-orm@${drizzleVersion}/${driver}`, bin: opts.bun ? BUN : NODE26, file: "drivers/drizzle.ts", args: ["--pkg", "drizzle-orm", "--version", drizzleVersion, "--driver", driver], sqlite: opts.sqlite, meta: { pkg: `drizzle-orm (${driver})`, version: drizzleVersion, target, runtime: opts.bun ? "bun" : n26 } });
+drizzleJob("neon-serverless", "Postgres 14 via local Neon proxy");
+drizzleJob("neon-http", "Postgres 14 via local Neon proxy");
+drizzleJob("pglite", "PGlite (in-process)");
+drizzleJob("bun-sql", "Postgres 14 (local)", { bun: true });
+drizzleJob("planetscale-serverless", "MySQL 8.4 via ps-http-sim");
+drizzleJob("bun-sqlite", "SQLite file", { bun: true, sqlite: true });
+drizzleJob("d1", "D1 (Miniflare, local workerd)");
 
 // SQLite
 for (const [alias, v] of [["bs3-13", "13.0.3"], ["bs3-12", "12.11.1"]]) add({ id: `better-sqlite3@${v}`, bin: NODE26, file: "drivers/sync-sqlite.ts", args: ["--lib", alias, "--version", v], sqlite: true, meta: { pkg: "better-sqlite3", version: v, target: "SQLite file", runtime: n26 } });

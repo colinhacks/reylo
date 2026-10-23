@@ -51,6 +51,15 @@ import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import type { PgTransaction } from "drizzle-orm/pg-core";
 import type { MySqlTransaction } from "drizzle-orm/mysql-core";
 import type { SQLiteTransaction } from "drizzle-orm/sqlite-core";
+import type { NeonDatabase } from "drizzle-orm/neon-serverless";
+import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
+import type { PgliteDatabase } from "drizzle-orm/pglite";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import type { PlanetScaleDatabase } from "drizzle-orm/planetscale-serverless";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
+import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
+import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
+import type { DurableObjectStorage } from "@cloudflare/workers-types";
 import { defineQuery } from "../../../src/index.ts";
 
 type Params = { id: number };
@@ -679,164 +688,220 @@ declare const c89: SQLiteTransaction<'async', any, any, any>; // drizzle-orm@0.4
 /*@525*/ { const k: "promise" = kind(sqQ.run(c89, { id: 1 })); void k; }
 /*@526*/ { const k: "promise" = kind(sqQ.with(c89)({ id: 1 })); void k; }
 /*@527*/ sqQ.runSync(c89, { id: 1 });
-declare const c90: ls017.Client; // @libsql/client@0.17.4 Client
+declare const c90: NeonDatabase & { $client: neon1.Pool }; // drizzle-orm@0.45.4 (neon-serverless) drizzle(pool)
 /*@528*/ pgQ.run(c90, { id: 1 });
 /*@529*/ myQ.run(c90, { id: 1 });
 /*@530*/ sqQ.run(c90, { id: 1 });
-/*@531*/ { const k: "promise" = kind(sqQ.run(c90, { id: 1 })); void k; }
-/*@532*/ { const k: "promise" = kind(sqQ.with(c90)({ id: 1 })); void k; }
-/*@533*/ sqQ.runSync(c90, { id: 1 });
-declare const c91: ls017.Transaction; // @libsql/client@0.17.4 Transaction
+/*@531*/ { const k: "promise" = kind(pgQ.run(c90, { id: 1 })); void k; }
+/*@532*/ { const k: "promise" = kind(pgQ.with(c90)({ id: 1 })); void k; }
+/*@533*/ pgQ.runSync(c90, { id: 1 });
+declare const c91: NeonHttpDatabase & { $client: neon1.NeonQueryFunction<false, false> }; // drizzle-orm@0.45.4 (neon-http) drizzle(neon())
 /*@534*/ pgQ.run(c91, { id: 1 });
 /*@535*/ myQ.run(c91, { id: 1 });
 /*@536*/ sqQ.run(c91, { id: 1 });
-/*@537*/ { const k: "promise" = kind(sqQ.run(c91, { id: 1 })); void k; }
-/*@538*/ { const k: "promise" = kind(sqQ.with(c91)({ id: 1 })); void k; }
-/*@539*/ sqQ.runSync(c91, { id: 1 });
-declare const c92: ls018.Client; // @libsql/client@0.18.0 Client
+/*@537*/ { const k: "promise" = kind(pgQ.run(c91, { id: 1 })); void k; }
+/*@538*/ { const k: "promise" = kind(pgQ.with(c91)({ id: 1 })); void k; }
+/*@539*/ pgQ.runSync(c91, { id: 1 });
+declare const c92: PgliteDatabase & { $client: PGlite05 }; // drizzle-orm@0.45.4 (pglite) drizzle(pglite)
 /*@540*/ pgQ.run(c92, { id: 1 });
 /*@541*/ myQ.run(c92, { id: 1 });
 /*@542*/ sqQ.run(c92, { id: 1 });
-/*@543*/ { const k: "promise" = kind(sqQ.run(c92, { id: 1 })); void k; }
-/*@544*/ { const k: "promise" = kind(sqQ.with(c92)({ id: 1 })); void k; }
-/*@545*/ sqQ.runSync(c92, { id: 1 });
-declare const c93: ls018.Transaction; // @libsql/client@0.18.0 Transaction
+/*@543*/ { const k: "promise" = kind(pgQ.run(c92, { id: 1 })); void k; }
+/*@544*/ { const k: "promise" = kind(pgQ.with(c92)({ id: 1 })); void k; }
+/*@545*/ pgQ.runSync(c92, { id: 1 });
+declare const c93: BunSQLDatabase & { $client: SQL }; // drizzle-orm@0.45.4 (bun-sql) drizzle(sql)
 /*@546*/ pgQ.run(c93, { id: 1 });
 /*@547*/ myQ.run(c93, { id: 1 });
 /*@548*/ sqQ.run(c93, { id: 1 });
-/*@549*/ { const k: "promise" = kind(sqQ.run(c93, { id: 1 })); void k; }
-/*@550*/ { const k: "promise" = kind(sqQ.with(c93)({ id: 1 })); void k; }
-/*@551*/ sqQ.runSync(c93, { id: 1 });
-declare const c94: ls015.Client; // @libsql/client@0.15.15 Client
+/*@549*/ { const k: "promise" = kind(pgQ.run(c93, { id: 1 })); void k; }
+/*@550*/ { const k: "promise" = kind(pgQ.with(c93)({ id: 1 })); void k; }
+/*@551*/ pgQ.runSync(c93, { id: 1 });
+declare const c94: PlanetScaleDatabase & { $client: ps1.Client }; // drizzle-orm@0.45.4 (planetscale-serverless) drizzle(client)
 /*@552*/ pgQ.run(c94, { id: 1 });
 /*@553*/ myQ.run(c94, { id: 1 });
 /*@554*/ sqQ.run(c94, { id: 1 });
-/*@555*/ { const k: "promise" = kind(sqQ.run(c94, { id: 1 })); void k; }
-/*@556*/ { const k: "promise" = kind(sqQ.with(c94)({ id: 1 })); void k; }
-/*@557*/ sqQ.runSync(c94, { id: 1 });
-declare const c95: ls015.Transaction; // @libsql/client@0.15.15 Transaction
+/*@555*/ { const k: "promise" = kind(myQ.run(c94, { id: 1 })); void k; }
+/*@556*/ { const k: "promise" = kind(myQ.with(c94)({ id: 1 })); void k; }
+/*@557*/ myQ.runSync(c94, { id: 1 });
+declare const c95: DrizzleD1Database & { $client: D1Database }; // drizzle-orm@0.45.4 (d1) drizzle(d1)
 /*@558*/ pgQ.run(c95, { id: 1 });
 /*@559*/ myQ.run(c95, { id: 1 });
 /*@560*/ sqQ.run(c95, { id: 1 });
 /*@561*/ { const k: "promise" = kind(sqQ.run(c95, { id: 1 })); void k; }
 /*@562*/ { const k: "promise" = kind(sqQ.with(c95)({ id: 1 })); void k; }
 /*@563*/ sqQ.runSync(c95, { id: 1 });
-declare const c96: ls014.Client; // @libsql/client@0.14.0 Client
+declare const c96: BunSQLiteDatabase & { $client: BunDatabase }; // drizzle-orm@0.45.4 (bun-sqlite) drizzle(database)
 /*@564*/ pgQ.run(c96, { id: 1 });
 /*@565*/ myQ.run(c96, { id: 1 });
 /*@566*/ sqQ.run(c96, { id: 1 });
 /*@567*/ { const k: "promise" = kind(sqQ.run(c96, { id: 1 })); void k; }
 /*@568*/ { const k: "promise" = kind(sqQ.with(c96)({ id: 1 })); void k; }
-/*@569*/ sqQ.runSync(c96, { id: 1 });
-declare const c97: ls014.Transaction; // @libsql/client@0.14.0 Transaction
+/*@569*/ { const k: "value" = kind(sqQ.runSync(c96, { id: 1 })); void k; }
+declare const c97: DrizzleSqliteDODatabase & { $client: DurableObjectStorage }; // drizzle-orm@0.45.4 (durable-sqlite) drizzle(ctx.storage)
 /*@570*/ pgQ.run(c97, { id: 1 });
 /*@571*/ myQ.run(c97, { id: 1 });
 /*@572*/ sqQ.run(c97, { id: 1 });
 /*@573*/ { const k: "promise" = kind(sqQ.run(c97, { id: 1 })); void k; }
 /*@574*/ { const k: "promise" = kind(sqQ.with(c97)({ id: 1 })); void k; }
-/*@575*/ sqQ.runSync(c97, { id: 1 });
-declare const c98: tu08.Database; // @tursodatabase/database@0.8.3 Database (connect())
+/*@575*/ { const k: "value" = kind(sqQ.runSync(c97, { id: 1 })); void k; }
+declare const c98: ls017.Client; // @libsql/client@0.17.4 Client
 /*@576*/ pgQ.run(c98, { id: 1 });
 /*@577*/ myQ.run(c98, { id: 1 });
 /*@578*/ sqQ.run(c98, { id: 1 });
 /*@579*/ { const k: "promise" = kind(sqQ.run(c98, { id: 1 })); void k; }
 /*@580*/ { const k: "promise" = kind(sqQ.with(c98)({ id: 1 })); void k; }
 /*@581*/ sqQ.runSync(c98, { id: 1 });
-declare const c99: tu08.Transaction; // @tursodatabase/database@0.8.3 Transaction (transactionAsync())
+declare const c99: ls017.Transaction; // @libsql/client@0.17.4 Transaction
 /*@582*/ pgQ.run(c99, { id: 1 });
 /*@583*/ myQ.run(c99, { id: 1 });
 /*@584*/ sqQ.run(c99, { id: 1 });
 /*@585*/ { const k: "promise" = kind(sqQ.run(c99, { id: 1 })); void k; }
 /*@586*/ { const k: "promise" = kind(sqQ.with(c99)({ id: 1 })); void k; }
 /*@587*/ sqQ.runSync(c99, { id: 1 });
-declare const c100: tu08c.Database; // @tursodatabase/database@0.8.3 compat Database
+declare const c100: ls018.Client; // @libsql/client@0.18.0 Client
 /*@588*/ pgQ.run(c100, { id: 1 });
 /*@589*/ myQ.run(c100, { id: 1 });
 /*@590*/ sqQ.run(c100, { id: 1 });
 /*@591*/ { const k: "promise" = kind(sqQ.run(c100, { id: 1 })); void k; }
 /*@592*/ { const k: "promise" = kind(sqQ.with(c100)({ id: 1 })); void k; }
-/*@593*/ { const k: "value" = kind(sqQ.runSync(c100, { id: 1 })); void k; }
-declare const c101: tu07.Database; // @tursodatabase/database@0.7.2 Database (connect())
+/*@593*/ sqQ.runSync(c100, { id: 1 });
+declare const c101: ls018.Transaction; // @libsql/client@0.18.0 Transaction
 /*@594*/ pgQ.run(c101, { id: 1 });
 /*@595*/ myQ.run(c101, { id: 1 });
 /*@596*/ sqQ.run(c101, { id: 1 });
 /*@597*/ { const k: "promise" = kind(sqQ.run(c101, { id: 1 })); void k; }
 /*@598*/ { const k: "promise" = kind(sqQ.with(c101)({ id: 1 })); void k; }
 /*@599*/ sqQ.runSync(c101, { id: 1 });
-declare const c102: tu07.Transaction; // @tursodatabase/database@0.7.2 Transaction (transactionAsync())
+declare const c102: ls015.Client; // @libsql/client@0.15.15 Client
 /*@600*/ pgQ.run(c102, { id: 1 });
 /*@601*/ myQ.run(c102, { id: 1 });
 /*@602*/ sqQ.run(c102, { id: 1 });
 /*@603*/ { const k: "promise" = kind(sqQ.run(c102, { id: 1 })); void k; }
 /*@604*/ { const k: "promise" = kind(sqQ.with(c102)({ id: 1 })); void k; }
 /*@605*/ sqQ.runSync(c102, { id: 1 });
-declare const c103: tu07c.Database; // @tursodatabase/database@0.7.2 compat Database
+declare const c103: ls015.Transaction; // @libsql/client@0.15.15 Transaction
 /*@606*/ pgQ.run(c103, { id: 1 });
 /*@607*/ myQ.run(c103, { id: 1 });
 /*@608*/ sqQ.run(c103, { id: 1 });
 /*@609*/ { const k: "promise" = kind(sqQ.run(c103, { id: 1 })); void k; }
 /*@610*/ { const k: "promise" = kind(sqQ.with(c103)({ id: 1 })); void k; }
-/*@611*/ { const k: "value" = kind(sqQ.runSync(c103, { id: 1 })); void k; }
-declare const c104: tu06.Database; // @tursodatabase/database@0.6.1 Database (connect())
+/*@611*/ sqQ.runSync(c103, { id: 1 });
+declare const c104: ls014.Client; // @libsql/client@0.14.0 Client
 /*@612*/ pgQ.run(c104, { id: 1 });
 /*@613*/ myQ.run(c104, { id: 1 });
 /*@614*/ sqQ.run(c104, { id: 1 });
 /*@615*/ { const k: "promise" = kind(sqQ.run(c104, { id: 1 })); void k; }
 /*@616*/ { const k: "promise" = kind(sqQ.with(c104)({ id: 1 })); void k; }
 /*@617*/ sqQ.runSync(c104, { id: 1 });
-declare const c105: tu06c.Database; // @tursodatabase/database@0.6.1 compat Database
+declare const c105: ls014.Transaction; // @libsql/client@0.14.0 Transaction
 /*@618*/ pgQ.run(c105, { id: 1 });
 /*@619*/ myQ.run(c105, { id: 1 });
 /*@620*/ sqQ.run(c105, { id: 1 });
 /*@621*/ { const k: "promise" = kind(sqQ.run(c105, { id: 1 })); void k; }
 /*@622*/ { const k: "promise" = kind(sqQ.with(c105)({ id: 1 })); void k; }
-/*@623*/ { const k: "value" = kind(sqQ.runSync(c105, { id: 1 })); void k; }
-declare const c106: tu04.Database; // @tursodatabase/database@0.4.4 Database (connect())
+/*@623*/ sqQ.runSync(c105, { id: 1 });
+declare const c106: tu08.Database; // @tursodatabase/database@0.8.3 Database (connect())
 /*@624*/ pgQ.run(c106, { id: 1 });
 /*@625*/ myQ.run(c106, { id: 1 });
 /*@626*/ sqQ.run(c106, { id: 1 });
 /*@627*/ { const k: "promise" = kind(sqQ.run(c106, { id: 1 })); void k; }
 /*@628*/ { const k: "promise" = kind(sqQ.with(c106)({ id: 1 })); void k; }
 /*@629*/ sqQ.runSync(c106, { id: 1 });
-declare const c107: tu04c.Database; // @tursodatabase/database@0.4.4 compat Database
+declare const c107: tu08.Transaction; // @tursodatabase/database@0.8.3 Transaction (transactionAsync())
 /*@630*/ pgQ.run(c107, { id: 1 });
 /*@631*/ myQ.run(c107, { id: 1 });
 /*@632*/ sqQ.run(c107, { id: 1 });
 /*@633*/ { const k: "promise" = kind(sqQ.run(c107, { id: 1 })); void k; }
 /*@634*/ { const k: "promise" = kind(sqQ.with(c107)({ id: 1 })); void k; }
-/*@635*/ { const k: "value" = kind(sqQ.runSync(c107, { id: 1 })); void k; }
-declare const c108: s3v5.Database; // sqlite3@5.1.7 Database
+/*@635*/ sqQ.runSync(c107, { id: 1 });
+declare const c108: tu08c.Database; // @tursodatabase/database@0.8.3 compat Database
 /*@636*/ pgQ.run(c108, { id: 1 });
 /*@637*/ myQ.run(c108, { id: 1 });
 /*@638*/ sqQ.run(c108, { id: 1 });
 /*@639*/ { const k: "promise" = kind(sqQ.run(c108, { id: 1 })); void k; }
 /*@640*/ { const k: "promise" = kind(sqQ.with(c108)({ id: 1 })); void k; }
-/*@641*/ sqQ.runSync(c108, { id: 1 });
-declare const c109: s3v6.Database; // sqlite3@6.0.1 Database
+/*@641*/ { const k: "value" = kind(sqQ.runSync(c108, { id: 1 })); void k; }
+declare const c109: tu07.Database; // @tursodatabase/database@0.7.2 Database (connect())
 /*@642*/ pgQ.run(c109, { id: 1 });
 /*@643*/ myQ.run(c109, { id: 1 });
 /*@644*/ sqQ.run(c109, { id: 1 });
 /*@645*/ { const k: "promise" = kind(sqQ.run(c109, { id: 1 })); void k; }
 /*@646*/ { const k: "promise" = kind(sqQ.with(c109)({ id: 1 })); void k; }
 /*@647*/ sqQ.runSync(c109, { id: 1 });
-declare const c110: SqliteDatabase; // sqlite@5.1.1 Database (open())
+declare const c110: tu07.Transaction; // @tursodatabase/database@0.7.2 Transaction (transactionAsync())
 /*@648*/ pgQ.run(c110, { id: 1 });
 /*@649*/ myQ.run(c110, { id: 1 });
 /*@650*/ sqQ.run(c110, { id: 1 });
 /*@651*/ { const k: "promise" = kind(sqQ.run(c110, { id: 1 })); void k; }
 /*@652*/ { const k: "promise" = kind(sqQ.with(c110)({ id: 1 })); void k; }
 /*@653*/ sqQ.runSync(c110, { id: 1 });
-declare const c111: D1Database; // D1 (@cloudflare/workers-types 5.20260929.1) D1Database
+declare const c111: tu07c.Database; // @tursodatabase/database@0.7.2 compat Database
 /*@654*/ pgQ.run(c111, { id: 1 });
 /*@655*/ myQ.run(c111, { id: 1 });
 /*@656*/ sqQ.run(c111, { id: 1 });
 /*@657*/ { const k: "promise" = kind(sqQ.run(c111, { id: 1 })); void k; }
 /*@658*/ { const k: "promise" = kind(sqQ.with(c111)({ id: 1 })); void k; }
-/*@659*/ sqQ.runSync(c111, { id: 1 });
-declare const c112: D1DatabaseSession; // D1 (@cloudflare/workers-types 5.20260929.1) D1DatabaseSession (withSession())
+/*@659*/ { const k: "value" = kind(sqQ.runSync(c111, { id: 1 })); void k; }
+declare const c112: tu06.Database; // @tursodatabase/database@0.6.1 Database (connect())
 /*@660*/ pgQ.run(c112, { id: 1 });
 /*@661*/ myQ.run(c112, { id: 1 });
 /*@662*/ sqQ.run(c112, { id: 1 });
 /*@663*/ { const k: "promise" = kind(sqQ.run(c112, { id: 1 })); void k; }
 /*@664*/ { const k: "promise" = kind(sqQ.with(c112)({ id: 1 })); void k; }
 /*@665*/ sqQ.runSync(c112, { id: 1 });
+declare const c113: tu06c.Database; // @tursodatabase/database@0.6.1 compat Database
+/*@666*/ pgQ.run(c113, { id: 1 });
+/*@667*/ myQ.run(c113, { id: 1 });
+/*@668*/ sqQ.run(c113, { id: 1 });
+/*@669*/ { const k: "promise" = kind(sqQ.run(c113, { id: 1 })); void k; }
+/*@670*/ { const k: "promise" = kind(sqQ.with(c113)({ id: 1 })); void k; }
+/*@671*/ { const k: "value" = kind(sqQ.runSync(c113, { id: 1 })); void k; }
+declare const c114: tu04.Database; // @tursodatabase/database@0.4.4 Database (connect())
+/*@672*/ pgQ.run(c114, { id: 1 });
+/*@673*/ myQ.run(c114, { id: 1 });
+/*@674*/ sqQ.run(c114, { id: 1 });
+/*@675*/ { const k: "promise" = kind(sqQ.run(c114, { id: 1 })); void k; }
+/*@676*/ { const k: "promise" = kind(sqQ.with(c114)({ id: 1 })); void k; }
+/*@677*/ sqQ.runSync(c114, { id: 1 });
+declare const c115: tu04c.Database; // @tursodatabase/database@0.4.4 compat Database
+/*@678*/ pgQ.run(c115, { id: 1 });
+/*@679*/ myQ.run(c115, { id: 1 });
+/*@680*/ sqQ.run(c115, { id: 1 });
+/*@681*/ { const k: "promise" = kind(sqQ.run(c115, { id: 1 })); void k; }
+/*@682*/ { const k: "promise" = kind(sqQ.with(c115)({ id: 1 })); void k; }
+/*@683*/ { const k: "value" = kind(sqQ.runSync(c115, { id: 1 })); void k; }
+declare const c116: s3v5.Database; // sqlite3@5.1.7 Database
+/*@684*/ pgQ.run(c116, { id: 1 });
+/*@685*/ myQ.run(c116, { id: 1 });
+/*@686*/ sqQ.run(c116, { id: 1 });
+/*@687*/ { const k: "promise" = kind(sqQ.run(c116, { id: 1 })); void k; }
+/*@688*/ { const k: "promise" = kind(sqQ.with(c116)({ id: 1 })); void k; }
+/*@689*/ sqQ.runSync(c116, { id: 1 });
+declare const c117: s3v6.Database; // sqlite3@6.0.1 Database
+/*@690*/ pgQ.run(c117, { id: 1 });
+/*@691*/ myQ.run(c117, { id: 1 });
+/*@692*/ sqQ.run(c117, { id: 1 });
+/*@693*/ { const k: "promise" = kind(sqQ.run(c117, { id: 1 })); void k; }
+/*@694*/ { const k: "promise" = kind(sqQ.with(c117)({ id: 1 })); void k; }
+/*@695*/ sqQ.runSync(c117, { id: 1 });
+declare const c118: SqliteDatabase; // sqlite@5.1.1 Database (open())
+/*@696*/ pgQ.run(c118, { id: 1 });
+/*@697*/ myQ.run(c118, { id: 1 });
+/*@698*/ sqQ.run(c118, { id: 1 });
+/*@699*/ { const k: "promise" = kind(sqQ.run(c118, { id: 1 })); void k; }
+/*@700*/ { const k: "promise" = kind(sqQ.with(c118)({ id: 1 })); void k; }
+/*@701*/ sqQ.runSync(c118, { id: 1 });
+declare const c119: D1Database; // D1 (@cloudflare/workers-types 5.20260929.1) D1Database
+/*@702*/ pgQ.run(c119, { id: 1 });
+/*@703*/ myQ.run(c119, { id: 1 });
+/*@704*/ sqQ.run(c119, { id: 1 });
+/*@705*/ { const k: "promise" = kind(sqQ.run(c119, { id: 1 })); void k; }
+/*@706*/ { const k: "promise" = kind(sqQ.with(c119)({ id: 1 })); void k; }
+/*@707*/ sqQ.runSync(c119, { id: 1 });
+declare const c120: D1DatabaseSession; // D1 (@cloudflare/workers-types 5.20260929.1) D1DatabaseSession (withSession())
+/*@708*/ pgQ.run(c120, { id: 1 });
+/*@709*/ myQ.run(c120, { id: 1 });
+/*@710*/ sqQ.run(c120, { id: 1 });
+/*@711*/ { const k: "promise" = kind(sqQ.run(c120, { id: 1 })); void k; }
+/*@712*/ { const k: "promise" = kind(sqQ.with(c120)({ id: 1 })); void k; }
+/*@713*/ sqQ.runSync(c120, { id: 1 });

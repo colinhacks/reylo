@@ -2,7 +2,7 @@
 
 Generated 2026-10-21T06:31:56.723Z by `./run.sh` against the working tree at d2c5ae1 (uncommitted changes in src/: no; src/execute.ts 7f14d5345660, src/index.ts f8cede32049c). The report and the diagnoses are in [README.md](README.md).
 
-4115 rows: 4047 pass, 2 fail, 51 unsupported (reylo refuses them with its own TypeError, as its contract says), 12 skip, 3 not run. Failing controls: 36 of 105 control rows fail, as designed.
+4485 rows: 4412 pass, 4 fail, 51 unsupported (reylo refuses them with its own TypeError, as its contract says), 15 skip, 3 not run. Failing controls: 36 of 105 control rows fail, as designed.
 
 ## Per job
 
@@ -64,6 +64,13 @@ Generated 2026-10-21T06:31:56.723Z by `./run.sh` against the working tree at d2c
 | drizzle-orm (mysql2)@0.45.4 | node 26.11.1 | MySQL 8.4 | 65 | 0 | 0 | 0 | 0 |
 | drizzle-orm (better-sqlite3)@0.45.4 | node 26.11.1 | SQLite file | 20 | 0 | 0 | 0 | 0 |
 | drizzle-orm (libsql)@0.45.4 | node 26.11.1 | SQLite file (file: URL) | 65 | 0 | 0 | 0 | 0 |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | 80 | 0 | 0 | 0 | 0 |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | 25 | 0 | 0 | 0 | 0 |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | 80 | 0 | 0 | 0 | 0 |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | 77 | 0 | 0 | 3 | 0 |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | 20 | 0 | 0 | 0 | 0 |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | 20 | 0 | 0 | 0 | 0 |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | 63 | 2 | 0 | 0 | 0 |
 
 ## Failures, grouped
 
@@ -203,7 +210,7 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 
 `tsc` Version 7.1.0-dev.20260918.1 over typecheck/cases.ts: every client and transaction object passed to a query's run (ClientFor<D>), and the type run returns. Details in [typecheck/RESULTS.md](typecheck/RESULTS.md).
 
-666 cases over 113 client types: 666 as expected, 0 wrongly accepted, 0 wrongly rejected.
+714 cases over 121 client types: 714 as expected, 0 wrongly accepted, 0 wrongly rejected.
 
 ## Every row
 
@@ -4324,3 +4331,373 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 | drizzle-orm (libsql)@0.45.4 | node 26.11.1 | SQLite file (file: URL) | tx.transaction(sp) (savepoint) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
 | drizzle-orm (libsql)@0.45.4 | node 26.11.1 | SQLite file (file: URL) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
 | drizzle-orm (libsql)@0.45.4 | node 26.11.1 | SQLite file (file: URL) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S2a many: 3 rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S2b one: the row | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S2e with(client)(params) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S6a syntax error rejects with the driver's error | pass | DatabaseError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S6b unique violation rejects with the driver's error | pass | DatabaseError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(pool) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S2a many: 3 rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S2b one: the row | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S2e with(client)(params) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | DatabaseError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | DatabaseError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | DatabaseError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | DatabaseError: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | DatabaseError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (neon-serverless)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S2a many: 3 rows | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S2b one: the row | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S2e with(client)(params) | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S6a syntax error rejects with the driver's error | pass | NeonDbError: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S6b unique violation rejects with the driver's error | pass | NeonDbError: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (neon-http)@0.45.4 | node 26.11.1 | Postgres 14 via local Neon proxy | drizzle(neon()) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S2a many: 3 rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S2b one: the row | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S2e with(client)(params) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S6a syntax error rejects with the driver's error | pass | me: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S6b unique violation rejects with the driver's error | pass | me: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | drizzle(pglite) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S2a many: 3 rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S2b one: the row | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S2e with(client)(params) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | me: syntax error at or near "selec" [code=42601 severity=ERROR] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | me: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | me: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | me: syntax error at or near "selec" [code=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | me: duplicate key value violates unique constraint "uniq_pkey" [code=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: DrizzleQueryError: Failed query: release savepoint sp1 params: [cause.code=25P02] |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | pass |  |
+| drizzle-orm (pglite)@0.45.4 | node 26.11.1 | PGlite (in-process) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | drizzle(sql) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: COMMIT was rolled back by the server because the transaction was already aborted [code=ERR_POSTGRES_COMMIT_ROLLED_BACK] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1d array params: = any(:ids) over an int and a text array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1e JSON params: an array bound to :a::jsonb is stored as that JSON array | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S1f array params: bool[], timestamptz[] and bytea[] | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | PostgresError: syntax error at or near "selec" [code=ERR_POSTGRES_SYNTAX_ERROR errno=42601 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | PostgresError: duplicate key value violates unique constraint "uniq_pkey" [code=ERR_POSTGRES_SERVER_ERROR errno=23505 severity=ERROR]; then the enclosing transaction failed, as the database aborts it after an error: PostgresError: current transaction is aborted, commands ignored until end of transaction block [code=ERR_POSTGRES_SERVER_ERROR errno=25P02 severity=ERROR] |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S11b round trip: an instant past 9999 and one before 1 go back in | SKIP | Bun.sql 1.4.3 decodes a timestamptz before 1 AD as an Invalid Date, which Reylo refuses (44ac8d4), so the instant never comes back to pass in |
+| drizzle-orm (bun-sql)@0.45.4 | bun 1.4.3 | Postgres 14 (local) | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync returned the value and threw |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2a many: 3 rows | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2b one: the row | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S2e with(client)(params) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6a syntax error rejects with the driver's error | pass | Error: near "selec": syntax error [code=SQLITE_ERROR errno=1] |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S6b unique violation rejects with the driver's error | pass | Error: UNIQUE constraint failed: uniq.k [code=SQLITE_CONSTRAINT_PRIMARYKEY errno=1555] |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (bun-sqlite)@0.45.4 | bun 1.4.3 | SQLite file | drizzle(database) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S2a many: 3 rows | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S2b one: the row | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S2e with(client)(params) | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S4 INSERT ... RETURNING | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S6a syntax error rejects with the driver's error | pass | Error: D1_ERROR: near "selec": syntax error at offset 0: SQLITE_ERROR (matched by message: the error carries no code field) |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S6b unique violation rejects with the driver's error | pass | Error: D1_ERROR: UNIQUE constraint failed: uniq.k: SQLITE_CONSTRAINT (extended: SQLITE_CONSTRAINT_PRIMARYKEY) (matched by message: the error carries no code field) |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass | Column "big" holds an integer past ±(2^53 - 1), which the driver already rounded to 9007199254740992: a number cannot ho |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S10j built JSON: SQLite's text of the JSON a statement builds is parsed into the object its type says, other JSON text stays a string | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (d1)@0.45.4 | node 26.11.1 | D1 (Miniflare, local workerd) | drizzle(d1) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S2a many: 3 rows | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S2b one: the row | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S2e with(client)(params) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S6a syntax error rejects with the driver's error | pass | DatabaseError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 (errno 1064) (sqlstate 42000) during query: selec 1 [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S6b unique violation rejects with the driver's error | pass | DatabaseError: Duplicate entry 'taken' for key 'uniq.PRIMARY' (errno 1062) (sqlstate 23000) during query: insert into driver_matrix.uniq (k) values ('taken') [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | drizzle(client) | S8 20 concurrent queries resolve with the right rows | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S2a many: 3 rows | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S2b one: the row | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S2e with(client)(params) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S6a syntax error rejects with the driver's error | pass | DatabaseError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 (errno 1064) (sqlstate 42000) during query: selec 1 [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S6b unique violation rejects with the driver's error | pass | DatabaseError: Duplicate entry 'taken' for key 'uniq.PRIMARY' (errno 1062) (sqlstate 23000) during query: insert into driver_matrix.uniq (k) values ('taken') [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S7a tx: write then commit is visible | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S7b tx: write then rollback is not visible | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S7c tx: savepoint rollback keeps the outer write | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S7d tx: a failing statement rolls the transaction back | pass | DatabaseError: Duplicate entry 'taken' for key 'uniq.PRIMARY' (errno 1062) (sqlstate 23000) during query: insert into driver_matrix.uniq (k) values ('taken') [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S7n tx: a write without parameters, then commit, is visible | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | db.transaction(tx) | S8 20 concurrent queries resolve with the right rows | FAIL | UnknownError: Expected JSON response from database API, got HTTP 403 Forbidden [body.code=UNKNOWN] |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S0 run() returns a promise on every client; runSync() returns the value on a sync client and is refused elsewhere | pass | reylo called no method the harness could observe; run returned a promise and rejected on a failing statement; runSync refused the client before calling it |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S1a params: int, text, bool, null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S1b omitted param (undefined) binds NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S1c binary params: a plain Uint8Array and a view into a larger buffer bind as their bytes | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S1g JSON params: a string, a number, a boolean, JSON text, an object and arrays are stored as their JSON, null as NULL | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S1h date and time params: a timestamptz takes its zoned text, timestamp and date their text, and a Date for any of them is refused before the driver is called | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S2a many: 3 rows | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S2b one: the row | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S2c maybeOne: zero rows gives null | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S2d maybeOne: two rows throw reylo's error | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S2e with(client)(params) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S3 write without RETURNING (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S3n write without parameters (none), then a separate read | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S5a repeated :id (runtime lexer) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S5b repeated :id (mapper text/order) | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S6a syntax error rejects with the driver's error | pass | DatabaseError: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near 'selec 1' at line 1 (errno 1064) (sqlstate 42000) during query: selec 1 [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S6b unique violation rejects with the driver's error | pass | DatabaseError: Duplicate entry 'taken' for key 'uniq.PRIMARY' (errno 1062) (sqlstate 23000) during query: insert into driver_matrix.uniq (k) values ('taken') [body.code=UNKNOWN] (matched by message: the error carries no code field) |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S10 representation: every value is Reylo's one type for its SQL type, whatever the driver gives by itself | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S11 round trip: the row S10 returns goes back in as the parameters it came from, every column equal | pass |  |
+| drizzle-orm (planetscale-serverless)@0.45.4 | node 26.11.1 | MySQL 8.4 via ps-http-sim | tx.transaction(sp) (savepoint) | S8 20 concurrent queries resolve with the right rows | FAIL | UnknownError: Expected JSON response from database API, got HTTP 403 Forbidden [body.code=UNKNOWN] |

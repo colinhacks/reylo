@@ -32,7 +32,9 @@ start() {
   esac
 }
 
-start porg-dm-mysql84 mysql:8.4 -e MYSQL_ROOT_PASSWORD=porg -e MYSQL_DATABASE=driver_matrix -p 127.0.0.1:33406:3306 mysql:8.4
+# ps-http-sim keeps a MySQL connection open for every session it opens, about 70 for each
+# PlanetScale job, so the server it fronts takes more than MySQL's default 151 connections.
+start porg-dm-mysql84 mysql:8.4 -e MYSQL_ROOT_PASSWORD=porg -e MYSQL_DATABASE=driver_matrix -p 127.0.0.1:33406:3306 mysql:8.4 --max-connections=1000
 start porg-dm-mysql80 mysql:8.0 -e MYSQL_ROOT_PASSWORD=porg -e MYSQL_DATABASE=driver_matrix -p 127.0.0.1:33380:3306 mysql:8.0
 start porg-dm-neon-pg postgres:14 -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=main -p 127.0.0.1:55414:5432 postgres:14
 
