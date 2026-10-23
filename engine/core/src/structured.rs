@@ -192,11 +192,12 @@ impl Server {
 
 /// Whether this pass rewrites the statement at all, without reading what it finds: a cheap test
 /// for a caller that treats such statements apart. A structured parameter (`::rows(…)`,
-/// `::row(…)`), a typed JSON parameter (`::jsonb('…')`) and a cast to `nullable(…)` are each
-/// written into the statement differently than the lexer alone writes them.
+/// `::row(…)`), a typed JSON parameter (`::jsonb('…')`), a cast to `nullable(…)` and, on MySQL
+/// and SQLite, which have no `::`, any other `::type` are each written into the statement
+/// differently than the lexer alone writes them.
 pub fn present(sql: &str, dialect: Dialect) -> bool {
     let Ok(lexed) = lex::lex(sql, dialect) else { return false };
-    lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some())
+    lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some() || (dialect != Dialect::Postgres && plain_cast_at(sql, p.end).is_some()))
 }
 
 /// After a placeholder ending at `end`: `::rows(` or `::row(`, with any spacing, as `(one, the
@@ -2309,6 +2310,20 @@ fn affinity(declared: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn present_is_whether_the_pass_rewrites_the_statement() {
+        for dialect in [Dialect::Postgres, Dialect::Mysql, Dialect::Sqlite] {
+            assert!(present("select * from :r::rows(id int8)", dialect), "{dialect:?}");
+            assert!(present("select :doc::jsonb('{\"type\": \"object\"}')", dialect), "{dialect:?}");
+            assert!(present("select :q::nullable(text)", dialect), "{dialect:?}");
+            assert!(!present("select :q", dialect), "{dialect:?}");
+        }
+        // A plain `::type` is Postgres's own cast, and the pass writes it on the others alone.
+        assert!(!present("select :n::int", Dialect::Postgres));
+        assert!(present("select :n::int", Dialect::Mysql));
+        assert!(present("select :n::int", Dialect::Sqlite));
+    }
 
     fn one(sql: &str, dialect: Dialect) -> Found {
         let mut found = find(sql, dialect, &Server::default()).expect("reads");
