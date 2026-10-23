@@ -48,7 +48,7 @@ test("withReylo takes a config of Next's own keys written in place, beside the o
   const config = withReylo({ reactStrictMode: true, turbopack: { root: "/app" }, typescript: { tsconfigPath: "tsconfig.json" }, compiler: { removeConsole: true } });
   assert.equal(config.reactStrictMode, true);
   assert.equal(config.turbopack.root, "/app");
-  assert.deepEqual(config.compiler.removeConsole, true);
+  assert.equal(config.compiler.removeConsole, true);
 });
 
 test("withReylo turns Next's type check off for its own, and leaves both off where the project turned Next's off", () => {
