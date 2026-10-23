@@ -29,4 +29,11 @@ scalar_row_agg_coalesce_cast.sql: many () -> { id: int8, posts: [posts{ id: int8
 scalar_row_agg_coalesce_json.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
 scalar_row_agg_uncorrelated.sql: one () -> { posts: [posts{ id: int8, user_id: int8, title: text }] }
 scalar_row_agg_uncorrelated_from.sql: many () -> { id: int8, posts: [posts{ id: int8, user_id: int8, title: text }] }
-scalar_row_array_agg_coalesce.sql: many () -> { id: int8, rows: posts{ id: int8?, user_id: int8?, title: text? }[] }
+scalar_row_array_agg_bare.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[]? }
+scalar_row_array_agg_built.sql: many () -> { id: int8, rows: posts{ id: int8?, user_id: int8?, title: text? }[] }
+scalar_row_array_agg_coalesce.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[] }
+scalar_row_array_agg_default_rows.sql: many () -> { id: int8, rows: posts{ id: int8?, user_id: int8?, title: text? }[] }
+scalar_row_array_agg_in_json.sql: many () -> { id: int8, j: { rows: (posts{ id: int8, user_id: int8, title: text }!)[] } }
+scalar_row_array_agg_outer_column.sql: many () -> { rows: text[]? }
+scalar_row_array_agg_outer_joined.sql: many () -> { id: int8, rows: posts{ id: int8, user_id: int8, title: text }[]? }
+scalar_row_array_agg_uncorrelated.sql: one () -> { rows: posts{ id: int8, user_id: int8, title: text }[] }
