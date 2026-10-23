@@ -67,6 +67,7 @@
 
 use crate::dialect::Dialect;
 use crate::infer::{self, Trust};
+use crate::resolution::{Kind, Operand};
 use crate::jsonshape::last_string;
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
@@ -133,6 +134,14 @@ pub struct Catalog {
     /// Whether a user or an extension defined an operator named `=`, which may then be the one a
     /// comparison of other types than the key column's resolves to.
     pub equality_shadowed: bool,
+    /// What the trust check says of the overloads of the names a user also defined, which says
+    /// for which operand types such an `=` still resolves to the built-in.
+    pub overloads: Option<crate::resolution::Shared>,
+    /// Per relation as named in `column_types`, its columns whose type is a domain, by name.
+    pub domains: std::collections::HashMap<String, HashSet<String>>,
+    /// The base types of every such column: a column of one of these types, as `column_types`
+    /// gives it, may be one of a domain.
+    pub domain_bases: HashSet<u32>,
     /// Per relation, the events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) for which it,
     /// or a partition or an inheritance child of it, has an enabled row trigger that runs BEFORE
     /// the change or INSTEAD of it. Such a trigger can return NULL and skip the row, so an INSERT
@@ -276,15 +285,15 @@ pub const UNIQUE_KEYS_QUERY: &str = concat!(
 
 /// `$1` is `text[]` of relation names as the statement writes them: every column of each, `(the
 /// name, column names, their type oids, whether each one's collation is deterministic, whether the
-/// relation is a sequence)`, a domain's column by its base type, whose equality it uses. What the
-/// other side of an equality is when it is a column (`u.id = p.author_id`), which relation a bare
-/// column belongs to, whether a column's equality is identity, and whether the relation holds
-/// exactly one row.
+/// relation is a sequence, their declared type oids)`, a domain's column by its base type, whose
+/// equality it uses, and then by the domain. What the other side of an equality is when it is a
+/// column (`u.id = p.author_id`), which relation a bare column belongs to, whether a column's
+/// equality is identity, and whether the relation holds exactly one row.
 pub const COLUMNS_QUERY: &str = concat!(
     "SELECT x.name, array_agg(a.attname::text ORDER BY a.attnum), \
       array_agg((CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE a.atttypid END)::int8 ORDER BY a.attnum), \
       array_agg(coalesce((SELECT o.collisdeterministic FROM pg_collation o WHERE o.oid = a.attcollation), true) ORDER BY a.attnum), \
-      bool_and(c.relkind = 'S') \
+      bool_and(c.relkind = 'S'), array_agg(a.atttypid::int8 ORDER BY a.attnum) \
     FROM unnest($1::text[]) AS x(name) \
     JOIN pg_class c ON c.oid = ",
     relation_named!("x.name"),
@@ -438,7 +447,7 @@ fn always_true(quals: &protobuf::Node, catalog: &Catalog) -> bool {
     };
     match quals.node.as_ref() {
         Some(NodeEnum::AConst(c)) => !c.isnull && matches!(&c.val, Some(protobuf::a_const::Val::Boolval(b)) if b.boolval),
-        Some(NodeEnum::AExpr(e)) if is_equality(e) && e.name.len() == 1 && !catalog.equality_shadowed => match (e.lexpr.as_deref().and_then(integer), e.rexpr.as_deref().and_then(integer)) {
+        Some(NodeEnum::AExpr(e)) if is_equality(e) && e.name.len() == 1 && catalog.equality(Operand::Is(oid::INT4), Operand::Is(oid::INT4)) => match (e.lexpr.as_deref().and_then(integer), e.rexpr.as_deref().and_then(integer)) {
             (Some(l), Some(r)) => l == r,
             _ => false,
         },
@@ -1450,9 +1459,10 @@ fn operator_names(aexpr: &Value) -> Vec<String> {
 }
 
 /// Whether an operator is one of the built-in spellings the trust check asks about, and no user
-/// or extension defined one of that name: the built-in operators are never volatile.
+/// or extension defined one of that name that is volatile: the built-in operators never are.
 fn trusted_operator(name: &str, catalog: &Catalog) -> bool {
-    (infer::POSTGRES_OPERATORS.contains(&name) || infer::POSTGRES_STRICT_OPERATORS.contains(&name)) && !catalog.user_operators.contains(name)
+    (infer::POSTGRES_OPERATORS.contains(&name) || infer::POSTGRES_STRICT_OPERATORS.contains(&name))
+        && (!catalog.user_operators.contains(name) || catalog.overloads.as_ref().and_then(|o| o.0.operator_volatile(name)) == Some(false))
 }
 
 /// Whether a cast may call a user's cast function: one to a type outside the built-in targets no
@@ -2030,7 +2040,9 @@ fn catalog_name(rv: &protobuf::RangeVar) -> String {
 ///   So the value's type must be one the column's operator family compares as it is
 ///   ([`compatible`]). A literal or a parameter the server types from the column adapts to it.
 /// - Where a user or an extension defined an operator named `=`, a comparison across two types may
-///   resolve to theirs, so only a value of the column's own type, or one that adapts to it, counts.
+///   resolve to theirs, so only a value of the column's own type, or one that adapts to it, counts,
+///   or one of a type whose comparison with the column's resolves to the built-in `=`
+///   ([`crate::resolution`]): a column of a domain, or a value that may be one, proves nothing so.
 /// - A value whose type the build cannot name counts only for a column whose type no implicit cast
 ///   maps to a wider one with loss ([`ANY_VALUE_TYPES`]). A column, or a scalar subquery's
 ///   column, on the other side has the type `type_of` gives it, from the catalog.
@@ -2043,8 +2055,24 @@ fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &prot
     let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)).copied() else { return true };
     match value_type(value, catalog, type_of) {
         ValueType::Adapts => true,
-        ValueType::Is(t) => t == column_type || (!catalog.equality_shadowed && compatible(column_type, t)),
+        ValueType::Is(t) => {
+            let domain = catalog.domains.get(relation).is_some_and(|d| d.contains(column));
+            let operand = |t: u32, domain: bool| if domain { Operand::Opaque } else { Operand::Is(t) };
+            let value = match value.node.as_ref() {
+                Some(NodeEnum::ParamRef(_)) => Operand::Param(Some(t)),
+                Some(NodeEnum::ColumnRef(_)) | Some(NodeEnum::SubLink(_)) => operand(t, catalog.domain_bases.contains(&t)),
+                _ => Operand::Is(t),
+            };
+            t == column_type || (compatible(column_type, t) && catalog.equality(operand(column_type, domain), value))
+        }
         ValueType::Unnamed => !catalog.equality_shadowed && ANY_VALUE_TYPES.contains(&column_type),
+    }
+}
+
+impl Catalog {
+    /// Whether `=` over operands of these types can only resolve to the built-in one.
+    fn equality(&self, left: Operand, right: Operand) -> bool {
+        !self.equality_shadowed || self.overloads.as_ref().is_some_and(|o| o.0.resolve(Kind::Infix, "=", &[left, right]).is_some())
     }
 }
 
@@ -2062,7 +2090,7 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
         Some(NodeEnum::ColumnRef(_)) | Some(NodeEnum::SubLink(_)) => type_of(value).map_or(ValueType::Unnamed, ValueType::Is),
         Some(NodeEnum::AConst(c)) => match &c.val {
             Some(protobuf::a_const::Val::Ival(_)) => ValueType::Is(oid::INT4),
-            Some(protobuf::a_const::Val::Fval(f)) => ValueType::Is(if f.fval.parse::<i64>().is_ok() { oid::INT8 } else { oid::NUMERIC }),
+            Some(protobuf::a_const::Val::Fval(f)) => crate::infer::postgres_number(&f.fval).map_or(ValueType::Unnamed, ValueType::Is),
             Some(protobuf::a_const::Val::Boolval(_)) => ValueType::Is(oid::BOOL),
             _ => ValueType::Adapts,
         },
