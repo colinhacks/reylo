@@ -12975,22 +12975,29 @@ impl<'a> Parser<'a> {
                 // operand of the joins after it (`a JOIN b RIGHT JOIN c ON x` is
                 // `(a JOIN b) RIGHT JOIN c ON x`), and nests those joins inside it only where an
                 // ON or USING is left over for it (`a JOIN b JOIN c ON x ON y` is
-                // `a JOIN (b JOIN c ON x) ON y`).
+                // `a JOIN (b JOIN c ON x) ON y`). Where none is, the joins read after it are the
+                // ones this loop would read next from the same tokens, so they are kept rather
+                // than read again: going back made a chain of bare joins exponential to parse.
                 if !self
                     .dialect
                     .supports_left_associative_joins_without_parens()
                     && !natural
                     && self.peek_parens_less_nested_join()
                 {
-                    let index = self.index;
-                    match self.parse_joins() {
-                        Ok(joins) if self.peek_one_of_keywords(&[Keyword::ON, Keyword::USING]).is_some() => {
-                            relation = TableFactor::NestedJoin {
-                                table_with_joins: Box::new(TableWithJoins { relation, joins }),
-                                alias: None,
-                            };
-                        }
-                        _ => self.index = index,
+                    let rest = self.parse_joins()?;
+                    if self.peek_one_of_keywords(&[Keyword::ON, Keyword::USING]).is_some() {
+                        relation = TableFactor::NestedJoin {
+                            table_with_joins: Box::new(TableWithJoins { relation, joins: rest }),
+                            alias: None,
+                        };
+                    } else {
+                        joins.push(Join {
+                            relation,
+                            global,
+                            join_operator: join_operator_type(JoinConstraint::None),
+                        });
+                        joins.extend(rest);
+                        return Ok(joins);
                     }
                 }
 

@@ -2321,6 +2321,28 @@ mod tests {
     }
 
     #[test]
+    fn a_chain_of_joins_is_read_in_one_pass() {
+        // A join with no ON or USING of its own is the left operand of the joins after it, and
+        // nests them only where an ON or USING is left over for it.
+        let printed = |sql: &str| parse(&MySqlDialect {}, sql).unwrap_or_else(|e| panic!("{sql}: {e}")).pop().unwrap().to_string();
+        assert_eq!(printed("SELECT * FROM a JOIN b RIGHT JOIN c ON x"), "SELECT * FROM a JOIN b RIGHT JOIN c ON x");
+        assert_eq!(printed("SELECT * FROM a JOIN b JOIN c ON x ON y"), "SELECT * FROM a JOIN (b JOIN c ON x) ON y");
+        // The joins read after a bare one are kept, never read again, which made a chain of bare
+        // joins exponential to parse: 20 of them took a second. 61 tables are MySQL's limit.
+        let bare = |n: usize| format!("SELECT * FROM t0{}", (1..n).map(|i| format!(" JOIN t{i}")).collect::<String>());
+        let started = std::time::Instant::now();
+        assert_eq!(printed(&bare(21)), bare(21));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1), "{:?}", started.elapsed());
+        for sql in [bare(61), format!("{} ON t0.id = t60.id", bare(61))] {
+            assert_eq!(crate::stack::run(|| printed(&sql)), sql);
+        }
+        // Every ON at the end: each join nests the rest.
+        let ons = (1..61).rev().map(|i| format!(" ON t{}.id = t{i}.id", i - 1)).collect::<String>();
+        let nested = (1..60).rev().fold("t60".to_string(), |inner, i| format!("(t{i} JOIN {inner} ON t{i}.id = t{}.id)", i + 1));
+        assert_eq!(crate::stack::run(|| printed(&format!("{}{ons}", bare(61)))), format!("SELECT * FROM t0 JOIN {nested} ON t0.id = t1.id"));
+    }
+
+    #[test]
     fn a_write_or_a_select_into_returns_no_rows() {
         // MySQL's multi-table DELETE and UPDATE return no rows, and neither does a SELECT whose
         // rows go into variables, its INTO after the columns or after the whole statement.
