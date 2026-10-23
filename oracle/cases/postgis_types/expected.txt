@@ -1,0 +1,12 @@
+add.sql: maybeOne (id: int4, location: geometry, shape: geometry?, area: geography?) -> { id: int4, location: geometry, shape: geometry?, area: geography? }
+aggregated.sql: one () -> { locations: (geometry!)[]?, shapes: (geometry!)[]?, collected: geometry?, extent: box2d? }
+any_geometry.sql: many (gs: geometry[]) -> { id: int4 }
+by_point.sql: many (x: float8, y: float8, lng: float8, lat: float8) -> { id: int4, made: geometry?, point: geography? }
+dump.sql: many () -> { id: int4, path: int4[]?, geom: geometry? }
+dump_rows.sql: many () -> { id: int4, d: geometry_dump{ path: int4[]?, geom: geometry? }? }
+geojson.sql: many () -> { id: int4, geojson: text?, wkt: text?, srid: int4?, x: float8? }
+json_agg.sql: one () -> { locations: [geometry]?, shapes: [geometry?]? }
+json_object.sql: many () -> { doc: { id: int4, location: geometry, shape: geometry?, area: geography?, bounds: box2d? } }
+plain.sql: many () -> { id: int4, location: geometry, shape: geometry?, area: geography?, bounds: box2d?, trail: geometry[]? }
+whole_row.sql: many () -> { doc: { id: int4, location: geometry, shape: geometry?, area: geography?, bounds: box2d?, trail: geometry[]? } }
+within.sql: many (p: geography, p2: geography, d: float8) -> { id: int4, meters: float8? }
