@@ -20,7 +20,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 - Parameters are `:name` on every database. Each appears once in a statement; to use a value twice, select it once in a `with` and read it from there.
 - A parameter the query does not type is an error that says to cast it: `:q::text`. Reylo writes each database's own cast (https://reylo.dev/#casts).
 - An optional filter takes `coalesce`, which makes the parameter accept null: `where user_id = coalesce(:user_id::int, user_id)`. A null test such as `(:q is null or name = :q)` does not, and uses the parameter twice (https://reylo.dev/#nullable-parameters). A list page whose filters and sort come from its URL is one statement with a coalesced parameter per filter and a `case` per sort (https://reylo.dev/#dynamic-filtering).
-- Any other parameter takes no null: `.run()` throws before the query runs when one gets `null` or is left out, so pass every value its type asks for, even from an untyped request body.
+- A parameter written bare, with no cast, to a column that may hold null takes null too. Any other parameter takes no null: `.run()` throws before the query runs when one gets `null` or is left out, so pass every value its type asks for, even from an untyped request body.
 - A list is one parameter: `= any(:ids::int[])` on Postgres, and a JSON parameter read with `json_table` on MySQL or `json_each` on SQLite. Copy each database's form from https://reylo.dev/#filtering-by-a-list.
 - Many rows to insert are one JSON parameter whose cast carries their JSON Schema (https://reylo.dev/#bulk-inserts, https://reylo.dev/#typed-json).
 - A column is nullable or not as the schema and the query make it: `not null`, a left join, `coalesce`. Change those to change the type.

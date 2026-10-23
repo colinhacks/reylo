@@ -290,7 +290,7 @@ where user_id = coalesce(:user_id::int, user_id)
 
 </Inferred>
 
-Any other parameter takes no null. If one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
 
 ### Dynamic filtering
 
