@@ -1,5 +1,6 @@
 // The sqlcommenter comment (https://google.github.io/sqlcommenter/spec/) that ends every statement
-// a build step writes: `/*file='queries%2Fget_user.sql'*/`, the `.sql` file the statement came from. Datadog's Database Monitoring and PlanetScale's query insights read
+// a build step writes, unless the project file says `sqlcommenter: false`:
+// `/*file='queries%2Fget_user.sql'*/`, the `.sql` file the statement came from. Datadog's Database Monitoring and PlanetScale's query insights read
 // it as the statement's tags, and `pg_stat_activity` and a slow-query log show it as written. The
 // file is its one tag, so the text is the same on every call, and a driver that keeps its statements
 // prepared by their text keeps this one.

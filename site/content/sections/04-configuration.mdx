@@ -13,6 +13,8 @@ direct_url: ${DATABASE_URL}
 env: [.env.local, .env]
 # an error for a parameter whose type cannot be inferred (the default)
 strict_params: true
+# a comment naming each query's file, for your database's monitoring (the default)
+sqlcommenter: true
 ```
 
 ### `direct_url`
@@ -56,4 +58,17 @@ A [parameter whose type cannot be inferred](#a-parameter-nothing-types) is an er
 ```yaml title=".reylo.yaml"
 # the default is true
 strict_params: false
+```
+
+### `sqlcommenter`
+
+Each compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set `sqlcommenter: false` to leave it off.
+
+```yaml title=".reylo.yaml"
+# the default is true
+sqlcommenter: false
+```
+
+```sql title="What Postgres receives for queries/get_user.sql, by default"
+select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
 ```

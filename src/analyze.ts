@@ -81,7 +81,9 @@ export class Session {
   static async for(from: string, env: Record<string, string | undefined> = process.env): Promise<Session> {
     // From the package's directory, so that a message names a file as the project sees it.
     const { project, engine } = await openProject(packageDir(from), env);
-    const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, engine instanceof MissingEngine ? engine.message : null]);
+    // A setting the build step reads (`sqlcommenter`) is part of the key, so a change to it in the
+    // project file reaches a running watch process.
+    const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, project.sqlcommenter, engine instanceof MissingEngine ? engine.message : null]);
     let session = sessions.get(key);
     if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE)));
     return session;

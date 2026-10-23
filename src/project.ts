@@ -23,6 +23,7 @@ export type ProjectFile = {
   direct_url?: string;
   env?: string[];
   strict_params?: boolean;
+  sqlcommenter?: boolean;
   cli?: Cli;
 };
 
@@ -37,6 +38,8 @@ export type ResolvedProject = {
   dialect: Dialect;
   /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `strict_params: false`. */
   strictParams: boolean;
+  /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
+  sqlcommenter: boolean;
   /** Which files `reylo generate` analyzes: `include` replaces every `.sql` file, `exclude` adds to what is left out. */
   cli: Cli;
   /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
@@ -212,6 +215,6 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   // `.reylo/`, which a build with no URL reads (src/analyze.ts).
   const installed = url ? [] : installedEngines(root);
   if (installed.length === 1) dialect = installed[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
 }
 

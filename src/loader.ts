@@ -61,7 +61,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // A structured parameter's lists, at JavaScript's offsets into the statement (the engine's are
   // UTF-8 bytes).
   const source = sourceName(path);
-  const text = withSqlcommenter(analysis.rewritten.sql, source);
+  const text = session.project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, source) : analysis.rewritten.sql;
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
   // A typed JSON, structured or cast parameter is checked with reylo's `checks`, imported only where
   // the statement has one, so that an app none of whose statements has one bundles none of them
