@@ -12,7 +12,7 @@ dml_target_expr.sql: many () -> { m: text? }
 dml_target_probe.sql: many () -> { j: json? }
 grouping_set.sql: many () -> { o: { n: text }? }
 inner_with_hides.sql: one () -> { v: json? }
-param_with_table.sql: one (n: int4) -> { o: { n: unknown? } }
+param_with_table.sql: one (n: int4) -> { o: { n: int4 } }
 rollup_aggregate.sql: many () -> { o: [text]? }
 rollup_by_alias.sql: many () -> { o: { n: text? }? }
 rollup_by_ordinal.sql: many () -> { o: { n: text? }? }
