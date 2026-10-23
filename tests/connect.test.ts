@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
 import { reason, Unreachable } from "../src/engine.ts";
 import { forPostgresJs, openPostgresDescriber } from "../packages/postgres/describe.ts";
@@ -54,4 +57,30 @@ test("postgres.js gets no channel_binding parameter, and one that requires bindi
   assert.deepEqual(forPostgresJs("postgres://localhost/db?channel_binding=disable&application_name=x"), { url: "postgres://localhost/db?application_name=x" });
   assert.deepEqual(forPostgresJs("postgres://localhost/db?sslmode=disable"), { url: "postgres://localhost/db?sslmode=disable" });
   assert.deepEqual(forPostgresJs("postgres://localhost/db"), { url: "postgres://localhost/db" });
+});
+
+test("postgres.js gets libpq's TLS files as TLS options, not as server settings", () => {
+  const dir = mkdtempSync(join(tmpdir(), "reylo-tls-"));
+  writeFileSync(join(dir, "ca.pem"), "CA");
+  writeFileSync(join(dir, "c.pem"), "CERT");
+  writeFileSync(join(dir, "k.pem"), "KEY");
+  try {
+    const full = forPostgresJs(`postgres://h/db?sslmode=verify-full&sslrootcert=${dir}/ca.pem&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem&sslpassword=pw&application_name=x`);
+    assert.equal(full.url, "postgres://h/db?sslmode=verify-full&application_name=x");
+    const ssl = full.ssl as import("node:tls").ConnectionOptions;
+    assert.equal(String(ssl.ca), "CA");
+    assert.equal(String(ssl.cert), "CERT");
+    assert.equal(String(ssl.key), "KEY");
+    assert.equal(ssl.passphrase, "pw");
+    assert.equal(ssl.rejectUnauthorized, true);
+    assert.equal(ssl.checkServerIdentity, undefined);
+    const ca = forPostgresJs(`postgres://h/db?sslmode=verify-ca&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(ca.rejectUnauthorized, true);
+    assert.equal(typeof ca.checkServerIdentity, "function");
+    assert.equal((forPostgresJs(`postgres://h/db?sslmode=require&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions).rejectUnauthorized, false);
+    assert.deepEqual(forPostgresJs(`postgres://h/db?sslmode=disable&sslrootcert=${dir}/ca.pem`), { url: "postgres://h/db?sslmode=disable" });
+    assert.deepEqual(forPostgresJs("postgres://h/db?sslmode=verify-full&sslrootcert=system"), { url: "postgres://h/db?sslmode=verify-full&sslrootcert=system" });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

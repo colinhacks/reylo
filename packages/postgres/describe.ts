@@ -2,6 +2,8 @@
 // it (scripts/build.ts bundles them into describe.js): Parse/Describe and the engine's catalog
 // queries, so the type check describes the same way whatever driver the app runs on. The analysis
 // loads it by its database (src/engine.ts, `describer`).
+import { readFileSync } from "node:fs";
+import type { ConnectionOptions } from "node:tls";
 import postgres from "postgres";
 import { Unreachable } from "../../src/connection.ts";
 
@@ -34,18 +36,36 @@ const CONNECT_TIMEOUT_SECONDS = 10;
 
 /**
  * postgres.js sends a URL parameter it does not know to the server as a setting, and the server
- * refuses `channel_binding`, which Neon's URLs carry. postgres.js cannot bind the channel either,
- * so a URL that requires it has the server's certificate verified instead.
+ * refuses it. Two kinds of parameter reach this far. `channel_binding`, which Neon's URLs carry:
+ * postgres.js cannot bind the channel either, so a URL that requires it has the server's
+ * certificate verified instead. And libpq's TLS files (`sslrootcert`, `sslcert`, `sslkey`,
+ * `sslpassword`), which postgres.js reads only as `sslrootcert=system`: they become the TLS
+ * options of the connection, verified as `sslmode` asks (`verify-ca` and `verify-full` check the
+ * certificate chain, and `verify-full` the host name too).
  */
-export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" } {
+export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" | ConnectionOptions } {
   const q = url.indexOf("?");
   if (q < 0) return { url };
   const params = new URLSearchParams(url.slice(q + 1));
   const binding = params.get("channel_binding");
-  if (binding === null) return { url };
-  params.delete("channel_binding");
+  const files = ["sslrootcert", "sslcert", "sslkey", "sslpassword"].filter((k) => params.has(k) && !(k === "sslrootcert" && params.get(k) === "system"));
+  if (binding === null && files.length === 0) return { url };
+  const mode = params.get("sslmode");
+  const read = (key: string) => (params.has(key) ? readFileSync(params.get(key)!) : undefined);
+  const options: ConnectionOptions | undefined = files.length > 0 && mode !== "disable"
+    ? {
+        ca: read("sslrootcert"),
+        cert: read("sslcert"),
+        key: read("sslkey"),
+        passphrase: params.get("sslpassword") ?? undefined,
+        rejectUnauthorized: mode === "verify-ca" || mode === "verify-full" || binding === "require",
+        ...(mode === "verify-ca" && { checkServerIdentity: () => undefined }),
+      }
+    : undefined;
+  for (const key of ["channel_binding", ...files]) params.delete(key);
   const rest = params.toString();
   const stripped = url.slice(0, q) + (rest ? `?${rest}` : "");
+  if (options) return { url: stripped, ssl: options };
   return binding === "require" ? { url: stripped, ssl: "verify-full" } : { url: stripped };
 }
 
