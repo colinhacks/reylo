@@ -454,10 +454,9 @@ impl Builder<'_> {
                 None => self.leaf(expr),
             },
             // A CASE whose one branch builds JSON and whose others are NULL: that branch's shape,
-            // nullable where a branch is NULL. Two branches that build JSON may build two shapes.
+            // nullable. Two branches that build JSON may build two shapes.
             Some(NodeEnum::CaseExpr(c)) => match case_branch(c) {
-                Some((built, true)) => force_nullable(self.walk(built)),
-                Some((built, false)) => self.walk(built),
+                Some(built) => force_nullable(self.walk(built)),
                 None => self.leaf(expr),
             },
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
@@ -902,23 +901,22 @@ fn column_names(body: &SelectStmt, lists: &[Vec<Node>]) -> Option<Vec<Option<Str
     Some(names)
 }
 
-/// The one branch of a CASE that builds JSON, where every other branch is NULL, and whether one
-/// is (no `ELSE` is `ELSE NULL`).
-fn case_branch(c: &protobuf::CaseExpr) -> Option<(&Node, bool)> {
+/// The one branch of a CASE that builds JSON, where every other branch is NULL (no `ELSE` is
+/// `ELSE NULL`). A CASE has a `WHEN`, so with one such branch it always has a NULL one too.
+fn case_branch(c: &protobuf::CaseExpr) -> Option<&Node> {
     let mut built: Option<&Node> = None;
-    let mut nullable = c.defresult.is_none();
     let results = c.args.iter().map(|w| match w.node.as_ref() {
         Some(NodeEnum::CaseWhen(w)) => w.result.as_deref(),
         _ => None,
     });
     for result in results.chain(c.defresult.as_deref().map(Some)) {
         match result {
-            Some(r) if is_null_const(r) => nullable = true,
+            Some(r) if is_null_const(r) => {}
             Some(r) if built.is_none() && is_constructor(r) => built = Some(r),
             _ => return None,
         }
     }
-    built.map(|b| (b, nullable))
+    built
 }
 
 /// A NULL constant, under casts.
