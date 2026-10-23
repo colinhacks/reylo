@@ -919,3 +919,4 @@ What Reylo can't type on Postgres, and what to do instead:
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| A float or `cube` on Supabase, whose Postgres prints floats rounded (`extra_float_digits = 0`), so `0.1::float8 + 0.2` comes back `0.3` | Run `alter role postgres set extra_float_digits = 1` once; the role's later connections read exact values |
