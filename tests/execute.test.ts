@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
+import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -146,6 +147,40 @@ test("a typed JSON, structured or cast parameter is checked with the checks its 
   assert.deepEqual(await execute(client, { ...json, checks }, { p: { n: 1 } }), []);
   assert.throws(() => executeSync(db, { ...cast, checks }, { n: "one" }), /Parameter "n"/);
   assert.deepEqual(executeSync(db, { ...cast, checks }, { n: 1 }), [{ n: 1 }]);
+});
+
+test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs", async () => {
+  const seen: unknown[][] = [];
+  const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [], rowCount: 0 }) };
+  const int4 = { kind: "scalar", name: "int4" } as const;
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :x::int + 1 as y, :email as email", params: ["x", "email"], inputs: { x: { type: int4, nullable: false }, email: { type: { kind: "scalar", name: "text" }, nullable: true } } };
+  await assert.rejects(async () => execute(client, q, { x: null, email: "a" }), { name: "TypeError", message: `Parameter "x" is null, and the statement takes no null for it: pass a value.` });
+  await assert.rejects(async () => execute(client, q, { email: "a" }), { name: "TypeError", message: `Parameter "x" is missing, and the statement takes no null for it: pass a value.` });
+  assert.throws(() => executeSync(new DatabaseSync(":memory:"), { ...q, dialect: "sqlite", sql: "select :x + 1 as y, :email as email" }, {}), /Parameter "x" is missing/);
+  assert.equal(seen.length, 0);
+  // One that takes null binds NULL, given or left out; so does one typed `unknown`, and one a
+  // query defined by hand leaves without `nullable`.
+  await execute(client, q, { x: 1 });
+  await execute(client, { ...q, inputs: { x: { type: { kind: "unknown" }, nullable: false }, email: { type: int4 } } }, { x: null, email: null });
+  assert.deepEqual(seen, [[1, null], [null, null]]);
+  // A typed JSON parameter takes null where its schema allows null, and otherwise its default or
+  // nothing; pg gets the JSON as its text.
+  const json = (schema: JsonSchema): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema, nullable: false } }, checks });
+  await assert.rejects(async () => execute(client, json({ type: "integer" }), { p: null }), /Parameter "p" is null/);
+  await assert.rejects(async () => execute(client, json({ type: "integer" }), {}), /Parameter "p" is missing/);
+  await execute(client, json({ type: ["integer", "null"] }), {});
+  await execute(client, json({ type: "integer", default: 3 }), {});
+  assert.deepEqual(seen.slice(2), [[null], ["3"]]);
+  // A JSON parameter with no schema is declared `unknown`, and takes null; one whose type alone
+  // carries a schema takes null where that schema allows null.
+  const untyped = (type: EngineType): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable: false } }, checks });
+  await execute(client, untyped({ kind: "json" }), { p: null });
+  await execute(client, untyped({ kind: "json", schema: { type: ["integer", "null"] } }), {});
+  await assert.rejects(async () => execute(client, untyped({ kind: "json", schema: { type: "integer" } }), { p: null }), /Parameter "p" is null/);
+  assert.deepEqual(seen.slice(4), [[null], [null]]);
+  // A structured parameter keeps its own message, which says what to pass.
+  const rows: QueryModule<"postgres"> = { dialect: "postgres", sql: "select 1", params: ["r"], inputs: { r: { type: { kind: "rows", one: true, fields: [] }, nullable: false } }, checks };
+  await assert.rejects(async () => execute(client, rows, { r: null }), /pass one object/);
 });
 
 test("a query without inputs, defined by hand or built before them, binds every array as it is", async () => {

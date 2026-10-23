@@ -132,10 +132,10 @@ test("MySQL: a cast is MySQL's own, LIMIT and a text cast take the bare placehol
     const prefix = await built(root, url.href, "prefix", "select name from people where name like concat(:prefix::text, '%') and code <> :code::char(3) and uid <> :uid::uuid order by id");
     assert.equal(prefix.text, "select name from people where name like concat(?, '%') and code <> ? and uid <> ? order by id");
     // MySQL types the bare placeholder as a string, and the parameter keeps its cast.
-    assert.match(prefix.code, /"prefix":\{"type":\{"kind":"scalar","name":"text"\},"cast":"text"\}/);
+    assert.match(prefix.code, /"prefix":\{"type":\{"kind":"scalar","name":"text"\},"cast":"text","nullable":false\}/);
     const alone = await built(root, url.href, "alone", "select :p::varchar(5) as p");
     assert.equal(alone.text, "select ? as p");
-    assert.match(alone.code, /"p":\{"type":\{"kind":"scalar","name":"text"\},"cast":"varchar\(5\)"\}/);
+    assert.match(alone.code, /"p":\{"type":\{"kind":"scalar","name":"text"\},"cast":"varchar\(5\)","nullable":false\}/);
     assert.deepEqual({ ...(await alone.query.run(db, { p: "abc" })) }, { p: "abc" });
     assert.deepEqual(plain(await prefix.query.run(db, { prefix: "A", code: "ALN", uid: "c3d4e5f6-a7b8-4c9d-8e0f-1a2b3c4d5e03" })), [{ name: "Ada" }]);
     // The run time still checks the value against the cast.

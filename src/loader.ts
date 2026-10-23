@@ -52,8 +52,9 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // no columns and any number of rows.
   const refused = analysis.diagnostics.find((d) => d.code === 6);
   if (refused) throw new Error(`${path}:${place(sql, refused.start)}: ${refused.message}`);
-  // Each parameter's type, for the drivers that bind an array or a JSON value wrong (src/execute.ts).
-  const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }) }]));
+  // Each parameter's type, for the drivers that bind an array or a JSON value wrong, and whether it
+  // takes null, which the run time refuses for one that does not (src/execute.ts).
+  const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }), nullable: p.nullable }]));
   // Each output column's name and kind, from the table the declared types come from: what the run
   // time gives each value (src/values.ts).
   const columns = analysis.columns.map((c) => [c.name, columnKind(c.type, session.project.dialect)]);
@@ -64,8 +65,9 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
   // A typed JSON, structured or cast parameter is checked with reylo's `checks`, imported only where
   // the statement has one, so that an app none of whose statements has one bundles none of them
-  // (src/checks.ts).
-  const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.type.kind === "rows");
+  // (src/checks.ts). A non-null JSON parameter whose type alone carries a schema needs them too,
+  // to learn whether that schema allows null.
+  const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.type.kind === "rows" || (p.type.kind === "json" && p.type.schema !== undefined && !p.nullable));
   const code = [
     `import { defineQuery${checked ? ", checks" : ""} } from "reylo";`,
     // `sql` is the statement as Reylo sends it to the database, `raw` the file as written; the
