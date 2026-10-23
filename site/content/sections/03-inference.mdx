@@ -292,19 +292,25 @@ where user_id = coalesce(:user_id::int, user_id)
 
 ### Dynamic filtering
 
-To filter a list by whatever the page's URL holds, give each filter a nullable parameter, which matches every row when null:
+To filter a list by whatever the page's URL holds, declare every parameter up front in a `with`, each coalesced to the value that matches every row. A filter with no such value, like the author, coalesces to null:
 
 <Inferred>
 
 ```sql file="search_posts.sql" dialect="all"
-with input as (select coalesce(:sort::text, 'newest') as sort)
+with input as (
+  select
+    coalesce(:q::text, '') as q,
+    coalesce(:author_id::int, null) as author_id,
+    coalesce(:status::text, 'all') as status,
+    coalesce(:sort::text, 'newest') as sort
+)
 select p.id, p.title, u.name as author
 from posts p
 join users u on u.id = p.user_id
 cross join input
-where p.title like concat('%', coalesce(:q::text, ''), '%')
-  and p.user_id = coalesce(:author_id::int, p.user_id)
-  and case coalesce(:status::text, 'all')
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
     when 'published' then p.published_at is not null
     when 'draft' then p.published_at is null
     else true
