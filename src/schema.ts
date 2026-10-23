@@ -152,14 +152,15 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
 
 /** The query's input and output schemas: the parameters as an object, and the result as `run` returns it once JSON. */
 export function querySchemas(analysis: Analysis, dialect: Dialect): { input: Schema; output: Schema } {
-  // A typed JSON parameter's schema as written, with its defaults; one with a `default` at its root may be left out.
+  // A typed JSON parameter's schema as written, with its defaults; one with a `default` at its root may be left out, as may one that takes null.
   const input = object(analysis.params, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema ?? typeSchema(p.type, dialect, true);
     return p.nullable ? nullable(s) : s;
   }, (i) => {
-    const s = analysis.params[i]!.schema;
-    return s !== null && typeof s === "object" && s !== undefined && "default" in s;
+    const p = analysis.params[i]!;
+    const s = p.schema;
+    return p.nullable || (s !== null && typeof s === "object" && s !== undefined && "default" in s);
   }, true);
   const row = object(analysis.columns, (i) => {
     const c = analysis.columns[i]!;

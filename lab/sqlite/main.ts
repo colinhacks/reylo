@@ -28,9 +28,10 @@ import byEmail from "./by_email.sql";
 import search from "./search.sql";
 const i1: { id: number; name: string; created_at: string } = null! as Awaited<ReturnType<typeof insert.run>>;
 const i2: Awaited<ReturnType<typeof insert.run>> = null! as { id: number; name: string; created_at: string };
-// :email is written whole to a nullable column, so the caller may pass null; :name fills a NOT NULL one.
-const i3: { name: string; email: string | null } = null! as Parameters<typeof insert.run>[1];
-const i4: Parameters<typeof insert.run>[1] = null! as { name: string; email: string | null };
+// :email is written whole to a nullable column, so the caller may pass null or leave it out; :name
+// fills a NOT NULL one.
+const i3: { name: string; email?: string | null } = null! as Parameters<typeof insert.run>[1];
+const i4: Parameters<typeof insert.run>[1] = null! as { name: string; email?: string | null };
 const b1: { id: number; name: string } | null = null! as Awaited<ReturnType<typeof byEmail.run>>;
 const b2: Awaited<ReturnType<typeof byEmail.run>> = null! as { id: number; name: string } | null;
 // `cast(:min as integer)` reads a parameter the caller cannot pass as null, so it is never NULL.
