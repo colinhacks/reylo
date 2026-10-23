@@ -1423,7 +1423,6 @@ fn star_alias(node: &Node) -> Option<String> {
     }
 }
 
-/// A bare `u`, the alias form `to_jsonb` takes for a whole row.
 /// Every name a column reference of one field in `expr` reads, inside its subqueries too.
 fn bare_names(expr: &Node) -> Vec<String> {
     fn sval(v: &Value) -> Option<&str> {
@@ -1454,6 +1453,7 @@ fn bare_names(expr: &Node) -> Vec<String> {
     out
 }
 
+/// A bare `u`, the alias form `to_jsonb` takes for a whole row.
 fn bare_alias(node: &Node) -> Option<String> {
     match node.node.as_ref()? {
         NodeEnum::ColumnRef(c) if c.fields.len() == 1 => last_string(&c.fields),
