@@ -1,0 +1,1 @@
+select p.id from posts p join json_table(:filters::json('{"type": "object", "properties": {"q": {"type": "string"}}, "required": ["q"]}'), '$' columns (q varchar(100) path '$.q')) as f on p.title like concat('%', f.q, '%')

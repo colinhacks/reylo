@@ -1,0 +1,10 @@
+connection_collation.sql: many (names: json {"type":"array","items":{"type":"string"}}) -> {  } !! reylo6: Illegal mix of collations (utf8mb4_unicode_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT) for operation '=' (ER_CANT_AGGREGATE_2COLLATIONS)
+connection_collation_named.sql: many (names: json {"type":"array","items":{"type":"string"}}) -> { id: int4 }
+join_like.sql: many (filters: json {"type":"object","properties":{"q":{"type":"string"}},"required":["q"],"additionalProperties":true}) -> { id: int4 }
+key_and_list.sql: maybeOne (id: int4, names: json {"type":"array","items":{"type":"string"}}) -> { id: int4, name: text }
+names_in.sql: many (names: json {"type":"array","items":{"type":"string"}}) -> { id: int4, name: text }
+nested_tags.sql: many (doc: json {"type":"object"}) -> { id: int4 }
+number_column.sql: many (ids: json {"type":"array","items":{"type":"integer"}}) -> { name: text }
+other_collation.sql: many (codes: json {"type":"array","items":{"type":"string"}}) -> { id: int4 }
+own_charset.sql: many (names: json {"type":"array","items":{"type":"string"}}) -> { id: int4 }
+shape.sql: many (d: json {"type":"array","items":{"type":"string"}}) -> { o: { n: text? } }

@@ -1584,11 +1584,13 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
     }
 
     // Offsets of the expanded statement in the rewritten one: every placeholder before them
-    // changed its length.
+    // changed its length, and every text the rewrite added before them moved them.
     let spans = analysis.rewritten.spans.clone();
+    let inserted = analysis.rewritten.inserted.clone();
     let rewritten = |p: usize| {
         let delta: isize = spans.iter().filter(|&&(_, oe, _, _)| oe <= p).map(|&(os, oe, rs, re)| (re - rs) as isize - (oe - os) as isize).sum();
-        (p as isize + delta) as usize
+        let added: usize = inserted.iter().filter(|&&(at, _, _)| at <= p).map(|&(_, rs, re)| re - rs).sum();
+        (p as isize + delta) as usize + added
     };
     for ((f, (l, at)), table) in expanded.found.iter().zip(&expanded.lowered).zip(&columns) {
         if !f.insert {
@@ -1621,6 +1623,7 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
             }
         })
         .collect();
+    analysis.rewritten.inserted = inserted.iter().map(|&(at, rs, re)| (expanded.to_author(at).0, rs, re)).collect();
     Some(analysis)
 }
 
@@ -2516,6 +2519,45 @@ mod tests {
         assert!(seen.last().unwrap().starts_with("insert into accounts (`name`, `role`) SELECT `a`.`name`, `a`.`role` FROM JSON_TABLE("), "{}", seen.last().unwrap());
         assert_eq!((a.structured.len(), a.structured[0].lists.len(), a.structured[0].copied.len()), (1, 2, 0));
         assert!(serde_json::to_value(&a).unwrap()["structured"].is_array());
+    }
+
+    #[test]
+    fn text_the_dialects_rewrite_adds_before_a_list_moves_the_list_with_it() {
+        // MySQL's rewrite may add text the author did not write (the MySQL engine's
+        // `mysql_collation`): each list the run time writes again keeps covering its own text.
+        use crate::api::{Answer, Answers, NoDescribe, Need};
+        let sql = "insert into accounts :a::rows(name varchar(9) not null, role? varchar(9) not null)";
+        let added = "/* added */ ";
+        let run = |add: bool| {
+            let mut answers: Answers<NoDescribe> = Answers::new();
+            for _ in 0..4 {
+                let host = Host::new(&answers);
+                let inner = |s: &str| {
+                    let mut a = crate::analysis::bare_of(s, Dialect::Mysql, Vec::new());
+                    if add {
+                        a.rewritten.sql = format!("{added}{}", a.rewritten.sql);
+                        a.rewritten.spans = a.rewritten.spans.iter().map(|&(os, oe, rs, re)| (os, oe, rs + added.len(), re + added.len())).collect();
+                        a.rewritten.inserted = vec![(0, 0, added.len())];
+                    }
+                    Some(a)
+                };
+                if let Some(a) = analyze(sql, Dialect::Mysql, &host, &inner, &|d| crate::analysis::bare_of(sql, Dialect::Mysql, d)) {
+                    return a;
+                }
+                for need in host.needs() {
+                    if let Need::Query { id, .. } = need {
+                        answers.insert(id, Answer::Rows { rows: Vec::new() });
+                    }
+                }
+            }
+            panic!("the analysis never settled");
+        };
+        let (plain, moved) = (run(false), run(true));
+        let text = |a: &Analysis| a.structured[0].lists.iter().map(|l| a.rewritten.sql[l.start..l.end].to_string()).collect::<Vec<_>>();
+        assert_eq!(plain.structured[0].lists.len(), 2);
+        assert_eq!(text(&moved), text(&plain));
+        assert_eq!(moved.rewritten.inserted, [(0, 0, added.len())]);
+        assert_eq!(moved.rewritten.to_original(added.len() + 3), 3);
     }
 
     #[test]

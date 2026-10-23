@@ -1,0 +1,1 @@
+connection_collation.sql: the engine refused it: reylo6: Illegal mix of collations (utf8mb4_unicode_ci,IMPLICIT) and (utf8mb4_0900_ai_ci,IMPLICIT) for operation '=' (ER_CANT_AGGREGATE_2COLLATIONS)

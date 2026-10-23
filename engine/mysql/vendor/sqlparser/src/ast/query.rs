@@ -4120,6 +4120,10 @@ pub struct JsonTableNamedColumn {
     pub name: Ident,
     /// The type of the column to be extracted.
     pub r#type: DataType,
+    /// The column's character set, `CHARACTER SET cs` after its type.
+    pub character_set: Option<ObjectName>,
+    /// The column's collation, `COLLATE c` after its type.
+    pub collation: Option<ObjectName>,
     /// The path to the column to be extracted. Must be a literal string.
     pub path: ValueWithSpan,
     /// true if the column is a boolean set to true if the given path exists
@@ -4132,14 +4136,14 @@ pub struct JsonTableNamedColumn {
 
 impl fmt::Display for JsonTableNamedColumn {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{} {}{} PATH {}",
-            self.name,
-            self.r#type,
-            if self.exists { " EXISTS" } else { "" },
-            self.path
-        )?;
+        write!(f, "{} {}", self.name, self.r#type)?;
+        if let Some(character_set) = &self.character_set {
+            write!(f, " CHARACTER SET {character_set}")?;
+        }
+        if let Some(collation) = &self.collation {
+            write!(f, " COLLATE {collation}")?;
+        }
+        write!(f, "{} PATH {}", if self.exists { " EXISTS" } else { "" }, self.path)?;
         if let Some(on_empty) = &self.on_empty {
             write!(f, " {on_empty} ON EMPTY")?;
         }

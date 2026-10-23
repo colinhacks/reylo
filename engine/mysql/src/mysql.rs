@@ -252,6 +252,21 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
         return Some(crate::analysis::bare(sql, lexed, Dialect::Mysql, vec![Diagnostic { message, start, length: end - start, code: 10 }]));
     }
     let rewritten = lex::rewrite(sql, lexed, Target::Question);
+    // Text MySQL would make in the connection's collation takes the database's, asked once a
+    // session (`mysql_collation`), before the prepare checks the statement as it will run.
+    let sites = crate::mysql_collation::sites(sql, &lexed.opaque);
+    let rewritten = if sites.is_empty() {
+        rewritten
+    } else {
+        let server = match host.query(crate::structured::MYSQL_SERVER_QUERY, Vec::new(), Scope::Session)? {
+            Ok(rows) => crate::structured::Server::of(&rows),
+            Err(_) => crate::structured::Server::default(),
+        };
+        match &server.collation {
+            Some((charset, collation)) if !server.mariadb && charset.eq_ignore_ascii_case("utf8mb4") => crate::mysql_collation::written(rewritten, &sites, collation),
+            _ => rewritten,
+        }
+    };
     // Asked in one round: the prepare, the mode where it decides the reading, and the columns of
     // the tables a parameter is written to.
     let raw = host.describe(&rewritten.sql);
@@ -1500,7 +1515,10 @@ fn vectors_as_text(rewritten: lex::Rewritten, raw: &MysqlDescribe) -> lex::Rewri
         from = re;
     }
     sql.push_str(&rewritten.sql[from..]);
-    lex::Rewritten { sql, order: rewritten.order, spans }
+    // Each text the rewrite added (`mysql_collation`) moved with the wraps before it.
+    let moved = |p: usize| rewritten.spans.iter().zip(&spans).filter(|((_, _, _, re), _)| *re <= p).last().map_or(p, |((_, _, _, re), (_, _, _, new_re))| p - re + new_re);
+    let inserted = rewritten.inserted.iter().map(|&(at, rs, re)| (at, moved(rs), moved(re))).collect();
+    lex::Rewritten { sql, order: rewritten.order, spans, inserted }
 }
 
 /// A parameter's type from the server's context guess. Every integer context comes back as
