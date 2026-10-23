@@ -276,16 +276,21 @@ impl Level {
     }
 
     /// Whether the query whose FROM this is, standing inside another, is the one an aggregate
-    /// call in its select list belongs to, for certain: the call reads no column, or one of this
-    /// FROM, a qualified one by its item's name and a bare one by an item that shows its name.
+    /// call in its select list belongs to, for certain: the call reads a column of this FROM, a
+    /// qualified one by its item's name and a bare one by an item that shows its name, or reads
+    /// no column and holds no subquery. An aggregate belongs to the innermost query whose column
+    /// it reads, so one such read outside a subquery in the call settles it; a subquery's own
+    /// reads, which may reach a query around this one, are not read.
     pub fn owns(&self, call: &protobuf::FuncCall) -> bool {
         let mut reads = Vec::new();
+        let mut subquery = false;
         for node in call.args.iter().chain(&call.agg_order).chain(call.agg_filter.as_deref()) {
-            if serde_json::to_value(node).ok().and_then(|tree| references(&tree, &mut reads)).is_none() {
-                return false;
+            match serde_json::to_value(node) {
+                Ok(tree) => subquery |= references(&tree, &mut reads),
+                Err(_) => return false,
             }
         }
-        reads.is_empty() || reads.iter().any(|fields| match fields.as_slice() {
+        (reads.is_empty() && !subquery) || reads.iter().any(|fields| match fields.as_slice() {
             [Some(column)] => self.items.iter().any(|i| i.shown.has(column)),
             // `p.title` and `p.*`. A longer form (`app.posts.title`) names a relation by its
             // schema, which an alias here does not answer to.
@@ -295,9 +300,10 @@ impl Level {
     }
 }
 
-/// The column references in an expression, each as its fields with `None` for a `*`; nothing when
-/// the expression holds a subquery, whose references have a scope of their own.
-fn references(v: &Value, out: &mut Vec<Vec<Option<String>>>) -> Option<()> {
+/// The column references in an expression outside any subquery in it, each as its fields with
+/// `None` for a `*`, and whether it holds a subquery, whose references have a scope of their own.
+/// The expression an `IN` or `ANY` subquery is compared with is outside it.
+fn references(v: &Value, out: &mut Vec<Vec<Option<String>>>) -> bool {
     fn text(v: &Value) -> Option<String> {
         match v {
             Value::Object(map) => map.iter().find_map(|(key, child)| if key == "sval" { child.as_str().map(str::to_string) } else { text(child) }),
@@ -306,20 +312,25 @@ fn references(v: &Value, out: &mut Vec<Vec<Option<String>>>) -> Option<()> {
     }
     match v {
         Value::Object(map) => {
+            let mut subquery = false;
             for (key, child) in map {
                 if key == "SubLink" {
-                    return None;
+                    if let Some(test) = child.get("testexpr") {
+                        references(test, out);
+                    }
+                    subquery = true;
+                    continue;
                 }
                 match child.get("fields").and_then(Value::as_array).filter(|_| key == "ColumnRef") {
                     Some(fields) => out.push(fields.iter().map(text).collect()),
-                    None => references(child, out)?,
+                    None => subquery |= references(child, out),
                 }
             }
+            subquery
         }
-        Value::Array(items) => items.iter().try_for_each(|i| references(i, out))?,
-        _ => {}
+        Value::Array(items) => items.iter().fold(false, |subquery, i| references(i, out) | subquery),
+        _ => false,
     }
-    Some(())
 }
 
 /// The columns a query shows, by the names the server gives them: a target's alias, a column
@@ -431,6 +442,11 @@ mod tests {
             "select (select count(b) from posts p (a, b, c)) from users",
             "select (select count(title) from posts p (a, b)) from users",
             "select (select count(title) from posts tablesample system (50)) from users",
+            // A read of this FROM outside a subquery in the call settles it, whatever the
+            // subquery reads, as does the expression an `IN` subquery is compared with.
+            "select (select json_agg(json_build_object('id', p.id, 'n', (select count(*) from comments c where c.post_id = p.id))) from posts p) from users",
+            "select (select count(title || (select name from users limit 1)) from posts) from users",
+            "select (select count(p.id in (select post_id from comments)) from posts p) from users",
         ] {
             assert!(owns(sql, &c), "{sql}");
         }
@@ -474,6 +490,8 @@ mod tests {
             "select (select count(public.posts.title) from comments posts) from users",
             // A subquery inside the call has names of its own.
             "select (select count((select title from posts limit 1)) from posts) from users",
+            "select (select count(name || (select body from comments limit 1)) from posts) from users",
+            "select (select count(u.id in (select post_id from comments)) from posts) from users u",
         ] {
             assert!(!owns(sql, &c), "{sql}");
         }
