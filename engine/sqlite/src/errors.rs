@@ -16,10 +16,11 @@ use serde_json::Value;
 /// may change a key another table's foreign key refers to. One row `('open', why)` for each trigger
 /// that may fire, and one `('name', code, field, name)` for each name an error may carry: a unique
 /// key's columns as SQLite's message lists them, `a, b`. What a write reaches: the written tables,
-/// and, where `{cascades}`, the tables a foreign key's action writes in turn.
+/// and, where `{cascades}`, the tables a foreign key's action writes in turn. A name is matched as
+/// SQLite matches it, whatever its case: a trigger and a foreign key spell a table as they please.
 const ERRORS_QUERY: &str = "with recursive w(t) as ( \
-      select name from sqlite_schema where type in ('table', 'view') and name in ({written}) \
-      union select s.name from sqlite_schema s join pragma_foreign_key_list(s.name) f join w on f.\"table\" = w.t \
+      select name from sqlite_schema where type in ('table', 'view') and name collate nocase in ({written}) \
+      union select s.name from sqlite_schema s join pragma_foreign_key_list(s.name) f join w on f.\"table\" = w.t collate nocase \
         where s.type = 'table' and {cascades} and (f.on_delete in ('CASCADE', 'SET NULL', 'SET DEFAULT') or f.on_update in ('CASCADE', 'SET NULL', 'SET DEFAULT'))), \
     keys(t, code, name, columns, expression) as ( \
       select w.t, case i.origin when 'pk' then 'SQLITE_CONSTRAINT_PRIMARYKEY' else 'SQLITE_CONSTRAINT_UNIQUE' end, i.name, \
@@ -28,7 +29,7 @@ const ERRORS_QUERY: &str = "with recursive w(t) as ( \
       from w join pragma_index_list(w.t) i where i.\"unique\" \
       union all select w.t, 'SQLITE_CONSTRAINT_PRIMARYKEY', null, (select group_concat(name, ', ') from (select name from pragma_table_info(w.t) where pk > 0 order by pk)), 0 \
       from w where exists (select 1 from pragma_table_info(w.t) where pk > 0)) \
-    select 'open' as kind, 'trigger' as code, g.name as field, null as name from sqlite_schema g join w on g.tbl_name = w.t where g.type = 'trigger' \
+    select 'open' as kind, 'trigger' as code, g.name as field, null as name from sqlite_schema g join w on g.tbl_name = w.t collate nocase where g.type = 'trigger' \
     union all select 'name', code, 'constraint', name from keys where expression \
     union all select 'name', code, 'columns', columns from keys where not expression and columns is not null \
     union all select 'name', code, 'table', t from keys \

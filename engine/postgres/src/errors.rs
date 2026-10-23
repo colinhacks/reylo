@@ -15,6 +15,24 @@ use serde_json::{json, Value};
 /// or a natural join, a `BETWEEN`, `DISTINCT`, `GROUP BY` and `ORDER BY`.
 const IMPLICIT_OPERATORS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 
+/// The server's functions that run SQL they are given as text, which may call anything.
+const RUNS_SQL: [&str; 14] = [
+    "query_to_xml",
+    "query_to_xmlschema",
+    "query_to_xml_and_xmlschema",
+    "cursor_to_xml",
+    "cursor_to_xmlschema",
+    "table_to_xml",
+    "table_to_xmlschema",
+    "table_to_xml_and_xmlschema",
+    "schema_to_xml",
+    "schema_to_xmlschema",
+    "schema_to_xml_and_xmlschema",
+    "database_to_xml",
+    "database_to_xmlschema",
+    "database_to_xml_and_xmlschema",
+];
+
 /// `$1` and `$2` are `text[]` of the relations the statement writes and reads, as it writes them;
 /// `$3`, `$4` and `$5` the functions, the operators and the types it names; `$6` whether a row it
 /// writes may change a key another table's foreign key refers to. One row `('open', why)`
@@ -26,8 +44,8 @@ const IMPLICIT_OPERATORS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 /// view's base relations, and, where `$6`, the tables a foreign key's action writes in turn. What a read
 /// reaches: the read relations and, through views, the relations they read. Code runs there in a
 /// trigger or a rule; in a default, a generated column, a check, an index's expression, a
-/// partition key, a domain's check or a policy, which `pg_depend` ties to the functions and
-/// operators they call; in a type's input and output; across a foreign table; in a user's or an
+/// partition key, a domain's default or check or a policy, which `pg_depend` ties to the functions
+/// and operators they call; in an index's operator class; in a type's input and output; across a foreign table; in a user's or an
 /// extension's function of a name the statement calls, whatever it takes, since a literal or a
 /// parameter of no type takes the type of the one function there is; and in a user's or an
 /// extension's operator or cast of the statement, where each type of a user's it takes is present.
@@ -82,7 +100,8 @@ pub const ERRORS_QUERY: &str = concat!(
     UNION ALL SELECT 'open', 'rule', q.rulename::text, NULL FROM pg_rewrite q JOIN w ON q.ev_class = w.oid WHERE q.rulename <> '_RETURN' AND q.ev_enabled <> 'D' \
     UNION ALL SELECT 'open', 'foreign table', c.relname::text, NULL FROM pg_class c JOIN rel ON c.oid = rel.oid WHERE c.relkind = 'f' \
     UNION ALL SELECT 'open', 'depends on', d.refobjid::text, NULL FROM pg_depend d \
-      WHERE d.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass) AND d.refobjid >= 16384 AND ( \
+      WHERE d.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass, 'pg_opclass'::regclass, 'pg_opfamily'::regclass) AND d.refobjid >= 16384 AND ( \
+        (d.classid = 'pg_type'::regclass AND d.objid IN (SELECT oid FROM dom)) OR \
         (d.classid = 'pg_attrdef'::regclass AND d.objid IN (SELECT ad.oid FROM pg_attrdef ad JOIN rel ON ad.adrelid = rel.oid)) \
         OR (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM cons)) \
         OR (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM w UNION SELECT i.indexrelid FROM pg_index i JOIN w ON i.indrelid = w.oid)) \
@@ -134,6 +153,9 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
         return Some(None);
     }
     let Ok(parsed) = analyze::analyze(&analysis.rewritten.sql) else { return Some(None) };
+    if parsed.functions.iter().any(|f| RUNS_SQL.contains(&f.as_str()) || f == "ts_stat" || f == "ts_rewrite") {
+        return Some(None);
+    }
     let mut operators: Vec<&str> = parsed.operators.iter().map(String::as_str).collect();
     operators.extend(IMPLICIT_OPERATORS.iter().filter(|o| !parsed.operators.iter().any(|p| p == *o)));
     let params = vec![json!(parsed.write_set), json!(parsed.read_set), json!(parsed.functions), json!(operators), json!(parsed.types), json!(parsed.changes_keys)];

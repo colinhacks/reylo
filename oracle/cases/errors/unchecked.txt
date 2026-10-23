@@ -1,4 +1,6 @@
 call_boom.sql: boom (U0001)
 compare_literal.sql: sad (U0003)
 compare_mood.sql: sad (U0003)
+insert_defaulted.sql: boom (U0004)
 judge_mood.sql: sad (U0002)
+query_to_xml.sql: boom (U0001)

@@ -8,8 +8,11 @@ delete_post.sql: none (id: int4) -> {  }
 delete_user.sql: none (id: int4) -> {  }
 insert_audited.sql: none (id: int4) -> {  }
 insert_coded.sql: none (id: int4) -> {  }
+insert_defaulted.sql: none (id: int4) -> {  }
 insert_event.sql: none (id: int4, at: date) -> {  }
+insert_ordered.sql: none (id: int4?) -> {  }
 insert_user.sql: none (id: int4, email: text, age: int4) -> {  }
 judge_mood.sql: many () -> { n: int4? }
+query_to_xml.sql: one () -> { x: xml? }
 select_view.sql: many (id: int4) -> { id: int4, email: text }
 upsert_user.sql: none (id: int4, email: text, age: int4) -> {  }

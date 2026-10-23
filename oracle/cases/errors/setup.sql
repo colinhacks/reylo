@@ -24,3 +24,10 @@ create function judge(mood) returns int language plpgsql as $$ begin if $1 = 'sa
 create function mood_over(mood, int) returns bool language plpgsql as $$ begin if $1 = 'sad' then raise exception 'sad' using errcode = 'U0003'; end if; return true; end $$;
 create operator ~~~ (leftarg = mood, rightarg = int, function = mood_over);
 insert into moods (id, m) values (1, 'ok'), (2, 'sad');
+create function boom_default() returns int language plpgsql as $$ begin raise exception 'boom' using errcode = 'U0004'; end $$;
+create domain defaulted as int default boom_default();
+create table defaulted_rows (id int primary key, v defaulted);
+create function thirteen_cmp(int, int) returns int language plpgsql immutable as $$ begin if $1 = 13 or $2 = 13 then raise exception 'thirteen' using errcode = 'U0005'; end if; return btint4cmp($1, $2); end $$;
+create operator class thirteen_ops for type int using btree as operator 1 <, operator 2 <=, operator 3 =, operator 4 >=, operator 5 >, function 1 thirteen_cmp(int, int);
+create table ordered (id int);
+create unique index ordered_id on ordered (id thirteen_ops);
