@@ -196,7 +196,7 @@ A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If 
 
 **Intervals**
 
-An interval is an ISO 8601 duration with its sign in front, which `Temporal.Duration.from()` reads. Postgres signs an interval's months, days and time separately, so when those differ in sign, each part keeps its own sign: Postgres reads that form back, and `Temporal` doesn't.
+An interval is an ISO 8601 duration with its sign in front, which `Temporal.Duration.from()` reads. Postgres signs an interval's months, days and time separately, so when those differ in sign, each part keeps its own sign: Postgres reads that form back, and `Temporal` doesn't. This holds in Postgres's default `IntervalStyle`; if your session changes it, the text is Postgres's own.
 
 <Pairs>
 
@@ -274,7 +274,7 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
 
 <Pairs>
 
@@ -283,6 +283,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 - `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
+- `jsonb_build_object('d', '1 day 02:03:04'::interval)` → `{ d: "1 day 02:03:04" }`
 - `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
 - `json_build_object('o', 7::oid)` → `{ o: "7" }`
 - `json_build_object('h', 'a=>1, b=>NULL'::hstore)` → `{ h: { a: "1", b: null } }`
