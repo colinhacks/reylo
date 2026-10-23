@@ -1,0 +1,4 @@
+count_cast.sql: many () -> { c: text? }
+key_sublink.sql: maybeOne () -> { id: int4 }
+max_cast.sql: many () -> { m: varchar? }
+max_sublink.sql: one () -> { m: varchar? }

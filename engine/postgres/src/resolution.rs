@@ -292,6 +292,11 @@ impl Overloads {
     /// set, so a call of the name aggregates whichever overload the server picks. `None` where
     /// the catalog reports none.
     pub fn every_aggregate(&self, name: &str) -> Option<bool> {
+        // A call of one argument with no exact match may be a cast to a type of the name
+        // (`func_get_detail`), which reads each row's value.
+        if self.typed.contains(name) {
+            return Some(false);
+        }
         let flags = self.flags.get(&(Kind::Function, name.to_string()))?;
         Some(flags & (NOT_AGGREGATE | RETURNS_SET) == 0)
     }
@@ -501,6 +506,10 @@ mod tests {
         assert_eq!(c.resolve(Kind::Function, "sum", &[Operand::Is(oid::INT4)]), Some(Some(oid::INT8)));
         assert_eq!(c.every_aggregate("sum"), Some(true));
         assert_eq!(c.every_aggregate("count"), None);
+        // A domain named `max` beside a user's aggregate `max(bytea)`: `max(v)` of a `varchar`
+        // is a cast to the domain.
+        let (c, _) = catalog(vec![vec![json!("opaque f"), json!("max"), Value::Null, json!(1), json!(0)], vec![json!("type"), json!("max"), Value::Null, Value::Null, Value::Null]]);
+        assert_eq!(c.every_aggregate("max"), Some(false));
     }
 
     #[test]
