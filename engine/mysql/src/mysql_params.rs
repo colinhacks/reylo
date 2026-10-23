@@ -372,8 +372,10 @@ fn refuses_null(clause: &str, column: &str) -> bool {
 
 /// The tables of the current schema the statement reads and writes, as it names them, for the
 /// freshness facts ([`crate::fresh`]): every table a FROM item reads, in subqueries and WITH
-/// queries too, and the table an INSERT, an UPDATE or a DELETE writes. A WITH query is no table, and
-/// a table of another schema is left out, since the facts are read from the current one.
+/// queries too, and the tables an INSERT, an UPDATE or a DELETE writes: a multi-table UPDATE's or
+/// DELETE's every table, any of which it may write. A WITH query is no table, and a table of another
+/// schema is left out, since the facts are read from the current one; a write that names one, or
+/// that writes through something that is no table, lists nothing it writes.
 pub(crate) fn tables(statement: &Statement) -> Tables {
     let mut walk = Walk { tables: Vec::new() };
     walk.statement(statement, &Env::default());
@@ -386,14 +388,48 @@ pub(crate) fn tables(statement: &Statement) -> Tables {
             ast::TableObject::TableName(name) => table_name(name).into_iter().collect(),
             _ => Vec::new(),
         },
-        Statement::Update(update) => target(&update.table.relation).into_iter().collect(),
-        Statement::Delete(delete) if delete.tables.is_empty() => {
+        Statement::Update(update) if update.table.joins.is_empty() && update.from.is_none() => target(&update.table.relation).into_iter().collect(),
+        Statement::Update(update) => {
+            let from = match &update.from {
+                Some(ast::UpdateTableFromKind::BeforeSet(from) | ast::UpdateTableFromKind::AfterSet(from)) => from.as_slice(),
+                None => &[],
+            };
+            every_table(std::iter::once(&update.table).chain(from)).unwrap_or_default()
+        }
+        Statement::Delete(delete) => {
             let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) = &delete.from;
-            from.first().and_then(|t| target(&t.relation)).into_iter().collect()
+            match from.as_slice() {
+                [only] if delete.tables.is_empty() && only.joins.is_empty() && delete.using.is_none() => target(&only.relation).into_iter().collect(),
+                _ => every_table(from.iter().chain(delete.using.iter().flatten())).unwrap_or_default(),
+            }
         }
         _ => Vec::new(),
     };
     Tables { read: walk.tables, write }
+}
+
+/// Every table of a multi-table UPDATE's or DELETE's tables, or `None` where one is a table of
+/// another schema or something that is no table, which the write might reach through.
+fn every_table<'a>(from: impl Iterator<Item = &'a ast::TableWithJoins>) -> Option<Vec<String>> {
+    fn factor(f: &TableFactor, out: &mut Vec<String>) -> Option<()> {
+        match f {
+            TableFactor::Table { name, .. } => out.push(table_name(name)?),
+            TableFactor::NestedJoin { table_with_joins, .. } => joined(table_with_joins, out)?,
+            _ => return None,
+        }
+        Some(())
+    }
+    fn joined(t: &ast::TableWithJoins, out: &mut Vec<String>) -> Option<()> {
+        factor(&t.relation, out)?;
+        t.joins.iter().try_for_each(|j| factor(&j.relation, out))
+    }
+    let mut out = Vec::new();
+    for t in from {
+        joined(t, &mut out)?;
+    }
+    out.sort();
+    out.dedup();
+    Some(out)
 }
 
 /// The column a parameter is written to whole, by name or by its place in the table.
@@ -928,6 +964,14 @@ mod tests {
         assert_eq!(tables("delete from users where id in (select user_id from bans)"), (names(&["bans", "users"]), names(&["users"])));
         // A table of another schema is left out: the facts are read from the current one.
         assert_eq!(tables("select id from other.users"), (vec![], vec![]));
+        // A multi-table UPDATE or DELETE may write any of its tables; one that names a table of
+        // another schema, or joins a derived table, lists nothing it writes.
+        assert_eq!(tables("delete u from users u join bans b on b.user_id = u.id").1, names(&["bans", "users"]));
+        assert_eq!(tables("delete from users using users join bans on bans.user_id = users.id").1, names(&["bans", "users"]));
+        assert_eq!(tables("update users u join posts p on p.user_id = u.id set p.title = u.name").1, names(&["posts", "users"]));
+        assert_eq!(tables("update users u join (select 1 as id) d on d.id = u.id set u.name = 'x'").1, Vec::<String>::new());
+        assert_eq!(tables("delete u from users u join other.bans b on b.user_id = u.id").1, Vec::<String>::new());
+        assert_eq!(tables("insert into other.audit (user_id) values (1)").1, Vec::<String>::new());
     }
 
     fn may_be_null(sql: &str) -> Vec<String> {

@@ -45,10 +45,13 @@ fn literal(s: &str) -> String {
 }
 
 /// The names each error the statement may raise can carry: `Some(None)` where it may fire a
-/// trigger, or the parse named no table.
+/// trigger, or the parse named no table, or no table it writes.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
     let written: Vec<String> = tables.write.iter().map(|t| literal(t.rsplit('.').next().unwrap_or(t))).collect();
+    if analysis.kind != "select" && written.is_empty() {
+        return Some(None);
+    }
     // An INSERT changes no key but as a REPLACE, which deletes, or through an upsert that updates.
     let cascades = !written.is_empty() && (analysis.kind != "insert" || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]));
     let query = ERRORS_QUERY.replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") }).replace("{cascades}", if cascades { "1" } else { "0" });
@@ -59,7 +62,8 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
 
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement. A name an extended
 /// code's error may carry is one the primary code's may too, which is the code sqlite3 and the
-/// sqlite package give.
+/// sqlite package give, but for the constraint: given the primary code alone, the run time reads a
+/// failed CHECK's name or expression into it too, which the catalog does not hold.
 fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
     let text = |row: &[Value], k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);
     let mut errors = Errors::default();
@@ -68,7 +72,9 @@ fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
             Some("name") => {
                 if let (Some(code), Some(field), Some(name)) = (text(row, 1), text(row, 2), text(row, 3)) {
                     errors.add(&code, &field, &name);
-                    errors.add("SQLITE_CONSTRAINT", &field, &name);
+                    if field != "constraint" {
+                        errors.add("SQLITE_CONSTRAINT", &field, &name);
+                    }
                 }
             }
             _ => return None,
@@ -92,5 +98,8 @@ mod tests {
         let mut open = rows.clone();
         open.push(vec![json!("open"), json!("trigger"), json!("audit"), Value::Null]);
         assert_eq!(narrowed(&open), None);
+        // An index's name is the extended code's alone: the primary code's may be a CHECK's.
+        let index = vec![vec![json!("name"), json!("SQLITE_CONSTRAINT_UNIQUE"), json!("constraint"), json!("users_lower_email")]];
+        assert_eq!(serde_json::to_value(narrowed(&index)).unwrap(), json!({ "SQLITE_CONSTRAINT_UNIQUE": { "constraint": ["users_lower_email"] } }));
     }
 }

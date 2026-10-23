@@ -12,7 +12,8 @@ use reylo_engine_core::host::Lazy;
 use serde_json::Value;
 
 /// `{written}` and `{read}` are lists of string literals, the tables the statement writes and reads;
-/// `{called}` the words it calls as functions; `{cascades}` whether a row it writes may change a key
+/// `{called}` the words it calls as functions, which a stored function of any schema may answer to,
+/// since a call may name the schema; `{cascades}` whether a row it writes may change a key
 /// another table's foreign key refers to. One row `('open', why)` for each trigger and stored
 /// function that may run, and one `('name', code, field, name)` for each name an error may carry.
 /// What a write reaches: the written tables, a view's tables, and, where `{cascades}`, the tables a
@@ -26,7 +27,7 @@ const ERRORS_QUERY: &str = "with recursive w(t) as ( \
       union select u.table_name from information_schema.view_table_usage u join r on u.view_name = r.t where u.view_schema = database() and u.table_schema = database()), \
     rel(t) as (select t from w union select t from r) \
     select 'open' as kind, 'trigger' as code, cast(g.trigger_name as char) as field, cast(null as char) as name from information_schema.triggers g join w on g.event_object_table = w.t where g.event_object_schema = database() \
-    union all select 'open', 'function', cast(p.routine_name as char), null from information_schema.routines p where p.routine_schema = database() and p.routine_type = 'FUNCTION' and lower(p.routine_name) in ({called}) \
+    union all select 'open', 'function', cast(p.routine_name as char), null from information_schema.routines p where p.routine_type = 'FUNCTION' and lower(p.routine_name) in ({called}) \
     union all select 'open', 'view', cast(v.table_name as char), null from information_schema.view_routine_usage v join rel on v.table_name = rel.t where v.table_schema = database() \
     union all select 'name', k.code, k.field, k.name from ( \
       select 'ER_DUP_ENTRY' as code, 'key' as field, cast(concat(s.table_name, '.', s.index_name) as char) as name from information_schema.statistics s join w on s.table_name = w.t where s.table_schema = database() and s.non_unique = 0 \
@@ -55,13 +56,14 @@ fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
 }
 
 /// The names each error the statement may raise can carry: `Some(None)` where it may run a trigger
-/// or a stored function, or the parse named no table.
+/// or a stored function, is neither a query nor a write (a CALL), or writes what the parse cannot
+/// name (a table of another schema).
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
     let unqualified = |t: &String| t.rsplit('.').next().unwrap_or(t).to_string();
     let written: Vec<String> = tables.write.iter().map(unqualified).collect();
     let read: Vec<String> = tables.read.iter().map(unqualified).collect();
-    if written.iter().chain(&read).any(|t| t.contains('\\')) {
+    if (analysis.kind != "select" && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
         return Some(None);
     }
     let called = called(&analysis.rewritten.sql, Dialect::Mysql);

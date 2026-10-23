@@ -596,12 +596,12 @@ fn relnames_in(v: &Value) -> Vec<String> {
     out
 }
 
-/// Generic walk: calls `f(key, value)` for every object entry, recursing into everything.
 /// The last name of a list of `String` nodes: a function's, an operator's or a type's, without its schema.
 fn last_sval(list: Option<&Value>) -> Option<&str> {
     list?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()
 }
 
+/// Generic walk: calls `f(key, value)` for every object entry, recursing into everything.
 fn visit(v: &Value, f: &mut dyn FnMut(&str, &Value)) {
     match v {
         Value::Object(map) => {
