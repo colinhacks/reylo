@@ -3184,6 +3184,66 @@ mod tests {
     }
 
     #[test]
+    fn a_derived_table_or_a_with_query_over_a_schema_qualified_table_is_settled() {
+        // A server with `users (id int not null, name text not null)` and `app.accounts (id int
+        // not null, note text)`. The catalog's rows by name never match a schema-qualified name,
+        // so each probe of a query over `app.accounts` asks for that relation again, while the
+        // statement around it settles, and its columns' `NOT NULL` is read by oid.
+        const USERS: u32 = 16400;
+        const ACCOUNTS: u32 = 16600;
+        let not_null: HashSet<(u32, i32)> = HashSet::from([(USERS, 1), (USERS, 2), (ACCOUNTS, 1)]);
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let analyzed = |sql: &str| {
+            let mut answers: HashMap<String, Answer> = HashMap::new();
+            for _ in 0..64 {
+                let host = Host::new(&answers);
+                if let Some(a) = analyze(sql, &host) {
+                    assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+                    return a.columns.into_iter().map(|c| (c.name, c.ty, c.nullable)).collect::<Vec<_>>();
+                }
+                for need in host.needs() {
+                    match need {
+                        crate::api::Need::Describe { id, sql } => {
+                            let columns = if sql.contains("app.accounts") {
+                                vec![column("id", 23, ACCOUNTS, 1), column("note", 25, ACCOUNTS, 2)]
+                            } else {
+                                vec![column("id", 23, USERS, 1), column("name", 25, USERS, 2)]
+                            };
+                            answers.insert(id, Answer::Describe { describe: RawDescribe { params: vec![], columns } });
+                        }
+                        crate::api::Need::Query { id, sql, params, .. } => {
+                            let rows = match sql.as_str() {
+                                RELATION_COLUMNS_QUERY => {
+                                    let names: Vec<String> = serde_json::from_value(params[0].clone()).unwrap();
+                                    if names.iter().any(|n| n == "users") {
+                                        ["id", "name"].iter().enumerate().map(|(i, c)| vec![json!(USERS), json!("users"), json!(i + 1), json!(true), Value::Null, json!(c), json!(true)]).collect()
+                                    } else {
+                                        vec![]
+                                    }
+                                }
+                                ATTNOTNULL_QUERY => {
+                                    let rels: Vec<u32> = serde_json::from_value(params[0].clone()).unwrap();
+                                    let atts: Vec<i32> = serde_json::from_value(params[1].clone()).unwrap();
+                                    rels.iter().zip(&atts).filter(|(r, a)| not_null.contains(&(**r, **a))).map(|(r, a)| vec![json!(r), json!(a)]).collect()
+                                }
+                                _ => vec![],
+                            };
+                            answers.insert(id, Answer::Rows { rows });
+                        }
+                    }
+                }
+            }
+            panic!("the replay did not converge");
+        };
+        let int = |name: &str, nullable: bool| (name.to_string(), Type::Scalar { name: "int4".into() }, nullable);
+        let text = |name: &str, nullable: bool| (name.to_string(), Type::Scalar { name: "text".into() }, nullable);
+        assert_eq!(analyzed("select s.id, s.note from (select id, note from app.accounts) s"), [int("id", false), text("note", true)]);
+        assert_eq!(analyzed("with a as (select id, note from app.accounts) select id, note from a"), [int("id", false), text("note", true)]);
+        assert_eq!(analyzed("select s.id, s.name from (select id, name from users) s"), [int("id", false), text("name", false)]);
+        assert_eq!(analyzed("with u as (select id, name from users) select id, name from u"), [int("id", false), text("name", false)]);
+    }
+
+    #[test]
     fn own_provenance_lines_up_with_the_columns() {
         let own = |sql: &str, count: usize| own_provenance(sql, analyze::analyze(sql).ok().as_ref(), count);
         let with = "WITH a AS (SELECT p.title AS t, p.title AS t2 FROM posts p UNION ALL SELECT u.email, u.email FROM users u), e AS (SELECT)";

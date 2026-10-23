@@ -21,6 +21,7 @@ passthrough.sql: maybeOne (id: int8) -> { name: text?, score: int4 }
 renamed.sql: one () -> { a: text?, b: int8 }
 right_join_nulled.sql: many () -> { n: int8?, id: int8 }
 rollup_over.sql: many () -> { n: int8? }
+schema_qualified.sql: many () -> { id: int8, score: int4 }
 set_inside.sql: many () -> { g: int4 }
 star_between.sql: one () -> { one: int4, n: int8, top: text?, two: int4 }
 two_stars.sql: one () -> { n: int8?, top: text? }
@@ -30,6 +31,7 @@ where_over.sql: maybeOne (min: int8) -> { n: int8 }
 whole_row.sql: one () -> { s: record? }
 with_insert_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, id: int8?, label: text? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
 with_renamed.sql: one () -> { a: text?, b: int8 }
+with_schema_qualified.sql: many () -> { id: int8, score: int4 }
 with_shadows_table.sql: one () -> { label: text? }
 with_star.sql: one () -> { n: int8 }
 with_star_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, tag_id: int8?, label: text? }
