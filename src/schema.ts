@@ -64,6 +64,8 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       case "float8": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "double" }, nonFinite] } : { type: "number", format: "double" };
       case "numeric": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "decimal" }, nonFinite] } : { type: "number", format: "decimal" };
       case "bytea": return { type: "string", format: "hex" };
+      // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
+      case "interval": return { type: "string", description: "pg type interval" };
       // A row whose columns were not read (a subquery's): an object of them.
       case "record": return { type: "object" };
       // An hstore: an object of its keys, each value text or null.
