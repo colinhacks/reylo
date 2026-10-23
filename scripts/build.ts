@@ -13,6 +13,7 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { transformSync } from "esbuild";
 
 const root = join(import.meta.dirname, "..");
 const dist = join(root, "dist");
@@ -22,6 +23,12 @@ const DATABASES = ["postgres", "sqlite", "mysql"] as const;
 rmSync(dist, { recursive: true, force: true });
 const reylo = join(dist, "reylo");
 execFileSync(join(root, "node_modules/.bin/tsc"), ["-p", join(root, "tsconfig.build.json")], { stdio: "inherit" });
+// The comments stay in the sources and in the declarations, where an editor shows them. The
+// JavaScript ships without them, since they are about a third of its size.
+for (const file of readdirSync(reylo, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".js"))) {
+  const path = join(reylo, file);
+  writeFileSync(path, transformSync(readFileSync(path, "utf8"), { loader: "js", legalComments: "inline" }).code);
+}
 copyFileSync(join(root, "README.md"), join(reylo, "README.md"));
 
 const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
