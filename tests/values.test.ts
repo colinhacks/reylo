@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, instant, kindType, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, instant, kindType, postgresInterval, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import type { Columns } from "../src/values.ts";
 
@@ -65,13 +65,49 @@ test("the representation, value by value", () => {
   assert.equal(d("timestamp", "2026-10-20 10:00:00.123456"), "2026-10-20T10:00:00.123456");
   assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "0044-03-15T12:00:00 BC");
   assert.equal(d("timestamp", "infinity"), "infinity");
-  assert.equal(d("interval", "1 year 2 mons"), "1 year 2 mons");
+  assert.equal(d("interval", "1 year 2 mons"), "P1Y2M");
   assert.deepEqual(d("bytea", "\\x0102ff"), Buffer.from([1, 2, 255]));
   assert.deepEqual([...(d("bytea", "\\001\\\\x") as Uint8Array)], [1, 92, 120], "the escape format too");
   assert.deepEqual(d("jsonb", '{"big":9007199254740993}'), { big: 9007199254740992 });
   assert.equal(d("bool", "f"), false);
   assert.ok(Number.isNaN(d("float8", "NaN") as number));
   assert.equal(d("float8", "-Infinity"), -Infinity);
+});
+
+test("interval: an ISO 8601 duration with its sign in front, which Temporal reads, and each part signed where the parts' signs differ", () => {
+  const Temporal = (globalThis as unknown as { Temporal: { Duration: { from(text: string): { toString(): string } } } }).Temporal;
+  // Postgres's text in IntervalStyle postgres, Reylo's value, and Postgres's own in iso_8601, as Postgres 18 writes them.
+  for (const [text, iso, postgres] of [
+    ["1 mon", "P1M", "P1M"],
+    ["1 year 2 mons 3 days 04:05:06.789", "P1Y2M3DT4H5M6.789S", "P1Y2M3DT4H5M6.789S"],
+    ["00:00:00", "PT0S", "PT0S"],
+    ["48:00:00", "PT48H", "PT48H"],
+    ["00:00:00.000001", "PT0.000001S", "PT0.000001S"],
+    ["-1 days", "-P1D", "P-1D"],
+    ["-1 years -2 mons", "-P1Y2M", "P-1Y-2M"],
+    ["-1 mons -2 days -00:00:03", "-P1M2DT3S", "P-1M-2DT-3S"],
+    ["-178956970 years -7 mons -2147483647 days -2562047788:00:54.775807", "-P178956970Y7M2147483647DT2562047788H54.775807S", "P-178956970Y-7M-2147483647DT-2562047788H-54.775807S"],
+  ] as [string, string, string][]) {
+    assert.equal(duration(text), iso, text);
+    assert.equal(Temporal.Duration.from(iso).toString(), iso, `${text}: Temporal reads it`);
+    assert.equal(postgresInterval(iso), postgres, `${text}: as a parameter, in the form Postgres reads`);
+  }
+  // Parts of different signs have no ISO 8601 form: Postgres's own, which Temporal refuses.
+  for (const [text, iso] of [
+    ["1 mon -1 days", "P1M-1D"],
+    ["-1 days +01:00:00", "P-1DT1H"],
+    ["1 day -01:30:00.5", "P1DT-1H-30M-0.5S"],
+  ] as [string, string][]) {
+    assert.equal(duration(text), iso, text);
+    assert.equal(postgresInterval(iso), iso, `${text}: already the form Postgres reads`);
+  }
+  assert.equal(duration("infinity"), "infinity");
+  assert.equal(duration("-infinity"), "-infinity");
+  // Any other text, such as a parameter in Postgres's own words, goes as it is.
+  assert.equal(postgresInterval("-1 days"), "-1 days");
+  assert.equal(postgresInterval("+P1D"), "P1D");
+  assert.deepEqual(textDecoder("interval[]")('{"1 day",NULL,-00:00:03}'), ["P1D", null, "-PT3S"]);
+  assert.equal(coerce("interval", "-1 days", "span"), "-P1D", "a driver's text, as Bun.sql gives it");
 });
 
 test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kept, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
