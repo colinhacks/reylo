@@ -116,6 +116,7 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
     case "timestamp": return { type: "string", description: "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)" };
     case "bytes": return { type: "string", format: "byte", contentEncoding: "base64" };
     case "vector": return { type: "array", items: { type: "number", format: "float" } };
+    case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     case "text": return { type: "string" };
     case "json": return {};
     case "unknown": return {};

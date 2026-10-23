@@ -363,11 +363,11 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * The kinds Bun.sql can give in another form: a BIGINT as its digits (a BigInt with `bigint: true`),
  * a date and a timestamp as a Date read as UTC, a timestamptz as a Date, an int4[] and float4[] as a
  * typed array, an array of a type Bun does not parse (an enum's, uuid, name, a range) as its text,
- * a pgvector vector as its text, MySQL's TINYINT(1) and a comparison as a number or a BIGINT's
- * digits, and its BIT(1) as a boolean; and an interval as Postgres's text, which Reylo writes as
+ * a pgvector vector and an hstore as their text, MySQL's TINYINT(1) and a comparison as a number or
+ * a BIGINT's digits, and its BIT(1) as a boolean; and an interval as Postgres's text, which Reylo writes as
  * an ISO 8601 duration.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector)$|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore)$|\[\]$|\|/;
 
 export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];

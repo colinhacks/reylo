@@ -11,9 +11,9 @@
 // wall-clock text with `T` between the date and the time; `timestamptz` the instant's ISO 8601 text
 // in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
 // front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `vector` pgvector's
-// `vector` or `halfvec` as an array of its numbers; `text` the server's text, which every other
-// type is (time, uuid, an enum's label, a range, a row value); `unknown` whatever the driver gives
-// (a SQLite column with no
+// `vector` or `halfvec` as an array of its numbers; `hstore` an hstore's keys as an object, each
+// value a string or null; `text` the server's text, which every other type is (time, uuid, an
+// enum's label, a range, a row value); `unknown` whatever the driver gives (a SQLite column with no
 // declared type). `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
 // expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
 // separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
@@ -26,7 +26,7 @@ import type { EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | "unknown";
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
@@ -47,6 +47,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   json: "unknown",
   bytes: "Uint8Array",
   vector: "number[]",
+  hstore: "Record<string, string | null>",
   unknown: "unknown",
 };
 
@@ -54,8 +55,8 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
  * The kind of a Postgres or MySQL base type, by the engine's name for it (MySQL's are the Postgres
  * names: a DATETIME is `timestamp`, a BIT `bytea`, a YEAR `int2`). Every type not named here is
  * its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
- * `uuid`, `money`, `point`, `xml`, a row value). pgvector's `vector` and `halfvec` are
- * extensions' types, named by their names as every created type is.
+ * `uuid`, `money`, `point`, `xml`, a row value). pgvector's `vector` and `halfvec`, and an
+ * `hstore`, are extensions' types, named by their names as every created type is.
  */
 const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   bool: "bool",
@@ -75,6 +76,7 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   bytea: "bytes",
   vector: "vector",
   halfvec: "vector",
+  hstore: "hstore",
 };
 
 /**
@@ -313,6 +315,53 @@ export function bytea(x: string): Uint8Array {
   return Uint8Array.from(out);
 }
 
+/**
+ * An hstore's text as an object of its keys: `"a"=>"1", "b c"=>NULL` is `{ a: "1", "b c": null }`.
+ * The server quotes every key and value, escapes `"` and `\` with a backslash, writes a null value
+ * as a bare NULL and separates the pairs with `, `. A key such as `__proto__` is a key like any other.
+ */
+export function hstore(x: string): Record<string, string | null> {
+  const pairs: [string, string | null][] = [];
+  const n = x.length;
+  let i = 0;
+  const quoted = (): string => {
+    let s = "";
+    let from = ++i;
+    while (i < n && x[i] !== '"') {
+      if (x[i] === "\\") (s += x.slice(from, i)), (from = ++i);
+      i++;
+    }
+    s += x.slice(from, i++);
+    return s;
+  };
+  while (i < n) {
+    while (x[i] === " " || x[i] === ",") i++;
+    if (i >= n || x[i] !== '"') break;
+    const key = quoted();
+    i += 2;
+    if (x[i] === '"') pairs.push([key, quoted()]);
+    else (pairs.push([key, null]), (i += 4));
+  }
+  return Object.fromEntries(pairs);
+}
+
+/**
+ * An hstore, as `.run()` returns it, in the text its input reads: each key and value quoted, `"`
+ * and `\` escaped, a null value a bare NULL. A key whose value is undefined is left out, as JSON
+ * leaves it out.
+ */
+export function hstoreText(v: object, fail: (message: string) => never): string {
+  if (Array.isArray(v) || v instanceof Date || ArrayBuffer.isView(v)) return fail(`is an hstore, an object of its keys whose values are strings or null; got ${describe(v)}.`);
+  const quote = (s: string) => `"${s.replace(/[\\"]/g, "\\$&")}"`;
+  const pairs: string[] = [];
+  for (const [key, value] of Object.entries(v)) {
+    if (value === undefined) continue;
+    if (value !== null && typeof value !== "string") fail(`is an hstore, whose values are strings or null, and its key ${JSON.stringify(key)} holds ${describe(value)}.`);
+    pairs.push(`${quote(key)}=>${value === null ? "NULL" : quote(value)}`);
+  }
+  return pairs.join(", ");
+}
+
 const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   bool: (x) => x === "t",
   int: number,
@@ -328,6 +377,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   bytes: bytea,
   // pgvector prints the shortest text of each float, `[1,2.5,1e-07]`, which JSON reads exactly.
   vector: (x) => JSON.parse(x),
+  hstore,
   unknown: identity,
 };
 
@@ -566,6 +616,8 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unk
     case "json":
     case "vector":
       return typeof v === "string" ? JSON.parse(v) : v;
+    case "hstore":
+      return typeof v === "string" ? hstore(v) : v;
     case "bytes":
       if (isBytes(v)) return v;
       if (v instanceof ArrayBuffer) return new Uint8Array(v);

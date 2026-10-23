@@ -24,9 +24,9 @@ const appTable: Record<number, Parser> = {
 const appTypes = { getTypeParser: (oid: number) => appTable[oid] ?? noParse };
 
 // Oids the database created: an enum and its array, a domain's array, a row type's array, the
-// array of a type whose delimiter is not a comma (PostGIS's geometry), pgvector's vector and its
-// array, and a type created after Reylo first read the catalog.
-const ROLE_ARR = 70000, ROLE = 70001, POSINT_ARR = 70010, POSINT = 70011, PAIR_ARR = 70020, PAIR = 70021, LATE_ARR = 70030, LATE = 70031, SHAPE_ARR = 70040, SHAPE = 70041, VEC_ARR = 70050, VEC = 70051;
+// array of a type whose delimiter is not a comma (PostGIS's geometry), pgvector's vector and an
+// hstore and their arrays, and a type created after Reylo first read the catalog.
+const ROLE_ARR = 70000, ROLE = 70001, POSINT_ARR = 70010, POSINT = 70011, PAIR_ARR = 70020, PAIR = 70021, LATE_ARR = 70030, LATE = 70031, SHAPE_ARR = 70040, SHAPE = 70041, VEC_ARR = 70050, VEC = 70051, HSTORE_ARR = 70060, HSTORE = 70061;
 const COLUMNS: [string, number, string | null][] = [
   ["roles", ROLE_ARR, "{admin,member,NULL}"],
   ["role", ROLE, "admin"],
@@ -48,6 +48,8 @@ const COLUMNS: [string, number, string | null][] = [
   ["shapes", SHAPE_ARR, "{0101:NULL:0102}"],
   ["embedding", VEC, "[1,2.5,-3,1e-07]"],
   ["embeddings", VEC_ARR, '{"[1,2]",NULL,"[3]"}'],
+  ["prefs", HSTORE, String.raw`"a"=>"1", "b c"=>NULL, "q\""=>"\\"`],
+  ["history", HSTORE_ARR, String.raw`{"\"a\"=>\"1\"",NULL,""}`],
   ["nothing", ROLE_ARR, null],
 ];
 /** What Reylo returns for each column: src/values.ts. */
@@ -72,12 +74,14 @@ const declared = {
   shapes: ["0101", null, "0102"],
   embedding: [1, 2.5, -3, 1e-7],
   embeddings: [[1, 2], null, [3]],
+  prefs: { a: "1", "b c": null, 'q"': "\\" },
+  history: [{ a: "1" }, null, {}],
   nothing: null,
 };
 /** The module's columns for the same statement, as a build step writes them (src/loader.ts). */
 const columns: Columns = [
   ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"],
-  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["nothing", "text[]"],
+  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
 ];
 
 // The catalog, as decode.ts reads it: [array oid, element's base oid, a row type's array (kept as
@@ -90,6 +94,7 @@ function database() {
       [PAIR_ARR, PAIR, true, ",", PAIR, "pair"],
       [SHAPE_ARR, SHAPE, false, ":", SHAPE, "geometry"],
       [VEC_ARR, VEC, false, ",", VEC, "vector"],
+      [HSTORE_ARR, HSTORE, false, ",", HSTORE, "hstore"],
     ] as [number, number, boolean, string, number, string][],
     catalogQueries: [] as string[],
     late() {
@@ -177,7 +182,7 @@ test("pg Client: Reylo's table answers every oid, so no parser of the app's appl
   const [row] = (await execute(client, probe, { id: 1 })) as Record<string, unknown>[];
   same(row, declared);
   assert.equal(db.catalogQueries.length, 1);
-  assert.match(db.catalogQueries[0]!, new RegExp(`any\\('\\{${ROLE_ARR},${ROLE},${POSINT_ARR},${PAIR_ARR},${SHAPE_ARR},${VEC},${VEC_ARR}\\}'`));
+  assert.match(db.catalogQueries[0]!, new RegExp(`any\\('\\{${ROLE_ARR},${ROLE},${POSINT_ARR},${PAIR_ARR},${SHAPE_ARR},${VEC},${VEC_ARR},${HSTORE},${HSTORE_ARR}\\}'`));
   await execute(client, probe, { id: 1 });
   assert.equal(db.catalogQueries.length, 1, "what the catalog said is kept per client");
   assert.deepEqual((await client.query("select * from probe")).rows[0], control, "the app's own queries keep its parsers");
@@ -379,14 +384,15 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     roles: "{admin,member}",
     shapes: "{0101:0102}",
     embedding: "[1,2.5]",
+    prefs: '"a"=>"1"',
     at: new Date("2024-01-15T08:30:00Z"),
     forever: Infinity,
   };
   const bun = { unsafe: async () => [{ ...bunRow }], commitDistributed: async () => {} };
-  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["at", "timestamptz"], ["forever", "date"]] };
+  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["prefs", "hstore"], ["at", "timestamptz"], ["forever", "date"]] };
   // The failing control: Bun.sql's timestamptz is a Date; Reylo's the instant's text, to Bun's millisecond.
   assert.ok(bunRow.at instanceof Date);
-  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
+  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], prefs: { a: "1" }, at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
   // Without bigint: true, Bun's int8 is its text.
   const plain = { unsafe: async () => [{ big: "9007199254740993", at: new Date("2024-01-15T08:30:00.5Z") }], commitDistributed: async () => {} };
   assert.deepEqual(await execute(plain, { ...probe, columns: [["big", "int8"], ["at", "timestamptz"]] }, { id: 1 }), [{ big: 9007199254740993n, at: "2024-01-15T08:30:00.5Z" }]);

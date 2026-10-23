@@ -96,8 +96,11 @@ test("pgvector's vector and halfvec are arrays of numbers, as columns and as par
   assert.equal(renderType(scalar("sparsevec"), false, "postgres"), "string");
 });
 
-test("an hstore is its text on the wire and an object of nullable text inside a document", () => {
-  assert.equal(renderType(scalar("hstore"), false, "postgres"), "string");
+test("an hstore is an object of nullable text, as a column, a parameter and inside a document", () => {
+  assert.equal(renderType(scalar("hstore"), false, "postgres"), "Record<string, string | null>");
+  assert.equal(renderParamType(scalar("hstore"), "postgres"), "Record<string, string | null>");
+  assert.equal(renderType({ kind: "array", of: scalar("hstore") }, false, "postgres"), "(Record<string, string | null> | null)[]");
+  assert.deepEqual(typeSchema(scalar("hstore"), "postgres"), { type: "object", additionalProperties: { type: ["string", "null"] } });
   assert.equal(renderType(scalar("hstore"), true, "postgres"), "Record<string, string | null>");
   assert.equal(renderType({ kind: "list", of: scalar("hstore"), nullable_items: false }, false, "postgres"), "(Record<string, string | null>)[]");
   assert.deepEqual(typeSchema(scalar("hstore"), "postgres", false, true), { type: "object", additionalProperties: { type: ["string", "null"] } });

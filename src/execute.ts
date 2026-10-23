@@ -8,7 +8,7 @@
 import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
-import { describe, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
+import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import type { JsonSchema } from "./engine-type.ts";
@@ -589,6 +589,9 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
     if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${type.name}, which has one dimension at least; got an empty array.`);
     return vectorText(v, name, `a pgvector ${type.name}`);
   }
+  if (type.kind === "scalar" && type.name === "hstore" && typeof v === "object") return hstoreText(v, (message) => {
+    throw new ParameterError(`Parameter "${name}" ${message}`);
+  });
   if (typeof v !== "string") return v;
   if (isTime(type)) return postgresYear(v);
   return type.kind === "scalar" && type.name === "interval" ? postgresInterval(v) : v;
