@@ -1,7 +1,7 @@
-// The JavaScript half of analysis: run Parse/Describe against the project's own
-// Postgres client. Drivers are resolved from the PROJECT directory, never from
-// reylo's own dependencies, so every driver stays an optional peer.
-import { createRequire } from "node:module";
+// The JavaScript half of a Postgres analysis: Parse/Describe and the engine's catalog queries,
+// through postgres.js, which the Postgres engine's package carries inside it, so the type check
+// describes the same way whatever driver the app runs on.
+import postgres from "postgres";
 import { Unreachable } from "./engine.ts";
 
 export type Described = {
@@ -10,7 +10,6 @@ export type Described = {
 };
 
 export interface Describer {
-  readonly driver: "postgres" | "pg";
   describe(sql: string): Promise<Described>;
   query(sql: string, params?: unknown[]): Promise<Record<string, unknown>[]>;
   /** Rows as arrays of values, in column order: what the engine's catalog queries read. */
@@ -49,124 +48,40 @@ export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" }
   return binding === "require" ? { url: stripped, ssl: "verify-full" } : { url: stripped };
 }
 
-/**
- * The project's driver, as `require.resolve` found it. `require` rather than `import()`: a bundler
- * that runs Reylo's loader reads this file too (Turbopack bundles it; webpack parses it for its
- * build dependencies), and warns on an `import()` of a path it cannot follow, which the compiled
- * file has, since tsc wraps the path. The module is the same file either way.
- */
-export function loadDriver(require: NodeJS.Require, path: string): any {
-  const loaded = require(path);
-  // An ES module comes back as its namespace.
-  return loaded?.[Symbol.toStringTag] === "Module" ? loaded.default : loaded;
-}
-
-export async function openPostgresDescriber(projectDir: string, url: string): Promise<Describer> {
-  const require = createRequire(projectDir.replace(/\/?$/, "/package.json"));
-  const resolve = (name: string) => { try { return require.resolve(name); } catch { return undefined; } };
-  const rethrow = (e: unknown): never => { throw settled(e); };
-
-  const porsager = resolve("postgres");
-  if (porsager) {
-    const postgres = loadDriver(require, porsager) as (url: string, o?: object) => any;
-    const target = forPostgresJs(url);
-    const sql = postgres(target.url, { max: 1, prepare: false, onnotice: () => {}, connect_timeout: CONNECT_TIMEOUT_SECONDS, ...(target.ssl && { ssl: target.ssl }) });
-    // postgres.js runs these queries one at a time and connects again for each one queued behind
-    // a failure, so five transforms against a host that never answers would wait five timeouts
-    // (ending the client does not release the queue). The first failure answers every call that
-    // is waiting and every call after it.
-    let failure: Error | undefined;
-    let abort!: (e: Error) => void;
-    const aborted = new Promise<never>((_, reject) => { abort = reject; });
-    aborted.catch(() => {});
-    const guard = <T>(run: () => PromiseLike<T>): Promise<T> => {
-      if (failure) return Promise.reject(failure);
-      return Promise.race([run(), aborted]).catch((e: unknown): never => {
-        if (failure) throw failure;
-        const err = settled(e);
-        if (err instanceof Unreachable) {
-          failure = err;
-          abort(err);
-          sql.end({ timeout: 0 }).catch(() => {});
-        }
-        throw err;
-      });
-    };
-    return {
-      driver: "postgres",
-      async describe(text) {
-        const d = await guard<any>(() => sql.unsafe(text).describe());
-        return {
-          params: (d.types as number[]).map((oid) => ({ oid })),
-          columns: (d.columns as any[]).map((c) => ({ name: c.name, oid: c.type, table: c.table, attnum: c.number })),
-        };
-      },
-      query: (text, params = []) => guard(() => sql.unsafe(text, params as any[])),
-      values: (text, params = []) => guard(() => sql.unsafe(text, params as any[]).values()),
-      close: () => sql.end({ timeout: 0 }),
-    };
-  }
-
-  const pgPath = resolve("pg");
-  if (pgPath) {
-    const pg = loadDriver(require, pgPath);
-    const client = new pg.Client({ connectionString: url, connectionTimeoutMillis: CONNECT_TIMEOUT_SECONDS * 1000 });
-    // A connection that drops while idle is reported as an event; unheard, it ends the process.
-    // The next call fails on the closed client and reopens it.
-    client.on("error", () => {});
-    await client.connect().catch(rethrow);
-    // A bundler loads several .sql files at once, so calls on the one client overlap; pg 8 queues a
-    // query sent while another runs, with a deprecation warning, and pg 9 will refuse it. So the
-    // calls take turns.
-    let turn: Promise<unknown> = Promise.resolve();
-    const serial = <T>(call: () => Promise<T>): Promise<T> => {
-      const next = turn.then(call, call);
-      turn = next.catch(() => {});
-      return next;
-    };
-    return {
-      driver: "pg",
-      // node-postgres has no public describe, but it accepts any "submittable"
-      // object in client.query (pg-cursor works this way). This one sends
-      // Parse + Describe + Sync and collects the descriptions; parameterDescription
-      // and noData are not routed to the query by pg, so they are read off the
-      // connection while the query is active.
-      describe(text) {
-        return serial(() => new Promise<Described>((resolve, reject) => {
-          const out: Described = { params: [], columns: [] };
-          let con: any;
-          const cleanup = () => { con?.off("parameterDescription", onParam); con?.off("noData", onNoData); };
-          const onParam = (m: any) => { out.params = (m.dataTypeIDs as number[]).map((oid) => ({ oid })); };
-          const onNoData = () => { out.columns = []; };
-          const submittable = {
-            submit(connection: any) {
-              con = connection;
-              con.on("parameterDescription", onParam);
-              con.on("noData", onNoData);
-              con.parse({ name: "", text, types: [] });
-              con.describe({ type: "S", name: "" });
-              con.sync();
-            },
-            handleRowDescription(m: any) {
-              out.columns = (m.fields as any[]).map((f) => ({ name: f.name, oid: f.dataTypeID, table: f.tableID, attnum: f.columnID }));
-            },
-            handleParseComplete() {},
-            handleDataRow() {},
-            handleCommandComplete() {},
-            handleEmptyQuery() {},
-            handlePortalSuspended() {},
-            // pg drops the active query on an error message before ReadyForQuery,
-            // so the rejection cannot wait for handleReadyForQuery.
-            handleError(err: Error) { cleanup(); reject(settled(err)); },
-            handleReadyForQuery() { cleanup(); resolve(out); },
-          };
-          client.query(submittable);
-        }));
-      },
-      query: (text, params = []) => serial(async () => (await client.query(text, params).catch(rethrow)).rows),
-      values: (text, params = []) => serial(async () => (await client.query({ text, values: params, rowMode: "array" }).catch(rethrow)).rows),
-      close: () => client.end(),
-    };
-  }
-  throw new Error(`No Postgres client found in ${projectDir}; install "postgres" or "pg".`);
+export async function openPostgresDescriber(url: string): Promise<Describer> {
+  const target = forPostgresJs(url);
+  const sql = postgres(target.url, { max: 1, prepare: false, onnotice: () => {}, connect_timeout: CONNECT_TIMEOUT_SECONDS, ...(target.ssl && { ssl: target.ssl }) });
+  // postgres.js runs these queries one at a time and connects again for each one queued behind
+  // a failure, so five transforms against a host that never answers would wait five timeouts
+  // (ending the client does not release the queue). The first failure answers every call that
+  // is waiting and every call after it.
+  let failure: Error | undefined;
+  let abort!: (e: Error) => void;
+  const aborted = new Promise<never>((_, reject) => { abort = reject; });
+  aborted.catch(() => {});
+  const guard = <T>(run: () => PromiseLike<T>): Promise<T> => {
+    if (failure) return Promise.reject(failure);
+    return Promise.race([run(), aborted]).catch((e: unknown): never => {
+      if (failure) throw failure;
+      const err = settled(e);
+      if (err instanceof Unreachable) {
+        failure = err;
+        abort(err);
+        sql.end({ timeout: 0 }).catch(() => {});
+      }
+      throw err;
+    });
+  };
+  return {
+    async describe(text) {
+      const d = await guard<any>(() => sql.unsafe(text).describe());
+      return {
+        params: (d.types as number[]).map((oid) => ({ oid })),
+        columns: (d.columns as any[]).map((c) => ({ name: c.name, oid: c.type, table: c.table, attnum: c.number })),
+      };
+    },
+    query: (text, params = []) => guard(() => sql.unsafe(text, params as any[])),
+    values: (text, params = []) => guard(() => sql.unsafe(text, params as any[]).values()),
+    close: () => sql.end({ timeout: 0 }),
+  };
 }

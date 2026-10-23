@@ -1,11 +1,9 @@
-// MySQL describe through the project's mysql2: a server-side prepare reports
-// result columns with type codes, NOT NULL flags, charsets, display lengths and
-// the table each is a column of, and the server's type guess per `?` parameter,
-// without executing anything. The engine reads
-// those as they are (wiki/mysql-sources.md); this side only carries them, and
-// runs the engine's catalog queries.
-import { createRequire } from "node:module";
-import { loadDriver } from "./describe.ts";
+// The JavaScript half of a MySQL analysis, through mysql2, which the MySQL engine's package carries
+// inside it: a server-side prepare reports result columns with type codes, NOT NULL flags,
+// charsets, display lengths and the table each is a column of, and the server's type guess per `?`
+// parameter, without executing anything. The engine reads those as they are
+// (wiki/mysql-sources.md); this side only carries them, and runs the engine's catalog queries.
+import mysql from "mysql2/promise";
 import { Unreachable, type MysqlDescribed } from "./engine.ts";
 
 export type { MysqlDescribed } from "./engine.ts";
@@ -38,15 +36,10 @@ export function notMysql(version: unknown): string | undefined {
   return /mariadb/i.test(v) ? "MariaDB" : undefined;
 }
 
-export async function openMysqlDescriber(projectDir: string, url: string): Promise<MysqlDescriber> {
-  const require = createRequire(projectDir.replace(/\/?$/, "/package.json"));
-  let path: string;
-  try {
-    path = require.resolve("mysql2/promise");
-  } catch {
-    throw new Error(`No MySQL client found in ${projectDir}; install "mysql2".`);
-  }
-  const mysql = loadDriver(require, path) as { createConnection(url: string): Promise<any> };
+/** How a connection is made: mysql2's, which the tests replace with a stand-in server. */
+export const connector = { createConnection: (url: string): Promise<unknown> => mysql.createConnection(url) };
+
+export async function openMysqlDescriber(url: string): Promise<MysqlDescriber> {
   // The server's answer to a statement carries a SQLSTATE; mysql2 marks `fatal` the errors that
   // end the connection (a refused socket, a handshake the server rejects, a lost connection).
   const rethrow = (e: unknown): never => {
@@ -54,7 +47,8 @@ export async function openMysqlDescriber(projectDir: string, url: string): Promi
     throw err?.sqlState && !err.fatal ? e : new Unreachable(e);
   };
   // mysql2's default connectTimeout is already 10 s, the Postgres describer's limit.
-  const conn = await mysql.createConnection(url).catch(rethrow);
+  // Typed loosely, as the prepare's metadata is: mysql2's declarations leave out what it carries.
+  const conn: any = await connector.createConnection(url).catch(rethrow);
   // A connection that drops while idle is reported as an event; unheard, it ends the process.
   conn.on("error", () => {});
   // One query per connection: a MariaDB server is refused before anything is analyzed on it. A

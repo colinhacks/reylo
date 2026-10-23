@@ -49,22 +49,18 @@
     "@reylosql/sqlite": "link:packages/sqlite",
     "@types/node": "^26.6.1",
     "esbuild": "^0.28.2",
+    "mysql2": "3.24.4",
+    "postgres": "3.4.9",
     "typescript": "^7.1.0-dev.20260918.1"
   },
   "peerDependencies": {
     "@reylosql/mysql": "0.4.0",
     "@reylosql/postgres": "0.4.0",
-    "@reylosql/sqlite": "0.4.0",
-    "mysql2": ">=3",
-    "pg": ">=8",
-    "postgres": ">=3"
+    "@reylosql/sqlite": "0.4.0"
   },
   "peerDependenciesMeta": {
     "@reylosql/mysql": { "optional": true },
     "@reylosql/postgres": { "optional": true },
-    "@reylosql/sqlite": { "optional": true },
-    "mysql2": { "optional": true },
-    "pg": { "optional": true },
-    "postgres": { "optional": true }
+    "@reylosql/sqlite": { "optional": true }
   }
 }

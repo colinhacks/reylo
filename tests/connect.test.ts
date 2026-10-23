@@ -1,17 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { reason, Unreachable } from "../src/engine.ts";
 import { forPostgresJs, openPostgresDescriber } from "../src/describe.ts";
 import { openMysqlDescriber } from "../src/mysql-describe.ts";
 
-// The drivers are the labs' dependencies, never the package's own.
-const lab = (name: string) => fileURLToPath(new URL(`../lab/${name}`, import.meta.url));
-const installed = (dir: string, pkg: string) => existsSync(`${dir}/node_modules/${pkg}`) || `${dir} has no ${pkg} installed`;
 const unreachable = (r: PromiseSettledResult<unknown>, pattern: RegExp) => {
   assert.equal(r.status, "rejected");
   const e = (r as PromiseRejectedResult).reason;
@@ -25,21 +18,21 @@ test("reason reads a refused connection, an AggregateError with no message of it
   assert.equal(reason(Object.assign(new Error(""), { code: "ETIMEDOUT" })), "ETIMEDOUT");
 });
 
-test("postgres.js: a refused connection fails every call as Unreachable", { skip: installed(lab("basic"), "postgres") !== true && "lab/basic is not installed" }, async () => {
-  const d = await openPostgresDescriber(lab("basic"), "postgres://localhost:1/x");
+test("postgres.js: a refused connection fails every call as Unreachable", async () => {
+  const d = await openPostgresDescriber("postgres://localhost:1/x");
   const results = await Promise.allSettled([d.values("select 1"), d.describe("select 2"), d.query("select 3")]);
   for (const r of results) unreachable(r, /ECONNREFUSED/);
   await d.close();
 });
 
-test("postgres.js: calls queued behind a server that never answers fail together at the first timeout", { skip: installed(lab("basic"), "postgres") !== true && "lab/basic is not installed", timeout: 30_000 }, async () => {
+test("postgres.js: calls queued behind a server that never answers fail together at the first timeout", { timeout: 30_000 }, async () => {
   // A server that accepts the socket and never says anything: the connection times out, and
   // postgres.js would connect again for each queued call, one timeout after another. The client
   // resets the socket when it gives up, which the server's side hears as ECONNRESET.
   const silent = createServer((socket) => socket.on("error", () => {}));
   await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
   try {
-    const d = await openPostgresDescriber(lab("basic"), `postgres://127.0.0.1:${(silent.address() as AddressInfo).port}/x`);
+    const d = await openPostgresDescriber(`postgres://127.0.0.1:${(silent.address() as AddressInfo).port}/x`);
     const t0 = Date.now();
     const results = await Promise.allSettled([d.values("select 1"), d.values("select 2"), d.values("select 3")]);
     for (const r of results) unreachable(r, /CONNECT_TIMEOUT/);
@@ -50,20 +43,9 @@ test("postgres.js: calls queued behind a server that never answers fail together
   }
 });
 
-test("mysql2: a refused connection is Unreachable", { skip: installed(lab("mysql"), "mysql2") !== true && "lab/mysql is not installed" }, async () => {
-  const [r] = await Promise.allSettled([openMysqlDescriber(lab("mysql"), "mysql://root@localhost:1/x")]);
+test("mysql2: a refused connection is Unreachable", async () => {
+  const [r] = await Promise.allSettled([openMysqlDescriber("mysql://root@localhost:1/x")]);
   unreachable(r!, /ECONNREFUSED/);
-});
-
-test("a project with no driver for its dialect is told which ones the type check reads", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "reylo-no-driver-"));
-  try {
-    writeFileSync(join(dir, "package.json"), '{ "name": "no-driver", "private": true }\n');
-    await assert.rejects(openPostgresDescriber(dir, "postgres://localhost:1/x"), /install "postgres" or "pg"/);
-    await assert.rejects(openMysqlDescriber(dir, "mysql://root@localhost:1/x"), /install "mysql2"/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("postgres.js gets no channel_binding parameter, and one that requires binding gets a verified certificate", () => {

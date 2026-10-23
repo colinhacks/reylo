@@ -317,7 +317,7 @@ export class Session {
     const { dialect, url, root } = this.project;
     this.#io ??= (async (): Promise<Io> => {
       if (dialect === "mysql") {
-        const m = await openMysqlDescriber(root, url!);
+        const m = await openMysqlDescriber(url!);
         return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
       }
       if (dialect === "sqlite") {
@@ -336,7 +336,7 @@ export class Session {
           drivers,
         };
       }
-      const d = await openPostgresDescriber(root, url!);
+      const d = await openPostgresDescriber(url!);
       return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
     })();
     const io = this.#io;
