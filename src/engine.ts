@@ -120,7 +120,7 @@ export class MissingEngine extends Error {
 
 /**
  * Where `dialect`'s engine is: the project's own install first, as its drivers are found
- * (src/describe.ts), then reylo's. `from` is where reylo looks after the project, its own module
+ * (`describer`, below), then reylo's. `from` is where reylo looks after the project, its own module
  * unless a test says otherwise.
  */
 export function enginePath(dialect: Dialect, projectDir: string, from: string = import.meta.url): string | undefined {

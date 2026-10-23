@@ -21,8 +21,8 @@ export type Tooling = {
   sqlModule(path: string, source: string): Promise<{ code: string; entry: string }>;
   /** Closes every build step's connection, for a build that has ended. */
   releaseConnections(): Promise<void>;
-  /** Answers TypeScript's content mapper protocol over this process's stdin and stdout. */
-  serveMapper(): void;
+  /** The methods of TypeScript's content mapper protocol, which src/mapper.ts serves over this process's stdin and stdout. */
+  mapperHandlers(): Record<string, (params: unknown) => unknown | Promise<unknown>>;
   /** Runs the CLI's command, and answers with its exit code. */
   runCli(args: string[]): Promise<number>;
 };

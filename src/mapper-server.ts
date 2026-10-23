@@ -46,9 +46,16 @@ function mapToStatement(text: string, sql: string): number[][] {
   return [[0, Buffer.byteLength(text), start, end - start, ATOM, DEFINITION | TYPE_DEFINITION | IMPLEMENTATION]];
 }
 
+export type MapperHandlers = Record<string, (params: unknown) => unknown | Promise<unknown>>;
+
 /** Answers TypeScript's content mapper protocol over this process's stdin and stdout. */
 export function serveMapper(): void {
-  serve({
+  serve(mapperHandlers());
+}
+
+/** The content mapper's methods, for an entry point that serves them (src/mapper.ts). */
+export function mapperHandlers(): MapperHandlers {
+  return {
     initialize(params) {
       // Builds from 2026-09-18 on send `protocolVersion: 1` and refuse a mapper that does not
       // answer with the version it speaks; the npm nightly of the same day does not send it yet.
@@ -152,5 +159,5 @@ export function serveMapper(): void {
       if (project) await (await project.session).close();
       return {};
     },
-  });
+  };
 }
