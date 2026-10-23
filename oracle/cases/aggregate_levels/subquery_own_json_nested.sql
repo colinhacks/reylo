@@ -1,0 +1,1 @@
+select u.id, (select coalesce(jsonb_agg(jsonb_build_object('id', p.id, 'bodies', (select coalesce(jsonb_agg(c.body), '[]') from comments c where c.post_id = p.id))), '[]') from posts p where p.user_id = u.id) as posts from users u
