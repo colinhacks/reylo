@@ -8,12 +8,12 @@
 import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
-import { ParameterError, postgresYear, type Columns } from "./values.ts";
+import { describe, ParameterError, postgresYear, zoned, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import type { JsonSchema } from "./engine-type.ts";
-import { cloneJson, validate, withDefaults } from "./json-schema.ts";
-import { checkCast, describe, prepareRows, variant, zoned, type Structured } from "./rows.ts";
+import type { Checks } from "./checks.ts";
+import type { Structured } from "./rows.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite";
@@ -161,6 +161,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly fresh?: Fresh | undefined;
   /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
+  /** The checks of a typed JSON, structured or cast parameter (src/checks.ts), which a build step passes where the statement has one. */
+  readonly checks?: Checks | undefined;
 };
 
 /**
@@ -395,6 +397,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     const schema = query.inputs?.[name]?.schema;
     if (schema !== undefined) {
       let v = params[name];
+      const { cloneJson, validate, withDefaults } = checksFor(query, name);
       if (v === undefined && schema !== null && typeof schema === "object" && "default" in schema) v = cloneJson(schema.default);
       if (v !== undefined && v !== null) {
         v = withDefaults(schema, v);
@@ -408,6 +411,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     // statement reads; in an insert, its lists name only the keys the call carries.
     if (type?.kind === "rows") {
       const structured = query.structured?.find((s) => s.name === name);
+      const { prepareRows, variant } = checksFor(query, name);
       const prepared = prepareRows(name, type, bound.values[i], query.dialect, structured !== undefined);
       bound.values[i] = prepared.value;
       if (structured) bound.text = variant(bound.text, structured, type.fields, prepared.present);
@@ -423,7 +427,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     // A `::type` written on MySQL or SQLite, whose cast turns a value it cannot read into 0 or
     // NULL: the value is checked against the type as written.
     const cast = query.inputs?.[name]?.cast;
-    if (cast !== undefined && type !== undefined) checkCast(name, cast, type, bound.values[i], query.dialect);
+    if (cast !== undefined && type !== undefined) checksFor(query, name).checkCast(name, cast, type, bound.values[i], query.dialect);
     checkTime(type, name, bound.values[i]);
     checkBinary(type, name, bound.values[i]);
     bound.values[i] = encode(type, bound.values[i], query.dialect, name);
@@ -432,6 +436,12 @@ function statement(query: QueryModule, params: ParamsInput) {
   // structured parameter's is written already).
   if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.type.kind !== "rows" ? JSON.stringify(v) : v));
   return bound;
+}
+
+/** The checks a parameter needs (src/checks.ts): every build step passes them where its statement has such a parameter. */
+function checksFor(query: QueryModule, name: string): Checks {
+  if (query.checks) return query.checks;
+  throw new ParameterError(`Parameter "${name}" is a typed JSON, structured or cast parameter, which the run time checks with Reylo's checks; a query defined by hand passes them: defineQuery({ …, checks }) with checks from "reylo".`);
 }
 
 /** Where an array, or an array inside it (a multidimensional one), holds null or undefined: `[2]`, `[1][0]`. */

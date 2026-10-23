@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
-import { defineQuery } from "../src/index.ts";
+import { checks, defineQuery } from "../src/index.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -131,6 +131,21 @@ test("postgres: pg's family, PGlite and Neon, which write any array as an array 
   await execute((_: string, values?: unknown[]) => (seen.push(values!), Promise.resolve([])), typed, typedValues);
   assert.equal(seen.length, 3);
   for (const values of seen) assert.deepEqual(values, ['{"1","3"}', "ada", '[1,{"a":"b"}]']);
+});
+
+test("a typed JSON, structured or cast parameter is checked with the checks its module passes, and refused without them", async () => {
+  const refusal = (name: string) => ({ name: "TypeError", message: `Parameter "${name}" is a typed JSON, structured or cast parameter, which the run time checks with Reylo's checks; a query defined by hand passes them: defineQuery({ …, checks }) with checks from "reylo".` });
+  const client = { query: async () => ({ rows: [], rowCount: 0 }) };
+  const json: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema: { type: "object", properties: { n: { type: "integer" } }, required: ["n"] } } } };
+  await assert.rejects(async () => execute(client, json, { p: { n: 1 } }), refusal("p"));
+  const db = new DatabaseSync(":memory:");
+  const cast: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select cast(:n as integer) as n", params: ["n"], inputs: { n: { type: { kind: "scalar", name: "integer" }, cast: "integer" } } };
+  assert.throws(() => executeSync(db, cast, { n: 1 }), refusal("n"));
+  // With them, a value the schema or the cast refuses is refused, and one they take is bound.
+  await assert.rejects(async () => execute(client, { ...json, checks }, { p: { n: "one" } }), /Parameter "p" at \/n/);
+  assert.deepEqual(await execute(client, { ...json, checks }, { p: { n: 1 } }), []);
+  assert.throws(() => executeSync(db, { ...cast, checks }, { n: "one" }), /Parameter "n"/);
+  assert.deepEqual(executeSync(db, { ...cast, checks }, { n: 1 }), [{ n: 1 }]);
 });
 
 test("a query without inputs, defined by hand or built before them, binds every array as it is", async () => {
