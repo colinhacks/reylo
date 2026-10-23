@@ -550,7 +550,7 @@ MySQL has no `::` casts, so Reylo turns `:p::type` into MySQL's `CAST`. It also 
 
 The check rejects an integer out of range, a decimal with more digits than its scale, and a date that doesn't exist (`"2026-02-30"`).
 
-A `json_table` column of a text type takes your database's character set and collation. MySQL would give it the connection's, which mysql2 sets to `utf8mb4_unicode_ci` while MySQL 8 makes a database `utf8mb4_0900_ai_ci`, and comparing it with a column would fail with "Illegal mix of collations". A type that names its own `character set` or `collate` is left as you wrote it, so to compare with a column of another collation, name that collation in the `json_table` column. Your own `cast(… as char)` takes the connection's collation, so write `::text` instead, which takes the column's.
+A `json_table` column of a text type takes your database's collation, where its character set is `utf8mb4`, as JSON's is. MySQL would give it the connection's, which mysql2 sets to `utf8mb4_unicode_ci` while MySQL 8 makes a database `utf8mb4_0900_ai_ci`, and comparing it with a column would fail with "Illegal mix of collations". A type that names its own `character set` or `collate` is left as you wrote it, so to compare with a column of another collation, name that collation in the `json_table` column. Your own `cast(… as char)` takes the connection's collation, so write `::text` instead, which takes the column's.
 
 ## Drivers
 
