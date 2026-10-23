@@ -510,7 +510,9 @@ impl Builder<'_> {
                 }
                 let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
                 let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
-                let level = Level::of(&select.from_clause, &withs, self.columns);
+                // The FROMs around the subquery are the builder's stack, every one of them.
+                let outside = self.stack.iter().zip(&self.withs).map(|((_, from, _), withs)| Level::of(from, withs, self.columns)).collect();
+                let level = Level::of(&select.from_clause, &withs, self.columns).within(outside);
                 self.next_ctx += 1;
                 self.stack.push((self.next_ctx, select.from_clause.clone(), None));
                 self.withs.push(withs);
