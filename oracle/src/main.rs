@@ -396,7 +396,10 @@ impl AsyncAnswerer<PgDescribe> for PgAnswers<'_> {
                         .collect();
                     serde_json::from_value(json!({ "params": params, "columns": columns })).map(Ok).map_err(|e| e.to_string())
                 }
-                Err(e) => serde_json::from_value(pg_error(&e)).map(Err).map_err(|e| e.to_string()),
+                Err(e) => match pg_error(&e) {
+                    Some(refusal) => Ok(Err(refusal)),
+                    None => Err(format!("the describe did not reach the server: {e}")),
+                },
             }
         }
     }
@@ -462,17 +465,15 @@ fn pg_message(e: &tokio_postgres::Error) -> String {
     e.as_db_error().map(|d| format!("{} ({})", d.message(), d.code().code())).unwrap_or_else(|| e.to_string())
 }
 
-fn pg_error(e: &tokio_postgres::Error) -> Value {
-    match e.as_db_error() {
-        Some(d) => {
-            let position = match d.position() {
-                Some(tokio_postgres::error::ErrorPosition::Original(p)) => Some(*p),
-                _ => None,
-            };
-            json!({ "message": d.message(), "code": d.code().code(), "position": position })
-        }
-        None => json!({ "message": e.to_string() }),
-    }
+/// The server's refusal of what it was asked, or `None` for an error that never reached it, such as
+/// a closed connection, which is the host's failure and ends the replay.
+fn pg_error(e: &tokio_postgres::Error) -> Option<DbError> {
+    let d = e.as_db_error()?;
+    let position = match d.position() {
+        Some(tokio_postgres::error::ErrorPosition::Original(p)) => Some(*p as usize),
+        _ => None,
+    };
+    Some(DbError { message: d.message().to_string(), code: Some(d.code().code().to_string()), position })
 }
 
 // ---------------------------------------------------------------------------------------------
