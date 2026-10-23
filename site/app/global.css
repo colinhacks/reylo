@@ -19,8 +19,8 @@
    and inline code. In light mode the yellow darkens to ochre wherever it
    carries text, so it keeps its contrast on white.
 
-   The yellow is a lightsaber's: by night a light lemon yellow, by day a warm
-   gold. By night the yellow that marks something also gives off a little
+   The yellow is a lightsaber's: by night the hero recording's yellow, #fbc40e,
+   by day a warm gold. By night the yellow that marks something also gives off a little
    light (Saber light, below), and the logo blooms. ─────────── */
 
 :root {
@@ -51,7 +51,7 @@
 }
 
 .dark {
-  --dk-accent: hsl(47, 100%, 65%);
+  --dk-accent: #fbc40e;
 
   --color-fd-background: hsl(0, 0%, 5.5%);
   --color-fd-foreground: hsl(0, 0%, 86%);
@@ -63,13 +63,13 @@
   --color-fd-card: hsl(0, 0%, 8.5%);
   --color-fd-card-foreground: hsl(0, 0%, 86%);
   --color-fd-border: hsl(0, 0%, 17%);
-  --color-fd-primary: hsl(47, 100%, 65%);
+  --color-fd-primary: #fbc40e;
   --color-fd-primary-foreground: hsl(0, 0%, 5.5%);
   --color-fd-secondary: hsl(0, 0%, 9%);
   --color-fd-secondary-foreground: hsl(0, 0%, 98%);
   --color-fd-accent: hsl(0, 0%, 14%);
   --color-fd-accent-foreground: hsl(0, 0%, 98%);
-  --color-fd-ring: hsl(47, 100%, 65%);
+  --color-fd-ring: #fbc40e;
 
   --color-fd-info: hsl(212, 60%, 70%);
   --color-fd-warning: hsl(46, 90%, 60%);
