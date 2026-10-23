@@ -327,6 +327,25 @@ test("postgres: a pgvector vector parameter takes an array of finite numbers, wr
   await assert.rejects(execute(client as never, nearest, { q: [1], qs: [[1], [NaN]], h: null }) as Promise<unknown>, /element at \[0\] is NaN/);
 });
 
+test("postgres: an hstore parameter takes an object of its keys, written as the text hstore reads; an array of them as an array of those texts", async () => {
+  const seen: unknown[][] = [];
+  const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };
+  const hstore = { kind: "scalar", name: "hstore" } as const;
+  const save: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "update settings set prefs = :prefs where history = any(:history)",
+    params: ["prefs", "history"],
+    inputs: { prefs: { type: hstore }, history: { type: { kind: "array", of: hstore } } },
+  };
+  await execute(client as never, save, { prefs: { theme: "dark", 'q"': "\\", gone: null }, history: [{ a: "1" }, {}] });
+  assert.deepEqual(seen, [[String.raw`"theme"=>"dark", "q\""=>"\\", "gone"=>NULL`, String.raw`{"\"a\"=>\"1\"",""}`]]);
+  // Its text passes as it is.
+  await execute(client as never, save, { prefs: '"a"=>"1"', history: [] });
+  assert.deepEqual(seen.at(-1), ['"a"=>"1"', "{}"]);
+  await assert.rejects(execute(client as never, save, { prefs: { n: 1 }, history: [] }) as Promise<unknown>, /Parameter "prefs" is an hstore, whose values are strings or null, and its key "n" holds 1/);
+  await assert.rejects(execute(client as never, save, { prefs: ["a"], history: [] }) as Promise<unknown>, /Parameter "prefs" is an hstore, an object of its keys/);
+});
+
 test("postgres: an array parameter is written with its element type's delimiter, which the module's inputs carry", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };

@@ -83,3 +83,15 @@ test("a pgvector vector member takes an array of finite numbers, written as the 
   assert.deepEqual(prepareRows("items", items, [{ embedding: [1, 2.5, 3], history: [[0.5], null] }], "postgres", true).value, [{ embedding: "[1,2.5,3]", history: ["[0.5]", null] }]);
   for (const embedding of [[], [1, NaN], ["1"], "x".length]) assert.throws(() => prepareRows("items", items, [{ embedding }], "postgres", true), /embedding.* is vector\(3\), an array of finite numbers with one at least/);
 });
+
+test("an hstore member takes an object of its keys, written as the text hstore reads", () => {
+  const settings: RowsType = {
+    kind: "rows",
+    one: true,
+    fields: [{ name: "prefs", type: scalar("hstore"), written: "hstore", nullable: false, optional: false }],
+  };
+  assert.equal(renderParamType(settings), "{ prefs: Record<string, string | null> }");
+  assert.deepEqual(prepareRows("settings", settings, { prefs: { theme: "dark", gone: null } }, "postgres", true).value, { prefs: '"theme"=>"dark", "gone"=>NULL' });
+  assert.throws(() => prepareRows("settings", settings, { prefs: { n: 1 } }, "postgres", true), /prefs.* is hstore, whose values are strings or null, and its key "n" holds 1/);
+  assert.throws(() => prepareRows("settings", settings, { prefs: 1 }, "postgres", true), /prefs.* is hstore, an object of its keys/);
+});

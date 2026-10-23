@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, instant, kindType, postgresInterval, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import type { Columns } from "../src/values.ts";
 
@@ -479,4 +479,32 @@ test("MySQL: a VECTOR is an array of its floats on every driver that reads one, 
   await assert.rejects(execute(fake, w, { v: [1, NaN] }) as Promise<unknown>, /the element at \[1\] is NaN/);
   await assert.rejects(execute(fake, w, { v: [Infinity] }) as Promise<unknown>, /the element at \[0\] is Infinity/);
   await assert.rejects(execute(fake, w, { v: [1, null] }) as Promise<unknown>, /^TypeError: Parameter "v" is an array whose elements may not be null, and the element at \[1\] is/);
+});
+
+test("an hstore's text is an object of its keys, and an object goes back in as that text", () => {
+  // As Postgres 17 writes hstore(array['a','q"uote','back\\slash','b c','x=>y','',','], array['1','v"','\\','sp ace',null,'empty','comma,']).
+  const text = String.raw`""=>"empty", ","=>"comma,", "a"=>"1", "b c"=>"sp ace", "x=>y"=>NULL, "q\"uote"=>"v\"", "back\\slash"=>"\\"`;
+  const value = { "": "empty", ",": "comma,", a: "1", "b c": "sp ace", "x=>y": null, 'q"uote': 'v"', "back\\slash": "\\" };
+  assert.deepEqual(hstore(text), value);
+  assert.deepEqual(textDecoder("hstore")(text), value);
+  assert.deepEqual(hstore(""), {});
+  // A key named __proto__ is a key, not the object's prototype.
+  assert.deepEqual(Object.keys(hstore(String.raw`"__proto__"=>"x"`)), ["__proto__"]);
+  // An array of hstores, as Postgres quotes each element.
+  assert.deepEqual(textDecoder("hstore[]")(String.raw`{"\"a\"=>\"1\"","\"k\"=>NULL",NULL}`), [{ a: "1" }, { k: null }, null]);
+  // Bun.sql hands the text over; an object a driver parsed stays as it is.
+  assert.deepEqual(coerce("hstore", String.raw`"a"=>"1"`, "h"), { a: "1" });
+  assert.deepEqual(coerce("hstore", { a: "1" }, "h"), { a: "1" });
+  const fail = (message: string): never => {
+    throw new TypeError(message);
+  };
+  assert.equal(hstoreText(value, fail), String.raw`""=>"empty", ","=>"comma,", "a"=>"1", "b c"=>"sp ace", "x=>y"=>NULL, "q\"uote"=>"v\"", "back\\slash"=>"\\"`);
+  assert.deepEqual(hstore(hstoreText(value, fail)), value);
+  assert.equal(hstoreText({ a: undefined, b: "2" }, fail), String.raw`"b"=>"2"`);
+  assert.throws(() => hstoreText({ n: 1 }, fail), /its key "n" holds 1/);
+  assert.throws(() => hstoreText(["a"], fail), /an object of its keys whose values are strings or null; got an array/);
+  // Only a plain object's keys are an hstore's: a Map or a class instance is refused, not written empty.
+  assert.throws(() => hstoreText(new Map([["a", "1"]]), fail), /got a Map\./);
+  assert.throws(() => hstoreText(new (class Prefs {})(), fail), /got a Prefs\./);
+  assert.equal(hstoreText(Object.assign(Object.create(null), { a: "1" }), fail), String.raw`"a"=>"1"`);
 });
