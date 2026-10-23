@@ -491,8 +491,8 @@ function writeEntry(root: string, file: string, entry: Entry): void {
  * count read them), enum labels, domains, functions with their defaults, volatility, strictness,
  * kind and variadic argument, user operators and casts (the trust check reads them), view
  * definitions and column comments (a field's doc comment), and the server settings that change a statement's types;
- * and what the errors a statement may raise are read from: defaults and generated columns and policies on Postgres,
- * and triggers, foreign keys, checks and every schema's stored functions on MySQL. SQLite's whole schema is
+ * and what the errors a statement may raise are read from: defaults (a domain's too), generated columns, policies and
+ * operator classes on Postgres, and triggers, foreign keys, checks and every schema's stored functions on MySQL. SQLite's whole schema is
  * its `sqlite_schema` table, and the functions of the SQLite that opened it are part of what an
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
  * `text || "char"` is ambiguous, and a query the server refuses leaves every entry unverified.
@@ -510,12 +510,13 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select 'u ' || w.ev_class || ' ' || w.rulename || ' ' || w.ev_type::text || ' ' || w.ev_enabled::text || ' ' || md5(pg_get_ruledef(w.oid)) from pg_rewrite w join pg_class c on c.oid = w.ev_class join pg_namespace n on n.oid = c.relnamespace where w.rulename <> '_RETURN' and n.nspname ${NS}
     union all select 'o ' || o.oid || ' ' || o.oprname || ' ' || o.oprleft || ' ' || o.oprright || ' ' || o.oprcode::oid from pg_operator o where o.oid >= 16384
     union all select 'e ' || e.enumtypid || ' ' || e.enumsortorder || ' ' || e.enumlabel from pg_enum e
-    union all select 't ' || t.oid || ' ' || t.typname || ' ' || t.typtype::text || ' ' || t.typbasetype || ' ' || t.typnotnull from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname ${NS}
+    union all select 't ' || t.oid || ' ' || t.typname || ' ' || t.typtype::text || ' ' || t.typbasetype || ' ' || t.typnotnull || ' ' || md5(coalesce(t.typdefault, '')) from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname ${NS}
     union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) || ' ' || p.prokind::text || ' ' || p.provolatile::text || ' ' || p.proisstrict || ' ' || p.pronargdefaults || ' ' || p.provariadic from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
     union all select 'k ' || k.oid || ' ' || k.castsource || ' ' || k.casttarget || ' ' || k.castfunc || ' ' || k.castcontext::text || ' ' || k.castmethod::text from pg_cast k where k.oid >= 16384
     union all select 'w ' || c.oid || ' ' || md5(pg_get_viewdef(c.oid)) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and n.nspname ${NS}
     union all select 'x ' || d.adrelid || ' ' || d.adnum || ' ' || md5(pg_get_expr(d.adbin, d.adrelid)) from pg_attrdef d join pg_class c on c.oid = d.adrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
     union all select 'p ' || p.polrelid || ' ' || p.polname || ' ' || p.polcmd::text || ' ' || p.polpermissive || ' ' || md5(coalesce(pg_get_expr(p.polqual, p.polrelid), '') || ' ' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '')) from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
+    union all select 'q ' || q.oid || ' ' || q.opcname || ' ' || q.opcmethod || ' ' || q.opcintype from pg_opclass q where q.oid >= 16384
     union all select 'd ' || d.objoid || ' ' || d.objsubid || ' ' || md5(d.description) from pg_description d join pg_class c on c.oid = d.objoid join pg_namespace n on n.oid = c.relnamespace where d.classoid = 'pg_class'::regclass and d.objsubid > 0 and n.nspname ${NS}
   ) t`,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
