@@ -545,7 +545,7 @@ select 'guest', null
 
 **Whole rows**
 
-A whole row is non-null, and keeps each column's type, unless an outer join can null it.
+A whole row is non-null unless an outer join can null it, and keeps each column's type and nullability either way.
 
 <Inferred>
 
