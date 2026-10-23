@@ -32,16 +32,9 @@ export type MysqlCode = (typeof MYSQL_CODES)[number][1][number];
 /** The name of a SQLite result code of an error, primary or extended, as `"SQLITE_CONSTRAINT_UNIQUE"`. */
 export type SqliteCode = keyof typeof SQLITE_CODES;
 
-/** An error Postgres raised. */
-export interface PostgresQueryError extends Error {
+/** What an error Postgres raised holds beside its code. */
+interface PostgresErrorFields extends Error {
   readonly name: "QueryError";
-  /**
-   * The SQLSTATE, as `"23505"`: one Postgres defines, or one a function raised itself
-   * (`raise ... using errcode`), which no list holds.
-   */
-  readonly code: PostgresCode | (string & {});
-  /** The code's condition name, as `"unique_violation"`; undefined for a code Postgres does not define. */
-  readonly condition: PostgresCondition | undefined;
   /** `ERROR`, `FATAL` (the session ended) or `PANIC` (the server stopped), in the server's language with pg. */
   readonly severity: string;
   /** The server's message, as `duplicate key value violates unique constraint "users_email_key"`. */
@@ -61,11 +54,41 @@ export interface PostgresQueryError extends Error {
   readonly cause: unknown;
 }
 
-/** An error MySQL raised. */
-export interface MysqlQueryError extends Error {
+/**
+ * The names each field of an error may hold, by the error's code: what a statement that runs only
+ * the server's own code writes through (its constraints, tables, columns and domains).
+ */
+export type PostgresNarrowing = { readonly [C in PostgresCode]?: { readonly constraint?: string; readonly table?: string; readonly column?: string; readonly dataType?: string } };
+
+/** An error of one of the codes `C`, with the names `F` narrows its fields to. */
+type PostgresMember<C extends PostgresCode, F> = Omit<PostgresErrorFields, keyof F> & {
+  /** The SQLSTATE, as `"23505"`. */
+  readonly code: C;
+  /** The code's condition name, as `"unique_violation"`. */
+  readonly condition: (typeof POSTGRES_CODES)[C];
+} & { readonly [K in keyof F]: F[K] | undefined };
+
+/**
+ * An error Postgres raised. A statement that may run a user's code (a trigger, a function) may raise
+ * any code: `code` is any string, and `condition` the strict union, undefined for a code Postgres
+ * does not define. Where a statement runs only the server's own code, its module narrows the type
+ * with `N`: a code Postgres defines, and for each code `N` lists, the names its fields may hold.
+ */
+export type PostgresQueryError<N extends PostgresNarrowing | undefined = undefined> = [N] extends [PostgresNarrowing]
+  ? { [C in keyof N & PostgresCode]: PostgresMember<C, N[C]> }[keyof N & PostgresCode] | PostgresMember<Exclude<PostgresCode, keyof N>, {}>
+  : PostgresErrorFields & {
+      /**
+       * The SQLSTATE, as `"23505"`: one Postgres defines, or one a function raised itself
+       * (`raise ... using errcode`), which no list holds.
+       */
+      readonly code: PostgresCode | (string & {});
+      /** The code's condition name, as `"unique_violation"`; undefined for a code Postgres does not define. */
+      readonly condition: PostgresCondition | undefined;
+    };
+
+/** What an error MySQL raised holds beside its code. */
+interface MysqlErrorFields extends Error {
   readonly name: "QueryError";
-  /** The error's name, as `"ER_DUP_ENTRY"`; undefined for a number MySQL does not define, as one a `signal` statement sets. */
-  readonly code: MysqlCode | undefined;
   /** The error's number, as `1062`. */
   readonly errno: number;
   /** The SQLSTATE, as `"23000"`. */
@@ -84,15 +107,27 @@ export interface MysqlQueryError extends Error {
   readonly cause: unknown;
 }
 
-/** An error SQLite raised. */
-export interface SqliteQueryError extends Error {
+/** The names each field of an error may hold, by the error's name: what a statement that runs no trigger and no stored function writes through. */
+export type MysqlNarrowing = { readonly [C in MysqlCode]?: { readonly key?: string; readonly constraint?: string; readonly table?: string; readonly column?: string } };
+
+/** An error of one of the names `C`, with the names `F` narrows its fields to. */
+type MysqlMember<C extends MysqlCode | undefined, F> = Omit<MysqlErrorFields, keyof F> & {
+  /** The error's name, as `"ER_DUP_ENTRY"`; undefined for a number MySQL does not define. */
+  readonly code: C;
+} & { readonly [K in keyof F]: F[K] | undefined };
+
+/**
+ * An error MySQL raised: its name from MySQL's own list, undefined for a number the list lacks, as
+ * one a `signal` statement sets. Where a statement runs no trigger and no stored function, its
+ * module narrows the type with `N`: for each name `N` lists, the names its fields may hold.
+ */
+export type MysqlQueryError<N extends MysqlNarrowing | undefined = undefined> = [N] extends [MysqlNarrowing]
+  ? { [C in keyof N & MysqlCode]: MysqlMember<C, N[C]> }[keyof N & MysqlCode] | MysqlMember<Exclude<MysqlCode, keyof N> | undefined, {}>
+  : MysqlMember<MysqlCode | undefined, {}>;
+
+/** What an error SQLite raised holds beside its code. */
+interface SqliteErrorFields extends Error {
   readonly name: "QueryError";
-  /**
-   * The result code's name: the extended code, as `"SQLITE_CONSTRAINT_UNIQUE"`, where the driver
-   * gives it; the primary code, as `"SQLITE_CONSTRAINT"`, from sqlite3 and the sqlite package,
-   * which give only that; undefined where the driver gives none, as Turso's engine.
-   */
-  readonly code: SqliteCode | undefined;
   /** The result code's number, as `2067`. */
   readonly errcode: number | undefined;
   /** SQLite's message, as `UNIQUE constraint failed: users.email`. */
@@ -106,6 +141,27 @@ export interface SqliteQueryError extends Error {
   /** The driver's own error. */
   readonly cause: unknown;
 }
+
+/** The names each field of an error may hold, by the result code's name: what a statement that fires no trigger writes through. */
+export type SqliteNarrowing = { readonly [C in SqliteCode]?: { readonly table?: string; readonly columns?: readonly string[]; readonly constraint?: string } };
+
+/** An error of one of the codes `C`, with the names `F` narrows its fields to. */
+type SqliteMember<C extends SqliteCode | undefined, F> = Omit<SqliteErrorFields, keyof F> & {
+  /**
+   * The result code's name: the extended code, as `"SQLITE_CONSTRAINT_UNIQUE"`, where the driver
+   * gives it; the primary code, as `"SQLITE_CONSTRAINT"`, from sqlite3 and the sqlite package,
+   * which give only that; undefined where the driver gives none, as Turso's engine.
+   */
+  readonly code: C;
+} & { readonly [K in keyof F]: F[K] | undefined };
+
+/**
+ * An error SQLite raised. Where a statement fires no trigger, its module narrows the type with
+ * `N`: for each code `N` lists, the names its fields may hold.
+ */
+export type SqliteQueryError<N extends SqliteNarrowing | undefined = undefined> = [N] extends [SqliteNarrowing]
+  ? { [C in keyof N & SqliteCode]: SqliteMember<C, N[C]> }[keyof N & SqliteCode] | SqliteMember<Exclude<SqliteCode, keyof N> | undefined, {}>
+  : SqliteMember<SqliteCode | undefined, {}>;
 
 /** The error a database of the dialect raised. */
 export type QueryError<D extends Dialect = Dialect> = D extends "postgres" ? PostgresQueryError : D extends "mysql" ? MysqlQueryError : SqliteQueryError;

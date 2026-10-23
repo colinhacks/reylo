@@ -35,6 +35,15 @@ pub struct Analysis {
     pub write_set: Vec<String>,
     /// Function names called anywhere in the statement.
     pub functions: Vec<String>,
+    /// Operator names written anywhere in the statement (`=`, `~~` for LIKE, an `ANY`'s and an
+    /// `IN`'s operator); the comparisons a statement makes without writing them (a `CASE x WHEN`,
+    /// a `USING`, a `BETWEEN`) are not among them.
+    pub operators: Vec<String>,
+    /// The names of the types the statement casts to or declares (`::int`, `AS t(a text)`).
+    pub types: Vec<String>,
+    /// Whether a row the statement writes may change a key another table's foreign key refers
+    /// to: an UPDATE, a DELETE, a MERGE, or an INSERT whose ON CONFLICT updates.
+    pub changes_keys: bool,
     /// Each parameter that is the whole value written to a column, bare or under a cast: an
     /// INSERT's VALUES item, an UPDATE's or an ON CONFLICT's SET. (parameter number, relation, column)
     pub filled: Vec<(i32, String, Filled)>,
@@ -143,6 +152,10 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
     // How many times the statement reads each relation name, anywhere in it.
     let mut occurrences: HashMap<String, usize> = HashMap::new();
     let mut functions: Vec<String> = Vec::new();
+    let mut operators: Vec<String> = Vec::new();
+    let mut types: Vec<String> = Vec::new();
+    // An UPDATE, a DELETE or a MERGE anywhere, a WITH query's included, or an ON CONFLICT that updates.
+    let mut changes_keys = false;
     let mut filled: Vec<(i32, String, Filled)> = Vec::new();
     let mut bare: Vec<(i32, String, Filled)> = Vec::new();
     let mut selected: Vec<(i32, String, Filled)> = Vec::new();
@@ -171,6 +184,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         // a statement returns are still the outer SELECT's, which is what `statement` is for.
         "InsertStmt" | "UpdateStmt" | "DeleteStmt" | "MergeStmt" => {
             kind = StatementKind::Mutation;
+            changes_keys |= key != "InsertStmt";
             if node.get("returning_clause").and_then(|c| c.get("exprs")).and_then(|l| l.as_array()).is_some_and(|l| !l.is_empty()) {
                 has_returning = true;
             }
@@ -279,6 +293,23 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
             if let Some(name) = name {
                 if !functions.iter().any(|f| f == name) {
                     functions.push(name.to_string());
+                }
+            }
+        }
+        "AExpr" | "SubLink" => {
+            if let Some(name) = last_sval(node.get(if key == "AExpr" { "name" } else { "oper_name" })) {
+                if !operators.iter().any(|o| o == name) {
+                    operators.push(name.to_string());
+                }
+            }
+        }
+        "on_conflict_clause" => {
+            changes_keys |= node.get("action").and_then(Value::as_i64) == Some(protobuf::OnConflictAction::OnconflictUpdate as i64);
+        }
+        "type_name" => {
+            if let Some(name) = last_sval(node.get("names")) {
+                if !types.iter().any(|t| t == name) {
+                    types.push(name.to_string());
                 }
             }
         }
@@ -392,6 +423,9 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         read_set,
         write_set,
         functions,
+        operators,
+        types,
+        changes_keys,
         filled,
         bare,
         selected,
@@ -563,6 +597,11 @@ fn relnames_in(v: &Value) -> Vec<String> {
 }
 
 /// Generic walk: calls `f(key, value)` for every object entry, recursing into everything.
+/// The last name of a list of `String` nodes: a function's, an operator's or a type's, without its schema.
+fn last_sval(list: Option<&Value>) -> Option<&str> {
+    list?.as_array()?.last()?.get("node")?.get("String")?.get("sval")?.as_str()
+}
+
 fn visit(v: &Value, f: &mut dyn FnMut(&str, &Value)) {
     match v {
         Value::Object(map) => {
@@ -781,5 +820,27 @@ mod tests {
         assert!(a.functions.contains(&"count".to_string()));
         assert!(a.functions.contains(&"lower".to_string()));
         assert!(a.functions.contains(&"abs".to_string()));
+    }
+
+    #[test]
+    fn operators_and_types_collected_everywhere() {
+        let a = analyze("SELECT x::numeric, y FROM t, jsonb_to_recordset($2) AS r(y citext) WHERE a = ANY($1::int[]) AND b LIKE 'x%' AND c IN (SELECT d FROM u) AND e @> '{}'::jsonb").unwrap();
+        for o in ["=", "~~", "@>"] {
+            assert!(a.operators.contains(&o.to_string()), "{o}: {:?}", a.operators);
+        }
+        for t in ["numeric", "int4", "jsonb", "citext"] {
+            assert!(a.types.contains(&t.to_string()), "{t}: {:?}", a.types);
+        }
+        assert!(!a.changes_keys);
+        for (sql, changes) in [
+            ("INSERT INTO t (a) VALUES (1)", false),
+            ("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO NOTHING", false),
+            ("INSERT INTO t (a) VALUES (1) ON CONFLICT (a) DO UPDATE SET a = 2", true),
+            ("UPDATE t SET a = 1", true),
+            ("DELETE FROM t", true),
+            ("WITH d AS (DELETE FROM t RETURNING a) SELECT a FROM d", true),
+        ] {
+            assert_eq!(analyze(sql).unwrap().changes_keys, changes, "{sql}");
+        }
     }
 }

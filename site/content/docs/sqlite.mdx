@@ -634,6 +634,8 @@ With [`.try()`](/#try), an error SQLite raised comes back as `{ error }`, with t
 
 Most drivers give the extended code, such as `SQLITE_CONSTRAINT_UNIQUE`. The `sqlite3` driver and the `sqlite` package give only the primary one, `SQLITE_CONSTRAINT`, and Turso's engine gives none from 0.8 on, so its `code` is `undefined` and only `message` names the failure. SQLite doesn't name the foreign key a row fails.
 
+When the query fires no trigger, its error type is narrowed: a unique, not-null or `STRICT` type violation names only the tables and columns it writes, and the indexes of their expressions. A `CHECK` isn't narrowed, since SQLite's catalog doesn't name it.
+
 ## Drivers
 
 Reylo decodes its query results itself, so settings on your database connection don't affect Reylo's queries, and Reylo's don't affect yours. Type checking needs no driver: it reads your schema with `node:sqlite`, built into Node since 22.5.

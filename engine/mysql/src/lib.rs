@@ -7,6 +7,7 @@
 //! besides the oracle.
 
 pub mod api;
+pub mod errors;
 pub mod host;
 pub mod mysql;
 pub mod mysql_collation;

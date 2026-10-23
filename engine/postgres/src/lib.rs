@@ -12,6 +12,7 @@
 pub mod analyze;
 pub mod api;
 pub mod cardinality;
+pub mod errors;
 pub mod extension;
 pub mod host;
 pub mod infer;

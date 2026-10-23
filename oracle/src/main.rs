@@ -41,7 +41,13 @@
 //! Each statement goes through the engine's replay exactly as a host runs it: the describe comes
 //! from the extended protocol (on MySQL a server-side prepare) and every catalog query runs on
 //! the case's database. A catalog query that fails is a failure of the case, never an empty answer.
+//!
+//! Where an analysis narrows the errors its statement may raise (it runs only its database's own
+//! code), every error a run raises must be one its database defines, naming only what the
+//! narrowing lists. A case's `errors.txt`, where it has one, holds each statement's narrowing, and
+//! is compared and blessed like `expected.txt`.
 
+mod errors;
 mod mysql;
 mod seed;
 
@@ -158,9 +164,11 @@ async fn main() -> ExitCode {
                     unnamed += unchecked.len();
                 }
                 print_unchecked(case, lines.len(), &unchecked);
-                // Both verdicts are printed, whichever fails the case.
+                // Every verdict is printed, whichever fails the case.
                 let matched = check(case, &lines, bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched {
+                let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+                let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
+                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed {
                     failed += 1;
                 }
             }

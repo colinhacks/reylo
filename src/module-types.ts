@@ -18,7 +18,23 @@ export type ModuleTypes = {
   cardinality: Analysis["cardinality"];
   /** The parameters' names in order of first use: the module's `params` at run time. */
   names: string[];
+  /** The type of the error `.try()` gives: the module's `QueryError`. */
+  queryError: string;
 };
+
+/**
+ * The type of the error `.try()` gives for a statement: where it runs only its database's own
+ * code, narrowed to the names each code's fields may hold (engine/core/src/errors.rs), a SQLite
+ * unique key's columns written as SQLite's message lists them, `a, b`; the dialect's whole error
+ * type otherwise.
+ */
+export function queryErrorType(dialect: Dialect, errors: Analysis["errors"]): string {
+  if (!errors) return `import("reylo").QueryError<${JSON.stringify(dialect)}>`;
+  const name = { postgres: "PostgresQueryError", mysql: "MysqlQueryError", sqlite: "SqliteQueryError" }[dialect];
+  const names = (field: string, list: string[]) => list.map((n) => (field === "columns" ? `readonly [${n.split(", ").map((c) => JSON.stringify(c)).join(", ")}]` : JSON.stringify(n))).join(" | ");
+  const codes = Object.entries(errors).map(([code, fields]) => `  ${JSON.stringify(code)}: { ${Object.entries(fields).map(([field, list]) => `${field}: ${names(field, list)}`).join("; ")} };`);
+  return codes.length ? `import("reylo").${name}<{\n${codes.join("\n")}\n}>` : `import("reylo").${name}<{}>`;
+}
 
 /** A parameter's TypeScript type: `unknown` when nothing in the statement types it (a CAST does), with `| null` where the statement lets the caller pass null. */
 function paramType(q: Analysis["params"][number], rendered: string): string {
@@ -97,7 +113,7 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
     }
   }
   const cardinality = analysis.cardinality;
-  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names };
+  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
   const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
@@ -112,5 +128,6 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
     row: columns.length ? objectType(columns) : "never",
     cardinality,
     names,
+    queryError: queryErrorType(dialect, analysis.errors),
   };
 }

@@ -577,6 +577,7 @@ impl<'a> Engine<'a> {
             unresolved,
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         };
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
@@ -634,6 +635,7 @@ impl<'a> Engine<'a> {
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         })
     }

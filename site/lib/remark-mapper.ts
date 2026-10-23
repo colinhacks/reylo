@@ -471,7 +471,7 @@ const TYPE_WIDTH = { side: 30, rows: 64 } as const;
 export function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
   const params = /^export type Params = (.*);$/m.exec(module)?.[1];
   const row = /^export type Row = (.*);$/m.exec(module)?.[1];
-  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)"> & \{/.exec(module)?.[1];
+  const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)", QueryError> & \{/.exec(module)?.[1];
   if (params === undefined || row === undefined || cardinality === undefined) throw new Error(`a module lib/remark-mapper.ts cannot read:\n${module}`);
   return { params: params === 'Record<never, never>' ? undefined : params, row, cardinality };
 }

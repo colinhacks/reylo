@@ -1,0 +1,6 @@
+delete_user.sql: none (id: integer) -> {  }
+insert_audited.sql: none (id: integer) -> {  }
+insert_pair.sql: none (x: integer, y: integer) -> {  }
+insert_post.sql: none (id: integer, user_id: integer, slug: text?, lang: text?) -> {  }
+insert_user.sql: none (id: integer, email: text, age: integer?) -> {  }
+select_users.sql: many () -> { id: integer, email: text }

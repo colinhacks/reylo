@@ -570,6 +570,12 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             } else {
                                 tally.fail(message(&e));
                             }
+                            if let Some(db) = e.as_db_error() {
+                                let fields = [("constraint", db.constraint()), ("table", db.table()), ("column", db.column()), ("dataType", db.datatype()), ("schema", db.schema())];
+                                if let Some(why) = crate::errors::contradiction(&analysis["errors"], db.code().code(), &fields) {
+                                    problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                }
+                            }
                             // A NULL the engine let a parameter take, which the database refuses
                             // with a NOT NULL or a CHECK violation, is a parameter typed nullable
                             // that may not be null. The NULLs are to blame where the same run with
@@ -1044,6 +1050,12 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                 tally.timed_out += 1;
                             } else {
                                 tally.fail(e.to_string());
+                            }
+                            if let rusqlite::Error::SqliteFailure(failure, message) = &e {
+                                let message = message.clone().unwrap_or_default();
+                                if let Some(why) = crate::errors::sqlite_contradiction(&analysis["errors"], failure.extended_code, &message) {
+                                    problems.push(format!("{file}: {why} with ({shown})"));
+                                }
                             }
                             if cardinality != "many" && returned > 1 {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows before it failed with ({shown})"));

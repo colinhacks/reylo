@@ -31,6 +31,12 @@ impl Database for Sqlite {
             crate::structured::analyze(sql, Dialect::Sqlite, host, &inner, &|diagnostics| crate::analysis::bare_of(sql, Dialect::Sqlite, diagnostics))
         })
     }
+
+    /// The unique keys, NOT NULL columns and STRICT tables the statement's constraint errors may
+    /// name, where it fires no trigger.
+    fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::errors::Errors>> {
+        crate::errors::errors(analysis, host)
+    }
 }
 
 #[cfg(test)]
