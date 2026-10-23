@@ -16,7 +16,15 @@ create operator || (leftarg = anyelement, rightarg = anyelement, function = conc
 -- A `lower` of an int, which no built-in takes.
 create function lower(int4) returns text language sql immutable as $$ select null::text $$;
 -- An implicit cast between two built-in types by a function, which a built-in operator over the
--- one may run to reach the other.
+-- one may run to reach the other, and a cast to the other runs.
 create function bool_to_int8(bool) returns int8 language sql immutable as $$ select null::int8 $$;
 create cast (bool as int8) with function bool_to_int8(bool) as implicit;
 create table posts (id bigint primary key, author_id bigint, title text not null);
+-- A cast function of a user's to text, as PostGIS has one from geometry: a CHECK's strings still
+-- compare with the built-in `=` of two texts, and a cast of any built-in type to text is a
+-- built-in one.
+create type pair as (a int, b int);
+create function pair_text(pair) returns text language sql immutable as $$ select null::text $$;
+create cast (pair as text) with function pair_text(pair);
+create table accounts (id int primary key, status text not null check (status in ('active', 'banned')));
+insert into accounts values (1, 'active'), (2, 'banned');

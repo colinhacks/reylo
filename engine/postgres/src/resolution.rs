@@ -43,6 +43,8 @@ pub enum Kind {
     Infix,
     Prefix,
     Function,
+    /// A cast to the built-in type of the name.
+    Cast,
 }
 
 /// An operand's type, as the server's resolution reads it.
@@ -106,6 +108,9 @@ pub struct Overloads {
     typed: HashSet<String>,
     /// Per name and kind, the bits of every user's overload of it, or-ed.
     flags: HashMap<(Kind, String), u32>,
+    /// Per built-in type name a user's cast function targets, the type's oid and the built-in
+    /// types a cast to it from may call such a function.
+    casts: HashMap<String, (u32, HashSet<u32>)>,
 }
 
 impl Overloads {
@@ -144,6 +149,11 @@ impl Overloads {
                     out.builtin.entry((kind, name.to_string())).or_default().push(Builtin { args, defaults: b.unwrap_or(0) as usize, result });
                 }
                 _ => match tag {
+                    "cast from" => {
+                        if let (Some(name), Some(target), Some(sources)) = (name, a, oids(row.get(2))) {
+                            out.casts.insert(name.to_string(), (target, sources.into_iter().collect()));
+                        }
+                    }
                     "reach" => {
                         if let (Some(target), Some(sources)) = (a, oids(row.get(2))) {
                             out.reach.entry(target).or_default().extend(sources);
@@ -196,6 +206,17 @@ impl Overloads {
     }
 
     fn resolve_one(&self, kind: Kind, name: &str, operands: &[Operand]) -> Option<Option<u32>> {
+        // A cast of an untyped value reads it with the type's input function; of a value of a
+        // built-in type, it runs the cast between the two, which is a user's only from the
+        // sources of their casts to the type (`find_coercion_pathway`, by base types).
+        if kind == Kind::Cast {
+            let (target, sources) = self.casts.get(name)?;
+            return match operands {
+                [Operand::Unknown] => Some(Some(*target)),
+                [Operand::Is(t)] if *t < FIRST_USER_OID && !RECORD_TYPES.contains(t) && !sources.contains(t) => Some(Some(*target)),
+                _ => None,
+            };
+        }
         if operands.iter().any(|o| match o {
             Operand::Opaque | Operand::Param(_) => true,
             Operand::Is(t) => *t >= FIRST_USER_OID || RECORD_TYPES.contains(t),
@@ -216,6 +237,7 @@ impl Overloads {
                 Operand::Is(t) => Some(*t),
                 _ => None,
             }).collect(),
+            (Kind::Cast, _) => return None,
         };
         if let Some(exact) = &exact {
             // A user's overload of exactly those types may come first on the search path, and
@@ -466,6 +488,22 @@ mod tests {
         let (c, _) = catalog(vec![vec![json!("opaque b"), json!("+"), Value::Null, json!(2), json!(0)], vec![json!("implicit"), Value::Null, Value::Null, json!(oid::TEXT), Value::Null], builtin("b", "+", &[oid::INT4, oid::INT4], oid::INT4)]);
         assert_eq!(c.resolve(Kind::Infix, "+", &[Operand::Is(oid::TEXT), Operand::Is(oid::INT4)]), None);
         assert_eq!(c.resolve(Kind::Infix, "+", &[Operand::Is(oid::INT4), Operand::Is(oid::INT4)]), Some(Some(oid::INT4)));
+    }
+
+    #[test]
+    fn a_cast_to_a_type_a_user_casts_to_is_theirs_only_from_their_source() {
+        // PostGIS's cast of a `geometry` to `text`.
+        let (c, _) = catalog(vec![vec![json!("cast from"), json!("text"), json!([]), json!(oid::TEXT), Value::Null], vec![json!("cast from"), json!("int8"), json!([oid::BOOL]), json!(oid::INT8), Value::Null]]);
+        assert_eq!(c.resolve(Kind::Cast, "text", &[Operand::Is(oid::INT4)]), Some(Some(oid::TEXT)));
+        assert_eq!(c.resolve(Kind::Cast, "text", &[Operand::Unknown]), Some(Some(oid::TEXT)));
+        assert_eq!(c.resolve(Kind::Cast, "text", &[Operand::Is(GEOMETRY)]), None);
+        assert_eq!(c.resolve(Kind::Cast, "text", &[Operand::Opaque]), None);
+        // A user's own cast of a `bool` to `int8`.
+        assert_eq!(c.resolve(Kind::Cast, "int8", &[Operand::Is(oid::BOOL)]), None);
+        assert_eq!(c.resolve(Kind::Cast, "int8", &[Operand::Param(Some(oid::BOOL))]), None);
+        assert_eq!(c.resolve(Kind::Cast, "int8", &[Operand::Param(Some(oid::INT4))]), Some(Some(oid::INT8)));
+        // A name no row reports: a user's type of the name, or a host that did not ask.
+        assert_eq!(c.resolve(Kind::Cast, "uuid", &[Operand::Is(oid::TEXT)]), None);
     }
 
     #[test]

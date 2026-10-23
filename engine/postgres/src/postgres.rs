@@ -156,6 +156,9 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 /// - `type`: a function name a user's type also has.
 /// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
 ///   type has its name and no user's cast function targets it.
+/// - `cast from`: a built-in type no user's type has the name of, but a user's cast function
+///   targets, with its oid and the built-in types that function's source is the base type of: a
+///   cast to it from any other built-in type is a built-in one.
 /// - `raise`, from a server before 18, whose cast of a JSON null to a number or a boolean raises
 ///   an error where 18 answers NULL ([`JSONB_CASTS_RAISE`]).
 pub const TRUST_QUERY: &str = "WITH RECURSIVE \
@@ -211,6 +214,11 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'cast', t.typname::text, NULL, NULL, NULL FROM pg_catalog.pg_type t WHERE t.oid < 16384 AND t.typnamespace = 'pg_catalog'::pg_catalog.regnamespace \
       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid >= 16384 AND u.typname = t.typname) \
       AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid >= 16384 AND c.casttarget = t.oid AND c.castmethod = 'f') \
+    UNION ALL SELECT 'cast from', t.typname::text, coalesce(pg_catalog.array_agg(DISTINCT s.s::int8) FILTER (WHERE s.s IS NOT NULL), '{}'), t.oid::int8, NULL \
+      FROM pg_catalog.pg_type t JOIN pg_catalog.pg_cast c ON c.oid >= 16384 AND c.casttarget = t.oid AND c.castmethod = 'f' LEFT JOIN sources s ON s.b = c.castsource \
+      WHERE t.oid < 16384 AND t.typnamespace = 'pg_catalog'::pg_catalog.regnamespace \
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid >= 16384 AND u.typname = t.typname) \
+      GROUP BY t.typname, t.oid \
     UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL WHERE pg_catalog.current_setting('server_version_num')::int4 < 180000";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
@@ -1060,7 +1068,7 @@ impl<'a> Engine<'a> {
     /// the relations it reads, which is where the describe traces its columns. The column types a
     /// test's resolution reads are asked only where a test rests on a name a user also defined.
     fn unreduced(&self, parsed: &Parsed, trust: &Trust) -> Lazy<Vec<String>> {
-        let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.checked(&c.name));
+        let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.call_checked(c));
         let columns = if typed {
             let relations = relations_of(Some(parsed));
             if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement)?.unwrap_or_default() }
@@ -2381,11 +2389,12 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
             _ => node,
         }
     }
-    // The type a printed operand has: its outermost cast's, where it has one.
+    // The type a printed operand has: its outermost cast's, where it has one. The server prints a
+    // type's name bare only where the name reads as that type, schema-qualified elsewhere.
     let cast_type = |node: &pg_query::protobuf::Node| match node.node.as_ref() {
         Some(N::TypeCast(t)) => match t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).as_deref() {
-            Some("text") if trust.holds("::text") => Some(Operand::Is(crate::pgtypes::oid::TEXT)),
-            Some("varchar") if trust.holds("::varchar") => Some(Operand::Is(crate::pgtypes::oid::VARCHAR)),
+            Some("text") => Some(Operand::Is(crate::pgtypes::oid::TEXT)),
+            Some("varchar") => Some(Operand::Is(crate::pgtypes::oid::VARCHAR)),
             _ => Some(Operand::Opaque),
         },
         _ => None,
@@ -2495,9 +2504,6 @@ pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
 /// test that rests on one does not prove the joined row exists.
 fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Value>], trust: &Trust) -> bool {
     use crate::resolution::Operand;
-    if !witness.names.iter().filter(|n| n.starts_with("::")).all(|n| trust.holds(n)) {
-        return false;
-    }
     // A domain's column, or one the catalog does not report, is of no type the build vouches for.
     let read = || -> Option<Operand> {
         let name = witness.column.last()?;
@@ -2508,7 +2514,7 @@ fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Valu
         Some(if base == declared { Operand::Is(base) } else { Operand::Opaque })
     };
     let column = || read().unwrap_or(Operand::Opaque);
-    witness.calls.iter().all(|call| {
+    witness.calls.iter().filter(|call| trust.call_checked(call)).all(|call| {
         let operands: Vec<Operand> = call
             .args
             .iter()

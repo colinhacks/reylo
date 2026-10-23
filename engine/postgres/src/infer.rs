@@ -495,6 +495,15 @@ impl Trust {
         !self.builtin(name) || self.overloads.as_ref().is_some_and(|o| o.0.casts_implicitly())
     }
 
+    /// Whether a call a strict claim rests on is the built-in only for some operands' types: a
+    /// cast to a type a user's cast function may target, or an operator or a function [`Trust::checked`].
+    pub(crate) fn call_checked(&self, call: &StrictCall) -> bool {
+        match call.kind {
+            Kind::Cast => !self.cast(&call.name),
+            _ => self.checked(&call.name),
+        }
+    }
+
     /// A parameter as an operand: untyped where the statement first reads it, of its type after.
     pub fn param(&self, number: i32) -> Operand {
         Operand::Param(usize::try_from(number).ok().and_then(|n| self.param_types.get(n.checked_sub(1)?)).copied().filter(|t| *t != 0))
@@ -1168,6 +1177,12 @@ impl Reader<'_> {
                     Dialect::Postgres if self.trust.cast(&name) => {
                         let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { Expr::NotJsonb(Box::new(operand)) } else { operand };
                         Expr::Every(vec![operand], POSTGRES_CASTS.iter().find(|(n, _)| *n == name).map_or(Ty::Unknown, |(_, o)| Ty::Is(*o)))
+                    }
+                    // A type a user's cast function targets: the cast is a built-in one where the
+                    // operand's type is none of that function's sources.
+                    Dialect::Postgres => {
+                        let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { Expr::NotJsonb(Box::new(operand)) } else { operand };
+                        self.shadowed_call(Kind::Cast, &name, &[arg], vec![operand], Claim::Every(None, Ty::Unknown))
                     }
                     Dialect::Sqlite | Dialect::Mysql if SQLITE_TOTAL_CASTS.contains(&name.as_str()) => {
                         let ty = SQLITE_CASTS.iter().find(|(n, _)| *n == name).map_or(Ty::Unknown, |(_, o)| Ty::Is(*o));
@@ -1987,18 +2002,15 @@ impl Reader<'_> {
     fn narrowings(&mut self, node: &Node) -> Vec<Narrowing> {
         let mut out: Vec<Narrowing> = Vec::new();
         for strict in strict_in(node) {
-            if !strict.names.iter().filter_map(|n| n.strip_prefix("::")).all(|target| self.trust.cast(target)) {
-                continue;
-            }
             if out.iter().any(|n| n.column == strict.column && n.checks.is_empty()) {
                 continue;
             }
             let mut checks = Vec::new();
-            if strict.calls.iter().any(|c| !self.trust.builtin(&c.name)) && self.trust.overloads.is_none() {
+            if strict.calls.iter().any(|c| self.trust.call_checked(c)) && (self.dialect != Dialect::Postgres || self.trust.overloads.is_none()) {
                 continue;
             }
             for call in &strict.calls {
-                if self.dialect != Dialect::Postgres || !self.trust.checked(&call.name) {
+                if !self.trust.call_checked(call) {
                     continue;
                 }
                 let args = call.args.iter().map(|a| self.operand(a)).collect();
@@ -2089,8 +2101,8 @@ pub(crate) fn postgres_number(text: &str) -> Option<u32> {
 pub(crate) struct Strict {
     pub column: Vec<String>,
     pub names: Vec<String>,
-    /// Every operator and function call among `names`, with its operands; a cast is in `names`
-    /// alone, as `::type`.
+    /// Every operator, function and cast among `names`, with its operands; a cast is in `names`
+    /// as `::type`, and here by the type's name.
     pub calls: Vec<StrictCall>,
 }
 
@@ -2224,15 +2236,16 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
         }
         Some(NodeEnum::TypeCast(t)) => {
             let target = t.type_name.as_ref().filter(|n| n.array_bounds.is_empty() && !n.setof && !n.pct_type).and_then(|n| builtin_name(&n.names));
-            match target.filter(|n| POSTGRES_CASTS.iter().any(|(c, _)| c == n)) {
-                Some(target) => {
-                    let mut found = t.arg.as_deref().map(nulls_with).unwrap_or_default();
-                    for f in &mut found {
+            match (target.filter(|n| POSTGRES_CASTS.iter().any(|(c, _)| c == n)), t.arg.as_deref()) {
+                (Some(target), Some(arg)) => nulls_with(arg)
+                    .into_iter()
+                    .map(|mut f| {
                         f.names.push(format!("::{target}"));
-                    }
-                    found
-                }
-                None => Vec::new(),
+                        f.calls.push(StrictCall { kind: Kind::Cast, name: target.clone(), args: vec![arg.clone()] });
+                        f
+                    })
+                    .collect(),
+                _ => Vec::new(),
             }
         }
         _ => Vec::new(),
@@ -2954,6 +2967,23 @@ mod tests {
         // A trust that says nothing of the overloads proves nothing, as before.
         let bare = Trust { shadowed: trust.shadowed.clone(), ..Trust::default() };
         assert_eq!(plan("SELECT a + 1 FROM t", Dialect::Postgres, &bare).head[0], Some(Expr::Unknown));
+    }
+
+    #[test]
+    fn a_cast_to_a_type_a_user_casts_to_keeps_nullability_from_any_other_source() {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        // PostGIS's cast of a `geometry` to `text`, which takes `text` off the trusted targets.
+        let rows = vec![vec![json!("cast from"), json!("text"), json!([]), json!(oid::TEXT), Value::Null]];
+        let mut trust = Trust { cast_targets: Some(HashSet::new()), non_null_params: true, param_types: vec![oid::INT4], ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        let fact = |sql: &str, leaves: &[DescribedColumn]| resolve(plan(sql, Dialect::Postgres, &trust).head[0].as_ref().expect("a claim"), Some(leaves));
+        assert_eq!(fact("SELECT a::text FROM t", &[col(false, oid::INT4)]), Fact { non_null: true, type_oid: Some(oid::TEXT) });
+        assert!(fact("SELECT 'x'::text", &[]).non_null);
+        assert!(fact("SELECT $1::text", &[]).non_null);
+        assert!(!fact("SELECT a::text FROM t", &[col(false, GEOMETRY)]).non_null);
+        // A target no row names stays distrusted.
+        assert!(!fact("SELECT a::int8 FROM t", &[col(false, oid::INT4)]).non_null);
     }
 
     #[test]
