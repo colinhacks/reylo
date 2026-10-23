@@ -4,14 +4,16 @@
 //! `utf8mb4_unicode_ci` and MySQL 8 makes its databases `utf8mb4_0900_ai_ci`, so such a column
 //! compared with a table's text column fails as both are set up out of the box.
 //!
-//! The compiled statement gives each such column the database's character set and collation in
-//! its definition, as the expansion of a `rows(…)` parameter gives its own JSON_TABLE's
-//! (`structured.rs`). The column keeps a column's coercibility, so it compares with a table's
-//! column of the database's collation, and a column of any other still refuses it, as it did:
-//! nothing that ran before compares otherwise. A type that names its own character set or
-//! collation says what it wants and is left as written, and so is a JSON_TABLE the expansion
-//! wrote, whose names start with `reylo.`. MariaDB compares its JSON_TABLE's text with any column
-//! already, and is left alone.
+//! The compiled statement gives each such column the database's collation in its definition, as
+//! the expansion of a `rows(…)` parameter gives its own JSON_TABLE's (`structured.rs`), where the
+//! database's character set is `utf8mb4`, JSON's own: a column of another character set would
+//! convert the JSON's text into it, so there the column is left as written. The column keeps a
+//! column's coercibility, so it compares with a table's column of the database's collation, and a
+//! column of another collation decides as MySQL lets it, as before (a `_bin` one wins; one of the
+//! connection's collation is refused). A type that names its own character set or collation says
+//! what it wants and is left as written, and so is a JSON_TABLE the expansion wrote, whose names
+//! start with `reylo.`. MariaDB compares its JSON_TABLE's text with any column already, and is
+//! left alone.
 //!
 //! A CAST or a CONVERT to CHAR takes the connection's collation too, but no expression can be
 //! given a collation without overriding a column's in a comparison, which would change what an
@@ -175,14 +177,14 @@ fn columns(t: &[Token], sql: &str, k: usize, out: &mut Vec<usize>) {
     }
 }
 
-/// `rewritten` with ` CHARACTER SET <charset> COLLATE <collation>` written at each site: its
-/// placeholders keep their places, and each text it adds is listed in `inserted`. `sites` are
-/// offsets of the text `rewritten` was made from.
-pub fn written(rewritten: Rewritten, sites: &[usize], charset: &str, collation: &str) -> Rewritten {
+/// `rewritten` with ` COLLATE <collation>` written at each site, which gives the column the
+/// collation's character set too: its placeholders keep their places, and each text it adds is
+/// listed in `inserted`. `sites` are offsets of the text `rewritten` was made from.
+pub fn written(rewritten: Rewritten, sites: &[usize], collation: &str) -> Rewritten {
     if sites.is_empty() {
         return rewritten;
     }
-    let clause = format!(" CHARACTER SET {charset} COLLATE {collation}");
+    let clause = format!(" COLLATE {collation}");
     // The rewritten offset of an original one: every placeholder before it changed its length.
     let at = |p: usize| {
         let delta: isize = rewritten.spans.iter().filter(|&&(_, oe, _, _)| oe <= p).map(|&(os, oe, rs, re)| (re - rs) as isize - (oe - os) as isize).sum();
@@ -219,19 +221,19 @@ mod tests {
 
     fn compiled(sql: &str) -> String {
         let lexed = lex::lex(sql, Dialect::Mysql).unwrap();
-        written(lex::rewrite(sql, &lexed, Target::Question), &sites(sql, &lexed.opaque), "utf8mb4", "utf8mb4_0900_ai_ci").sql
+        written(lex::rewrite(sql, &lexed, Target::Question), &sites(sql, &lexed.opaque), "utf8mb4_0900_ai_ci").sql
     }
 
     #[test]
-    fn a_json_table_text_column_takes_the_databases_character_set_and_collation() {
+    fn a_json_table_text_column_takes_the_databases_collation() {
         assert_eq!(
             compiled("select u.id from users u join json_table(:names, '$[*]' columns (n varchar(40) path '$', k int path '$.k', t text exists path '$.t')) j on u.name = j.n"),
-            "select u.id from users u join json_table(?, '$[*]' columns (n varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci path '$', k int path '$.k', t text CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci exists path '$.t')) j on u.name = j.n"
+            "select u.id from users u join json_table(?, '$[*]' columns (n varchar(40) COLLATE utf8mb4_0900_ai_ci path '$', k int path '$.k', t text COLLATE utf8mb4_0900_ai_ci exists path '$.t')) j on u.name = j.n"
         );
         // A NESTED path's columns too; an ordinality column, and a number, take nothing.
         assert_eq!(
             compiled("select * from json_table(:d, '$' columns (id for ordinality, nested path '$.tags[*]' columns (tag char(10) path '$'))) t"),
-            "select * from json_table(?, '$' columns (id for ordinality, nested path '$.tags[*]' columns (tag char(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci path '$'))) t"
+            "select * from json_table(?, '$' columns (id for ordinality, nested path '$.tags[*]' columns (tag char(10) COLLATE utf8mb4_0900_ai_ci path '$'))) t"
         );
     }
 
@@ -255,18 +257,35 @@ mod tests {
     fn the_placeholders_and_the_added_text_map_back_to_the_authors_text() {
         let sql = "select j.n from json_table(:doc, '$' columns (n text path '$.n')) j where j.n <> :n";
         let lexed = lex::lex(sql, Dialect::Mysql).unwrap();
-        let r = written(lex::rewrite(sql, &lexed, Target::Question), &sites(sql, &lexed.opaque), "utf8mb4", "utf8mb4_0900_ai_ci");
+        let r = written(lex::rewrite(sql, &lexed, Target::Question), &sites(sql, &lexed.opaque), "utf8mb4_0900_ai_ci");
         for &(os, oe, rs, re) in &r.spans {
             assert_eq!(&r.sql[rs..re], "?");
             assert!(sql[os..oe].starts_with(':'));
         }
         assert_eq!(r.inserted.len(), 1);
         let (at, start, end) = r.inserted[0];
-        assert_eq!(&r.sql[start..end], " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        assert_eq!(&r.sql[start..end], " COLLATE utf8mb4_0900_ai_ci");
         assert_eq!(&sql[at..at + 7], " path '");
         // An offset inside the added text is the place it was added at; one after it is where it
         // was in the author's text.
         assert_eq!(r.to_original(start + 4), at);
         assert_eq!(r.to_original(r.sql.find("<> ?").unwrap()), sql.find("<> :n").unwrap());
+    }
+
+    #[test]
+    fn the_engines_parser_reads_a_json_table_columns_character_set_and_collation_and_prints_them() {
+        use sqlparser::dialect::MySqlDialect;
+        use sqlparser::parser::Parser;
+        // The written statement, and one that names a character set too, keep their tree, which
+        // the row count, the JSON shapes and the probes are read from.
+        for sql in [
+            compiled("select j.n from json_table(:d, '$[*]' columns (n text path '$')) j"),
+            "select j.n from json_table(?, '$[*]' columns (n varchar(40) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin EXISTS PATH '$')) AS j".to_string(),
+        ] {
+            let parsed = Parser::parse_sql(&MySqlDialect {}, &sql).unwrap_or_else(|e| panic!("{sql}: {e}"));
+            let printed = parsed[0].to_string();
+            assert!(printed.contains("COLLATE utf8mb4_"), "{printed}");
+            assert_eq!(Parser::parse_sql(&MySqlDialect {}, &printed).unwrap()[0].to_string(), printed);
+        }
     }
 }

@@ -14029,6 +14029,13 @@ impl<'a> Parser<'a> {
             return Ok(JsonTableColumn::ForOrdinality(name));
         }
         let r#type = self.parse_data_type()?;
+        // MySQL takes a character set and a collation after the type, as a table's column does.
+        let character_set = if self.parse_keywords(&[Keyword::CHARACTER, Keyword::SET]) || self.parse_keyword(Keyword::CHARSET) {
+            Some(self.parse_object_name(false)?)
+        } else {
+            None
+        };
+        let collation = if self.parse_keyword(Keyword::COLLATE) { Some(self.parse_object_name(false)?) } else { None };
         let exists = self.parse_keyword(Keyword::EXISTS);
         self.expect_keyword_is(Keyword::PATH)?;
         let path = self.parse_value()?;
@@ -14045,6 +14052,8 @@ impl<'a> Parser<'a> {
         Ok(JsonTableColumn::Named(JsonTableNamedColumn {
             name,
             r#type,
+            character_set,
+            collation,
             path,
             exists,
             on_empty,

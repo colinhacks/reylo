@@ -26,3 +26,4 @@ Measured against MySQL 8.4 itself: every statement of the kinds the engine reads
 - A statement's `INTO` may follow the rest of it, before or after its locking clause, and is held on its SELECT; a subquery takes none. `LOCK IN SHARE MODE` is `FOR SHARE`, and `FOR SHARE OF t1, t2` keeps every table (`LockClause::of` is a list).
 - A string literal prints its value as MySQL reads it back: the quote doubled, and a backslash and NUL escaped where the session reads backslash escapes (`set_backslash_escapes`, which the engine sets for the session it reads). A hexadecimal literal with an odd number of digits prints with a leading zero, `0x5ff` as `X'05ff'`.
 - A stray `END` after a statement is an error, not the end of its text.
+- A `JSON_TABLE` column takes `CHARACTER SET cs` (or `CHARSET cs`) and `COLLATE c` after its type, as MySQL does, and keeps them (`JsonTableNamedColumn::character_set` and `collation`) to print them back.

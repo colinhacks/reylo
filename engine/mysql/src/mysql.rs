@@ -263,7 +263,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
             Err(_) => crate::structured::Server::default(),
         };
         match &server.collation {
-            Some((charset, collation)) if !server.mariadb => crate::mysql_collation::written(rewritten, &sites, charset, collation),
+            Some((charset, collation)) if !server.mariadb && charset.eq_ignore_ascii_case("utf8mb4") => crate::mysql_collation::written(rewritten, &sites, collation),
             _ => rewritten,
         }
     };
