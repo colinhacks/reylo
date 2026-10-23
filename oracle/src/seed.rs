@@ -209,11 +209,10 @@ async fn type_of(client: &Client, oid: u32, known: &mut HashMap<u32, Column>) ->
     Ok(column)
 }
 
-/// The edge values of one column's type in a state, as SQL literals, NULL first. An array's
-/// elements are the first value of its element type's pool.
+/// The edge values of one scalar column's type in a state, as SQL literals, NULL first. An
+/// array column's pool is built by `accepted_pool`, which checks its element first.
 fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
-    let first = scalars(col, scenario).into_iter().next();
-    with_casts(col, if col.is_array { arrays(col, first.as_deref()) } else { scalars(col, scenario) })
+    with_casts(col, scalars(col, scenario))
 }
 
 /// The values of a type's pool, NULL first, each cast to the type.
@@ -1470,7 +1469,7 @@ mod tests {
         let mut vectors = column("U", "vector");
         vectors.ty = "vector(2)[]".into();
         vectors.is_array = true;
-        assert_eq!(pool(&vectors, Scenario::Edges), ["NULL", "'{}'::vector(2)[]", "'{\"[1]\"}'::vector(2)[]", "'{\"[1]\",NULL}'::vector(2)[]", "'{NULL}'::vector(2)[]"]);
+        assert_eq!(with_casts(&vectors, arrays(&vectors, Some("'[1]'"))), ["NULL", "'{}'::vector(2)[]", "'{\"[1]\"}'::vector(2)[]", "'{\"[1]\",NULL}'::vector(2)[]", "'{NULL}'::vector(2)[]"]);
         assert_eq!(arrays(&vectors, Some("'[1,2]'")), ["'{}'", "'{\"[1,2]\"}'", "'{\"[1,2]\",NULL}'", "'{NULL}'"]);
         let mut geometries = column("U", "geometry");
         geometries.delimiter = ":".into();
