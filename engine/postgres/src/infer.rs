@@ -1097,6 +1097,9 @@ impl Reader<'_> {
                             let arity = match name.as_str() {
                                 "count" => f.args.len() <= 1,
                                 "sum" | "avg" | "min" | "max" | "json_agg" | "jsonb_agg" => f.args.len() == 1,
+                                // Postgres's other aggregates the rules read, each at its one arity.
+                                "array_agg" | "bit_and" | "bit_or" | "bool_and" | "bool_or" | "every" => self.dialect == Dialect::Postgres && f.args.len() == 1,
+                                "string_agg" | "json_object_agg" | "jsonb_object_agg" => self.dialect == Dialect::Postgres && f.args.len() == 2,
                                 "total" | "json_group_array" => self.dialect == Dialect::Sqlite && f.args.len() == 1,
                                 _ => false,
                             };

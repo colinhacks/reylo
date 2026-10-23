@@ -1,4 +1,4 @@
-aggregate_order.sql: many (o: text) -> { names: text? } !! reylo17: order by :o sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :o when 'name' then name end
+aggregate_order.sql: one (o: text) -> { names: text? } !! reylo17: order by :o sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :o when 'name' then name end
 case_chooses.sql: many (sort: text) -> { id: int4, name: text }
 case_direction.sql: many (desc: bool) -> { id: int4, name: text }
 distinct_on.sql: maybeOne (d: text) -> { id: int4, name: text } !! reylo17: distinct on (:d) keeps a single row, since a parameter is a value and not a column's name; choose the column with case :d when 'name' then name end
