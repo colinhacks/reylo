@@ -124,6 +124,8 @@ Add the preload to `nub.jsonc`:
 </Tab>
 <Tab value="Vite" id="setup-vite">
 
+Add Reylo's plugin to your Vite config:
+
 ```ts title="vite.config.ts"
 import { defineConfig } from "vite";
 import reylo from "reylo/vite";
@@ -172,6 +174,8 @@ Next.js type-checks with your project's `tsc` but without `--runExternalCode`, s
 </Tab>
 <Tab value="esbuild" id="setup-esbuild">
 
+Add Reylo's plugin to your esbuild build:
+
 ```js title="build.mjs"
 import * as esbuild from "esbuild";
 import reylo from "reylo/esbuild";
@@ -189,6 +193,8 @@ await esbuild.build({
 </Tab>
 <Tab value="webpack" id="setup-webpack">
 
+Load `.sql` files with Reylo's loader in your webpack config:
+
 ```js title="webpack.config.mjs"
 export default {
   // ...
@@ -202,6 +208,8 @@ Compile TypeScript with `swc-loader` or `babel-loader`, since TypeScript 7 has n
 
 </Tab>
 <Tab value="Rspack" id="setup-rspack">
+
+Load `.sql` files with Reylo's webpack loader in your Rspack config:
 
 ```js title="rspack.config.mjs"
 export default {
