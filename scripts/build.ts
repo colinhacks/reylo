@@ -60,7 +60,7 @@ if (source.length) throw new Error(`dist/reylo holds TypeScript sources: ${sourc
 const wasm = files.filter((f) => f.endsWith(".wasm"));
 if (wasm.length) throw new Error(`dist/reylo holds an engine: ${wasm.join(", ")}`);
 // Nor any of the build-time half, which a run-time module would drag in by importing it.
-const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|loader|commands|mapper-server)\.js$/.test(f));
+const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|engine-core|loader|commands|mapper-server)\.js$/.test(f));
 if (tooling.length) throw new Error(`dist/reylo holds the engine packages' build steps: ${tooling.join(", ")}`);
 console.log(`dist/reylo: ${files.length} files, package ${built.name}@${built.version}`);
 
