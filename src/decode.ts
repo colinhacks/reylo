@@ -99,7 +99,7 @@ const catalogSql = (oids: number[]) => {
 select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text
 from pg_catalog.pg_type e
 join pg_catalog.pg_type b on b.oid = coalesce((select d.base from d join pg_catalog.pg_type t on t.oid = d.base where d.oid = e.oid and t.typtype <> 'd'), e.oid)
-where e.typarray = any(${list}) or e.oid = any(${list})`;
+where e.typarray = any(${list}) or (e.oid = any(${list}) and e.typcategory <> 'A')`;
 };
 
 /**
@@ -112,10 +112,15 @@ async function learn(key: object, oids: Iterable<number>, load: Load): Promise<v
   const missing = new Set([...oids].filter((oid) => !known.has(oid)));
   if (!missing.size) return;
   const rows = await load(catalogSql([...missing]));
+  // An array oid takes its element's kind, never the text its own row as a type would give it.
+  const arrays = new Set<number>();
   for (const [array, base, isText, delim, oid, name] of rows) {
     const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name, "postgres") : "text"));
-    if (missing.has(Number(oid))) known.set(Number(oid), { kind: element ?? "text", delim: "," });
-    if (missing.has(Number(array))) known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
+    if (missing.has(Number(array))) {
+      arrays.add(Number(array));
+      known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
+    }
+    if (missing.has(Number(oid)) && !arrays.has(Number(oid))) known.set(Number(oid), { kind: element ?? "text", delim: "," });
   }
   for (const oid of missing) if (!known.has(oid)) known.set(oid, { kind: "text", delim: "," });
 }

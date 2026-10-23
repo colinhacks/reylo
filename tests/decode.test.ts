@@ -99,7 +99,14 @@ function database() {
       if (text.includes("pg_catalog.pg_type")) {
         db.catalogQueries.push(text);
         const wanted = /any\('\{([\d,]+)\}'/.exec(text)![1]!.split(",").map(Number);
-        const rows = db.types.filter(([array, , , , element]) => wanted.includes(array) || wanted.includes(element)).map((row) => row.map(String));
+        // An array oid asked about also brings the array type's own row after its element's, as a
+        // query matching every requested oid would return it.
+        const rows = db.types
+          .flatMap(([array, base, isText, delim, element, name]) => [
+            ...(wanted.includes(array) || wanted.includes(element) ? [[array, base, isText, delim, element, name]] : []),
+            ...(wanted.includes(array) ? [[0, array, true, ",", array, `_${name}`]] : []),
+          ])
+          .map((row) => row.map(String));
         return { fields: [0, 1, 2, 3, 4, 5].map((i) => ({ name: `c${i}`, dataTypeID: 25 })), raw: rows };
       }
       const cols = [...COLUMNS];
