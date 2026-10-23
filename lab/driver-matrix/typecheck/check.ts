@@ -76,7 +76,16 @@ import type { BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
 import type { LibSQLDatabase } from "drizzle-orm/libsql";
 import type { PgTransaction } from "drizzle-orm/pg-core";
 import type { MySqlTransaction } from "drizzle-orm/mysql-core";
-import type { SQLiteTransaction } from "drizzle-orm/sqlite-core";`;
+import type { SQLiteTransaction } from "drizzle-orm/sqlite-core";
+import type { NeonDatabase } from "drizzle-orm/neon-serverless";
+import type { NeonHttpDatabase } from "drizzle-orm/neon-http";
+import type { PgliteDatabase } from "drizzle-orm/pglite";
+import type { BunSQLDatabase } from "drizzle-orm/bun-sql";
+import type { PlanetScaleDatabase } from "drizzle-orm/planetscale-serverless";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
+import type { BunSQLiteDatabase } from "drizzle-orm/bun-sqlite";
+import type { DrizzleSqliteDODatabase } from "drizzle-orm/durable-sqlite";
+import type { DurableObjectStorage } from "@cloudflare/workers-types";`;
 
 const entries: Entry[] = [];
 const pg = (pkg: string, shape: string, type: string, note?: string) => entries.push({ pkg, shape, type, accepts: ["postgres"], ...(note ? { note } : {}) });
@@ -145,6 +154,14 @@ sq("drizzle-orm@0.45.4 (better-sqlite3)", "drizzle(database)", "BetterSQLite3Dat
 sq("drizzle-orm@0.45.4", "SQLiteTransaction (db.transaction, over better-sqlite3)", "SQLiteTransaction<'sync', any, any, any>", true);
 sq("drizzle-orm@0.45.4 (libsql)", "drizzle(client)", "LibSQLDatabase & { $client: ls018.Client }");
 sq("drizzle-orm@0.45.4", "SQLiteTransaction (db.transaction, over libSQL)", "SQLiteTransaction<'async', any, any, any>");
+pg("drizzle-orm@0.45.4 (neon-serverless)", "drizzle(pool)", "NeonDatabase & { $client: neon1.Pool }");
+pg("drizzle-orm@0.45.4 (neon-http)", "drizzle(neon())", "NeonHttpDatabase & { $client: neon1.NeonQueryFunction<false, false> }");
+pg("drizzle-orm@0.45.4 (pglite)", "drizzle(pglite)", "PgliteDatabase & { $client: PGlite05 }");
+entries.push({ pkg: "drizzle-orm@0.45.4 (bun-sql)", shape: "drizzle(sql)", type: "BunSQLDatabase & { $client: SQL }", accepts: ALL, note: "its client is Bun.sql's one class for the three adapters" });
+my("drizzle-orm@0.45.4 (planetscale-serverless)", "drizzle(client)", "PlanetScaleDatabase & { $client: ps1.Client }");
+sq("drizzle-orm@0.45.4 (d1)", "drizzle(d1)", "DrizzleD1Database & { $client: D1Database }");
+sq("drizzle-orm@0.45.4 (bun-sqlite)", "drizzle(database)", "BunSQLiteDatabase & { $client: BunDatabase }", true);
+sq("drizzle-orm@0.45.4 (durable-sqlite)", "drizzle(ctx.storage)", "DrizzleSqliteDODatabase & { $client: DurableObjectStorage }", true);
 for (const [ns, v] of [["ls017", "0.17.4"], ["ls018", "0.18.0"], ["ls015", "0.15.15"], ["ls014", "0.14.0"]]) {
   sq(`@libsql/client@${v}`, "Client", `${ns}.Client`);
   sq(`@libsql/client@${v}`, "Transaction", `${ns}.Transaction`);

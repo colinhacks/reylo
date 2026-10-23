@@ -27,7 +27,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 
 ## Running a query
 
-- Pass the project's own database client to `.run()`: a pool, a client, or a transaction or connection taken from one (https://reylo.dev/#supported-drivers, https://reylo.dev/#transactions). At run time Reylo opens no connection of its own.
+- Pass the project's own database client to `.run()`: a pool, a client, a transaction or connection taken from one, or a Drizzle database over one (https://reylo.dev/#supported-drivers, https://reylo.dev/#transactions). At run time Reylo opens no connection of its own.
 - `.runSync()` returns the result itself on a synchronous SQLite client (`better-sqlite3`, `node:sqlite`, a Durable Object's `ctx.storage.sql`), so it works inside their synchronous transactions. `.with(client)` binds the query to a client.
 - The result's shape follows the row count Reylo infers: an array, one row, a row or `null`, or nothing for a write without `returning`.
 - Every driver gives the same types: a 64-bit integer is a `bigint`, a decimal its exact text, an instant its ISO 8601 text in UTC, and no value is a `Date`. Pass a parameter in the form `.run()` returns for its type (https://reylo.dev/#data-types).

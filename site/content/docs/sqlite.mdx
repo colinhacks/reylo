@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on SQLite. The TypeScript type of each 
 | --- | --- |
 | SQLite versions | Reylo checks each query with its own SQLite 3.53, and again with the SQLite of each driver your `package.json` lists ([Functions](#functions)) |
 | Connection | A `file:` or `sqlite:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url); a relative path starts at your `package.json` |
-| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3` or libSQL ([Drivers](#drivers)) |
+| Drivers | `better-sqlite3`, `node:sqlite`, `bun:sqlite`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite` and `Bun.sql`, and Drizzle over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects ([Drivers](#drivers)) |
 | Type checking | Reads your schema with Node's built-in `node:sqlite`, so it needs no driver |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -830,7 +830,7 @@ Without `safeIntegers`, Bun rounds an integer past 2^53, so Reylo throws an erro
 
 ### Drizzle
 
-Pass a Drizzle database over `better-sqlite3` or libSQL, or a transaction taken from it. Over `better-sqlite3`, `.runSync()` works inside its transactions:
+Pass a Drizzle database over `better-sqlite3`, `bun:sqlite`, libSQL, D1 or Durable Objects, or a transaction taken from it. Over D1, Drizzle has no transactions. Over `better-sqlite3`, `bun:sqlite` and Durable Objects, `.runSync()` works inside its transactions:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/better-sqlite3";

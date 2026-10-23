@@ -11,9 +11,18 @@ importers:
       '@cloudflare/workers-types':
         specifier: 5.20260929.1
         version: 5.20260929.1
+      '@electric-sql/pglite':
+        specifier: 0.5.8
+        version: 0.5.8(ws@8.22.0)
       '@libsql/client':
         specifier: 0.18.0
         version: 0.18.0
+      '@neondatabase/serverless':
+        specifier: 1.1.0
+        version: 1.1.0
+      '@planetscale/database':
+        specifier: 1.20.2
+        version: 1.20.2
       '@types/better-sqlite3':
         specifier: 9.6.0
         version: 9.6.0
@@ -31,7 +40,7 @@ importers:
         version: '@types/pg@8.23.1'
       drizzle-orm:
         specifier: 0.45.4
-        version: 0.45.4(@cloudflare/workers-types@5.20260929.1)(@libsql/client@0.18.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(mysql2@3.24.5(@types/node@26.6.1))(pg@8.23.0)(postgres@3.4.9)
+        version: 0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.8(ws@8.22.0))(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(mysql2@3.24.5(@types/node@26.6.1))(pg@8.23.0)(postgres@3.4.9)
       libsql-014:
         specifier: npm:@libsql/client@0.14.0
         version: '@libsql/client@0.14.0'
@@ -2377,10 +2386,13 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  drizzle-orm@0.45.4(@cloudflare/workers-types@5.20260929.1)(@libsql/client@0.18.0)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(mysql2@3.24.5(@types/node@26.6.1))(pg@8.23.0)(postgres@3.4.9):
+  drizzle-orm@0.45.4(@cloudflare/workers-types@5.20260929.1)(@electric-sql/pglite@0.5.8(ws@8.22.0))(@libsql/client@0.18.0)(@neondatabase/serverless@1.1.0)(@planetscale/database@1.20.2)(@types/better-sqlite3@9.6.0)(better-sqlite3@13.0.3)(mysql2@3.24.5(@types/node@26.6.1))(pg@8.23.0)(postgres@3.4.9):
     dependencies:
       '@cloudflare/workers-types': 5.20260929.1
+      '@electric-sql/pglite': 0.5.8(ws@8.22.0)
       '@libsql/client': 0.18.0
+      '@neondatabase/serverless': 1.1.0
+      '@planetscale/database': 1.20.2
       '@types/better-sqlite3': 9.6.0
       better-sqlite3: 13.0.3
       mysql2: 3.24.5(@types/node@26.6.1)

@@ -80,6 +80,8 @@ export type DurableObjectSql = {
   exec(query: string, ...bindings: any[]): { toArray(): unknown[] };
   readonly databaseSize: number;
 };
+/** A Durable Object's storage, `ctx.storage`, which `drizzle-orm/durable-sqlite` keeps: `run` takes its `sql`. */
+export type DurableObjectStorage = { readonly sql: DurableObjectSql };
 /** Cloudflare D1's database and sessions: prepare(sql).bind(...values).all() → { results }. */
 export type D1Client = {
   prepare(sql: string): { bind(...values: any[]): { all(): Promise<{ results: unknown[] }> } };
@@ -132,14 +134,14 @@ export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | Cal
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
-export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
+export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
 
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
 export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
-export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DurableObjectSql | DrizzleDatabase<SyncSqliteClient> | DrizzleSyncSqliteTransaction : never;
+export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
 
 export type QueryModule<D extends Dialect = Dialect> = {
   readonly dialect: D;
@@ -210,7 +212,10 @@ function underneath(c: AnyClient): AnyClient {
   const o = c as unknown as { select?: unknown; session?: { client?: unknown; tx?: unknown; dialect?: unknown } } | null | undefined;
   const session = o != null && typeof o === "object" && typeof o.select === "function" ? o.session : undefined;
   if (session == null || typeof session !== "object" || session.dialect == null) return c;
-  return ((session.tx ?? session.client) as AnyClient | undefined) ?? c;
+  const client = ((session.tx ?? session.client) as AnyClient | undefined) ?? c;
+  // drizzle-orm/durable-sqlite keeps the Durable Object's storage, whose SQL storage is its sql.
+  const sql = (client as { sql?: AnyClient }).sql;
+  return isDurableObjectSql(sql) ? sql! : client;
 }
 
 /** The synchronous path alone, for `runSync`: any other client is refused before anything runs. */

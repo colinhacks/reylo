@@ -860,9 +860,9 @@ export const SCENARIOS: Scenario[] = [
       }
       // A column declared BIGINT is a BigInt, exact past 2^53 where the driver reads the integer
       // itself (Reylo's own statement on better-sqlite3, node:sqlite, bun:sqlite and Turso's
-      // engine); where the driver rounds it first, Reylo's error naming the column; libSQL's own
-      // error at its default intMode.
-      const rounds = /^(sqlite3|sqlite|miniflare D1|Bun\.sql)\b/.test(ctx.job.pkg);
+      // engine); where the driver rounds it first, Reylo's error naming the column (D1's job, or
+      // Drizzle's over D1); libSQL's own error at its default intMode.
+      const rounds = /^(sqlite3|sqlite|miniflare D1|Bun\.sql)\b|^drizzle-orm \(d1\)/.test(ctx.job.pkg);
       // libSQL's job, or Drizzle's over libSQL.
       const libsql = /^(@libsql\/|drizzle-orm \(libsql\))/.test(ctx.job.pkg);
       try {

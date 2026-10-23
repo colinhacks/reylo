@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on MySQL. The TypeScript type of each c
 | --- | --- |
 | MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
 | Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url) |
-| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` ([Drivers](#drivers)) |
+| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` or PlanetScale ([Drivers](#drivers)) |
 | Type checking | Reads the schema through the `mysql2` inside `@reylosql/mysql`, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -648,7 +648,7 @@ Bun loses the microseconds of a `DATETIME`, a fraction that is all zeros, and a 
 
 ### Drizzle
 
-Pass a Drizzle database over `mysql2`, or a transaction or savepoint taken from it:
+Pass a Drizzle database over `mysql2` or PlanetScale, or a transaction or savepoint taken from it:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/mysql2";
