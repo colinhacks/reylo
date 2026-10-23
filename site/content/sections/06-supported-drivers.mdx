@@ -4,7 +4,7 @@ title: "Supported drivers"
 
 ## Supported drivers
 
-Pass `.run()` a client from any of these drivers, or a Drizzle database over one. Transactions and connections taken from a client work too ([an example](#transactions)).
+Pass `.run()` a client from any of these drivers, or a Drizzle database over one. A transaction, a savepoint or a connection taken from a client is a client too, as each example shows.
 
 The type check reads your schema through a driver of its own, so your app can use any of these.
 
@@ -17,6 +17,18 @@ import getUser from "./get_user.sql";
 const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 
 const user = await getUser.run(db, { id: 1 });
+
+const client = await db.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="postgres.js" dialect="postgres"
@@ -26,6 +38,8 @@ import getUser from "./get_user.sql";
 const db = postgres(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="postgres"
@@ -35,6 +49,8 @@ import getUser from "./get_user.sql";
 const db = new SQL(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="PGlite" dialect="postgres"
@@ -44,15 +60,31 @@ import getUser from "./get_user.sql";
 const db = new PGlite("./pgdata");
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="Neon" dialect="postgres"
-import { neon } from "@neondatabase/serverless";
+import { neon, Pool } from "@neondatabase/serverless";
 import getUser from "./get_user.sql";
 
 const db = neon(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+// a transaction takes a Pool, over a WebSocket
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const client = await pool.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="pg-promise" dialect="postgres"
@@ -63,6 +95,8 @@ const pgp = pgPromise();
 const db = pgp(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.tx((t) => getUser.run(t, { id: 1 }));
 ```
 
 ```ts twoslash tab="@vercel/postgres" dialect="postgres"
@@ -71,6 +105,18 @@ import { sql } from "@vercel/postgres";
 import getUser from "./get_user.sql";
 
 const user = await getUser.run(sql, { id: 1 });
+
+const client = await sql.connect();
+try {
+  await client.query("begin");
+  await getUser.run(client, { id: 1 });
+  await client.query("commit");
+} catch (error) {
+  await client.query("rollback");
+  throw error;
+} finally {
+  client.release();
+}
 ```
 
 ```ts twoslash tab="Drizzle" dialect="postgres"
@@ -80,6 +126,7 @@ import getUser from "./get_user.sql";
 const db = drizzle(process.env.DATABASE_URL!);
 
 const user = await getUser.run(db, { id: 1 });
+
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
@@ -92,6 +139,18 @@ import getUser from "./get_user.sql";
 const db = mysql.createPool(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await getUser.run(conn, { id: 1 });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
 ```
 
 ```ts twoslash tab="mariadb" dialect="mysql"
@@ -102,6 +161,18 @@ import getUser from "./get_user.sql";
 const db = mariadb.createPool(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+try {
+  await conn.beginTransaction();
+  await getUser.run(conn, { id: 1 });
+  await conn.commit();
+} catch (error) {
+  await conn.rollback();
+  throw error;
+} finally {
+  conn.release();
+}
 ```
 
 ```ts twoslash tab="PlanetScale" dialect="mysql"
@@ -112,6 +183,8 @@ import getUser from "./get_user.sql";
 const db = connect({ url: process.env.DATABASE_URL });
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="mysql"
@@ -121,6 +194,8 @@ import getUser from "./get_user.sql";
 const db = new SQL(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="Drizzle" dialect="mysql"
@@ -130,6 +205,7 @@ import getUser from "./get_user.sql";
 const db = drizzle(process.env.DATABASE_URL!);
 
 const user = await getUser.run(db, { id: 1 });
+
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
@@ -142,6 +218,9 @@ import getUser from "./get_user.sql";
 const db = new Database("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+// the function must not await, so it runs .runSync()
+db.transaction(() => getUser.runSync(db, { id: 1 }))();
 ```
 
 ```ts twoslash tab="node:sqlite" dialect="sqlite"
@@ -151,6 +230,15 @@ import getUser from "./get_user.sql";
 const db = new DatabaseSync("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+db.exec("begin");
+try {
+  getUser.runSync(db, { id: 1 });
+  db.exec("commit");
+} catch (error) {
+  db.exec("rollback");
+  throw error;
+}
 ```
 
 ```ts twoslash tab="Bun.sql" dialect="sqlite"
@@ -160,6 +248,8 @@ import getUser from "./get_user.sql";
 const db = new SQL({ adapter: "sqlite", filename: "app.db" });
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.begin((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="libSQL" dialect="sqlite"
@@ -169,6 +259,14 @@ import getUser from "./get_user.sql";
 const db = createClient({ url: "file:app.db" });
 
 const user = await getUser.run(db, { id: 1 });
+
+const tx = await db.transaction("write");
+try {
+  await getUser.run(tx, { id: 1 });
+  await tx.commit();
+} finally {
+  tx.close();
+}
 ```
 
 ```ts twoslash tab="Turso" dialect="sqlite"
@@ -178,6 +276,15 @@ import getUser from "./get_user.sql";
 const db = await connect("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.exec("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await db.exec("commit");
+} catch (error) {
+  await db.exec("rollback");
+  throw error;
+}
 ```
 
 ```ts twoslash tab="Cloudflare D1" dialect="sqlite"
@@ -186,6 +293,7 @@ import getUser from "./get_user.sql";
 
 export default {
   async fetch(request: Request, env: { DB: D1Database }) {
+    // D1 has no transaction a query can join: its batch() takes D1's own statements
     const user = await getUser.run(env.DB, { id: 1 });
     return Response.json(user);
   },
@@ -202,16 +310,33 @@ export class Board extends DurableObject {
   user(id: number) {
     return getUser.runSync(this.ctx.storage.sql, { id });
   }
+
+  userInTransaction(id: number) {
+    return this.ctx.storage.transactionSync(() =>
+      getUser.runSync(this.ctx.storage.sql, { id }),
+    );
+  }
 }
 ```
 
 ```ts twoslash tab="sqlite3" dialect="sqlite"
+import { promisify } from "node:util";
 import sqlite3 from "sqlite3";
 import getUser from "./get_user.sql";
 
 const db = new sqlite3.Database("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
+const exec = promisify(db.exec.bind(db));
+await exec("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await exec("commit");
+} catch (error) {
+  await exec("rollback");
+  throw error;
+}
 ```
 
 ```ts twoslash tab="sqlite" dialect="sqlite"
@@ -222,6 +347,15 @@ import getUser from "./get_user.sql";
 const db = await open({ filename: "app.db", driver: sqlite3.Database });
 
 const user = await getUser.run(db, { id: 1 });
+
+await db.exec("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await db.exec("commit");
+} catch (error) {
+  await db.exec("rollback");
+  throw error;
+}
 ```
 
 ```ts twoslash tab="Drizzle" dialect="sqlite"
@@ -231,5 +365,6 @@ import getUser from "./get_user.sql";
 const db = drizzle("app.db");
 
 const user = await getUser.run(db, { id: 1 });
+
 db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
 ```
