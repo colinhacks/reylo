@@ -318,6 +318,8 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
     if( pItem->fg.isTabFunc ){ key(s, "args"); exprList(s, pItem->u1.pFuncArg, p); sqlite3_str_appendchar(s, 1, ','); }
     kv_bool(s, "cte", pItem->fg.isCte);
+    /* A recursive WITH query's read of itself, inside the query: it has no subquery of its own. */
+    kv_bool(s, "recursive", pItem->fg.isRecursive);
     if( pItem->pSTab ){
       tableSeen(pItem->pSTab);
       if( IsView(pItem->pSTab) ) kv_bool(s, "view", 1);
