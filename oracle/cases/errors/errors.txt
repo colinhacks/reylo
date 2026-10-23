@@ -14,5 +14,6 @@ insert_ordered.sql: open
 insert_user.sql: closed | 23502 column ["email","id"]; table ["users"] | 23505 constraint ["users_email_key","users_lower_email","users_pkey"]; table ["users"] | 23514 constraint ["adult","positive_check"]; dataType ["positive"]; table ["users"]
 judge_mood.sql: open
 query_to_xml.sql: open
+select_ordered.sql: open
 select_view.sql: closed
 upsert_user.sql: closed | 23001 constraint ["comments_post_id_fkey"]; table ["comments","posts"] | 23502 column ["email","id","title","user_id"]; table ["posts","users"] | 23503 constraint ["comments_post_id_fkey","posts_user_id_fkey"]; table ["comments","posts","users"] | 23505 constraint ["posts_pkey","users_email_key","users_lower_email","users_pkey"]; table ["posts","users"] | 23514 constraint ["adult","positive_check"]; dataType ["positive"]; table ["posts","users"]

@@ -14,5 +14,6 @@ insert_ordered.sql: none (id: int4?) -> {  }
 insert_user.sql: none (id: int4, email: text, age: int4) -> {  }
 judge_mood.sql: many () -> { n: int4? }
 query_to_xml.sql: one () -> { x: xml? }
+select_ordered.sql: maybeOne (id: int4) -> { id: int4 }
 select_view.sql: many (id: int4) -> { id: int4, email: text }
 upsert_user.sql: none (id: int4, email: text, age: int4) -> {  }

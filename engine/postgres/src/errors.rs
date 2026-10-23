@@ -45,7 +45,8 @@ const RUNS_SQL: [&str; 14] = [
 /// reaches: the read relations and, through views, the relations they read. Code runs there in a
 /// trigger or a rule; in a default, a generated column, a check, an index's expression, a
 /// partition key, a domain's default or check or a policy, which `pg_depend` ties to the functions
-/// and operators they call; in an index's operator class; in a type's input and output; across a foreign table; in a user's or an
+/// and operators they call; in the operator class of an index or a partition key, on a read too,
+/// since a scan of the index or the pruning of the partitions calls it; in a type's input and output; across a foreign table; in a user's or an
 /// extension's function of a name the statement calls, whatever it takes, since a literal or a
 /// parameter of no type takes the type of the one function there is; and in a user's or an
 /// extension's operator or cast of the statement, where each type of a user's it takes is present.
@@ -105,6 +106,8 @@ pub const ERRORS_QUERY: &str = concat!(
         (d.classid = 'pg_attrdef'::regclass AND d.objid IN (SELECT ad.oid FROM pg_attrdef ad JOIN rel ON ad.adrelid = rel.oid)) \
         OR (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM cons)) \
         OR (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM w UNION SELECT i.indexrelid FROM pg_index i JOIN w ON i.indrelid = w.oid)) \
+        OR (d.classid = 'pg_class'::regclass AND d.refclassid IN ('pg_opclass'::regclass, 'pg_opfamily'::regclass) \
+          AND d.objid IN (SELECT oid FROM rel UNION SELECT i.indexrelid FROM pg_index i JOIN rel ON i.indrelid = rel.oid)) \
         OR (d.classid = 'pg_policy'::regclass AND d.objid IN (SELECT p.oid FROM pg_policy p JOIN rel ON p.polrelid = rel.oid)) \
         OR (d.classid = 'pg_rewrite'::regclass AND d.objid IN (SELECT q.oid FROM pg_rewrite q JOIN rel ON q.ev_class = rel.oid))) \
     UNION ALL SELECT 'open', 'column type', t.typname::text, NULL FROM pg_attribute a JOIN rel ON a.attrelid = rel.oid JOIN pg_type t ON t.oid = a.atttypid \
