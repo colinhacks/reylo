@@ -2525,7 +2525,6 @@ mod tests {
         assert_eq!(engine.pin("SELECT $1 + $1"), "SELECT ($1::int4) + ($1::int4)");
     }
 
-
     #[test]
     fn each_parameter_appears_once() {
         // Every later use is an error at its place, before the server is asked anything, and the

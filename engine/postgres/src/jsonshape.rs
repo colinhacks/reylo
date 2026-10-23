@@ -583,8 +583,9 @@ pub fn top_context(top: &NodeEnum) -> Option<(Vec<Node>, Vec<Node>, Option<proto
     }
 }
 
-/// Whether a write's target goes by the name of one of its WITH queries.
-fn target_named_by_with(top: &NodeEnum, with: Option<&protobuf::WithClause>) -> bool {
+/// Whether a write's target goes by the name of one of its WITH queries, which a probe carrying
+/// the clause would read in place of the table.
+pub(crate) fn target_named_by_with(top: &NodeEnum, with: Option<&protobuf::WithClause>) -> bool {
     let relation = match top {
         NodeEnum::InsertStmt(s) => s.relation.as_ref(),
         NodeEnum::UpdateStmt(s) => s.relation.as_ref(),

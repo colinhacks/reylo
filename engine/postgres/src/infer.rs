@@ -44,7 +44,7 @@
 
 use crate::dialect::Dialect;
 use crate::types::DescribedColumn;
-use crate::jsonshape::{as_select, last_string, select_text, single_target, top_context};
+use crate::jsonshape::{as_select, last_string, select_text, single_target, target_named_by_with, top_context};
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
 use crate::returning::Rows;
@@ -392,6 +392,11 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
         }
     }
     let Some((targets, from, with)) = top_context(top) else { return Plan::default() };
+    // A write whose WITH clause has a query named like its target writes the table, where its leaf
+    // probe, carrying the clause, would read the query by that name: the describe answers alone.
+    if target_named_by_with(top, with.as_ref()) {
+        return Plan::default();
+    }
     // A grouping set nulls a grouping column in its super-aggregate rows, which a probe over the
     // `FROM` alone would never show: a leaf there proves nothing.
     let grouped = matches!(top, NodeEnum::SelectStmt(s) if s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_)))));
