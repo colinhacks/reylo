@@ -132,6 +132,8 @@ The error is your database's own, typed with every code it defines, so TypeScrip
 
 Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say. The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
 
+On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
+
 ### `.with()`
 
 To bind the query to a client, call `.with()`. It returns a function that takes the parameters:
