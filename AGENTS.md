@@ -98,7 +98,7 @@ docker run -d --name reylo-mysql -p 53306:3306 -e MYSQL_ALLOW_EMPTY_PASSWORD=yes
 
 - With a local Postgres install instead: `oracle/cluster.sh start <its bin directory> <port>` makes a throwaway cluster under `/tmp` and prints its URL, and `oracle/cluster.sh stop <port>` deletes it. On macOS a postmaster started with no locale in its environment stops at once ("postmaster became multithreaded during startup"), so set `LANG=en_US.UTF-8` for it.
 - The oracle's `json_schema_*` cases call five JSON Schema validator extensions in Postgres 18. `.github/scripts/json-schema-validators.sh` builds them against a Postgres install's `pg_config`, as the oracle job in `test.yml` does.
-- The oracle's `pgvector_types` and `postgis_types` cases need pgvector and PostGIS in that Postgres 18: on Debian and Ubuntu, PGDG's `postgresql-18-pgvector` and `postgresql-18-postgis-3`, as the oracle job installs them; Homebrew's `postgresql@18` has pgvector, and `brew install postgis` adds PostGIS.
+- The oracle's `pgvector_types` and `postgis_types` cases need pgvector and PostGIS in that Postgres 18: on Debian and Ubuntu, PGDG's `postgresql-18-pgvector` and `postgresql-18-postgis-3`, as the oracle job installs them; with Homebrew's `postgresql@18`, `brew install pgvector postgis`.
 - CI's Postgres cluster for the oracle is made with `initdb -E UTF8 --locale=C`, so a case that depends on collation can differ on a cluster with another locale.
 - MySQL 9.7 and later start with GTIDs on, which refuses the oracle's MyISAM and MEMORY writes: start them with `--gtid-mode=OFF --enforce-gtid-consistency=OFF`. The `mysql_*` cases are blessed on MySQL 8.4.
 
