@@ -85,6 +85,7 @@ test("a scalar that names two types is either", () => {
 test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
   for (const name of ["vector", "halfvec"]) {
     assert.equal(renderType(scalar(name), false, "postgres"), "number[]");
+    assert.equal(renderType(scalar(name), true, "postgres"), "string");
     assert.equal(renderParamType(scalar(name), "postgres"), "number[]");
     assert.equal(renderType({ kind: "array", of: scalar(name) }, false, "postgres"), "(number[] | null)[]");
     assert.equal(renderParamType({ kind: "array", of: scalar(name) }, "postgres"), "number[][]");
