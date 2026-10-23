@@ -284,7 +284,7 @@ function isTurso(c: AnyClient): boolean {
 
 // Slonik's pool, connections, transactions and savepoints. Its query() takes only the statements
 // its sql tag builds, and its type parsers are set on the pool's connections, which a statement
-// cannot override, so numeric, timestamp and interval values arrive already rounded.
+// cannot override, so numeric, timestamp and interval values arrive as lossy numbers.
 function isSlonik(c: AnyClient): boolean {
   return typeof c.maybeOneFirst === "function" && typeof c.anyFirst === "function";
 }

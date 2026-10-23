@@ -83,7 +83,7 @@ const user = await getUser.run(db, { id: 1 });
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
-If your app uses `slonik`, run Reylo's queries on a `pg` pool beside it: Slonik's type parsers apply to every query on its pool, and they round numeric, timestamp and interval values.
+If your app uses `slonik`, run Reylo's queries on a `pg` pool beside it: Slonik's type parsers apply to every query on its pool, and they turn numeric, timestamp and interval values into lossy numbers.
 
 ### MySQL
 
