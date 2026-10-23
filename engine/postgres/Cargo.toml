@@ -10,6 +10,8 @@ name = "reylo_engine_postgres"
 
 [build-dependencies]
 reylo-engine-build = { path = "../build-support" }
+bindgen = "0.66"
+cc = "1"
 
 [dependencies]
 reylo-engine-core = { path = "../core" }
@@ -21,5 +23,6 @@ serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # `pg_query` 18.0 is not on crates.io yet: `../build.sh --prepare` fetches upstream's `pg-18` branch
 # at a pinned commit and applies the patch in `vendor/` (WebAssembly, and how deeply a statement may
 # nest) into `.patched/pg_query`; the `[patch]` that points cargo at the copy, and the release
-# profile, are the workspace's (`../../Cargo.toml`). prost's recursion limit is lifted for the
-# parse: libpg_query bounds the depth of what it hands over instead (`src/stack.rs`).
+# profile, are the workspace's (`../../Cargo.toml`). The engine reads libpg_query's tree from its C
+# nodes (`src/raw.rs`, with bindings and converters `build.rs` generates); `pg_query::parse`, whose
+# prost decoding has its recursion limit lifted here, is only the tests' reference for that tree.

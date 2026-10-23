@@ -19,6 +19,7 @@ pub mod jsonshape;
 pub mod levels;
 pub mod pgtypes;
 pub mod postgres;
+mod raw;
 pub mod returning;
 pub mod stack;
 pub mod types;

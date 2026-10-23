@@ -1261,6 +1261,8 @@ dependencies = [
 name = "reylo-engine-postgres"
 version = "0.0.0"
 dependencies = [
+ "bindgen",
+ "cc",
  "pg_query",
  "prost",
  "reylo-engine-build",

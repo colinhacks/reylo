@@ -443,8 +443,9 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         }
     }
 
-    let read_set = parsed.select_tables();
-    let write_set = parsed.dml_tables();
+    let listed = parsed.listed();
+    let read_set = listed.select_tables();
+    let write_set = listed.dml_tables();
 
     Ok(Analysis {
         kind,

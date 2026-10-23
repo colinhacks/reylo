@@ -1,8 +1,8 @@
 //! The stack the analysis runs on.
 //!
 //! A statement's tree is as deep as its expressions nest, and every pass over it recurses: the
-//! decoding of a parser's tree into Rust (prost spends kilobytes of stack on each level of
-//! libpg_query's `Node`, serde on each level of SQLite's), the walks of the expression rules, the
+//! reading of a parser's tree into Rust (libpg_query's C nodes, `engine/postgres/src/raw.rs`, and
+//! serde on each level of SQLite's), the walks of the expression rules, the
 //! row-count proof and the JSON shapes, and the drop of the tree. Each parser bounds the depth of
 //! what it hands over (libpg_query by the patch in `engine/postgres/vendor/`, SQLite by the limit
 //! `engine/sqlite/csrc/reylo_sqlite.c` sets on its expression depth), so the stack all of that
@@ -16,8 +16,9 @@
 #[cfg(not(target_family = "wasm"))]
 use std::cell::Cell;
 
-/// How deeply a statement may nest, in libpg_query's measure, the protobuf messages it hands over:
-/// it refuses a deeper tree with "parse tree is nested too deeply to serialize to protobuf". An
+/// How deeply a statement may nest, in libpg_query's measure, the protobuf messages of its tree,
+/// which the engine's reader of the tree counts the same way (`engine/postgres/src/raw.rs`) and
+/// refuses past with "parse tree is nested too deeply to read". An
 /// expression level is two messages (the `Node` and the node inside it), so this is about 500
 /// levels of `a + b + …`, of nested `CASE`, `coalesce` or `json_build_object`, and 165 nested
 /// scalar subqueries; a flat list (`a or b or …`, a `CASE` with many `WHEN`s, an `IN` list) does
@@ -25,7 +26,8 @@ use std::cell::Cell;
 /// same for every host, so a statement parses on all of them or on none, and a client engine and
 /// `pgreylo` give the same answer. It is what the WebAssembly engine can afford: there the
 /// recursion runs on the JavaScript engine's own stack, about 1 MB in Node and shared with the
-/// host's frames, at some 0.4 kB a message, and the deepest statement needs at most 43% of it. The
+/// host's frames, and the deepest statement of each shape leaves the host 45% of it
+/// (`tests/depth.test.ts`). The
 /// other parsers spend more a level, so each has a bound of its own, set where the deepest
 /// statement needs no more of Node's stack than that: the MySQL engine bounds `sqlparser`'s
 /// recursion to a fifth of this, 200 levels (196 nested function calls, 195 `CASE`s, 97
@@ -34,8 +36,8 @@ use std::cell::Cell;
 /// (`engine/sqlite/csrc/reylo_sqlite.c`).
 pub const MAX_DEPTH: usize = 1_000;
 
-/// The stack an analysis runs on natively. At [`MAX_DEPTH`] an unoptimized build needs about
-/// 25 MiB (the decoding alone some 15 kB a message); this is reserved address space, and only the
+/// The stack an analysis runs on natively. At [`MAX_DEPTH`] an unoptimized build needed about
+/// 25 MiB while prost decoded libpg_query's tree; this is reserved address space, and only the
 /// pages a deep statement touches are ever backed by memory.
 pub const STACK_BYTES: usize = 64 << 20;
 
