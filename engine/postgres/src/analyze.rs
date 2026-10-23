@@ -107,7 +107,11 @@ impl std::fmt::Display for AnalyzeError {
 
 /// Analyze one rewritten statement (placeholders already `$n`).
 pub fn analyze(sql: &str) -> Result<Analysis, AnalyzeError> {
-    crate::stack::run(|| analyze_here(sql))
+    crate::stack::kept(&ANALYZED, sql, || crate::stack::run(|| analyze_here(sql)))
+}
+
+thread_local! {
+    static ANALYZED: std::cell::RefCell<Vec<(String, Result<Analysis, AnalyzeError>)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {

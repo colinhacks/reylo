@@ -27,8 +27,12 @@ use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// How many statements one analysis may synthesize to settle its columns: one per set-operation
-/// arm, one per statement whose expressions read a column, one per JSON constructor context.
-const MAX_PROBES: usize = 8;
+/// arm, one per statement whose expressions read a column, one per JSON constructor context, one
+/// per WITH query or derived table a column is read from. Each is a describe, asked together with
+/// the others ([`Engine::prewarm_tree`]), so the cap bounds the work rather than the rounds. A
+/// statement of a hundred lines with four WITH queries, a derived table and two JSON columns takes
+/// thirteen; past the cap a column is as nullable as the probes left unsettled leave it.
+const MAX_PROBES: usize = 24;
 /// How many times one analysis may settle a probe at all, the same statement under another
 /// assumption included.
 const MAX_PROBE_CALLS: usize = 64;
@@ -332,13 +336,25 @@ struct Engine<'a> {
     /// The statements probed so far. The budget is on distinct statements, which is what costs
     /// a describe; settling one again under another assumption costs nothing.
     probed: RefCell<HashSet<String>>,
+    /// The statements whose describe was asked ahead ([`Engine::prewarm_tree`]), the analyzed
+    /// statement first: one set for the columns' probes and the JSON shapes', as the budget is.
+    prewarmed: RefCell<HashSet<String>>,
     /// The statements being probed right now, outermost first. A statement that comes to probe
     /// itself (a whole-row leaf reads as a whole row in its own leaf probe) proves nothing by it.
     probing: RefCell<Vec<String>>,
     /// Every `probe` call so far, whatever the statement: a bound on the work one analysis does.
     probe_calls: Cell<usize>,
+    /// What each probe settled to, for the rest of the analysis: settled again, a probe would
+    /// settle every probe it reads again, which a chain of WITH queries doubles at each link.
+    settled: RefCell<HashMap<String, Option<DescribedStatement>>>,
+    /// How many times a probe met itself among the probes being settled ([`Engine::probing`]),
+    /// or a WITH query read itself and took the assumption it is being settled under
+    /// ([`Engine::with_stack`]): an outcome that rests on either is not kept.
+    assumptions: Cell<usize>,
     /// Per placeholder of the main statement, the cast a probe pins on it.
     casts: RefCell<Vec<Option<String>>>,
+    /// Whether `casts` holds the statement's describe's answer yet.
+    pinned: Cell<bool>,
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
@@ -357,7 +373,7 @@ const MAX_ITEM_DEPTH: usize = 4;
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), casts: RefCell::new(Vec::new()), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed) -> Lazy<Analysis> {
@@ -401,6 +417,15 @@ impl<'a> Engine<'a> {
         let catalog_rows = catalog_rows(self.host, functions, &relations);
         for probe in &jsonshape::probes_ahead(&rewritten.sql) {
             self.prewarm(&probe.sql);
+        }
+        // The JSON shapes' probes, and every probe that settles them, pinned, once the describe
+        // has said what they are pinned with: the shapes are read only after the columns are
+        // settled, rounds later.
+        if let (true, Some(trust), Some(rows)) = (self.pinned.get(), &trust, &catalog_rows) {
+            self.prewarmed.borrow_mut().insert(rewritten.sql.clone());
+            for probe in &jsonshape::plan(&rewritten.sql, Dialect::Postgres, trust, &crate::levels::Columns::from_rows(&rows.columns)).probes {
+                self.prewarm_probe(&probe.sql, trust);
+            }
         }
         // The unique indexes of every table an `ON CONFLICT (…)` names its arbiter's columns for.
         let conflicts = conflict_targets(&rewritten.sql);
@@ -878,6 +903,43 @@ impl<'a> Engine<'a> {
         }
     }
 
+    /// Ask for the describe of every probe settling `sql` may read, its own and theirs in turn,
+    /// once the casts a probe is pinned with are known: the statements its FROM items run, its
+    /// leaf probe, its set operation's arms. Each probe settles the next only once described, so
+    /// asked one by one they would take a round each; every one of their texts follows from the
+    /// SQL, so all of them are asked at once. A guess `probe` never reads costs one describe, and
+    /// no more of them than the probes one analysis may settle are asked, the columns' and the
+    /// JSON shapes' together ([`Engine::prewarmed`]).
+    fn prewarm_tree(&self, sql: &str, trust: &Trust) {
+        if let Some((_, queries)) = infer::item_reads(sql) {
+            for query in &queries {
+                self.prewarm_probe(&query.sql, trust);
+            }
+        }
+        // The columns a leaf plan reads are a catalog query, answered in a later round when not
+        // yet asked; the leaves wait for it.
+        let Some(columns) = level_columns(sql, self.host) else { return };
+        let plan = infer::plan(sql, Dialect::Postgres, trust, &columns);
+        if let Some(set) = &plan.set_op {
+            self.prewarm_probe(&set.left, trust);
+            self.prewarm_probe(&set.right, trust);
+        }
+        if let (Some(leaves), true) = (&plan.leaves, plan.reads_leaves()) {
+            self.prewarm_probe(leaves, trust);
+        }
+    }
+
+    fn prewarm_probe(&self, sql: &str, trust: &Trust) {
+        {
+            let mut prewarmed = self.prewarmed.borrow_mut();
+            if prewarmed.len() > MAX_PROBES || !prewarmed.insert(sql.to_string()) {
+                return;
+            }
+        }
+        let _ = self.host.describe(&self.pin(sql));
+        self.prewarm_tree(sql, trust);
+    }
+
     // -----------------------------------------------------------------------------------------
     // Describe, settle, refine
     // -----------------------------------------------------------------------------------------
@@ -917,6 +979,15 @@ impl<'a> Engine<'a> {
         let types = self.types(&oids);
         let checks = self.checks(sql, &raw, parsed, written, false);
         let comments = self.comments(sql, &raw, parsed, written);
+        // The casts are set before the first probe, which is pinned with them: a probe described
+        // before them and again after would be two texts, each a describe and a round.
+        if raw.params.iter().any(|o| *o != 0 && self.registry.borrow().get(*o).is_none()) {
+            return None;
+        }
+        *self.casts.borrow_mut() = raw.params.iter().map(|o| self.registry.borrow().get(*o).map(|t| t.cast_name.clone()).filter(|c| !c.is_empty())).collect();
+        self.pinned.set(true);
+        self.prewarmed.borrow_mut().insert(sql.to_string());
+        self.prewarm_tree(sql, trust);
         // Nullability from provenance, then from the SQL.
         let settled = self.settle(sql, &raw, parsed, trust);
         let (Some(()), Some(mut described), Some(checks), Some(comments)) = (types, settled, checks, comments) else { return None };
@@ -931,7 +1002,6 @@ impl<'a> Engine<'a> {
             }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
-        *self.casts.borrow_mut() = raw.params.iter().map(|o| self.registry.borrow().get(*o).map(|t| t.cast_name.clone()).filter(|c| !c.is_empty())).collect();
         self.refine(sql, &mut described, trust)?;
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         Some(Ok((raw, described)))
@@ -1294,6 +1364,7 @@ impl<'a> Engine<'a> {
             let same = jsonshape::without_placeholders(&query.sql);
             if let Some(entry) = self.with_stack.borrow_mut().iter_mut().find(|(text, _, _)| *text == query.sql || jsonshape::without_placeholders(text) == same) {
                 entry.2 = true;
+                self.assumptions.set(self.assumptions.get() + 1);
                 let assumed = &entry.1;
                 let named = reads.iter().filter_map(|r| match r {
                     ItemRead::Column { item, column } if *item == i => Some((column.clone(), assumed.contains(column))),
@@ -1417,7 +1488,14 @@ impl<'a> Engine<'a> {
     /// Describe a synthesized statement the way the main one is described, refinement included.
     /// `Some(None)` is a probe the database refused, which proves nothing.
     fn probe(&self, sql: &str, trust: &Trust) -> Lazy<Option<DescribedStatement>> {
-        if self.probing.borrow().iter().any(|p| p == sql) || self.probe_calls.get() >= MAX_PROBE_CALLS {
+        if self.probing.borrow().iter().any(|p| p == sql) {
+            self.assumptions.set(self.assumptions.get() + 1);
+            return Some(None);
+        }
+        if let Some(outcome) = self.settled.borrow().get(sql) {
+            return Some(outcome.clone());
+        }
+        if self.probe_calls.get() >= MAX_PROBE_CALLS {
             return Some(None);
         }
         self.probe_calls.set(self.probe_calls.get() + 1);
@@ -1428,9 +1506,13 @@ impl<'a> Engine<'a> {
             self.budget.set(self.budget.get() - 1);
             self.probed.borrow_mut().insert(sql.to_string());
         }
+        let assumptions = self.assumptions.get();
         self.probing.borrow_mut().push(sql.to_string());
         let outcome = self.probe_inner(sql, trust);
         self.probing.borrow_mut().pop();
+        if let (true, Some(settled)) = (self.assumptions.get() == assumptions, &outcome) {
+            self.settled.borrow_mut().insert(sql.to_string(), settled.clone());
+        }
         outcome
     }
 

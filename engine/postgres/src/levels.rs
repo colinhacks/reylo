@@ -55,7 +55,11 @@ impl<R: Into<String>, C: Into<String>> FromIterator<(R, Vec<C>)> for Columns {
 /// Whether a statement holds a scalar subquery, the one place a rule asks whose an aggregate is:
 /// a statement without one needs no [`Columns`] for that.
 pub fn needed(sql: &str) -> bool {
-    crate::stack::run(|| needed_here(sql))
+    crate::stack::kept(&NEEDED, sql, || crate::stack::run(|| needed_here(sql)))
+}
+
+thread_local! {
+    static NEEDED: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 fn needed_here(sql: &str) -> bool {

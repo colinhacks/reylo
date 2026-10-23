@@ -1163,11 +1163,15 @@ pub struct ItemQuery {
     pub nulled: bool,
 }
 
+thread_local! {
+    static READS: std::cell::RefCell<Vec<(String, Option<(Vec<ItemRead>, Vec<ItemQuery>)>)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// Per target of the select list, what it reads of the FROM items that are statements of their
 /// own, and those items. `None` when the statement is not a plain SELECT that reads one, or when
 /// a `(row).*` hides how many columns a target is.
 pub fn item_reads(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
-    let (reads, queries) = crate::stack::run(|| reads_here(sql))?;
+    let (reads, queries) = crate::stack::kept(&READS, sql, || crate::stack::run(|| reads_here(sql)))?;
     let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Defaulted { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
     (0..queries.len()).any(read).then_some((reads, queries))
 }

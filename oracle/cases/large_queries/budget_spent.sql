@@ -1,0 +1,15 @@
+with c1 as (select id, name || '' as n from users),
+c2 as (select id, n || '' as n from c1),
+c3 as (select id, n || '' as n from c2),
+c4 as (select id, n || '' as n from c3),
+c5 as (select id, n || '' as n from c4),
+c6 as (select id, n || '' as n from c5),
+c7 as (select id, n || '' as n from c6),
+c8 as (select id, n || '' as n from c7),
+c9 as (select id, n || '' as n from c8),
+c10 as (select id, n || '' as n from c9),
+c11 as (select id, n || '' as n from c10),
+c12 as (select id, n || '' as n from c11),
+c13 as (select id, n || '' as n from c12),
+c14 as (select id, n || '' as n from c13)
+select json_build_object('id', c14.id, 'n', c14.n) as j from c14

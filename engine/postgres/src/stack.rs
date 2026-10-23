@@ -15,8 +15,60 @@ pub fn too_deep(error: &str) -> bool {
 /// and a caller that is not on the engine's stack (a framework helper on a tokio worker) gets the
 /// room for it all the same. The tree comes back to the caller, whose own walks over it take far
 /// less stack per level.
+///
+/// An analysis reads one statement, and each probe of it, many times over, and a host replays it
+/// round after round, so the trees of the last statements parsed are kept by their text: a copy
+/// of one costs a fraction of the parse.
 pub fn parse(sql: &str) -> pg_query::Result<pg_query::ParseResult> {
-    run(|| pg_query::parse(sql, 0))
+    if let Some(tree) = PARSED.with(|kept| kept.borrow().iter().find(|(text, _)| text == sql).map(|(_, tree)| copy(tree))) {
+        return Ok(tree);
+    }
+    let tree = run(|| pg_query::parse(sql, 0))?;
+    PARSED.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= KEPT {
+            kept.remove(0);
+        }
+        kept.push((sql.to_string(), copy(&tree)));
+    });
+    Ok(tree)
+}
+
+/// What `read` answers for `sql`, kept with the last answers by the text: a pure reading of a
+/// statement, which an analysis asks for over and over ([`parse`]).
+pub(crate) fn kept<T: Clone + 'static>(answers: &'static std::thread::LocalKey<std::cell::RefCell<Vec<(String, T)>>>, sql: &str, read: impl FnOnce() -> T) -> T {
+    if let Some(answer) = answers.with(|kept| kept.borrow().iter().find(|(text, _)| text == sql).map(|(_, answer)| answer.clone())) {
+        return answer;
+    }
+    let answer = read();
+    answers.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= KEPT {
+            kept.remove(0);
+        }
+        kept.push((sql.to_string(), answer.clone()));
+    });
+    answer
+}
+
+/// How many trees [`parse`] keeps: more than the statements one analysis parses, its probes and
+/// the expressions it reads alone included.
+const KEPT: usize = 64;
+
+thread_local! {
+    static PARSED: std::cell::RefCell<Vec<(String, pg_query::ParseResult)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn copy(tree: &pg_query::ParseResult) -> pg_query::ParseResult {
+    pg_query::ParseResult {
+        protobuf: tree.protobuf.clone(),
+        warnings: tree.warnings.clone(),
+        tables: tree.tables.clone(),
+        aliases: tree.aliases.clone(),
+        cte_names: tree.cte_names.clone(),
+        functions: tree.functions.clone(),
+        filter_columns: tree.filter_columns.clone(),
+    }
 }
 
 /// Print a tree back to SQL with libpg_query, on the engine's stack (see [`parse`]).
