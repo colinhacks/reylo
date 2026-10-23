@@ -6,7 +6,7 @@ title: "Supported drivers"
 
 Pass `.run()` a client from any of these drivers, or a Drizzle database over one. Transactions and connections taken from a client work too ([an example](#transactions)).
 
-The type check reads your schema through `pg` or postgres.js on Postgres, and `mysql2` on MySQL. If your app uses another driver, add one of these as a dev dependency.
+The type check reads your schema through a driver of its own, so your app can use any of these.
 
 ### Postgres
 

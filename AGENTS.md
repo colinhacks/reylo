@@ -11,7 +11,7 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | Path | What it is |
 | --- | --- |
 | `src/` | The npm package `reylo`, TypeScript: the content mapper, the run time (`.run()`, `.runSync()`, `.with()`), the bundler adapters, the preload `reylo/register` and the CLI `reylo generate` |
-| `packages/<database>/` | The engine packages `@reylosql/postgres`, `@reylosql/mysql` and `@reylosql/sqlite`: a `package.json`, a README and the committed `engine.wasm`, nothing else; optional peers of `reylo` at its exact version |
+| `packages/<database>/` | The engine packages `@reylosql/postgres`, `@reylosql/mysql` and `@reylosql/sqlite`: a `package.json`, a README, the committed `engine.wasm`, and `tooling.ts`, from which the build bundles the build-time half of `src/` into the package; Postgres's and MySQL's also hold their describer, `describe.ts`, with its driver as a dev dependency. Optional peers of `reylo` at its exact version |
 | `engine/` | The analysis engine, Rust: `core/`, shared by every database, and one crate per database, none depending on another, each implementing core's `Database` trait ([engine/README.md](./engine/README.md)). Built to wasm for the loader, and linked natively by the oracle |
 | `oracle/` | The soundness oracle (`reylo-oracle`) and `oracle/cases/`, the regression suite for everything the engine infers |
 | `tests/` | The loader's node tests |
@@ -27,16 +27,16 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | To change | Edit | Prove it with |
 | --- | --- | --- |
 | A type, nullability, JSON shape or cardinality Reylo infers | The engine crate of that database (map below) | An oracle case, the engine's tests, the rebuilt `engine.wasm` ([recipe](#an-inference-fix-in-the-engine)) |
-| What the type check shows: the declaration, the hover, a diagnostic | `src/mapper.ts`, `src/module-types.ts`, `src/render.ts`, `src/doc-comment.ts` | `tests/compiled.test.ts`, `definition`, `doc-comment`, `render` |
-| One analysis path and the `.reylo/` cache | `src/analyze.ts`; the engine's host is `src/engine.ts`, which answers it through `src/describe.ts`, `src/mysql-describe.ts` and `src/sqlite-describe.ts` | `tests/analyze.test.ts`, `engines`, `fingerprint` |
+| What the type check shows: the declaration, the hover, a diagnostic | `src/mapper-server.ts`, `src/module-types.ts`, `src/render.ts`, `src/doc-comment.ts` | `tests/compiled.test.ts`, `definition`, `doc-comment`, `render` |
+| One analysis path and the `.reylo/` cache | `src/analyze.ts`; the engine's host is `src/engine.ts`, which answers it through `packages/postgres/describe.ts`, `packages/mysql/describe.ts` and `src/sqlite-describe.ts` | `tests/analyze.test.ts`, `engines`, `fingerprint` |
 | How `.run()` binds parameters and decodes values | `src/execute.ts`, `src/values.ts` (one representation per SQL type), `src/decode.ts`, `src/decode-mysql.ts`, `src/decode-sqlite.ts`, `src/rows.ts` (structured parameters) | `tests/execute.test.ts`, `decode`, `values`, `representation`, `structured`, `rows`, `casts`, then `lab/driver-matrix` |
 | Typed JSON parameters, and a query's input and output JSON Schema | `src/json-schema.ts` (the run time's validator), `src/schema.ts`; the types are `engine/core/src/schema_type.rs` and `schema.rs` | `tests/json-schema.test.ts`, then `lab/json-schema-suite` |
 | The check of a SQLite statement on the app's own SQLite | `src/sqlite-drivers.ts` | `tests/sqlite-drivers.test.ts` |
 | The run-time freshness check | `src/fresh.ts` | `tests/fresh.test.ts` |
-| A bundler or runtime integration | `src/vite.ts`, `esbuild.ts`, `webpack.ts`, `turbopack.ts`, `next.ts`, `jest.ts`, `register.ts` (with `bridge.ts` and `register-worker.ts`); what they emit is `src/loader.ts` | `tests/vite.test.ts`, `next`, `jest`, then the matching example and `lab/bundlers` |
+| A bundler or runtime integration | `src/vite.ts`, `esbuild.ts`, `webpack.ts`, `turbopack.ts`, `next.ts`, `jest.ts`, `register.ts` (with `bridge.ts` and `register-worker.ts`), each of which loads the build-time half from the engine package (`src/engine-package.ts`, `src/tooling.ts`); what they emit is `src/loader.ts` | `tests/vite.test.ts`, `next`, `jest`, then the matching example and `lab/bundlers` |
 | The project file `.reylo.yaml` | `engine/core/src/config.rs` and `src/project.ts`; a core change, so all three artifacts are rebuilt. A new key, or a new meaning for one, is a design decision: agree it with a maintainer before writing it | `tests/project.test.ts`, `project-file-module`, `strict-params`, `cli`; the docs' `04-configuration.mdx` |
 | The placeholder lexer | `engine/core/src/lex.rs` and its port `src/lex.ts`, together | `tests/lex.test.ts` and the engine's tests |
-| The CLI | `src/cli.ts` | `tests/cli.test.ts` |
+| The CLI | `src/commands.ts`, which `src/cli.ts` starts | `tests/cli.test.ts` |
 | The docs | `site/content/` | `nub run build` in `site/` ([recipe](#a-docs-change)) |
 
 The live tests in these files skip without both test databases ([JavaScript](#javascript)). A change a user of Reylo would notice also updates the docs and the skill, `skills/using-reylo/SKILL.md`, in the same pull request.
@@ -56,20 +56,19 @@ The engine never opens a connection: it replays an analysis, names the statement
 
 Prefer nub over `node`, `bun`, npm, npx, pnpm and yarn: `nub install`, `nub add`, `nub run <script>`, `nub <file>` to run a file, `nubx <tool>` for a local CLI, and `nub --node <file>` for strict, unaugmented Node. It keeps the existing lockfiles. CI uses nub 0.9.6 on Node 24.
 
-- `nub install` at the root, then `nub run typecheck` (`tsc --noEmit --runExternalCode`, about a second) and `nub run test` (`node --test 'tests/**/*.test.ts'`, about 15 seconds) are the loader's checks.
-- CI fails on any skipped test: a run must end with `ℹ skipped 0`, and `nub run test 2>&1 | grep -E '^﹣|ℹ skipped'` lists each skip with its reason. `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name the test databases ([Test databases](#test-databases)); the Postgres tests of structured parameters, freshness and the schema fingerprint also need `lab/drivers` installed; the connection tests need the drivers linked into two labs; and the Jest, Vitest and SQLite-driver tests need `lab/drivers` and `lab/jest` installed. The full setup, as CI makes it, from the repository's root:
+- `nub install` at the root, in `packages/postgres` and in `packages/mysql` (the drivers the engines describe through, which the build bundles into them), then `nub run typecheck` (`tsc --noEmit --runExternalCode`, about a second) and `nub run test` (`node --test 'tests/**/*.test.ts'`, about 15 seconds) are the loader's checks.
+- CI fails on any skipped test: a run must end with `ℹ skipped 0`, and `nub run test 2>&1 | grep -E '^﹣|ℹ skipped'` lists each skip with its reason. `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name the test databases ([Test databases](#test-databases)); the Postgres tests of structured parameters, freshness and the schema fingerprint also need `lab/drivers` installed; and the Jest, Vitest and SQLite-driver tests need `lab/drivers` and `lab/jest` installed. The full setup, as CI makes it, from the repository's root:
 
   ```sh
+  (cd packages/postgres && nub install) && (cd packages/mysql && nub install)
   (cd lab/drivers && nub install) && (cd lab/jest && nub install)
-  mkdir -p lab/basic/node_modules/@reylosql lab/mysql/node_modules/@reylosql lab/jest/node_modules/@reylosql
-  ln -sfn ../../.. lab/basic/node_modules/reylo && ln -sfn ../../../../packages/postgres lab/basic/node_modules/@reylosql/postgres && ln -sfn ../../drivers/node_modules/postgres lab/basic/node_modules/postgres
-  ln -sfn ../../.. lab/mysql/node_modules/reylo && ln -sfn ../../../../packages/mysql lab/mysql/node_modules/@reylosql/mysql && ln -sfn ../../drivers/node_modules/mysql2 lab/mysql/node_modules/mysql2
+  mkdir -p lab/jest/node_modules/@reylosql
   ln -sfn ../../.. lab/jest/node_modules/reylo && ln -sfn ../../../../packages/sqlite lab/jest/node_modules/@reylosql/sqlite
   ```
 
   Every lab reaches the package through a link, `node_modules/reylo`, to the repository root, and its engine through `node_modules/@reylosql/<database>` into `packages/`. `nub install` in a lab removes the links, so make them again after one.
-- `nub run build` writes `dist/reylo` (no engine) and `dist/postgres`, `dist/sqlite` and `dist/mysql`, and refuses versions that disagree. The examples link `dist/` with `link:`, not the sources, so run it before `nub install` in an example and again after any change to `src/`. Never turn those links into `file:` dependencies: nub 0.9.6 never refreshes a `file:` directory it has installed once, so the example would run a stale build.
-- `reylo` finds a project's engine from the project first, then from its own install (`src/engine.ts`), and refuses one of another version. The root's own tests reach the three engines through its `devDependencies` (`link:packages/<database>`).
+- `nub run build` writes `dist/reylo` (the run time and the entry points, no engine) and `dist/postgres`, `dist/sqlite` and `dist/mysql` (the engine, `tooling.js` and, for Postgres and MySQL, `describe.js` with the driver inside), and refuses versions that disagree. The examples link `dist/` with `link:`, not the sources, so run it before `nub install` in an example and again after any change to `src/`. Never turn those links into `file:` dependencies: nub 0.9.6 never refreshes a `file:` directory it has installed once, so the example would run a stale build.
+- `reylo` finds a project's engine from the project first, then from its own install (`src/engine.ts`, `src/engine-package.ts`), and refuses one of another version. The root's own tests reach the three engines through its `devDependencies` (`link:packages/<database>`).
 - `site/` has its own install: `nub install` there before building or serving it.
 
 ### Rust
@@ -136,7 +135,7 @@ The docs are `site/content/docs/`: the main page `index.mdx`, which continues in
 
 `.github/workflows/test.yml` runs on every push to `main` and every pull request, in three jobs:
 
-- **test**: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `lab/drivers` and in `lab/jest`, the lab links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
+- **test**: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `packages/postgres`, `packages/mysql`, `lab/drivers` and `lab/jest`, the Jest lab's links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
 - **engine**: `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle`.
 - **oracle**: `cargo run -q -p reylo-oracle -- --url <pg> --mysql-url <mysql> --strict-coverage oracle/cases`, on Postgres 18 with the five JSON Schema validators, which `.github/scripts/json-schema-validators.sh` builds and a cache keeps, and MySQL 8.4. A failure in the step that builds the validators is not the engine's.
 

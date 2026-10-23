@@ -12,7 +12,7 @@ description: How Reylo types SQL queries on MySQL. The TypeScript type of each c
 | MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
 | Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url) |
 | Drivers | `mysql2`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` ([Drivers](#drivers)) |
-| Type checking | Needs `mysql2` in your project, to read the schema |
+| Type checking | Reads the schema through the `mysql2` inside `@reylosql/mysql`, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -552,7 +552,7 @@ The check rejects an integer out of range, a decimal with more digits than its s
 
 ## Drivers
 
-Reylo decodes its query results itself, so options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through `mysql2`, so if your app uses PlanetScale or `Bun.sql`, add `mysql2` as a dev dependency.
+Reylo decodes its query results itself, so options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the `mysql2` that `@reylosql/mysql` carries, whatever driver your app uses, PlanetScale and `Bun.sql` included.
 
 Each example below runs this query:
 
