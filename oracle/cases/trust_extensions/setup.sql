@@ -25,3 +25,4 @@ create table users (
 -- A CHECK the seeded values break: its own table, with rows of its own.
 create table accounts (id int primary key, status text not null check (status in ('active', 'banned')));
 insert into accounts values (1, 'active'), (2, 'banned');
+create table posts (id bigint primary key, author_id bigint, title text not null);

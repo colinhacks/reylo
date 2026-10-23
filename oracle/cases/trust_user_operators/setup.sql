@@ -19,3 +19,4 @@ create function lower(int4) returns text language sql immutable as $$ select nul
 -- one may run to reach the other.
 create function bool_to_int8(bool) returns int8 language sql immutable as $$ select null::int8 $$;
 create cast (bool as int8) with function bool_to_int8(bool) as implicit;
+create table posts (id bigint primary key, author_id bigint, title text not null);

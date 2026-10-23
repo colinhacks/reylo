@@ -491,7 +491,7 @@ impl Trust {
     /// Whether a call of `name` is the built-in only for some operands' types: a user or an
     /// extension defined the name, or an implicit cast between built-in types by a function of
     /// theirs, which a built-in's candidate may run on its operand.
-    fn checked(&self, name: &str) -> bool {
+    pub(crate) fn checked(&self, name: &str) -> bool {
         !self.builtin(name) || self.overloads.as_ref().is_some_and(|o| o.0.casts_implicitly())
     }
 
@@ -2025,19 +2025,7 @@ impl Reader<'_> {
     /// untyped, a NULL is anything a probe wrote in place of a parameter, a parameter is untyped on
     /// its first read and typed after, and a number or a boolean is typed as `make_const` types it.
     fn fixed(&self, node: &Node) -> Option<Operand> {
-        match node.node.as_ref()? {
-            NodeEnum::AConst(c) if c.isnull => Some(Operand::Opaque),
-            NodeEnum::AConst(c) => Some(match c.val.as_ref() {
-                Some(protobuf::a_const::Val::Sval(_)) => Operand::Unknown,
-                Some(protobuf::a_const::Val::Ival(_)) => Operand::Is(oid::INT4),
-                Some(protobuf::a_const::Val::Fval(f)) => postgres_number(&f.fval).map_or(Operand::Opaque, Operand::Is),
-                Some(protobuf::a_const::Val::Boolval(_)) => Operand::Is(oid::BOOL),
-                Some(protobuf::a_const::Val::Bsval(_)) => Operand::Is(BIT),
-                None => Operand::Opaque,
-            }),
-            NodeEnum::ParamRef(p) => Some(self.trust.param(p.number)),
-            _ => None,
-        }
+        fixed_operand(node, self.trust)
     }
 
     /// A call of the shadowed `name` over `nodes` read as `args`: the claim, where the arguments'
@@ -2048,6 +2036,23 @@ impl Reader<'_> {
             Some(check) => Expr::Call(Box::new(Call { check, args, claim })),
             None => Expr::Unknown,
         }
+    }
+}
+
+/// An operand's type as the server reads it, where the SQL alone says it ([`Reader::fixed`]).
+pub(crate) fn fixed_operand(node: &Node, trust: &Trust) -> Option<Operand> {
+    match node.node.as_ref()? {
+        NodeEnum::AConst(c) if c.isnull => Some(Operand::Opaque),
+        NodeEnum::AConst(c) => Some(match c.val.as_ref() {
+            Some(protobuf::a_const::Val::Sval(_)) => Operand::Unknown,
+            Some(protobuf::a_const::Val::Ival(_)) => Operand::Is(oid::INT4),
+            Some(protobuf::a_const::Val::Fval(f)) => postgres_number(&f.fval).map_or(Operand::Opaque, Operand::Is),
+            Some(protobuf::a_const::Val::Boolval(_)) => Operand::Is(oid::BOOL),
+            Some(protobuf::a_const::Val::Bsval(_)) => Operand::Is(BIT),
+            None => Operand::Opaque,
+        }),
+        NodeEnum::ParamRef(p) => Some(trust.param(p.number)),
+        _ => None,
     }
 }
 
@@ -2898,6 +2903,76 @@ mod tests {
         let before = Trust { jsonb_casts_raise: true, ..Default::default() };
         let p = plan("SELECT j::int4 FROM docs", Dialect::Postgres, &before);
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[col(false, oid::JSONB)])).non_null);
+    }
+
+    /// A trust that knows pgvector's `=`, `+` and `sum`, which no built-in type converts to, and
+    /// PostGIS's `=`, which `text` converts to, beside the built-ins over `int4` and `text`.
+    fn extended(param_types: Vec<u32>) -> Trust {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        let opaque = |kind: &str, name: &str, arity: u32| vec![json!(format!("opaque {kind}")), json!(name), Value::Null, json!(arity), json!(0)];
+        let builtin = |kind: &str, name: &str, args: &[u32], result: u32| vec![json!(format!("builtin {kind}")), json!(name), json!(args), json!(result), Value::Null];
+        let rows = vec![
+            opaque("b", "=", 2),
+            opaque("b", "+", 2),
+            opaque("f", "sum", 1),
+            vec![json!("user b"), json!("="), json!([GEOMETRY, GEOMETRY]), json!(0), json!(0)],
+            vec![json!("reach"), Value::Null, json!([oid::TEXT, oid::BYTEA]), json!(GEOMETRY), Value::Null],
+            builtin("b", "=", &[oid::INT4, oid::INT4], oid::BOOL),
+            builtin("b", "=", &[oid::TEXT, oid::TEXT], oid::BOOL),
+            builtin("b", "+", &[oid::INT4, oid::INT4], oid::INT4),
+            builtin("f", "sum", &[oid::INT4], oid::INT8),
+        ];
+        let mut trust = Trust { param_types, non_null_params: true, ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        trust
+    }
+
+    const VECTOR: u32 = 20000;
+    const GEOMETRY: u32 = 20200;
+
+    #[test]
+    fn a_shadowed_name_proves_what_the_built_in_does_where_the_operands_resolve_to_it() {
+        let trust = extended(vec![oid::TEXT]);
+        let facts = |sql: &str, leaves: &[DescribedColumn]| -> Vec<Fact> {
+            plan(sql, Dialect::Postgres, &trust).head.iter().map(|e| resolve(e.as_ref().expect("a claim"), Some(leaves))).collect()
+        };
+        let int = facts("SELECT a + 1 AS x, a = 2 AS y, a = 'x' AS z, (a + 1) = 2 AS n FROM t", &vec![col(false, oid::INT4); 4]);
+        assert!(int.iter().all(|f| f.non_null), "{int:?}");
+        assert_eq!(int[0].type_oid, Some(oid::INT4));
+        // A vector's own `=` and `+`, whatever they answer.
+        let vector = facts("SELECT a + a AS x, a = a AS y FROM t", &vec![col(false, VECTOR); 4]);
+        assert!(vector.iter().all(|f| !f.non_null), "{vector:?}");
+        // `text` converts to `geometry`, but `text = text` is an exact match; `text = bytea` is not.
+        assert!(facts("SELECT a = 'x' AS y FROM t", &[col(false, oid::TEXT)])[0].non_null);
+        assert!(!facts("SELECT a = b AS y FROM t", &[col(false, oid::TEXT), col(false, oid::BYTEA)])[0].non_null);
+        // Two untyped operands may resolve to any overload.
+        assert!(!facts("SELECT 'a' = 'b' AS y", &[])[0].non_null);
+        // A grouped `sum` of an `int4` is the built-in's, an `int8`.
+        let grouped = facts("SELECT sum(a) AS s FROM t GROUP BY b", &[col(false, oid::INT4)]);
+        assert_eq!(grouped[0], Fact { non_null: true, type_oid: Some(oid::INT8) });
+        // A trust that says nothing of the overloads proves nothing, as before.
+        let bare = Trust { shadowed: trust.shadowed.clone(), ..Trust::default() };
+        assert_eq!(plan("SELECT a + 1 FROM t", Dialect::Postgres, &bare).head[0], Some(Expr::Unknown));
+    }
+
+    #[test]
+    fn a_strict_where_on_a_shadowed_name_narrows_where_its_operands_resolve_to_the_built_in() {
+        let trust = extended(vec![oid::TEXT]);
+        let fact = |sql: &str, leaves: &[DescribedColumn], at: usize| resolve(plan(sql, Dialect::Postgres, &trust).head[at].as_ref().expect("a claim"), Some(leaves)).non_null;
+        // The probe reads the WHERE's column: a `text` beside a parameter typed `text`.
+        assert!(fact("SELECT name FROM t WHERE name = $1", &[col(true, oid::TEXT)], 0));
+        assert!(!fact("SELECT name FROM t WHERE name = $1", &[col(true, VECTOR)], 0));
+        // The expressions that read the column are narrowed too.
+        let p = plan("SELECT name || 'x' AS shout FROM t WHERE name = $1", Dialect::Postgres, &trust);
+        assert!(p.reads_leaves());
+        let leaves = [col(true, oid::TEXT), col(true, oid::TEXT)];
+        assert!(resolve(p.head[0].as_ref().unwrap(), Some(&leaves)).non_null);
+        // No describe of the parameter: it may be of any type.
+        let untyped = extended(Vec::new());
+        assert!(!resolve(plan("SELECT name FROM t WHERE name = $1", Dialect::Postgres, &untyped).head[0].as_ref().unwrap(), Some(&[col(true, oid::TEXT)])).non_null);
+        // A NULL a probe wrote for a parameter is of any type too.
+        assert!(!fact("SELECT name FROM t WHERE name = NULL", &[col(true, oid::TEXT)], 0));
     }
 
     #[test]

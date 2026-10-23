@@ -1055,6 +1055,27 @@ impl<'a> Engine<'a> {
         Some(())
     }
 
+    /// The tables on the nullable side of an outer join, with the ones a strict WHERE reduced only
+    /// by tests that may hold of NULL put back ([`witness_holds`]). A WITH query among them brings
+    /// the relations it reads, which is where the describe traces its columns. The column types a
+    /// test's resolution reads are asked only where a test rests on a name a user also defined.
+    fn unreduced(&self, parsed: &Parsed, trust: &Trust) -> Lazy<Vec<String>> {
+        let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.checked(&c.name));
+        let columns = if typed {
+            let relations = relations_of(Some(parsed));
+            if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement)?.unwrap_or_default() }
+        } else {
+            Vec::new()
+        };
+        let mut tables = parsed.nullable_tables.clone();
+        for (relation, witnesses) in &parsed.reductions {
+            if !witnesses.iter().any(|w| witness_holds(w, relation, &columns, trust)) {
+                tables.push(relation.clone());
+            }
+        }
+        Some(parsed.nulled_tables(tables))
+    }
+
     /// Ask for a probe's describe ahead of the round that reads it, when nothing has to be
     /// pinned on it first: `probe` finds the answer waiting.
     fn prewarm(&self, sql: &str) {
@@ -1403,7 +1424,10 @@ impl<'a> Engine<'a> {
             let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
             self.host.query(ATTNOTNULL_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)
         };
-        let nullable_tables: Vec<String> = parsed.map(|p| unreduced(p, trust)).unwrap_or_default();
+        let nullable_tables: Vec<String> = match parsed {
+            Some(p) => self.unreduced(p, trust)?,
+            None => Vec::new(),
+        };
         let nullable_tables: &[String] = &nullable_tables;
         let relnames = if nullable_tables.is_empty() || rels.is_empty() {
             Some(Ok(Vec::new()))
@@ -2464,18 +2488,45 @@ pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
     }
 }
 
-/// The tables on the nullable side of an outer join, with the ones a strict WHERE reduced only by
-/// operators the catalog says a user or an extension also defined put back: such an operator may
-/// be true of NULL, so its conjunct does not prove the joined row exists. A WITH query among them
-/// brings the relations it reads, which is where the describe traces its columns.
-fn unreduced(parsed: &Parsed, trust: &Trust) -> Vec<String> {
-    let mut tables = parsed.nullable_tables.clone();
-    for (relation, witnesses) in &parsed.reductions {
-        if witnesses.iter().all(|names| names.iter().any(|n| !trust.holds(n))) {
-            tables.push(relation.clone());
-        }
+/// Whether a strict test that reduced an outer join on `relation` holds of NULL nowhere: every cast
+/// it rests on keeps its argument's nullability, and every operator and function is the built-in
+/// one, or resolves to it for its operands' types, the test's column of the type `columns` (the
+/// rows of [`cardinality::COLUMNS_QUERY`]) gives it. A user's operator may be true of NULL, so a
+/// test that rests on one does not prove the joined row exists.
+fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Value>], trust: &Trust) -> bool {
+    use crate::resolution::Operand;
+    if !witness.names.iter().filter(|n| n.starts_with("::")).all(|n| trust.holds(n)) {
+        return false;
     }
-    parsed.nulled_tables(tables)
+    // A domain's column, or one the catalog does not report, is of no type the build vouches for.
+    let read = || -> Option<Operand> {
+        let name = witness.column.last()?;
+        let row = columns.iter().find(|r| r.first().and_then(as_str) == Some(relation))?;
+        let at = row.get(1).and_then(as_strings)?.iter().position(|c| c == name)?;
+        let base = row.get(2)?.as_array()?.get(at).and_then(as_u32)?;
+        let declared = row.get(5)?.as_array()?.get(at).and_then(as_u32)?;
+        Some(if base == declared { Operand::Is(base) } else { Operand::Opaque })
+    };
+    let column = || read().unwrap_or(Operand::Opaque);
+    witness.calls.iter().all(|call| {
+        let operands: Vec<Operand> = call
+            .args
+            .iter()
+            .map(|a| match a.node.as_ref() {
+                Some(NodeEnum::ColumnRef(c)) if bare_fields(c).as_ref() == Some(&witness.column) => column(),
+                _ => infer::fixed_operand(a, trust).unwrap_or(Operand::Opaque),
+            })
+            .collect();
+        trust.resolves(call.kind, &call.name, &operands).is_some()
+    })
+}
+
+/// A column reference's names, where each is a plain name.
+fn bare_fields(c: &pg_query::protobuf::ColumnRef) -> Option<Vec<String>> {
+    c.fields.iter().map(|f| match f.node.as_ref() {
+        Some(NodeEnum::String(s)) => Some(s.sval.clone()),
+        _ => None,
+    }).collect()
 }
 
 /// The relations a statement reads or writes, as the parse names them, sorted. libpg_query
@@ -3177,6 +3228,26 @@ mod tests {
             assert_eq!(check_values(other, "status"), None, "{other}");
         }
         assert_eq!(with_values(Type::Scalar { name: "text".into() }, Some(&["a".to_string()])), Type::Enum { name: "text".into(), labels: vec!["a".into()] });
+    }
+
+    #[test]
+    fn a_strict_where_reduces_an_outer_join_where_its_operands_resolve_to_the_built_in() {
+        use crate::resolution::{Overloads, Shared};
+        // pgvector's `=`, which no built-in type converts to.
+        let rows = vec![vec![json!("opaque b"), json!("="), Value::Null, json!(2), json!(0)], vec![json!("builtin b"), json!("="), json!([oid::TEXT, oid::TEXT]), json!(oid::BOOL), Value::Null]];
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        // `users.email` is a `text`, `users.code` one of a domain over it.
+        let columns = vec![vec![json!("users"), json!(["id", "email", "code"]), json!([oid::INT8, oid::TEXT, oid::TEXT]), json!([true, true, true]), json!(false), json!([oid::INT8, oid::TEXT, 30000])]];
+        let held = |sql: &str| {
+            let parsed = analyze::analyze(sql).unwrap();
+            let (relation, witnesses) = &parsed.reductions[0];
+            witnesses.iter().any(|w| witness_holds(w, relation, &columns, &trust))
+        };
+        assert!(held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email = 'x'"));
+        assert!(!held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.code = 'x'"), "a domain's column");
+        assert!(!held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email = p.title"), "another column, of no type the test reads");
+        assert!(held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email IS NOT NULL"));
     }
 
     #[test]

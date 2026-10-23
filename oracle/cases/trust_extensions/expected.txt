@@ -7,5 +7,7 @@ extension_params.sql: many (h: citext) -> { handle: citext? }
 extension_types.sql: many () -> { h: bool?, has: bool?, inside: bool?, anc: bool?, lt: bool?, left: bool?, m: citext? }
 grouped.sql: many () -> { s: int8, m: text, n: int8 }
 key_literal.sql: maybeOne () -> { email: text }
+outer_join.sql: many (e: text) -> { title: text, email: text, age: int4 }
+outer_join_extension.sql: many () -> { title: text, email: text?, age: int4? }
 total.sql: one () -> { s: int8? }
 where_param.sql: many (n: text) -> { name: text, shout: text }

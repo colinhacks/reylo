@@ -23,6 +23,22 @@ pub enum Filled {
     Position(usize),
 }
 
+/// One strict test that took a table off [`Analysis::nullable_tables`]: the column of it the test
+/// is strict in, as written, and the names its strictness rests on, the calls among them with
+/// their operands, which say for which types a user's overload of such a name is not the one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Witness {
+    pub column: Vec<String>,
+    pub names: Vec<String>,
+    pub(crate) calls: Vec<crate::infer::StrictCall>,
+}
+
+impl From<crate::infer::Strict> for Witness {
+    fn from(s: crate::infer::Strict) -> Witness {
+        Witness { column: s.column, names: s.names, calls: s.calls }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Analysis {
     pub kind: StatementKind,
@@ -69,7 +85,7 @@ pub struct Analysis {
     /// NULL`; see `infer::Strict`). A test proves the joined row exists only when those are the
     /// built-in ones, which the parse alone cannot know: a host with the catalog's word puts back
     /// a table no witness holds for.
-    pub reductions: Vec<(String, Vec<Vec<String>>)>,
+    pub reductions: Vec<(String, Vec<Witness>)>,
     /// Each WITH query's name beside every relation it reads, through the WITH queries it reads
     /// in turn. The describe traces a column read through the query to its table, so an outer
     /// join that nulls the query nulls those tables too ([`Analysis::nulled_tables`]).
@@ -324,7 +340,7 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
     // qualifier is that one occurrence's name in the top-level FROM: a test of `a.id` in a
     // self-join, or of a subquery that goes by the table's name, says nothing of the occurrence
     // the join nulls.
-    let mut reductions: Vec<(String, Vec<Vec<String>>)> = Vec::new();
+    let mut reductions: Vec<(String, Vec<Witness>)> = Vec::new();
     let once = |rel: &str| occurrences.get(rel) == Some(&1);
     if let NodeEnum::SelectStmt(s) = top {
         if let Some(w) = s.where_clause.as_deref() {
@@ -334,10 +350,10 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
                 if !once(rel) {
                     return true;
                 }
-                let witnesses: Vec<Vec<String>> = strict
+                let witnesses: Vec<Witness> = strict
                     .iter()
                     .filter(|st| matches!(st.column.as_slice(), [q, _] if aliases.get(q).is_some_and(|r| r == rel)))
-                    .map(|st| st.names.clone())
+                    .map(|st| Witness::from(st.clone()))
                     .collect();
                 if witnesses.is_empty() {
                     return true;
@@ -534,7 +550,7 @@ fn alias_map(from: &[protobuf::Node]) -> HashMap<String, String> {
 /// row they return, though an outer join among them nulls it: the witnesses of the inner join's
 /// ON conjuncts strict in it that reject its null extension last (`None` when no outer join
 /// below nulls it, or when one nulls it again above).
-fn reduced_by_joins(item: &protobuf::Node, rel: &str) -> Option<Vec<Vec<String>>> {
+fn reduced_by_joins(item: &protobuf::Node, rel: &str) -> Option<Vec<Witness>> {
     /// The joins from `node` down to the relation, each with whether the relation is on its
     /// right side, and the relation's alias.
     fn path<'a>(node: &'a protobuf::Node, rel: &str, out: &mut Vec<(&'a protobuf::JoinExpr, bool)>) -> Option<String> {
@@ -557,7 +573,7 @@ fn reduced_by_joins(item: &protobuf::Node, rel: &str) -> Option<Vec<Vec<String>>
     let mut joins = Vec::new();
     let alias = path(item, rel, &mut joins)?;
     let mut nulled = false;
-    let mut witnesses: Vec<Vec<String>> = Vec::new();
+    let mut witnesses: Vec<Witness> = Vec::new();
     for (join, right) in joins.iter().rev() {
         let kind = join.jointype;
         if (kind == JoinType::JoinLeft as i32 && *right) || (kind == JoinType::JoinRight as i32 && !*right) || kind == JoinType::JoinFull as i32 {
@@ -566,14 +582,14 @@ fn reduced_by_joins(item: &protobuf::Node, rel: &str) -> Option<Vec<Vec<String>>
             continue;
         }
         if nulled && kind == JoinType::JoinInner as i32 && join.using_clause.is_empty() && !join.is_natural {
-            let strict: Vec<Vec<String>> = join
+            let strict: Vec<Witness> = join
                 .quals
                 .as_deref()
                 .map(crate::infer::strict_in)
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|st| matches!(st.column.as_slice(), [q, _] if *q == alias))
-                .map(|st| st.names)
+                .map(Witness::from)
                 .collect();
             if !strict.is_empty() {
                 nulled = false;

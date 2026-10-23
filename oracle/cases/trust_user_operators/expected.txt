@@ -2,6 +2,8 @@ cast_function.sql: many () -> { m: int8? }
 exact_builtin.sql: many () -> { small: bool, plus: int4, cat: text, l: text, times: int4 }
 implicit_route.sql: many () -> { p: int8? }
 key_literal.sql: maybeOne () -> { name: text }
+outer_join_builtin.sql: many () -> { title: text, name: text, age: int4 }
+outer_join_user.sql: many () -> { title: text, name: text?, age: int4? }
 polymorphic.sql: many () -> { c: text? }
 user_exact.sql: many () -> { same: bool? }
 user_function.sql: many () -> { l: text? }
