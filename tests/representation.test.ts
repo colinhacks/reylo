@@ -223,7 +223,8 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
     insert into t values (1, 5, 1.5, 'hi', x'0102ff', 1, 7, 2.5), (2, 6, null, null, null, 0, x'01', 'abc');
     create table big (id integer primary key, v integer); insert into big values (1, 9007199254740993);
     create table odd (id integer primary key, ok boolean); insert into odd values (1, 2);
-    create table loose (id integer primary key, n integer, s text); insert into loose values (1, 'abc', x'0102')`);
+    create table loose (id integer primary key, n integer, s text); insert into loose values (1, 'abc', x'0102');
+    create table tight (id integer primary key, n integer not null) strict; insert into tight values (1, 5)`);
   setup.close();
   // A column declared BOOLEAN and a comparison are booleans.
   const q = await built(root, "file:./app.db", "all_types", "select *, n > 5 as more from t order by id");
@@ -234,6 +235,8 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   const looseS = await built(root, "file:./app.db", "loose_s", "select s from loose");
   const textInN = /Column "n" is typed number and holds the text "abc"/;
   const blobInS = /Column "s" is typed string and holds a BLOB of 2 bytes/;
+  // A value that is one of several kinds is typed unknown, so nothing is refused over a STRICT table.
+  const mixed = await built(root, "file:./app.db", "mixed", "select n as v from tight union all select 'x'");
   // libSQL's intMode "string" hands the 2 over as its digits.
   const refused = /Column "ok" is a boolean, stored as 0 or 1, and holds "?2"?, which is neither/;
   const rows = [
@@ -253,6 +256,7 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   assert.throws(() => looseN.runSync(db), textInN);
   assert.throws(() => looseS.runSync(db), blobInS);
   assert.equal(db.prepare("select n from loose").get().n, "abc", "the control: SQLite lets the text in");
+  assert.deepEqual(plain(mixed.runSync(db)), [{ v: 5 }, { v: "x" }], "better-sqlite3: a STRICT table's union of a number and text");
   db.close();
   const node = new DatabaseSync(file, { readBigInts: true });
   assert.deepEqual(plain(await q.run(node)), rows, "node:sqlite with readBigInts");
@@ -260,6 +264,7 @@ test("SQLite: one row on every driver, whatever its integer setting; an integer 
   await assert.rejects(odd.run(node), refused);
   await assert.rejects(looseN.run(node), textInN);
   await assert.rejects(looseS.run(node), blobInS);
+  assert.deepEqual(plain(await mixed.run(node)), [{ v: 5 }, { v: "x" }], "node:sqlite: a STRICT table's union of a number and text");
   node.close();
   for (const intMode of ["number", "bigint", "string"]) {
     const client = createClient({ url: `file:${file}`, intMode });
