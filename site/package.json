@@ -9,6 +9,12 @@
     "capture": "nub scripts/capture-types.ts"
   },
   "dependencies": {
+    "@codemirror/autocomplete": "6.20.4",
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-sql": "6.10.0",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
     "@react-router/node": "8.5.0",
     "docs-kit": "link:./docs-kit",
     "fumadocs-core": "^16.15.1",
@@ -18,11 +24,12 @@
     "isbot": "^5.2.2",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
-    "react-router": "8.5.0"
+    "react-router": "8.5.0",
+    "shiki": "4.4.3"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260929.1",
-    "@electric-sql/pglite": "0.5.8",
+    "@electric-sql/pglite": "0.5.11",
     "@libsql/client": "0.18.0",
     "@mdx-js/mdx": "3.1.1",
     "@neondatabase/serverless": "1.1.0",

@@ -183,6 +183,17 @@ const where = (node: MdNode) => `line ${node.position?.start.line ?? '?'}`;
 /** A database's own page, whose every example is that database's. */
 const DIALECT_PAGE = /(^|\/)(postgres|mysql|sqlite)\.mdx$/;
 
+/** The main page's Postgres schema, its `schema.sql` blocks: what the playground's PGlite holds (lib/live/plugin.ts). */
+let postgresSchema: string | undefined;
+export function pagePostgresSchema(): string {
+  if (postgresSchema === undefined) {
+    const blocks = collectFiles(pageFiles(process.cwd())).filter((b) => b.name === SCHEMA_FILE && b.dialect === 'postgres');
+    if (!blocks.length) throw new Error("the main page has no Postgres schema.sql block, which the live card's database holds");
+    postgresSchema = blocks.map((b) => b.node.value).join('\n\n');
+  }
+  return postgresSchema;
+}
+
 /** The element that shows its statements with the types Reylo infers for them (`renderInferred`). */
 export const INFERRED = 'Inferred';
 /** A card's schema block: ```sql schema dialect="postgres"```. */
@@ -457,7 +468,7 @@ export const INFERRED_LAYOUT: 'side' | 'rows' = 'rows';
 const TYPE_WIDTH = { side: 30, rows: 64 } as const;
 
 /** A statement's module (as `render` in scripts/capture-types.ts writes it): its parameters, row and cardinality. */
-function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
+export function moduleTypes(module: string): { params: string | undefined; row: string; cardinality: string } {
   const params = /^export type Params = (.*);$/m.exec(module)?.[1];
   const row = /^export type Row = (.*);$/m.exec(module)?.[1];
   const cardinality = /declare const query: Query<[\s\S]*, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)"> & \{/.exec(module)?.[1];

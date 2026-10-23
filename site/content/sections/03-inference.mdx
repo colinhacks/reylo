@@ -18,6 +18,8 @@ To type a query, Reylo has your live database prepare it, without running it, an
 - **Cardinality** — from keys, aggregates, `limit 1` and `returning`
 - **Column comments** — on Postgres and MySQL, shown when you hover a field that reads the column
 
+<PlaygroundLink />
+
 <Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
 
 Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`.

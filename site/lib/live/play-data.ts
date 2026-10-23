@@ -1,0 +1,104 @@
+// What /play is drawn with at build time (app/routes/play.tsx's loader): the main page's Postgres
+// schema, highlighted; the examples, one per subsection of the main page's Inference section, each
+// with its types; and the tables and columns the editor completes. The types come from the same
+// engine and the same PGlite snapshot the reader's tab loads (lib/live/plugin.ts writes it before
+// the build reads it), through the same function (lib/live/analyze.ts), so the page is complete,
+// for every example, before anything loads.
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { AnswerCache } from '../../../src/engine-core.ts';
+import { pageFiles } from '../page-files.ts';
+import { collectFiles, moduleTypes, pagePostgresSchema, readModules } from '../remark-mapper.ts';
+import { formatType, resultType } from '../type-format.ts';
+import { analyzeStatement, COMPLETION_QUERY, completionSchema, type LiveResult } from './analyze.ts';
+import { instantiateEngine } from './engine.ts';
+import { loadHighlighter, tokens, type Token } from './highlight.ts';
+import { pgliteIo } from './pg-io.ts';
+
+export type Example = {
+  /** The subsection's heading. */
+  title: string;
+  /** Its anchor on the main page, which the address names: `?example=nested-fetching`. */
+  slug: string;
+  sql: string;
+  sqlTokens: Token[][];
+  result: LiveResult;
+  params?: Token[][];
+  returns: Token[][];
+};
+
+export type PlayData = {
+  schema: Token[][];
+  examples: Example[];
+  /** The slug of the example the page opens with. */
+  start: string;
+  completions: Record<string, string[]>;
+};
+
+/** The example the page opens with: nested JSON, a nullable object and a cardinality. */
+const START = 'nested-fetching';
+
+/**
+ * The Inference section's subsections, each by its heading and its first Postgres statement (one
+ * written for every dialect, or for Postgres).
+ */
+function inferenceStatements(site: string): { title: string; slug: string; sql: string }[] {
+  const source = readFileSync(path.join(site, 'content', 'sections', '03-inference.mdx'), 'utf8');
+  const out: { title: string; slug: string; sql: string }[] = [];
+  for (const part of source.split(/\n### /).slice(1)) {
+    const heading = part.slice(0, part.indexOf('\n'));
+    const title = heading.replace(/\s*\[#[^\]]*\]\s*$/, '').replace(/`/g, '').trim();
+    const anchor = /\[#([^\]]+)\]/.exec(heading)?.[1];
+    const slug = anchor ?? title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const blocks = [...part.matchAll(/```sql ([^\n]*)\n([\s\S]*?)```/g)];
+    const block = blocks.find(([, meta]) => /file="/.test(meta!) && /dialect="(?:postgres|all)"/.test(meta!));
+    if (block) out.push({ title, slug, sql: block[2]!.replace(/\n$/, '') });
+  }
+  return out;
+}
+
+export async function playData(): Promise<PlayData> {
+  const site = process.cwd();
+  const { PGlite } = await import('@electric-sql/pglite');
+  const pg = await PGlite.create({ loadDataDir: new Blob([readFileSync(path.join(site, '.live', 'postgres.tar'))]) });
+  try {
+    const engine = await instantiateEngine(await WebAssembly.compile(readFileSync(path.join(site, '..', 'packages', 'postgres', 'engine.wasm'))));
+    const io = pgliteIo(pg);
+    const h = await loadHighlighter();
+    const examples: Example[] = [];
+    const cards = collectFiles(pageFiles(site), site).filter((b) => b.inferred && b.dialect === 'postgres');
+    const modules = readModules(site);
+    for (const { title, slug, sql } of inferenceStatements(site)) {
+      const result = await analyzeStatement(engine, io, new AnswerCache(), sql);
+      if (result.diagnostics.length) {
+        console.warn(`lib/live/play-data.ts: the Inference example "${title}" is left out: against the main page's Postgres schema, ${result.diagnostics[0]!.message}`);
+        continue;
+      }
+      // A card that shows a schema of its own is an example here only where the main page's schema
+      // gives its statement the types the card shows.
+      const card = cards.find((b) => b.node.value.replace(/\n$/, '') === sql);
+      if (card?.schema !== undefined) {
+        const module = modules.postgres?.[card.name!]?.[card.hash];
+        const shown = module && moduleTypes(module);
+        const flat = (t: string | undefined) => (t === undefined ? '' : formatType(t, Infinity).replace(/\s+/g, ' '));
+        if (!shown || flat(shown.params) !== flat(result.params) || flat(resultType(shown.row, shown.cardinality)) !== flat(result.returns)) continue;
+      }
+      examples.push({
+        title,
+        slug,
+        sql,
+        sqlTokens: tokens(h, sql, 'sql'),
+        result,
+        params: result.params === undefined ? undefined : tokens(h, result.params, 'ts'),
+        returns: tokens(h, result.returns, 'ts'),
+      });
+    }
+    if (!examples.some((e) => e.slug === START)) throw new Error(`lib/live/play-data.ts: no Inference example "${START}" to open with`);
+    // The schema's comments follow their code by two spaces, where the docs line them up in a
+    // column: the playground's pane is narrower than that column.
+    const schema = pagePostgresSchema().replace(/(\S)[ \t]{2,}--/g, '$1  --');
+    return { schema: tokens(h, schema, 'sql'), examples, start: START, completions: completionSchema(await io.query(COMPLETION_QUERY, [])) };
+  } finally {
+    await pg.close();
+  }
+}

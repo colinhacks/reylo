@@ -12,6 +12,8 @@ export default [
   route(':slug?', 'routes/page.tsx'),
   ...markdown.map((file) => route(file, 'routes/markdown.ts', { id: `markdown/${file}` })),
   route('404', 'routes/not-found.tsx'),
+  // The playground, full screen (components/play.tsx).
+  route('play', 'routes/play.tsx'),
   // The local playground (app/routes/playground.tsx), on the dev server only: it needs scratch databases.
   ...(process.env.NODE_ENV === 'production' ? [] : [route('playground', 'routes/playground.tsx')]),
   route('llms.txt', 'routes/llms.ts'),
