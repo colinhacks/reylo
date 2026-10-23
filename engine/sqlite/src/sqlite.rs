@@ -2008,10 +2008,11 @@ impl Analyzer<'_> {
             "abs" | "round" | "acos" | "acosh" | "asin" | "asinh" | "atan" | "atan2" | "atanh" | "ceil" | "ceiling" | "cos" | "cosh" | "degrees" | "exp"
             | "floor" | "ln" | "log" | "log10" | "log2" | "mod" | "pow" | "power" | "radians" | "sin" | "sinh" | "sqrt" | "tan" | "tanh" | "trunc" => real(),
             "coalesce" | "ifnull" | "nullif" | "min" | "max" => others(),
-            // `lag` and `lead` hand back their default where the row they read is missing.
-            "lag" | "lead" if i == 2 => {
-                let first = n.args.first().map(|a| self.type_of(a, scope)).unwrap_or_else(Fact::unknown);
-                Ctx::Typed(if matches!(first.ty, Type::Unknown) { None } else { Some(Fact { ty: first.ty, non_null: true }) })
+            // `lag` and `lead` hand back their default where the row they read is missing, so the
+            // value and the default each take the other's type.
+            "lag" | "lead" if n.args.len() >= 3 && (i == 0 || i == 2) => {
+                let other = self.type_of(&n.args[2 - i], scope);
+                Ctx::Typed(if matches!(other.ty, Type::Unknown) { None } else { Some(Fact { ty: other.ty, non_null: true }) })
             }
             // A condition is a truth value; a value shares the other values' type.
             "iif" | "if" => {
@@ -3725,9 +3726,11 @@ mod tests {
         assert_eq!(ty("SELECT lag(n, 1, 0) OVER (ORDER BY id) AS v FROM t"), "integer");
         assert_eq!(ty("SELECT lag(n, 1, NULL) OVER (ORDER BY id) AS v FROM t"), "integer");
         assert_eq!(ty("SELECT lag(n) OVER (ORDER BY id) AS v FROM t"), "integer");
-        // A parameter as the default takes the first argument's type.
-        let r = analyze_ddl("SELECT lag(n, 1, :p) OVER (ORDER BY id) AS v FROM t", &ddl, &Extras::default());
-        assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
+        // A parameter as the value or the default takes the other's type.
+        for sql in ["SELECT lag(n, 1, :p) OVER (ORDER BY id) AS v FROM t", "SELECT lag(:p, 1, n) OVER (ORDER BY id) AS v FROM t"] {
+            let r = analyze_ddl(sql, &ddl, &Extras::default());
+            assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()), "{sql}");
+        }
     }
 
     #[test]
