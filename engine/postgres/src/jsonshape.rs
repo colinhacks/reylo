@@ -63,6 +63,18 @@ pub struct Plan {
     /// Result column name → its shape, in target-list order.
     pub columns: Vec<(String, Shape)>,
     pub probes: Vec<Probe>,
+    /// Per probe, for a `to_jsonb(alias)` one whose alias an outer join may null, the same read
+    /// with the alias's row always there ([`row_present`]): its columns are the row's fields as
+    /// they are where the object exists.
+    pub present: Vec<Option<Probe>>,
+}
+
+impl Plan {
+    /// Every statement the plan may describe: its probes, then the reads of a row where it is
+    /// there.
+    pub fn statements(&self) -> impl Iterator<Item = &Probe> {
+        self.probes.iter().chain(self.present.iter().flatten())
+    }
 }
 
 /// One probe's describe, as the resolver needs it.
@@ -72,6 +84,11 @@ pub struct Outcome {
     /// Whether the probe's own analysis saw an outer join, which is the one thing that can null
     /// a whole row under `to_jsonb(alias)`.
     pub outer_join: bool,
+    /// For a `to_jsonb(alias)` probe, per column, whether it can be NULL in a row where the
+    /// alias's row is there, as the plan's read of it with that row present says: an outer join
+    /// nulls every column of a row it does not match, but a row that is there holds its own.
+    /// `None` where the probe's own columns say it already.
+    pub present: Option<Vec<bool>>,
     /// Per column, the JSON a WITH query or a derived table builds in it, for one the probe reads
     /// straight from such an item: it stands for the column's type. Empty where there is none.
     pub built: Vec<Option<Built>>,
@@ -124,7 +141,7 @@ pub fn probes_ahead(sql: &str) -> Vec<Probe> {
 }
 
 fn probes_ahead_here(sql: &str) -> Vec<Probe> {
-    plan_with(sql, Dialect::Postgres, &Trust::default(), &Columns::default(), true).probes
+    plan_with(sql, Dialect::Postgres, &Trust::default(), &Columns::default(), true).statements().cloned().collect()
 }
 
 fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahead: bool) -> Plan {
@@ -189,7 +206,21 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         .iter()
         .map(|d| Probe { sql: text(&d.from, d).unwrap_or_default(), wider: d.wider.as_ref().and_then(|f| text(f, d)) })
         .collect();
-    Plan { columns, probes }
+    let present = builder
+        .drafts
+        .iter()
+        .map(|d| {
+            let alias = d.row.as_deref()?;
+            let (from, wider) = (row_present(&d.from, alias), d.wider.as_ref().and_then(|w| row_present(w, alias)));
+            if from.is_none() && wider.is_none() {
+                return None;
+            }
+            let from = from.unwrap_or_else(|| d.from.clone());
+            let wider = wider.or_else(|| d.wider.clone());
+            Some(Probe { sql: text(&from, d).unwrap_or_default(), wider: wider.as_ref().and_then(|f| text(f, d)) })
+        })
+        .collect();
+    Plan { columns, probes, present }
 }
 
 /// Turn one shape plus its probes' describes into the column's type.
@@ -324,8 +355,8 @@ struct Lateral {
 #[derive(Clone)]
 struct Draft {
     ctx: usize,
-    /// A `to_jsonb(alias)` probe, whose every column is one field.
-    row: bool,
+    /// For a `to_jsonb(alias)` probe, whose every column is one field, the alias.
+    row: Option<String>,
     from: Vec<Node>,
     /// The condition every row the context reads passed: the statement's WHERE, and an
     /// aggregate's FILTER for what it aggregates.
@@ -659,9 +690,9 @@ impl Builder<'_> {
         // stays beside the arguments.
         let grouped = self.outside_aggregates() && !matches!(expr.node, Some(NodeEnum::ColumnRef(_)));
         let ctx = self.stack[self.stack.len() - 1].0;
-        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && !d.row && d.grouped == grouped) {
+        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && d.row.is_none() && d.grouped == grouped) {
             Some(i) => i,
-            None => match self.draft(false) {
+            None => match self.draft(None) {
                 Some(i) => {
                     self.drafts[i].grouped = grouped;
                     i
@@ -696,7 +727,7 @@ impl Builder<'_> {
         if self.nulled_by_grouping() {
             return Shape::Unknown;
         }
-        let Some(probe) = self.draft(true) else { return Shape::Unknown };
+        let Some(probe) = self.draft(Some(alias.to_string())) else { return Shape::Unknown };
         let star = Node {
             node: Some(NodeEnum::ColumnRef(ColumnRef {
                 fields: vec![string_node(alias), Node { node: Some(NodeEnum::AStar(AStar {})) }],
@@ -707,7 +738,7 @@ impl Builder<'_> {
         Shape::Row { probe }
     }
 
-    fn draft(&mut self, row: bool) -> Option<usize> {
+    fn draft(&mut self, row: Option<String>) -> Option<usize> {
         if self.drafts.len() >= MAX_PROBES {
             self.overflowed = true;
             return None;
@@ -1121,14 +1152,18 @@ impl ResolveCtx<'_> {
                     let fields = outcome
                         .columns
                         .iter()
-                        .map(|col| {
+                        .enumerate()
+                        .map(|(i, col)| {
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));
                                 Type::Unknown
                             } else {
                                 self.column(col)
                             };
-                            Field { name: col.name.clone(), ty, nullable: col.nullable }
+                            // A field is as the read with the row there has it: the outer join that
+                            // nulls the object nulls none of a row that exists.
+                            let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
+                            Field { name: col.name.clone(), ty, nullable: col.nullable && present }
                         })
                         .collect();
                     // An outer join can null the whole row, which is then every column NULL: a
@@ -1182,6 +1217,51 @@ fn display_path(path: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // Parse-tree helpers
 // ---------------------------------------------------------------------------------------------
+
+/// `from` with each outer join that may null `alias`'s row made one that keeps the row: a LEFT
+/// JOIN with the alias on its right side, or a RIGHT JOIN with it on its left, an inner one, and a
+/// FULL JOIN one that preserves the alias's side. The rows where the alias's row is there are the
+/// same rows: an outer join puts its nullable side's row only beside a row its ON held for, as an
+/// inner join does, and a FULL JOIN's side keeps every row of its own either way. `None` where no
+/// join can null the alias, or none of `from` goes by it.
+pub(crate) fn row_present(from: &[Node], alias: &str) -> Option<Vec<Node>> {
+    use protobuf::JoinType;
+    /// Whether `node` holds the item `alias` names, making the joins above it keep its row.
+    fn keep(node: &mut Node, alias: &str, changed: &mut bool) -> bool {
+        let named = |a: Option<&protobuf::Alias>| a.is_some_and(|a| a.aliasname == alias);
+        match node.node.as_mut() {
+            Some(NodeEnum::RangeVar(rv)) => rv.alias.as_ref().map_or(rv.relname.as_str(), |a| a.aliasname.as_str()) == alias,
+            Some(NodeEnum::RangeSubselect(r)) => named(r.alias.as_ref()),
+            Some(NodeEnum::RangeFunction(r)) => named(r.alias.as_ref()),
+            Some(NodeEnum::RangeTableFunc(r)) => named(r.alias.as_ref()),
+            // A join with an alias of its own hides the names inside it.
+            Some(NodeEnum::JoinExpr(j)) if j.alias.is_some() => named(j.alias.as_ref()),
+            Some(NodeEnum::JoinExpr(j)) => {
+                let left = j.larg.as_deref_mut().is_some_and(|n| keep(n, alias, changed));
+                let right = j.rarg.as_deref_mut().is_some_and(|n| keep(n, alias, changed));
+                let kept = match JoinType::try_from(j.jointype) {
+                    Ok(JoinType::JoinLeft) if right => Some(JoinType::JoinInner),
+                    Ok(JoinType::JoinRight) if left => Some(JoinType::JoinInner),
+                    Ok(JoinType::JoinFull) if left => Some(JoinType::JoinLeft),
+                    Ok(JoinType::JoinFull) if right => Some(JoinType::JoinRight),
+                    _ => None,
+                };
+                if let Some(kept) = kept {
+                    j.jointype = kept as i32;
+                    *changed = true;
+                }
+                left || right
+            }
+            _ => false,
+        }
+    }
+    let mut from = from.to_vec();
+    let mut changed = false;
+    for item in &mut from {
+        keep(item, alias, &mut changed);
+    }
+    changed.then_some(from)
+}
 
 pub fn as_select(node: &Node) -> Option<&SelectStmt> {
     match node.node.as_ref()? {
@@ -1552,7 +1632,7 @@ mod tests {
     fn a_scalar_subquery_that_may_find_no_row_is_nullable_whatever_its_value() {
         let registry = TypeRegistry::with_builtins();
         let found = vec![column("a0", oid::TEXT, "text", false)];
-        let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false, built: Vec::new() })], &registry, &[]);
+        let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         // Whether the column is nullable, and whether the first field of the object it is.
         let whole = |sql: &str| !resolved(sql).non_null;
         let field = |sql: &str| match resolved(sql).ty {
@@ -1854,6 +1934,7 @@ mod tests {
                 column("a2", oid::INT4, "int4", true),
             ],
             outer_join: false,
+            present: None,
             built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
@@ -1888,6 +1969,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("a0", oid::UUID, "uuid", false), column("a1", oid::UNKNOWN, "unknown", true)],
             outer_join: false,
+            present: None,
             built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
@@ -1907,6 +1989,7 @@ mod tests {
         let outcome = Outcome {
             columns: vec![column("a0", oid::INT8, "int8", false), column("a1", NUMERIC, "numeric", false), column("a2", BYTEA, "bytea", false)],
             outer_join: false,
+            present: None,
             built: Vec::new(),
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
@@ -1924,16 +2007,44 @@ mod tests {
         let registry = TypeRegistry::with_builtins();
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, built: Vec::new() })], &registry, &[]);
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
         assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
         // An outer join in the probe's own analysis is what can null the whole row, unless a
         // column it proved non-null says the row is there (an unmatched row is every column NULL).
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, built: Vec::new() })], &registry, &[]);
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
         let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
-        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, built: Vec::new() })], &registry, &[]);
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
+        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), true), field("name", scalar("text"), true)] });
+        // The read with the row there gives the fields of an object that exists their own.
+        let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
+        assert!(!r.non_null);
+        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+    }
+
+    #[test]
+    fn a_row_an_outer_join_may_null_is_read_again_with_the_row_there() {
+        let present = |sql: &str| shapes(sql).present.into_iter().map(|p| p.map(|p| p.sql)).collect::<Vec<_>>();
+        assert_eq!(present("SELECT to_jsonb(p) AS j FROM users u LEFT JOIN posts p ON p.user_id = u.id"), [Some("SELECT p.* FROM users u JOIN posts p ON p.user_id = u.id".to_string())]);
+        assert_eq!(present("SELECT to_jsonb(u) AS j FROM users u RIGHT JOIN posts p ON p.user_id = u.id"), [Some("SELECT u.* FROM users u JOIN posts p ON p.user_id = u.id".to_string())]);
+        // A FULL JOIN keeps every row of the alias's side, matched or not.
+        assert_eq!(present("SELECT to_jsonb(u) AS j FROM users u FULL JOIN posts p ON p.user_id = u.id"), [Some("SELECT u.* FROM users u LEFT JOIN posts p ON p.user_id = u.id".to_string())]);
+        assert_eq!(present("SELECT to_jsonb(p) AS j FROM users u FULL JOIN posts p ON p.user_id = u.id"), [Some("SELECT p.* FROM users u RIGHT JOIN posts p ON p.user_id = u.id".to_string())]);
+        // Every join above the alias that nulls it, and none that does not.
+        assert_eq!(
+            present("SELECT to_jsonb(c) AS j FROM users u LEFT JOIN (posts p LEFT JOIN comments c ON c.post_id = p.id) ON p.author_id = u.id LEFT JOIN users m ON m.id = u.id"),
+            [Some("SELECT c.* FROM users u JOIN (posts p JOIN comments c ON c.post_id = p.id) ON p.author_id = u.id LEFT JOIN users m ON m.id = u.id".to_string())]
+        );
+        assert_eq!(present("SELECT to_jsonb(y) AS j FROM users x LEFT JOIN users y ON y.id > x.id"), [Some("SELECT y.* FROM users x JOIN users y ON y.id > x.id".to_string())]);
+        // The preserved side, a join with an alias that hides the name, and no join at all: no read.
+        assert_eq!(present("SELECT to_jsonb(u) AS j FROM users u LEFT JOIN posts p ON p.user_id = u.id"), [None]);
+        assert_eq!(present("SELECT to_jsonb(j) AS j FROM users u LEFT JOIN (posts p JOIN comments c ON c.post_id = p.id) AS j ON true"), [Some("SELECT j.* FROM users u JOIN (posts p JOIN comments c ON c.post_id = p.id ) j ON true".to_string())]);
+        assert_eq!(present("SELECT to_jsonb(u) AS j FROM users u"), [None]);
+        assert_eq!(present("SELECT jsonb_build_object('id', p.id) AS j FROM users u LEFT JOIN posts p ON p.user_id = u.id"), [None]);
+        // A derived table by its alias.
+        assert_eq!(present("SELECT to_jsonb(d) AS j FROM users u LEFT JOIN (SELECT 1 AS n) d ON true"), [Some("SELECT d.* FROM users u JOIN (SELECT 1 AS n) d ON true".to_string())]);
     }
 
     #[test]
@@ -1942,7 +2053,7 @@ mod tests {
         let p = shapes("SELECT jsonb_build_object('posts', ps.posts) AS author FROM ps");
         let item = Type::List { of: Box::new(Type::Object { fields: vec![field("tags", Type::Unknown, true)] }), nullable_items: false };
         let built = Built { ty: item, non_null: true, unresolved: vec!["[].tags".into(), "[]".into(), WHOLE.into()] };
-        let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, built: vec![Some(built)] };
+        let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, present: None, built: vec![Some(built)] };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert_eq!(r.unresolved, vec!["posts[].tags", "posts[]", "posts"]);
     }

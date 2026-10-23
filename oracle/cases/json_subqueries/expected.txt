@@ -12,6 +12,6 @@ row_alias.sql: many () -> { j: { id: int8, name: text, u: json?, p: text? } }
 row_alias_beside_function.sql: many () -> { j: json }
 row_alias_is_a_column.sql: many () -> { j: json? }
 row_alias_is_an_outer_column.sql: many () -> { id: int8, j: json? }
-row_left_join.sql: many () -> { id: int8, j: { id: int8?, user_id: int8?, title: text? }? }
+row_left_join.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
 row_subquery_key.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
 row_subquery_limit.sql: many () -> { id: int8, j: { id: int8, user_id: int8, title: text }? }
