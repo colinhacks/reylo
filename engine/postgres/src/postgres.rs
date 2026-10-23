@@ -1284,8 +1284,12 @@ impl<'a> Engine<'a> {
         // nullable as that item's own result says, whatever the catalog says of the table column
         // behind it. Each item answers by its place in the FROM, so a table read twice changes
         // nothing there.
+        // Following an item can prefetch a relation its statement reads, which writes the cache:
+        // the borrow is let go for it and taken again after.
+        drop(known);
         let item_columns = if grouping { Some(Vec::new()) } else { self.item_columns(sql, raw.columns.len(), trust) };
         let Some(item_columns) = item_columns else { return None };
+        let known = self.relations.borrow();
         let registry = self.registry.borrow();
         let columns: Vec<DescribedColumn> = raw
             .columns
