@@ -1535,10 +1535,11 @@ impl<'a> Parser<'a> {
                 })
             }
             // Reylo's copy: MySQL's `!` binds tighter than any binary operator (`!0 = 1` is
-            // `(!0) = 1`), unlike `NOT`.
+            // `(!0) = 1`), unlike `NOT`, but not than `->`, which is part of its operand
+            // (`!j->'$.a'` is `!(j->'$.a')`).
             Token::ExclamationMark if dialect.supports_bang_not_operator() => Ok(Expr::UnaryOp {
                 op: UnaryOperator::BangNot,
-                expr: Box::new(self.parse_subexpr(self.dialect.prec_value(Precedence::DoubleColon))?),
+                expr: Box::new(self.parse_subexpr(self.dialect.prec_value(Precedence::DoubleColon) - 1)?),
             }),
             tok @ Token::DoubleExclamationMark
             | tok @ Token::PGSquareRoot

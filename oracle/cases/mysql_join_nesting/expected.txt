@@ -1,4 +1,5 @@
 arrow_binds_tight.sql: many () -> { x: float8?, y: text? }
+bang_before_arrow.sql: many () -> { x: int8|int4?, y: int8|int4? }
 comma_then_right.sql: many () -> { a: int4, b: int4?, c: int4 }
 left_after_bare_join.sql: many () -> { a: int4, b: int4, c: int4? }
 parenthesized_comma.sql: many () -> { a: int4?, b: int4?, c: int4 }

@@ -2343,6 +2343,28 @@ mod tests {
     }
 
     #[test]
+    fn bang_binds_tighter_than_any_binary_operator_but_the_arrows() {
+        // `->` and `->>` are part of `!`'s operand, as in MySQL, and every other binary operator
+        // takes `!x` as its operand.
+        let item = |sql: &str| match parse(&MySqlDialect {}, sql).unwrap_or_else(|e| panic!("{sql}: {e}")).pop() {
+            Some(Statement::Query(q)) => match *q.body {
+                SetExpr::Select(s) => match s.projection.into_iter().next() {
+                    Some(SelectItem::UnnamedExpr(e)) => e,
+                    other => panic!("{sql}: {other:?}"),
+                },
+                other => panic!("{sql}: {other:?}"),
+            },
+            other => panic!("{sql}: {other:?}"),
+        };
+        for sql in ["select !j->'$.a' from t", "select !j->>'$.a' from t"] {
+            assert!(matches!(item(sql), Expr::UnaryOp { op: ast::UnaryOperator::BangNot, expr } if matches!(*expr, Expr::BinaryOp { .. })), "{sql}");
+        }
+        for sql in ["select !0 = 1", "select !a + 1 from t", "select !a ^ 1 from t"] {
+            assert!(matches!(item(sql), Expr::BinaryOp { left, .. } if matches!(*left, Expr::UnaryOp { op: ast::UnaryOperator::BangNot, .. })), "{sql}");
+        }
+    }
+
+    #[test]
     fn a_write_or_a_select_into_returns_no_rows() {
         // MySQL's multi-table DELETE and UPDATE return no rows, and neither does a SELECT whose
         // rows go into variables, its INTO after the columns or after the whole statement.
