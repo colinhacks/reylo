@@ -377,7 +377,7 @@ from events
 
 **Through a `with` query or a subquery**
 
-JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is. Through a `union` or a `*`, it's `unknown`.
+JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `unknown`.
 
 <Inferred>
 
@@ -529,7 +529,7 @@ where o.paid
 
 **Expressions**
 
-Literals, casts, `count`, `exists` and `is null` are never null. Operators, built-in functions and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is.
+Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is.
 
 <Inferred>
 
