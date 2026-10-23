@@ -2656,7 +2656,7 @@ mod tests {
             let mut answers: Answers<NoDescribe> = Answers::new();
             for _ in 0..4 {
                 let host = Host::new(&answers);
-                let inner = |s: &str| {
+                let inner = |s: &str, _: &[String]| {
                     let mut a = crate::analysis::bare_of(s, Dialect::Mysql, Vec::new());
                     if add {
                         a.rewritten.sql = format!("{added}{}", a.rewritten.sql);
