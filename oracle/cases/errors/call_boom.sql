@@ -1,0 +1,1 @@
+select boom() as n

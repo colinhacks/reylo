@@ -28,6 +28,12 @@ export type Analysis = {
   structured?: { name: string; lists: { start: number; end: number; entries: string[] }[] }[];
   /** The catalog facts the analysis relied on, and the query that reads them (engine/core/src/fresh.rs). */
   fresh?: { query: string; rows: string[][]; inserts: string[]; defaults?: string[][] };
+  /**
+   * By each error's code, the names each of its fields may hold, where the statement runs only its
+   * database's own code (engine/core/src/errors.rs): `.try()`'s error, narrowed. Absent where
+   * the statement may run a user's code, which may raise any error.
+   */
+  errors?: Record<string, Record<string, string[]>>;
 };
 
 export type Lexed = {

@@ -344,6 +344,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         });
     }
@@ -498,6 +499,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
+        errors: None,
         // From the tree as the session reads the statement, also where it reads some part of it
         // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
         // turn on that.

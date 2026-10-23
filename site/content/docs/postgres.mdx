@@ -741,6 +741,8 @@ With [`.try()`](/#try), an error Postgres raised comes back as `{ error }`, with
 
 Since a function may raise any code, TypeScript takes any string for `code`. Compare `condition` to have it catch a misspelled name.
 
+When nothing the query sets off is code a user or an extension wrote (no trigger or rule on a table it writes, and no default, check, policy, view, operator or function that calls such code), its error type is narrowed: `code` is one Postgres defines, and a unique, not-null, foreign key, check or exclusion violation names only the constraints, tables, columns and domains the query writes through, its partitions and the tables its foreign keys' actions reach included.
+
 ## Drivers
 
 Reylo decodes its query results itself, so type parsers and options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defineQuery, type MysqlClient, type MysqlCode, type PostgresClient, type PostgresCondition, type Query, type SqliteCode } from "../src/index.ts";
+import { defineQuery, type MysqlClient, type MysqlCode, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresQueryError, type Query, type SqliteCode, type SqliteQueryError } from "../src/index.ts";
 import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
 
 // `.try()` and the database's error it reads from each driver's own (src/query-error.ts). The
@@ -354,6 +354,31 @@ export async function types(pg: Query<{}, { id: number }, "one", "postgres">, my
     b.error.errno satisfies number;
     // @ts-expect-error: no such name in MySQL's list
     if (b.error.code === "ER_DUP_ENTY") {}
+  }
+  // A statement that runs only the server's own code: a code Postgres defines, and the names its
+  // writes reach.
+  const narrowed = null as unknown as PostgresQueryError<{ "23505": { constraint: "users_email_key" | "users_pkey"; table: "users" } }>;
+  if (narrowed.condition === "unique_violation") {
+    narrowed.code satisfies "23505";
+    narrowed.constraint satisfies "users_email_key" | "users_pkey" | undefined;
+    // @ts-expect-error: no such constraint
+    if (narrowed.constraint === "posts_pkey") {}
+  } else {
+    narrowed.constraint satisfies string | undefined;
+  }
+  // @ts-expect-error: a code Postgres does not define, which only a user's code raises
+  if (narrowed.code === "U0001") {}
+  const myNarrowed = null as unknown as MysqlQueryError<{ ER_DUP_ENTRY: { key: "users.PRIMARY" | "users.email" } }>;
+  if (myNarrowed.code === "ER_DUP_ENTRY") {
+    myNarrowed.key satisfies "users.PRIMARY" | "users.email" | undefined;
+    // @ts-expect-error: no such key
+    if (myNarrowed.key === "posts.PRIMARY") {}
+  }
+  const liteNarrowed = null as unknown as SqliteQueryError<{ SQLITE_CONSTRAINT_UNIQUE: { table: "posts"; columns: readonly ["email"] | readonly ["slug", "lang"] } }>;
+  if (liteNarrowed.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    liteNarrowed.columns satisfies readonly ["email"] | readonly ["slug", "lang"] | undefined;
+    // @ts-expect-error: no such table
+    if (liteNarrowed.table === "users") {}
   }
   const c = lite.trySync(liteDb);
   if (c.error) {

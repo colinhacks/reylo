@@ -30,6 +30,7 @@ import { Session } from '../../src/analyze.ts';
 import { ident, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, RAW_NOTE, sqlNote, statementAfter } from '../../src/doc-comment.ts';
 import { withSqlcommenter } from '../../src/sqlcommenter.ts';
+import { queryErrorType } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
@@ -128,7 +129,7 @@ async function render(session: Session, source: string, written: string, sql: st
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? `${rendered} | null` : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], plain = compiled) => {
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], plain = compiled, queryError = queryErrorType(project.dialect, undefined)) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
@@ -139,11 +140,11 @@ async function render(session: Session, source: string, written: string, sql: st
       `import type { Query } from "reylo";`,
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
-      `export type QueryError = import("reylo").QueryError<${JSON.stringify(project.dialect)}>;`,
+      `export type QueryError = ${queryError};`,
       `${sqlDoc()}export declare const sql: ${JSON.stringify(compiled)};`,
       `${rawDoc()}export declare const raw: ${JSON.stringify(written)};`,
       `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(', ')}];`,
-      `${docComment(prose, shown)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
+      `${docComment(prose, shown)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}, QueryError> & {`,
       `${sqlDoc('  ')}  readonly sql: typeof sql;`,
       `${rawDoc('  ')}  readonly raw: typeof raw;`,
       `  readonly source: string;`,
@@ -175,7 +176,7 @@ async function render(session: Session, source: string, written: string, sql: st
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === 'object' && 'default' in q.schema)).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, source) : analysis.rewritten.sql, paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, analysis.rewritten.sql), analysis };
+  return { text: emit(project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, source) : analysis.rewritten.sql, paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, analysis.rewritten.sql, queryErrorType(dialect, analysis.errors)), analysis };
 }
 
 // ---- The scratch databases ----
@@ -399,7 +400,7 @@ function indent(text: string) {
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
   const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)"$/, '') : module;
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", QueryError$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);

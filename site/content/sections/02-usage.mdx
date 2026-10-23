@@ -90,7 +90,8 @@ const result = await createUser.try(db, {
   email: "ada@example.com",
 });
 if (result.error?.condition === "unique_violation") {
-  console.log(`${result.error.constraint} is taken`);
+  result.error.constraint;
+  //           ^?
 }
 ```
 
@@ -102,7 +103,8 @@ const result = await createUser.try(db, {
   email: "ada@example.com",
 });
 if (result.error?.code === "ER_DUP_ENTRY") {
-  console.log(`${result.error.key} is taken`);
+  result.error.key;
+  //           ^?
 }
 ```
 
@@ -114,7 +116,8 @@ const result = await createUser.try(db, {
   email: "ada@example.com",
 });
 if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
-  console.log(`${result.error.columns} is taken`);
+  result.error.columns;
+  //           ^?
 }
 ```
 
@@ -129,6 +132,8 @@ The error is your database's own, typed with every code it defines, so TypeScrip
 | Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
 | MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
 | SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
+
+When the query runs none of your own code, such as a trigger or a function you wrote, Reylo also narrows each error to the names it can carry: a unique violation names one of the unique keys of the tables the query writes, as in the examples above. Your database's page says what it narrows.
 
 Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say. The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
 

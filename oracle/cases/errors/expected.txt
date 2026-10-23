@@ -1,0 +1,11 @@
+book_room.sql: none (id: int4, start: timestamptz, finish: timestamptz) -> {  }
+call_boom.sql: one () -> { n: int4? }
+cast_positive.sql: one (n: int4) -> { n: int4? }
+delete_post.sql: none (id: int4) -> {  }
+delete_user.sql: none (id: int4) -> {  }
+insert_audited.sql: none (id: int4) -> {  }
+insert_coded.sql: none (id: int4) -> {  }
+insert_event.sql: none (id: int4, at: date) -> {  }
+insert_user.sql: none (id: int4, email: text, age: int4) -> {  }
+select_view.sql: many (id: int4) -> { id: int4, email: text }
+upsert_user.sql: none (id: int4, email: text, age: int4) -> {  }

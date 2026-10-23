@@ -165,6 +165,10 @@ pub struct Analysis {
     /// ([`crate::fresh`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fresh: Option<crate::fresh::Fresh>,
+    /// The names each error the statement may raise can carry, where it runs only its database's
+    /// own code ([`crate::errors`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub errors: Option<crate::errors::Errors>,
     /// The tables the statement reads and writes, as its database's own parse names them, which
     /// the facts are read for ([`Database::tables`]). Not on the wire.
     #[serde(skip)]
