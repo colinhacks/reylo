@@ -470,28 +470,27 @@ impl Builder<'_> {
 
     /// `json_agg(x)` and its kin, `non_null` where no group is empty.
     fn aggregate(&mut self, f: &protobuf::FuncCall, non_null: bool) -> Shape {
-
-            // Only rows its FILTER passes reach an aggregate: its argument is read in a
-            // context of its own whose probe filters by it too, so `FILTER (WHERE p.id IS
-            // NOT NULL)` over a LEFT JOIN reads `p` as a row that exists.
-            let Some(filter) = f.agg_filter.as_deref() else {
-                self.in_aggregate += 1;
-                let items = self.walk(&f.args[0]);
-                self.in_aggregate -= 1;
-                return Shape::Array { items: Box::new(items), non_null };
-            };
-            let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
-            let both = match outer {
-                Some(outer) => and(outer, filter.clone()),
-                None => filter.clone(),
-            };
-            self.next_ctx += 1;
-            self.stack.push((self.next_ctx, from, Some(both)));
-            self.withs.push(self.withs.last().cloned().unwrap_or_default());
+        // Only rows its FILTER passes reach an aggregate: its argument is read in a
+        // context of its own whose probe filters by it too, so `FILTER (WHERE p.id IS
+        // NOT NULL)` over a LEFT JOIN reads `p` as a row that exists.
+        let Some(filter) = f.agg_filter.as_deref() else {
+            self.in_aggregate += 1;
             let items = self.walk(&f.args[0]);
-            self.withs.pop();
-            self.stack.pop();
-            Shape::Array { items: Box::new(items), non_null }
+            self.in_aggregate -= 1;
+            return Shape::Array { items: Box::new(items), non_null };
+        };
+        let (_, from, outer) = self.stack[self.stack.len() - 1].clone();
+        let both = match outer {
+            Some(outer) => and(outer, filter.clone()),
+            None => filter.clone(),
+        };
+        self.next_ctx += 1;
+        self.stack.push((self.next_ctx, from, Some(both)));
+        self.withs.push(self.withs.last().cloned().unwrap_or_default());
+        let items = self.walk(&f.args[0]);
+        self.withs.pop();
+        self.stack.pop();
+        Shape::Array { items: Box::new(items), non_null }
     }
 
     /// Whether a value read where the builder stands may be NULL for a grouping set.
