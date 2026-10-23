@@ -1340,9 +1340,11 @@ fn emit_object(o: &Obj) -> Value {
 /// Postgres's `->` and `#>` read an object: the canonical schema of the values found there, and
 /// whether one is found for certain, every step landing on an object that holds its key. A step
 /// on anything else finds no value, which the database answers with SQL NULL, so it narrows
-/// nothing but that certainty. With `indexes`, a key that is a whole number reads an array's
-/// element instead (`#>`), which this reading does not follow: `None` where a step may land on an
-/// array then, and where the schema holds anything but the canonical vocabulary.
+/// nothing but that certainty. With `indexes`, a key the database reads as an integer reads an
+/// array's element instead (`#>`, whose key Postgres reads with `strtoint`: leading whitespace, a
+/// sign, then digits, a negative one counting from the end), which this reading does not follow:
+/// `None` where a step may land on an array then, and where the schema holds anything but the
+/// canonical vocabulary.
 pub fn at_path(schema: &Value, path: &[&str], indexes: bool) -> Option<(Value, bool)> {
     let mut at = schema.clone();
     let mut found = true;
@@ -1356,7 +1358,9 @@ pub fn at_path(schema: &Value, path: &[&str], indexes: bool) -> Option<(Value, b
 
 /// One step of [`at_path`].
 fn at_key(schema: &Value, key: &str, indexes: bool) -> Option<(Value, bool)> {
-    let index = indexes && !key.is_empty() && key.bytes().all(|b| b.is_ascii_digit());
+    let digits = key.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let digits = digits.strip_prefix(['+', '-']).unwrap_or(digits);
+    let index = indexes && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
     let map = match schema {
         Value::Bool(true) => return (!index).then_some((Value::Bool(true), false)),
         Value::Bool(false) => return Some((Value::Bool(false), false)),
@@ -1723,6 +1727,11 @@ mod tests {
         assert_eq!(at(&["name", "x"], false), Some((json!(false), false)));
         assert_eq!(at(&["tags", "0"], false), Some((json!(false), false)));
         assert_eq!(at(&["tags", "0"], true), None);
+        // As Postgres reads an index: a sign, or whitespace before it, and a negative one too.
+        for key in ["-1", "+0", " 1", "\t-2"] {
+            assert_eq!(at(&["tags", key], true), None, "{key:?}");
+        }
+        assert_eq!(at(&["tags", "1 "], true), Some((json!(false), false)));
         assert_eq!(at(&[], false), Some((doc.clone(), true)));
         // A union reads each member; an enum of objects, the values each holds.
         let union = json!({"anyOf": [{"type": "object", "properties": {"t": {"enum": ["a"]}}, "required": ["t"], "additionalProperties": false}, {"type": "object", "properties": {"t": {"enum": ["b"]}}, "required": ["t"], "additionalProperties": false}]});

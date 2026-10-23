@@ -265,7 +265,7 @@ pub enum Expr {
     Array { non_null: bool, items: Vec<Expr> },
     /// The JSON a column holds read at literal keys (`doc -> 'a'`, `doc #>> '{a,b}'`): the column,
     /// the keys, whether the read gives text (`->>`, `#>>`) rather than JSON, and whether a key
-    /// that is a whole number may index an array (`#>`, `#>>`). Typed and non-null as the JSON
+    /// Postgres reads as an integer may index an array (`#>`, `#>>`). Typed and non-null as the JSON
     /// Schema a CHECK holds the column to says ([`json_read`]).
     JsonPath { base: Box<Expr>, path: Vec<String>, text: bool, indexes: bool },
 }

@@ -40,3 +40,7 @@ create table notes (id int primary key, body json not null check (json_matches_s
 insert into notes values (1, '{"title": "t"}'), (2, '{"title": "", "title2": 1}');
 create table lists (id int primary key, l jsonb not null check (jsonb_matches_schema('{"type": "array", "items": {"type": "object", "properties": {"a": {"type": "integer"}}, "required": ["a"]}}', l)));
 insert into lists values (1, '[]'), (2, '[{"a": 1}]');
+-- A value that is an array or an object: under #> a key Postgres reads as an integer, a sign or
+-- leading whitespace included, indexes the array, counting from its end when negative.
+create table mixed (id int primary key, m jsonb not null check (jsonb_matches_schema('{"type": "object", "properties": {"tags": {"anyOf": [{"type": "array", "items": {"type": "integer"}}, {"type": "object", "additionalProperties": {"type": "string"}}]}}}', m)));
+insert into mixed values (1, '{"tags": [1, 2]}'), (2, '{"tags": {"-1": "x", "+0": "y", " 1": "z", "a": "w"}}');
