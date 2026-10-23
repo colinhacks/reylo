@@ -622,6 +622,9 @@ fn nullable_found(sql: &str, p: &lex::Placeholder, paren: usize, dialect: Dialec
     }
     if dialect == Dialect::Postgres {
         let written = &sql[start..end];
+        if !one_postgres_type(written) {
+            return error(format!("{takes}, one type alone."), start, end);
+        }
         f.plain = Some(PlainCast { written: written.to_string(), around: Some((String::new(), format!("::{written}"))) });
         return Ok(f);
     }
@@ -631,6 +634,98 @@ fn nullable_found(sql: &str, p: &lex::Placeholder, paren: usize, dialect: Dialec
     let around = cast_around(&written, dialect, spot(sql, p.start, close + 1, opaque), server).map_err(|message| DescriptorError { message, start, end: type_end })?;
     f.plain = Some(PlainCast { written, around });
     Ok(f)
+}
+
+/// Whether `written`, the text inside a Postgres `nullable(…)`, reads as one type name, which the
+/// expansion writes after `::` as it stands: a name, qualified or quoted, its modifiers in
+/// parentheses, array bounds, and the words of Postgres's own types of several words (`double
+/// precision`, `timestamp with time zone`, `interval day to second`). Anything else, a comma, an
+/// operator, a string or another word, would turn the cast into an expression the server takes,
+/// and change what the statement means. A modifier's text is the server's to check, which takes
+/// only constants there.
+fn one_postgres_type(written: &str) -> bool {
+    const WORDS: &[&str] = &["precision", "varying", "with", "without", "time", "zone", "character", "char", "national", "year", "month", "day", "hour", "minute", "second", "to", "array"];
+    #[derive(PartialEq)]
+    enum Last {
+        Start,
+        Part,
+        Dot,
+        Space,
+        Group,
+    }
+    let b = written.as_bytes();
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut last = Last::Start;
+    let mut i = 0;
+    while i < b.len() {
+        let c = written[i..].chars().next().expect("inside the text");
+        if c.is_whitespace() {
+            if last != Last::Dot {
+                last = if last == Last::Start { Last::Start } else { Last::Space };
+            }
+            i += c.len_utf8();
+        } else if c == '"' || word(c) {
+            let begin = i;
+            if c == '"' {
+                i += 1;
+                loop {
+                    match b.get(i) {
+                        None => return false,
+                        Some(b'"') if b.get(i + 1) == Some(&b'"') => i += 2,
+                        Some(b'"') => break,
+                        Some(_) => i += 1,
+                    }
+                }
+                i += 1;
+            } else {
+                i += written[i..].chars().take_while(|c| word(*c)).map(char::len_utf8).sum::<usize>();
+            }
+            // A part after the first name is one of the words of Postgres's own types.
+            match last {
+                Last::Start | Last::Dot => {}
+                Last::Space | Last::Group if c != '"' && WORDS.contains(&written[begin..i].to_ascii_lowercase().as_str()) => {}
+                _ => return false,
+            }
+            last = Last::Part;
+        } else if c == '.' {
+            if last != Last::Part {
+                return false;
+            }
+            last = Last::Dot;
+            i += 1;
+        } else if c == '(' || c == '[' {
+            if matches!(last, Last::Start | Last::Dot) {
+                return false;
+            }
+            let close = if c == '(' { ')' } else { ']' };
+            let mut depth = 0usize;
+            let mut quote: Option<u8> = None;
+            loop {
+                let Some(&d) = b.get(i) else { return false };
+                match quote {
+                    Some(q) if d == q => quote = None,
+                    Some(_) => {}
+                    None if d == b'\'' || d == b'"' => quote = Some(d),
+                    None if d == c as u8 => depth += 1,
+                    None if d == close as u8 => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    // Array bounds are digits.
+                    None if c == '[' && !(d.is_ascii_digit() || d.is_ascii_whitespace()) => return false,
+                    None => {}
+                }
+                i += 1;
+            }
+            i += 1;
+            last = Last::Group;
+        } else {
+            return false;
+        }
+    }
+    matches!(last, Last::Part | Last::Group | Last::Space)
 }
 
 /// One character of a column list's text and the bytes of the author's text it stands for.
@@ -2308,6 +2403,16 @@ mod tests {
         assert!(err("select :p::nullable(nullable(text))", Dialect::Postgres).contains("once"));
         assert!(err("select * from :p::nullable(rows(id int8))", Dialect::Postgres).contains("never null"));
         assert!(err("select :p::nullable(int int)", Dialect::Mysql).contains("one type alone"));
+        // On Postgres, the text is written after `::` as it stands, so it is one type: a name, its
+        // modifiers, array bounds and the words of Postgres's own types of several words.
+        for written in ["int", "public.mood", "\"My Type\"", "varchar(255)", "numeric(10, 2)", "int[]", "int[3]", "int array", "timestamp with time zone", "timestamp(3) without time zone", "double precision", "character varying(10)", "interval day to second", "bit varying", "public.\"Mood\"[]", "pg_catalog.int4"] {
+            let sql = format!("select :p::nullable({written})");
+            assert_eq!(expanded(&sql, Dialect::Postgres), format!("select :p::{written}"), "{written}");
+        }
+        for written in ["int, 2", "int or true", "int and x", "text collate \"C\"", "timestamp at time zone 'utc'", "int + 1", "int[a]", "int.", ".int", "int int", "(int)"] {
+            let sql = format!("select :p::nullable({written})");
+            assert!(err(&sql, Dialect::Postgres).contains("one type alone"), "{written}");
+        }
         assert!(err("select :p::nullable(bool)", Dialect::Mysql).contains("no boolean type"));
     }
 
