@@ -2,6 +2,7 @@ bare_self.sql: many () -> { n: integer }
 carried_null.sql: many () -> { n: integer, x: unknown? }
 counter.sql: many () -> { n: integer }
 distinct_union.sql: many () -> { n: integer }
+json_in_recursion.sql: many () -> { n: integer, x: text?, j: text }
 null_in_recursion.sql: many () -> { n: integer, x: text? }
 nullable_column.sql: many () -> { id: integer, parent: integer? }
 nullable_note.sql: many () -> { id: integer, note: text? }

@@ -1255,8 +1255,15 @@ impl Analyzer<'_> {
         let outer = self.level.replace(level_of(first, self.extras));
         let mut assumed: Vec<Fact> = first.columns.iter().map(|c| Fact { ty: self.type_of(&c.expr, &inner).ty, non_null: true }).collect();
         self.level.replace(outer);
+        // What a round works out under its assumption, a JSON constructor's shape or a recursive
+        // WITH query's columns within this one, holds under that assumption alone: each round
+        // starts from what was known before the first, and only the round that settles keeps its own.
+        let shapes = self.shapes.borrow().clone();
+        let nested = self.settled.borrow().clone();
         let mut settled = None;
         for _ in 0..=width + 1 {
+            *self.shapes.borrow_mut() = shapes.clone();
+            *self.settled.borrow_mut() = nested.clone();
             self.recursion.borrow_mut().push((name.to_string(), assumed.clone()));
             let got: Vec<Fact> = (0..width).map(|k| self.select_column(sub, k, scope)).collect();
             self.recursion.borrow_mut().pop();
@@ -1265,6 +1272,10 @@ impl Analyzer<'_> {
                 break;
             }
             assumed = got.iter().zip(&assumed).map(|(g, a)| Fact { ty: g.ty.clone(), non_null: g.non_null && a.non_null }).collect();
+        }
+        if settled.is_none() {
+            *self.shapes.borrow_mut() = shapes;
+            *self.settled.borrow_mut() = nested;
         }
         let facts = settled.unwrap_or_else(|| vec![Fact::unknown(); width]);
         let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
