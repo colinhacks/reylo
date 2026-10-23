@@ -1024,8 +1024,7 @@ with input as (
 )
 select users.id, u.title
 from input, json_table(input.users, '$[*]' columns (
-  -- json_table takes the connection's collation, so name users.email's
-  email varchar(255) collate utf8mb4_0900_ai_ci path '$.email',
+  email varchar(255) path '$.email',
   nested path '$.posts[*]' columns (title text path '$.title')
 )) as u
 join users on users.email = u.email
