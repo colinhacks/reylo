@@ -503,4 +503,8 @@ test("an hstore's text is an object of its keys, and an object goes back in as t
   assert.equal(hstoreText({ a: undefined, b: "2" }, fail), String.raw`"b"=>"2"`);
   assert.throws(() => hstoreText({ n: 1 }, fail), /its key "n" holds 1/);
   assert.throws(() => hstoreText(["a"], fail), /an object of its keys whose values are strings or null; got an array/);
+  // Only a plain object's keys are an hstore's: a Map or a class instance is refused, not written empty.
+  assert.throws(() => hstoreText(new Map([["a", "1"]]), fail), /got a Map\./);
+  assert.throws(() => hstoreText(new (class Prefs {})(), fail), /got a Prefs\./);
+  assert.equal(hstoreText(Object.assign(Object.create(null), { a: "1" }), fail), String.raw`"a"=>"1"`);
 });

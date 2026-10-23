@@ -351,7 +351,13 @@ export function hstore(x: string): Record<string, string | null> {
  * leaves it out.
  */
 export function hstoreText(v: object, fail: (message: string) => never): string {
-  if (Array.isArray(v) || v instanceof Date || ArrayBuffer.isView(v)) return fail(`is an hstore, an object of its keys whose values are strings or null; got ${describe(v)}.`);
+  // Only a plain object's own keys are its pairs: a Map, a Set or a class instance would be written
+  // as an empty hstore, so anything else is refused, its constructor named.
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) {
+    const name = Array.isArray(v) || v instanceof Date || ArrayBuffer.isView(v) ? undefined : (v.constructor as { name?: unknown } | undefined)?.name;
+    return fail(`is an hstore, an object of its keys whose values are strings or null; got ${typeof name === "string" && name ? `a ${name}` : describe(v)}.`);
+  }
   const quote = (s: string) => `"${s.replace(/[\\"]/g, "\\$&")}"`;
   const pairs: string[] = [];
   for (const [key, value] of Object.entries(v)) {
