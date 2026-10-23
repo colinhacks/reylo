@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
-import type { JsonSchema } from "../src/engine-type.ts";
+import type { EngineType, JsonSchema } from "../src/engine-type.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -171,6 +171,16 @@ test("a parameter the statement takes no null for refuses null and refuses to be
   await execute(client, json({ type: ["integer", "null"] }), {});
   await execute(client, json({ type: "integer", default: 3 }), {});
   assert.deepEqual(seen.slice(2), [[null], ["3"]]);
+  // A JSON parameter with no schema is declared `unknown`, and takes null; one whose type alone
+  // carries a schema takes null where that schema allows null.
+  const untyped = (type: EngineType): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable: false } }, checks });
+  await execute(client, untyped({ kind: "json" }), { p: null });
+  await execute(client, untyped({ kind: "json", schema: { type: ["integer", "null"] } }), {});
+  await assert.rejects(async () => execute(client, untyped({ kind: "json", schema: { type: "integer" } }), { p: null }), /Parameter "p" is null/);
+  assert.deepEqual(seen.slice(4), [[null], [null]]);
+  // A structured parameter keeps its own message, which says what to pass.
+  const rows: QueryModule<"postgres"> = { dialect: "postgres", sql: "select 1", params: ["r"], inputs: { r: { type: { kind: "rows", one: true, fields: [] }, nullable: false } }, checks };
+  await assert.rejects(async () => execute(client, rows, { r: null }), /pass one object/);
 });
 
 test("a query without inputs, defined by hand or built before them, binds every array as it is", async () => {

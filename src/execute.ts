@@ -413,12 +413,9 @@ function statement(query: QueryModule, params: ParamsInput) {
       bound.values[i] = v === undefined ? null : v;
       return;
     }
-    // A parameter the statement takes no null for, which its types rely on (a column it alone
-    // fills, an expression of it typed non-null), refuses null and refuses to be left out, which
-    // would bind NULL. One typed `unknown` takes anything.
-    if (input?.nullable === false && bound.values[i] === null && type?.kind !== "unknown") refuseNull(name, params[name]);
     // A structured parameter is checked against its column list and written as the JSON the
-    // statement reads; in an insert, its lists name only the keys the call carries.
+    // statement reads; in an insert, its lists name only the keys the call carries. It refuses
+    // null itself, saying what to pass.
     if (type?.kind === "rows") {
       const structured = query.structured?.find((s) => s.name === name);
       const { prepareRows, variant } = checksFor(query, name);
@@ -427,6 +424,13 @@ function statement(query: QueryModule, params: ParamsInput) {
       if (structured) bound.text = variant(bound.text, structured, type.fields, prepared.present);
       return;
     }
+    // A parameter the statement takes no null for, which its types rely on (a column it alone
+    // fills, an expression of it typed non-null), refuses null and refuses to be left out, which
+    // would bind NULL: exactly where its declared type takes no null (src/render.ts,
+    // `renderParamType`). One typed `unknown`, and a JSON one with no schema, are declared
+    // `unknown` and take anything; a JSON one whose type alone carries a schema takes null where
+    // that schema allows null.
+    if (input?.nullable === false && bound.values[i] === null && refusesNull(query, type)) refuseNull(name, params[name]);
     // An array parameter takes no NULL element, as its type says (`:ids::int[]` is `number[]`):
     // a NULL in `= any(:ids)` matches nothing. An array inside a
     // structured parameter's member keeps its NULL elements (src/rows.ts).
@@ -465,6 +469,13 @@ function nullElement(array: readonly unknown[], path = ""): string | undefined {
     }
   }
   return undefined;
+}
+
+/** Whether a parameter the statement takes no null for is declared with a type that takes no null. */
+function refusesNull(query: QueryModule, type: EngineType | undefined): boolean {
+  if (type === undefined || type.kind === "unknown") return false;
+  if (type.kind !== "json") return true;
+  return type.schema !== undefined && query.checks !== undefined && query.checks.validate(type.schema, null) !== undefined;
 }
 
 /** A parameter the statement takes no null for, given null or left out. */
