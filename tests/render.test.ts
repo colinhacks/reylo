@@ -219,7 +219,8 @@ test("a returned array's elements may be NULL unless the statement shows they ar
   assert.equal(renderType(texts(true), true), "(string | null)[]");
   assert.equal(renderType({ kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] }, nullable_items: true }), `("ok" | "sad" | null)[]`);
   // A top-level array parameter's elements take no NULL, as the parameter itself takes NULL only
-  // as the first argument of `coalesce`: a NULL in `= any(:ids)` matches nothing. An array inside a
+  // when cast to `nullable(…)` or written bare to a nullable column: a NULL in `= any(:ids)`
+  // matches nothing. An array inside a
   // structured parameter's member keeps NULL elements, so a built array goes back into a row.
   assert.equal(renderParamType(texts()), "string[]");
   assert.equal(renderParamType({ kind: "array", of: scalar("int8") }), "(number | bigint | string)[]");
