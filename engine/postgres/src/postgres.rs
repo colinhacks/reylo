@@ -779,32 +779,34 @@ impl<'a> Engine<'a> {
         // Every probe is described before the items any of them reads are followed, so those
         // take what the probe budget leaves and never a probe the statement's own JSON needs.
         let mut described = Vec::with_capacity(plan.probes.len());
-        for (i, probe) in plan.probes.iter().enumerate() {
+        for probe in &plan.probes {
             let mut one = (probe.sql.as_str(), self.probe(&probe.sql, trust));
             if let (Some(None), Some(wider)) = (&one.1, &probe.wider) {
                 one = (wider.as_str(), self.probe(wider, trust));
             }
             pending |= one.1.is_none();
-            // A whole row an outer join may null is read again with the row there, over the same
-            // `FROM` the probe was described over, for the fields an object that exists holds.
-            let present = match (plan.present.get(i).and_then(Option::as_ref), &one.1) {
-                (Some(present), Some(Some(_))) => {
-                    let text = if one.0 == probe.sql { Some(present.sql.as_str()) } else { present.wider.as_deref() };
-                    match text.map(|text| self.probe(text, trust)) {
-                        Some(None) => {
-                            pending = true;
-                            None
-                        }
-                        Some(Some(found)) => found,
-                        None => None,
-                    }
-                }
+            described.push(one);
+        }
+        // A whole row an outer join may null is read again with the row there, over the same
+        // `FROM` its probe was described over, for the fields an object that exists holds: after
+        // every probe, since a field without it is only less precise.
+        let mut present = Vec::with_capacity(plan.probes.len());
+        for (i, (probe, (text, one))) in plan.probes.iter().zip(&described).enumerate() {
+            let read = match (plan.present.get(i).and_then(Option::as_ref), one) {
+                (Some(read), Some(Some(_))) => if *text == probe.sql { Some(read.sql.as_str()) } else { read.wider.as_deref() },
                 _ => None,
             };
-            described.push((one.0, one.1, present));
+            present.push(match read.map(|read| self.probe(read, trust)) {
+                Some(None) => {
+                    pending = true;
+                    None
+                }
+                Some(Some(found)) => found,
+                None => None,
+            });
         }
         let mut outcomes: Vec<Option<jsonshape::Outcome>> = Vec::with_capacity(plan.probes.len());
-        for (probe, (text, one, present)) in plan.probes.iter().zip(described) {
+        for (probe, ((text, one), present)) in plan.probes.iter().zip(described.into_iter().zip(present)) {
             let Some(Some(d)) = one else {
                 outcomes.push(None);
                 continue;
