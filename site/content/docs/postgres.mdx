@@ -261,7 +261,7 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, and an `hstore` is an object of its keys, each value text or null.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
 
 <Pairs>
 
@@ -271,7 +271,10 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
 - `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
+- `json_build_object('o', 7::oid)` → `{ o: "7" }`
 - `json_build_object('h', 'a=>1, b=>NULL'::hstore)` → `{ h: { a: "1", b: null } }`
+- `json_build_object('g', 'POINT(1 2)'::geometry)` → `{ g: { type: "Point", coordinates: [1, 2] } }`
+- `json_build_object('v', '[1,2.5]'::vector)` → `{ v: "[1,2.5]" }`
 
 </Pairs>
 

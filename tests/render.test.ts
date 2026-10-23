@@ -89,6 +89,19 @@ test("an hstore is its text on the wire and an object of nullable text inside a 
   assert.deepEqual(typeSchema(scalar("hstore"), "postgres", false, true), { type: "object", additionalProperties: { type: ["string", "null"] } });
 });
 
+test("inside a document an oid is its text, a geometry its GeoJSON, and an extension's type with no cast to JSON its text", () => {
+  // Postgres writes JSON numbers only for the integers, the floats and numeric: `{"o" : "7"}`.
+  assert.equal(renderType(scalar("oid"), false, "postgres"), "number");
+  assert.equal(renderType(scalar("oid"), true, "postgres"), "string");
+  assert.deepEqual(typeSchema(scalar("oid"), "postgres", false, true), { type: "string" });
+  // PostGIS's cast to JSON writes GeoJSON: `{"type":"Point","coordinates":[1,2]}`.
+  assert.equal(renderType(scalar("geometry"), false, "postgres"), "string");
+  assert.equal(renderType(scalar("geometry"), true, "postgres"), "{ type: string; [key: string]: unknown }");
+  assert.deepEqual(typeSchema(scalar("geometry"), "postgres", false, true), { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" });
+  // A pgvector vector, a geography, a cube or an isbn inside a document is the JSON string of its text: `{"v" : "[1,2,3]"}`.
+  for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(scalar(name), true, "postgres"), "string", name);
+});
+
 test("a composite with no columns inside a document is an empty object", () => {
   assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, true), "Record<never, never>");
   assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, false), "string");

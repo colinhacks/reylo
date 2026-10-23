@@ -707,13 +707,19 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
 /// Whether a JSON value inside a document is of the kind a value of the base type `name` is
 /// written as there, as `src/render.ts` types it (its table `json`): a number for the integers, a
 /// number or the text of a non-finite one for the floats and `numeric`, a boolean, an object for a
-/// row whose columns were not read and for an hstore, text for the rest it names. A type the table does not name renders `unknown`, which admits any value.
+/// row whose columns were not read and for an hstore, GeoJSON for a geometry, text for the rest it
+/// names, an oid among them. A type the table does not name renders `unknown`, which admits any value.
 fn json_admits(name: &str, json: &Value) -> bool {
     match name {
         "bool" => json.is_boolean(),
-        "int2" | "int4" | "int8" | "oid" => json.is_number(),
+        "int2" | "int4" | "int8" => json.is_number(),
         "float4" | "float8" | "numeric" => json.is_number() || matches!(json.as_str(), Some("NaN" | "Infinity" | "-Infinity")),
-        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "ltree" | "lquery" | "ltxtquery" => json.is_string(),
+        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "ltree" | "lquery" | "ltxtquery" | "oid" => json.is_string(),
+        // Types with no cast to JSON, built-in and the extensions', written as their text.
+        "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "pg_lsn" | "jsonpath" | "xid" | "xid8" | "regproc" | "regprocedure" | "regoper" | "regoperator" | "regnamespace" | "regrole" | "regcollation" | "regconfig" | "regdictionary" => json.is_string(),
+        "vector" | "halfvec" | "sparsevec" | "geography" | "box2d" | "box3d" | "spheroid" | "raster" | "cube" | "seg" | "ean13" | "isbn" | "isbn13" | "ismn" | "ismn13" | "issn" | "issn13" | "upc" | "query_int" | "h3index" | "hll" | "hll_hashval" | "ip4" | "ip4r" | "ip6" | "ip6r" | "ipaddress" | "iprange" | "ulid" | "prefix_range" | "mol" | "qmol" | "xqmol" | "reaction" | "bfp" | "sfp" | "roaringbitmap" | "s3vec" | "semver" | "semverrange" | "semvermultirange" | "unit" | "unitrange" | "unitmultirange" | "rabitq8" | "rabitq4" => json.is_string(),
+        // A geometry: GeoJSON, through PostGIS's cast to JSON.
+        "geometry" => json.get("type").is_some_and(Value::is_string),
         // An hstore: an object of its keys, each value text or null.
         "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         // A row whose columns were not read (a subquery's): an object of them.

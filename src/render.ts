@@ -11,7 +11,8 @@ import { kindType as typeOfKind, scalarKind, type Dialect } from "./values.ts";
 const nonFinite = `number | "NaN" | "Infinity" | "-Infinity"`;
 const json: Record<string, string> = {
   bool: "boolean",
-  int2: "number", int4: "number", oid: "number", float4: nonFinite, float8: nonFinite,
+  // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
+  int2: "number", int4: "number", oid: "string", float4: nonFinite, float8: nonFinite,
   int8: "number", numeric: nonFinite,
   text: "string", varchar: "string", bpchar: "string", name: "string", char: "string", citext: "string",
   uuid: "string", time: "string", timetz: "string", interval: "string",
@@ -22,8 +23,23 @@ const json: Record<string, string> = {
   int4range: "string", int8range: "string", numrange: "string", tsrange: "string", tstzrange: "string", daterange: "string",
   int4multirange: "string", int8multirange: "string", nummultirange: "string", tsmultirange: "string", tstzmultirange: "string", datemultirange: "string",
   ltree: "string", lquery: "string", ltxtquery: "string",
+  // Types with no cast to JSON, which Postgres writes inside a document as their text: built-in
+  // geometric and system types, and the extensions' on Neon and Supabase (pgvector, PostGIS's
+  // others, cube, seg, isn, intarray, h3, hll, ip4r, pgx_ulid, prefix, rdkit, roaringbitmap,
+  // semver, unit, VectorChord).
+  point: "string", line: "string", lseg: "string", box: "string", path: "string", polygon: "string", circle: "string",
+  pg_lsn: "string", jsonpath: "string", xid: "string", xid8: "string",
+  regproc: "string", regprocedure: "string", regoper: "string", regoperator: "string", regnamespace: "string", regrole: "string", regcollation: "string", regconfig: "string", regdictionary: "string",
+  vector: "string", halfvec: "string", sparsevec: "string", geography: "string", box2d: "string", box3d: "string", spheroid: "string", raster: "string",
+  cube: "string", seg: "string", ean13: "string", isbn: "string", isbn13: "string", ismn: "string", ismn13: "string", issn: "string", issn13: "string", upc: "string",
+  query_int: "string", h3index: "string", hll: "string", hll_hashval: "string",
+  ip4: "string", ip4r: "string", ip6: "string", ip6r: "string", ipaddress: "string", iprange: "string", ulid: "string", prefix_range: "string",
+  mol: "string", qmol: "string", xqmol: "string", reaction: "string", bfp: "string", sfp: "string", roaringbitmap: "string", s3vec: "string",
+  semver: "string", semverrange: "string", semvermultirange: "string", unit: "string", unitrange: "string", unitmultirange: "string", rabitq8: "string", rabitq4: "string",
   // An hstore is an object of its keys inside a document, each value text or null (`{"a": "1", "b": null}`).
   hstore: "Record<string, string | null>",
+  // PostGIS writes a geometry through its cast to JSON: a GeoJSON geometry, `{"type":"Point","coordinates":[1,2]}`.
+  geometry: "{ type: string; [key: string]: unknown }",
   // A row whose columns were not read (a subquery's): an object of them inside a document.
   record: "Record<string, unknown>",
 };
