@@ -24,9 +24,9 @@ const appTable: Record<number, Parser> = {
 const appTypes = { getTypeParser: (oid: number) => appTable[oid] ?? noParse };
 
 // Oids the database created: an enum and its array, a domain's array, a row type's array, the
-// array of a type whose delimiter is not a comma (PostGIS's geometry), and a type created after
-// Reylo first read the catalog.
-const ROLE_ARR = 70000, ROLE = 70001, POSINT_ARR = 70010, POSINT = 70011, PAIR_ARR = 70020, PAIR = 70021, LATE_ARR = 70030, LATE = 70031, SHAPE_ARR = 70040, SHAPE = 70041;
+// array of a type whose delimiter is not a comma (PostGIS's geometry), pgvector's vector and its
+// array, and a type created after Reylo first read the catalog.
+const ROLE_ARR = 70000, ROLE = 70001, POSINT_ARR = 70010, POSINT = 70011, PAIR_ARR = 70020, PAIR = 70021, LATE_ARR = 70030, LATE = 70031, SHAPE_ARR = 70040, SHAPE = 70041, VEC_ARR = 70050, VEC = 70051;
 const COLUMNS: [string, number, string | null][] = [
   ["roles", ROLE_ARR, "{admin,member,NULL}"],
   ["role", ROLE, "admin"],
@@ -46,6 +46,8 @@ const COLUMNS: [string, number, string | null][] = [
   ["flag", 16, "t"],
   ["boxes", 1020, "{(1,1),(0,0);(2,2),(1,1)}"],
   ["shapes", SHAPE_ARR, "{0101:NULL:0102}"],
+  ["embedding", VEC, "[1,2.5,-3,1e-07]"],
+  ["embeddings", VEC_ARR, '{"[1,2]",NULL,"[3]"}'],
   ["nothing", ROLE_ARR, null],
 ];
 /** What Reylo returns for each column: src/values.ts. */
@@ -68,28 +70,37 @@ const declared = {
   flag: true,
   boxes: ["(1,1),(0,0)", "(2,2),(1,1)"],
   shapes: ["0101", null, "0102"],
+  embedding: [1, 2.5, -3, 1e-7],
+  embeddings: [[1, 2], null, [3]],
   nothing: null,
 };
 /** The module's columns for the same statement, as a build step writes them (src/loader.ts). */
 const columns: Columns = [
   ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"],
-  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["nothing", "text[]"],
+  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["nothing", "text[]"],
 ];
 
-// The catalog: [array oid, element's base oid, a row type's array (kept as text), delimiter].
+// The catalog, as decode.ts reads it: [array oid, element's base oid, a row type's array (kept as
+// text), delimiter, element oid, base type's name], for a type or an array type it asks about.
 function database() {
   const db = {
-    types: [[ROLE_ARR, ROLE, false, ","], [POSINT_ARR, 23, false, ","], [PAIR_ARR, PAIR, true, ","], [SHAPE_ARR, SHAPE, false, ":"]] as [number, number, boolean, string][],
+    types: [
+      [ROLE_ARR, ROLE, false, ",", ROLE, "role"],
+      [POSINT_ARR, 23, false, ",", POSINT, "int4"],
+      [PAIR_ARR, PAIR, true, ",", PAIR, "pair"],
+      [SHAPE_ARR, SHAPE, false, ":", SHAPE, "geometry"],
+      [VEC_ARR, VEC, false, ",", VEC, "vector"],
+    ] as [number, number, boolean, string, number, string][],
     catalogQueries: [] as string[],
     late() {
-      db.types.push([LATE_ARR, LATE, false, ","]);
+      db.types.push([LATE_ARR, LATE, false, ",", LATE, "late"]);
     },
     answer(text: string): { fields: { name: string; dataTypeID: number }[]; raw: (string | null)[][] } {
       if (text.includes("pg_catalog.pg_type")) {
         db.catalogQueries.push(text);
         const wanted = /any\('\{([\d,]+)\}'/.exec(text)![1]!.split(",").map(Number);
-        const rows = db.types.filter(([array]) => wanted.includes(array)).map(([array, base, isText, delim]) => [String(array), String(base), String(isText), delim]);
-        return { fields: [0, 1, 2, 3].map((i) => ({ name: `c${i}`, dataTypeID: 25 })), raw: rows };
+        const rows = db.types.filter(([array, , , , element]) => wanted.includes(array) || wanted.includes(element)).map((row) => row.map(String));
+        return { fields: [0, 1, 2, 3, 4, 5].map((i) => ({ name: `c${i}`, dataTypeID: 25 })), raw: rows };
       }
       const cols = [...COLUMNS];
       if (text.includes("late")) cols.push(["lates", LATE_ARR, "{x,y}"], ["late", LATE, "x"]);
@@ -159,7 +170,7 @@ test("pg Client: Reylo's table answers every oid, so no parser of the app's appl
   const [row] = (await execute(client, probe, { id: 1 })) as Record<string, unknown>[];
   same(row, declared);
   assert.equal(db.catalogQueries.length, 1);
-  assert.match(db.catalogQueries[0]!, new RegExp(`any\\('\\{${ROLE_ARR},${ROLE},${POSINT_ARR},${PAIR_ARR},${SHAPE_ARR}\\}'`));
+  assert.match(db.catalogQueries[0]!, new RegExp(`any\\('\\{${ROLE_ARR},${ROLE},${POSINT_ARR},${PAIR_ARR},${SHAPE_ARR},${VEC},${VEC_ARR}\\}'`));
   await execute(client, probe, { id: 1 });
   assert.equal(db.catalogQueries.length, 1, "what the catalog said is kept per client");
   assert.deepEqual((await client.query("select * from probe")).rows[0], control, "the app's own queries keep its parsers");
@@ -360,14 +371,15 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     ints: Int32Array.of(1, 2),
     roles: "{admin,member}",
     shapes: "{0101:0102}",
+    embedding: "[1,2.5]",
     at: new Date("2024-01-15T08:30:00Z"),
     forever: Infinity,
   };
   const bun = { unsafe: async () => [{ ...bunRow }], commitDistributed: async () => {} };
-  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["at", "timestamptz"], ["forever", "date"]] };
+  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["at", "timestamptz"], ["forever", "date"]] };
   // The failing control: Bun.sql's timestamptz is a Date; Reylo's the instant's text, to Bun's millisecond.
   assert.ok(bunRow.at instanceof Date);
-  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
+  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
   // Without bigint: true, Bun's int8 is its text.
   const plain = { unsafe: async () => [{ big: "9007199254740993", at: new Date("2024-01-15T08:30:00.5Z") }], commitDistributed: async () => {} };
   assert.deepEqual(await execute(plain, { ...probe, columns: [["big", "int8"], ["at", "timestamptz"]] }, { id: 1 }), [{ big: 9007199254740993n, at: "2024-01-15T08:30:00.5Z" }]);

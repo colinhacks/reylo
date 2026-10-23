@@ -23,7 +23,7 @@
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
 // those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+import { coerce, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -86,29 +86,36 @@ const learnedOf = (key: object): Learned => {
 /** Rows as arrays of text, from a query that reads the catalog. */
 type Load = (sql: string) => Promise<(string | null)[][]>;
 
-// Every array type among `oids`, with its element's base type through any number of domains (an
-// array of row values, or of a type whose own output is an array, stays text). An oid goes out as
-// int8, since one above 2^31 would wrap as int4.
-const catalogSql = (oids: number[]) => `with recursive d(oid, base) as (
+// Every type among `oids`, and every array type's element, with its base type through any number
+// of domains and that base type's name (an array of row values, or of a type whose own output is
+// an array, stays text). An oid goes out as int8, since one above 2^31 would wrap as int4.
+const catalogSql = (oids: number[]) => {
+  const list = `'{${oids.map((o) => Math.trunc(o)).join(",")}}'::pg_catalog.oid[]`;
+  return `with recursive d(oid, base) as (
   select oid, typbasetype from pg_catalog.pg_type where typtype = 'd'
   union all
   select d.oid, t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.base where t.typtype = 'd'
 )
-select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text
+select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text
 from pg_catalog.pg_type e
 join pg_catalog.pg_type b on b.oid = coalesce((select d.base from d join pg_catalog.pg_type t on t.oid = d.base where d.oid = e.oid and t.typtype <> 'd'), e.oid)
-where e.typarray = any('{${oids.map((o) => Math.trunc(o)).join(",")}}'::pg_catalog.oid[])`;
+where e.typarray = any(${list}) or e.oid = any(${list})`;
+};
 
-/** Reads the kinds of the oids the client has not met yet: an array of its element's base kind, any other type its text. */
+/**
+ * Reads the kinds of the oids the client has not met yet: a type the database created by its
+ * name, as the engine names it (pgvector's `vector` is its numbers, an enum its text), and an array
+ * of one its element's kind.
+ */
 async function learn(key: object, oids: Iterable<number>, load: Load): Promise<void> {
   const known = learnedOf(key);
-  const missing = [...new Set(oids)].filter((oid) => !known.has(oid));
-  if (!missing.length) return;
-  const rows = await load(catalogSql(missing));
-  for (const [array, base, isText, delim] of rows) {
-    const b = builtin(Number(base));
-    const element = isText === "true" ? undefined : b ? b.kind : "text";
-    known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
+  const missing = new Set([...oids].filter((oid) => !known.has(oid)));
+  if (!missing.size) return;
+  const rows = await load(catalogSql([...missing]));
+  for (const [array, base, isText, delim, oid, name] of rows) {
+    const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name, "postgres") : "text"));
+    if (missing.has(Number(oid))) known.set(Number(oid), { kind: element ?? "text", delim: "," });
+    if (missing.has(Number(array))) known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
   }
   for (const oid of missing) if (!known.has(oid)) known.set(oid, { kind: "text", delim: "," });
 }
@@ -351,10 +358,11 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * The kinds Bun.sql can give in another form: a BIGINT as its digits (a BigInt with `bigint: true`),
  * a date and a timestamp as a Date read as UTC, a timestamptz as a Date, an int4[] and float4[] as a
  * typed array, an array of a type Bun does not parse (an enum's, uuid, name, a range) as its text,
- * MySQL's TINYINT(1) and a comparison as a number or a BIGINT's digits, and its BIT(1) as a boolean;
- * and an interval as Postgres's text, which Reylo writes as an ISO 8601 duration.
+ * a pgvector vector as its text, MySQL's TINYINT(1) and a comparison as a number or a BIGINT's
+ * digits, and its BIT(1) as a boolean; and an interval as Postgres's text, which Reylo writes as
+ * an ISO 8601 duration.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes)$|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector)$|\[\]$|\|/;
 
 export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];

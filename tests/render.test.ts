@@ -82,6 +82,19 @@ test("a scalar that names two types is either", () => {
   assert.equal(renderType(scalar("int8|mystery"), true, "mysql"), "unknown");
 });
 
+test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
+  for (const name of ["vector", "halfvec"]) {
+    assert.equal(renderType(scalar(name), false, "postgres"), "number[]");
+    assert.equal(renderParamType(scalar(name), "postgres"), "number[]");
+    assert.equal(renderType({ kind: "array", of: scalar(name) }, false, "postgres"), "(number[] | null)[]");
+    assert.equal(renderParamType({ kind: "array", of: scalar(name) }, "postgres"), "number[][]");
+    assert.deepEqual(typeSchema(scalar(name), "postgres"), { type: "array", items: { type: "number", format: "float" } });
+    assert.deepEqual(typeSchema(scalar(name), "postgres", false, true), { type: "string" });
+  }
+  // A sparsevec stays its text.
+  assert.equal(renderType(scalar("sparsevec"), false, "postgres"), "string");
+});
+
 test("an hstore is its text on the wire and an object of nullable text inside a document", () => {
   assert.equal(renderType(scalar("hstore"), false, "postgres"), "string");
   assert.equal(renderType(scalar("hstore"), true, "postgres"), "Record<string, string | null>");
