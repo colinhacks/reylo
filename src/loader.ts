@@ -4,6 +4,7 @@
 // database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
+import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { Session } from "./analyze.ts";
 import { sourceName } from "./project.ts";
@@ -15,6 +16,8 @@ export type SqlModule = {
   code: string;
   /** The `.reylo/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
   entry: string;
+  /** The project file and the `.env` files that exist: the module's text depends on them too (`sqlcommenter`, the URL), so a bundler watches them as well. */
+  watched: string[];
 };
 
 export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
@@ -78,7 +81,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
-  return { code, entry: outcome.entry };
+  return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };
 }
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */

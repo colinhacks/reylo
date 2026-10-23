@@ -15,9 +15,10 @@ type LoaderContext = {
 export default function reyloSqlLoader(this: LoaderContext, source: string): void {
   const done = this.async();
   tooling(dirname(this.resourcePath)).then((t) => t.sqlModule(this.resourcePath, source)).then(
-    ({ code, entry }) => {
-      // A new analysis of the statement (the type check's, after a migration) rebuilds the module.
-      this.addDependency(entry);
+    ({ code, entry, watched }) => {
+      // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
+      // and so does a change to the project file or a `.env` file, which the module's text reads.
+      for (const file of [entry, ...watched]) this.addDependency(file);
       done(null, code);
     },
     (error: Error) => done(error),

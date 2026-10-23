@@ -18,7 +18,7 @@ import { dirname, join } from "node:path";
 /** What an engine package's build-time half offers reylo's entry points. */
 export type Tooling = {
   /** The module a build step writes for a `.sql` file, and the `.reylo/` entry it was built from, which the build watches. */
-  sqlModule(path: string, source: string): Promise<{ code: string; entry: string }>;
+  sqlModule(path: string, source: string): Promise<{ code: string; entry: string; watched: string[] }>;
   /** Closes every build step's connection, for a build that has ended. */
   releaseConnections(): Promise<void>;
   /** The methods of TypeScript's content mapper protocol, which src/mapper.ts serves over this process's stdin and stdout. */

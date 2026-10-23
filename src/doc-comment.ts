@@ -80,8 +80,6 @@ export function statementAfter(sql: string, leading: Leading): string {
 /** What `sql` is, after the statement in its doc comment. */
 export const sqlNote = (commented: boolean) =>
   `The statement as Reylo sends it to the database, as the module's \`sql\` export: \`:id\` is \`$1\` on Postgres and \`?\` on MySQL and SQLite, ${commented ? "each cast is the dialect's own, and a comment naming the file ends it" : "and each cast is the dialect's own"}.`;
-/** The note where the project's statements end with their file's sqlcommenter comment, as they do unless it says `sqlcommenter: false`. */
-export const SQL_NOTE = sqlNote(true);
 /** What `raw` is, after the statement in its doc comment. */
 export const RAW_NOTE = "The `.sql` file's contents, exactly as written, as the module's `raw` export.";
 
