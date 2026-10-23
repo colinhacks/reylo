@@ -619,6 +619,10 @@ test("a Drizzle database or transaction runs on the driver client its session ke
   assert.deepEqual(seen, [[1, "ada"], [1, "ada", 1]]);
   const db = new DatabaseSync(":memory:");
   assert.deepEqual(executeSync(drizzle(db) as never, lite, { id: 1, name: "ada" }), [row]);
+  // drizzle-orm/durable-sqlite keeps the Durable Object's storage, ctx.storage, whose SQL storage is its sql.
+  const storage = { sql: durableObjectSql(new DatabaseSync(":memory:")), transactionSync: (fn: () => unknown) => fn() };
+  assert.deepEqual(executeSync(drizzle(storage) as never, lite, { id: 1, name: "ada" }), [row]);
+  assert.deepEqual(await execute(drizzle(storage) as never, lite, { id: 1, name: "ada" }), [row]);
   // Inside a libSQL transaction the session keeps the base client on client and the transaction on tx.
   const libsql = (name: string) => ({ execute: async () => (seen.push([name]), { rows: [row], columns: ["id", "name", "again"], columnTypes: [] }), batch: async () => [], transaction: async () => {} });
   const tx = { select() {}, session: { dialect: {}, client: libsql("base"), tx: { ...libsql("tx"), commit: async () => {}, rollback: async () => {} } } };
