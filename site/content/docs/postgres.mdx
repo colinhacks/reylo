@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | --- | --- |
 | Postgres versions | 14 to 18 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url). Connect directly, not through a pooler such as PgBouncer. |
-| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg` or postgres.js ([Drivers](#drivers)) |
+| Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
 | Type checking | Reads the schema through the postgres.js inside `@reylosql/postgres`, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -870,7 +870,7 @@ The package is deprecated on npm: Reylo's types accept its client, but Reylo's t
 
 ### Drizzle
 
-Pass a Drizzle database over `pg` or postgres.js, or a transaction or savepoint taken from it:
+Pass a Drizzle database over `pg`, postgres.js, Neon, PGlite or `Bun.sql`, or a transaction or savepoint taken from it. Over Neon's HTTP driver, Drizzle has no transactions:
 
 ```ts twoslash tab="main.ts"
 import { drizzle } from "drizzle-orm/node-postgres";
