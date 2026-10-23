@@ -1150,9 +1150,10 @@ impl Analyzer<'_> {
             "function" => {
                 // The JSON a `json_*` constructor builds, which SQLite returns as its text.
                 if let Some(ty) = self.built_text(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row.
+                    // `json()` of a scalar subquery is NULL where the subquery finds no row; every
+                    // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
                     let non_null = match n.args.first() {
-                        Some(a) if a.op == "select" => self.type_of(a, scope).non_null,
+                        Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
                         _ => true,
                     };
                     return Fact { ty, non_null };
@@ -1510,8 +1511,9 @@ impl Analyzer<'_> {
                     return any;
                 }
                 if let Some(ty) = self.shape(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row.
-                    let non_null = !n.args.first().is_some_and(|a| a.op == "select") || self.type_of(n, scope).non_null;
+                    // `json()` of a scalar subquery is NULL where the subquery finds no row, and
+                    // `jsonb()` too; every other constructor is never NULL.
+                    let non_null = !(matches!(name, "json" | "jsonb") && n.args.first().is_some_and(|a| a.op == "select")) || self.type_of(n, scope).non_null;
                     return JsonFact { ty, non_null, carry: Carry::Yes };
                 }
                 let first = n.args.first().into_iter();
@@ -4039,6 +4041,7 @@ mod tests {
         // At the top, a scalar subquery's JSON is text either way, which the run time parses.
         assert_eq!(json_typed("select (select json_group_array(id) from posts) as ids"), "ids: number[]");
         assert_eq!(json_typed("select json((select json_object('n', name) from users where id = 1)) as u"), "u: { n: string } | null");
+        assert_eq!(json_typed("select json_array((select name from users where id = 1)) as a, json_group_array((select name from users where id = 1)) as g, json_group_object((select name from users where id = 1), id) as o from users"), "a: [string | null]; g: (string | null)[]; o: { [key: string]: number }");
         let a = analyze_ddl(profile, &json_ddl(), &Extras::default()).analysis;
         assert_eq!((a.columns[0].type_name.as_str(), a.cardinality.as_str()), ("text", "maybeOne"));
         // Each value as SQLite writes it there: an INTEGER, a BIGINT column's too, as a number
@@ -4093,6 +4096,9 @@ mod tests {
             ("json((select json_object('n', name) from users u2 where u2.id = users.id))", "{ n: string } | null"),
             ("json((select json_group_array(p.id) from posts p where p.user_id = users.id order by p.id))", "number[]"),
             ("json((select json_array(1)))", "[number]"),
+            // Another constructor reads the subquery's NULL as a null, and is never NULL.
+            ("json_array((select name from users u2 where u2.id = users.id))", "[string | null]"),
+            ("json_group_array((select name from users u2 where u2.id = users.id))", "(string | null)[]"),
             // `coalesce` never reaches an argument after one that is never NULL.
             ("coalesce(json((select json_group_array(p.id) from posts p where p.user_id = users.id)), '[]')", "number[]"),
             ("coalesce(json_object('e', email), json_array())", "{ e: string | null }"),

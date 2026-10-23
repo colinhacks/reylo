@@ -6,5 +6,6 @@ profile.sql: maybeOne (id: integer) -> { profile: { user: { id: integer, name: t
 returning.sql: one (user_id: integer, title: text, body: text?) -> { post: { id: integer, title: text, body: text?, tags: json {"type":"array","items":false,"minItems":2,"prefixItems":[{"type":"string"},{"type":["string","null"]}]} } }
 scalars.sql: many () -> { o: { i: integer, id: integer, big: int8?, r: real?, inf: real?, t: text, e: text?, n: numeric?, nul: unknown, cmp: integer, tru: integer, flag: numeric, any: unknown, doc: text? } }
 subquery_json.sql: many () -> { o: { sub: { n: text }?, agg: [integer], reach: [text], none: { n: text }? } }
+subquery_null.sql: many () -> { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":["string","null"]}]}, o: { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":["string","null"]}]} }, g: [text?] }
 top_level.sql: many (doc: text?) -> { a: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":"integer","format":"int64"}]}, b: text, c: text, d: json {"type":"array","items":false,"minItems":1,"prefixItems":[{"type":"integer","format":"int64"}]}?, e: text, x: { id: integer, name: text } }
 windows.sql: many () -> { id: integer, next: [integer], w: { w: unknown } }
