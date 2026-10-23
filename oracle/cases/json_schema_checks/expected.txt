@@ -3,7 +3,7 @@ bare.sql: many () -> { id: int4, doc: json {"type":"object","properties":{"name"
 built_row.sql: one () -> { made: [docs{ id: int4?, doc: json? }]? }
 constructor.sql: many () -> { o: { id: int4, doc: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]},"size":{"type":["integer","null"]}},"required":["name","kind"],"additionalProperties":true}, flags: json {"type":"object","additionalProperties":{"type":"boolean"}}? } }
 domain.sql: many () -> { f: json {"type":"object","additionalProperties":{"type":"boolean"}}? }
-expression.sql: many () -> { name: json?, merged: json }
+expression.sql: many () -> { name: json {"type":"string"}, merged: json }
 insert.sql: one (id: int4, f: json {"type":"object","additionalProperties":{"type":"boolean"}}?) -> { f: json {"type":"object","additionalProperties":{"type":"boolean"}}? }
 nulls.sql: many () -> { m: json {"type":["string","null"]}, old: json? }
 recursive.sql: many () -> { body: json {"type":"object","properties":{"label":{"type":"string"},"children":{"type":"array"}},"required":["label"],"additionalProperties":true}? }

@@ -24,6 +24,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 - A list is one parameter: `= any(:ids::int[])` on Postgres, and a JSON parameter read with `json_table` on MySQL or `json_each` on SQLite. Copy each database's form from https://reylo.dev/#filtering-by-a-list.
 - Many rows to insert are one JSON parameter whose cast carries their JSON Schema (https://reylo.dev/#bulk-inserts, https://reylo.dev/#typed-json).
 - A column is nullable or not as the schema and the query make it: `not null`, a left join, `coalesce`. Change those to change the type.
+- On Postgres, a JSON column a JSON Schema `CHECK` holds is typed by that schema, and so is a key read from it with a literal key, `payload -> 'x'` or `payload ->> 'x'`. Any other value read out of a document is `unknown` until a cast types it (https://reylo.dev/postgres#json).
 
 ## Running a query
 

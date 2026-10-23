@@ -1,0 +1,14 @@
+arrow.sql: many () -> { name: json {"type":"string"}, kind: json {"enum":["a","b"]}, size: json {"type":["integer","null"]}, tags: json {"type":"array","items":{"type":"string"}}?, owner: json {"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}},"required":["id"],"additionalProperties":true} }
+cast.sql: many () -> { size: int4?, owner_id: int4, name: text }
+chain.sql: many () -> { owner_id: json {"type":"integer"}, email: text?, note: text?, note_json: json {"type":"string"}? }
+constructor.sql: many () -> { o: { name: json {"type":"string"}, owner_id: json {"type":"integer"}, note: json {"type":"string"}? } }
+derived.sql: many () -> { name: text, owner_id: json {"type":"integer"} }
+json_column.sql: many () -> { title: json {"type":"string"}, title_text: text, other: json? }
+not_literal.sql: many (key: text) -> { v: json?, w: text? }
+outer_joined.sql: many () -> { id: int4, kind: 'a' | 'b'? }
+path.sql: many () -> { owner_id: json {"type":"integer"}, owner_id_text: text, email: json {"type":"string"}?, whole: json {"type":"object","properties":{"name":{"type":"string"},"kind":{"enum":["a","b"]},"size":{"type":["integer","null"]},"tags":{"type":"array","items":{"type":"string"}},"owner":{"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}},"required":["id"],"additionalProperties":true},"meta":{"anyOf":[{"type":"object","properties":{"note":{"type":"string"}},"required":["note"],"additionalProperties":true},{"type":"null"}]},"0":{"type":"boolean"}},"required":["name","kind","size","owner"],"additionalProperties":true}, kind: 'a' | 'b' }
+path_index.sql: many () -> { first_tag: json?, zero: json {"type":"boolean"}?, zero_key: json {"type":"boolean"}?, first_a: json?, a: json? }
+tagged_union.sql: many () -> { type: json {"anyOf":[{"enum":["click"]},{"enum":["key"]}]}, type_text: 'click' | 'key', x: json {"type":"number"}?, key: text? }
+text_arrow.sql: many () -> { name: text, kind: 'a' | 'b', size: text?, tags: text? }
+undeclared.sql: many () -> { extra: json?, loose_x: json?, maybe_x: json {"type":"integer"}?, maybe_x_text: text? }
+with_query.sql: many () -> { kind: 'a' | 'b', owner_id: json {"type":"integer"} }

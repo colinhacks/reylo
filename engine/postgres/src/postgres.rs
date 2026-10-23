@@ -1042,8 +1042,8 @@ impl<'a> Engine<'a> {
         *self.comments.borrow_mut() = comments;
         self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
-            if trust.builtin("=") {
-                col.values = checks.values.get(&(raw.table, raw.attnum)).cloned();
+            if let (true, Some(values)) = (trust.builtin("="), checks.values.get(&(raw.table, raw.attnum))) {
+                col.values = Some(values.clone());
             }
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
@@ -1396,7 +1396,13 @@ impl<'a> Engine<'a> {
             .enumerate()
             .map(|(i, col)| match item_columns.get(i) {
                 // An outer join nulls a WITH query by its name, and any other item by its place.
-                Some(Some((with, nullable))) => DescribedColumn { nullable: *nullable || with.as_ref().is_some_and(|query| nullable_tables.iter().any(|t| t == query)), ..col },
+                // What the item settled of its column's values holds here too.
+                Some(Some((with, item))) => DescribedColumn {
+                    nullable: item.nullable || with.as_ref().is_some_and(|query| nullable_tables.iter().any(|t| t == query)),
+                    document: col.document.clone().or_else(|| item.document.clone()),
+                    values: col.values.clone().or_else(|| item.values.clone()),
+                    ..col
+                },
                 _ => col,
             })
             .collect();
@@ -1416,14 +1422,14 @@ impl<'a> Engine<'a> {
     /// nothing changes. What survives holds by induction over the iterations: the rows of the
     /// non-recursive arm are non-null on their own account, each later row is non-null given
     /// the rows it was computed from, and a UNION is non-null only where both arms are.
-    fn item_columns(&self, sql: &str, count: usize, trust: &Trust) -> Lazy<Vec<Option<(Option<String>, bool)>>> {
+    fn item_columns(&self, sql: &str, count: usize, trust: &Trust) -> Lazy<Vec<Option<(Option<String>, ItemColumn)>>> {
         use infer::ItemRead;
         let Some((reads, queries)) = infer::item_reads(sql) else { return Some(Vec::new()) };
         // One `*` at most: its width is what the other targets leave of the result's columns.
         let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. })).count();
         let Some(width) = (count + stars).checked_sub(reads.len()).filter(|w| stars == 1 || (stars == 0 && *w == 0)) else { return Some(Vec::new()) };
         let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
-        let mut settled: HashMap<usize, Vec<(String, bool)>> = HashMap::new();
+        let mut settled: HashMap<usize, Vec<ItemColumn>> = HashMap::new();
         let mut pending = false;
         for (i, query) in queries.iter().enumerate().filter(|(i, _)| read(*i)) {
             // The query reading itself: the answer is the assumption it is being settled under,
@@ -1436,7 +1442,7 @@ impl<'a> Engine<'a> {
                 self.assumptions.set(self.assumptions.get() + 1);
                 let assumed = &entry.1;
                 let named = reads.iter().filter_map(|r| match r {
-                    ItemRead::Column { item, column } if *item == i => Some((column.clone(), assumed.contains(column))),
+                    ItemRead::Column { item, column } if *item == i => Some(ItemColumn { name: column.clone(), nullable: assumed.contains(column), document: None, values: None }),
                     _ => None,
                 });
                 settled.insert(i, named.collect());
@@ -1456,8 +1462,13 @@ impl<'a> Engine<'a> {
                         break;
                     }
                 };
-                let columns: Vec<(String, bool)> = described.columns.iter().enumerate().map(|(i, c)| (query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone()), c.nullable)).collect();
-                let refuted: Vec<String> = columns.iter().filter(|(n, nullable)| *nullable && !assumed.contains(n)).map(|(n, _)| n.clone()).collect();
+                let columns: Vec<ItemColumn> = described
+                    .columns
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| ItemColumn { name: query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone()), nullable: c.nullable, document: c.document.clone(), values: c.values.clone() })
+                    .collect();
+                let refuted: Vec<String> = columns.iter().filter(|c| c.nullable && !assumed.contains(&c.name)).map(|c| c.name.clone()).collect();
                 if !read_itself || refuted.is_empty() {
                     settled.insert(i, columns);
                     break;
@@ -1468,20 +1479,20 @@ impl<'a> Engine<'a> {
         if pending {
             return None;
         }
-        let answer = |item: usize, nullable: bool| (queries[item].with.clone(), nullable || (queries[item].with.is_none() && queries[item].nulled));
+        let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone(), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
                 ItemRead::Other | ItemRead::Table | ItemRead::Defaulted { .. } => out.push(None),
                 ItemRead::Column { item, column } => {
-                    let mut named = settled.get(&item).into_iter().flatten().filter(|(n, _)| *n == column);
+                    let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (named.next(), named.next()) {
-                        (Some((_, nullable)), None) => Some(answer(item, *nullable)),
+                        (Some(found), None) => Some(answer(item, found)),
                         _ => None,
                     });
                 }
                 ItemRead::Star { item } => match item.and_then(|item| Some((item, settled.get(&item).filter(|columns| columns.len() == width)?))) {
-                    Some((item, columns)) => out.extend(columns.iter().map(|(_, nullable)| Some(answer(item, *nullable)))),
+                    Some((item, columns)) => out.extend(columns.iter().map(|c| Some(answer(item, c)))),
                     None => out.extend(std::iter::repeat(None).take(width)),
                 },
             }
@@ -1495,6 +1506,7 @@ impl<'a> Engine<'a> {
         let columns = level_columns(sql, self.host)?;
         let plan = infer::plan(sql, Dialect::Postgres, trust, &columns);
         // Per column: whether it is non-null, and what the statement says of an array's elements.
+        let mut reads: Vec<Option<infer::JsonRead>> = Vec::new();
         let facts: Vec<Option<(bool, Option<bool>)>> = match &plan.set_op {
             Some(set) => {
                 let left = self.probe(&set.left, trust);
@@ -1537,6 +1549,7 @@ impl<'a> Engine<'a> {
                 // A type the registry has not read may be an array, whose elements say nothing.
                 let registry = self.registry.borrow();
                 let is_array = |o: u32| registry.get(o).is_none_or(|t| t.kind == crate::pgtypes::TypeKind::Array);
+                reads = claims.iter().map(|claim| claim.and_then(|e| infer::json_read(e, leaves.as_deref()))).collect();
                 claims.iter().map(|claim| claim.map(|e| (infer::resolve(e, leaves.as_deref()).non_null, infer::items_nullable(e, leaves.as_deref(), &is_array)))).collect()
             }
         };
@@ -1549,6 +1562,15 @@ impl<'a> Engine<'a> {
                     col.nullable = false;
                 }
                 col.nullable_items = items;
+            }
+        }
+        // A read of a JSON column at literal keys holds what the column's schema says is there:
+        // that schema, or the strings it keeps a text read to.
+        for (col, read) in described.columns.iter_mut().zip(reads) {
+            match read {
+                Some(read) if read.text => col.values = read.strings(),
+                Some(read) if !read.schema.is_boolean() => col.document = Some(read.schema),
+                _ => {}
             }
         }
         Some(())
@@ -1608,8 +1630,8 @@ impl<'a> Engine<'a> {
         let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
         self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
-            if trust.builtin("=") {
-                col.values = checks.values.get(&(raw.table, raw.attnum)).cloned();
+            if let (true, Some(values)) = (trust.builtin("="), checks.values.get(&(raw.table, raw.attnum))) {
+                col.values = Some(values.clone());
             }
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
@@ -2020,6 +2042,17 @@ struct Checks {
     documents: HashMap<(u32, i32), Value>,
     /// The schemas behind each document, which a parameter written to several columns meets all of.
     sources: HashMap<(u32, i32), Vec<(String, Validators)>>,
+}
+
+/// One column of a FROM item's own settled result ([`Engine::item_columns`]): its name, whether it
+/// may be NULL, and the schema and the strings the item settled its values to, as for a read of
+/// a JSON column at literal keys inside it ([`infer::json_read`]).
+#[derive(Debug, Clone)]
+struct ItemColumn {
+    name: String,
+    nullable: bool,
+    document: Option<Value>,
+    values: Option<Vec<String>>,
 }
 
 /// `ty` as the values `document` admits, when it is a JSON value a CHECK holds to a JSON Schema

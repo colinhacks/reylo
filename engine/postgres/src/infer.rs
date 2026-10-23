@@ -263,6 +263,11 @@ pub enum Expr {
     /// values of `x`, or a literal. The array itself is never NULL when `non_null` says so; its
     /// elements are as these are ([`items_nullable`]).
     Array { non_null: bool, items: Vec<Expr> },
+    /// The JSON a column holds read at literal keys (`doc -> 'a'`, `doc #>> '{a,b}'`): the column,
+    /// the keys, whether the read gives text (`->>`, `#>>`) rather than JSON, and whether a key
+    /// that is a whole number may index an array (`#>`, `#>>`). Typed and non-null as the JSON
+    /// Schema a CHECK holds the column to says ([`json_read`]).
+    JsonPath { base: Box<Expr>, path: Vec<String>, text: bool, indexes: bool },
 }
 
 /// The type an [`Expr::Every`] or [`Expr::Any`] carries.
@@ -497,7 +502,72 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
             Fact { non_null: fact.non_null && !may_be_jsonb(inner, leaves), ..fact }
         }
         Expr::Narrowed(inner) => Fact { non_null: true, ..resolve(inner, leaves) },
+        Expr::JsonPath { .. } => match json_read(expr, leaves) {
+            Some(read) => Fact { non_null: read.non_null, type_oid: Some(read.type_oid) },
+            None => NOTHING,
+        },
     }
+}
+
+/// What a JSON read at literal keys finds ([`Expr::JsonPath`]), given the leaf probe.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsonRead {
+    /// The canonical schema of the values found there ([`crate::schema_type`]).
+    pub schema: serde_json::Value,
+    /// Whether the read is never NULL: the column is not, each key's object holds the key for
+    /// certain, and the text read finds no JSON null, which it answers with SQL NULL.
+    pub non_null: bool,
+    /// What the read gives: the column's own JSON type, or `text`.
+    pub type_oid: u32,
+    /// Whether the read gives text.
+    pub text: bool,
+}
+
+impl JsonRead {
+    /// The strings a text read gives, where the schema keeps the value to a list of strings (and
+    /// a JSON null, which the read answers with SQL NULL), in an `enum` or a union of them: a
+    /// JSON string reads as the string.
+    pub fn strings(&self) -> Option<Vec<String>> {
+        fn collect(schema: &serde_json::Value, out: &mut Vec<String>) -> Option<()> {
+            if let Some(members) = schema.get("anyOf").and_then(serde_json::Value::as_array) {
+                return members.iter().try_for_each(|m| collect(m, out));
+            }
+            for value in schema.get("enum")?.as_array()? {
+                match value {
+                    serde_json::Value::String(s) if !out.contains(s) => out.push(s.clone()),
+                    serde_json::Value::String(_) | serde_json::Value::Null => {}
+                    _ => return None,
+                }
+            }
+            Some(())
+        }
+        let mut strings = Vec::new();
+        collect(&self.schema, &mut strings)?;
+        (!strings.is_empty()).then_some(strings)
+    }
+}
+
+/// What an [`Expr::JsonPath`] finds: only a `json` or `jsonb` column a CHECK holds to a JSON
+/// Schema says anything, each step reading that schema's object at its key as the server reads
+/// the value's ([`crate::schema_type::at_path`]). `None` for any other read.
+pub fn json_read(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Option<JsonRead> {
+    let Expr::JsonPath { base, path, text, indexes } = expr else { return None };
+    let (column, narrowed) = match base.as_ref() {
+        Expr::Leaf(i) => (*i, false),
+        Expr::Narrowed(inner) => match inner.as_ref() {
+            Expr::Leaf(i) => (*i, true),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let col = leaves?.get(column)?;
+    if col.type_oid != oid::JSONB && col.type_oid != oid::JSON {
+        return None;
+    }
+    let keys: Vec<&str> = path.iter().map(String::as_str).collect();
+    let (schema, found) = crate::schema_type::at_path(col.document.as_ref()?, &keys, *indexes)?;
+    let non_null = (narrowed || !col.nullable) && found && !(*text && crate::schema_type::admits(&schema, &serde_json::Value::Null));
+    Some(JsonRead { schema, non_null, type_oid: if *text { oid::TEXT } else { col.type_oid }, text: *text })
 }
 
 /// Whether an expression may hold a `jsonb` value: its type is `jsonb`, or one a database
@@ -513,6 +583,8 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
             Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) => true,
             Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => may_be_jsonb(inner, leaves),
             Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(|o| may_be_jsonb(o, leaves)),
+            // `->` and `#>` give the column's own JSON; `->>` and `#>>` text.
+            Expr::JsonPath { text, .. } => !text,
         },
     }
 }
@@ -542,7 +614,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
         })),
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => items_nullable(inner, leaves, is_array),
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
-        Expr::NonNull(_) | Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) => None,
+        Expr::NonNull(_) | Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
     }
 }
 
@@ -551,6 +623,7 @@ fn reads_unread(expr: &Expr) -> bool {
     match expr {
         Expr::Unread => true,
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => reads_unread(inner),
+        Expr::JsonPath { base, .. } => reads_unread(base),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_unread),
         Expr::Array { items, .. } => items.iter().any(reads_unread),
         Expr::NonNull(_) | Expr::Unknown | Expr::Leaf(_) | Expr::Row(..) => false,
@@ -875,6 +948,9 @@ impl Reader<'_> {
                     return Expr::Unknown;
                 }
                 let Some(op) = builtin_name(&a.name) else { return Expr::Unknown };
+                if self.dialect == Dialect::Postgres && matches!(op.as_str(), "->" | "->>" | "#>" | "#>>") {
+                    return self.json_path(&op, a);
+                }
                 let accepted = match self.dialect {
                     Dialect::Postgres => POSTGRES_OPERATORS.contains(&op.as_str()) && self.trust.builtin(&op),
                     Dialect::Sqlite | Dialect::Mysql => SQLITE_OPERATORS.contains(&op.as_str()),
@@ -1054,6 +1130,30 @@ impl Reader<'_> {
                 Some(&ty) => Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), Ty::Is(ty)),
                 None => Expr::Unknown,
             },
+        }
+    }
+
+    /// A read of JSON at literal keys with the built-in `->`, `->>`, `#>` or `#>>`: an
+    /// [`Expr::JsonPath`] over a column, a read of a read at more keys extending it. A key that
+    /// is not a literal (a parameter, an expression, an integer that indexes an array), and a read
+    /// of anything but a column, claims nothing.
+    fn json_path(&mut self, op: &str, a: &protobuf::AExpr) -> Expr {
+        let (Some(left), Some(right)) = (a.lexpr.as_deref(), a.rexpr.as_deref()) else { return Expr::Unknown };
+        if !self.trust.builtin(op) {
+            return Expr::Unknown;
+        }
+        let indexes = op.starts_with('#');
+        let keys = if indexes { text_array(right) } else { string_literal(right).map(|key| vec![key]) };
+        let Some(keys) = keys else { return Expr::Unknown };
+        let text = op.ends_with(">>");
+        match self.read(left) {
+            Expr::JsonPath { base, mut path, text: false, indexes: before } => {
+                path.extend(keys);
+                Expr::JsonPath { base, path, text, indexes: before || indexes }
+            }
+            base @ Expr::Leaf(_) => Expr::JsonPath { base: Box::new(base), path: keys, text, indexes },
+            Expr::Narrowed(inner) if matches!(*inner, Expr::Leaf(_)) => Expr::JsonPath { base: Box::new(Expr::Narrowed(inner)), path: keys, text, indexes },
+            _ => Expr::Unknown,
         }
     }
 
@@ -1770,12 +1870,96 @@ fn is_star(node: &Node) -> bool {
     }
 }
 
+/// A string literal, bare or cast to `text` or `varchar`: one key of `->`. A cast to anything
+/// else is not one (`'0'::int` indexes an array).
+fn string_literal(node: &Node) -> Option<String> {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => match c.val.as_ref() {
+            Some(protobuf::a_const::Val::Sval(s)) => Some(s.sval.clone()),
+            _ => None,
+        },
+        Some(NodeEnum::TypeCast(t)) => {
+            let target = t.type_name.as_ref().filter(|n| n.array_bounds.is_empty()).and_then(|n| builtin_name(&n.names))?;
+            if target != "text" && target != "varchar" {
+                return None;
+            }
+            string_literal(t.arg.as_deref()?)
+        }
+        _ => None,
+    }
+}
+
+/// The keys of `#>`: a text array literal (`'{a,b}'`, cast to `text[]` or not), or `ARRAY[…]` of
+/// string literals.
+fn text_array(node: &Node) -> Option<Vec<String>> {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => match c.val.as_ref() {
+            Some(protobuf::a_const::Val::Sval(s)) => array_literal(&s.sval),
+            _ => None,
+        },
+        Some(NodeEnum::AArrayExpr(a)) => a.elements.iter().map(string_literal).collect(),
+        Some(NodeEnum::TypeCast(t)) => {
+            let target = t.type_name.as_ref().filter(|n| n.array_bounds.len() == 1).and_then(|n| builtin_name(&n.names))?;
+            if target != "text" && target != "varchar" {
+                return None;
+            }
+            text_array(t.arg.as_deref()?)
+        }
+        _ => None,
+    }
+}
+
+/// The elements of a one-dimensional array literal, as Postgres reads its input: `{a, "b c"}`,
+/// a quoted element taking a backslash's next character as it is and an unquoted one trimmed.
+/// `None` for a NULL element, an empty unquoted one, nesting, explicit bounds or anything else
+/// the reading would doubt.
+fn array_literal(text: &str) -> Option<Vec<String>> {
+    let inner = text.trim().strip_prefix('{')?.strip_suffix('}')?;
+    let mut out = Vec::new();
+    if inner.trim().is_empty() {
+        return Some(out);
+    }
+    let mut chars = inner.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        let mut element = String::new();
+        if chars.next_if_eq(&'"').is_some() {
+            loop {
+                match chars.next()? {
+                    '\\' => element.push(chars.next()?),
+                    '"' => break,
+                    c => element.push(c),
+                }
+            }
+            while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        } else {
+            while let Some(c) = chars.next_if(|c| *c != ',') {
+                match c {
+                    '{' | '}' | '"' | '\\' => return None,
+                    c => element.push(c),
+                }
+            }
+            element.truncate(element.trim_end().len());
+            if element.is_empty() || element.eq_ignore_ascii_case("null") {
+                return None;
+            }
+        }
+        out.push(element);
+        match chars.next() {
+            None => return Some(out),
+            Some(',') => {}
+            Some(_) => return None,
+        }
+    }
+}
+
 fn reads_leaf(expr: &Expr) -> bool {
     match expr {
         Expr::Leaf(_) | Expr::Row(..) => true,
         Expr::Nullable(inner) => reads_leaf(inner),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_leaf),
         Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => reads_leaf(inner),
+        Expr::JsonPath { base, .. } => reads_leaf(base),
         Expr::Array { items, .. } => items.iter().any(reads_leaf),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread => false,
     }
@@ -2602,6 +2786,48 @@ mod tests {
         assert!(resolve(p.head[0].as_ref().unwrap(), None).non_null);
         assert!(!resolve(p.head[1].as_ref().unwrap(), None).non_null);
         assert_eq!(dollar_placeholders("SELECT ?1, '?2', \"?3\" -- ?4\n, ?10 /* ?5 */"), "SELECT $1, '?2', \"?3\" -- ?4\n, $10 /* ?5 */");
+    }
+
+    #[test]
+    fn a_json_read_at_literal_keys_is_typed_by_the_columns_schema() {
+        let path = |sql: &str| match pg(sql).head.into_iter().next().flatten() {
+            Some(Expr::JsonPath { path, text, indexes, .. }) => Some((path, text, indexes)),
+            _ => None,
+        };
+        let keys = |list: &[&str]| list.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+        assert_eq!(path("SELECT doc -> 'a' FROM t"), Some((keys(&["a"]), false, false)));
+        assert_eq!(path("SELECT doc -> 'a' ->> 'b' FROM t"), Some((keys(&["a", "b"]), true, false)));
+        assert_eq!(path("SELECT doc -> 'a'::text FROM t"), Some((keys(&["a"]), false, false)));
+        assert_eq!(path(r#"SELECT doc #> '{a, "b c", "d\"e"}' FROM t"#), Some((keys(&["a", "b c", "d\"e"]), false, true)));
+        assert_eq!(path("SELECT doc #>> ARRAY['a', 'b'] FROM t"), Some((keys(&["a", "b"]), true, true)));
+        assert_eq!(path("SELECT doc #> '{}'::text[] FROM t"), Some((vec![], false, true)));
+        // A key that is no literal, an array index, a read of a read's text and of anything but a
+        // column claim nothing.
+        for sql in [
+            "SELECT doc -> $1 FROM t",
+            "SELECT doc -> 0 FROM t",
+            "SELECT doc -> '0'::int FROM t",
+            "SELECT doc #> '{a,NULL}' FROM t",
+            "SELECT doc #> '{{a}}' FROM t",
+            "SELECT (doc ->> 'a') -> 'b' FROM t",
+            "SELECT (doc || '{}') -> 'a' FROM t",
+        ] {
+            assert_eq!(path(sql), None, "{sql}");
+        }
+        let shadowed = Trust { shadowed: ["->".to_string()].into_iter().collect(), ..Trust::default() };
+        assert_eq!(plan("SELECT doc -> 'a' FROM t", Dialect::Postgres, &shadowed).head, vec![Some(Expr::Unknown)]);
+        // The read resolves against the column's schema: there for certain under a required key of
+        // a column that is not NULL, and a text read of a value that may be a JSON null is NULL.
+        let schema = serde_json::json!({"type": "object", "properties": {"a": {"type": ["string", "null"]}}, "required": ["a"], "additionalProperties": true});
+        let doc = |nullable: bool, type_oid: u32| DescribedColumn { document: Some(schema.clone()), ..col(nullable, type_oid) };
+        let read = |sql: &str, leaf: DescribedColumn| resolve(pg(sql).head[0].as_ref().expect("a claim"), Some(&[leaf]));
+        assert_eq!(read("SELECT doc -> 'a' FROM t", doc(false, oid::JSONB)), Fact { non_null: true, type_oid: Some(oid::JSONB) });
+        assert_eq!(read("SELECT doc -> 'a' FROM t", doc(false, oid::JSON)), Fact { non_null: true, type_oid: Some(oid::JSON) });
+        assert_eq!(read("SELECT doc ->> 'a' FROM t", doc(false, oid::JSONB)), Fact { non_null: false, type_oid: Some(oid::TEXT) });
+        assert_eq!(read("SELECT doc -> 'a' FROM t", doc(true, oid::JSONB)), Fact { non_null: false, type_oid: Some(oid::JSONB) });
+        assert_eq!(read("SELECT doc -> 'b' FROM t", doc(false, oid::JSONB)), Fact { non_null: false, type_oid: Some(oid::JSONB) });
+        assert_eq!(read("SELECT doc -> 'a' FROM t", col(false, oid::JSONB)).non_null, false);
+        assert_eq!(read("SELECT doc -> 'a' FROM t", doc(false, oid::TEXT)).non_null, false);
     }
 
     #[test]
