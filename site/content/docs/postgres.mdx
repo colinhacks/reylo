@@ -354,7 +354,7 @@ A `case` whose one branch builds JSON and whose other branches are `null` keeps 
 
 ```sql file="pg_json_case.sql"
 select case when total > 100
-  then jsonb_build_object('total', total)
+  then jsonb_build_object('id', id)
 end as big_order
 from orders
 ```
