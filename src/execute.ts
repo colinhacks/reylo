@@ -282,8 +282,15 @@ function isTurso(c: AnyClient): boolean {
   return typeof c.prepare === "function" && ((typeof c.connect === "function" && typeof c.maxWriteReplicationIndex === "function") || (typeof c.all === "function" && typeof c.batch === "function"));
 }
 
+// Slonik's pool, connections, transactions and savepoints. Its query() takes only the statements
+// its sql tag builds, and its type parsers are set on the pool's connections, which a statement
+// cannot override, so numeric, timestamp and interval values arrive as lossy numbers.
+function isSlonik(c: AnyClient): boolean {
+  return typeof c.maybeOneFirst === "function" && typeof c.anyFirst === "function";
+}
+
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
-  if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
+  if (c == null || (typeof c !== "object" && typeof c !== "function") || isSlonik(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
   if (query.fresh && due(query)) {
@@ -690,9 +697,9 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
     }
     seen = names.size ? `an object with ${[...names].slice(0, 12).join(", ")}${names.size > 12 ? ", ..." : ""}` : "an object with no methods";
   }
-  // node:sqlite's tag store keeps its database on db. Kysely and Prisma decode every value of a
-  // raw query themselves, by their own rules or the driver's parsers, before it returns.
-  // Neither hands out a transaction's connection.
+  // node:sqlite's tag store keeps its database on db. Kysely, Prisma and Slonik decode every value
+  // of a raw query themselves, by their own rules or the driver's parsers, before it returns.
+  // None hands out a transaction's connection.
   const o = c as { db?: { prepare?: unknown }; selectFrom?: unknown; executeQuery?: unknown; isTransaction?: unknown; $queryRawUnsafe?: unknown; $transaction?: unknown } | null;
   const inTx = " and does not hand out its transaction's connection: take the transaction from the driver's client instead.";
   const hint =
@@ -702,6 +709,8 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
         ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`
         : typeof o?.$queryRawUnsafe === "function"
           ? ` Prisma decodes the values of its queries itself${typeof o.$transaction !== "function" ? inTx : ": pass a client of your database's driver, such as the pool its driver adapter was made with."}`
-          : "";
+          : o != null && isSlonik(o as AnyClient)
+            ? " Slonik decodes the values of its queries itself, by type parsers set for its whole pool, and does not hand out its connection: run Reylo's queries on a pg Pool beside it."
+            : "";
   return new TypeError(`reylo cannot run a ${dialect} statement on ${seen}. It takes a client with ${accepted[dialect]}.${hint}`);
 }

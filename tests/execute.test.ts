@@ -614,6 +614,10 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   // Inside their transactions, neither hands out the connection.
   await assert.rejects(() => execute(Object.assign(new Kysely(), { isTransaction: true }) as never, pg) as Promise<unknown>, / Kysely decodes the values of its queries itself and does not hand out its transaction's connection: take the transaction from the driver's client instead\.$/);
   await assert.rejects(() => execute({ $queryRawUnsafe() {} } as never, lite) as Promise<unknown>, / Prisma decodes the values of its queries itself and does not hand out its transaction's connection/);
+  // Slonik's pool and transactions have a query() that takes only its sql tag's statements, so it
+  // is refused before Reylo calls it.
+  const slonik = { query: () => assert.fail("query() was called"), maybeOneFirst() {}, anyFirst() {}, transaction() {} };
+  await assert.rejects(() => execute(slonik as never, pg) as Promise<unknown>, /object with query, maybeOneFirst, anyFirst, transaction\. .* Slonik decodes the values of its queries itself, by type parsers set for its whole pool, and does not hand out its connection: run Reylo's queries on a pg Pool beside it\.$/);
   // node:sqlite's tag store has all() for templates; it is not sqlite3's database.
   const store = new DatabaseSync(":memory:").createTagStore();
   await assert.rejects(() => execute(store as never, lite, { id: 1, name: "ada" }) as Promise<unknown>, /sqlite statement on an object with .*pass its database, store\.db/);
