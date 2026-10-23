@@ -482,7 +482,13 @@ impl Trust {
     /// Whether a call of `name` over operands of these types resolves to the built-in, and the
     /// type it returns where the catalog says ([`crate::resolution::Overloads::resolve`]).
     pub fn resolves(&self, kind: Kind, name: &str, operands: &[Operand]) -> Option<Option<u32>> {
-        if !self.checked(name) {
+        // A cast is named by its target type, which no operator or function shadows: whether a
+        // user's cast function may be the one is the cast targets' word.
+        let checked = match kind {
+            Kind::Cast => !self.cast(name),
+            _ => self.checked(name),
+        };
+        if !checked {
             return Some(None);
         }
         self.overloads.as_ref()?.0.resolve(kind, name, operands)
@@ -2984,6 +2990,21 @@ mod tests {
         assert!(!fact("SELECT a::text FROM t", &[col(false, GEOMETRY)]).non_null);
         // A target no row names stays distrusted.
         assert!(!fact("SELECT a::int8 FROM t", &[col(false, oid::INT4)]).non_null);
+    }
+
+    #[test]
+    fn a_cast_resolves_by_the_cast_targets_not_by_the_shadowed_names() {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        // A user's cast function from `bool` to `int8`: `int8` is no trusted target, and no name
+        // is shadowed.
+        let rows = vec![vec![json!("cast from"), json!("int8"), json!([oid::BOOL]), json!(oid::INT8), Value::Null]];
+        let mut trust = Trust { cast_targets: Some(["text".to_string()].into_iter().collect()), ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        assert!(trust.shadowed.is_empty());
+        assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::BOOL)]), None);
+        assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::INT4)]), Some(Some(oid::INT8)));
+        assert_eq!(trust.resolves(Kind::Cast, "text", &[Operand::Is(oid::BOOL)]), Some(None));
     }
 
     #[test]
