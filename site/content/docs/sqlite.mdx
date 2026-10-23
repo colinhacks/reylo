@@ -567,20 +567,20 @@ By default, such a parameter is a type-check error asking for a cast. With [`str
 
 ### Parameters that may be null
 
-A parameter accepts `null` in two places:
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
 
 <Rules>
 
-**In `coalesce` or `ifnull`**
+**Cast to `nullable(…)`**
 
-As the first argument of `coalesce` or `ifnull`, where `null` falls back to the next argument.
+A cast to `nullable(type)` makes the parameter that type or `null`.
 
 <Inferred>
 
-```sql file="lite_param_coalesce.sql" dialect="sqlite"
+```sql file="lite_param_nullable.sql" dialect="sqlite"
 select id, name
 from users
-where name = coalesce(:name::text, name)
+where name = coalesce(:name::nullable(text), name)
 ```
 
 </Inferred>
@@ -600,7 +600,7 @@ values (:user_id, :total_cents, :ships_on)
 
 </Rules>
 
-A cast sets the parameter's whole type, so `:email::text` never accepts `null`. Testing a parameter for null (`:p is null`) doesn't make it nullable.
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:p is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
 ### Casts
 

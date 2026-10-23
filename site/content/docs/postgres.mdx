@@ -690,20 +690,20 @@ A `bytea` parameter takes only a `Uint8Array`, and rejects base64 or hex text be
 
 ### Parameters that may be null
 
-A parameter accepts `null` in two places:
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
 
 <Rules>
 
-**In `coalesce`**
+**Cast to `nullable(…)`**
 
-As the first argument of `coalesce`, where `null` falls back to the next argument.
+A cast to `nullable(type)` makes the parameter that type or `null`.
 
 <Inferred>
 
-```sql file="pg_param_coalesce.sql"
+```sql file="pg_param_nullable.sql"
 select id, name
 from users
-where role = coalesce(:role::user_role, role)
+where role = coalesce(:role::nullable(user_role), role)
 ```
 
 </Inferred>
@@ -723,7 +723,7 @@ values (:user_id, :total, :ships_on)
 
 </Rules>
 
-A cast sets the parameter's whole type, so `:email::text` never accepts `null`. Testing a parameter for null (`:role is null`) doesn't make it nullable.
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
 ## Drivers
 

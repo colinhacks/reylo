@@ -496,20 +496,20 @@ A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a"
 
 ### Parameters that may be null
 
-A parameter accepts `null` in two places:
+A parameter accepts `null` in two places. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
 
 <Rules>
 
-**In `coalesce` or `ifnull`**
+**Cast to `nullable(…)`**
 
-As the first argument of `coalesce` or `ifnull`, where `null` falls back to the next argument.
+A cast to `nullable(type)` makes the parameter that type or `null`.
 
 <Inferred>
 
-```sql file="my_param_coalesce.sql" dialect="mysql"
+```sql file="my_param_nullable.sql" dialect="mysql"
 select id, name
 from users
-where role = coalesce(:role::text, role)
+where role = coalesce(:role::nullable(text), role)
 ```
 
 </Inferred>
@@ -529,7 +529,7 @@ values (:user_id, :total, :ships_on)
 
 </Rules>
 
-A cast sets the parameter's whole type, so `:email::text` never accepts `null`. Testing a parameter for null (`:p is null`, `:p <=> col`) doesn't make it nullable.
+Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:p is null`, `:p <=> col`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
 ### Casts
 
