@@ -1,5 +1,10 @@
+agg_outer_column_named_like_item.sql: many () -> { j: [text?]? }
+agg_outer_column_named_like_item_coalesce.sql: many () -> { j: [text?]? }
 array_subquery_outer.sql: many () -> { j: { names: [text]? } }
 array_subquery_own.sql: many () -> { j: { titles: [text] } }
+field_outer_column_in_expression.sql: many () -> { j: { p: text? }? }
+field_outer_column_in_subquery.sql: many () -> { j: { x: { n: int8? }? } }
+field_outer_column_named_like_item.sql: many () -> { j: { p: text? }? }
 field_subquery_bare_count.sql: many () -> { j: { n: int8 } }
 field_subquery_column.sql: many () -> { j: { first: text? } }
 field_subquery_count.sql: many () -> { j: { n: int8 } }
