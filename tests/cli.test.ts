@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,21 @@ function reylo(cwd: string, ...args: string[]) {
   // The time varies from run to run; everything else is the readout.
   return { status: r.status, out: r.stdout.replace(/\(\d+\.\d s\)/, "(_ s)"), err: r.stderr };
 }
+
+test("reylo generate reads a .env database URL with an inline comment", (t) => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-cli-env-")));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".env"), 'DATABASE_URL="file:./app.db" # local development\n');
+  writeFileSync(join(root, "query.sql"), "select id from users");
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("create table users (id integer primary key)");
+  db.close();
+
+  const result = spawnSync(process.execPath, [CLI, "generate"], { cwd: root, encoding: "utf8", env: { PATH: process.env.PATH } });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+});
 
 test("reylo generate analyzes every .sql file of the project, and prints each file with a mark and every error in full", () => {
   // The CLI sees its working directory as the real path (/private/var on macOS).

@@ -49,6 +49,13 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
+Reylo reads env files with Node's `.env` syntax: a `#` outside quotes starts a comment, even without a space before it. Quote a value that contains a literal `#` to keep it.
+
+```sh title=".env"
+DATABASE_URL="file:./app.db" # local development
+DB_LABEL="local#development"
+```
+
 ### `strict_params`
 
 A [parameter whose type cannot be inferred](#a-parameter-nothing-types) is an error that says to [cast it](#casts). Set `strict_params: false` to type it `unknown` instead.

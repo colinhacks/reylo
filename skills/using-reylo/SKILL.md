@@ -12,6 +12,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 ## Before changing anything
 
 - Find the project file, `.reylo.yaml` or `.reylo.yml`, beside `package.json`. Its `direct_url`, or `DATABASE_URL` without one, is the dev database the type check reads the schema from, and its scheme names the database: `postgres://`, `mysql://`, `file:` for SQLite.
+- Reylo reads `.env.local`, then `.env`, unless the project file names other `env` files; the environment wins. Env files use Node's `.env` syntax: `DATABASE_URL="file:./app.db" # local` leaves the comment out. Quote a value that contains a literal `#`; an unquoted `#` starts a comment even without a space before it.
 - The type check is `tsc --noEmit --runExternalCode` on TypeScript 7.1, usually a `typecheck` script. Run it before and after a change.
 
 ## Writing a query

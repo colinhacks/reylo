@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parseEnv } from "node:util";
 import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
@@ -109,14 +110,9 @@ export function dialectOf(url: string): Dialect | undefined {
   return undefined;
 }
 
-export function readEnvFile(path: string): Record<string, string> {
+export function readEnvFile(path: string): ReturnType<typeof parseEnv> {
   if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (m) out[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, "$2");
-  }
-  return out;
+  return parseEnv(readFileSync(path, "utf8"));
 }
 
 /** 1-based line and column of a byte offset, for a message that names the place in the file. */

@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { engine } from "../src/engine.ts";
-import { findProjectFile, resolveProject } from "../src/project.ts";
+import { findProjectFile, readEnvFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
 
 // Any engine reads the project file; the repository's own install has every one.
@@ -20,6 +20,36 @@ function tree(files: Record<string, string>): string {
   }
   return root;
 }
+
+test("env files ignore comments outside quotes and keep hashes inside quotes", (t) => {
+  const root = tree({
+    ".env": [
+      "# development database",
+      "UNQUOTED=file:./app.db # local",
+      "UNQUOTED_HASH=value#comment",
+      'DOUBLE_QUOTED="file:./app.db" # local',
+      "SINGLE_QUOTED='file:./app.db' # local",
+      'DOUBLE_HASH="value#with spaces" # local',
+      "SINGLE_HASH='value#with spaces' # local",
+      "export EXPORTED = value # local",
+      "EMPTY= # local",
+    ].join("\n"),
+  });
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+
+  const values = readEnvFile(join(root, ".env"));
+
+  assert.deepEqual(values, {
+    UNQUOTED: "file:./app.db",
+    UNQUOTED_HASH: "value",
+    DOUBLE_QUOTED: "file:./app.db",
+    SINGLE_QUOTED: "file:./app.db",
+    DOUBLE_HASH: "value#with spaces",
+    SINGLE_HASH: "value#with spaces",
+    EXPORTED: "value",
+    EMPTY: "",
+  });
+});
 
 test("without a project file, DATABASE_URL comes from the environment, then .env.local, then .env", async () => {
   const e = await engine("postgres", ROOT);
