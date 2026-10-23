@@ -15,7 +15,10 @@ where_coalesce.sql: many () -> { name: text, title: text?, published_at: timesta
 where_or_not_strict.sql: many () -> { name: text, title: text?, published_at: timestamptz? }
 where_reduces.sql: many () -> { name: text, title: text, published_at: timestamptz }
 whole_row_agg.sql: one () -> { events: [events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }]? }
-whole_row_agg_grouped.sql: many () -> { kind: 'click' | 'key', events: [events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }], rows: (events{ id: int4?, kind: text?, payload: json?, note: text? }!)[] }
+whole_row_agg_grouped.sql: many () -> { kind: 'click' | 'key', events: [events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }], rows: (events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }!)[] }
+whole_row_array_agg_built.sql: many () -> { kind: 'click' | 'key', rows: events{ id: int4?, kind: text?, payload: json?, note: text? }[] }
+whole_row_array_agg_in_json.sql: many () -> { kind: 'click' | 'key', rows: { rows: (events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }!)[] } }
+whole_row_array_agg_outer_in_json.sql: many () -> { id: int4, rows: { rows: (posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?)[] } }
 whole_row_beside_with.sql: many (id: int4) -> { u: users{ id: int4, name: text, email: text? }, gone: [record?] }
 whole_row_json_derived.sql: many () -> { id: int4, post: { id: int4, title: text, published_at: timestamptz?, late: text? }? }
 whole_row_json_full_joined.sql: many () -> { author: { id: int4, name: text, email: text? }?, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }? }
@@ -28,7 +31,7 @@ whole_row_json_self_full_join.sql: many () -> { earlier: { id: int4, name: text,
 whole_row_json_self_join.sql: many () -> { id: int4, earlier: { id: int4, name: text, email: text? }, later: { id: int4, name: text, email: text? }? }
 whole_row_json_view.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz?, shout: text }? }
 whole_row_json_with.sql: many () -> { id: int4, post: { user_id: int4?, title: text, published_at: timestamptz?, loud: text }? }
-whole_row_outer_joined.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?], rows: (posts{ id: int4?, user_id: int4?, title: text?, published_at: timestamptz? }?)[] }
+whole_row_outer_joined.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?], rows: (posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?)[] }
 whole_row_outer_reduced.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }] }
 whole_row_preserved_side.sql: one () -> { users: [users{ id: int4, name: text, email: text? }]? }
 whole_row_read.sql: many () -> { e: events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }, doc: { id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? } }

@@ -1040,7 +1040,7 @@ impl<'a> Engine<'a> {
         let settled = self.settle(sql, &raw, parsed, trust);
         let (Some(()), Some(mut described), Some(checks), Some(comments)) = (types, settled, checks, comments) else { return None };
         *self.comments.borrow_mut() = comments;
-        self.stored_sublinks(sql, &mut described);
+        self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
             if trust.builtin("=") {
                 col.values = checks.values.get(&(raw.table, raw.attnum)).cloned();
@@ -1206,13 +1206,21 @@ impl<'a> Engine<'a> {
         Some(out)
     }
 
-    /// Mark the result columns a scalar or `ARRAY` subquery fills with stored rows of a table
-    /// ([`sublink_rows`]), where the subquery's one target can only be that table's whole row: it
-    /// names no column of any table the statement reads, and every FROM item of the statement is
-    /// a table whose columns the engine read. The column's type confirms it: the table's row type,
-    /// or an array of it.
-    fn stored_sublinks(&self, sql: &str, described: &mut DescribedStatement) {
-        let Some(rows) = sublink_rows(sql) else { return };
+    /// Mark the result columns a scalar or `ARRAY` subquery fills with stored rows of a table, or
+    /// an `array_agg` of a table's whole row aggregates them into ([`sublink_rows`]), where the
+    /// name can only be that table's whole row: it names no column of any table the statement
+    /// reads, and every FROM item of the statement is a table whose columns the engine read. The
+    /// column's type confirms it: the table's row type, or an array of it. A user's `array_agg`
+    /// may build any row, so the built-in one alone counts.
+    fn stored_sublinks(&self, sql: &str, described: &mut DescribedStatement, trust: &Trust) {
+        let Some(mut rows) = sublink_rows(sql) else { return };
+        if !trust.builtin("array_agg") {
+            for target in &mut rows.targets {
+                if target.as_ref().is_some_and(|t| t.3) {
+                    *target = None;
+                }
+            }
+        }
         if rows.targets.len() != described.columns.len() || rows.targets.iter().all(Option::is_none) {
             return;
         }
@@ -1221,7 +1229,7 @@ impl<'a> Engine<'a> {
         let registry = self.registry.borrow();
         let unambiguous = |name: &str| !SYSTEM_COLUMNS.contains(&name) && rows.tables.iter().all(|t| columns.get(t).is_some_and(|c| c.values().all(|(column, _)| column != name)));
         for (col, target) in described.columns.iter_mut().zip(&rows.targets) {
-            let Some((relation, name, array)) = target else { continue };
+            let Some((relation, name, array, _)) = target else { continue };
             let oid = relations.iter().find(|(_, (n, _))| n == relation).map(|(o, _)| *o);
             let row_type = if *array { registry.get(col.type_oid).and_then(|t| t.elem) } else { Some(col.type_oid) };
             let of = row_type.and_then(|o| registry.get(o)).and_then(|t| t.relid);
@@ -1598,7 +1606,7 @@ impl<'a> Engine<'a> {
         let checks = self.checks(sql, &raw, parsed.as_ref(), &[], true);
         let settled = self.settle(sql, &raw, parsed.as_ref(), trust);
         let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
-        self.stored_sublinks(sql, &mut described);
+        self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
             if trust.builtin("=") {
                 col.values = checks.values.get(&(raw.table, raw.attnum)).cloned();
@@ -1894,9 +1902,10 @@ const SYSTEM_COLUMNS: &[&str] = &["tableoid", "xmin", "cmin", "xmax", "cmax", "c
 /// What [`sublink_rows`] finds in a SELECT.
 struct SublinkRows {
     /// Per target of the SELECT: for a scalar or `ARRAY` subquery whose one target is the whole
-    /// row of a table of its own FROM, that table, the name the row goes by there, and whether
-    /// the subquery is an `ARRAY`.
-    targets: Vec<Option<(String, String, bool)>>,
+    /// row of a table of its own FROM, or an `array_agg` of the whole row of a table of the
+    /// SELECT's FROM, that table, the name the row goes by there, whether the value is an array
+    /// of rows, and whether it is an `array_agg`.
+    targets: Vec<Option<(String, String, bool, bool)>>,
     /// Every table a FROM anywhere in the statement names.
     tables: Vec<String>,
 }
@@ -1924,8 +1933,9 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
 }
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
-/// of its own FROM's tables (`(select c from child c …)`, `array(select c from child c …)`), and
-/// every table a FROM of the statement names. `None` where a name could mean something the
+/// of its own FROM's tables (`(select c from child c …)`, `array(select c from child c …)`), or an
+/// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`),
+/// and every table a FROM of the statement names. `None` where a name could mean something the
 /// statement's text does not show: a FROM item that is no plain table (a function, a derived
 /// table, `JSON_TABLE`), a table named with its schema, or one named like a WITH query. A bare
 /// name reads a column of any FROM in scope before it reads a row, which
@@ -1955,8 +1965,31 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
             _ => None,
         }
     }
-    let row = |target: &Node| -> Option<(String, String, bool)> {
+    /// The name a bare `e` or `e.*` reads a whole row by.
+    fn whole(node: &Node) -> Option<String> {
+        let N::ColumnRef(c) = node.node.as_ref()? else { return None };
+        match c.fields.as_slice() {
+            [name] | [name, Node { node: Some(N::AStar(_)) }] => match name.node.as_ref()? {
+                N::String(s) => Some(s.sval.clone()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    let N::SelectStmt(select) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()? else { return None };
+    let row = |target: &Node| -> Option<(String, String, bool, bool)> {
         let N::ResTarget(t) = target.node.as_ref()? else { return None };
+        // An array of the rows the SELECT aggregates: each a stored row, or NULL where an outer
+        // join nulled the table, which the array's own elements say.
+        if let N::FuncCall(f) = t.val.as_deref()?.node.as_ref()? {
+            let [arg] = f.args.as_slice() else { return None };
+            if crate::infer::builtin_name(&f.funcname).as_deref() != Some("array_agg") || f.agg_star || f.agg_within_group {
+                return None;
+            }
+            let name = whole(arg)?;
+            let relation = select.from_clause.iter().find_map(|item| named(item, &name))?;
+            return Some((relation, name, true, true));
+        }
         let N::SubLink(s) = t.val.as_deref()?.node.as_ref()? else { return None };
         let array = s.sub_link_type == SubLinkType::ArraySublink as i32;
         if !array && s.sub_link_type != SubLinkType::ExprSublink as i32 {
@@ -1972,9 +2005,8 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
         let [field] = c.fields.as_slice() else { return None };
         let N::String(name) = field.node.as_ref()? else { return None };
         let relation = inner.from_clause.iter().find_map(|item| named(item, &name.sval))?;
-        Some((relation, name.sval.clone(), array))
+        Some((relation, name.sval.clone(), array, false))
     };
-    let N::SelectStmt(select) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()? else { return None };
     if select.op != SetOperation::SetopNone as i32 {
         return None;
     }
@@ -2788,7 +2820,8 @@ mod tests {
     #[test]
     fn a_subquery_whose_one_target_is_a_tables_whole_row_returns_its_stored_rows() {
         let targets = |sql: &str| sublink_rows(sql).map(|r| r.targets);
-        let row = |table: &str, name: &str, array: bool| Some((table.to_string(), name.to_string(), array));
+        let row = |table: &str, name: &str, array: bool| Some((table.to_string(), name.to_string(), array, false));
+        let agg = |table: &str, name: &str| Some((table.to_string(), name.to_string(), true, true));
         assert_eq!(
             targets("SELECT p.id, array(SELECT c FROM child c WHERE c.pid = p.id), (SELECT c FROM child c LIMIT 1), (SELECT child FROM child) FROM parent p"),
             Some(vec![None, row("child", "c", true), row("child", "c", false), row("child", "child", false)])
@@ -2805,6 +2838,15 @@ mod tests {
         assert_eq!(targets("SELECT (SELECT c FROM public.child c LIMIT 1)"), None);
         assert_eq!(targets("WITH child AS (SELECT 1 AS x) SELECT (SELECT c FROM child c LIMIT 1)"), None);
         assert_eq!(targets("SELECT 1 UNION SELECT 2"), None);
+        // An `array_agg` of a whole row of the SELECT's own FROM, bare or starred, ordered,
+        // filtered or over a window, beside one of a column, of a built row and of another FROM's.
+        assert_eq!(
+            targets("SELECT array_agg(c), array_agg(c.* ORDER BY c.id), array_agg(c) FILTER (WHERE c.id > 0), array_agg(c) OVER (), array_agg(c.id), array_agg(row(c.id)), pg_catalog.array_agg(p) FROM parent p JOIN child c ON c.pid = p.id GROUP BY p.id"),
+            Some(vec![agg("child", "c"), agg("child", "c"), agg("child", "c"), agg("child", "c"), None, None, agg("parent", "p")])
+        );
+        assert_eq!(targets("SELECT (SELECT array_agg(c) FROM child c) FROM parent p"), Some(vec![None]));
+        assert_eq!(targets("SELECT array_agg(child) FROM child c"), Some(vec![None]));
+        assert_eq!(targets("SELECT array_agg(c) FROM (SELECT 1) c"), None);
     }
 
     #[test]
