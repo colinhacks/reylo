@@ -17,12 +17,17 @@ import { dirname, join, resolve } from "node:path";
 type AfterCompile = (metadata: { projectDir: string; distDir: string }) => Promise<void>;
 
 // The part of Next's config the wrapper reads or sets, so that reylo has no dependency on next.
-// Each field's type admits Next's own, and the rest of the config passes through as it is.
+// Each field's type admits Next's own, and the rest of the config passes through as it is. Every
+// level it names has an index signature, since an object literal passed to withReylo is checked
+// for excess properties against this type, which `{ reactStrictMode: true }` and
+// `{ turbopack: { root } }` would fail; and its value is `any`, the one index signature that
+// Next's own `NextConfig`, an interface, is assignable to.
 type NextConfig = {
-  typescript?: { ignoreBuildErrors?: boolean; tsconfigPath?: string };
-  turbopack?: { rules?: Record<string, unknown> };
+  typescript?: { ignoreBuildErrors?: boolean; tsconfigPath?: string; [key: string]: any };
+  turbopack?: { rules?: Record<string, unknown>; [key: string]: any };
   webpack?: ((config: any, context: any) => any) | null;
-  compiler?: { runAfterProductionCompile?: AfterCompile };
+  compiler?: { runAfterProductionCompile?: AfterCompile; [key: string]: any };
+  [key: string]: any;
 };
 
 export function withReylo<Config extends NextConfig>(config: Config = {} as Config): Config {
