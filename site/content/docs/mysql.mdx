@@ -552,6 +552,23 @@ The check rejects an integer out of range, a decimal with more digits than its s
 
 A `json_table` column of a text type takes your database's collation, where its character set is `utf8mb4`, as JSON's is. MySQL would give it the connection's, which mysql2 sets to `utf8mb4_unicode_ci` while MySQL 8 makes a database `utf8mb4_0900_ai_ci`, and comparing it with a column would fail with "Illegal mix of collations". A type that names its own `character set` or `collate` is left as you wrote it, so to compare with a column of another collation, name that collation in the `json_table` column. Your own `cast(… as char)` takes the connection's collation, so write `::text` instead, which takes the column's.
 
+## Database errors
+
+With [`.try()`](/#try), an error MySQL raised comes back as `{ error }`, with the same fields on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The error's name, as `"ER_DUP_ENTRY"`, from the 1,777 that MySQL 8.4 sends a client, or `undefined` for a number it doesn't define, such as one a `signal` sets |
+| `errno` | The error's number, as `1062` |
+| `sqlState` | The SQLSTATE, as `"23000"` |
+| `message` | The server's message |
+| `key` | On a duplicate entry, the key as the message names it, as `users.email` |
+| `constraint` | On a foreign key or a check the row fails, the constraint |
+| `table` | On a foreign key the row fails, the table it belongs to |
+| `column` | On a null, a missing value, or a value too long or out of range, the column |
+
+Reylo names the error from MySQL's own list whichever driver ran it, since each driver keeps an older list, or MariaDB's. MySQL names a key, a constraint or a column only in its message, which Reylo reads in English, so on a server whose `lc_messages` is another language those fields are `undefined`.
+
 ## Drivers
 
 Reylo decodes its query results itself, so options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the `mysql2` that `@reylosql/mysql` carries, whatever driver your app uses, PlanetScale and `Bun.sql` included.

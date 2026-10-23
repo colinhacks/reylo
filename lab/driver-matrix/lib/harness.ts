@@ -214,6 +214,35 @@ function expectDriverError(e: unknown, dialect: Dialect, which: "syntax" | "dup"
   throw new Mismatch(`not the driver's ${which === "dup" ? "unique-violation" : "syntax"} error: ${describe(e)}`);
 }
 
+/** The fields `.try()`'s error must carry on each dialect, whichever driver ran the statement; a list holds the values a driver may give. */
+function queryErrorFields(job: Job, which: "syntax" | "dup"): Record<string, unknown> {
+  if (job.dialect === "postgres") {
+    return which === "dup"
+      ? { code: "23505", condition: "unique_violation", schema: "driver_matrix", table: "uniq", constraint: "uniq_pkey", detail: "Key (k)=(taken) already exists." }
+      : { code: "42601", condition: "syntax_error", position: 1 };
+  }
+  if (job.dialect === "mysql") return which === "dup" ? { code: "ER_DUP_ENTRY", errno: 1062, sqlState: "23000", key: "uniq.PRIMARY" } : { code: "ER_PARSE_ERROR", errno: 1064, sqlState: "42000" };
+  // sqlite3 and the sqlite package give only the primary code, and Turso's engine none, or the
+  // primary one's number before 0.8.
+  const turso = /tursodatabase/.test(job.pkg);
+  const primaryOnly = job.pkg === "sqlite3" || job.pkg === "sqlite" || (turso && /^0\.[0-7]\./.test(job.version));
+  if (which === "syntax") return turso ? { code: undefined, errcode: undefined } : { code: "SQLITE_ERROR", errcode: 1 };
+  if (turso && !primaryOnly) return { code: undefined, errcode: undefined, message: "UNIQUE constraint failed: uniq.k", table: undefined, columns: undefined };
+  return primaryOnly ? { code: "SQLITE_CONSTRAINT", errcode: 19, table: "uniq", columns: ["k"] } : { code: "SQLITE_CONSTRAINT_PRIMARYKEY", errcode: 1555, table: "uniq", columns: ["k"] };
+}
+
+/** `.try()`'s result must be `{ error }`, Reylo's reading of the database's error, whose cause is the driver's own. */
+function expectQueryError(r: any, job: Job, which: "syntax" | "dup"): string {
+  if (!r || typeof r !== "object" || r.value !== undefined || !r.error) throw new Mismatch(`expected { error }, got ${oneLine(safeJson(plainResult(r)))}`);
+  const e = r.error;
+  if (!(e instanceof Error) || e.name !== "QueryError") throw new Mismatch(`the error is not Reylo's QueryError: ${describe(e)}`);
+  if (!(e.cause instanceof Error)) throw new Mismatch(`the error's cause is not the driver's error: ${describe(e.cause)}`);
+  const want = queryErrorFields(job, which);
+  const got = Object.fromEntries(Object.keys(want).map((k) => [k, k === "message" ? e.message : e[k]]));
+  if (safeJson(got) !== safeJson(want)) throw new Mismatch(`read ${oneLine(safeJson(got))}, expected ${oneLine(safeJson(want))}`);
+  return `QueryError ${Object.entries(got).filter(([k]) => k !== "message").map(([k, v]) => `${k}=${Array.isArray(v) ? v.join(",") : String(v)}`).join(" ")}: ${oneLine(e.message, 120)}`;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Calling reylo, with its return discipline checked on every call
 
@@ -239,6 +268,38 @@ export async function call(ctx: Ctx, q: any, client: Client, params?: Record<str
     if (ctx.shape.paramsRefused && e instanceof TypeError && ctx.shape.paramsRefused.test(e.message)) ctx.refusals.push(e);
     throw e;
   }
+}
+
+/** A `.try()` result as plain data: the value, or the error's message and fields without its cause. */
+function plainResult(r: any): unknown {
+  if (!r || typeof r !== "object" || !r.error) return r;
+  const { cause: _cause, ...fields } = r.error;
+  return { error: { message: r.error.message, ...fields } };
+}
+
+/** q.try(client, params), with run's return discipline; on a synchronous client q.trySync too, which must give the same. */
+export async function callTry(ctx: Ctx, q: any, client: Client, params?: Record<string, unknown>): Promise<any> {
+  let r: unknown;
+  try {
+    r = params === undefined ? q.try(client) : q.try(client, params);
+  } catch (e) {
+    throw new Violation(`try threw synchronously: ${describe(e)}`);
+  }
+  if (!isThenable(r)) throw new Violation(`try returned ${r === null ? "null" : typeof r} instead of a promise`);
+  let result: any;
+  try {
+    result = await r;
+  } catch (e) {
+    if (ctx.shape.paramsRefused && e instanceof TypeError && ctx.shape.paramsRefused.test(e.message)) ctx.refusals.push(e);
+    throw e;
+  }
+  if (ctx.kind === "sync") {
+    const sync = params === undefined ? q.trySync(client) : q.trySync(client, params);
+    if (isThenable(sync)) throw new Violation("trySync returned a promise on a synchronous SQLite client");
+    const [a, b] = [safeJson(plainResult(sync)), safeJson(plainResult(result))];
+    if (a !== b) throw new Mismatch(`trySync gave ${oneLine(a, 300)}, and try ${oneLine(b, 300)}`);
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -284,6 +345,8 @@ export function queries(d: Dialect, typed = true) {
     one: q(`select id, name from ${t("people")} where id = :id`, ["id"], "one"),
     maybeOne: q(`select id, name from ${t("people")} where id = :id`, ["id"], "maybeOne"),
     maybeOneOfTwo: q(`select id from ${t("people")} where id <= :id order by id`, ["id"], "maybeOne"),
+    // Every row, declared at most one: Reylo's own error, from a statement without parameters.
+    allAsMaybeOne: q(`select id from ${t("people")} order by id`, [], "maybeOne"),
     insert: q(`insert into ${t("scratch")} (tag, n) values (:tag, :n)`, ["tag", "n"], "none"),
     returning: q(`insert into ${t("scratch")} (tag, n) values (:tag, :n) returning tag, n`, ["tag", "n"], "one"),
     byTag: q(`select n from ${t("scratch")} where tag = :tag`, ["tag"], "one"),
@@ -683,6 +746,32 @@ export const SCENARIOS: Scenario[] = [
       } catch (e) {
         return expectDriverError(e, ctx.job.dialect, "dup");
       }
+    },
+  },
+  {
+    id: "S6c try: a unique violation resolves to the database's error, read the same on every driver",
+    on: "client",
+    async run(ctx, client, q) {
+      return expectQueryError(await callTry(ctx, q.dup, client, { k: "taken" }), ctx.job, "dup");
+    },
+  },
+  {
+    id: "S6d try: rows resolve to the value; Reylo's own error rejects; a syntax error resolves to the database's error",
+    on: "client",
+    params: false,
+    async run(ctx, client, q) {
+      // The error last: on Postgres it aborts the transaction a shape runs in.
+      const ok = await callTry(ctx, q.many, client);
+      if (!ok || "error" in ok) throw new Mismatch(`expected { value }, got ${oneLine(safeJson(plainResult(ok)))}`);
+      eq(ok.value, PEOPLE, "value");
+      try {
+        const r = await callTry(ctx, q.allAsMaybeOne, client);
+        throw new Mismatch(`expected reylo's "at most one row" error to reject, got ${oneLine(safeJson(plainResult(r)))}`);
+      } catch (e) {
+        if (e instanceof Mismatch || e instanceof Violation) throw e;
+        if (!(e instanceof Error) || !/Expected at most one row, got 3/.test(e.message)) throw new Mismatch(`wrong error: ${describe(e)}`);
+      }
+      return expectQueryError(await callTry(ctx, q.syntax, client), ctx.job, "syntax");
     },
   },
   {

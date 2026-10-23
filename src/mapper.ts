@@ -9,7 +9,7 @@ import { serve } from "./rpc.ts";
 type Handler = (params: unknown) => unknown | Promise<unknown>;
 type Handlers = Record<string, Handler>;
 
-const NO_ENGINE_TEXT = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\ndeclare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
+const NO_ENGINE_TEXT = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\nexport type QueryError = import("reylo").QueryError;\ndeclare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
 
 let real: Handlers | undefined;
 let message = "";

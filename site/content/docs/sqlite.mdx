@@ -620,6 +620,20 @@ SQLite has no `::` casts, so Reylo turns `:p::type` into SQLite's `CAST`. It als
 
 The check rejects a non-integer for `::int`, and any value outside SQLite's 64-bit range.
 
+## Database errors
+
+With [`.try()`](/#try), an error SQLite raised comes back as `{ error }`, with the same fields on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The result code's name, as `"SQLITE_CONSTRAINT_UNIQUE"`: the most specific one your driver gives |
+| `errcode` | Its number, as `2067` |
+| `message` | SQLite's message |
+| `table`, `columns` | On a unique, not-null or `STRICT` type violation, the table and its columns |
+| `constraint` | On a check the row fails, the check's name, or its expression when it has none; on a unique index of an expression, the index |
+
+Most drivers give the extended code, such as `SQLITE_CONSTRAINT_UNIQUE`. The `sqlite3` driver and the `sqlite` package give only the primary one, `SQLITE_CONSTRAINT`, and Turso's engine gives none from 0.8 on, so its `code` is `undefined` and only `message` names the failure. SQLite doesn't name the foreign key a row fails.
+
 ## Drivers
 
 Reylo decodes its query results itself, so settings on your database connection don't affect Reylo's queries, and Reylo's don't affect yours. Type checking needs no driver: it reads your schema with `node:sqlite`, built into Node since 22.5.
