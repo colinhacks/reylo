@@ -295,7 +295,7 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
       const decode = decoders[i]!;
       for (const row of rows) {
         const v = row[f.name];
-        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name, columns?.[i]?.[2]);
+        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name);
       }
     }
   }
