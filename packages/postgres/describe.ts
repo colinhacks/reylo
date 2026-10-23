@@ -40,8 +40,9 @@ const CONNECT_TIMEOUT_SECONDS = 10;
  * postgres.js cannot bind the channel either, so a URL that requires it has the server's
  * certificate verified instead. And libpq's TLS files (`sslrootcert`, `sslcert`, `sslkey`,
  * `sslpassword`), which postgres.js reads only as `sslrootcert=system`: they become the TLS
- * options of the connection, verified as `sslmode` asks (`verify-ca` and `verify-full` check the
- * certificate chain, and `verify-full` the host name too).
+ * options of the connection, verified as libpq does: `verify-ca`, `verify-full` and a root
+ * certificate file check the certificate chain, and `verify-full` and `sslrootcert=system` the host
+ * name too; without a root certificate file, `require` checks nothing.
  */
 export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" | ConnectionOptions } {
   const q = url.indexOf("?");
@@ -51,16 +52,14 @@ export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" |
   const files = ["sslrootcert", "sslcert", "sslkey", "sslpassword"].filter((k) => params.has(k) && !(k === "sslrootcert" && params.get(k) === "system"));
   if (binding === null && files.length === 0) return { url };
   const mode = params.get("sslmode");
-  const read = (key: string) => (params.has(key) ? readFileSync(params.get(key)!) : undefined);
+  const read = (key: string) => (files.includes(key) ? readFileSync(params.get(key)!) : undefined);
+  // As libpq: a root certificate file makes `require` check the chain like `verify-ca`, and
+  // `sslrootcert=system` checks the chain and the host name like `verify-full`.
+  const system = params.get("sslrootcert") === "system";
+  const chain = mode === "verify-ca" || mode === "verify-full" || binding === "require" || system || files.includes("sslrootcert");
+  const host = mode === "verify-full" || system || binding === "require";
   const options: ConnectionOptions | undefined = files.length > 0 && mode !== "disable"
-    ? {
-        ca: read("sslrootcert"),
-        cert: read("sslcert"),
-        key: read("sslkey"),
-        passphrase: params.get("sslpassword") ?? undefined,
-        rejectUnauthorized: mode === "verify-ca" || mode === "verify-full" || binding === "require",
-        ...(mode === "verify-ca" && { checkServerIdentity: () => undefined }),
-      }
+    ? { ca: read("sslrootcert"), cert: read("sslcert"), key: read("sslkey"), passphrase: params.get("sslpassword") ?? undefined, rejectUnauthorized: chain, ...(chain && !host && { checkServerIdentity: () => undefined }) }
     : undefined;
   for (const key of ["channel_binding", ...files]) params.delete(key);
   const rest = params.toString();

@@ -77,7 +77,15 @@ test("postgres.js gets libpq's TLS files as TLS options, not as server settings"
     const ca = forPostgresJs(`postgres://h/db?sslmode=verify-ca&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions;
     assert.equal(ca.rejectUnauthorized, true);
     assert.equal(typeof ca.checkServerIdentity, "function");
-    assert.equal((forPostgresJs(`postgres://h/db?sslmode=require&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions).rejectUnauthorized, false);
+    const required = forPostgresJs(`postgres://h/db?sslmode=require&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(required.rejectUnauthorized, true);
+    assert.equal(typeof required.checkServerIdentity, "function");
+    assert.equal((forPostgresJs(`postgres://h/db?sslmode=require&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem`).ssl as import("node:tls").ConnectionOptions).rejectUnauthorized, false);
+    const system = forPostgresJs(`postgres://h/db?sslmode=verify-full&sslrootcert=system&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(system.ca, undefined);
+    assert.equal(String(system.cert), "CERT");
+    assert.equal(system.rejectUnauthorized, true);
+    assert.equal(system.checkServerIdentity, undefined);
     assert.deepEqual(forPostgresJs(`postgres://h/db?sslmode=disable&sslrootcert=${dir}/ca.pem`), { url: "postgres://h/db?sslmode=disable" });
     assert.deepEqual(forPostgresJs("postgres://h/db?sslmode=verify-full&sslrootcert=system"), { url: "postgres://h/db?sslmode=verify-full&sslrootcert=system" });
   } finally {
