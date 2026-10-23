@@ -1214,6 +1214,12 @@ impl Analyzer<'_> {
                 "total" => done("real", total_nulls(&first)),
                 "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
+                // `lag(x, n, d)` and `lead` are their default `d` where the row they read is
+                // missing: either value's type.
+                "lag" | "lead" if args.len() > 2 => {
+                    let values: Vec<&Fact> = [0, 2].into_iter().filter(|&i| n.args.get(i).is_some_and(|e| e.op != "null")).filter_map(|i| args.get(i)).collect();
+                    typed(shared(&values), Nulls::Always)
+                }
                 "min" | "max" | "lag" | "lead" | "first_value" | "last_value" | "nth_value" => typed(first.ty.clone(), Nulls::Always),
                 "group_concat" | "string_agg" => done("text", Nulls::Always),
                 _ => Fact::unknown(),
@@ -3978,6 +3984,11 @@ mod tests {
         assert_eq!(json_typed("select post from titled"), "post: { id: number; title: string }");
         assert_eq!(json_typed("with t as (select json_array(id) as x from users) select x from t"), "x: [number]");
         assert_eq!(json_typed("select max(json_array(id)) as m from users"), "m: [number] | null");
+        // `lag` and `lead` are their default where the row they read is missing.
+        assert_eq!(
+            json_typed("select lag(json_array(id), 1, '{\"a\":1}') over (order by id) as d, lead(json_array(id), 1, json_array(0)) over (order by id) as l, lag(id, 1, name) over (order by id) as m from users"),
+            "d: string | null; l: [number] | null; m: unknown | null"
+        );
         assert_eq!(json_typed("insert into posts (user_id, title) values (1, 'a') returning json_object('id', id, 'title', title) as post"), "post: { id: number; title: string }");
     }
 
@@ -4050,7 +4061,15 @@ mod tests {
         }
         // `json()` nests again the built JSON a subquery's or view's column or `lag` returns as
         // text.
-        for (expr, ty) in [("json(x)", "[number]"), ("json(post)", "{ id: number; title: string }"), ("json(lag(json_array(id)) over (order by id))", "[number] | null")] {
+        for (expr, ty) in [
+            ("json(x)", "[number]"),
+            ("json(post)", "{ id: number; title: string }"),
+            ("json(lag(json_array(id)) over (order by id))", "[number] | null"),
+            ("json(lag(json_array(id), 1, null) over (order by id))", "[number] | null"),
+            ("json(lead(json_array(id), 1, json_array(0)) over (order by id))", "[number] | null"),
+            // A default of other text is that text, which `json()` reads as any JSON.
+            ("json(lag(json_array(id), 1, '{\"a\":1}') over (order by id))", "unknown"),
+        ] {
             let sql = format!("select json_object('a', {expr}) as o from (select *, json_array(id) as x from users) users, (select post from titled)");
             assert_eq!(json_typed(&sql), format!("o: {{ a: {ty} }}"), "{expr}");
         }
