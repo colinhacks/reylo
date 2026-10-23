@@ -63,9 +63,10 @@ impl Database for Postgres {
         // statement's own needs asked in the same round, a statement that settles in one round would
         // be done before the answer came, and the extension would never be used.
         let Some(server) = extension::server(&host) else { return Response::Need { needs: host.needs() } };
-        // A structured parameter is expanded before the analysis, and the server's answer carries
-        // neither the expansion nor the lists the run time writes again, so such a statement is
-        // analyzed here, with the server answering its needs.
+        // A structured parameter, a typed JSON one and a cast to `nullable(…)` are expanded before
+        // the analysis, and the server's answer carries neither the expansion nor the lists the
+        // run time writes again, so such a statement is analyzed here, with the server answering
+        // its needs.
         if server == Server::Same && !reylo_engine_core::structured::present(sql, Dialect::Postgres) {
             match extension::analyze(sql, &host) {
                 Some(Some(analysis)) => return with_facts::<Postgres>(analysis, &host),
@@ -122,6 +123,23 @@ mod tests {
         let ids = need_ids(&analyze(&answers));
         assert_eq!(ids.len(), 1);
         assert!(ids[0].starts_with(&format!("query:{ANALYZE_QUERY}|")), "{ids:?}");
+    }
+
+    #[test]
+    fn a_statement_the_engine_rewrites_is_analyzed_here_and_never_by_the_server() {
+        let mut answers = Answers::new();
+        answers.insert(format!("query:{PROBE_QUERY}|[]"), Answer::Rows { rows: vec![vec![json!("0.1.0")]] });
+        answers.insert(format!("query:{VERSION_QUERY}|[]"), Answer::Rows { rows: vec![vec![json!({ "fingerprint": crate::FINGERPRINT })]] });
+        let asks_the_server = |sql: &str| need_ids(&Postgres::round(sql, &answers)).iter().any(|id| id.starts_with(&format!("query:{ANALYZE_QUERY}|")));
+        // The server's answer carries the statement as the lexer writes it, so a cast the engine
+        // writes otherwise is expanded here.
+        assert!(!asks_the_server("select * from :ids::rows(id int8)"));
+        assert!(!asks_the_server("select :doc::jsonb('{\"type\": \"object\"}') as doc"));
+        assert!(!asks_the_server("select :n::nullable(int) as n"));
+        assert!(!asks_the_server("select :n :: Nullable (int) as n"));
+        // An ordinary cast, `json` and `jsonb` included, is the server's to analyze whole.
+        assert!(asks_the_server("select :n::int as n"));
+        assert!(asks_the_server("select :doc::jsonb as doc"));
     }
 }
 

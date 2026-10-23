@@ -190,11 +190,13 @@ impl Server {
     }
 }
 
-/// Whether the statement has a structured parameter at all, without reading one: a cheap test for
-/// a caller that treats such statements apart.
+/// Whether this pass rewrites the statement at all, without reading what it finds: a cheap test
+/// for a caller that treats such statements apart. A structured parameter (`::rows(…)`,
+/// `::row(…)`), a typed JSON parameter (`::jsonb('…')`) and a cast to `nullable(…)` are each
+/// written into the statement differently than the lexer alone writes them.
 pub fn present(sql: &str, dialect: Dialect) -> bool {
     let Ok(lexed) = lex::lex(sql, dialect) else { return false };
-    lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some())
+    lexed.placeholders.iter().any(|p| cast_at(sql, p.end).is_some() || json_cast_at(sql, p.end).is_some() || nullable_cast_at(sql, p.end).is_some())
 }
 
 /// After a placeholder ending at `end`: `::rows(` or `::row(`, with any spacing, as `(one, the
