@@ -490,7 +490,9 @@ function writeEntry(root: string, file: string, entry: Entry): void {
  * their columns, inheritance, constraints, indexes, row triggers and rules (nullability and the row
  * count read them), enum labels, domains, functions with their defaults, volatility, strictness,
  * kind and variadic argument, user operators and casts (the trust check reads them), view
- * definitions and column comments (a field's doc comment), and the server settings that change a statement's types. SQLite's whole schema is
+ * definitions and column comments (a field's doc comment), and the server settings that change a statement's types;
+ * and what the errors a statement may raise are read from: defaults and generated columns and policies on Postgres,
+ * and triggers, foreign keys, checks and every schema's stored functions on MySQL. SQLite's whole schema is
  * its `sqlite_schema` table, and the functions of the SQLite that opened it are part of what an
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
  * `text || "char"` is ambiguous, and a query the server refuses leaves every entry unverified.
@@ -512,6 +514,8 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) || ' ' || p.prokind::text || ' ' || p.provolatile::text || ' ' || p.proisstrict || ' ' || p.pronargdefaults || ' ' || p.provariadic from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
     union all select 'k ' || k.oid || ' ' || k.castsource || ' ' || k.casttarget || ' ' || k.castfunc || ' ' || k.castcontext::text || ' ' || k.castmethod::text from pg_cast k where k.oid >= 16384
     union all select 'w ' || c.oid || ' ' || md5(pg_get_viewdef(c.oid)) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and n.nspname ${NS}
+    union all select 'x ' || d.adrelid || ' ' || d.adnum || ' ' || md5(pg_get_expr(d.adbin, d.adrelid)) from pg_attrdef d join pg_class c on c.oid = d.adrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
+    union all select 'p ' || p.polrelid || ' ' || p.polname || ' ' || p.polcmd::text || ' ' || p.polpermissive || ' ' || md5(coalesce(pg_get_expr(p.polqual, p.polrelid), '') || ' ' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '')) from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
     union all select 'd ' || d.objoid || ' ' || d.objsubid || ' ' || md5(d.description) from pg_description d join pg_class c on c.oid = d.objoid join pg_namespace n on n.oid = c.relnamespace where d.classoid = 'pg_class'::regclass and d.objsubid > 0 and n.nspname ${NS}
   ) t`,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
@@ -519,6 +523,10 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()
     union all select concat_ws(' ', 'v', table_name, md5(view_definition)) from information_schema.views where table_schema = database()
     union all select concat_ws(' ', 'r', routine_name, routine_type, coalesce(dtd_identifier, ''), md5(coalesce(routine_definition, ''))) from information_schema.routines where routine_schema = database()
+    union all select concat_ws(' ', 'p', routine_schema, routine_name) from information_schema.routines where routine_schema <> database() and routine_type = 'FUNCTION'
+    union all select concat_ws(' ', 'g', event_object_table, trigger_name, event_manipulation, action_timing) from information_schema.triggers where event_object_schema = database()
+    union all select concat_ws(' ', 'f', table_name, constraint_name, referenced_table_name, update_rule, delete_rule) from information_schema.referential_constraints where constraint_schema = database()
+    union all select concat_ws(' ', 'k', table_name, constraint_name, constraint_type) from information_schema.table_constraints where table_schema = database()
   ) t`,
   sqlite: `select type, name, tbl_name, coalesce(sql, '') from sqlite_schema
     union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4`,
