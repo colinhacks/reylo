@@ -151,7 +151,9 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 /// - `reach`: per argument type of a user's overload (the fourth column), the built-in types the
 ///   server converts to it implicitly (`can_coerce_type`): the same base type, an implicit cast
 ///   between the base types, an array of elements that convert so, and for a polymorphic type
-///   every type it takes; `any` is an argument type every type is taken to convert to.
+///   every type it takes; `any` is an argument type every type is taken to convert to; `base`
+///   is such an argument type that is a domain (the fourth column) beside its base type (the
+///   fifth), which is the type the server reports a column of the domain as.
 /// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
 /// - `type`: a function name a user's type also has.
 /// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
@@ -207,6 +209,7 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
         AND p.proargtypes::oid[] <@ ARRAY(SELECT t FROM common) \
     UNION ALL SELECT 'reach', NULL, pg_catalog.array_agg(r.s::int8 ORDER BY r.s), r.u::int8, NULL FROM reach r GROUP BY r.u \
     UNION ALL SELECT 'any', NULL, NULL, p.u::int8, NULL FROM pseudo p \
+    UNION ALL SELECT 'base', NULL, NULL, g.u::int8, g.b::int8 FROM targets g WHERE g.u <> g.b \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::int8, NULL FROM sources s \
       WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid >= 16384 AND c.castcontext = 'i' AND c.castmethod = 'f' AND c.casttarget < 16384 \
         AND (c.castsource = s.b OR c.castsource = (SELECT a.e FROM arrays a WHERE a.t = s.b))) \

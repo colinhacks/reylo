@@ -101,6 +101,8 @@ pub struct Overloads {
     reach: HashMap<u32, HashSet<u32>>,
     /// The argument types every type converts to: the pseudo-types the query does not spell out.
     any: HashSet<u32>,
+    /// The base type of every argument type of a user's overload that is a domain.
+    bases: HashMap<u32, u32>,
     /// Built-in types a user's implicit cast function converts to another built-in type.
     implicit: HashSet<u32>,
     /// Function names a user's type also has: a call of one argument with no exact match may be a
@@ -160,6 +162,11 @@ impl Overloads {
                         }
                     }
                     "any" => out.any.extend(a),
+                    "base" => {
+                        if let (Some(domain), Some(base)) = (a, b) {
+                            out.bases.insert(domain, base);
+                        }
+                    }
                     "implicit" => out.implicit.extend(a),
                     "type" => {
                         if let Some(name) = name {
@@ -241,8 +248,11 @@ impl Overloads {
         };
         if let Some(exact) = &exact {
             // A user's overload of exactly those types may come first on the search path, and
-            // one with defaults or a variadic argument may expand to them.
-            if users.iter().any(|u| u.args == *exact || (kind == Kind::Function && (u.defaults > 0 || u.variadic) && u.fits(exact.len()))) {
+            // one with defaults or a variadic argument may expand to them. A column of a domain
+            // is described as of the domain's base type, which the server matched as the domain:
+            // an overload of a domain matches a value of its base type too.
+            let base = |t: &u32| self.bases.get(t).copied().unwrap_or(*t);
+            if users.iter().any(|u| u.args == *exact || u.args.iter().map(base).eq(exact.iter().copied()) || (kind == Kind::Function && (u.defaults > 0 || u.variadic) && u.fits(exact.len()))) {
                 return None;
             }
             // A call of no arguments matches every overload of none exactly.
@@ -447,6 +457,26 @@ mod tests {
         // Typed by an earlier read as `bytea`, it reaches PostGIS's `=` beside a `text`.
         assert_eq!(c.resolve(Kind::Infix, "=", &[Operand::Is(oid::TEXT), Operand::Param(Some(oid::BYTEA))]), None);
         assert_eq!(c.resolve(Kind::Infix, "=", &[Operand::Is(oid::TEXT), Operand::Param(None)]), None, "no describe");
+    }
+
+    #[test]
+    fn a_user_overload_of_a_domain_matches_a_value_of_its_base_type() {
+        // A domain `mytext` over `text` with an `=` and a `lower` of its own: the describe reports
+        // a column of it as a `text`, and the server matches it as the domain.
+        const MYTEXT: u32 = 30000;
+        let (c, _) = catalog(vec![
+            user("b", "=", &[MYTEXT, MYTEXT]),
+            user("f", "lower", &[MYTEXT]),
+            reach(MYTEXT, &[oid::TEXT, oid::VARCHAR]),
+            vec![json!("base"), Value::Null, Value::Null, json!(MYTEXT), json!(oid::TEXT)],
+            builtin("b", "=", &[oid::TEXT, oid::TEXT], oid::BOOL),
+            builtin("f", "lower", &[oid::TEXT], oid::TEXT),
+        ]);
+        assert_eq!(c.resolve(Kind::Infix, "=", &[Operand::Is(oid::TEXT), Operand::Unknown]), None);
+        assert_eq!(c.resolve(Kind::Infix, "=", &[Operand::Is(oid::TEXT), Operand::Is(oid::TEXT)]), None);
+        assert_eq!(c.resolve(Kind::Function, "lower", &[Operand::Is(oid::TEXT)]), None);
+        // Over an `int4` nothing of the domain's is a candidate.
+        assert_eq!(c.resolve(Kind::Infix, "=", &[Operand::Is(oid::INT4), Operand::Is(oid::INT4)]), Some(None));
     }
 
     #[test]
