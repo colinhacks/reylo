@@ -426,7 +426,7 @@ impl<'a> Engine<'a> {
         // settled, rounds later.
         if let (true, Some(trust), Some(rows)) = (self.pinned.get(), &trust, &catalog_rows) {
             self.prewarmed.borrow_mut().insert(rewritten.sql.clone());
-            for probe in &jsonshape::plan(&rewritten.sql, Dialect::Postgres, trust, &crate::levels::Columns::from_rows(&rows.columns)).probes {
+            for probe in jsonshape::plan(&rewritten.sql, Dialect::Postgres, trust, &crate::levels::Columns::from_rows(&rows.columns)).statements() {
                 self.prewarm_probe(&probe.sql, trust);
             }
         }
@@ -779,20 +779,37 @@ impl<'a> Engine<'a> {
         // Every probe is described before the items any of them reads are followed, so those
         // take what the probe budget leaves and never a probe the statement's own JSON needs.
         let mut described = Vec::with_capacity(plan.probes.len());
-        for probe in &plan.probes {
+        for (i, probe) in plan.probes.iter().enumerate() {
             let mut one = (probe.sql.as_str(), self.probe(&probe.sql, trust));
             if let (Some(None), Some(wider)) = (&one.1, &probe.wider) {
                 one = (wider.as_str(), self.probe(wider, trust));
             }
             pending |= one.1.is_none();
-            described.push(one);
+            // A whole row an outer join may null is read again with the row there, over the same
+            // `FROM` the probe was described over, for the fields an object that exists holds.
+            let present = match (plan.present.get(i).and_then(Option::as_ref), &one.1) {
+                (Some(present), Some(Some(_))) => {
+                    let text = if one.0 == probe.sql { Some(present.sql.as_str()) } else { present.wider.as_deref() };
+                    match text.map(|text| self.probe(text, trust)) {
+                        Some(None) => {
+                            pending = true;
+                            None
+                        }
+                        Some(Some(found)) => found,
+                        None => None,
+                    }
+                }
+                _ => None,
+            };
+            described.push((one.0, one.1, present));
         }
         let mut outcomes: Vec<Option<jsonshape::Outcome>> = Vec::with_capacity(plan.probes.len());
-        for (probe, (text, one)) in plan.probes.iter().zip(described) {
+        for (probe, (text, one, present)) in plan.probes.iter().zip(described) {
             let Some(Some(d)) = one else {
                 outcomes.push(None);
                 continue;
             };
+            let present = present.filter(|p| p.columns.len() == d.columns.len()).map(|p| p.columns.iter().map(|c| c.nullable).collect());
             let outer_join = analyze::analyze(&probe.sql).map(|a| a.has_outer_join).unwrap_or(true);
             let built = match self.built(text, &d.columns, trust, columns, params, depth) {
                 Some(built) => built,
@@ -801,7 +818,7 @@ impl<'a> Engine<'a> {
                     Vec::new()
                 }
             };
-            outcomes.push(Some(jsonshape::Outcome { columns: d.columns, outer_join, built }));
+            outcomes.push(Some(jsonshape::Outcome { columns: d.columns, outer_join, present, built }));
         }
         if pending {
             return None;
