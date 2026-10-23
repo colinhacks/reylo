@@ -24,6 +24,11 @@ pub enum Type {
         of: Box<Type>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nullable_items: Option<bool>,
+        /// The character between the elements of the array's text, where the element type's
+        /// `typdelim` is not a comma: `:` for PostGIS's `geometry` and `geography`, `;` for `box`.
+        /// The server writes and reads the array's text with it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delimiter: Option<String>,
     },
     /// `json[b]_build_object(…)`: the keys in the order the SQL writes them.
     Object { fields: Vec<Field> },

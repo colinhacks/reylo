@@ -121,7 +121,7 @@ async function fieldDecoders(fields: Field[], columns: Columns | undefined, key:
   const byColumn = columns && columns.length === fields.length ? columns : undefined;
   const created = fields.filter((f) => f.oid >= FIRST_USER_OID);
   const known = learnedOf(key);
-  if (byColumn) created.forEach((f) => known.has(f.oid) || known.set(f.oid, { kind: byColumn[fields.indexOf(f)]![1], delim: "," }));
+  if (byColumn) created.forEach((f) => known.has(f.oid) || known.set(f.oid, { kind: byColumn[fields.indexOf(f)]![1], delim: byColumn[fields.indexOf(f)]![2] ?? "," }));
   else if (created.length) await learn(key, created.map((f) => f.oid), load);
   return fields.map((f) => {
     const b = builtinDecoder(f.oid);
@@ -295,7 +295,7 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
       const decode = decoders[i]!;
       for (const row of rows) {
         const v = row[f.name];
-        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name);
+        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name, columns?.[i]?.[2]);
       }
     }
   }
@@ -359,22 +359,22 @@ export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
   const first = rows[0] as Record<string, unknown>;
   // A query defined by hand carries no kinds: only what Bun's own types say is converted.
-  const work: (readonly [string, Kind])[] = columns ? columns.filter(([, kind]) => BUN_KINDS.test(kind)) : Object.keys(first).map((name) => [name, "unknown"] as const);
+  const work: (readonly [string, Kind, string?])[] = columns ? columns.filter(([, kind]) => BUN_KINDS.test(kind)) : Object.keys(first).map((name) => [name, "unknown"] as const);
   if (!work.length) return rows;
   for (const row of rows as Record<string, unknown>[]) {
-    for (const [name, kind] of work) {
+    for (const [name, kind, delim] of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
-      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name);
+      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim);
     }
   }
   return rows;
 }
 
 /** A value of `kind` as Bun.sql gave it: an either's digits are a MySQL BIGINT's, which Bun gives as a string. */
-function bunValue(kind: Kind, v: unknown, name: string): unknown {
+function bunValue(kind: Kind, v: unknown, name: string, delim?: string): unknown {
   if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && /^[+-]?\d+$/.test(v)) return BigInt(v);
-  return coerce(kind, v, name);
+  return coerce(kind, v, name, delim);
 }
 
 /** A value whose kind is not known: a typed array an array, and a Date, which no kind is, the instant's text. */

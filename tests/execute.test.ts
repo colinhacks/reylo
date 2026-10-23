@@ -290,6 +290,22 @@ test("arrayLiteral writes a Postgres array literal as pg does: nesting, NULL, qu
   const offset = -d.getTimezoneOffset();
   const zone = `${offset < 0 ? "-" : "+"}${String(Math.floor(Math.abs(offset) / 60)).padStart(2, "0")}:${String(Math.abs(offset) % 60).padStart(2, "0")}`;
   assert.equal(arrayLiteral([d]), `{"2026-01-02T03:04:05.006${zone}"}`);
+  // An element type's own delimiter, between sub-arrays too: PostGIS's geometry is `:`.
+  assert.equal(arrayLiteral(["0101", null, "0102"], ":"), '{"0101":NULL:"0102"}');
+  assert.equal(arrayLiteral([["a"], ["b"]], ";"), '{{"a"};{"b"}}');
+});
+
+test("postgres: an array parameter is written with its element type's delimiter, which the module's inputs carry", async () => {
+  const seen: unknown[][] = [];
+  const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };
+  const shapes: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select id from places where shape = any(:shapes)",
+    params: ["shapes"],
+    inputs: { shapes: { type: { kind: "array", of: { kind: "scalar", name: "geometry" }, delimiter: ":" } } },
+  };
+  await execute(client as never, shapes, { shapes: ["0101", "0102"] });
+  assert.deepEqual(seen, [['{"0101":"0102"}']]);
 });
 
 test("postgres: Neon's neon() before 1.0 is called with (text, values)", async () => {

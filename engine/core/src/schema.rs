@@ -77,7 +77,7 @@ impl Type {
             Type::Scalar { name } => scalar(name, opts),
             Type::Enum { labels, .. } => json!({"type": "string", "enum": labels}),
             // Postgres lets any array hold NULL elements, whatever a column's NOT NULL says.
-            Type::Array { of, nullable_items } => {
+            Type::Array { of, nullable_items, .. } => {
                 let items = of.json_schema(opts);
                 let nulls = if opts.input { *nullable_items == Some(true) } else { *nullable_items != Some(false) };
                 json!({"type": "array", "items": if nulls { nullable(items) } else { items }})
@@ -259,16 +259,16 @@ mod tests {
         assert_eq!(mood.json_schema(WIRE), json!({"type": "string", "enum": ["ok", "sad"]}));
         // A result's elements may be NULL, as any Postgres array's may, unless the statement shows
         // they are not; a parameter's are strict unless the statement says otherwise.
-        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None }.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"type": "integer", "format": "int32"}, {"type": "null"}]}}));
-        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": "integer", "format": "int32"}}));
+        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None, delimiter: None }.json_schema(WIRE), json!({"type": "array", "items": {"anyOf": [{"type": "integer", "format": "int32"}, {"type": "null"}]}}));
+        assert_eq!(Type::Array { of: Box::new(s("int4")), nullable_items: None, delimiter: None }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": "integer", "format": "int32"}}));
         // An array's element stands where the array does.
-        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false) }.json_schema(IN_JSON)["items"], json!({"type": "integer", "format": "int64"}));
-        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false) }.json_schema(WIRE)["items"], json!({"type": "string", "format": "int64"}));
-        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE), json!({"type": "array", "items": {"type": ["string", "null"]}}));
-        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true) }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": ["string", "null"]}}));
-        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(false) }.json_schema(WIRE), json!({"type": "array", "items": {"type": "string"}}));
+        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false), delimiter: None }.json_schema(IN_JSON)["items"], json!({"type": "integer", "format": "int64"}));
+        assert_eq!(Type::Array { of: Box::new(s("int8")), nullable_items: Some(false), delimiter: None }.json_schema(WIRE)["items"], json!({"type": "string", "format": "int64"}));
+        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true), delimiter: None }.json_schema(WIRE), json!({"type": "array", "items": {"type": ["string", "null"]}}));
+        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(true), delimiter: None }.json_schema(WIRE.as_input()), json!({"type": "array", "items": {"type": ["string", "null"]}}));
+        assert_eq!(Type::Array { of: Box::new(s("text")), nullable_items: Some(false), delimiter: None }.json_schema(WIRE), json!({"type": "array", "items": {"type": "string"}}));
         // A structured parameter's member keeps its array's NULL elements, which the run time binds.
-        let texts = Type::Array { of: Box::new(s("text")), nullable_items: None };
+        let texts = Type::Array { of: Box::new(s("text")), nullable_items: None, delimiter: None };
         let member = Type::Rows { one: true, fields: vec![crate::types::RowField { name: "tags".into(), ty: texts, written: "text[]".into(), nullable: false, optional: false, schema: None }] };
         assert_eq!(member.json_schema(WIRE.as_input())["properties"]["tags"], json!({"type": "array", "items": {"type": ["string", "null"]}}));
         assert_eq!(Type::Json { schema: None }.json_schema(WIRE), json!({}));
@@ -294,7 +294,7 @@ mod tests {
         );
         assert_eq!(users.json_schema(IN_JSON)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
         assert_eq!(users.json_schema(INT8N)["properties"]["id"], json!({"type": "integer", "format": "int64"}));
-        let many = Type::Array { of: Box::new(users.clone()), nullable_items: None };
+        let many = Type::Array { of: Box::new(users.clone()), nullable_items: None, delimiter: None };
         assert_eq!(many.json_schema(WIRE), json!({"type": "array", "items": nullable(users.json_schema(WIRE))}));
         assert_eq!(many.json_schema(WIRE.as_input()), json!({"type": "array", "items": users.json_schema(WIRE)}));
     }

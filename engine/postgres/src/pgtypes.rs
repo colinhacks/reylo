@@ -55,6 +55,8 @@ pub struct PgType {
     pub cast_name: String,
     /// A composite type's relation, whose columns' CHECKs [`TypeRegistry::documents`] keys by it.
     pub relid: Option<u32>,
+    /// `typdelim` where it is not a comma: what separates the elements of an array of the type.
+    pub delimiter: Option<String>,
 }
 
 /// One column of a composite type, read from `pg_attribute` beside its relation.
@@ -108,7 +110,8 @@ pub(crate) use not_null_rows;
 /// The columns of one `pg_type` row `t` as [`TypeRegistry::insert_rows`] reads them: the oid, the
 /// name, `typtype`, the element and base types, an enum's labels, the name a cast spells, and a
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
-/// `NOT NULL`), so a whole-row value has its fields in the same round as its type.
+/// `NOT NULL`), so a whole-row value has its fields in the same round as its type, and the
+/// delimiter of an array of it.
 macro_rules! type_columns {
     () => {
         concat!("t.oid::int8, t.typname::text, t.typtype::text, t.typelem::int8, t.typbasetype::int8, \
@@ -118,7 +121,8 @@ macro_rules! type_columns {
     CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.atttypid::int8 ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
     CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attnotnull AND ", not_null_rows!("t.typrelid", "a.attname"), " ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
     CASE WHEN t.typtype = 'c' THEN t.typrelid::int8 END, \
-    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attnum::int4 ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END")
+    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attnum::int4 ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
+    t.typdelim::text")
     };
 }
 
@@ -265,6 +269,7 @@ impl TypeRegistry {
                 _ => Vec::new(),
             };
             let relid = row.get(10).and_then(as_u32).filter(|r| *r != 0);
+            let delimiter = row.get(12).and_then(Value::as_str).filter(|d| *d != ",").map(str::to_string);
             let name = name.to_string();
             let kind = match typtype {
                 "b" | "p" if elem != 0 && name.starts_with('_') => TypeKind::Array,
@@ -276,7 +281,7 @@ impl TypeRegistry {
             };
             self.types.insert(
                 oid,
-                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid },
+                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter },
             );
         }
     }
@@ -293,6 +298,7 @@ impl TypeRegistry {
             fields: Vec::new(),
             cast_name: String::new(),
             relid: None,
+            delimiter: None,
         });
     }
 
@@ -394,8 +400,12 @@ impl TypeRegistry {
         for _ in 0..8 {
             let Some(t) = self.get(cur) else { return Type::Unknown };
             match (t.kind, t.elem, t.base) {
-                // The elements of an array of stored rows are stored rows.
-                (TypeKind::Array, Some(e), _) => return Type::Array { of: Box::new(self.render_at(e, depth + 1, stored)), nullable_items: None },
+                // The elements of an array of stored rows are stored rows. A domain has its base
+                // type's delimiter.
+                (TypeKind::Array, Some(e), _) => {
+                    let delimiter = self.get(e).and_then(|t| t.delimiter.clone());
+                    return Type::Array { of: Box::new(self.render_at(e, depth + 1, stored)), nullable_items: None, delimiter };
+                }
                 (TypeKind::Domain, _, Some(b)) => cur = b,
                 (TypeKind::Enum, _, _) => return Type::Enum { name: t.name.clone(), labels: t.labels.clone() },
                 (TypeKind::Composite, _, _) if !t.fields.is_empty() => {
@@ -457,7 +467,7 @@ mod tests {
                 fields: vec![
                     Field { name: "id".into(), ty: Type::Scalar { name: "int8".into() }, nullable: false },
                     Field { name: "name".into(), ty: Type::Scalar { name: "text".into() }, nullable: true },
-                    Field { name: "tags".into(), ty: Type::Array { of: Box::new(Type::Scalar { name: "text".into() }), nullable_items: None }, nullable: true },
+                    Field { name: "tags".into(), ty: Type::Array { of: Box::new(Type::Scalar { name: "text".into() }), nullable_items: None, delimiter: None }, nullable: true },
                 ],
             };
             // A stored row of the table holds its NOT NULL; a row value of its type need not.
@@ -501,7 +511,28 @@ mod tests {
         assert!(out.is_empty());
         let Type::Composite { fields, .. } = registry.render(90001) else { panic!("a composite") };
         assert_eq!(fields[0].ty, Type::Scalar { name: "int8".into() });
-        assert_eq!(fields[1].ty, Type::Array { of: Box::new(Type::Enum { name: "mood".into(), labels: vec!["ok".into(), "sad".into()] }), nullable_items: None });
+        assert_eq!(fields[1].ty, Type::Array { of: Box::new(Type::Enum { name: "mood".into(), labels: vec!["ok".into(), "sad".into()] }), nullable_items: None, delimiter: None });
+    }
+
+    #[test]
+    fn an_array_carries_its_elements_delimiter_where_it_is_not_a_comma() {
+        let mut registry = TypeRegistry::with_builtins();
+        // The thirteen columns of TYPE_QUERY: PostGIS's geometry, its array, a domain over it and
+        // the domain's array. A domain has its base type's delimiter.
+        let row = |oid: u32, name: &str, typtype: &str, elem: u32, base: u32, delimiter: &str| {
+            vec![json!(oid), json!(name), json!(typtype), json!(elem), json!(base), Value::Null, json!(name), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, json!(delimiter)]
+        };
+        registry.insert_rows(&[
+            row(90001, "geometry", "b", 0, 0, ":"),
+            row(90002, "_geometry", "b", 90001, 0, ","),
+            row(90003, "place", "d", 0, 90001, ":"),
+            row(90004, "_place", "b", 90003, 0, ","),
+        ]);
+        let geometry = Box::new(Type::Scalar { name: "geometry".into() });
+        assert_eq!(registry.render(90002), Type::Array { of: geometry.clone(), nullable_items: None, delimiter: Some(":".into()) });
+        assert_eq!(registry.render(90004), Type::Array { of: geometry, nullable_items: None, delimiter: Some(":".into()) });
+        // A comma, and a host that predates the column, leave it out.
+        assert_eq!(registry.render(1009), Type::Array { of: Box::new(Type::Scalar { name: "text".into() }), nullable_items: None, delimiter: None });
     }
 
     #[test]

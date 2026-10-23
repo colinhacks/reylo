@@ -2178,7 +2178,7 @@ fn check_values(text: &str, column: &str) -> Option<Vec<String>> {
 /// `ty` with what the statement says of its elements, when it is an array.
 pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
     match ty {
-        Type::Array { of, .. } => Type::Array { of, nullable_items },
+        Type::Array { of, delimiter, .. } => Type::Array { of, nullable_items, delimiter },
         other => other,
     }
 }
