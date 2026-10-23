@@ -107,8 +107,9 @@ function jsonParams(sql: string): { name: string; schema: unknown }[] {
  */
 function compile(sql: string, dialect: Dialect): string {
   if (dialect === 'postgres') return sql.replace(new RegExp(String.raw`::(jsonb?)\(${SCHEMA_STRING}\)`, 'g'), '::$1');
-  const json = new RegExp(String.raw`\(?(${NAME})\)?::json\(${SCHEMA_STRING}\)`, 'g');
-  return sql.replace(json, dialect === 'mysql' ? 'cast($1 as json)' : '$1');
+  // The parentheses come in a pair or not at all: a call's own, as in `json_table(:x::json('…'), …)`, stays.
+  const json = new RegExp(String.raw`(?:\((${NAME})\)|(${NAME}))::json\(${SCHEMA_STRING}\)`, 'g');
+  return sql.replace(json, (_, wrapped: string | undefined, bare: string | undefined) => (dialect === 'mysql' ? `cast(${wrapped ?? bare} as json)` : (wrapped ?? bare)!));
 }
 
 // ---- The module, as src/mapper.ts renders it ----
