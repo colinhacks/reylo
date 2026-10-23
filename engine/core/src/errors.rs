@@ -31,24 +31,48 @@ impl Errors {
 }
 
 /// The words of `sql` outside its strings and comments, lowercased, each with the character after
-/// it that is not a space.
+/// it that is neither a space nor in a comment. A quoted identifier is a word too, unquoted: a
+/// backquoted, double-quoted or bracketed one, where a dialect reads a double quote as a string
+/// as well, which leaves the scan the more cautious. MySQL runs what a `/*!` comment holds, so the
+/// scan reads it as text.
 fn words(sql: &str, dialect: Dialect) -> Vec<(String, Option<char>)> {
     let opaque = lex::lex(sql, dialect).map(|l| l.opaque).unwrap_or_default();
+    let span = |i: usize| opaque.iter().find(|&&(s, _)| s == i).map(|&(_, e)| e.max(i + 1));
     let b = sql.as_bytes();
+    let comment = |i: usize| [&b"/*"[..], b"--", b"#"].iter().any(|c| b[i..].starts_with(c)) && !b[i..].starts_with(b"/*!");
+    // The character after `i` that is neither a space nor in a comment.
+    let next = |mut i: usize| loop {
+        let c = sql[i..].chars().next()?;
+        match span(i) {
+            Some(e) if comment(i) => i = e,
+            _ if c.is_whitespace() => i += c.len_utf8(),
+            _ => return Some(c),
+        }
+    };
     let mut out = Vec::new();
     let mut i = 0;
     while i < b.len() {
-        if let Some(&(_, e)) = opaque.iter().find(|&&(s, _)| s == i) {
-            i = e.max(i + 1);
+        if b[i..].starts_with(b"/*!") {
+            i += 3;
             continue;
         }
-        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+        if let Some(e) = span(i) {
+            if let (Some(close), true) = (match b[i] { b'`' => Some('`'), b'"' => Some('"'), b'[' => Some(']'), _ => None }, e >= i + 2) {
+                let open = b[i] as char;
+                let inner = &sql[i + 1..e - 1];
+                let word = if open == close { inner.replace(&format!("{close}{close}"), &close.to_string()) } else { inner.to_string() };
+                out.push((word.to_lowercase(), next(e)));
+            }
+            i = e;
+            continue;
+        }
+        // A name may hold letters beyond ASCII.
+        if b[i].is_ascii_alphabetic() || b[i] == b'_' || b[i] >= 0x80 {
             let start = i;
-            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
+            while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$' || b[i] >= 0x80) {
                 i += 1;
             }
-            let next = sql[i..].chars().find(|c| !c.is_whitespace());
-            out.push((sql[start..i].to_ascii_lowercase(), next));
+            out.push((sql[start..i].to_lowercase(), next(i)));
             continue;
         }
         i += 1;
@@ -89,5 +113,9 @@ mod tests {
         assert_eq!(called("select tax (price), 'f(x)', count(*) /* g(y) */ from t where h = 1", Dialect::Mysql), vec!["count", "tax"]);
         assert!(has_word("insert into t (a) values (1) on duplicate key update a = 2", Dialect::Mysql, &["update"]));
         assert!(!has_word("insert into t (a) values ('update')", Dialect::Sqlite, &["update", "replace"]));
+        // A quoted name is the name, and a comment may sit before the parenthesis.
+        assert_eq!(called("select `Tax`(price), other.rate /* why */ (price), \"f\"\"g\"(1) from t", Dialect::Mysql), vec!["f\"g", "rate", "tax"]);
+        assert_eq!(called("select 1 /*!80000 + tax(2) */", Dialect::Mysql), vec!["tax"]);
+        assert_eq!(called("select 'é', ré(1), `é`(2)", Dialect::Mysql), vec!["ré", "é"]);
     }
 }

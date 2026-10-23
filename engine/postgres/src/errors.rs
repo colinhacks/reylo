@@ -27,10 +27,14 @@ const IMPLICIT_OPERATORS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 /// reaches: the read relations and, through views, the relations they read. Code runs there in a
 /// trigger or a rule; in a default, a generated column, a check, an index's expression, a
 /// partition key, a domain's check or a policy, which `pg_depend` ties to the functions and
-/// operators they call; in a type's input and output; across a foreign table; and in the functions,
-/// operators, casts and types the statement names, where a user's or an extension's one of the
-/// name could be chosen over the server's (one taking only the server's types). A server newer
-/// than 18 may raise a code the run time's list lacks.
+/// operators they call; in a type's input and output; across a foreign table; in a user's or an
+/// extension's function of a name the statement calls, whatever it takes, since a literal or a
+/// parameter of no type takes the type of the one function there is; and in a user's or an
+/// extension's operator or cast of the statement, where each type of a user's it takes is present:
+/// a column's type, a row type, a type the statement names or a function it calls returns, a
+/// preferred type or one a built-in type casts to implicitly, and what those are built of (a
+/// domain's base, an array's element and its array, a composite's fields, a range's subtype).
+/// A server newer than 18 may raise a code the run time's list lacks.
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
     named(oid, written) AS ( \
@@ -57,7 +61,18 @@ pub const ERRORS_QUERY: &str = concat!(
       UNION SELECT a.oid FROM pg_type a JOIN userio u ON a.typelem = u.oid WHERE a.typinput = 'array_in'::regproc \
       UNION SELECT d.oid FROM pg_type d JOIN pg_type b ON b.oid = d.typbasetype WHERE d.typtype = 'd' \
         AND (b.oid IN (SELECT oid FROM userio) OR b.typtype = 'd' OR (b.typinput = 'array_in'::regproc AND b.typelem IN (SELECT oid FROM userio)))), \
-    cons(oid) AS (SELECT c.oid FROM pg_constraint c WHERE c.conrelid IN (SELECT oid FROM w) OR c.contypid IN (SELECT oid FROM dom)) \
+    cons(oid) AS (SELECT c.oid FROM pg_constraint c WHERE c.conrelid IN (SELECT oid FROM w) OR c.contypid IN (SELECT oid FROM dom)), \
+    present(oid) AS ( \
+      SELECT a.atttypid FROM pg_attribute a JOIN rel ON a.attrelid = rel.oid WHERE a.attnum > 0 AND NOT a.attisdropped \
+      UNION SELECT c.reltype FROM pg_class c JOIN rel ON c.oid = rel.oid \
+      UNION SELECT t.oid FROM pg_type t WHERE t.typname = ANY($5::text[]) \
+      UNION SELECT p.prorettype FROM pg_proc p WHERE p.proname = ANY($3::text[]) \
+      UNION SELECT t.oid FROM pg_type t WHERE t.oid >= 16384 AND t.typispreferred \
+      UNION SELECT c.casttarget FROM pg_cast c WHERE c.castcontext = 'i' AND c.casttarget >= 16384 \
+      UNION SELECT y.oid FROM present p JOIN pg_type t ON t.oid = p.oid CROSS JOIN LATERAL ( \
+        SELECT t.typbasetype UNION ALL SELECT t.typelem UNION ALL SELECT t.typarray \
+        UNION ALL SELECT a.atttypid FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped \
+        UNION ALL SELECT g.rngsubtype FROM pg_range g WHERE g.rngtypid = t.oid) AS y(oid) WHERE y.oid <> 0) \
     SELECT 'open', 'a server newer than 18', NULL, NULL WHERE pg_catalog.current_setting('server_version_num')::int4 >= 190000 \
     UNION ALL SELECT 'open', 'trigger', g.tgname::text, NULL FROM pg_trigger g JOIN w ON g.tgrelid = w.oid WHERE NOT g.tgisinternal AND g.tgenabled <> 'D' \
     UNION ALL SELECT 'open', 'rule', q.rulename::text, NULL FROM pg_rewrite q JOIN w ON q.ev_class = w.oid WHERE q.rulename <> '_RETURN' AND q.ev_enabled <> 'D' \
@@ -72,11 +87,11 @@ pub const ERRORS_QUERY: &str = concat!(
     UNION ALL SELECT 'open', 'column type', t.typname::text, NULL FROM pg_attribute a JOIN rel ON a.attrelid = rel.oid JOIN pg_type t ON t.oid = a.atttypid \
       WHERE a.attnum > 0 AND NOT a.attisdropped AND t.oid IN (SELECT oid FROM coded) \
     UNION ALL SELECT 'open', 'function', p.proname::text, NULL FROM pg_proc p WHERE p.oid >= 16384 AND p.proname = ANY($3::text[]) \
-      AND NOT EXISTS (SELECT 1 FROM unnest(p.proargtypes::oid[]) AS g(t) WHERE g.t >= 16384) \
     UNION ALL SELECT 'open', 'operator', o.oprname::text, NULL FROM pg_operator o WHERE o.oid >= 16384 AND o.oprname = ANY($4::text[]) \
-      AND o.oprleft < 16384 AND o.oprright < 16384 \
+      AND (o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present)) AND (o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present)) \
     UNION ALL SELECT 'open', 'type', t.typname::text, NULL FROM pg_type t WHERE t.typname = ANY($5::text[]) AND t.oid IN (SELECT oid FROM coded) \
-    UNION ALL SELECT 'open', 'cast', c.oid::text, NULL FROM pg_cast c WHERE c.oid >= 16384 AND c.castmethod = 'f' AND c.castsource < 16384 AND c.casttarget < 16384 \
+    UNION ALL SELECT 'open', 'cast', c.oid::text, NULL FROM pg_cast c WHERE c.oid >= 16384 AND c.castmethod = 'f' \
+      AND ((c.castsource < 16384 AND c.casttarget < 16384) OR c.castsource IN (SELECT oid FROM present) OR c.casttarget IN (SELECT oid FROM present)) \
     UNION ALL SELECT 'name', k.code, k.field, k.name FROM ( \
       SELECT CASE WHEN i.indisexclusion THEN '23P01' ELSE '23505' END AS code, 'constraint' AS field, ic.relname::text AS name \
         FROM pg_index i JOIN w ON i.indrelid = w.oid JOIN pg_class ic ON ic.oid = i.indexrelid WHERE i.indisunique OR i.indisexclusion \

@@ -8,6 +8,10 @@ create trigger audited_audit before insert on audited for each row set new.id = 
 create function tax(n int) returns int deterministic return n * 2;
 create view taxed as select id, tax(age) as taxed from users;
 create view user_emails as select id, email from users;
+create table members (id int primary key);
+create table bans (member_id int primary key);
+create table ledger (id int primary key);
+create trigger members_ledger before delete on members for each row insert into ledger (id) values (old.id);
 insert into users (id, email, age) values (1, 'ada@example.com', 30);
 insert into posts (id, user_id, title) values (1, 1, 'hello');
 insert into comments (id, post_id) values (1, 1);
