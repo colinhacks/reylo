@@ -571,10 +571,12 @@ fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
     if grouped {
         return one_group(s, dialect, trust, catalog);
     }
-    if let Some(through) = cte_passthrough(s, dialect, trust, catalog) {
-        return through.map(|_| ());
+    // A WITH query of any number of rows may still be pinned to one by a key of its own.
+    match cte_passthrough(s, dialect, trust, catalog) {
+        Some(Ok(_)) => Ok(()),
+        Some(Err(why)) => one_row(s, dialect, trust, catalog).map_err(|_| why),
+        None => one_row(s, dialect, trust, catalog),
     }
-    one_row(s, dialect, trust, catalog)
 }
 
 /// `WITH x AS (…) SELECT … FROM x [WHERE …]`: the rows are the WITH query's, at most. The WITH
@@ -871,7 +873,20 @@ impl<'a> From<'a> {
     /// only items no row null-extends count, pinned by the WHERE or by inner joins: every row of
     /// the FROM then carries the same row of each, which is what grouping and DISTINCT ask.
     fn determined(&self, constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
+        self.determined_from(vec![false; self.items.len()], constant, dialect, trust, catalog)
+    }
+
+    /// [`From::determined`], with the items `done` names taken as determined from the start: with
+    /// one item alone, whether every row of it meets one row at most of each other item.
+    fn determined_from(&self, mut done: Vec<bool>, constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
         let n = self.items.len();
+        // The keys of each subquery and WITH query, which pin it as a unique key pins a table.
+        let keys: Vec<Vec<Key>> = (0..n)
+            .map(|i| match &self.items[i].source {
+                Source::Subquery(..) | Source::With(..) => self.item_keys(i, dialect, trust, catalog),
+                _ => Vec::new(),
+            })
+            .collect();
         // The items of one row at most per row of the rest (rule 4).
         let per_row: Vec<bool> = self
             .items
@@ -883,7 +898,6 @@ impl<'a> From<'a> {
                 _ => false,
             })
             .collect();
-        let mut done = vec![false; n];
         loop {
             let mut changed = false;
             for i in 0..n {
@@ -896,8 +910,8 @@ impl<'a> From<'a> {
                     Source::Relation(_) if per_row[i] => !constant && rest(),
                     Source::Relation(rv) => self.key_pinned(i, rv, &done, constant, catalog),
                     _ if constant && item.nullable => false,
-                    Source::With(cte, recursive) => !*recursive && with_query_at_most_one(cte, dialect, trust, &catalog.enclosed(&self.ctes)),
-                    Source::Subquery(sub, lateral) => (!*lateral || rest()) && at_most_one_select(sub, dialect, trust, &catalog.enclosed(&self.ctes)).is_ok(),
+                    Source::With(cte, recursive) => !*recursive && (with_query_at_most_one(cte, dialect, trust, &catalog.enclosed(&self.ctes)) || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
+                    Source::Subquery(sub, lateral) => (!*lateral || rest()) && (at_most_one_select(sub, dialect, trust, &catalog.enclosed(&self.ctes)).is_ok() || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Function(f) => !constant && rest() && one_row_function(f, catalog).is_ok(),
                     Source::Enclosing | Source::Opaque => false,
                 };
@@ -909,6 +923,79 @@ impl<'a> From<'a> {
             if !changed {
                 return done;
             }
+        }
+    }
+
+    /// Whether the equalities pin every column of one of `keys`, the keys of subquery or WITH
+    /// query `i` ([`output_keys`]), as [`From::key_pinned`] pins a table's.
+    fn derived_pinned(&self, i: usize, keys: &[Key], done: &[bool], constant: bool, catalog: &Catalog) -> bool {
+        let item = &self.items[i];
+        if item.renamed {
+            return false;
+        }
+        let usable = |c: &Conjunct| match &c.may_pin {
+            None => true,
+            Some(may) => may.contains(&i) && (!constant || (c.inner && !item.nullable)),
+        };
+        keys.iter().any(|key| {
+            !key.is_empty() && key.iter().all(|part| self.conjuncts.iter().any(|c| usable(c) && self.equates_as(c.node, i, &part.name, &part.relation, &part.column, done, catalog)))
+        })
+    }
+
+    /// The unique keys of item `i`'s rows, each column by the name the item gives it: a table's
+    /// own (a partial one where the WHERE restricts the table to its rows), and a subquery's or a
+    /// WITH query's from its statement ([`output_keys`]). A key over an expression is none here.
+    fn item_keys(&self, i: usize, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+        let item = &self.items[i];
+        if item.renamed {
+            return Vec::new();
+        }
+        match &item.source {
+            Source::Relation(rv) => {
+                let relation = catalog_name(rv);
+                let full = catalog.unique_keys.get(&relation).into_iter().flatten();
+                let partial = catalog.partial_keys.get(&relation).into_iter().flatten().filter(|(_, p)| self.restricts(i, p)).map(|(k, _)| k);
+                full.chain(partial)
+                    .filter(|k| !k.is_empty() && k.iter().all(|c| !c.starts_with('(')))
+                    .map(|k| k.iter().map(|c| Part { name: c.clone(), relation: relation.clone(), column: c.clone() }).collect())
+                    .collect()
+            }
+            Source::Subquery(sub, _) => output_keys(sub, dialect, trust, &catalog.enclosed(&self.ctes)),
+            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
+                Some(NodeEnum::SelectStmt(body)) => output_keys(body, dialect, trust, &catalog.enclosed(&self.ctes)),
+                _ => Vec::new(),
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// The table column behind column `column` of item `i`, passed through unchanged.
+    fn base(&self, i: usize, column: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Option<(String, String)> {
+        let item = &self.items[i];
+        if item.renamed {
+            return None;
+        }
+        match &item.source {
+            Source::Relation(rv) => Some((catalog_name(rv), column.to_string())),
+            Source::Subquery(sub, _) => output_base(sub, column, dialect, trust, &catalog.enclosed(&self.ctes)),
+            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
+                Some(NodeEnum::SelectStmt(body)) => output_base(body, column, dialect, trust, &catalog.enclosed(&self.ctes)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// The item and column a column reference of this level's select list reads: as
+    /// [`From::column`] places it, or a bare name over a FROM of one item.
+    fn place_column(&self, c: &protobuf::ColumnRef, catalog: &Catalog) -> Option<(usize, String)> {
+        if let Some(placed) = self.column(c, catalog) {
+            return Some(placed);
+        }
+        match c.fields.iter().filter_map(field_name).collect::<Vec<_>>().as_slice() {
+            // A table's own columns are placed above; a name it lacks is an enclosing query's.
+            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
+            _ => None,
         }
     }
 
@@ -960,15 +1047,21 @@ impl<'a> From<'a> {
     /// enclosing queries, and compares under the column's own equality. A bare name for the column is `i`'s: `i` has it, so had
     /// another item it too, the server would have refused the name as ambiguous.
     fn equates(&self, node: &protobuf::Node, i: usize, relation: &str, column: &str, done: &[bool], catalog: &Catalog) -> bool {
+        self.equates_as(node, i, column, relation, column, done, catalog)
+    }
+
+    /// [`From::equates`] for the column item `i` names `name`, which is `column` of `relation`.
+    #[allow(clippy::too_many_arguments)]
+    fn equates_as(&self, node: &protobuf::Node, i: usize, name: &str, relation: &str, column: &str, done: &[bool], catalog: &Catalog) -> bool {
         let Some(NodeEnum::AExpr(e)) = node.node.as_ref() else { return false };
         if !is_equality(e) {
             return false;
         }
         let (Some(l), Some(r)) = (e.lexpr.as_deref(), e.rexpr.as_deref()) else { return false };
         let alias = &self.items[i].alias;
-        let is_part = |side: &protobuf::Node| match column.strip_prefix('(') {
-            Some(_) => !self.mentions_merged(side) && matches_expression(side, column, alias),
-            None => self.own(side, alias).as_deref() == Some(column),
+        let is_part = |side: &protobuf::Node| match name.strip_prefix('(') {
+            Some(_) => !self.mentions_merged(side) && matches_expression(side, name, alias),
+            None => self.own(side, alias).as_deref() == Some(name),
         };
         [(l, r), (r, l)].into_iter().any(|(side, value)| {
             is_part(side)
@@ -1551,6 +1644,163 @@ fn aliases_here(sql: &str) -> std::collections::HashMap<String, String> {
 
 /// Which of the key proof's structural conditions a statement breaks, if it breaks one. A shape
 /// that returns a row per group or per arm is not a shape a unique key speaks for.
+/// One column of a key of a subquery's or a WITH query's rows: its name in their output, and the
+/// table column it passes through unchanged, whose type and equality an equated value must suit.
+#[derive(Clone, Debug)]
+struct Part {
+    name: String,
+    relation: String,
+    column: String,
+}
+
+type Key = Vec<Part>;
+
+/// The unique keys of a SELECT's rows: sets of its output columns no two of its rows share a value
+/// of every one of, NULL aside, which no equality matches. Read as a table's unique keys are, they
+/// pin a subquery or a WITH query to one row ([`From`], rule 1).
+///
+/// - A unique key of one of its FROM items, every column of it in the select list unchanged, when
+///   every other item is determined against that item ([`From::determined_from`]): each of its
+///   rows then meets one row at most of the rest, and the FROM is no more rows than it. A WHERE,
+///   a HAVING, a LIMIT or an OFFSET only removes rows, and a window function adds none. A LATERAL
+///   subquery is no such item: its rows are computed anew for each row of the rest, so two of them
+///   may share a key.
+/// - The GROUP BY's expressions, each a column in the select list: one row per group. Not under
+///   GROUPING SETS, ROLLUP or CUBE, which return a row per grouping set.
+/// - Under DISTINCT, the whole select list; under DISTINCT ON, its expressions.
+///
+/// None at all for a set operation, a VALUES list, or a set-returning call at this level, which
+/// repeats a row (`SELECT id, generate_series(1, 2) FROM posts`).
+fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() || s.into_clause.is_some() {
+        return Vec::new();
+    }
+    if s.group_clause.iter().any(|g| matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(_)))) {
+        return Vec::new();
+    }
+    if dialect == Dialect::Postgres {
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        if calls_at_this_level(at_this_level).set_returning(catalog).is_some() {
+            return Vec::new();
+        }
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return Vec::new();
+    }
+    // The output name of column `column` of item `i`, where the select list keeps it unchanged.
+    let output = |i: usize, column: &str| -> Option<String> {
+        s.target_list.iter().find_map(|target| {
+            let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return None };
+            let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return None };
+            let star = c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))));
+            if star {
+                // A USING or NATURAL join merges columns under one name.
+                let every = c.fields.len() == 1 && !from.natural && from.using.is_empty();
+                let its = c.fields.len() == 2 && c.fields.first().and_then(field_name) == Some(from.items[i].alias.as_str());
+                return (every || its).then(|| column.to_string());
+            }
+            let (j, own) = from.place_column(c, catalog)?;
+            (j == i && own == column).then(|| if r.name.is_empty() { own } else { r.name.clone() })
+        })
+    };
+    // The output column an expression of GROUP BY or DISTINCT ON is, with the table column behind it.
+    let part = |e: &protobuf::Node| -> Option<Part> {
+        let (c, name) = match e.node.as_ref()? {
+            NodeEnum::ColumnRef(c) => (c, None),
+            // `GROUP BY 2` groups by the second output column.
+            NodeEnum::AConst(k) => match &k.val {
+                Some(protobuf::a_const::Val::Ival(n)) => match s.target_list.get(usize::try_from(n.ival).ok()?.checked_sub(1)?)?.node.as_ref()? {
+                    NodeEnum::ResTarget(r) => match r.val.as_deref()?.node.as_ref()? {
+                        NodeEnum::ColumnRef(c) => (c, Some(r.name.clone()).filter(|n| !n.is_empty())),
+                        _ => return None,
+                    },
+                    _ => return None,
+                },
+                _ => return None,
+            },
+            _ => return None,
+        };
+        let (i, column) = from.place_column(c, catalog)?;
+        let name = match name {
+            Some(name) => name,
+            None => output(i, &column)?,
+        };
+        let (relation, column) = from.base(i, &column, dialect, trust, catalog)?;
+        Some(Part { name, relation, column })
+    };
+    let mut keys = Vec::new();
+    if !s.group_clause.is_empty() {
+        keys.extend(s.group_clause.iter().map(part).collect::<Option<Key>>());
+        return keys;
+    }
+    if !s.distinct_clause.is_empty() {
+        let plain = s.distinct_clause.iter().all(|d| d.node.is_none());
+        let key: Option<Key> = if plain {
+            s.target_list
+                .iter()
+                .map(|t| match t.node.as_ref()? {
+                    NodeEnum::ResTarget(r) => match r.val.as_deref()?.node.as_ref()? {
+                        NodeEnum::ColumnRef(c) if !c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => {
+                            let (i, column) = from.place_column(c, catalog)?;
+                            let (relation, base) = from.base(i, &column, dialect, trust, catalog)?;
+                            Some(Part { name: if r.name.is_empty() { column } else { r.name.clone() }, relation, column: base })
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .collect()
+        } else {
+            s.distinct_clause.iter().map(part).collect()
+        };
+        keys.extend(key);
+    }
+    let n = from.items.len();
+    for r in 0..n {
+        if matches!(from.items[r].source, Source::Subquery(_, true)) {
+            continue;
+        }
+        let mut seed = vec![false; n];
+        seed[r] = true;
+        if !from.determined_from(seed, false, dialect, trust, catalog).iter().all(|d| *d) {
+            continue;
+        }
+        for key in from.item_keys(r, dialect, trust, catalog) {
+            let mapped: Option<Key> = key.iter().map(|p| output(r, &p.name).map(|name| Part { name, relation: p.relation.clone(), column: p.column.clone() })).collect();
+            keys.extend(mapped);
+        }
+    }
+    keys
+}
+
+/// The table column behind output column `name` of a SELECT, passed through unchanged.
+fn output_base(s: &SelectStmt, name: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Option<(String, String)> {
+    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() {
+        return None;
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return None;
+    }
+    s.target_list.iter().find_map(|target| {
+        let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return None };
+        let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { return None };
+        if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
+            // `*` over one item, or `q.*`, keeps that item's column of the name.
+            let i = match c.fields.len() {
+                1 if from.items.len() == 1 && !from.natural && from.using.is_empty() => 0,
+                2 => from.items.iter().position(|it| Some(it.alias.as_str()) == c.fields.first().and_then(field_name))?,
+                _ => return None,
+            };
+            return from.base(i, name, dialect, trust, catalog);
+        }
+        let (i, column) = from.place_column(c, catalog)?;
+        let out = if r.name.is_empty() { column.as_str() } else { r.name.as_str() };
+        (out == name).then(|| from.base(i, &column, dialect, trust, catalog)).flatten()
+    })
+}
+
 fn not_key_shaped(s: &SelectStmt) -> Option<&'static str> {
     if s.larg.is_some() || s.rarg.is_some() {
         Some("a set operation (UNION, INTERSECT, EXCEPT) returns any number of rows")
@@ -2171,7 +2421,6 @@ mod tests {
             // USING equates columns the build does not read.
             ("select p.title from posts p join users u using (id) where p.id = $1", "of `u`"),
             // A derived table of many rows, and LATERAL before its outer row is pinned.
-            ("select x.title from (select * from posts) x where x.id = $1", "the subquery `x`"),
             ("select u.email, x.title from users u cross join lateral (select title from posts where author_id = u.id limit 1) x", "of `u`"),
             // A function in FROM, and a join with an alias of its own.
             ("select u.email from users u, generate_series(1, 2) g where u.id = $1", "`g` in the FROM"),
@@ -2646,7 +2895,6 @@ mod tests {
             // A WITH query of the same name is not the table.
             ("WITH todos AS (SELECT id FROM events) SELECT id FROM todos WHERE id = $1", "the WITH query `todos`"),
             // A derived table of any number of rows, and a UNION.
-            ("SELECT x.title FROM (SELECT * FROM todos) x WHERE x.id = $1", "the subquery `x`"),
             ("SELECT title FROM todos WHERE id = $1 UNION SELECT title FROM todos", "a set operation"),
             // A LIMIT above one, or one the build cannot read, bounds nothing by itself.
             ("SELECT title FROM todos WHERE owner_id = $1 LIMIT 2", "does not equate every column"),
