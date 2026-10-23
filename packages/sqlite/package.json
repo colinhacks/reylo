@@ -2,7 +2,7 @@
   "name": "@reylosql/sqlite",
   "version": "0.4.0",
   "private": true,
-  "description": "Reylo's analysis engine for SQLite: the WebAssembly artifact reylo loads to type .sql files against a SQLite database. Install it beside reylo, at reylo's version.",
+  "description": "Reylo's analysis engine for SQLite: the WebAssembly artifact and the build steps reylo loads to type .sql files against a SQLite database. Install it beside reylo, at reylo's version.",
   "license": "MIT",
   "author": "Colin McDonnell",
   "homepage": "https://reylo.dev/sqlite",
@@ -15,9 +15,12 @@
   "type": "module",
   "exports": {
     "./engine.wasm": "./engine.wasm",
+    "./tooling": "./tooling.ts",
     "./package.json": "./package.json"
   },
   "files": [
-    "engine.wasm"
+    "engine.wasm",
+    "tooling.js",
+    "d1-proxy.js"
   ]
 }

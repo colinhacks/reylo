@@ -7,10 +7,13 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { WASI as WasiClass } from "node:wasi";
+import { Unreachable } from "./connection.ts";
 import type { EngineType } from "./engine-type.ts";
 
 export type { EngineType } from "./engine-type.ts";
+export { reason, Unreachable } from "./connection.ts";
 export type Dialect = "postgres" | "sqlite" | "mysql";
 
 export type Diagnostic = { message: string; start: number; length: number; code: number };
@@ -74,14 +77,27 @@ type Response =
   | { status: "error"; message: string };
 
 /**
- * Each database's engine: an npm package that carries its artifact, `engine.wasm`, and nothing else.
- * Each is an optional peer of reylo's, at reylo's own version, so a project installs the ones for
- * its databases. Every one carries the same core, which lexes and reads the project file.
+ * Each database's engine: an npm package that carries its artifact, `engine.wasm`, reylo's
+ * build-time half (src/tooling.ts), and on Postgres and MySQL its describer with the driver inside
+ * (`describer`). Each is an optional peer of reylo's, at reylo's own version, so a project installs
+ * the ones for its databases. Every one carries the same core, which lexes and reads the project
+ * file.
  */
 export const ENGINE_PACKAGES: Record<Dialect, string> = { postgres: "@reylosql/postgres", sqlite: "@reylosql/sqlite", mysql: "@reylosql/mysql" };
 
-/** The version of reylo, which every engine package it loads must have. */
-const REYLO_VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+/**
+ * The version of reylo, which every engine package it loads must have: that of the package this
+ * module ships in, which is reylo's in this repository and an engine package's once built
+ * (src/tooling.ts). The two move together.
+ */
+const REYLO_VERSION: string = (() => {
+  for (const at of ["./package.json", "../package.json"]) {
+    try {
+      return JSON.parse(readFileSync(new URL(at, import.meta.url), "utf8")).version;
+    } catch {}
+  }
+  throw new Error("reylo's build steps cannot find the package.json of their own package");
+})();
 
 /** An engine reylo cannot load: none installed, another version than reylo's, or another database's. Reported as the project's error. */
 export class MissingEngine extends Error {
@@ -104,7 +120,7 @@ export class MissingEngine extends Error {
 
 /**
  * Where `dialect`'s engine is: the project's own install first, as its drivers are found
- * (src/describe.ts), then reylo's. `from` is where reylo looks after the project, its own module
+ * (`describer`, below), then reylo's. `from` is where reylo looks after the project, its own module
  * unless a test says otherwise.
  */
 export function enginePath(dialect: Dialect, projectDir: string, from: string = import.meta.url): string | undefined {
@@ -114,6 +130,25 @@ export function enginePath(dialect: Dialect, projectDir: string, from: string = 
     } catch {}
   }
   return undefined;
+}
+
+/**
+ * The half of `dialect`'s analysis that talks to its database, `@reylosql/<database>/describe`:
+ * packages/postgres/describe.ts and packages/mysql/describe.ts, each with its driver inside.
+ * Found as its engine is, and loaded once per process and file. SQLite has none: it prepares inside
+ * the engine and reads the database file through `node:sqlite`.
+ */
+export function describer<T>(dialect: "postgres" | "mysql", projectDir: string, from: string = import.meta.url): Promise<T> {
+  for (const base of [join(projectDir, "package.json"), from]) {
+    let path: string;
+    try {
+      path = createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/describe`);
+    } catch {
+      continue;
+    }
+    return import(pathToFileURL(path).href) as Promise<T>;
+  }
+  return Promise.reject(MissingEngine.of(dialect));
 }
 
 const engines = new Map<string, Promise<Engine>>();
@@ -261,24 +296,6 @@ export class Engine {
     }
     throw new Error("the analysis engine did not converge");
   }
-}
-
-/**
- * The database cannot be reached, as opposed to the server answering a statement with an error.
- * It ends the analysis at once instead of becoming an answer: asking again cannot succeed, and a
- * driver that backs off between attempts (postgres.js waits up to 20 s) would hold the transform
- * for minutes.
- */
-export class Unreachable extends Error {
-  constructor(cause: unknown) {
-    super(reason(cause), { cause });
-  }
-}
-
-/** A driver error as one line: a refused connection is an AggregateError with no message of its own. */
-export function reason(e: unknown): string {
-  const err = e as { message?: string; code?: string; errors?: { message?: string }[] } | undefined;
-  return err?.message || err?.errors?.map((x) => x.message).filter(Boolean).join("; ") || err?.code || String(e);
 }
 
 async function fulfil(need: Need, io: EngineIo): Promise<Answer> {

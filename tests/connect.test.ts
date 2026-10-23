@@ -1,17 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type AddressInfo } from "node:net";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { createServer, type AddressInfo } from "node:net";
 import { reason, Unreachable } from "../src/engine.ts";
-import { forPostgresJs, openPostgresDescriber } from "../src/describe.ts";
-import { openMysqlDescriber } from "../src/mysql-describe.ts";
+import { forPostgresJs, openPostgresDescriber } from "../packages/postgres/describe.ts";
+import { openMysqlDescriber } from "../packages/mysql/describe.ts";
 
-// The drivers are the labs' dependencies, never the package's own.
-const lab = (name: string) => fileURLToPath(new URL(`../lab/${name}`, import.meta.url));
-const installed = (dir: string, pkg: string) => existsSync(`${dir}/node_modules/${pkg}`) || `${dir} has no ${pkg} installed`;
 const unreachable = (r: PromiseSettledResult<unknown>, pattern: RegExp) => {
   assert.equal(r.status, "rejected");
   const e = (r as PromiseRejectedResult).reason;
@@ -25,21 +21,21 @@ test("reason reads a refused connection, an AggregateError with no message of it
   assert.equal(reason(Object.assign(new Error(""), { code: "ETIMEDOUT" })), "ETIMEDOUT");
 });
 
-test("postgres.js: a refused connection fails every call as Unreachable", { skip: installed(lab("basic"), "postgres") !== true && "lab/basic is not installed" }, async () => {
-  const d = await openPostgresDescriber(lab("basic"), "postgres://localhost:1/x");
+test("postgres.js: a refused connection fails every call as Unreachable", async () => {
+  const d = await openPostgresDescriber("postgres://localhost:1/x");
   const results = await Promise.allSettled([d.values("select 1"), d.describe("select 2"), d.query("select 3")]);
   for (const r of results) unreachable(r, /ECONNREFUSED/);
   await d.close();
 });
 
-test("postgres.js: calls queued behind a server that never answers fail together at the first timeout", { skip: installed(lab("basic"), "postgres") !== true && "lab/basic is not installed", timeout: 30_000 }, async () => {
+test("postgres.js: calls queued behind a server that never answers fail together at the first timeout", { timeout: 30_000 }, async () => {
   // A server that accepts the socket and never says anything: the connection times out, and
   // postgres.js would connect again for each queued call, one timeout after another. The client
   // resets the socket when it gives up, which the server's side hears as ECONNRESET.
   const silent = createServer((socket) => socket.on("error", () => {}));
   await new Promise<void>((resolve) => silent.listen(0, "127.0.0.1", resolve));
   try {
-    const d = await openPostgresDescriber(lab("basic"), `postgres://127.0.0.1:${(silent.address() as AddressInfo).port}/x`);
+    const d = await openPostgresDescriber(`postgres://127.0.0.1:${(silent.address() as AddressInfo).port}/x`);
     const t0 = Date.now();
     const results = await Promise.allSettled([d.values("select 1"), d.values("select 2"), d.values("select 3")]);
     for (const r of results) unreachable(r, /CONNECT_TIMEOUT/);
@@ -50,20 +46,9 @@ test("postgres.js: calls queued behind a server that never answers fail together
   }
 });
 
-test("mysql2: a refused connection is Unreachable", { skip: installed(lab("mysql"), "mysql2") !== true && "lab/mysql is not installed" }, async () => {
-  const [r] = await Promise.allSettled([openMysqlDescriber(lab("mysql"), "mysql://root@localhost:1/x")]);
+test("mysql2: a refused connection is Unreachable", async () => {
+  const [r] = await Promise.allSettled([openMysqlDescriber("mysql://root@localhost:1/x")]);
   unreachable(r!, /ECONNREFUSED/);
-});
-
-test("a project with no driver for its dialect is told which ones the type check reads", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "reylo-no-driver-"));
-  try {
-    writeFileSync(join(dir, "package.json"), '{ "name": "no-driver", "private": true }\n');
-    await assert.rejects(openPostgresDescriber(dir, "postgres://localhost:1/x"), /install "postgres" or "pg"/);
-    await assert.rejects(openMysqlDescriber(dir, "mysql://root@localhost:1/x"), /install "mysql2"/);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
 });
 
 test("postgres.js gets no channel_binding parameter, and one that requires binding gets a verified certificate", () => {
@@ -72,4 +57,38 @@ test("postgres.js gets no channel_binding parameter, and one that requires bindi
   assert.deepEqual(forPostgresJs("postgres://localhost/db?channel_binding=disable&application_name=x"), { url: "postgres://localhost/db?application_name=x" });
   assert.deepEqual(forPostgresJs("postgres://localhost/db?sslmode=disable"), { url: "postgres://localhost/db?sslmode=disable" });
   assert.deepEqual(forPostgresJs("postgres://localhost/db"), { url: "postgres://localhost/db" });
+});
+
+test("postgres.js gets libpq's TLS files as TLS options, not as server settings", () => {
+  const dir = mkdtempSync(join(tmpdir(), "reylo-tls-"));
+  writeFileSync(join(dir, "ca.pem"), "CA");
+  writeFileSync(join(dir, "c.pem"), "CERT");
+  writeFileSync(join(dir, "k.pem"), "KEY");
+  try {
+    const full = forPostgresJs(`postgres://h/db?sslmode=verify-full&sslrootcert=${dir}/ca.pem&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem&sslpassword=pw&application_name=x`);
+    assert.equal(full.url, "postgres://h/db?sslmode=verify-full&application_name=x");
+    const ssl = full.ssl as import("node:tls").ConnectionOptions;
+    assert.equal(String(ssl.ca), "CA");
+    assert.equal(String(ssl.cert), "CERT");
+    assert.equal(String(ssl.key), "KEY");
+    assert.equal(ssl.passphrase, "pw");
+    assert.equal(ssl.rejectUnauthorized, true);
+    assert.equal(ssl.checkServerIdentity, undefined);
+    const ca = forPostgresJs(`postgres://h/db?sslmode=verify-ca&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(ca.rejectUnauthorized, true);
+    assert.equal(typeof ca.checkServerIdentity, "function");
+    const required = forPostgresJs(`postgres://h/db?sslmode=require&sslrootcert=${dir}/ca.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(required.rejectUnauthorized, true);
+    assert.equal(typeof required.checkServerIdentity, "function");
+    assert.equal((forPostgresJs(`postgres://h/db?sslmode=require&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem`).ssl as import("node:tls").ConnectionOptions).rejectUnauthorized, false);
+    const system = forPostgresJs(`postgres://h/db?sslmode=verify-full&sslrootcert=system&sslcert=${dir}/c.pem&sslkey=${dir}/k.pem`).ssl as import("node:tls").ConnectionOptions;
+    assert.equal(system.ca, undefined);
+    assert.equal(String(system.cert), "CERT");
+    assert.equal(system.rejectUnauthorized, true);
+    assert.equal(system.checkServerIdentity, undefined);
+    assert.deepEqual(forPostgresJs(`postgres://h/db?sslmode=disable&sslrootcert=${dir}/ca.pem`), { url: "postgres://h/db?sslmode=disable" });
+    assert.deepEqual(forPostgresJs("postgres://h/db?sslmode=verify-full&sslrootcert=system"), { url: "postgres://h/db?sslmode=verify-full&sslrootcert=system" });
+  } finally {
+    rmSync(dir, { recursive: true });
+  }
 });

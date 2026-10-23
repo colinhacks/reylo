@@ -62,14 +62,18 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const source = sourceName(path);
   const text = withSqlcommenter(analysis.rewritten.sql, source);
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
+  // A typed JSON, structured or cast parameter is checked with reylo's `checks`, imported only where
+  // the statement has one, so that an app none of whose statements has one bundles none of them
+  // (src/checks.ts).
+  const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.type.kind === "rows");
   const code = [
-    `import { defineQuery } from "reylo";`,
+    `import { defineQuery${checked ? ", checks" : ""} } from "reylo";`,
     // `sql` is the statement as Reylo sends it to the database, `raw` the file as written; the
     // definition's own `sql` is the statement as written and its `text` the compiled one.
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry };

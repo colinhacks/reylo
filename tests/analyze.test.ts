@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
-import { notMysql } from "../src/mysql-describe.ts";
+import { connector, notMysql } from "../packages/mysql/describe.ts";
 import { defineQuery } from "../src/index.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
@@ -327,37 +327,33 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
   }
 });
 
-// A project whose mysql2 is a stand-in: its server answers version() with what the test sets, and
+// A project on MySQL whose server is a stand-in: it answers version() with what the test sets, and
 // every other query with one row.
-function fakeMysql(): { root: string; serve(version: string): { queries: string[]; ended: () => boolean } } {
+function fakeMysql(): { root: string; serve(version: string): { queries: string[]; ended: () => boolean; restore: () => void } } {
   const root = mkdtempSync(join(tmpdir(), "reylo-not-mysql-"));
   writeFileSync(join(root, "package.json"), "{}");
   // In .env, so that a build step, which reads the process's environment, finds it too.
   writeFileSync(join(root, ".env"), "DATABASE_URL=mysql://root@db.internal:3307/app\n");
-  mkdirSync(join(root, "node_modules", "mysql2"), { recursive: true });
-  writeFileSync(join(root, "node_modules", "mysql2", "package.json"), JSON.stringify({ name: "mysql2", version: "3.24.4" }));
-  writeFileSync(
-    join(root, "node_modules", "mysql2", "promise.js"),
-    `exports.createConnection = async () => {
-      const server = globalThis.reyloFakeMysql;
-      return {
-        on() {},
-        async query(q) {
-          const sql = typeof q === "string" ? q : q.sql;
-          server.queries.push(sql);
-          return [sql === "select version()" ? [[server.version]] : [["x"]], []];
-        },
-        async prepare() { throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true }); },
-        async end() { server.ended = true; },
-      };
-    };`,
-  );
   return {
     root,
     serve(version) {
       const server = { version, queries: [] as string[], ended: false };
-      (globalThis as any).reyloFakeMysql = server;
-      return { queries: server.queries, ended: () => server.ended };
+      const real = connector.createConnection;
+      connector.createConnection = async () => ({
+        on() {},
+        async query(q: string | { sql: string }) {
+          const sql = typeof q === "string" ? q : q.sql;
+          server.queries.push(sql);
+          return [sql === "select version()" ? [[server.version]] : [["x"]], []];
+        },
+        async prepare() {
+          throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
+        },
+        async end() {
+          server.ended = true;
+        },
+      });
+      return { queries: server.queries, ended: () => server.ended, restore: () => void (connector.createConnection = real) };
     },
   };
 }
@@ -391,6 +387,7 @@ test("a MariaDB server is refused by the type check, once per connection, with a
   } finally {
     if (saved !== undefined) process.env.DATABASE_URL = saved;
     for (const session of Session.opened()) await session.close();
+    server.restore();
   }
 });
 
@@ -406,6 +403,7 @@ test("a MySQL server is not refused: the type check goes on to read its schema",
     assert.equal(server.queries.length, 2);
   } finally {
     await session.close();
+    server.restore();
   }
 });
 

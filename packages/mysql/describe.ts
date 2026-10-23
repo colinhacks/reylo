@@ -1,14 +1,15 @@
-// MySQL describe through the project's mysql2: a server-side prepare reports
-// result columns with type codes, NOT NULL flags, charsets, display lengths and
-// the table each is a column of, and the server's type guess per `?` parameter,
-// without executing anything. The engine reads
-// those as they are (wiki/mysql-sources.md); this side only carries them, and
-// runs the engine's catalog queries.
-import { createRequire } from "node:module";
-import { loadDriver } from "./describe.ts";
-import { Unreachable, type MysqlDescribed } from "./engine.ts";
+// The JavaScript half of a MySQL analysis, which this package carries with mysql2 inside it
+// (scripts/build.ts bundles them into describe.js), and the analysis loads by its database
+// (src/engine.ts, `describer`): a server-side prepare reports result columns with type codes, NOT NULL flags,
+// charsets, display lengths and the table each is a column of, and the server's type guess per `?`
+// parameter, without executing anything. The engine reads those as they are
+// (wiki/mysql-sources.md); this side only carries them, and runs the engine's catalog queries.
+import mysql from "mysql2/promise";
+import { NotMysql, notMysql, Unreachable } from "../../src/connection.ts";
+import type { MysqlDescribed } from "../../src/engine.ts";
 
-export type { MysqlDescribed } from "./engine.ts";
+export type { MysqlDescribed } from "../../src/engine.ts";
+export { NotMysql, notMysql } from "../../src/connection.ts";
 
 export interface MysqlDescriber {
   describe(sql: string): Promise<MysqlDescribed>;
@@ -17,36 +18,10 @@ export interface MysqlDescriber {
   close(): Promise<void>;
 }
 
-/**
- * The server the type check was pointed at is not MySQL. MariaDB answers a prepare with every
- * parameter typed NULL and a JSON column as LONGTEXT, so its statements would be typed wrongly
- * (wiki/dialects.md): the type check refuses it before any statement is analyzed.
- */
-export class NotMysql extends Error {
-  readonly server: string;
-  constructor(server: string) {
-    super(`the server is ${server}, not MySQL`);
-    this.server = server;
-  }
-}
+/** How a connection is made: mysql2's, which the tests replace with a stand-in server. */
+export const connector = { createConnection: (url: string): Promise<unknown> => mysql.createConnection(url) };
 
-/** The server's name and version, when it is not MySQL: from version(), "11.8.2-MariaDB-ubu2404" on MariaDB. */
-export function notMysql(version: unknown): string | undefined {
-  const v = String(version ?? "");
-  const m = /^(?:5\.5\.5-)?(\d+(?:\.\d+)*).*mariadb/i.exec(v);
-  if (m) return `MariaDB ${m[1]}`;
-  return /mariadb/i.test(v) ? "MariaDB" : undefined;
-}
-
-export async function openMysqlDescriber(projectDir: string, url: string): Promise<MysqlDescriber> {
-  const require = createRequire(projectDir.replace(/\/?$/, "/package.json"));
-  let path: string;
-  try {
-    path = require.resolve("mysql2/promise");
-  } catch {
-    throw new Error(`No MySQL client found in ${projectDir}; install "mysql2".`);
-  }
-  const mysql = loadDriver(require, path) as { createConnection(url: string): Promise<any> };
+export async function openMysqlDescriber(url: string): Promise<MysqlDescriber> {
   // The server's answer to a statement carries a SQLSTATE; mysql2 marks `fatal` the errors that
   // end the connection (a refused socket, a handshake the server rejects, a lost connection).
   const rethrow = (e: unknown): never => {
@@ -54,7 +29,8 @@ export async function openMysqlDescriber(projectDir: string, url: string): Promi
     throw err?.sqlState && !err.fatal ? e : new Unreachable(e);
   };
   // mysql2's default connectTimeout is already 10 s, the Postgres describer's limit.
-  const conn = await mysql.createConnection(url).catch(rethrow);
+  // Typed loosely, as the prepare's metadata is: mysql2's declarations leave out what it carries.
+  const conn: any = await connector.createConnection(url).catch(rethrow);
   // A connection that drops while idle is reported as an event; unheard, it ends the process.
   conn.on("error", () => {});
   // One query per connection: a MariaDB server is refused before anything is analyzed on it. A

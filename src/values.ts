@@ -323,6 +323,24 @@ export class DecodeError extends TypeError {}
 /** Why a parameter's value cannot be bound: Reylo's error, naming the parameter. */
 export class ParameterError extends TypeError {}
 
+/**
+ * A string for a `timestamptz` names its zone: without one the server reads it in the session's
+ * TimeZone, which the driver or the server sets.
+ */
+export const zoned = /(?:\d:\d\d(?::\d\d(?:\.\d+)?)?(?:\s*(?:z|[+-]\d\d?(?::?\d\d){0,2})|\s+[a-z][\w/+-]*)|^-?infinity|^epoch|^now)(?:\s+bc)?$/i;
+
+/** A value as a message about a parameter names it: its kind, or a short form of itself. */
+export function describe(v: unknown): string {
+  if (v === null) return "null";
+  if (v instanceof Date) return "a Date";
+  if (Array.isArray(v)) return "an array";
+  if (v instanceof Uint8Array) return "binary data";
+  if (typeof v === "bigint") return `${v}n`;
+  if (typeof v === "string") return JSON.stringify(v.length > 60 ? `${v.slice(0, 57)}...` : v);
+  if (typeof v === "object") return "an object";
+  return String(v);
+}
+
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
 /** An integer as a number, refused where a number cannot hold it exactly. */

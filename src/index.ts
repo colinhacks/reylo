@@ -3,10 +3,12 @@
 import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import type { Structured } from "./rows.ts";
+import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns } from "./values.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
+export { checks } from "./checks.ts";
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
 export type Cardinality = "many" | "one" | "maybeOne" | "none";
@@ -103,6 +105,8 @@ export type QueryDefinition = {
   source?: string;
   cardinality?: Cardinality;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
+  /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
+  checks?: Checks;
 };
 
 export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(
@@ -126,6 +130,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,
+    checks: def.checks,
   };
   let compiled: string | undefined;
   const query: Query<Params, Row, C, D> = {

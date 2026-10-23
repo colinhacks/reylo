@@ -20,17 +20,16 @@ strict_params: true
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
 
 ```sh title=".env" tab="Postgres" tab-group="dialect"
-# or postgresql://; the type check uses your pg or postgres.js
+# or postgresql://
 DATABASE_URL=postgres://localhost:5432/app
 ```
 
 ```sh title=".env" tab="MySQL" tab-group="dialect"
-# the type check uses your mysql2
 DATABASE_URL=mysql://root@localhost:3306/app
 ```
 
 ```sh title=".env" tab="SQLite" tab-group="dialect"
-# or sqlite:; the path starts at package.json; no driver needed
+# or sqlite:; the path starts at package.json
 DATABASE_URL=file:./app.db
 ```
 

@@ -8,7 +8,9 @@
 // nobody chose is refused.
 import type { EngineType } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { ParameterError, postgresYear } from "./values.ts";
+import { describe, ParameterError, postgresYear, zoned } from "./values.ts";
+
+export { describe, zoned } from "./values.ts";
 
 type Dialect = "postgres" | "mysql" | "sqlite";
 export type RowsType = Extract<EngineType, { kind: "rows" }>;
@@ -18,12 +20,6 @@ export type RowField = RowsType["fields"][number];
 export type StructuredList = { readonly start: number; readonly end: number; readonly entries: readonly string[] };
 /** A structured parameter in insert position and the lists the run time writes again for the keys a call carries. */
 export type Structured = { readonly name: string; readonly lists: readonly StructuredList[] };
-
-/**
- * A string for a `timestamptz` names its zone: without one the server reads it in the session's
- * TimeZone, which the driver or the server sets.
- */
-export const zoned = /(?:\d:\d\d(?::\d\d(?:\.\d+)?)?(?:\s*(?:z|[+-]\d\d?(?::?\d\d){0,2})|\s+[a-z][\w/+-]*)|^-?infinity|^epoch|^now)(?:\s+bc)?$/i;
 
 // BigInt calls, not literals: a project that type-checks these sources for a target below ES2020
 // refuses a literal (TS2737), as lab/nextjs's ES2017 does.
@@ -367,15 +363,4 @@ export function variant(text: string, structured: Structured, fields: readonly R
     out = out.slice(0, list.start) + kept.join(", ") + out.slice(list.end);
   }
   return out;
-}
-
-export function describe(v: unknown): string {
-  if (v === null) return "null";
-  if (v instanceof Date) return "a Date";
-  if (Array.isArray(v)) return "an array";
-  if (v instanceof Uint8Array) return "binary data";
-  if (typeof v === "bigint") return `${v}n`;
-  if (typeof v === "string") return JSON.stringify(v.length > 60 ? `${v.slice(0, 57)}...` : v);
-  if (typeof v === "object") return "an object";
-  return String(v);
 }

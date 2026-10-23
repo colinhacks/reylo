@@ -33,7 +33,7 @@ function transform(_source: string, path: string, options: Options): { code: str
 // one line, since the values are JSON.
 function commonJs(path: string, code: string): string {
   const out = code
-    .replace(/^import \{ defineQuery \} from "reylo";$/m, `const { defineQuery } = require("reylo");`)
+    .replace(/^import \{ (defineQuery(?:, checks)?) \} from "reylo";$/m, (_, names: string) => `const { ${names} } = require("reylo");`)
     .replace(/^export const (\w+) = /gm, "const $1 = exports.$1 = ")
     .replace(/^export default /m, "exports.default = ");
   if (/^(import|export) /m.test(out)) throw new Error(`${path}: reylo's module has a shape reylo/jest cannot make CommonJS.`);

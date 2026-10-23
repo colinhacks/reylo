@@ -2,7 +2,7 @@
   "name": "@reylosql/postgres",
   "version": "0.4.0",
   "private": true,
-  "description": "Reylo's analysis engine for Postgres: the WebAssembly artifact reylo loads to type .sql files against a Postgres database. Install it beside reylo, at reylo's version.",
+  "description": "Reylo's analysis engine for Postgres: the WebAssembly artifact and the build steps reylo loads to type .sql files against a Postgres database. Install it beside reylo, at reylo's version.",
   "license": "MIT",
   "author": "Colin McDonnell",
   "homepage": "https://reylo.dev/postgres",
@@ -13,11 +13,19 @@
   },
   "bugs": "https://github.com/colinhacks/reylo/issues",
   "type": "module",
+  "devDependencies": {
+    "postgres": "3.4.9"
+  },
   "exports": {
     "./engine.wasm": "./engine.wasm",
+    "./tooling": "./tooling.ts",
+    "./describe": "./describe.ts",
     "./package.json": "./package.json"
   },
   "files": [
-    "engine.wasm"
+    "engine.wasm",
+    "tooling.js",
+    "describe.js",
+    "d1-proxy.js"
   ]
 }

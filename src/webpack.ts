@@ -3,7 +3,8 @@
 // (`src/turbopack.ts`), so that each host's config names its own host:
 //   webpack / Rspack:  module.rules: [{ test: /\.sql$/, use: "reylo/webpack" }]
 //   Turbopack:         turbopack: { rules: { "*.sql": { loaders: ["reylo/turbopack"], as: "*.js" } } }
-import { sqlModule } from "./loader.ts";
+import { dirname } from "node:path";
+import { tooling } from "./engine-package.ts";
 
 type LoaderContext = {
   resourcePath: string;
@@ -13,7 +14,7 @@ type LoaderContext = {
 
 export default function reyloSqlLoader(this: LoaderContext, source: string): void {
   const done = this.async();
-  sqlModule(this.resourcePath, source).then(
+  tooling(dirname(this.resourcePath)).then((t) => t.sqlModule(this.resourcePath, source)).then(
     ({ code, entry }) => {
       // A new analysis of the statement (the type check's, after a migration) rebuilds the module.
       this.addDependency(entry);

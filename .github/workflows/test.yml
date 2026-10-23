@@ -58,13 +58,18 @@ jobs:
           nub-version: "0.9.6"
           node-version: "24"
       - run: nub install --frozen-lockfile
+      # The driver each engine package describes through, which its build bundles into it.
+      - run: nub install --frozen-lockfile
+        working-directory: packages/postgres
+      - run: nub install --frozen-lockfile
+        working-directory: packages/mysql
       # The drivers the live tests load, and the Jest and Vitest projects the transformer's tests run.
       - run: nub install --frozen-lockfile
         working-directory: lab/drivers
       - run: nub install --frozen-lockfile
         working-directory: lab/jest
-      # Each lab reaches the package and its database's engine through links into this checkout, and its driver through lab/drivers (scripts/gates.sh, link_lab); nub install replaces node_modules, so the links come after it.
-      - name: Link the labs the tests load
+      # The Jest lab reaches the package and its database's engine through links into this checkout; nub install replaces node_modules, so the links come after it.
+      - name: Link the lab the tests load
         run: |
           link_lab () {
             local dir="lab/$1" db="$2"
@@ -74,8 +79,6 @@ jobs:
             ln -sfn "../../../../packages/$db" "$dir/node_modules/@reylosql/$db"
             for driver in "$@"; do ln -sfn "../../drivers/node_modules/$driver" "$dir/node_modules/$driver"; done
           }
-          link_lab basic postgres postgres
-          link_lab mysql mysql mysql2
           link_lab jest sqlite
       - run: nub run typecheck
       - name: Run the tests, none skipped

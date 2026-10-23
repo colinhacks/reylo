@@ -3,8 +3,8 @@
 // result. Bun's runtime plugin answers `import` through it; `require()` needs a synchronous
 // answer, which `reylo/register` gives.
 import { readFileSync } from "node:fs";
-import { releaseConnections } from "./analyze.ts";
-import { sqlModule } from "./loader.ts";
+import { dirname } from "node:path";
+import { releaseConnections, tooling } from "./engine-package.ts";
 
 type Build = {
   onLoad(options: { filter: RegExp }, callback: (args: { path: string }) => Promise<{ contents: string; loader: "js"; watchFiles?: string[] }>): void;
@@ -17,7 +17,7 @@ export default function reylo() {
     name: "reylo",
     setup(build: Build) {
       build.onLoad({ filter: /\.sql$/ }, async (args) => {
-        const { code, entry } = await sqlModule(args.path, readFileSync(args.path, "utf8"));
+        const { code, entry } = await (await tooling(dirname(args.path))).sqlModule(args.path, readFileSync(args.path, "utf8"));
         // In watch mode a new analysis of the statement (the type check's, after a migration) rebuilds the module.
         return { contents: code, loader: "js", watchFiles: [entry] };
       });

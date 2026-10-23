@@ -1,6 +1,6 @@
 //! The MySQL half: the host the engine's replay asks, and the seeding and the runs.
 //!
-//! The host answers as the loader's does (`src/mysql-describe.ts`, through mysql2). A describe is
+//! The host answers as the loader's does (`packages/mysql/describe.ts`, through mysql2). A describe is
 //! a server-side prepare, and the answer is the prepare's own column and parameter definitions:
 //! the protocol type code, the flags and the character set of each, and a column's display length
 //! and the table it is a column of, untouched. A catalog query is
