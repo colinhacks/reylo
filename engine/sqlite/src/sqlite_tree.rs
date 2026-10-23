@@ -140,6 +140,8 @@ pub struct From {
     /// A table-valued function's arguments (`json_each(:ids)`).
     pub args: Vec<Node>,
     pub cte: bool,
+    /// A recursive WITH query's read of itself, inside the query, which has no subquery of its own.
+    pub recursive: bool,
     pub view: bool,
     #[serde(rename = "virtual")]
     pub virtual_: bool,

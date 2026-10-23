@@ -233,7 +233,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     diagnostics.extend(crate::analysis::odd_pairs(sql, lexed, &constructors));
     // A parameter as a whole sort or group key is an error; the rest is typed all the same.
     diagnostics.extend(constant_keys(sql, lexed, &t));
-    let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()) };
+    let a = Analyzer { tree: &t, extras, skipping: &skipping, nullable_params: coalesced_params(&t, extras), level: std::cell::RefCell::new(Level::default()), shapes: std::cell::RefCell::new(HashMap::new()), recursion: std::cell::RefCell::new(Vec::new()), settled: std::cell::RefCell::new(HashMap::new()) };
     // A command (DDL, a PRAGMA, a transaction's control) has no tree to read: SQLite's prepare
     // says what it takes and returns, and nothing says where a column comes from, so each is of
     // no known type and may be NULL. One that returns no rows runs as a write does.
@@ -289,6 +289,19 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras) -> SqliteAnaly
     crate::analysis::clashes(sql, &mut analysis, &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
+}
+
+/// Whether a WITH query reads itself: an arm of its statement has a FROM item SQLite marks as the
+/// query's recursive read of itself.
+fn reads_itself(sel: &Sel) -> bool {
+    let mut arm = Some(sel);
+    while let Some(a) = arm {
+        if a.from.iter().any(|f| f.recursive) {
+            return true;
+        }
+        arm = a.prior.as_deref();
+    }
+    false
 }
 
 /// The tables the statement names, as SQLite resolved them, for the freshness facts: each table
@@ -749,6 +762,11 @@ struct Analyzer<'a> {
     level: std::cell::RefCell<Level>,
     /// The JSON each constructor builds, by its node ([`Analyzer::shape`]).
     shapes: std::cell::RefCell<HashMap<usize, Option<Type>>>,
+    /// The recursive WITH queries being settled, innermost last: each one's name and what its reads
+    /// of itself are taken to be ([`Analyzer::recursive_column`]).
+    recursion: std::cell::RefCell<Vec<(String, Vec<Fact>)>>,
+    /// Each recursive WITH query's settled columns, by its node.
+    settled: std::cell::RefCell<HashMap<usize, Vec<Fact>>>,
 }
 
 /// What one SELECT arm's WHERE and grouping prove of the expressions in its select list.
@@ -1214,6 +1232,46 @@ impl Analyzer<'_> {
         Fact { ty, non_null: facts.iter().all(|(_, f)| f.non_null) }
     }
 
+    /// Column `i` of a recursive WITH query, which reads itself, so that its columns are a fixed
+    /// point, and the greatest one is sound. Each column is first taken to be non-null and of the
+    /// type its first arm gives it, for the query's reads of itself; the query is typed under that
+    /// assumption; a column that comes out nullable, or of another type, is taken so, and the query
+    /// is typed again, until nothing changes. What survives holds by induction over the recursion:
+    /// the first arm's rows are so on their own account, each later row given the rows it was
+    /// computed from, and a UNION's column is non-null only where every arm's is. A query that does
+    /// not settle within a few rounds proves nothing.
+    fn recursive_column(&self, name: &str, sub: &Sel, i: usize, scope: &ScopeStack) -> Fact {
+        let key = sub as *const Sel as usize;
+        if let Some(facts) = self.settled.borrow().get(&key) {
+            return facts.get(i).cloned().unwrap_or_else(Fact::unknown);
+        }
+        let mut first = sub;
+        while let Some(prior) = first.prior.as_deref() {
+            first = prior;
+        }
+        let width = first.columns.len();
+        let mut inner = scope.clone();
+        inner.push(&first.from);
+        let outer = self.level.replace(level_of(first, self.extras));
+        let mut assumed: Vec<Fact> = first.columns.iter().map(|c| Fact { ty: self.type_of(&c.expr, &inner).ty, non_null: true }).collect();
+        self.level.replace(outer);
+        let mut settled = None;
+        for _ in 0..=width + 1 {
+            self.recursion.borrow_mut().push((name.to_string(), assumed.clone()));
+            let got: Vec<Fact> = (0..width).map(|k| self.select_column(sub, k, scope)).collect();
+            self.recursion.borrow_mut().pop();
+            if got.iter().zip(&assumed).all(|(g, a)| g.ty == a.ty && g.non_null == a.non_null) {
+                settled = Some(got);
+                break;
+            }
+            assumed = got.iter().zip(&assumed).map(|(g, a)| Fact { ty: g.ty.clone(), non_null: g.non_null && a.non_null }).collect();
+        }
+        let facts = settled.unwrap_or_else(|| vec![Fact::unknown(); width]);
+        let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
+        self.settled.borrow_mut().insert(key, facts);
+        fact
+    }
+
     /// A column reference: through the cursor to a subquery's column, or the table column itself.
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // A strict WHERE test on the column, or on any column of its outer-joined item, keeps
@@ -1224,8 +1282,15 @@ impl Analyzer<'_> {
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
-                if let Some(sub) = &f.subquery {
-                    let inner = self.select_column(sub, n.index.max(0) as usize, scope);
+                let index = n.index.max(0) as usize;
+                let inner = match (&f.subquery, f.table.as_deref()) {
+                    (Some(sub), Some(name)) if f.cte && reads_itself(sub) => Some(self.recursive_column(name, sub, index, scope)),
+                    (Some(sub), _) => Some(self.select_column(sub, index, scope)),
+                    // A recursive WITH query's read of itself, inside the query: what it is taken to be.
+                    (None, Some(name)) if f.recursive => self.recursion.borrow().iter().rev().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, facts)| facts.get(index).cloned().unwrap_or_else(Fact::unknown)),
+                    _ => None,
+                };
+                if let Some(inner) = inner {
                     return Fact { ty: inner.ty, non_null: narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced)) };
                 }
                 break;
@@ -3263,6 +3328,23 @@ mod tests {
         assert_eq!(col(&a, "id"), ("integer".into(), false));
         assert_eq!(col(&a, "name"), ("text".into(), false));
         assert_eq!(param(&a, "id"), "integer");
+    }
+
+    #[test]
+    fn a_recursive_with_query_is_typed_through_its_reads_of_itself() {
+        // Each column holds for every round: the first arm's rows on their own, each later row
+        // given the row it was computed from.
+        let a = analysis("with recursive t (id, depth) as (select id, 0 from users union all select p.id, t.depth + 1 from posts p join t on p.user_id = t.id) select id, depth from t");
+        assert_eq!(col(&a, "id"), ("integer".into(), false));
+        assert_eq!(col(&a, "depth"), ("integer".into(), false));
+        // A round that reads a nullable column, or NULL, leaves the column nullable.
+        let a = analysis("with recursive t (id, body) as (select id, title from posts union all select p.id, p.body from posts p join t on p.user_id = t.id) select id, body from t");
+        assert_eq!(col(&a, "body"), ("text".into(), true));
+        let a = analysis("with recursive t (n, x) as (select 1, 'a' union all select n + 1, null from t where n < 3) select n, x from t");
+        assert_eq!(col(&a, "x"), ("text".into(), true));
+        // A table named as a WITH query that only reads it is that table, not a read of itself.
+        let a = analysis("with users as (select id, email from main.users) select id, email from users");
+        assert_eq!(col(&a, "email"), ("text".into(), true));
     }
 
     #[test]
