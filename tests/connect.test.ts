@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type AddressInfo } from "node:net";
 import { reason, Unreachable } from "../src/engine.ts";
-import { forPostgresJs, openPostgresDescriber } from "../src/describe.ts";
-import { openMysqlDescriber } from "../src/mysql-describe.ts";
+import { forPostgresJs, openPostgresDescriber } from "../packages/postgres/describe.ts";
+import { openMysqlDescriber } from "../packages/mysql/describe.ts";
 
 const unreachable = (r: PromiseSettledResult<unknown>, pattern: RegExp) => {
   assert.equal(r.status, "rejected");

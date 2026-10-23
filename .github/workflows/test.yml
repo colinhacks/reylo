@@ -58,6 +58,11 @@ jobs:
           nub-version: "0.9.6"
           node-version: "24"
       - run: nub install --frozen-lockfile
+      # The driver each engine package describes through, which its build bundles into it.
+      - run: nub install --frozen-lockfile
+        working-directory: packages/postgres
+      - run: nub install --frozen-lockfile
+        working-directory: packages/mysql
       # The drivers the live tests load, and the Jest and Vitest projects the transformer's tests run.
       - run: nub install --frozen-lockfile
         working-directory: lab/drivers

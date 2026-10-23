@@ -1,8 +1,9 @@
-// The JavaScript half of a Postgres analysis: Parse/Describe and the engine's catalog queries,
-// through postgres.js, which the Postgres engine's package carries inside it, so the type check
-// describes the same way whatever driver the app runs on.
+// The JavaScript half of a Postgres analysis, which this package carries with postgres.js inside
+// it (scripts/build.ts bundles them into describe.js): Parse/Describe and the engine's catalog
+// queries, so the type check describes the same way whatever driver the app runs on. The analysis
+// loads it by its database (src/engine.ts, `describer`).
 import postgres from "postgres";
-import { Unreachable } from "./engine.ts";
+import { Unreachable } from "../../src/connection.ts";
 
 export type Described = {
   params: { oid: number }[];

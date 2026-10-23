@@ -7,10 +7,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { anyEngine, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
+import { anyEngine, describer, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
 import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
-import { openPostgresDescriber } from "./describe.ts";
-import { NotMysql, openMysqlDescriber } from "./mysql-describe.ts";
+import { NotMysql } from "./connection.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
@@ -317,6 +316,7 @@ export class Session {
     const { dialect, url, root } = this.project;
     this.#io ??= (async (): Promise<Io> => {
       if (dialect === "mysql") {
+        const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
         const m = await openMysqlDescriber(url!);
         return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
       }
@@ -336,6 +336,7 @@ export class Session {
           drivers,
         };
       }
+      const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
       const d = await openPostgresDescriber(url!);
       return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
     })();

@@ -49,8 +49,6 @@
     "@reylosql/sqlite": "link:packages/sqlite",
     "@types/node": "^26.6.1",
     "esbuild": "^0.28.2",
-    "mysql2": "3.24.4",
-    "postgres": "3.4.9",
     "typescript": "^7.1.0-dev.20260918.1"
   },
   "peerDependencies": {

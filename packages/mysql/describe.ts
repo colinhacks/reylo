@@ -1,39 +1,21 @@
-// The JavaScript half of a MySQL analysis, through mysql2, which the MySQL engine's package carries
-// inside it: a server-side prepare reports result columns with type codes, NOT NULL flags,
+// The JavaScript half of a MySQL analysis, which this package carries with mysql2 inside it
+// (scripts/build.ts bundles them into describe.js), and the analysis loads by its database
+// (src/engine.ts, `describer`): a server-side prepare reports result columns with type codes, NOT NULL flags,
 // charsets, display lengths and the table each is a column of, and the server's type guess per `?`
 // parameter, without executing anything. The engine reads those as they are
 // (wiki/mysql-sources.md); this side only carries them, and runs the engine's catalog queries.
 import mysql from "mysql2/promise";
-import { Unreachable, type MysqlDescribed } from "./engine.ts";
+import { NotMysql, notMysql, Unreachable } from "../../src/connection.ts";
+import type { MysqlDescribed } from "../../src/engine.ts";
 
-export type { MysqlDescribed } from "./engine.ts";
+export type { MysqlDescribed } from "../../src/engine.ts";
+export { NotMysql, notMysql } from "../../src/connection.ts";
 
 export interface MysqlDescriber {
   describe(sql: string): Promise<MysqlDescribed>;
   /** Rows as arrays of values, in column order. */
   values(sql: string, params: unknown[]): Promise<unknown[][]>;
   close(): Promise<void>;
-}
-
-/**
- * The server the type check was pointed at is not MySQL. MariaDB answers a prepare with every
- * parameter typed NULL and a JSON column as LONGTEXT, so its statements would be typed wrongly
- * (wiki/dialects.md): the type check refuses it before any statement is analyzed.
- */
-export class NotMysql extends Error {
-  readonly server: string;
-  constructor(server: string) {
-    super(`the server is ${server}, not MySQL`);
-    this.server = server;
-  }
-}
-
-/** The server's name and version, when it is not MySQL: from version(), "11.8.2-MariaDB-ubu2404" on MariaDB. */
-export function notMysql(version: unknown): string | undefined {
-  const v = String(version ?? "");
-  const m = /^(?:5\.5\.5-)?(\d+(?:\.\d+)*).*mariadb/i.exec(v);
-  if (m) return `MariaDB ${m[1]}`;
-  return /mariadb/i.test(v) ? "MariaDB" : undefined;
 }
 
 /** How a connection is made: mysql2's, which the tests replace with a stand-in server. */

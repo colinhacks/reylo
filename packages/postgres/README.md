@@ -1,6 +1,6 @@
 # @reylosql/postgres
 
-Reylo's analysis engine for Postgres, built to WebAssembly: `engine.wasm`, which [reylo](https://www.npmjs.com/package/reylo) loads to type the `.sql` files of a project whose database is Postgres. It is the engine alone; the type check, the bundler plugins, the run time and the CLI are reylo's.
+Reylo's analysis engine for Postgres, which [reylo](https://www.npmjs.com/package/reylo) loads to type the `.sql` files of a project whose database is Postgres. It holds the engine, built to WebAssembly, and the build steps that run it, which connect to Postgres through postgres.js, carried inside the package. The run time and the entry points a project names are reylo's, which runs the type check, the bundler plugins and the CLI from this package.
 
 ```sh
 npm install reylo

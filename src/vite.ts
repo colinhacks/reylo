@@ -8,8 +8,7 @@
 // reached `load`, and `.run` was undefined on the string it gave (examples/cloudflare-workers).
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { releaseConnections } from "./analyze.ts";
-import { sqlModule } from "./loader.ts";
+import { releaseConnections, tooling } from "./engine-package.ts";
 
 export default function reylo() {
   return {
@@ -29,7 +28,7 @@ export default function reylo() {
     },
     async load(this: { addWatchFile(id: string): void }, id: string) {
       if (!id.endsWith(".sql")) return null;
-      const { code, entry } = await sqlModule(id, readFileSync(id, "utf8"));
+      const { code, entry } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
       // A new analysis of the statement (the type check's, after a migration) rebuilds the module.
       this.addWatchFile(entry);
       return { code, map: null };

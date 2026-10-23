@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
-import { connector, notMysql } from "../src/mysql-describe.ts";
+import { connector, notMysql } from "../packages/mysql/describe.ts";
 import { defineQuery } from "../src/index.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
