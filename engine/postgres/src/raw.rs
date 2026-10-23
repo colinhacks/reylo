@@ -65,8 +65,8 @@ pub struct Parsed {
 
 impl Parsed {
     /// The tree with the tables and functions it names, which `pg_query` lists by walking it.
-    pub fn listed(&self) -> pg_query::ParseResult {
-        pg_query::ParseResult::new(self.protobuf.clone(), String::new())
+    pub fn listed(self) -> pg_query::ParseResult {
+        pg_query::ParseResult::new(self.protobuf, String::new())
     }
 }
 

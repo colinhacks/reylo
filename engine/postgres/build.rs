@@ -1,5 +1,6 @@
 // The hash of this crate's sources, which its fingerprint combines with core's (`src/lib.rs`).
-// `vendor/` is the patch to libpg_query, which sets how deeply a statement may nest.
+// `vendor/` is the patch to libpg_query, which sets how deeply a statement may nest, and `csrc/`
+// the C that runs its deparser.
 //
 // And the reader of libpg_query's parse tree (`src/raw.rs`): bindings to the C node structs, and
 // a converter from each to the `pg_query::protobuf` struct libpg_query would have encoded it as,
@@ -13,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    reylo_engine_build::emit("REYLO_ENGINE_POSTGRES_HASH", &["build.rs", "src", "vendor"]);
+    reylo_engine_build::emit("REYLO_ENGINE_POSTGRES_HASH", &["build.rs", "src", "csrc", "vendor"]);
     let root = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let crate_dir = root.join(".patched/pg_query");
     let lib = crate_dir.join("libpg_query");
@@ -26,7 +27,6 @@ fn main() {
     fs::write(out.join("raw_convert.rs"), defs.converter()).unwrap();
     fs::write(out.join("raw_build.rs"), defs.builder()).unwrap();
     // libpg_query's deparser over nodes, with its errors caught in C (`csrc/deparse.c`).
-    println!("cargo:rerun-if-changed=csrc");
     cc::Build::new()
         .file(root.join("csrc/deparse.c"))
         .include(lib.join("src/postgres/include"))
