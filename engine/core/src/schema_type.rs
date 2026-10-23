@@ -1336,6 +1336,103 @@ fn emit_object(o: &Obj) -> Value {
     Value::Object(out)
 }
 
+/// What a value a canonical schema ([`type_schema`]) admits holds at `path`, read key by key as
+/// Postgres's `->` and `#>` read an object: the canonical schema of the values found there, and
+/// whether one is found for certain, every step landing on an object that holds its key. A step
+/// on anything else finds no value, which the database answers with SQL NULL, so it narrows
+/// nothing but that certainty. With `indexes`, a key the database reads as an integer reads an
+/// array's element instead (`#>`, whose key Postgres reads with `strtoint`: leading whitespace, a
+/// sign, then digits, a negative one counting from the end), which this reading does not follow:
+/// `None` where a step may land on an array then, and where the schema holds anything but the
+/// canonical vocabulary.
+pub fn at_path(schema: &Value, path: &[&str], indexes: bool) -> Option<(Value, bool)> {
+    let mut at = schema.clone();
+    let mut found = true;
+    for key in path {
+        let (next, certain) = at_key(&at, key, indexes)?;
+        at = next;
+        found &= certain;
+    }
+    Some((at, found))
+}
+
+/// One step of [`at_path`].
+fn at_key(schema: &Value, key: &str, indexes: bool) -> Option<(Value, bool)> {
+    let digits = key.trim_start_matches([' ', '\t', '\n', '\x0b', '\x0c', '\r']);
+    let digits = digits.strip_prefix(['+', '-']).unwrap_or(digits);
+    let index = indexes && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+    let map = match schema {
+        Value::Bool(true) => return (!index).then_some((Value::Bool(true), false)),
+        Value::Bool(false) => return Some((Value::Bool(false), false)),
+        Value::Object(map) if map.is_empty() => return (!index).then_some((Value::Bool(true), false)),
+        Value::Object(map) => map,
+        _ => return None,
+    };
+    if let Some(Value::Array(members)) = map.get("anyOf") {
+        let mut found = !members.is_empty();
+        let mut values = Vec::new();
+        for member in members {
+            let (value, certain) = at_key(member, key, indexes)?;
+            found &= certain;
+            values.push(value);
+        }
+        return Some((any_of(values), found));
+    }
+    if map.contains_key("not") {
+        return None;
+    }
+    if let Some(Value::Array(values)) = map.get("enum") {
+        let mut found = !values.is_empty();
+        let mut held: Vec<Value> = Vec::new();
+        for value in values {
+            match value {
+                Value::Object(fields) => match fields.get(key) {
+                    Some(v) if !held.iter().any(|h| json_eq(h, v)) => held.push(v.clone()),
+                    Some(_) => {}
+                    None => found = false,
+                },
+                Value::Array(_) if index => return None,
+                _ => found = false,
+            }
+        }
+        return Some((if held.is_empty() { Value::Bool(false) } else { json!({ "enum": held }) }, found));
+    }
+    let kinds: Vec<&str> = match map.get("type") {
+        Some(Value::String(t)) => vec![t.as_str()],
+        Some(Value::Array(ts)) => ts.iter().filter_map(Value::as_str).collect(),
+        _ => return (!index).then_some((Value::Bool(true), false)),
+    };
+    if index && kinds.contains(&"array") {
+        return None;
+    }
+    if !kinds.contains(&"object") {
+        return Some((Value::Bool(false), false));
+    }
+    let declared = map.get("properties").and_then(Value::as_object).and_then(|p| p.get(key));
+    let value = declared.or_else(|| map.get("additionalProperties")).cloned().unwrap_or(Value::Bool(true));
+    let required = map.get("required").and_then(Value::as_array).is_some_and(|r| r.iter().any(|k| k.as_str() == Some(key)));
+    Some((value, kinds.len() == 1 && required))
+}
+
+/// The canonical union of `members`: `true` when one admits anything, none of the `false` ones.
+fn any_of(members: Vec<Value>) -> Value {
+    let mut kept: Vec<Value> = Vec::new();
+    for member in members {
+        match member {
+            Value::Bool(true) => return Value::Bool(true),
+            Value::Object(ref m) if m.is_empty() => return Value::Bool(true),
+            Value::Bool(false) => {}
+            member if kept.contains(&member) => {}
+            member => kept.push(member),
+        }
+    }
+    match kept.len() {
+        0 => Value::Bool(false),
+        1 => kept.pop().unwrap_or(Value::Bool(false)),
+        _ => json!({ "anyOf": kept }),
+    }
+}
+
 /// Whether `value` is one of the values a canonical schema ([`type_schema`]) admits.
 pub fn admits(schema: &Value, value: &Value) -> bool {
     let map = match schema {
@@ -1596,6 +1693,53 @@ mod tests {
         assert_eq!(resolve("http://a/b/c/d;p?q", "/./g").as_deref(), Some("http://a/g"));
         assert_eq!(resolve(DEFAULT_BASE, "#/$defs/a").as_deref(), Some("reylo:///schema.json#/$defs/a"));
         assert_eq!(resolve("relative", "g"), None);
+    }
+
+    #[test]
+    fn a_path_of_keys_reads_the_object_at_each_step() {
+        let doc = type_schema(
+            &json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "size": {"type": ["integer", "null"]},
+                    "owner": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+                    "meta": {"type": ["object", "null"], "properties": {"note": {"type": "string"}}, "required": ["note"]},
+                    "tags": {"type": "array", "items": {"type": "string"}}
+                },
+                "required": ["name", "size", "owner"],
+                "additionalProperties": {"type": "boolean"}
+            }),
+            &SPEC,
+        );
+        let at = |path: &[&str], indexes: bool| at_path(&doc, path, indexes);
+        // A required key of an object, and one below it: there for certain.
+        assert_eq!(at(&["name"], false), Some((json!({"type": "string"}), true)));
+        assert_eq!(at(&["owner", "id"], false), Some((json!({"type": "integer"}), true)));
+        // A JSON null is a value the key holds.
+        assert_eq!(at(&["size"], false), Some((json!({"type": ["integer", "null"]}), true)));
+        // A key left optional, one under a value that may be null, and one no property names.
+        assert_eq!(at(&["tags"], false), Some((json!({"type": "array", "items": {"type": "string"}}), false)));
+        assert_eq!(at(&["meta", "note"], false), Some((json!({"type": "string"}), false)));
+        assert_eq!(at(&["other"], false), Some((json!({"type": "boolean"}), false)));
+        // A key on a string or an array finds nothing; with indexes, a whole number on an array
+        // reads an element, which is not followed.
+        assert_eq!(at(&["name", "x"], false), Some((json!(false), false)));
+        assert_eq!(at(&["tags", "0"], false), Some((json!(false), false)));
+        assert_eq!(at(&["tags", "0"], true), None);
+        // As Postgres reads an index: a sign, or whitespace before it, and a negative one too.
+        for key in ["-1", "+0", " 1", "\t-2"] {
+            assert_eq!(at(&["tags", key], true), None, "{key:?}");
+        }
+        assert_eq!(at(&["tags", "1 "], true), Some((json!(false), false)));
+        assert_eq!(at(&[], false), Some((doc.clone(), true)));
+        // A union reads each member; an enum of objects, the values each holds.
+        let union = json!({"anyOf": [{"type": "object", "properties": {"t": {"enum": ["a"]}}, "required": ["t"], "additionalProperties": false}, {"type": "object", "properties": {"t": {"enum": ["b"]}}, "required": ["t"], "additionalProperties": false}]});
+        assert_eq!(at_path(&union, &["t"], false), Some((json!({"anyOf": [{"enum": ["a"]}, {"enum": ["b"]}]}), true)));
+        assert_eq!(at_path(&union, &["u"], false), Some((json!(false), false)));
+        assert_eq!(at_path(&json!({"enum": [{"k": 1}, {"k": 1}, {"j": 2}]}), &["k"], false), Some((json!({"enum": [1]}), false)));
+        assert_eq!(at_path(&json!(true), &["k"], false), Some((json!(true), false)));
+        assert_eq!(at_path(&json!({"not": {"type": "string"}}), &["k"], false), None);
     }
 
     #[test]

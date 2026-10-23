@@ -333,14 +333,43 @@ returning id
 
 </Inferred>
 
+**Keys read from the column**
+
+A key read with `->`, `->>`, `#>` or `#>>` and a literal key is typed by the schema, and is non-null where the schema requires the key:
+
+<Inferred>
+
+```sql schema
+create extension if not exists pg_jsonschema;
+
+create table events (
+  id bigserial primary key,
+  payload jsonb not null check (jsonb_matches_schema('{
+    "type": "object",
+    "properties": {
+      "kind": { "enum": ["click", "key"] },
+      "x": { "type": "integer" }
+    },
+    "required": ["kind"]
+  }', payload))
+);
+```
+
+```sql file="pg_json_keys.sql"
+select payload ->> 'kind' as kind, payload -> 'x' as x
+from events
+```
+
+</Inferred>
+
 **Where it doesn't**
 
-An expression on the column, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `unknown`.
+Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `unknown`.
 
 <Inferred>
 
 ```sql file="pg_json_unknown.sql"
-select payload -> 'x' as x, to_jsonb(kind) as k
+select payload || '{"seen": true}' as merged, to_jsonb(kind) as k
 from events
 ```
 
