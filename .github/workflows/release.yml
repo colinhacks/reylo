@@ -92,6 +92,11 @@ jobs:
           echo "npm $v at $(command -v npm)"
 
       - run: nub install --frozen-lockfile
+      # The driver each engine package describes through, which its build bundles into its describe.js.
+      - run: nub install --frozen-lockfile
+        working-directory: packages/postgres
+      - run: nub install --frozen-lockfile
+        working-directory: packages/mysql
       # dist/reylo, dist/postgres, dist/sqlite and dist/mysql; the build refuses an engine whose version is not reylo's
       - run: nub run build
 
