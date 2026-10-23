@@ -156,7 +156,7 @@ test("Postgres: a field that reads a column as it is carries the column's commen
     assert.equal(types(out["adults.sql"]!).row, "{\n  /** An adult's id */\n  id: number;\n  /** Age (in years) */\n  years: number;\n}");
     // A parameter written to a column carries the column's comment.
     assert.deepEqual(types(out["update.sql"]!), {
-      params: "{\n  /** Age (in years) */\n  age: number | null;\n  /** Free text; a *\\/ ends nothing */\n  note: string | null;\n  id: number;\n}",
+      params: "{\n  /** Age (in years) */\n  age?: number | null;\n  /** Free text; a *\\/ ends nothing */\n  note?: string | null;\n  id: number;\n}",
       row: "{\n  /** Age (in years) */\n  age: number | null;\n}",
     });
 
@@ -209,7 +209,7 @@ test("MySQL: a field that reads a column as it is carries the column's comment, 
     // Through a derived table MySQL names the base table beside the derived column's own name,
     // here another column of it: no comment.
     assert.equal(types(out["derived.sql"]!).row, "{ age: number }");
-    assert.equal(types(out["update.sql"]!).params, "{\n  /** Age (in years) */\n  age: number | null;\n  /** The user's id */\n  id: number;\n}");
+    assert.equal(types(out["update.sql"]!).params, "{\n  /** Age (in years) */\n  age?: number | null;\n  /** The user's id */\n  id: number;\n}");
 
     await db.query("alter table users modify age int comment 'Age, in whole years'");
     const again = await transform(root, { "user.sql": files["user.sql"] });

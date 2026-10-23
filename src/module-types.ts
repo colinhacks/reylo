@@ -102,8 +102,9 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
   const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);
-  // A typed JSON parameter whose schema has a `default` may be left out (wiki/typed-json-params.md).
-  const optional = new Set(analysis.params.filter((q) => q.schema !== null && typeof q.schema === "object" && "default" in q.schema).map((q) => q.name));
+  // A parameter that takes null may be left out, which binds NULL; so may a typed JSON parameter
+  // whose schema has a `default` (wiki/typed-json-params.md).
+  const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === "object" && "default" in q.schema)).map((q) => q.name));
   const paramTypes = typed.map(([name, type, comment]) => [`${ident(name)}${optional.has(name) ? "?" : ""}: ${type}`, comment] as const);
   return {
     diagnostics,

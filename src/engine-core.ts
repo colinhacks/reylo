@@ -12,7 +12,7 @@ export type Diagnostic = { message: string; start: number; length: number; code:
 
 export type Analysis = {
   kind: string;
-  /** `nullable`: the statement lets the caller pass null (it passes the parameter first to coalesce, or writes it whole and bare, with no cast, to a column that may hold null). */
+  /** `nullable`: the statement lets the caller pass null, or leave the parameter out (it casts the parameter to `nullable(…)`, or writes it whole and bare, with no cast, to a column that may hold null). */
   /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). */
   /** `comment`: the comment the database keeps on the column a parameter is written to (or, on MySQL, compared with), and on the table column a result column reads as it is; the declaration prints it as the field's doc comment. */
   params: { name: string; type: EngineType; type_name: string; nullable: boolean; schema?: import("./engine-type.ts").JsonSchema; cast?: string; comment?: string }[];

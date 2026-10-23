@@ -312,22 +312,23 @@ type ParamExprRow = {
 };
 const paramExpr1: ParamExprRow = null! as Awaited<ReturnType<typeof paramExpr.run>>;
 const paramExpr2: Awaited<ReturnType<typeof paramExpr.run>> = null! as ParamExprRow;
-const paramExpr3: { x: number; y: string | null } = null! as ParamExprParams;
-const paramExpr4: ParamExprParams = null! as { x: number; y: string | null };
-// Right otherwise: `:x::int` is a number, `coalesce(:y, 'd')` types :y as text the caller may
-// pass as null and the column as non-null, and a FROM-less select is exactly one row.
+const paramExpr3: { x: number; y?: string | null } = null! as ParamExprParams;
+const paramExpr4: ParamExprParams = null! as { x: number; y?: string | null };
+// Right otherwise: `:x::int` is a number, `coalesce(:y::nullable(text), 'd')` types :y as text the
+// caller may pass as null or leave out and the column as non-null, and a FROM-less select is
+// exactly one row.
 
 import paramNull from "./param_null.sql";
 import type { Params as ParamNullParams } from "./param_null.sql";
-type ParamNullParamsType = { email: string | null; name: string; role: "admin" | "member" | null };
+type ParamNullParamsType = { email?: string | null; name: string; role?: "admin" | "member" | null };
 const paramNull1: { id: number; email: string | null }[] = null! as Awaited<ReturnType<typeof paramNull.run>>;
 const paramNull2: Awaited<ReturnType<typeof paramNull.run>> = null! as { id: number; email: string | null }[];
 const paramNull3: ParamNullParamsType = null! as ParamNullParams;
 const paramNull4: ParamNullParams = null! as ParamNullParamsType;
-// Right: a parameter may be null where the statement lets it be, and nowhere else.
-// :email is written whole and bare to a nullable column; :role is
-// coalesced, through the WITH that selects it once; :name fills a NOT NULL column. A test for null
-// (`input.role is null or …`) would not make :role nullable.
+// Right: a parameter may be null, and left out, where the statement lets it be, and nowhere else.
+// :email is written whole and bare to a nullable column; :role is cast to nullable(…) in the WITH
+// that selects it once; :name fills a NOT NULL column. A coalesce or a test for null of :role
+// alone would not make it nullable.
 
 import paramPositional from "./param_positional.sql";
 import type { Params as ParamPositionalParams } from "./param_positional.sql";

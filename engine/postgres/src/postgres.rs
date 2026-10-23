@@ -176,17 +176,18 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
 }
 
 fn analyze_here(sql: &str, host: &Host) -> Lazy<Analysis> {
-    crate::structured::analyze(sql, Dialect::Postgres, host, &|sql| analyze_plain(sql, host), &|diagnostics| bare_of(sql, Dialect::Postgres, diagnostics))
+    crate::structured::analyze(sql, Dialect::Postgres, host, &|sql, marked| analyze_plain(sql, host, marked), &|diagnostics| bare_of(sql, Dialect::Postgres, diagnostics))
 }
 
-/// The analysis of a statement without structured parameters.
-fn analyze_plain(sql: &str, host: &Host) -> Lazy<Analysis> {
+/// The analysis of a statement without structured parameters; `marked` names the parameters cast
+/// to `nullable(…)`.
+fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let lexed = match lexed(sql, Dialect::Postgres) {
         Ok(l) => l,
         Err(bare) => return Some(bare),
     };
     let engine = Engine::new(host);
-    engine.run(sql, &lexed)
+    engine.run(sql, &lexed, marked)
 }
 
 /// The described statement alone, for a host that renders its own types and reads its own JSON
@@ -371,14 +372,23 @@ type Validators = &'static [&'static crate::schema_type::Validator];
 /// builds it: `WITH a AS (…), b AS (SELECT j FROM a) SELECT j FROM b` is two.
 const MAX_ITEM_DEPTH: usize = 4;
 
+/// The parameters the caller may pass null for, by number, and each one cast to `nullable(…)`
+/// that is written whole to a column refusing null ([`Engine::nullable_params`]).
+struct Nullable {
+    params: HashSet<i32>,
+    refused: Vec<(i32, String, String)>,
+}
+
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
         Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
-    fn run(&self, sql: &str, lexed: &Lexed) -> Lazy<Analysis> {
+    fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
         let mut diagnostics = Vec::new();
         let rewritten = lex::rewrite(sql, lexed, Target::Dollar);
+        // The parameters cast to `nullable(…)`, by the number the rewrite gave each.
+        let marked: HashSet<i32> = rewritten.order.iter().enumerate().filter(|(_, name)| marked.contains(name)).map(|(k, _)| k as i32 + 1).collect();
         let parsed = match analyze::analyze(&rewritten.sql) {
             Ok(p) => Some(p),
             // A statement of a kind the analysis does not read (DDL, a session setting, EXPLAIN)
@@ -404,7 +414,15 @@ impl<'a> Engine<'a> {
         let relations = relations_of(parsed.as_ref());
         // A parameter's TypeScript type carries null only where the statement lets the caller
         // pass one (see `nullable_params`); every other parameter is a non-null value.
-        let nullable = self.nullable_params(parsed.as_ref(), &relations);
+        let nullable = self.nullable_params(parsed.as_ref(), &relations, &marked);
+        // A parameter cast to `nullable(…)` and written whole to a column that refuses null would
+        // be refused at run time for the null its type allows: an error at the parameter.
+        for (n, relation, column) in nullable.iter().flat_map(|n| &n.refused) {
+            let Some(at) = rewritten.order.get(*n as usize - 1).and_then(|name| lexed.placeholders.iter().find(|p| &p.name == name)) else { continue };
+            let written = &sql[at.start..at.end];
+            diagnostics.push(diag(format!("The parameter {written} is cast to nullable(…), but it is written to {relation}.{column}, which refuses null: cast it to its type alone."), at.start, at.end - at.start, crate::structured::CODE));
+        }
+        let nullable = nullable.map(|n| n.params);
         let trust = trust(self.host).zip(nullable.clone()).map(|(mut trust, nullable)| {
             trust.non_null_params = true;
             trust.nullable_params = nullable;
@@ -701,24 +719,24 @@ impl<'a> Engine<'a> {
         Some(())
     }
 
-    /// The parameters the caller may pass null for, by number: each
-    /// one the statement passes first to `coalesce` (`coalesce(:p, 50)`, `coalesce(:p::int, col)`),
-    /// bare, under a cast, or through the column of a WITH query that selects it; and each one
-    /// that is, bare, with no cast, the whole value written to a column that may hold null,
-    /// wherever it is written (a parameter that also fills a column that refuses null cannot be
-    /// null). A column refuses null by its `NOT NULL`, by its domain's (declared `not null`, or
-    /// checking `VALUE IS NOT NULL`), or by a CHECK that tests it `IS NOT NULL` ([`refuses_null`]).
-    /// A cast parameter is its cast's type: "If you wanted to do type inference based on the
-    /// column, you shouldn't have added the cast." Nothing else lets a parameter take null, not a
-    /// null test of it. The rules take every other parameter as a non-null value, which is what
-    /// its TypeScript type promises.
-    fn nullable_params(&self, parsed: Option<&Parsed>, relations: &[String]) -> Lazy<HashSet<i32>> {
-        let Some(parsed) = parsed else { return Some(HashSet::new()) };
-        let mut out: HashSet<i32> = parsed.params.iter().filter(|(_, u)| u.coalesce).map(|(n, _)| *n).collect();
-        if parsed.bare.is_empty() {
+    /// The parameters the caller may pass null for, by number: each one cast to `nullable(…)`
+    /// (`marked`), and each one that is, bare, with no cast, the whole value written to a column
+    /// that may hold null, wherever it is written (a parameter that also fills a column that
+    /// refuses null cannot be null). A column refuses null by its `NOT NULL`, by its domain's
+    /// (declared `not null`, or checking `VALUE IS NOT NULL`), or by a CHECK that tests it `IS NOT
+    /// NULL` ([`refuses_null`]). Any other cast parameter is its cast's type, which the cast states
+    /// whole, and nothing else lets a parameter take null: not a `coalesce` of it, not a null test.
+    /// The rules take every other parameter as a non-null value, which is what its TypeScript type
+    /// promises. Beside them, each marked parameter written whole to a column that refuses null, as
+    /// `(parameter, relation, column)`.
+    fn nullable_params(&self, parsed: Option<&Parsed>, relations: &[String], marked: &HashSet<i32>) -> Lazy<Nullable> {
+        let mut out = Nullable { params: marked.clone(), refused: Vec::new() };
+        let Some(parsed) = parsed else { return Some(out) };
+        let checked: Vec<&(i32, String, analyze::Filled)> = parsed.filled.iter().chain(&parsed.selected).filter(|(n, _, _)| marked.contains(n)).collect();
+        if parsed.bare.is_empty() && checked.is_empty() {
             return Some(out);
         }
-        let mut written: Vec<String> = parsed.bare.iter().map(|(_, relation, _)| relation.clone()).collect();
+        let mut written: Vec<String> = parsed.bare.iter().chain(checked.iter().copied()).map(|(_, relation, _)| relation.clone()).collect();
         written.sort();
         written.dedup();
         let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written)], Scope::Statement);
@@ -733,20 +751,28 @@ impl<'a> Engine<'a> {
             refuses.insert((relation.to_string(), attnum as i32), not_null || checked || domain);
         }
         let columns = self.columns_by_name.borrow();
-        let mut fills: HashMap<i32, bool> = HashMap::new();
-        for (n, relation, column) in &parsed.bare {
-            let Some(known) = columns.get(relation) else { continue };
-            let found = match column {
+        // The column `column` of `relation` names, and whether it refuses null; a column the
+        // refusals do not name keeps its NOT NULL alone.
+        let column_of = |relation: &String, column: &analyze::Filled| {
+            let known = columns.get(relation)?;
+            let (attnum, (name, not_null)) = match column {
                 analyze::Filled::Name(name) => known.iter().find(|(_, (c, _))| c == name),
                 analyze::Filled::Position(i) => known.iter().nth(*i),
-            };
-            // A column the refusals do not name keeps its NOT NULL alone.
-            if let Some((attnum, (_, not_null))) = found {
-                let refused = refuses.get(&(relation.clone(), *attnum)).copied().unwrap_or(*not_null);
+            }?;
+            Some((name.clone(), refuses.get(&(relation.clone(), *attnum)).copied().unwrap_or(*not_null)))
+        };
+        let mut fills: HashMap<i32, bool> = HashMap::new();
+        for (n, relation, column) in &parsed.bare {
+            if let Some((_, refused)) = column_of(relation, column) {
                 *fills.entry(*n).or_insert(true) &= !refused;
             }
         }
-        out.extend(fills.into_iter().filter(|(_, nullable)| *nullable).map(|(n, _)| n));
+        out.params.extend(fills.into_iter().filter(|(_, nullable)| *nullable).map(|(n, _)| n));
+        for (n, relation, column) in checked {
+            if let Some((name, true)) = column_of(relation, column) {
+                out.refused.push((*n, relation.clone(), name));
+            }
+        }
         Some(out)
     }
 
@@ -2917,7 +2943,7 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_may_be_null_coalesced_first_or_written_bare_to_a_column_that_holds_null() {
+    fn a_parameter_may_be_null_cast_to_nullable_or_written_bare_to_a_column_that_holds_null() {
         // A server with one table, `users (id int primary key, name text not null, email text,
         // score numeric, n int, doc jsonb, meta json not null, nick text check (nick is not null),
         // mail required_email, code text check (code <> '' and code is not null), tag tag_text)`,
@@ -2936,13 +2962,12 @@ mod tests {
             };
             vec![json!("users"), json!(i + 1), json!(name), json!(not_null), json!(checks), json!(domain)]
         };
-        let nullable = |sql: &str| {
+        let analyzed = |sql: &str| {
             let mut answers: HashMap<String, Answer> = HashMap::new();
             for _ in 0..64 {
                 let host = Host::new(&answers);
                 if let Some(a) = analyze(sql, &host) {
-                    assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
-                    return a.params.iter().map(|p| format!("{}{}", p.name, if p.nullable { "?" } else { "" })).collect::<Vec<_>>().join(" ");
+                    return a;
                 }
                 for need in host.needs() {
                     match need {
@@ -2963,6 +2988,11 @@ mod tests {
                 }
             }
             panic!("the replay did not converge");
+        };
+        let nullable = |sql: &str| {
+            let a = analyzed(sql);
+            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+            a.params.iter().map(|p| format!("{}{}", p.name, if p.nullable { "?" } else { "" })).collect::<Vec<_>>().join(" ")
         };
         // Written whole and bare to a column that may hold null, in an INSERT's rows, by name and
         // by place, the SELECT that feeds an INSERT, an UPDATE's SET and an upsert's, a row
@@ -2987,11 +3017,28 @@ mod tests {
         assert_eq!(nullable("INSERT INTO users (name, email) SELECT :name::text, :email::text"), "name email");
         // Tested for NULL, or compared with IS NOT DISTINCT FROM: a value all the same.
         assert_eq!(nullable("SELECT id FROM users WHERE (:doc::json IS NULL OR n = :x::int) AND email IS NOT DISTINCT FROM :e AND :k::int IS NOT NULL"), "doc x e k");
-        // The first argument of `coalesce`, bare, under a cast, or the column of a WITH query that
-        // selects it: the caller may pass null. A later argument is a value.
-        assert_eq!(nullable("UPDATE users SET n = coalesce(:n::int, n), doc = coalesce(:doc::jsonb, doc), name = coalesce(name, :e) WHERE id = :id::int"), "n? doc? e id");
-        assert_eq!(nullable("UPDATE users SET name = coalesce(CAST(:name AS text), name), meta = coalesce(:meta, meta) WHERE id = :id"), "name? meta? id");
-        assert_eq!(nullable("WITH input AS (SELECT :q::text AS q) SELECT id FROM users, input WHERE name = coalesce(input.q, name)"), "q?");
+        // Cast to `nullable(…)`, whatever the type, through the WITH query that selects it once
+        // too: the caller may pass null. An argument of `coalesce`, first or not, is a value.
+        assert_eq!(nullable("UPDATE users SET n = coalesce(:n::int, n), doc = :doc::nullable(jsonb), email = :email::nullable(text), name = coalesce(name, :e) WHERE id = :id::int"), "n doc? email? e id");
+        assert_eq!(nullable("UPDATE users SET name = coalesce(CAST(:name AS text), name), meta = coalesce(:meta, meta) WHERE id = :id"), "name meta id");
+        assert_eq!(nullable("WITH input AS (SELECT :q::nullable(timestamp with time zone) AS q) SELECT id FROM users, input WHERE input.q IS NULL OR name = input.q::text"), "q?");
+        assert_eq!(nullable("WITH input AS (SELECT :q::text AS q) SELECT id FROM users, input WHERE name = coalesce(input.q, name)"), "q");
+        // Cast to `nullable(…)` and written whole to a column that refuses null, by its NOT NULL,
+        // a CHECK or a domain: an error at the parameter, whose null the database would refuse.
+        let sql = "INSERT INTO users (name, nick, mail, email) VALUES (:name::nullable(text), :nick::nullable(text), :mail::nullable(text), :email::nullable(text))";
+        let refused = analyzed(sql);
+        let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
+        let said = |p: &str, column: &str| format!("The parameter {p} is cast to nullable(…), but it is written to users.{column}, which refuses null: cast it to its type alone.");
+        assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [
+            (":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE),
+            (":nick::nullable(text)".to_string(), said(":nick", "nick"), crate::structured::CODE),
+            (":mail::nullable(text)".to_string(), said(":mail", "mail"), crate::structured::CODE),
+        ]);
+        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
+        let sql = "INSERT INTO users (name, email) SELECT :name::nullable(text), :email::nullable(text)";
+        let refused = analyzed(sql);
+        let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
+        assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
     }
 
     #[test]

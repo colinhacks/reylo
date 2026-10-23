@@ -48,6 +48,11 @@
 //! placeholder and MariaDB does not. Both databases' casts turn a value they cannot read into 0 or
 //! NULL instead of failing, so the run time checks such a parameter against its type before the
 //! statement runs, a text cast's included.
+//!
+//! A parameter cast to `nullable(…)`, as in `:q::nullable(text)` or `:doc::nullable(jsonb('…'))`,
+//! takes null, and the caller may leave it out: the pass writes the cast inside alone, which lets
+//! a NULL through in every dialect, and hands the dialect's analysis the names of such parameters,
+//! which it takes as the ones that may be null in place of any rule of its own.
 
 use crate::api::{Analysis, Describe, Diagnostic, Scope};
 use crate::dialect::Dialect;
@@ -104,8 +109,12 @@ pub struct Found {
     pub table: Option<(usize, usize)>,
     /// A typed JSON parameter (`:p::jsonb('…')`) instead of a column list.
     pub json: Option<JsonCast>,
-    /// A `::type` cast on MySQL or SQLite instead of a column list.
+    /// A `::type` cast on MySQL or SQLite instead of a column list, or on any dialect the type
+    /// inside `::nullable(…)`.
     pub plain: Option<PlainCast>,
+    /// Cast to `nullable(…)`: the caller may pass null, or leave the parameter out, and the
+    /// parameter is its inner cast otherwise.
+    pub nullable: bool,
     /// In insert position on Postgres and SQLite, per member, the default copied from the catalog
     /// that a row which leaves the member's key out takes, `None` for a member that takes none
     /// (required, or with no default, where the missing key's NULL is the column's own); `None`
@@ -211,12 +220,32 @@ fn cast_at(sql: &str, end: usize) -> Option<(bool, usize, usize)> {
 /// After a placeholder ending at `end`: `::jsonb(` or `::json(`, as `(jsonb, the offset of the
 /// parenthesis, the end of the keyword)`. Without the parenthesis it is an ordinary cast.
 fn json_cast_at(sql: &str, end: usize) -> Option<(bool, usize, usize)> {
+    json_type_at(sql, after_colons(sql, end)?)
+}
+
+/// After a placeholder ending at `end`: `::nullable(`, as `(the offset of the parenthesis, the end
+/// of the keyword)`.
+fn nullable_cast_at(sql: &str, end: usize) -> Option<(usize, usize)> {
     let b = sql.as_bytes();
-    let mut i = skip_space(b, end);
-    if !(b.get(i) == Some(&b':') && b.get(i + 1) == Some(&b':')) {
+    let i = after_colons(sql, end)?;
+    let word_end = i + b[i..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+    if !sql[i..word_end].eq_ignore_ascii_case("nullable") {
         return None;
     }
-    i = skip_space(b, i + 2);
+    let paren = skip_space(b, word_end);
+    (b.get(paren) == Some(&b'(')).then_some((paren, word_end))
+}
+
+/// Where the type of a `::` cast after a placeholder ending at `end` starts.
+fn after_colons(sql: &str, end: usize) -> Option<usize> {
+    let b = sql.as_bytes();
+    let i = skip_space(b, end);
+    (b.get(i) == Some(&b':') && b.get(i + 1) == Some(&b':')).then(|| skip_space(b, i + 2))
+}
+
+/// At `i`: `jsonb(` or `json(`, as `(jsonb, the offset of the parenthesis, the end of the keyword)`.
+fn json_type_at(sql: &str, i: usize) -> Option<(bool, usize, usize)> {
+    let b = sql.as_bytes();
     let word_end = i + b[i..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
     let jsonb = match sql[i..word_end].to_ascii_lowercase().as_str() {
         "jsonb" => true,
@@ -228,15 +257,16 @@ fn json_cast_at(sql: &str, end: usize) -> Option<(bool, usize, usize)> {
 }
 
 /// After a placeholder ending at `end`: `::type`, as `(the type as written, lowercased and spaced
-/// once, the end of the cast)`. A type is a name, a second word where SQL spells one type in two
-/// (`double precision`, `character varying`, `unsigned`), a parenthesized modifier list, and `[]`.
+/// once, the end of the cast)` ([`plain_type_at`]).
 fn plain_cast_at(sql: &str, end: usize) -> Option<(String, usize)> {
+    plain_type_at(sql, after_colons(sql, end)?)
+}
+
+/// At `i`: a type, as `(the type as written, lowercased and spaced once, its end)`. A type is a
+/// name, a second word where SQL spells one type in two (`double precision`, `character varying`,
+/// `unsigned`), a parenthesized modifier list, and `[]`.
+fn plain_type_at(sql: &str, i: usize) -> Option<(String, usize)> {
     let b = sql.as_bytes();
-    let mut i = skip_space(b, end);
-    if !(b.get(i) == Some(&b':') && b.get(i + 1) == Some(&b':')) {
-        return None;
-    }
-    i = skip_space(b, i + 2);
     let word = |i: usize| i + b[i..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
     let first = word(i);
     if first == i {
@@ -464,23 +494,13 @@ pub fn find(sql: &str, dialect: Dialect, server: &Server) -> Result<Vec<Found>, 
         if found.last().is_some_and(|f| p.start < f.region.1) {
             continue;
         }
-        if let Some((jsonb, paren, word_end)) = json_cast_at(sql, p.end) {
-            let start = skip_space(sql.as_bytes(), paren + 1);
-            if sql.as_bytes().get(start) != Some(&b'\'') {
-                let close = descriptor_text(sql, paren).map(|(_, close)| close).unwrap_or(sql.len() - 1);
-                return error(format!("`{}(…)` takes one string, the JSON Schema of the values, as in `{}::{}('{{\"type\": \"object\"}}')`.", if jsonb { "jsonb" } else { "json" }, &sql[p.start..p.end], if jsonb { "jsonb" } else { "json" }), paren, close + 1);
-            }
-            let (text, close) = schema_string(sql, start)?;
-            let span = (start, close);
-            let schema = match serde_json::from_str::<Value>(&text) {
-                Ok(schema) => schema,
-                Err(e) => return error(format!("The schema in the cast of {} is not JSON: {e}.", &sql[p.start..p.end]), span.0, span.1),
-            };
-            if let Some(message) = profile(&schema, "") {
-                return error(message, span.0, span.1);
-            }
-            found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one: false, members: Vec::new(), region: (p.start, close + 1), head: (p.start, p.end), alias: None, insert: false, table: None, json: Some(JsonCast { jsonb, schema, schema_span: span }), plain: None, copied: None });
-            let _ = word_end;
+        if let Some((paren, _)) = nullable_cast_at(sql, p.end) {
+            found.push(nullable_found(sql, p, paren, dialect, &lexed.opaque, server)?);
+            continue;
+        }
+        if let Some((jsonb, paren, _)) = json_cast_at(sql, p.end) {
+            let (cast, close) = json_cast(sql, &sql[p.start..p.end], jsonb, paren)?;
+            found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one: false, members: Vec::new(), region: (p.start, close + 1), head: (p.start, p.end), alias: None, insert: false, table: None, json: Some(cast), plain: None, nullable: false, copied: None });
             continue;
         }
         let Some((one, paren, word_end)) = cast_at(sql, p.end) else {
@@ -488,7 +508,7 @@ pub fn find(sql: &str, dialect: Dialect, server: &Server) -> Result<Vec<Found>, 
             if dialect != Dialect::Postgres {
                 if let Some((written, end)) = plain_cast_at(sql, p.end) {
                     let around = cast_around(&written, dialect, spot(sql, p.start, end, &lexed.opaque), server).map_err(|message| DescriptorError { message, start: p.end, end })?;
-                    found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one: false, members: Vec::new(), region: (p.start, end), head: (p.start, end), alias: None, insert: false, table: None, json: None, plain: Some(PlainCast { written, around }), copied: None });
+                    found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one: false, members: Vec::new(), region: (p.start, end), head: (p.start, end), alias: None, insert: false, table: None, json: None, plain: Some(PlainCast { written, around }), nullable: false, copied: None });
                 }
             }
             continue;
@@ -540,9 +560,172 @@ pub fn find(sql: &str, dialect: Dialect, server: &Server) -> Result<Vec<Found>, 
                 );
             }
         }
-        found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one, members, region, head: (p.start, word_end), alias, insert, table, json: None, plain: None, copied: None });
+        found.push(Found { name: p.name.clone(), placeholder: (p.start, p.end), one, members, region, head: (p.start, word_end), alias, insert, table, json: None, plain: None, nullable: false, copied: None });
     }
     Ok(found)
+}
+
+/// A typed JSON parameter's cast after `placeholder`, `json(` or `jsonb(` opening at `paren`, and
+/// the offset of its closing parenthesis.
+fn json_cast(sql: &str, placeholder: &str, jsonb: bool, paren: usize) -> Result<(JsonCast, usize), DescriptorError> {
+    let word = if jsonb { "jsonb" } else { "json" };
+    let start = skip_space(sql.as_bytes(), paren + 1);
+    if sql.as_bytes().get(start) != Some(&b'\'') {
+        let close = descriptor_text(sql, paren).map(|(_, close)| close).unwrap_or(sql.len() - 1);
+        return error(format!("`{word}(…)` takes one string, the JSON Schema of the values, as in `{placeholder}::{word}('{{\"type\": \"object\"}}')`."), paren, close + 1);
+    }
+    let (text, close) = schema_string(sql, start)?;
+    let span = (start, close);
+    let schema = match serde_json::from_str::<Value>(&text) {
+        Ok(schema) => schema,
+        Err(e) => return error(format!("The schema in the cast of {placeholder} is not JSON: {e}."), span.0, span.1),
+    };
+    if let Some(message) = profile(&schema, "") {
+        return error(message, span.0, span.1);
+    }
+    Ok((JsonCast { jsonb, schema, schema_span: span }, close))
+}
+
+/// A parameter cast to `nullable(…)`, whose parenthesis opens at `paren`: the caller may pass null
+/// or leave it out, and it is the cast inside otherwise, a typed JSON one or a type, which the
+/// expansion writes alone. Postgres reads that type as written (a schema's, a quoted name,
+/// `timestamp with time zone`); MySQL and SQLite take it as their own cast, as they take `::type`.
+fn nullable_found(sql: &str, p: &lex::Placeholder, paren: usize, dialect: Dialect, opaque: &[(usize, usize)], server: &Server) -> Result<Found, DescriptorError> {
+    let b = sql.as_bytes();
+    let placeholder = &sql[p.start..p.end];
+    let takes = format!("`nullable(…)` takes the parameter's type, as in `{placeholder}::nullable(text)`");
+    let start = skip_space(b, paren + 1);
+    if b.get(start) == Some(&b'\'') {
+        return error(format!("{takes}, not a string."), start, start + 1);
+    }
+    let (_, close) = descriptor_text(sql, paren)?;
+    let end = sql[..close].trim_end().len().max(start);
+    let mut f = Found { name: p.name.clone(), placeholder: (p.start, p.end), one: false, members: Vec::new(), region: (p.start, close + 1), head: (p.start, close + 1), alias: None, insert: false, table: None, json: None, plain: None, nullable: true, copied: None };
+    if start == end {
+        return error(format!("{takes}."), paren, close + 1);
+    }
+    if let Some((jsonb, json_paren, _)) = json_type_at(sql, start) {
+        let (cast, json_close) = json_cast(sql, placeholder, jsonb, json_paren)?;
+        if skip_space(b, json_close + 1) != close {
+            return error(format!("{takes}, one type alone."), json_close + 1, close);
+        }
+        f.json = Some(cast);
+        return Ok(f);
+    }
+    let word_end = start + b[start..].iter().take_while(|c| c.is_ascii_alphanumeric() || **c == b'_').count();
+    match sql[start..word_end].to_ascii_lowercase().as_str() {
+        "rows" | "row" if b.get(skip_space(b, word_end)) == Some(&b'(') => {
+            return error(format!("A row(…) or rows(…) parameter is never null: {takes}."), start, end);
+        }
+        "nullable" => return error(format!("{takes} once."), start, end),
+        _ => {}
+    }
+    if dialect == Dialect::Postgres {
+        let written = &sql[start..end];
+        if !one_postgres_type(written) {
+            return error(format!("{takes}, one type alone."), start, end);
+        }
+        f.plain = Some(PlainCast { written: written.to_string(), around: Some((String::new(), format!("::{written}"))) });
+        return Ok(f);
+    }
+    let Some((written, type_end)) = plain_type_at(sql, start).filter(|&(_, type_end)| skip_space(b, type_end) == close) else {
+        return error(format!("{takes}, one type alone."), start, end);
+    };
+    let around = cast_around(&written, dialect, spot(sql, p.start, close + 1, opaque), server).map_err(|message| DescriptorError { message, start, end: type_end })?;
+    f.plain = Some(PlainCast { written, around });
+    Ok(f)
+}
+
+/// Whether `written`, the text inside a Postgres `nullable(…)`, reads as one type name, which the
+/// expansion writes after `::` as it stands: a name, qualified or quoted, its modifiers in
+/// parentheses, array bounds, and the words of Postgres's own types of several words (`double
+/// precision`, `timestamp with time zone`, `interval day to second`). Anything else, a comma, an
+/// operator, a string or another word, would turn the cast into an expression the server takes,
+/// and change what the statement means. A modifier's text is the server's to check, which takes
+/// only constants there.
+fn one_postgres_type(written: &str) -> bool {
+    const WORDS: &[&str] = &["precision", "varying", "with", "without", "time", "zone", "character", "char", "national", "year", "month", "day", "hour", "minute", "second", "to", "array"];
+    #[derive(PartialEq)]
+    enum Last {
+        Start,
+        Part,
+        Dot,
+        Space,
+        Group,
+    }
+    let b = written.as_bytes();
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut last = Last::Start;
+    let mut i = 0;
+    while i < b.len() {
+        let c = written[i..].chars().next().expect("inside the text");
+        if c.is_whitespace() {
+            if last != Last::Dot {
+                last = if last == Last::Start { Last::Start } else { Last::Space };
+            }
+            i += c.len_utf8();
+        } else if c == '"' || word(c) {
+            let begin = i;
+            if c == '"' {
+                i += 1;
+                loop {
+                    match b.get(i) {
+                        None => return false,
+                        Some(b'"') if b.get(i + 1) == Some(&b'"') => i += 2,
+                        Some(b'"') => break,
+                        Some(_) => i += 1,
+                    }
+                }
+                i += 1;
+            } else {
+                i += written[i..].chars().take_while(|c| word(*c)).map(char::len_utf8).sum::<usize>();
+            }
+            // A part after the first name is one of the words of Postgres's own types.
+            match last {
+                Last::Start | Last::Dot => {}
+                Last::Space | Last::Group if c != '"' && WORDS.contains(&written[begin..i].to_ascii_lowercase().as_str()) => {}
+                _ => return false,
+            }
+            last = Last::Part;
+        } else if c == '.' {
+            if last != Last::Part {
+                return false;
+            }
+            last = Last::Dot;
+            i += 1;
+        } else if c == '(' || c == '[' {
+            if matches!(last, Last::Start | Last::Dot) {
+                return false;
+            }
+            let close = if c == '(' { ')' } else { ']' };
+            let mut depth = 0usize;
+            let mut quote: Option<u8> = None;
+            loop {
+                let Some(&d) = b.get(i) else { return false };
+                match quote {
+                    Some(q) if d == q => quote = None,
+                    Some(_) => {}
+                    None if d == b'\'' || d == b'"' => quote = Some(d),
+                    None if d == c as u8 => depth += 1,
+                    None if d == close as u8 => {
+                        depth -= 1;
+                        if depth == 0 {
+                            break;
+                        }
+                    }
+                    // Array bounds are digits.
+                    None if c == '[' && !(d.is_ascii_digit() || d.is_ascii_whitespace()) => return false,
+                    None => {}
+                }
+                i += 1;
+            }
+            i += 1;
+            last = Last::Group;
+        } else {
+            return false;
+        }
+    }
+    matches!(last, Last::Part | Last::Group | Last::Space)
 }
 
 /// One character of a column list's text and the bytes of the author's text it stands for.
@@ -1429,21 +1612,22 @@ pub fn rewritten_only<S: serde::Serializer>(infos: &[Info], s: S) -> Result<S::O
 }
 
 /// The diagnostic code of a column list Reylo cannot read, or one whose types the database
-/// refuses.
+/// refuses, and of a cast to `nullable(…)` that the column the parameter is written to refuses.
 pub const CODE: u32 = 20;
 
 /// The analysis of a statement that may have structured parameters: what `inner` answers for the
 /// statement with each one expanded, read back in the author's text, with each parameter typed by
-/// its column list. `inner` analyzes a statement that has none; `bare` is the analysis of the
+/// its column list. `inner` analyzes a statement that has none, given the names of the parameters
+/// cast to `nullable(…)`, which the caller may pass null for; `bare` is the analysis of the
 /// author's statement that only reports the diagnostics it is given.
-pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inner: &dyn Fn(&str) -> Lazy<Analysis>, bare: &dyn Fn(Vec<Diagnostic>) -> Analysis) -> Lazy<Analysis> {
+pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inner: &dyn Fn(&str, &[String]) -> Lazy<Analysis>, bare: &dyn Fn(Vec<Diagnostic>) -> Analysis) -> Lazy<Analysis> {
     let refused = |e: DescriptorError| Some(bare(vec![Diagnostic { message: e.message, start: e.start, length: e.end - e.start, code: CODE }]));
     let found = match find(sql, dialect, &Server::default()) {
         Ok(found) => found,
         Err(e) => return refused(e),
     };
     if found.is_empty() {
-        return inner(sql);
+        return inner(sql, &[]);
     }
     // On MySQL the expansion depends on the server, asked once a session.
     let server = if dialect == Dialect::Mysql {
@@ -1471,7 +1655,7 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 return (Lowered { text: String::new(), placeholder: (0, 0), members: Vec::new(), lists: Vec::new() }, Some(crate::analysis::bare_of("", dialect, Vec::new())));
             }
             let (text, lowered) = probe(f, dialect, &sql[f.placeholder.0..f.placeholder.1], &server);
-            (lowered, inner(&text))
+            (lowered, inner(&text, &[]))
         })
         .collect();
     let tables: Vec<Lazy<Vec<TableColumn>>> = found.iter().map(|f| table_columns(f, sql, dialect, &server, host)).collect();
@@ -1490,8 +1674,9 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
             f.copied = copies(f, c, dialect);
         }
     }
+    let marked: Vec<String> = found.iter().filter(|f| f.nullable).map(|f| f.name.clone()).collect();
     let expanded = expand(sql, found, dialect, &server);
-    let mut analysis = inner(&expanded.sql)?;
+    let mut analysis = inner(&expanded.sql, &marked)?;
     let mut probed = Vec::with_capacity(probes.len());
     for (lowered, a) in probes {
         probed.push((lowered, a?));
@@ -1511,9 +1696,18 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
     }
 
     for ((f, (lowered, probe)), table) in expanded.found.iter().zip(&probed).zip(&columns) {
+        if f.nullable {
+            if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
+                p.nullable = true;
+            }
+        }
         // A `::type` written as the dialect's own cast: the analysis typed it; the run time checks
-        // its value, since that cast converts what it cannot read.
+        // its value, since that cast converts what it cannot read. On Postgres, which reads `::`
+        // itself, the one such cast is the type inside `::nullable(…)`, which the server checks.
         if let Some(cast) = &f.plain {
+            if dialect == Dialect::Postgres {
+                continue;
+            }
             if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
                 p.cast = Some(cast.written.clone());
                 // A text cast on MySQL is the bare placeholder, which MySQL types as a string
@@ -2188,6 +2382,41 @@ mod tests {
     }
 
     #[test]
+    fn a_cast_to_nullable_is_written_as_the_cast_inside() {
+        let expanded = |sql: &str, dialect: Dialect| expand(sql, find(sql, dialect, &Server::default()).unwrap(), dialect, &Server::default()).sql;
+        let marked = |sql: &str, dialect: Dialect| find(sql, dialect, &Server::default()).unwrap().into_iter().filter(|f| f.nullable).map(|f| f.name).collect::<Vec<_>>();
+        // Postgres keeps the type as written: a schema's, a quoted name, two words, a modifier.
+        let sql = "select :a::nullable(text), :b::Nullable( timestamp with time zone ), :c::nullable(public.\"Mood\"), :d::nullable(int[]), :e::nullable(numeric(10, 2)), :f::int";
+        assert_eq!(expanded(sql, Dialect::Postgres), "select :a::text, :b::timestamp with time zone, :c::public.\"Mood\", :d::int[], :e::numeric(10, 2), :f::int");
+        assert_eq!(marked(sql, Dialect::Postgres), ["a", "b", "c", "d", "e"]);
+        // MySQL and SQLite write the type inside as they write `::type`, by where it stands too.
+        assert_eq!(expanded("select :n::nullable(int), :s::nullable(text) from t limit :k::nullable(int)", Dialect::Mysql), "select CAST(:n AS SIGNED), :s from t limit :k");
+        assert_eq!(expanded("select :n::nullable(int8), :d::nullable(date)", Dialect::Sqlite), "select CAST(:n AS INTEGER), CAST(:d AS TEXT)");
+        // A typed JSON parameter inside, with its schema.
+        let f = one("select :doc::nullable(jsonb('{\"type\": \"object\"}'))", Dialect::Postgres);
+        assert!(f.nullable);
+        assert_eq!(f.json.map(|c| c.schema), Some(serde_json::json!({"type": "object"})));
+        assert_eq!(expanded("select :doc::nullable(json('{\"type\": \"object\"}'))", Dialect::Mysql), "select cast(:doc as json)");
+        // What it does not take.
+        assert!(err("select :p::nullable()", Dialect::Postgres).contains("takes the parameter's type"));
+        assert!(err("select :p::nullable('text')", Dialect::Postgres).contains("not a string"));
+        assert!(err("select :p::nullable(nullable(text))", Dialect::Postgres).contains("once"));
+        assert!(err("select * from :p::nullable(rows(id int8))", Dialect::Postgres).contains("never null"));
+        assert!(err("select :p::nullable(int int)", Dialect::Mysql).contains("one type alone"));
+        // On Postgres, the text is written after `::` as it stands, so it is one type: a name, its
+        // modifiers, array bounds and the words of Postgres's own types of several words.
+        for written in ["int", "public.mood", "\"My Type\"", "varchar(255)", "numeric(10, 2)", "int[]", "int[3]", "int array", "timestamp with time zone", "timestamp(3) without time zone", "double precision", "character varying(10)", "interval day to second", "bit varying", "public.\"Mood\"[]", "pg_catalog.int4"] {
+            let sql = format!("select :p::nullable({written})");
+            assert_eq!(expanded(&sql, Dialect::Postgres), format!("select :p::{written}"), "{written}");
+        }
+        for written in ["int, 2", "int or true", "int and x", "text collate \"C\"", "timestamp at time zone 'utc'", "int + 1", "int[a]", "int.", ".int", "int int", "(int)"] {
+            let sql = format!("select :p::nullable({written})");
+            assert!(err(&sql, Dialect::Postgres).contains("one type alone"), "{written}");
+        }
+        assert!(err("select :p::nullable(bool)", Dialect::Mysql).contains("no boolean type"));
+    }
+
+    #[test]
     fn position_is_insert_only_right_after_into_a_table() {
         assert!(one("INSERT INTO public.events :e::rows(id int8)", Dialect::Postgres).insert);
         assert!(one("insert into \"Events\" :e::rows(id int8)", Dialect::Postgres).insert);
@@ -2465,7 +2694,7 @@ mod tests {
         for _ in 0..4 {
             let host = Host::new(&answers);
             let seen = std::cell::RefCell::new(Vec::new());
-            let inner = |s: &str| {
+            let inner = |s: &str, _: &[String]| {
                 seen.borrow_mut().push(s.to_string());
                 Some(crate::analysis::bare_of(s, dialect, Vec::new()))
             };
@@ -2532,7 +2761,7 @@ mod tests {
             let mut answers: Answers<NoDescribe> = Answers::new();
             for _ in 0..4 {
                 let host = Host::new(&answers);
-                let inner = |s: &str| {
+                let inner = |s: &str, _: &[String]| {
                     let mut a = crate::analysis::bare_of(s, Dialect::Mysql, Vec::new());
                     if add {
                         a.rewritten.sql = format!("{added}{}", a.rewritten.sql);

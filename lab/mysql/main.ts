@@ -35,9 +35,10 @@ const h: CountRow = null! as { n: bigint; latest: string | null };
 const i: { pattern: string } = null! as CountParams;
 const j: { n: bigint; latest: string | null } = await count.run(conn, { pattern: "a%" });
 // MySQL has no RETURNING, so a data-modifying statement returns nothing; the `?` in a VALUES
-// list is typed by the column it fills, and :email, written whole to a nullable column, may be null.
-const k: { name: string; email: string | null } = null! as InsertParams;
-const k2: InsertParams = null! as { name: string; email: string | null };
+// list is typed by the column it fills, and :email, written whole to a nullable column, may be null
+// or left out.
+const k: { name: string; email?: string | null } = null! as InsertParams;
+const k2: InsertParams = null! as { name: string; email?: string | null };
 const l: void = await insert.run(conn, { name: "eve", email: "eve@example.com" });
 const l2: void = await insert.run(conn, { name: "eve", email: null });
 // JSON constructors are typed from their arguments: the engine prepares `select p.id, p.title, p.tag

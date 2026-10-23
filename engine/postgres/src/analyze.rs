@@ -1,6 +1,5 @@
 //! Statement analysis over the real parse tree (libpg_query). Statement kind, locking,
-//! read/write sets, called functions, and the binding-site analysis that reads optionality
-//! and defaults out of the SQL itself (`coalesce`, null guards, the input-CTE convention).
+//! read/write sets, called functions, and the columns each parameter is written to whole.
 //!
 //! The parse tree is walked as generic JSON (the protobuf types serialize), so every
 //! clause — including LIMIT, VALUES, and ON CONFLICT — is reached; the crate's own typed
@@ -15,14 +14,6 @@ use std::collections::HashMap;
 pub enum StatementKind {
     Query,
     Mutation,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ParamUse {
-    /// The parameter is the first argument of a `coalesce(:p, …)`, where the caller may pass it
-    /// null; carries the literal default when one exists.
-    pub coalesce: bool,
-    pub coalesce_default: Option<Value>,
 }
 
 /// The column a parameter is written to: by name, or by position when an INSERT names no columns.
@@ -44,8 +35,6 @@ pub struct Analysis {
     pub write_set: Vec<String>,
     /// Function names called anywhere in the statement.
     pub functions: Vec<String>,
-    /// Binding-site info per parameter number (1-based).
-    pub params: HashMap<i32, ParamUse>,
     /// Each parameter that is the whole value written to a column, bare or under a cast: an
     /// INSERT's VALUES item, an UPDATE's or an ON CONFLICT's SET. (parameter number, relation, column)
     pub filled: Vec<(i32, String, Filled)>,
@@ -54,6 +43,10 @@ pub struct Analysis {
     /// CONFLICT's SET, a row value's element. Such a parameter takes the column's nullability;
     /// a cast one is its cast's type, never null.
     pub bare: Vec<(i32, String, Filled)>,
+    /// Each parameter that is, bare or under a cast, a whole column of the one SELECT that feeds
+    /// an INSERT: written whole, as a VALUES item is, which the check of a parameter cast to
+    /// `nullable(…)` against a column that refuses null reads beside `filled`.
+    pub selected: Vec<(i32, String, Filled)>,
     /// Whether RETURNING produces rows (for defaulting `returns`).
     pub has_returning: bool,
     /// Nullability degradation triggers: an outer join anywhere, a repeated table, a set op.
@@ -138,53 +131,6 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
 
     let tree = serde_json::to_value(&parsed.protobuf).map_err(|e| AnalyzeError::Parse(e.to_string()))?;
 
-    // Pass 1: CTE columns that are direct parameter bindings — (cte, column) -> param number.
-    let mut cte_param_columns: HashMap<(String, String), i32> = HashMap::new();
-    visit(&tree, &mut |key, node| {
-        if key != "CommonTableExpr" {
-            return;
-        }
-        let Some(ctename) = node.get("ctename").and_then(|v| v.as_str()) else { return };
-        let Some(select) = node.get("ctequery").and_then(|q| q.get("node")).and_then(|n| n.get("SelectStmt")) else {
-            return;
-        };
-        let Some(targets) = select.get("target_list").and_then(|t| t.as_array()) else { return };
-        for target in targets {
-            let Some(rt) = target.get("node").and_then(|n| n.get("ResTarget")) else { continue };
-            let Some(name) = rt.get("name").and_then(|n| n.as_str()).filter(|n| !n.is_empty()) else { continue };
-            if let Some(n) = rt.get("val").and_then(direct_param_number) {
-                cte_param_columns.insert((ctename.to_string(), name.to_string()), n);
-            }
-        }
-    });
-    // The names a FROM item gives those WITH queries (`FROM input i`), so a test of `i.q` reaches
-    // the parameter as one of `input.q` does.
-    let mut cte_aliases: HashMap<String, String> = HashMap::new();
-    if !cte_param_columns.is_empty() {
-        visit(&tree, &mut |key, node| {
-            if key != "RangeVar" {
-                return;
-            }
-            let (Some(rel), Some(alias)) = (node.get("relname").and_then(|r| r.as_str()), node.get("alias").and_then(|a| a.get("aliasname")).and_then(|a| a.as_str())) else { return };
-            if cte_param_columns.keys().any(|(cte, _)| cte == rel) {
-                cte_aliases.insert(alias.to_string(), rel.to_string());
-            }
-        });
-    }
-    // The parameter an operand is, through casts, or that the column of such a WITH query selects
-    // (`input.q`, by the query's name or a FROM item's alias for it). Each parameter appears once in
-    // a statement, so a value tested and read again is selected once in a WITH: the test of its
-    // column is the test of the parameter.
-    let param_of = |arg: &Value| {
-        direct_param_number(arg).or_else(|| {
-            column_ref_fields(arg).and_then(|(qual, col)| {
-                let qual = qual?;
-                cte_param_columns.get(&(qual.clone(), col.clone())).or_else(|| cte_aliases.get(&qual).and_then(|cte| cte_param_columns.get(&(cte.clone(), col)))).copied()
-            })
-        })
-    };
-
-    // Pass 2: everything else.
     let mut kind = top_kind;
     let mut has_locking = false;
     let mut has_returning = false;
@@ -197,9 +143,9 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
     // How many times the statement reads each relation name, anywhere in it.
     let mut occurrences: HashMap<String, usize> = HashMap::new();
     let mut functions: Vec<String> = Vec::new();
-    let mut params: HashMap<i32, ParamUse> = HashMap::new();
     let mut filled: Vec<(i32, String, Filled)> = Vec::new();
     let mut bare: Vec<(i32, String, Filled)> = Vec::new();
+    let mut selected: Vec<(i32, String, Filled)> = Vec::new();
 
     let outer_joins = [
         protobuf::JoinType::JoinLeft as i32,
@@ -277,8 +223,10 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
                     let plain = select.is_some_and(|s| s.get("op").and_then(|o| o.as_i64()).is_none_or(|op| op == setop_none as i64 || op == 0));
                     let targets = select.filter(|_| plain && rows.is_none_or(|r| r.is_empty())).and_then(|s| s.get("target_list")).and_then(|t| t.as_array());
                     for (i, target) in targets.into_iter().flatten().enumerate() {
-                        let Some(n) = target.get("node").and_then(|n| n.get("ResTarget")).and_then(|rt| rt.get("val")).and_then(bare_param_number) else { continue };
-                        if let Some(column) = column_at(i) {
+                        let val = target.get("node").and_then(|n| n.get("ResTarget")).and_then(|rt| rt.get("val"));
+                        let (Some(n), Some(column)) = (val.and_then(direct_param_number), column_at(i)) else { continue };
+                        selected.push((n, relation.to_string(), column.clone()));
+                        if val.and_then(bare_param_number).is_some() {
                             bare.push((n, relation.to_string(), column));
                         }
                     }
@@ -331,16 +279,6 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
             if let Some(name) = name {
                 if !functions.iter().any(|f| f == name) {
                     functions.push(name.to_string());
-                }
-            }
-        }
-        "CoalesceExpr" => {
-            let Some(args) = node.get("args").and_then(|a| a.as_array()) else { return };
-            if let Some(n) = args.first().and_then(param_of) {
-                let entry = params.entry(n).or_default();
-                entry.coalesce = true;
-                if let Some(d) = args.get(1).and_then(const_json) {
-                    entry.coalesce_default = Some(d);
                 }
             }
         }
@@ -454,9 +392,9 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
         read_set,
         write_set,
         functions,
-        params,
         filled,
         bare,
+        selected,
         has_returning,
         has_outer_join,
         nullable_tables,
@@ -659,48 +597,6 @@ fn direct_param_number(wrapper: &Value) -> Option<i32> {
     None
 }
 
-/// (qualifier, column) for a ColumnRef like `input.q` or bare `q`.
-fn column_ref_fields(wrapper: &Value) -> Option<(Option<String>, String)> {
-    let cr = wrapper.get("node")?.get("ColumnRef")?;
-    let fields = cr.get("fields")?.as_array()?;
-    let mut parts: Vec<String> = Vec::new();
-    for f in fields {
-        let s = f.get("node")?.get("String")?.get("sval")?.as_str()?;
-        parts.push(s.to_string());
-    }
-    match parts.len() {
-        1 => Some((None, parts.pop().unwrap())),
-        2 => {
-            let col = parts.pop().unwrap();
-            Some((Some(parts.pop().unwrap()), col))
-        }
-        _ => None,
-    }
-}
-
-/// A literal constant as a JSON value, for surfacing coalesce defaults in the schema.
-fn const_json(wrapper: &Value) -> Option<Value> {
-    let inner = wrapper.get("node")?;
-    if let Some(t) = inner.get("TypeCast") {
-        return t.get("arg").and_then(const_json);
-    }
-    let c = inner.get("AConst")?;
-    let val = c.get("val")?;
-    if let Some(i) = val.get("Ival").and_then(|v| v.get("ival")) {
-        return i.as_i64().map(Value::from).or(Some(Value::from(0)));
-    }
-    if let Some(f) = val.get("Fval").and_then(|v| v.get("fval")).and_then(|v| v.as_str()) {
-        return f.parse::<f64>().ok().map(Value::from);
-    }
-    if let Some(s) = val.get("Sval").and_then(|v| v.get("sval")).and_then(|v| v.as_str()) {
-        return Some(Value::from(s));
-    }
-    if let Some(b) = val.get("Boolval").and_then(|v| v.get("boolval")) {
-        return Some(Value::from(b.as_bool().unwrap_or(false)));
-    }
-    None
-}
-
 /// libpg_query error strings carry a location suffix worth keeping, but strip the noisy prefix.
 fn clean_parse_error(msg: &str) -> String {
     msg.trim_start_matches("Error { message: \"").trim_end_matches("\" }").to_string()
@@ -740,23 +636,6 @@ mod tests {
     }
 
     #[test]
-    fn coalesce_in_limit_marks_optional_with_default() {
-        let a = analyze("SELECT id FROM todos LIMIT coalesce($1::int, 50)").unwrap();
-        let p = a.params.get(&1).expect("param 1 analyzed");
-        assert!(p.coalesce);
-        assert_eq!(p.coalesce_default, Some(serde_json::json!(50)));
-    }
-
-    #[test]
-    fn coalesce_without_literal_default_is_still_optional() {
-        let a = analyze("SELECT id FROM todos WHERE created_at > coalesce($1::timestamptz, now() - interval '1 day')")
-            .unwrap();
-        let p = a.params.get(&1).unwrap();
-        assert!(p.coalesce);
-        assert_eq!(p.coalesce_default, None);
-    }
-
-    #[test]
     fn a_parameter_written_whole_to_a_column_names_it() {
         use Filled::{Name, Position};
         let a = analyze("INSERT INTO notes (title, body) VALUES ($1, $2::text), ($3, lower($4)) ON CONFLICT (title) DO UPDATE SET body = $5").unwrap();
@@ -788,39 +667,6 @@ mod tests {
         assert_eq!(analyze("INSERT INTO notes SELECT $1, $2").unwrap().bare, vec![(1, "notes".into(), Position(0)), (2, "notes".into(), Position(1))]);
         assert!(analyze("INSERT INTO notes (a) SELECT $1 UNION ALL SELECT $2").unwrap().bare.is_empty());
         assert_eq!(analyze("UPDATE notes SET a = $1, b = $2::text WHERE id = $3").unwrap().bare, vec![named(1, "a")]);
-    }
-
-    #[test]
-    fn a_null_test_marks_nothing() {
-        // A null test of the parameter and `IS NOT DISTINCT FROM` let the caller pass no null
-        // `coalesce` does, and a bare write to a nullable column.
-        for sql in ["SELECT id FROM t WHERE $1::text IS NULL OR title = 'x'", "SELECT id FROM t WHERE $1::text IS NOT NULL", "SELECT id FROM t WHERE title IS NOT DISTINCT FROM $1", "WITH input AS (SELECT $1::int AS min) SELECT id FROM t, input i WHERE i.min IS NULL OR score > i.min"] {
-            assert!(analyze(sql).unwrap().params.get(&1).is_none_or(|u| !u.coalesce), "{sql}");
-        }
-    }
-
-    #[test]
-    fn input_cte_coalesce_traces_through() {
-        // Each parameter appears once in a statement, so a value coalesced and read again is
-        // selected once in a WITH, and a coalesce of its column is a coalesce of the parameter.
-        let a = analyze(
-            "WITH input AS (SELECT coalesce($1::int, 50) AS lim, $2::text AS q)
-             SELECT id FROM todos, input WHERE title ILIKE '%' || coalesce(input.q, '') || '%'
-             LIMIT (SELECT lim FROM input)",
-        )
-        .unwrap();
-        assert_eq!(a.params.get(&1).unwrap().coalesce_default, Some(serde_json::json!(50)));
-        assert!(a.params.get(&2).unwrap().coalesce);
-        // By the name a FROM item gives the WITH query too.
-        let a = analyze("WITH input AS (SELECT $1::int AS v) SELECT id FROM t, input i WHERE score = coalesce(i.v, score)").unwrap();
-        assert!(a.params.get(&1).unwrap().coalesce);
-        let a = analyze("WITH input AS (SELECT $1::int AS v) SELECT id FROM t, input WHERE score = coalesce(input.v, score)").unwrap();
-        assert!(a.params.get(&1).unwrap().coalesce);
-        // A column that only compares with the parameter's, or a coalesce that has it second, says nothing of NULL.
-        let a = analyze("WITH input AS (SELECT $1::int AS v) SELECT id FROM t, input i WHERE score > i.v").unwrap();
-        assert!(a.params.get(&1).is_none_or(|u| !u.coalesce));
-        let a = analyze("SELECT id FROM t WHERE score = coalesce(score, $1::int)").unwrap();
-        assert!(a.params.get(&1).is_none_or(|u| !u.coalesce));
     }
 
     #[test]

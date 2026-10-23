@@ -20,7 +20,7 @@ integer_columns.sql: many () -> { tiny: int2?, small: int2?, medium: int4?, whol
 json_column.sql: many () -> { doc: json?, a: json?, a_text: text?, e: json?, kind: text? }
 literals.sql: one () -> { i: int8|int4, n: numeric, f: float8, s: text, nothing: unknown?, t: bool, h: bytea, b: bytea, d: date, tm: time, ts: timestamp, huge: int8, huger: numeric }
 param_abs.sql: one (n: float8, m: numeric, o: float8, p: float8, q: float8, r: int4, t: float8, u: numeric) -> { a: float8|int8|numeric?, r: numeric|int8|float8?, f: float8|int8|numeric?, c: float8|int8|numeric?, s: int8?, md: int8|float8|numeric?, pw: float8|int8|numeric?, tr: numeric|int8|float8? }
-param_aggregate.sql: one (n: int4, m: text, c: text, a: float8, d: date?) -> { s: numeric|int8|float8?, m: text?, c: int8, a: float8|int8|numeric?, d: date|timestamp|time|text? }
+param_aggregate.sql: one (n: int4, m: text, c: text, a: float8, d: date) -> { s: numeric|int8|float8?, m: text?, c: int8, a: float8|int8|numeric?, d: date|timestamp|time|text? }
 param_bare.sql: one (x: text) -> { x: text? }
 param_between.sql: many (from: timestamp, to: timestamp) -> { id: int4 }
 param_binary.sql: many (vb: bytea, b: bytea, bl: bytea) -> { id: int4 }
@@ -28,12 +28,12 @@ param_bit.sql: many (bits: bytea) -> { id: int4 }
 param_case.sql: many (a: int4) -> { picked: int8|float8|numeric? }
 param_case_operand.sql: one (n: int4) -> { word: text }
 param_cast.sql: one (a: int4, b: text, c: numeric, d: date, e: json, f: float8, g: int4, h: timestamp, i: timestamp, j: bytea, k: int4, l: float8) -> { a: int8?, b: text?, c: numeric?, d: date?, e: json?, f: float8?, g: int8?, h: timestamp?, i: time?, j: bytea?, k: int2?, l: float4? }
-param_coalesce.sql: many (v: text?) -> { id: int4 }
-param_coalesce_column.sql: many (n: int4?, m: int4) -> { n: int8|float8|numeric?, m: int8|float8|numeric? }
+param_coalesce.sql: many (v: text) -> { id: int4 }
+param_coalesce_column.sql: many (n: int4, m: int4) -> { n: int8|float8|numeric?, m: int8|float8|numeric? }
 param_comparison.sql: many (n: int4, m: int4, o: int4, p: text, q: int4) -> { bigger: bool?, same: bool?, listed: bool?, missing: bool, inside: bool? }
 param_date_arithmetic.sql: one (at: date, start: timestamp, a: timestamp, b: timestamp, c: timestamp) -> { next: date|timestamp|time|text?, later: timestamp|date|time|text?, days: int8|int4?, y: int2? }
 param_decimal.sql: many (price: numeric, exact: numeric) -> { id: int4 }
-param_derived.sql: many (n: int4, m: int4?) -> { x: int8|float8|numeric?, y: int8|float8|numeric }
+param_derived.sql: many (n: int4, m: int4) -> { x: int8|float8|numeric?, y: int8|float8|numeric }
 param_div.sql: one (n: int4) -> { half: int8|float8|numeric? }
 param_divided.sql: one (n: int4) -> { half: numeric|int8|float8? }
 param_float.sql: many (f: float8, d: float8) -> { id: int4 }
@@ -60,11 +60,11 @@ param_limit.sql: many (n: int4, skip: int4) -> { id: int4 }
 param_negated.sql: one (n: float8) -> { negated: float8|int8|numeric? }
 param_null_test.sql: many (v: text) -> { id: int4 }
 param_order_by.sql: many (col: text) -> { id: int4 } !! reylo17: order by :col sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :col when 'name' then name end
-param_pass_aggregate.sql: one (a: text, b: numeric?, c: text, d: int4?, e: date) -> { a: text?, b: numeric|int8|float8|text?, c: text?, d: int8|float8|numeric?, e: date|timestamp|time|text? }
-param_pass_bare.sql: one (a: text, b: text, c: text, d: text?, e: int4?, f: numeric?, g: timestamp?) -> { a: text?, b: text?, c: text?, d: text, e: int8|float8|numeric, f: numeric|int8|float8|text, g: timestamp|date|time|text }
-param_pass_date.sql: many (d: date?, e: timestamp, f: date, g: timestamp, h: time, i: date) -> { a: date|timestamp|time|text?, b: timestamp|date|time|text?, c: date|timestamp|time|text?, d: timestamp|date|time|text?, e: unknown?, f: date|timestamp|time|text? }
-param_pass_decimal.sql: many (p: numeric?, q: numeric, r: numeric, s: numeric, t: numeric, u: numeric, v: numeric) -> { a: numeric|int8|float8|text?, b: numeric|int8|float8|text?, c: numeric|int8|float8|text?, d: numeric|int8|float8|text?, e: numeric|int8|float8|text?, f: numeric|int8|float8|text?, g: numeric|int8|float8|text? }
-param_pass_window.sql: many (a: text, b: int4?, c: numeric) -> { a: text?, b: int8|float8|numeric?, c: numeric|int8|float8|text? }
+param_pass_aggregate.sql: one (a: text, b: numeric, c: text, d: int4, e: date) -> { a: text?, b: numeric|int8|float8|text?, c: text?, d: int8|float8|numeric?, e: date|timestamp|time|text? }
+param_pass_bare.sql: one (a: text, b: text, c: text, d: text, e: int4, f: numeric, g: timestamp) -> { a: text?, b: text?, c: text?, d: text, e: int8|float8|numeric, f: numeric|int8|float8|text, g: timestamp|date|time|text }
+param_pass_date.sql: many (d: date, e: timestamp, f: date, g: timestamp, h: time, i: date) -> { a: date|timestamp|time|text?, b: timestamp|date|time|text?, c: date|timestamp|time|text?, d: timestamp|date|time|text?, e: unknown?, f: date|timestamp|time|text? }
+param_pass_decimal.sql: many (p: numeric, q: numeric, r: numeric, s: numeric, t: numeric, u: numeric, v: numeric) -> { a: numeric|int8|float8|text?, b: numeric|int8|float8|text?, c: numeric|int8|float8|text?, d: numeric|int8|float8|text?, e: numeric|int8|float8|text?, f: numeric|int8|float8|text?, g: numeric|int8|float8|text? }
+param_pass_window.sql: many (a: text, b: int4, c: numeric) -> { a: text?, b: int8|float8|numeric?, c: numeric|int8|float8|text? }
 param_plus_column.sql: many (n: int4) -> { sum: int8|float8|numeric? }
 param_plus_one.sql: one (n: int4) -> { next: int8|float8|numeric? }
 param_repeated.sql: many (n: unknown) -> {  } !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :n::<type> as n) select … from input !! reylo3: The parameter :n appears more than once; use each parameter once, and select it in a with to read it twice, cast to its type, as in: with input as (select :n::<type> as n) select … from input

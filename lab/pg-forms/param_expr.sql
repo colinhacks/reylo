@@ -1,1 +1,1 @@
-select :x::int as x, coalesce(:y, 'd') as y
+select :x::int as x, coalesce(:y::nullable(text), 'd') as y

@@ -1,16 +1,12 @@
 //! Which MySQL parameters the caller may pass null for, by the rule of Postgres and SQLite
-//! (`postgres::nullable_params`, `sqlite::coalesced_params`), read off the `sqlparser` tree, since
-//! MySQL's prepare says nothing of a parameter's nullability: one the
-//! statement passes first to `coalesce` or `ifnull`, the two-argument coalesce, bare or under the
-//! conversion a `::type` cast compiles to, directly or through the column of a WITH query or a
-//! derived table that selects it (`with input as (select :p as p) … where coalesce(input.p, 0) =
-//! 0`); and one that is, bare, with no cast, the whole value written to a column that may hold
-//! null (a row of an INSERT's or a REPLACE's VALUES, the SELECT that feeds one, its SET list, an
-//! UPDATE's SET, ON DUPLICATE KEY UPDATE), unless it also fills a column that refuses null, by its
-//! NOT NULL or by an enforced CHECK that tests it IS NOT NULL. A cast parameter is its cast's
-//! type: "If you wanted to do type inference based on the column, you shouldn't have added the
-//! cast." Every other parameter is a non-null value, one the statement tests for null or compares
-//! with `<=>` included.
+//! (`postgres::nullable_params`), read off the `sqlparser` tree, since MySQL's prepare says nothing
+//! of a parameter's nullability: one cast to `nullable(…)`, and one that is, bare, with no cast,
+//! the whole value written to a column that may hold null (a row of an INSERT's or a REPLACE's
+//! VALUES, the SELECT that feeds one, its SET list, an UPDATE's SET, ON DUPLICATE KEY UPDATE),
+//! unless it also fills a column that refuses null, by its NOT NULL or by an enforced CHECK that
+//! tests it IS NOT NULL. Any other cast parameter is its cast's type, which the cast states whole.
+//! Every other parameter is a non-null value, one the statement coalesces, tests for null or
+//! compares with `<=>` included.
 
 use crate::api::Scope;
 use crate::fresh::Tables;
@@ -61,7 +57,7 @@ pub(crate) fn names(rewritten: &lex::Rewritten) -> Names {
 /// Asks for the columns of the tables the statement writes a parameter to or compares one with,
 /// so that the answer comes in the round of the statement's own prepare.
 pub(crate) fn prefetch(statement: &Statement, names: &Names, host: &Host) {
-    let tables = written_tables(&filled(statement, names, true));
+    let tables = written(statement, names);
     if !tables.is_empty() {
         let _ = host.query(COLUMNS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
         let _ = host.query(CHECKS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
@@ -118,7 +114,7 @@ pub(crate) fn traced_from(statement: &Statement) -> Option<Vec<String>> {
 
 /// The parameters written whole to a column or compared whole with one, each with that column.
 fn typed_targets(statement: &Statement, names: &Names) -> Vec<(String, String, Target)> {
-    let mut targets = filled(statement, names, false);
+    let mut targets = filled(statement, names, Fill::Typed);
     targets.extend(compared(statement, names));
     targets
 }
@@ -279,16 +275,25 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
     out
 }
 
-/// The parameters of `statement` the caller may pass null for, by name.
-pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host) -> Lazy<HashSet<String>> {
-    let mut walk = Walk { names, out: HashSet::new(), tables: Vec::new() };
-    walk.statement(statement, &Env::default());
-    let mut out = walk.out;
-    let filled = filled(statement, names, true);
-    if filled.is_empty() {
+/// The parameters the caller may pass null for, by name, and each one cast to `nullable(…)` that is
+/// written whole to a column refusing null, as `(parameter, table, column)`.
+pub(crate) struct Nullable {
+    pub params: HashSet<String>,
+    pub refused: Vec<(String, String, String)>,
+}
+
+/// The parameters of `statement` the caller may pass null for: those `marked` with `nullable(…)`,
+/// and the bare ones written whole to a column that may hold null.
+pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked: &[String]) -> Lazy<Nullable> {
+    let mut out = Nullable { params: marked.iter().cloned().collect(), refused: Vec::new() };
+    let filled_all = filled(statement, names, Fill::Written);
+    let bare = filled(statement, names, Fill::Bare);
+    let marked_writes: Vec<&(String, String, Target)> = filled_all.iter().filter(|(param, _, _)| marked.contains(param)).collect();
+    if bare.is_empty() && marked_writes.is_empty() {
         return Some(out);
     }
-    let tables = json!(written_tables(&filled).join(","));
+    // Every table a parameter is written to whole, as `prefetch` asked.
+    let tables = json!(written(statement, names).join(","));
     let (rows, checks) = (host.query(COLUMNS_QUERY, vec![tables.clone()], Scope::Statement), host.query(CHECKS_QUERY, vec![tables], Scope::Statement));
     let (rows, checks) = (rows?, checks?);
     // Per table as the server names it, the CHECKs.
@@ -308,30 +313,38 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host) -> Laz
         let refused = checked.get(table).is_some_and(|clauses| clauses.iter().any(|clause| refuses_null(clause, &column)));
         columns.entry(table.to_string()).or_default().push((column, nullable.eq_ignore_ascii_case("YES") && !refused, invisible));
     }
-    let mut fills: HashMap<String, bool> = HashMap::new();
-    for (param, table, target) in filled {
+    // The column a target names, and whether it may hold NULL.
+    let column_of = |table: &String, target: &Target| {
         // The server's name for the table: the query compares names as the server does, so a
         // row under another case came back because the server holds the two for one table.
-        let known = match columns.get(&table) {
-            Some(known) => Some(known),
+        let known = match columns.get(table) {
+            Some(known) => known,
             None => {
-                let mut same = columns.iter().filter(|(name, _)| name.eq_ignore_ascii_case(&table));
+                let mut same = columns.iter().filter(|(name, _)| name.eq_ignore_ascii_case(table));
                 match (same.next(), same.next()) {
-                    (Some((_, known)), None) => Some(known),
-                    _ => None,
+                    (Some((_, known)), None) => known,
+                    _ => return None,
                 }
             }
         };
-        let Some(known) = known else { continue };
-        let nullable = match &target {
-            Target::Name(name) => known.iter().find(|(c, _, _)| c == name).map(|(_, nullable, _)| *nullable),
-            Target::Position(i) => known.iter().filter(|(_, _, invisible)| !invisible).nth(*i).map(|(_, nullable, _)| *nullable),
-        };
-        if let Some(nullable) = nullable {
+        let (column, nullable, _) = match target {
+            Target::Name(name) => known.iter().find(|(c, _, _)| c == name),
+            Target::Position(i) => known.iter().filter(|(_, _, invisible)| !invisible).nth(*i),
+        }?;
+        Some((column.clone(), *nullable))
+    };
+    let mut fills: HashMap<String, bool> = HashMap::new();
+    for (param, table, target) in bare {
+        if let Some((_, nullable)) = column_of(&table, &target) {
             *fills.entry(param).or_insert(true) &= nullable;
         }
     }
-    out.extend(fills.into_iter().filter(|(_, nullable)| *nullable).map(|(param, _)| param));
+    out.params.extend(fills.into_iter().filter(|(_, nullable)| *nullable).map(|(param, _)| param));
+    for (param, table, target) in marked_writes {
+        if let Some((column, false)) = column_of(table, target) {
+            out.refused.push((param.clone(), table.clone(), column));
+        }
+    }
     Some(out)
 }
 
@@ -362,8 +375,7 @@ fn refuses_null(clause: &str, column: &str) -> bool {
 /// queries too, and the table an INSERT, an UPDATE or a DELETE writes. A WITH query is no table, and
 /// a table of another schema is left out, since the facts are read from the current one.
 pub(crate) fn tables(statement: &Statement) -> Tables {
-    let names = Names::new();
-    let mut walk = Walk { names: &names, out: HashSet::new(), tables: Vec::new() };
+    let mut walk = Walk { tables: Vec::new() };
     walk.statement(statement, &Env::default());
     let target = |relation: &TableFactor| match relation {
         TableFactor::Table { name, .. } => table_name(name),
@@ -389,6 +401,15 @@ pub(crate) fn tables(statement: &Statement) -> Tables {
 enum Target {
     Name(String),
     Position(usize),
+}
+
+/// Every table `statement` writes a parameter to whole, bare or cast, the SELECT that feeds an
+/// INSERT included: the tables whose columns [`nullable`] reads.
+fn written(statement: &Statement, names: &Names) -> Vec<String> {
+    let mut tables = written_tables(&filled(statement, names, Fill::Written));
+    tables.sort();
+    tables.dedup();
+    tables
 }
 
 fn written_tables(filled: &[(String, String, Target)]) -> Vec<String> {
@@ -442,12 +463,24 @@ fn bare(e: &Expr, names: &Names) -> Option<String> {
     }
 }
 
-/// Every parameter written whole to a column: (parameter, table as the statement names it,
-/// column). With `bare`, only one with no cast, which takes the column's nullability, and the
-/// columns of the one SELECT that feeds an INSERT too; otherwise one under the casts too, which
-/// takes the column's type.
-fn filled(statement: &Statement, names: &Names, bare_only: bool) -> Vec<(String, String, Target)> {
-    let direct = |e: &Expr, names: &Names| if bare_only { bare(e, names) } else { direct(e, names) };
+/// Which parameters written whole to a column [`filled`] lists.
+#[derive(Clone, Copy, PartialEq)]
+enum Fill {
+    /// Bare or under the casts, the SELECT that feeds an INSERT aside: those that take the
+    /// column's type.
+    Typed,
+    /// Only one with no cast, the columns of the one SELECT that feeds an INSERT included: those
+    /// that take the column's nullability.
+    Bare,
+    /// Bare or under the casts, the columns of the one SELECT that feeds an INSERT included: every
+    /// write a parameter cast to `nullable(…)` is checked against.
+    Written,
+}
+
+/// Every parameter written whole to a column, as `fill` picks them: (parameter, table as the
+/// statement names it, column).
+fn filled(statement: &Statement, names: &Names, fill: Fill) -> Vec<(String, String, Target)> {
+    let direct = |e: &Expr, names: &Names| if fill == Fill::Bare { bare(e, names) } else { direct(e, names) };
     let mut out = Vec::new();
     let column = |target: &ast::AssignmentTarget| match target {
         ast::AssignmentTarget::ColumnName(name) => name.0.last().and_then(|p| p.as_ident()).map(|i| (name.0.len(), i.value.to_ascii_lowercase())),
@@ -474,7 +507,7 @@ fn filled(statement: &Statement, names: &Names, bare_only: bool) -> Vec<(String,
                     }
                 }
                 // The SELECT that feeds the INSERT writes its columns whole, as a VALUES row does.
-                Some(SetExpr::Select(select)) if bare_only => {
+                Some(SetExpr::Select(select)) if fill != Fill::Typed => {
                     for (i, item) in select.projection.iter().enumerate() {
                         let (SelectItem::UnnamedExpr(value) | SelectItem::ExprWithAlias { expr: value, .. }) = item else { break };
                         let Some(param) = direct(value, names) else { continue };
@@ -532,103 +565,22 @@ fn filled(statement: &Statement, names: &Names, bare_only: bool) -> Vec<(String,
     out
 }
 
-/// A query's columns in order, each with the name a statement reads it by, if it has one, and
-/// the parameter it selects whole, if it does; `whole` where no wildcard stands for some of them.
-#[derive(Clone, Default)]
-struct Columns {
-    list: Vec<(Option<String>, Option<String>)>,
-    whole: bool,
-}
-
-impl Columns {
-    /// The columns under the names a column list gives them (`with input (q) as (select :q)`).
-    fn renamed(self, names: &[ast::TableAliasColumnDef]) -> Columns {
-        if names.is_empty() {
-            return self;
-        }
-        let keep = self.whole && self.list.len() == names.len();
-        let list = names.iter().enumerate().map(|(i, n)| (Some(n.name.value.to_ascii_lowercase()), self.list.get(i).and_then(|(_, p)| p.clone()).filter(|_| keep))).collect();
-        Columns { list, whole: true }
-    }
-
-    fn get(&self, column: &str) -> Option<&Option<String>> {
-        self.list.iter().find(|(c, _)| c.as_deref() == Some(column)).map(|(_, p)| p)
-    }
-
-    /// Whether every column has its name here, so that a bare name absent from it is not the query's.
-    fn complete(&self) -> bool {
-        self.whole && self.list.iter().all(|(c, _)| c.is_some())
-    }
-}
-
-/// A FROM item: the name the statement qualifies its columns with, in lower case, and, for a WITH
-/// query or a derived table, its columns; a table's are not known here.
-#[derive(Clone)]
-struct Item {
-    name: String,
-    columns: Option<Columns>,
-}
-
-/// What a place in the statement sees: the WITH queries by name, the latest last, and the FROM
-/// items of each enclosing SELECT, the innermost last.
+/// What a place in the statement sees: the WITH queries in scope, by name.
 #[derive(Clone, Default)]
 struct Env {
-    ctes: Vec<(String, Option<Columns>)>,
-    levels: Vec<Vec<Item>>,
+    ctes: Vec<String>,
 }
 
-struct Walk<'n> {
-    names: &'n Names,
-    out: HashSet<String>,
+/// A walk of the statement for the tables of the current schema its FROM items read.
+struct Walk {
     /// Each table of the current schema a FROM item reads, as the statement names it.
     tables: Vec<String>,
 }
 
-impl Walk<'_> {
-    /// The parameter an operand is, under casts, or that the column it reads selects.
-    fn param_of(&self, e: &Expr, env: &Env) -> Option<String> {
-        match e {
-            Expr::Nested(inner) | Expr::Cast { expr: inner, .. } | Expr::Convert { expr: inner, .. } => self.param_of(inner, env),
-            Expr::Function(_) => json_compact(e).and_then(|inner| self.param_of(inner, env)),
-            Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
-                let (by, column) = (parts[0].value.to_ascii_lowercase(), parts[1].value.to_ascii_lowercase());
-                let item = env.levels.iter().rev().find_map(|level| level.iter().find(|item| item.name == by))?;
-                item.columns.as_ref()?.get(&column)?.clone()
-            }
-            // A bare name is the column of the innermost SELECT whose FROM has it: of the one
-            // WITH query or derived table there that has it (a table that had it too would make
-            // the name ambiguous, which the prepare refuses), and of no level past a table,
-            // whose columns are not known here.
-            Expr::Identifier(ident) => {
-                let column = ident.value.to_ascii_lowercase();
-                for level in env.levels.iter().rev() {
-                    let mut having = level.iter().filter_map(|item| item.columns.as_ref().filter(|c| c.complete())?.get(&column));
-                    match (having.next(), having.next()) {
-                        (Some(param), None) => return param.clone(),
-                        (Some(_), Some(_)) => return None,
-                        _ => {}
-                    }
-                    if level.iter().any(|item| item.columns.as_ref().is_none_or(|c| !c.complete())) {
-                        return None;
-                    }
-                }
-                None
-            }
-            _ => direct(e, self.names),
-        }
-    }
-
-    fn mark(&mut self, e: &Expr, env: &Env) {
-        if let Some(param) = self.param_of(e, env) {
-            self.out.insert(param);
-        }
-    }
-
+impl Walk {
     fn statement(&mut self, statement: &Statement, env: &Env) {
         match statement {
-            Statement::Query(q) => {
-                self.query(q, env);
-            }
+            Statement::Query(q) => self.query(q, env),
             Statement::Insert(insert) => {
                 if let Some(source) = &insert.source {
                     self.query(source, env);
@@ -646,92 +598,65 @@ impl Walk<'_> {
                 if let Some(ast::UpdateTableFromKind::BeforeSet(more) | ast::UpdateTableFromKind::AfterSet(more)) = &update.from {
                     from.extend(more.iter().cloned());
                 }
-                let env = self.level(&from, env);
+                self.level(&from, env);
                 for a in &update.assignments {
-                    self.expr(&a.value, &env);
+                    self.expr(&a.value, env);
                 }
                 for e in update.selection.iter().chain(update.order_by.iter().map(|o| &o.expr)).chain(update.limit.iter()) {
-                    self.expr(e, &env);
+                    self.expr(e, env);
                 }
             }
             Statement::Delete(delete) => {
                 let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) = &delete.from;
                 let mut from = from.clone();
                 from.extend(delete.using.iter().flatten().cloned());
-                let env = self.level(&from, env);
+                self.level(&from, env);
                 for e in delete.selection.iter().chain(delete.order_by.iter().map(|o| &o.expr)).chain(delete.limit.iter()) {
-                    self.expr(e, &env);
+                    self.expr(e, env);
                 }
             }
             _ => {}
         }
     }
 
-    /// Walks a query and returns its columns.
-    fn query(&mut self, q: &Query, env: &Env) -> Option<Columns> {
+    fn query(&mut self, q: &Query, env: &Env) {
         let mut env = env.clone();
         for cte in q.with.iter().flat_map(|w| &w.cte_tables) {
-            let columns = self.query(&cte.query, &env).map(|c| c.renamed(&cte.alias.columns));
-            env.ctes.push((cte.alias.name.value.to_ascii_lowercase(), columns));
+            self.query(&cte.query, &env);
+            env.ctes.push(cte.alias.name.value.to_ascii_lowercase());
         }
-        let (inner, columns) = self.body(&q.body, &env);
-        let inner = inner.unwrap_or(env);
+        self.body(&q.body, &env);
         for o in q.order_by.iter().flat_map(|o| match &o.kind {
             ast::OrderByKind::Expressions(list) => list.as_slice(),
             _ => &[],
         }) {
-            self.expr(&o.expr, &inner);
+            self.expr(&o.expr, &env);
         }
-        columns
     }
 
-    /// Walks a query's body; a SELECT gives what its ORDER BY sees, and its columns.
-    fn body(&mut self, body: &SetExpr, env: &Env) -> (Option<Env>, Option<Columns>) {
+    fn body(&mut self, body: &SetExpr, env: &Env) {
         match body {
-            SetExpr::Select(s) => {
-                let (inner, columns) = self.select(s, env);
-                (Some(inner), Some(columns))
-            }
-            SetExpr::Query(q) => (None, self.query(q, env)),
+            SetExpr::Select(s) => self.select(s, env),
+            SetExpr::Query(q) => self.query(q, env),
             SetExpr::SetOperation { left, right, .. } => {
                 self.body(left, env);
                 self.body(right, env);
-                (None, None)
             }
             SetExpr::Values(values) => {
                 for e in values.rows.iter().flat_map(|row| &row.content) {
                     self.expr(e, env);
                 }
-                (None, None)
             }
-            SetExpr::Insert(s) | SetExpr::Update(s) | SetExpr::Delete(s) | SetExpr::Merge(s) => {
-                self.statement(s, env);
-                (None, None)
-            }
-            _ => (None, None),
+            SetExpr::Insert(s) | SetExpr::Update(s) | SetExpr::Delete(s) | SetExpr::Merge(s) => self.statement(s, env),
+            _ => {}
         }
     }
 
-    fn select(&mut self, s: &Select, env: &Env) -> (Env, Columns) {
-        let inner = self.level(&s.from, env);
-        let mut columns = Columns { list: Vec::new(), whole: true };
+    fn select(&mut self, s: &Select, env: &Env) {
+        self.level(&s.from, env);
         for item in &s.projection {
-            match item {
-                SelectItem::ExprWithAlias { expr, alias } => {
-                    self.expr(expr, &inner);
-                    columns.list.push((Some(alias.value.to_ascii_lowercase()), self.param_of(expr, &inner)));
-                }
-                SelectItem::UnnamedExpr(expr) => {
-                    self.expr(expr, &inner);
-                    // Any other expression MySQL names by its text, which no statement reads it by.
-                    let name = match expr {
-                        Expr::Identifier(i) => Some(i.value.to_ascii_lowercase()),
-                        Expr::CompoundIdentifier(parts) => parts.last().map(|i| i.value.to_ascii_lowercase()),
-                        _ => None,
-                    };
-                    columns.list.push((name, self.param_of(expr, &inner)));
-                }
-                _ => columns.whole = false,
+            if let SelectItem::ExprWithAlias { expr, .. } | SelectItem::UnnamedExpr(expr) = item {
+                self.expr(expr, env);
             }
         }
         let group_by = match &s.group_by {
@@ -739,31 +664,26 @@ impl Walk<'_> {
             _ => &[],
         };
         for e in s.selection.iter().chain(group_by).chain(s.having.iter()).chain(s.qualify.iter()) {
-            self.expr(e, &inner);
+            self.expr(e, env);
         }
-        (inner, columns)
     }
 
-    /// The FROM items of a SELECT, as the level its expressions see; the subqueries and the ON
-    /// conditions in them walked.
-    fn level(&mut self, from: &[TableWithJoins], env: &Env) -> Env {
-        let mut items: Vec<Item> = Vec::new();
+    /// The FROM items of a SELECT: the tables they read, and the subqueries and the ON conditions
+    /// in them walked.
+    fn level(&mut self, from: &[TableWithJoins], env: &Env) {
         let mut on: Vec<&Expr> = Vec::new();
         for twj in from {
-            self.items(twj, env, &mut items, &mut on);
+            self.items(twj, env, &mut on);
         }
-        let mut inner = env.clone();
-        inner.levels.push(items);
         for e in on {
-            self.expr(e, &inner);
+            self.expr(e, env);
         }
-        inner
     }
 
-    fn items<'t>(&mut self, twj: &'t TableWithJoins, env: &Env, items: &mut Vec<Item>, on: &mut Vec<&'t Expr>) {
-        self.factor(&twj.relation, env, items, on);
+    fn items<'t>(&mut self, twj: &'t TableWithJoins, env: &Env, on: &mut Vec<&'t Expr>) {
+        self.factor(&twj.relation, env, on);
         for join in &twj.joins {
-            self.factor(&join.relation, env, items, on);
+            self.factor(&join.relation, env, on);
             use ast::JoinOperator as J;
             let constraint = match &join.join_operator {
                 J::Join(c) | J::Inner(c) | J::Left(c) | J::LeftOuter(c) | J::Right(c) | J::RightOuter(c) | J::FullOuter(c) | J::CrossJoin(c) | J::Semi(c) | J::LeftSemi(c) | J::RightSemi(c) | J::Anti(c) | J::LeftAnti(c) | J::RightAnti(c) | J::StraightJoin(c) => Some(c),
@@ -776,58 +696,25 @@ impl Walk<'_> {
         }
     }
 
-    fn factor<'t>(&mut self, factor: &'t TableFactor, env: &Env, items: &mut Vec<Item>, on: &mut Vec<&'t Expr>) {
-        let alias_of = |alias: &Option<ast::TableAlias>| alias.as_ref().map(|a| a.name.value.to_ascii_lowercase());
+    fn factor<'t>(&mut self, factor: &'t TableFactor, env: &Env, on: &mut Vec<&'t Expr>) {
         match factor {
-            TableFactor::Table { name, alias, .. } => {
-                let table = table_name(name).map(|t| t.to_ascii_lowercase());
+            TableFactor::Table { name, .. } => {
                 // A WITH query in scope is what a bare name in FROM reads, whatever table shares it.
-                let cte = table.as_ref().and_then(|t| env.ctes.iter().rev().find(|(n, _)| n == t));
-                if cte.is_none() {
+                let table = table_name(name).map(|t| t.to_ascii_lowercase());
+                if !table.is_some_and(|t| env.ctes.contains(&t)) {
                     self.tables.extend(table_name(name));
                 }
-                let columns = cte.map(|(_, c)| c.clone().map(|c| c.renamed(alias.as_ref().map_or(&[], |a| a.columns.as_slice()))));
-                let by = alias_of(alias).or(table).or_else(|| name.0.last().and_then(|p| p.as_ident()).map(|i| i.value.to_ascii_lowercase())).unwrap_or_default();
-                items.push(Item { name: by, columns: columns.flatten() });
             }
-            TableFactor::Derived { subquery, alias, lateral, .. } => {
-                // A LATERAL one sees the items before it.
-                let seen = match lateral {
-                    true => {
-                        let mut seen = env.clone();
-                        seen.levels.push(items.clone());
-                        seen
-                    }
-                    false => env.clone(),
-                };
-                let columns = self.query(subquery, &seen).map(|c| c.renamed(alias.as_ref().map_or(&[], |a| a.columns.as_slice())));
-                items.push(Item { name: alias_of(alias).unwrap_or_default(), columns });
-            }
-            TableFactor::NestedJoin { table_with_joins, .. } => self.items(table_with_joins, env, items, on),
-            TableFactor::JsonTable { json_expr, alias, .. } => {
-                self.expr(json_expr, env);
-                items.push(Item { name: alias_of(alias).unwrap_or_default(), columns: None });
-            }
-            TableFactor::TableFunction { expr, alias } => {
-                self.expr(expr, env);
-                items.push(Item { name: alias_of(alias).unwrap_or_default(), columns: None });
-            }
-            _ => items.push(Item { name: String::new(), columns: None }),
+            TableFactor::Derived { subquery, .. } => self.query(subquery, env),
+            TableFactor::NestedJoin { table_with_joins, .. } => self.items(table_with_joins, env, on),
+            TableFactor::JsonTable { json_expr, .. } => self.expr(json_expr, env),
+            TableFactor::TableFunction { expr, .. } => self.expr(expr, env),
+            _ => {}
         }
     }
 
-    /// Walks an expression: a parameter passed first to `coalesce` or `ifnull` is marked.
+    /// Walks an expression, for the subqueries in it.
     fn expr(&mut self, e: &Expr, env: &Env) {
-        match e {
-            Expr::Function(f) if matches!(crate::mysql::builtin(f).as_str(), "coalesce" | "ifnull") => {
-                if let ast::FunctionArguments::List(list) = &f.args {
-                    if let Some(first) = list.args.first().and_then(arg_expr) {
-                        self.mark(first, env);
-                    }
-                }
-            }
-            _ => {}
-        }
         let mut children: Vec<&Expr> = Vec::new();
         let mut queries: Vec<&Query> = Vec::new();
         match e {
@@ -926,6 +813,13 @@ mod tests {
     /// `check (nick is not null)` and `check (note <> '')`; each parameter with whether it may be
     /// null, and whether the columns were asked for.
     fn nullable(sql: &str) -> (Vec<(String, bool)>, bool) {
+        let (analysis, asked) = analyzed(sql);
+        assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
+        (analysis.params.iter().map(|p| (p.name.clone(), p.nullable)).collect(), asked)
+    }
+
+    /// The analysis of `sql` over a scripted catalog, and whether it asked for the columns.
+    fn analyzed(sql: &str) -> (crate::api::Analysis, bool) {
         let columns = json!({ "rows": [
             ["accounts", "id", "NO", ""], ["accounts", "email", "YES", ""], ["accounts", "nick", "YES", ""], ["accounts", "note", "YES", ""],
             ["posts", "id", "NO", "auto_increment"], ["posts", "user_id", "NO", ""], ["posts", "title", "NO", ""], ["posts", "tag", "YES", ""],
@@ -939,8 +833,7 @@ mod tests {
         for _ in 0..8 {
             let host = Host::new(&answers);
             if let Some(analysis) = crate::mysql::analyze_text(sql, &host) {
-                assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
-                return (analysis.params.iter().map(|p| (p.name.clone(), p.nullable)).collect(), asked);
+                return (analysis, asked);
             }
             for need in host.needs() {
                 let (id, answer) = match need {
@@ -1098,29 +991,23 @@ mod tests {
     }
 
     #[test]
-    fn a_parameter_passed_first_to_coalesce_may_be_null() {
-        assert_eq!(may_be_null("select id from users where coalesce(:n, 0) = 0 and ifnull(:m, 1) = 1 and email = coalesce(email, :c) and ifnull(email, :d) = ''"), ["n", "m"]);
-        assert_eq!(may_be_null("update users set name = :name where coalesce(:id, id) = id"), ["id"]);
-        // Under the conversions a `::type` cast compiles to, keeping NULL.
-        assert_eq!(may_be_null("update users set email = coalesce(JSON_COMPACT(:e), email), name = coalesce(CAST(:n AS SIGNED), name), bio = ifnull(cast(:b as json), bio) where id = CAST(:id AS SIGNED)"), ["e", "n", "b"]);
-        // A function that is not the cast's, or JSON_COMPACT of more than the parameter, is an expression.
-        assert!(may_be_null("update users set email = coalesce(json_quote(:e), email), bio = coalesce(JSON_COMPACT(concat(:b, '')), bio) where id = :id").is_empty());
-        // Through the column of a WITH query or a derived table that selects it, by its name, by
-        // a FROM alias, by a column list, bare, and along a chain of WITH queries.
-        let q = |sql: &str| may_be_null(sql);
-        assert_eq!(q("with input as (select :q as q) select id from users, input where coalesce(input.q, users.name) = users.name"), ["q"]);
-        assert_eq!(q("with input as (select :q as q) select id from users, input i where coalesce(i.q, 0) = 0"), ["q"]);
-        assert_eq!(q("with input (v) as (select :q) select id from users, input where ifnull(input.v, 0) = 0"), ["q"]);
-        assert_eq!(q("with input as (select :q as q) select id from users, input where coalesce(q, 0) = 0"), ["q"]);
-        assert_eq!(q("with a as (select :q as q), b as (select a.q as r from a) select id from users, b where coalesce(b.r, 0) = 0"), ["q"]);
-        assert_eq!(q("select id from users, (select cast(:q as signed) as q) as s where users.id = coalesce(s.q, users.id)"), ["q"]);
-        assert_eq!(q("select id from users join (select :q as q) s on coalesce(s.q, 0) = 0"), ["q"]);
-        assert_eq!(q("with input as (select :q as q) select id from users where exists (select 1 from input where coalesce(input.q, 0) = 0)"), ["q"]);
-        // Not the parameter: another column of the item, a coalesce of a table's column, a
-        // compound, and a bare name a table between could hold.
-        assert!(q("with input as (select :q as q, 1 as one) select id from users, input where coalesce(input.one, users.email) is null").is_empty());
-        assert!(q("with input as (select :q as q union all select 1) select id from users, input where coalesce(input.q, 0) = 0").is_empty());
-        assert!(q("with input as (select :q as q) select id from input where exists (select 1 from users where coalesce(q, 0) = 0)").is_empty());
-        assert!(q("select id from users where name = :q").is_empty());
+    fn a_parameter_cast_to_nullable_may_be_null_and_a_coalesced_one_may_not() {
+        assert_eq!(may_be_null("select id from users where id = coalesce(:id::nullable(int), id) and name = coalesce(:n, name) and ifnull(:m, 1) = 1"), ["id"]);
+        // Through a WITH query, which selects the parameter once and tests it for null.
+        assert_eq!(may_be_null("with input as (select :q::nullable(text) as q) select id from users, input where input.q is null or users.name = input.q"), ["q"]);
+        assert!(may_be_null("with input as (select :q::text as q) select id from users, input where input.q is null or users.name = input.q").is_empty());
+        // Written whole to a column that holds NULL, and as typed JSON.
+        assert_eq!(may_be_null("update users set email = :e::nullable(text), bio = :b::nullable(json('{\"type\": \"object\"}')) where id = :id"), ["e", "b"]);
+    }
+
+    #[test]
+    fn a_parameter_cast_to_nullable_and_written_to_a_column_that_refuses_null_is_an_error() {
+        let messages = |sql: &str| analyzed(sql).0.diagnostics.into_iter().map(|d| d.message).collect::<Vec<_>>();
+        assert_eq!(messages("insert into users (name, email) values (:name::nullable(text), :email::nullable(text))"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
+        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
+        assert_eq!(messages("insert into users (name, email) select :name::nullable(text), :email::nullable(text)"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
+        // A CHECK that tests the column IS NOT NULL refuses it as NOT NULL does; one that tests
+        // anything else lets NULL pass.
+        assert_eq!(messages("update accounts set nick = :nick::nullable(text), note = :note::nullable(text) where id = 1"), ["The parameter :nick is cast to nullable(…), but it is written to accounts.nick, which refuses null: cast it to its type alone."]);
     }
 }

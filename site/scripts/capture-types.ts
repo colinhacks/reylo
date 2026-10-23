@@ -107,8 +107,9 @@ function jsonParams(sql: string): { name: string; schema: unknown }[] {
  */
 function compile(sql: string, dialect: Dialect): string {
   if (dialect === 'postgres') return sql.replace(new RegExp(String.raw`::(jsonb?)\(${SCHEMA_STRING}\)`, 'g'), '::$1');
-  const json = new RegExp(String.raw`\(?(${NAME})\)?::json\(${SCHEMA_STRING}\)`, 'g');
-  return sql.replace(json, dialect === 'mysql' ? 'cast($1 as json)' : '$1');
+  // The parentheses come in a pair or not at all: a call's own, as in `json_table(:x::json('…'), …)`, stays.
+  const json = new RegExp(String.raw`(?:\((${NAME})\)|(${NAME}))::json\(${SCHEMA_STRING}\)`, 'g');
+  return sql.replace(json, (_, wrapped: string | undefined, bare: string | undefined) => (dialect === 'mysql' ? `cast(${wrapped ?? bare} as json)` : (wrapped ?? bare)!));
 }
 
 // ---- The module, as src/mapper.ts renders it ----
@@ -170,7 +171,9 @@ async function render(session: Session, source: string, written: string, sql: st
   if (dialect === 'postgres' && analysis.kind === '') return { error: 'the statement is empty' };
   const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? ' | null' : ''}`);
   const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect))] as const);
-  const paramTypes = typed.map(([name, type]) => `${ident(name)}: ${type}`);
+  // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
+  const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === 'object' && 'default' in q.schema)).map((q) => q.name));
+  const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
   return { text: emit(withSqlcommenter(analysis.rewritten.sql, source), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, analysis.rewritten.sql), analysis };
 }
 

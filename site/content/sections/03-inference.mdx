@@ -259,19 +259,19 @@ from users u
 
 ### Nullable parameters
 
-To accept null, wrap a parameter in coalesce:
+To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null`:
 
 <Inferred>
 
 ```sql file="inferred_posts_by_user.sql" dialect="all"
 select id, title
 from posts
-where user_id = coalesce(:user_id::int, user_id)
+where user_id = coalesce(:user_id::nullable(int), user_id)
 ```
 
 </Inferred>
 
-A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
 
 ### Dynamic sorting
 
@@ -294,17 +294,89 @@ order by
 
 ### Dynamic filtering
 
-To filter a list by whatever the page's URL holds, declare every parameter up front in a `with`, each coalesced to the value that matches every row. A filter with no such value, like the author, coalesces to null:
+To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
 
 <Inferred>
 
-```sql file="search_posts.sql" dialect="all"
+```sql file="search_posts.sql" dialect="postgres"
 with input as (
-  select
-    coalesce(:q::text, '') as q,
-    coalesce(:author_id::int, null) as author_id,
-    coalesce(:status::text, 'all') as status,
-    coalesce(:sort::text, 'newest') as sort
+  select * from jsonb_to_record(:filters::jsonb('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }')) as f(q text, author_id int, status text, sort text)
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
+    when 'published' then p.published_at is not null
+    when 'draft' then p.published_at is null
+    else true
+  end
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
+```sql file="search_posts.sql" dialect="mysql"
+with input as (
+  select f.q, f.author_id, f.status, f.sort
+  from json_table(:filters::json('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }'), '$' columns (
+    q varchar(100) path '$.q',
+    author_id int path '$.author_id',
+    status varchar(9) path '$.status',
+    sort varchar(6) path '$.sort'
+  )) as f
+)
+select p.id, p.title, u.name as author
+from posts p
+join users u on u.id = p.user_id
+cross join input
+where p.title like concat('%', input.q, '%')
+  and (input.author_id is null or p.user_id = input.author_id)
+  and case input.status
+    when 'published' then p.published_at is not null
+    when 'draft' then p.published_at is null
+    else true
+  end
+order by
+  case when input.sort = 'title' then p.title end,
+  case when input.sort = 'oldest' then p.id end,
+  p.id desc
+```
+
+```sql file="search_posts.sql" dialect="sqlite"
+with input as (
+  select f ->> '$.q' as q, f ->> '$.author_id' as author_id, f ->> '$.status' as status, f ->> '$.sort' as sort
+  from (select :filters::json('{
+    "type": "object",
+    "properties": {
+      "q": { "type": "string", "maxLength": 100, "default": "" },
+      "author_id": { "type": "integer" },
+      "status": { "enum": ["published", "draft", "all"], "default": "all" },
+      "sort": { "enum": ["newest", "oldest", "title"], "default": "newest" }
+    },
+    "additionalProperties": false
+  }') as f)
 )
 select p.id, p.title, u.name as author
 from posts p
@@ -325,23 +397,15 @@ order by
 
 </Inferred>
 
-A search param missing from the URL is null, which turns its filter off:
+A filter left out takes its default, and one with none, like the author, is null, which turns it off:
 
 ```ts twoslash
 declare const request: Request;
 // ---cut---
 import searchPosts from "./search_posts.sql";
 
-// /posts?q=sql&status=draft
-const url = new URL(request.url);
-const author = url.searchParams.get("author");
-
-const posts = await searchPosts.run(db, {
-  q: url.searchParams.get("q"),
-  author_id: author === null ? null : Number(author),
-  status: url.searchParams.get("status"),
-  sort: url.searchParams.get("sort"),
-});
+// POST /posts/search with { "q": "sql", "status": "draft" }
+const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
 
 ### Unique keys

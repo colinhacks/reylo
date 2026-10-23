@@ -5,7 +5,7 @@ comparisons.sql: many () -> { eq: bool?, ne: bool?, lt: bool?, nse: bool, isnull
 expressions_over_flags.sql: many () -> { zero: int8|int4, most: int2?, plus: int8|int4?, either: int2? }
 not_truth_values.sql: many () -> { one: int8|int4, five: int8|int4, cs: int8|int4, mixed: int8|int4?, plus: int8|int4? }
 passed_through.sql: many () -> { co: bool, ifn: bool?, iff: bool?, cs: bool?, ni: bool?, sub: bool?, ex: bool }
-placeholders.sql: many (n: int4, m: int4, s: text, p: int4?) -> { eq: bool?, listed: bool?, lk: bool?, co: bool? }
+placeholders.sql: many (n: int4, m: int4, s: text, p: int4) -> { eq: bool?, listed: bool?, lk: bool?, co: bool? }
 rollup.sql: many () -> { same: bool?, n: int8 }
 through_derived.sql: many () -> { x: bool?, y: int8|int4? }
 through_view.sql: many () -> { done: int2, same: int8|int4? }

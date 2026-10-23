@@ -1,4 +1,4 @@
-coalesced.sql: many (n: integer?, doc: text?, guard: text?, id: integer) -> { n: integer?, doc: text? }
+coalesced.sql: many (n: integer?, doc: json?, guard: json?, id: integer) -> { n: integer?, doc: text? }
 update_row_value.sql: maybeOne (name: text, email: text, id: integer) -> { name: text, email: text? }
 update_set.sql: maybeOne (email: text, name: text, n: integer, doc: text, id: integer) -> { email: text?, n: integer?, doc: text? }
 upsert.sql: one (name: text, email: text) -> { id: integer }
