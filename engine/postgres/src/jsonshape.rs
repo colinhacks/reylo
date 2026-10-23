@@ -849,6 +849,10 @@ fn left_of(from: &[Node], alias: &str) -> Option<Vec<Node>> {
             return Some(None);
         }
         let Some(NodeEnum::JoinExpr(j)) = node.node.as_ref() else { return None };
+        // A join with an alias of its own hides the items inside it, as `from_items` reads them.
+        if j.alias.is_some() {
+            return None;
+        }
         if j.rarg.as_deref().is_some_and(|r| is_it(r, alias)) {
             return Some(Some(j.larg.as_deref()?.clone()));
         }
@@ -1737,6 +1741,9 @@ mod tests {
         assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT p.sku AS a0 FROM products p, users u WHERE p.org_id = u.org_id"));
         let p = shapes("SELECT x.o FROM orgs o, users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS o) x, teams t");
         assert_eq!(p.probes[0].sql, "SELECT u.name AS a0 FROM orgs o, users u");
+        // A join with an alias of its own hides a subquery of the same name inside it.
+        let p = shapes("SELECT x.o FROM (orgs u CROSS JOIN LATERAL (SELECT 1 AS o) x) j, users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS o) x");
+        assert_eq!(p.probes[0].sql, "SELECT u.name AS a0 FROM (orgs u CROSS JOIN LATERAL (SELECT 1 AS o) x ) j, users u");
         // A subquery that is no LATERAL one is a statement of its own, which the probe follows.
         let p = shapes("SELECT x.o FROM (SELECT jsonb_build_object('n', name) AS o FROM users) x");
         assert!(p.columns.is_empty());
