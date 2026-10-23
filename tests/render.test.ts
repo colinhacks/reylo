@@ -82,6 +82,13 @@ test("a scalar that names two types is either", () => {
   assert.equal(renderType(scalar("int8|mystery"), true, "mysql"), "unknown");
 });
 
+test("an hstore is its text on the wire and an object of nullable text inside a document", () => {
+  assert.equal(renderType(scalar("hstore"), false, "postgres"), "string");
+  assert.equal(renderType(scalar("hstore"), true, "postgres"), "Record<string, string | null>");
+  assert.equal(renderType({ kind: "list", of: scalar("hstore"), nullable_items: false }, false, "postgres"), "(Record<string, string | null>)[]");
+  assert.deepEqual(typeSchema(scalar("hstore"), "postgres", false, true), { type: "object", additionalProperties: { type: ["string", "null"] } });
+});
+
 test("a composite with no columns inside a document is an empty object", () => {
   assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, true), "Record<never, never>");
   assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, false), "string");

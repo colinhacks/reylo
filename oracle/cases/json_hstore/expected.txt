@@ -1,0 +1,3 @@
+aggregated.sql: one () -> { j: [hstore]? }
+object.sql: many () -> { j: { prefs: hstore, extra: hstore? } }
+plain.sql: many () -> { prefs: hstore, extra: hstore? }

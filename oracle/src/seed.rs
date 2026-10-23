@@ -212,6 +212,8 @@ fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
         (_, "I", _) => &["'10.0.0.1'", "'192.168.1.5/24'", "'::1'", "'::ffff:10.0.0.1'", "'10.0.0.0/8'", "'2001:db8::/32'", "'0.0.0.0/0'", "'::/0'"],
         (_, "U", "macaddr") => &["'08:00:2b:01:02:03'", "'00:00:00:00:00:00'", "'ff:ff:ff:ff:ff:ff'"],
         (_, "U", "macaddr8") => &["'08:00:2b:01:02:03:04:05'", "'08:00:2b:01:02:03'", "'00:00:00:00:00:00:00:00'", "'ff:ff:ff:ff:ff:ff:ff:ff'"],
+        // No key, one key, a NULL value, and a key that needs quoting.
+        (_, "U", "hstore") => &["''", "'a=>1'", "'a=>1, b=>NULL'", "'\"k e\"=>\"v\"'"],
         _ => &["'1'", "'a'"],
     };
     let mut scalars: Vec<String> = if col.kind == "e" { col.labels.iter().map(|l| quote(l)).collect() } else { literals.iter().map(|v| v.to_string()).collect() };
@@ -705,13 +707,15 @@ fn json_contradiction(ty: &Value, json: &Value, path: &str) -> Option<String> {
 /// Whether a JSON value inside a document is of the kind a value of the base type `name` is
 /// written as there, as `src/render.ts` types it (its table `json`): a number for the integers, a
 /// number or the text of a non-finite one for the floats and `numeric`, a boolean, an object for a
-/// row whose columns were not read, text for the rest it names. A type the table does not name renders `unknown`, which admits any value.
+/// row whose columns were not read and for an hstore, text for the rest it names. A type the table does not name renders `unknown`, which admits any value.
 fn json_admits(name: &str, json: &Value) -> bool {
     match name {
         "bool" => json.is_boolean(),
         "int2" | "int4" | "int8" | "oid" => json.is_number(),
         "float4" | "float8" | "numeric" => json.is_number() || matches!(json.as_str(), Some("NaN" | "Infinity" | "-Infinity")),
-        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "hstore" | "ltree" | "lquery" | "ltxtquery" => json.is_string(),
+        "text" | "varchar" | "bpchar" | "name" | "char" | "citext" | "uuid" | "time" | "timetz" | "interval" | "date" | "timestamp" | "timestamptz" | "bytea" | "money" | "inet" | "cidr" | "macaddr" | "macaddr8" | "xml" | "bit" | "varbit" | "tsvector" | "tsquery" | "regclass" | "regtype" | "int4range" | "int8range" | "numrange" | "tsrange" | "tstzrange" | "daterange" | "int4multirange" | "int8multirange" | "nummultirange" | "tsmultirange" | "tstzmultirange" | "datemultirange" | "ltree" | "lquery" | "ltxtquery" => json.is_string(),
+        // An hstore: an object of its keys, each value text or null.
+        "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         // A row whose columns were not read (a subquery's): an object of them.
         "record" => json.is_object(),
         _ => true,
