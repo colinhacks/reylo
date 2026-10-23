@@ -173,6 +173,8 @@ fn scalar(name: &str, opts: SchemaOptions) -> Value {
         "record" if opts.in_json => json!({"type": "object"}),
         // An hstore is an object of its keys inside a document, each value text or null.
         "hstore" if opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
+        // PostGIS writes a geometry inside a document through its cast to JSON, as GeoJSON.
+        "geometry" if opts.in_json => json!({"type": "object", "properties": {"type": {"type": "string"}}, "required": ["type"], "description": "a GeoJSON geometry"}),
         // `format: byte` is the table's word; `contentEncoding` is the JSON Schema 2020-12
         // spelling of the same base64, kept beside it for validators.
         "bytea" => json!({"type": "string", "format": "byte", "contentEncoding": "base64"}),
@@ -251,6 +253,13 @@ mod tests {
     fn inside_json_an_hstore_is_an_object_of_nullable_text() {
         assert_eq!(s("hstore").json_schema(IN_JSON), json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}));
         assert_eq!(s("hstore").json_schema(WIRE), json!({"type": "string", "description": "pg type hstore"}));
+    }
+
+    #[test]
+    fn inside_json_a_geometry_is_geojson_and_an_oid_its_text() {
+        assert_eq!(s("geometry").json_schema(IN_JSON)["required"], json!(["type"]));
+        assert_eq!(s("geometry").json_schema(WIRE), json!({"type": "string", "description": "pg type geometry"}));
+        assert_eq!(s("oid").json_schema(IN_JSON)["type"], json!("string"));
     }
 
     #[test]

@@ -25,6 +25,9 @@ function nullable(schema: Schema | JsonSchema): Schema | JsonSchema {
   return { anyOf: [schema, { type: "null" }] };
 }
 
+/** A PostGIS geometry inside a document, which its cast to JSON writes as GeoJSON. */
+const GEOJSON: Schema = { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" };
+
 /** A base type by its catalog name, standing where `inJson` says: inside a JSON document, as a parameter the caller passes, or as `run` returns it. */
 function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean): Schema {
   if (name.includes("|")) return { anyOf: name.split("|").map((part) => scalar(part, dialect, inJson, input)) };
@@ -65,6 +68,10 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       case "record": return { type: "object" };
       // An hstore: an object of its keys, each value text or null.
       case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
+      // PostGIS's cast to JSON: a GeoJSON geometry.
+      case "geometry": return GEOJSON;
+      // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
+      case "oid": return { type: "string" };
     }
   } else if (input) {
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.

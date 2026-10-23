@@ -1,0 +1,3 @@
+contrib.sql: many () -> { j: { c: cube, e: cube?, s: seg?, i: isbn?, q: query_int? }, row: { id: int8, c: cube, e: cube?, s: seg?, i: isbn?, q: query_int? } }
+oid_lists.sql: one () -> { os: [oid]?, ls: [oid]? }
+oids.sql: many () -> { j: { l: oid, o: oid }, row: { id: int8, l: oid, o: oid } }
