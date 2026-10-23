@@ -375,9 +375,10 @@
 }
 
 
-/* Setup's optional step, the editor: a chip after its name. It is drawn by the stylesheet, so the
-   table of contents, the anchor and the section's Markdown keep the name alone. */
-#nd-page .prose .dk-steps > h3#editors .dk-heading-text::after {
+/* Setup's optional steps, the editor and the skill: a chip after the name. It is drawn by the
+   stylesheet, so the table of contents, the anchor and the section's Markdown keep the name alone. */
+#nd-page .prose .dk-steps > h3#editors .dk-heading-text::after,
+#nd-page .prose .dk-steps > h3#skill .dk-heading-text::after {
   content: 'Optional';
   display: inline-block;
   margin-left: 0.6rem;
