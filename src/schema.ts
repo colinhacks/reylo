@@ -63,6 +63,8 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       case "bytea": return { type: "string", format: "hex" };
       // A row whose columns were not read (a subquery's): an object of them.
       case "record": return { type: "object" };
+      // An hstore: an object of its keys, each value text or null.
+      case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     }
   } else if (input) {
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.

@@ -21,7 +21,9 @@ const json: Record<string, string> = {
   bit: "string", varbit: "string", tsvector: "string", tsquery: "string", regclass: "string", regtype: "string",
   int4range: "string", int8range: "string", numrange: "string", tsrange: "string", tstzrange: "string", daterange: "string",
   int4multirange: "string", int8multirange: "string", nummultirange: "string", tsmultirange: "string", tstzmultirange: "string", datemultirange: "string",
-  hstore: "string", ltree: "string", lquery: "string", ltxtquery: "string",
+  ltree: "string", lquery: "string", ltxtquery: "string",
+  // An hstore is an object of its keys inside a document, each value text or null (`{"a": "1", "b": null}`).
+  hstore: "Record<string, string | null>",
   // A row whose columns were not read (a subquery's): an object of them inside a document.
   record: "Record<string, unknown>",
 };
