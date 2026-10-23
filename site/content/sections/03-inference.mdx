@@ -215,25 +215,6 @@ A call to a function your application registers fails the type check, cast or no
 
 </Details>
 
-### Dynamic sorting
-
-To pick the sort order at run time, order by a `case` on a parameter:
-
-<Inferred>
-
-```sql file="sort_users.sql" dialect="all"
--- a parameter appears once, so one read twice comes from a with
-with input as (select :sort::text as sort)
-select u.id, u.name
-from users u, input
-order by
-  case when input.sort = 'name' then u.name end,
-  case when input.sort = 'newest' then u.created_at end desc,
-  u.id
-```
-
-</Inferred>
-
 ### Left joins
 
 A left join makes the joined table's columns nullable:
@@ -291,6 +272,25 @@ where user_id = coalesce(:user_id::int, user_id)
 </Inferred>
 
 A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+
+### Dynamic sorting
+
+To pick the sort order at run time, order by a `case` on a parameter:
+
+<Inferred>
+
+```sql file="sort_users.sql" dialect="all"
+-- a parameter appears once, so one read twice comes from a with
+with input as (select :sort::text as sort)
+select u.id, u.name
+from users u, input
+order by
+  case when input.sort = 'name' then u.name end,
+  case when input.sort = 'newest' then u.created_at end desc,
+  u.id
+```
+
+</Inferred>
 
 ### Dynamic filtering
 
