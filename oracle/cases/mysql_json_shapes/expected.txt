@@ -20,7 +20,7 @@ array_agg_nullable_items.sql: one () -> { emails: [text?]? }
 array_agg_objects.sql: one () -> { list: [{ id: int4, name: text }]? }
 array_agg_of_json_column.sql: one () -> { docs: [json?]?, wrapped: [{ doc: json? }]? }
 array_agg_ordered_subquery.sql: many () -> { titles: [unknown?] }
-array_agg_placeholder_passed.sql: one (p: numeric?) -> { l: [numeric|int8|float8|text?]? }
+array_agg_placeholder_passed.sql: one (p: numeric) -> { l: [numeric|int8|float8|text?]? }
 array_agg_truth.sql: one () -> { l: [bool|int8]? }
 array_agg_truth_buffered.sql: one () -> { l: [bool|int8]? }
 array_agg_truth_cast.sql: many () -> { l: [bool] }
@@ -74,7 +74,7 @@ object_nested.sql: many () -> { o: { user: { id: int4, name: text }, meta: { ema
 object_null_literal_field.sql: many () -> { o: { a: unknown?, b: int8?, c: int4? } }
 object_odd_arguments.sql: many () -> { o: { a: int4, b: text }, none: {  } }
 object_placeholder.sql: maybeOne (n: int4, s: text, id: int4) -> { o: { n: int8|float8|numeric?, s: text?, id: int4 } }
-object_placeholder_passed.sql: many (p: numeric?, q: numeric, r: text, d: date?, n: int4, m: int4, t: time?) -> { o: { a: numeric|int8|float8|text?, b: numeric|int8|float8|text?, c: text?, d: date|timestamp|time|text?, e: bool|int8|float8|numeric|text?, f: int8|float8|numeric?, g: unknown? } }
+object_placeholder_passed.sql: many (p: numeric, q: numeric, r: text, d: date, n: int4, m: int4, t: time) -> { o: { a: numeric|int8|float8|text?, b: numeric|int8|float8|text?, c: text?, d: date|timestamp|time|text?, e: bool|int8|float8|numeric|text?, f: int8|float8|numeric?, g: unknown? } }
 object_right_join.sql: many () -> { o: { user: int4?, post: int4 } }
 object_through_function.sql: many () -> { merged: json?, inserted: json? }
 object_truth_all_aggregated.sql: one () -> { o: { c: bool?, n: int8, l: bool, t: bool|int8, both: bool? } }

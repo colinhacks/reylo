@@ -4,8 +4,8 @@
 -- refused the NULL the caller was allowed to pass ("domain required_email does not allow null
 -- values", a check violation). A bare parameter written whole, by VALUES, by the SELECT that feeds
 -- an INSERT, by SET or by a row value, takes the column's nullability, read from its NOT NULL, its
--- domains and its CHECKs, so each one here is a value but `note`'s; a cast one is a value; a
--- coalesced one may be null. The oracle binds NULL to every parameter typed nullable and fails the
+-- domains and its CHECKs, so each one here is a value but `note`'s; a cast one is a value; one cast
+-- to `nullable(…)` may be null. The oracle binds NULL to every parameter typed nullable and fails the
 -- case where the database refuses it with a NOT NULL or a CHECK violation.
 create domain required_email as text not null;
 create domain present_text as text check (value is not null);

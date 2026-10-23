@@ -24,8 +24,8 @@ impl Database for Sqlite {
     /// ([`crate::sqlite::analyze`]), the statement's structured parameters expanded first.
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         host.on_engine_stack(|host| {
-            let inner = |sql: &str| match crate::analysis::lexed(sql, Dialect::Sqlite) {
-                Ok(lexed) => crate::sqlite::analyze(sql, &lexed, host),
+            let inner = |sql: &str, marked: &[String]| match crate::analysis::lexed(sql, Dialect::Sqlite) {
+                Ok(lexed) => crate::sqlite::analyze(sql, &lexed, host, marked),
                 Err(bare) => Some(bare),
             };
             crate::structured::analyze(sql, Dialect::Sqlite, host, &inner, &|diagnostics| crate::analysis::bare_of(sql, Dialect::Sqlite, diagnostics))

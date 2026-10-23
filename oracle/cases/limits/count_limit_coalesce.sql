@@ -1,1 +1,1 @@
-select count(*) from bar limit coalesce(:n, 0)
+select count(*) from bar limit coalesce(:n::nullable(int), 0)

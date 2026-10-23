@@ -1,1 +1,1 @@
-select id, name from users where coalesce(:email, email) = email or ifnull(:bio, 'x') = bio
+select id, name from users where coalesce(:email::nullable(text), email) = email or ifnull(:bio::nullable(text), 'x') = bio

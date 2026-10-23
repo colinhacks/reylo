@@ -1,5 +1,6 @@
 coalesce_direct.sql: many (email: text?, bio: text?) -> { id: int4, name: text }
 guard_derived.sql: many (tag: text) -> { id: int4, tag: text? }
+guard_nullable.sql: many (q: text?) -> { id: int4 }
 guard_other_column.sql: many (name: text) -> { id: int4 }
 guard_with.sql: many (name: text) -> { id: int4, name: text? }
 guard_with_alias.sql: many (min: int4) -> { id: int4 }

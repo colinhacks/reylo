@@ -67,11 +67,12 @@ const MAY_RETURN_ROWS: &[&str] = &["analyze", "cache", "check", "checksum", "des
 /// placeholder by default and one without escapes; `"email"` is a string or a column), the mode
 /// decides, asked of the session, and both the placeholders and the parser's tree are read by it.
 pub fn analyze_text(sql: &str, host: &Host) -> Lazy<Analysis> {
-    crate::structured::analyze(sql, Dialect::Mysql, host, &|sql| analyze_text_plain(sql, host), &|diagnostics| crate::analysis::bare_of(sql, Dialect::Mysql, diagnostics))
+    crate::structured::analyze(sql, Dialect::Mysql, host, &|sql, marked| analyze_text_plain(sql, host, marked), &|diagnostics| crate::analysis::bare_of(sql, Dialect::Mysql, diagnostics))
 }
 
-/// The analysis of a statement without structured parameters.
-fn analyze_text_plain(sql: &str, host: &Host) -> Lazy<Analysis> {
+/// The analysis of a statement without structured parameters; `marked` names the parameters cast
+/// to `nullable(…)`.
+fn analyze_text_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let read = |text| lex::lex_mysql(sql, lex::Named::Dialect, text);
     let first = read(MysqlText::default());
     let alike = MysqlText::ALL.iter().all(|&text| read(text) == first);
@@ -108,7 +109,7 @@ fn analyze_text_plain(sql: &str, host: &Host) -> Lazy<Analysis> {
     if !repeated.is_empty() {
         return Some(crate::analysis::bare(sql, &lexed, Dialect::Mysql, repeated));
     }
-    analyze(sql, &lexed, text, host)
+    analyze(sql, &lexed, text, host, marked)
 }
 
 /// `sqlparser`'s MySQL dialect, reading strings and double quotes as a session of this reading
@@ -228,8 +229,8 @@ impl sqlparser::dialect::Dialect for SessionDialect {
 }
 
 /// `text` is how the session reads its strings, `None` where it would not say and the statement
-/// turns on it.
-pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -> Lazy<Analysis> {
+/// turns on it; `marked` names the parameters cast to `nullable(…)`.
+pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let dialect = SessionDialect(text.unwrap_or_default());
     // What the engine prints of the statement, for the probes it describes, writes its strings
     // as the session reads them back.
@@ -348,13 +349,23 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host) -
     }
     let parsed = if misread.is_some() { None } else { read.clone() };
     // A parameter as a whole sort or group key is an error; the rest is typed all the same.
-    let diagnostics = parsed.as_ref().map(|statement| constant_keys(sql, statement, &rewritten)).unwrap_or_default();
-    // The parameters the caller may pass null for, which the prepare does not say: by the rules
-    // of Postgres and SQLite, read off the tree (`mysql_params`).
+    let mut diagnostics = parsed.as_ref().map(|statement| constant_keys(sql, statement, &rewritten)).unwrap_or_default();
+    // The parameters the caller may pass null for, which the prepare does not say: each one cast
+    // to `nullable(…)`, and the rest by the rules of Postgres and SQLite, read off the tree
+    // (`mysql_params`).
     let nullable = match &parsed {
-        Some(statement) => crate::mysql_params::nullable(statement, &names, host)?,
-        None => HashSet::new(),
+        Some(statement) => crate::mysql_params::nullable(statement, &names, host, marked)?,
+        None => crate::mysql_params::Nullable { params: marked.iter().cloned().collect(), refused: Vec::new() },
     };
+    // A parameter cast to `nullable(…)` and written whole to a column that refuses null would be
+    // refused at run time for the null its type allows: an error at the parameter.
+    for (name, table, column) in &nullable.refused {
+        let Some(at) = lexed.placeholders.iter().find(|p| &p.name == name) else { continue };
+        let written = &sql[at.start..at.end];
+        let message = format!("The parameter {written} is cast to nullable(…), but it is written to {table}.{column}, which refuses null: cast it to its type alone.");
+        diagnostics.push(Diagnostic { message, start: at.start, length: at.end - at.start, code: crate::structured::CODE });
+    }
+    let nullable = nullable.params;
     // A parameter's type from the column it is written to or compared with, where the prepare's
     // says less, and the comments of those columns and of the ones the result columns read
     // (`mysql_params::typed`).
