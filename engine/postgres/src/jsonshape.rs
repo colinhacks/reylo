@@ -324,6 +324,18 @@ impl Builder<'_> {
         if self.overflowed {
             return Shape::Unknown;
         }
+        let shape = self.build(expr);
+        // A grouping set nulls a grouping expression in its super-aggregate rows, and an object
+        // or an array the statement builds may be one (`GROUP BY ROLLUP (o)`), as may one inside
+        // it: nothing built there is non-null.
+        if self.nulled_by_grouping() {
+            force_nullable(shape)
+        } else {
+            shape
+        }
+    }
+
+    fn build(&mut self, expr: &Node) -> Shape {
         match expr.node.as_ref() {
             Some(NodeEnum::FuncCall(f)) => {
                 // A constructor is the built-in one: a name qualified with a schema is somebody
@@ -1463,6 +1475,13 @@ mod tests {
         assert!(matches!(leaf("SELECT jsonb_agg(name) OVER () AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
         assert!(matches!(leaf("SELECT jsonb_agg(name) AS o FROM team GROUP BY ROLLUP (id)"), Shape::Column { .. }));
         assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY name"), Shape::Column { .. }));
+        // What is built is a grouping expression where it is grouped by, by name, position or
+        // expression, so nothing built is non-null; under a plain GROUP BY it is.
+        for sql in ["SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (o)", "SELECT jsonb_build_object('a', jsonb_build_object('b', name)) AS o FROM team GROUP BY ROLLUP ((jsonb_build_object('b', name)))"] {
+            let Shape::Object { non_null, fields } = &shapes(sql).columns[0].1 else { panic!("{sql}") };
+            assert!(!non_null && !matches!(fields[0].1, Shape::Object { non_null: true, .. }), "{sql}");
+        }
+        assert!(matches!(shapes("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY o").columns[0].1, Shape::Object { non_null: true, .. }));
         // A whole row under a grouping set, and a subquery with a grouping set of its own, are read as nothing.
         assert!(shapes("SELECT to_jsonb(t) AS o FROM team t GROUP BY ROLLUP (t.id)").columns.is_empty());
         assert!(shapes("SELECT (SELECT jsonb_build_object('n', name) FROM team GROUP BY CUBE (name) LIMIT 1) AS o").columns.is_empty());
