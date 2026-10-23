@@ -10,7 +10,7 @@ import { Session } from "./analyze.ts";
 import { sourceName } from "./project.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import { querySchemas } from "./schema.ts";
-import { columnKind } from "./values.ts";
+import { arrayDelimiter, columnKind } from "./values.ts";
 
 export type SqlModule = {
   code: string;
@@ -59,8 +59,12 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // takes null, which the run time refuses for one that does not (src/execute.ts).
   const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }), nullable: p.nullable }]));
   // Each output column's name and kind, from the table the declared types come from: what the run
-  // time gives each value (src/values.ts).
-  const columns = analysis.columns.map((c) => [c.name, columnKind(c.type, session.project.dialect)]);
+  // time gives each value (src/values.ts); and an array's delimiter where it is not a comma.
+  const columns = analysis.columns.map((c) => {
+    const kind = columnKind(c.type, session.project.dialect);
+    const delimiter = arrayDelimiter(c.type);
+    return delimiter === undefined ? [c.name, kind] : [c.name, kind, delimiter];
+  });
   // A structured parameter's lists, at JavaScript's offsets into the statement (the engine's are
   // UTF-8 bytes).
   const source = sourceName(path);

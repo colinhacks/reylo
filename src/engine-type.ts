@@ -5,8 +5,8 @@ export type EngineType =
   /** `name` lists two types or more (`int8|float8`) where the value is one or the other. */
   | { kind: "scalar"; name: string }
   | { kind: "enum"; name: string; labels: string[] }
-  /** `nullable_items`: true where an element may be null, false where the statement shows none is, absent where nothing is known; a result renders absent as `(T | null)[]`, a parameter as `T[]` (src/render.ts). */
-  | { kind: "array"; of: EngineType; nullable_items?: boolean }
+  /** `nullable_items`: true where an element may be null, false where the statement shows none is, absent where nothing is known; a result renders absent as `(T | null)[]`, a parameter as `T[]` (src/render.ts). `delimiter`: what separates the elements of the array's text, where it is not a comma (`:` for PostGIS's `geometry`). */
+  | { kind: "array"; of: EngineType; nullable_items?: boolean; delimiter?: string }
   | { kind: "object"; fields: { name: string; type: EngineType; nullable: boolean }[] }
   | { kind: "composite"; name: string; fields: { name: string; type: EngineType; nullable: boolean }[] }
   | { kind: "list"; of: EngineType; nullable_items: boolean }

@@ -13,7 +13,9 @@
 // Buffer is one); `text` the server's text, which every other type is (time, interval, uuid, an
 // enum's label, a range, a row value); `unknown` whatever the driver gives (a SQLite column with no
 // declared type). `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
-// expression whose type the bound value decides). No kind is a JavaScript Date.
+// expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
+// separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
+// `geometry`), which a column carries beside its kind.
 //
 // This module runs in every generated module's process, so it names no Node type: a Buffer is
 // reached through `globalThis` where one exists.
@@ -25,8 +27,8 @@ export type Dialect = "postgres" | "mysql" | "sqlite";
 export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "json" | "bytes" | "unknown";
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either. */
 export type Kind = string;
-/** The output columns a module carries, in the statement's order. */
-export type Columns = readonly (readonly [name: string, kind: Kind])[];
+/** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
+export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
 
 /** The TypeScript type of each scalar kind: what a value of that kind is at run time. */
 export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
@@ -94,6 +96,11 @@ export function scalarKind(name: string, dialect: Dialect): Kind {
   const kinds = [...new Set(name.split("|").flatMap((part) => (dialect === "sqlite" ? (SQLITE_KINDS[part] ?? "unknown") : (SQL_KINDS[part] ?? "text")).split("|")))];
   const wide = kinds.includes("int8") && !kinds.includes("float") ? kinds.filter((k) => k !== "int") : kinds;
   return wide.join("|");
+}
+
+/** The delimiter of an array's text, where the element type's is not a comma: a column carries it beside its kind. */
+export function arrayDelimiter(t: EngineType): string | undefined {
+  return t.kind === "array" ? t.delimiter : undefined;
 }
 
 /** The kind of a value of the engine's type `t`, standing in a result row (not inside a JSON document). */
@@ -454,13 +461,14 @@ export function float32s(bytes: Uint8Array, column: string): number[] {
 /**
  * `v` as a value of `kind`, from the form a driver decoded it to; `column` names it in an error. A
  * number past ±(2^53 - 1) in an integer column is one the driver already rounded, and is refused.
+ * `delim` is an array's, where its text is what the driver gave.
  */
-export function coerce(kind: Kind, v: unknown, column: string): unknown {
+export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unknown {
   if (v === null || v === undefined) return null;
   if (kind.endsWith("[]")) {
     const element = kind.slice(0, -2);
-    if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column));
-    if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column) : coerce(element, e, column)));
+    if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column), delim);
+    if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column, delim) : coerce(element, e, column)));
     // A MySQL VECTOR's bytes: no driver gives any other array of floats as bytes.
     if (element === "float" && isBytes(v)) return float32s(v, column);
     // Bun.sql's int4[] and float4[] are typed arrays.

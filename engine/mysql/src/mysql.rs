@@ -1488,7 +1488,7 @@ fn column_type(code: u32, charset: u32) -> (Type, &'static str) {
         // MySQL 9's VECTOR, a column and the context of a `?` alike: 32-bit floats, none of them
         // NULL, whose value comes as their little-endian bytes (measured on 9.7.2). A parameter
         // binds their text instead (`vectors_as_text`).
-        242 => (Type::Array { of: Box::new(scalar("float4")), nullable_items: Some(false) }, "vector"),
+        242 => (Type::Array { of: Box::new(scalar("float4")), nullable_items: Some(false), delimiter: None }, "vector"),
         16 => (scalar("bytea"), "bit"),
         249..=254 | 15 => {
             if charset == 63 { (scalar("bytea"), "binary") } else { (scalar("text"), "varchar") }
@@ -2672,7 +2672,7 @@ mod tests {
         // MySQL 9.7.2 describes a VECTOR(3) column, a NULL one, and a `?` compared with one, as type 242.
         let described = json!({ "columns": [{ "name": "v", "type": 242, "flags": 4241, "charset": 63, "length": 12 }, { "name": "vn", "type": 242, "flags": 144, "charset": 63, "length": 8 }], "params": [{ "type": 242, "flags": 128, "charset": 63 }] });
         let (analysis, _) = analyzed("select v, vn from items where v = :v", described, "STRICT_TRANS_TABLES");
-        let floats = Type::Array { of: Box::new(Type::Scalar { name: "float4".into() }), nullable_items: Some(false) };
+        let floats = Type::Array { of: Box::new(Type::Scalar { name: "float4".into() }), nullable_items: Some(false), delimiter: None };
         let columns: Vec<_> = analysis.columns.iter().map(|c| (c.ty.clone(), c.nullable, c.type_name.as_str())).collect();
         assert_eq!(columns, [(floats.clone(), false, "vector"), (floats.clone(), true, "vector")]);
         assert_eq!(analysis.params[0].ty, floats);

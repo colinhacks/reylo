@@ -309,7 +309,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // left the connection out of step. Each element of a `jsonb[]` is a JSON value.
       const bound = values.map((v, i) => {
         const t = type(i);
-        return Array.isArray(v) && t?.kind === "array" ? arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v) : v;
+        return Array.isArray(v) && t?.kind === "array" ? arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, t.delimiter) : v;
       });
       // A JSON parameter goes to pg's family, PGlite and Neon as its JSON text, and to postgres.js
       // as its JSON text declared `unknown` (below). Bun.sql serializes a value for a JSON
@@ -614,15 +614,16 @@ function asByteaHex(v: unknown) {
  * A Postgres array literal, written as pg writes one (`arrayString` in pg/lib/utils.js): a nested
  * array in braces, null and undefined as NULL, binary data as `\\x` and its hex, and every other
  * element quoted, with `"` and `\` escaped: a Date as its local time and offset, an object as
- * its JSON, anything else as its string.
+ * its JSON, anything else as its string. The elements are separated by `delim`, the element type's
+ * delimiter: the server reads `{"a","b"}` as one element of a `geometry[]`, whose delimiter is `:`.
  */
-export function arrayLiteral(array: readonly unknown[]): string {
+export function arrayLiteral(array: readonly unknown[], delim = ","): string {
   let out = "{";
   for (let i = 0; i < array.length; i++) {
     const v = array[i];
-    if (i) out += ",";
+    if (i) out += delim;
     if (v == null) out += "NULL";
-    else if (Array.isArray(v)) out += arrayLiteral(v);
+    else if (Array.isArray(v)) out += arrayLiteral(v, delim);
     else if (ArrayBuffer.isView(v)) out += "\\" + asByteaHex(new Uint8Array(v.buffer, v.byteOffset, v.byteLength));
     else out += `"${(v instanceof Date ? dateText(v) : typeof v === "object" ? JSON.stringify(v) : String(v)).replace(/[\\"]/g, "\\$&")}"`;
   }
