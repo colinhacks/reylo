@@ -41,10 +41,10 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect>
   extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>> {
   readonly dialect: D;
   // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
-  // and what they are (src/doc-comment.ts, `SQL_NOTE` and `RAW_NOTE`), and TypeScript would show
+  // and what they are (src/doc-comment.ts, `sqlNote` and `RAW_NOTE`), and TypeScript would show
   // this one first, run together with that one. `sql` is the base text: a structured parameter
   // (`::rows`, `::row`, src/rows.ts) in a MySQL insert has its column lists written again for the
-  // keys each call carries. Said here and not in `SQL_NOTE`, whose text the docs site shows in its
+  // keys each call carries. Said here and not in `sqlNote`, whose text the docs site shows in its
   // hovers, which leave structured parameters out.
   readonly sql: string;
   readonly raw: string;

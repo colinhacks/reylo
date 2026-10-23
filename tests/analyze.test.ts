@@ -148,8 +148,11 @@ test("the module a build step emits carries the analysis and reads nothing at ru
   // The build steps share one session per project; this one finds the database through .env.
   writeFileSync(join(root, ".env"), `DATABASE_URL=${env.DATABASE_URL}\n`);
   try {
-    const { code, entry } = await sqlModule(file, SELECT);
+    const { code, entry, watched } = await sqlModule(file, SELECT);
     assert.ok(existsSync(entry));
+    // A bundler watches the files the module's text reads besides the statement: here the .env
+    // file, the only one of the project's files that exists.
+    assert.deepEqual(watched, [join(root, ".env")]);
     assert.equal(code, [
       `import { defineQuery } from "reylo";`,
       `export const sql = "select id, name from users where id = ? /*file='user.sql'*/";`,

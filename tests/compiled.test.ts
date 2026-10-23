@@ -245,3 +245,26 @@ test("MySQL: `sql` has `?` placeholders and writes a typed JSON parameter's cast
     await admin.end();
   }
 });
+
+test("sqlcommenter: false leaves the comment off, at run time and in the declaration, and a running build sees the change", async () => {
+  const root = project("file:./app.db");
+  writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: false\n");
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("create table users (id integer primary key, name text not null, email text)");
+  db.exec("insert into users (name, email) values ('Ada', 'ada@example.com')");
+  try {
+    const plain = await built(root, "get_user", GET_USER);
+    assert.equal(plain.sql, "select id, name, email from users where id = ?\n");
+    assert.deepEqual({ ...((await plain.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
+    const declared = await declarations(root, { "get_user.sql": GET_USER });
+    assert.ok(texts(declared["get_user.sql"]!).includes(`export declare const sql: "select id, name, email from users where id = ?\\n";`), declared["get_user.sql"]!);
+    assert.ok(declared["get_user.sql"]!.includes("and each cast is the dialect's own."), declared["get_user.sql"]!);
+    // The same process, after the project file turns it back on: the session it builds with is a new one.
+    writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: true\n");
+    const tagged = await built(root, "get_user_again", GET_USER);
+    assert.equal(tagged.sql, "select id, name, email from users where id = ? /*file='get_user_again.sql'*/");
+  } finally {
+    db.close();
+    await closeAll();
+  }
+});

@@ -28,9 +28,10 @@ export default function reylo() {
     },
     async load(this: { addWatchFile(id: string): void }, id: string) {
       if (!id.endsWith(".sql")) return null;
-      const { code, entry } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
-      // A new analysis of the statement (the type check's, after a migration) rebuilds the module.
-      this.addWatchFile(entry);
+      const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
+      // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
+      // and so does a change to the project file or a `.env` file, which the module's text reads.
+      for (const file of [entry, ...watched]) this.addWatchFile(file);
       return { code, map: null };
     },
     async buildEnd() {

@@ -35,6 +35,9 @@ test("without a project file, DATABASE_URL comes from the environment, then .env
   const loose = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nstrict_params: false\n" });
   assert.equal(resolveProject(e, loose, {}).strictParams, false);
   assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\n" }), {}).strictParams, true);
+  // The sqlcommenter comment is on unless the project file turns it off.
+  assert.equal(local.sqlcommenter, true);
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nsqlcommenter: false\n" }), {}).sqlcommenter, false);
 });
 
 test("the project file sits beside package.json, and its direct_url, env files and strict_params apply", async () => {

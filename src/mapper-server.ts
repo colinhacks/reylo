@@ -10,11 +10,13 @@ import { moduleTypes, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject, sourceName, type Dialect } from "./project.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import { Session } from "./analyze.ts";
-import { docComment, leadingComment, RAW_NOTE, SQL_NOTE, statementAfter } from "./doc-comment.ts";
+import { docComment, leadingComment, RAW_NOTE, sqlNote, statementAfter } from "./doc-comment.ts";
 
 type Project = {
   dialect: Dialect;
   strictParams: boolean;
+  /** Whether each statement ends with a sqlcommenter comment naming its file. */
+  sqlcommenter: boolean;
   /** The project file as its messages name it: relative to the project, or `.reylo.yaml` where there is none. */
   projectFile: string;
   session: Promise<Session>;
@@ -69,8 +71,8 @@ export function mapperHandlers(): MapperHandlers {
       const resolved = resolveProject(await anyEngine(projectDir), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file) || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
-      projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, projectFile, session: Session.open(projectDir) });
-      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
+      projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, sqlcommenter: resolved.sqlcommenter, projectFile, session: Session.open(projectDir) });
+      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.sqlcommenter, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
     async transform(params) {
@@ -103,7 +105,7 @@ export function mapperHandlers(): MapperHandlers {
       const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], shown = compiled) => {
         const written = statementAfter(sql, leading);
         const sent = shown === undefined ? undefined : statementAfter(shown, leadingComment(shown, project.dialect));
-        const sqlDoc = (indent = "") => docComment(leading.prose, sent, SQL_NOTE, indent);
+        const sqlDoc = (indent = "") => docComment(leading.prose, sent, sqlNote(project.sqlcommenter), indent);
         const rawDoc = (indent = "") => docComment(leading.prose, written, RAW_NOTE, indent);
         const text = [
           `import type { Query } from "reylo";`,
@@ -150,7 +152,8 @@ export function mapperHandlers(): MapperHandlers {
       const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams, project.projectFile);
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The statement as the build sends it, its file's comment included (src/sqlcommenter.ts).
-      return emit(withSqlcommenter(analysis.rewritten.sql, sourceName(p.fileName)), types.params, types.row, types.cardinality, types.names, analysis.rewritten.sql);
+      const compiled = project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, sourceName(p.fileName)) : analysis.rewritten.sql;
+      return emit(compiled, types.params, types.row, types.cardinality, types.names, analysis.rewritten.sql);
     },
     async closeProject(params) {
       const handle = (params as { projectHandle: string }).projectHandle;

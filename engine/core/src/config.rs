@@ -40,6 +40,11 @@ pub struct Project {
     /// was `strict` until 2026-10-20.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict_params: Option<bool>,
+    /// Whether each statement the importer builds ends with a sqlcommenter comment naming its
+    /// `.sql` file (`/*file='queries%2Fget_user.sql'*/`), which a database's monitoring reads as
+    /// the statement's tags. On when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sqlcommenter: Option<bool>,
     #[serde(default, skip_serializing_if = "Cli::is_empty")]
     pub cli: Cli,
     #[serde(default, skip_serializing)]
@@ -155,14 +160,15 @@ mod tests {
 
     #[test]
     fn reads_the_library_keys_and_leaves_the_later_sections_alone() {
-        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\ncli:\n  include: [src/**/*.sql]\n  exclude: [src/legacy/**]\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
+        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\nsqlcommenter: false\ncli:\n  include: [src/**/*.sql]\n  exclude: [src/legacy/**]\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec![".env".to_string()]));
         assert_eq!(p.strict_params, Some(true));
+        assert_eq!(p.sqlcommenter, Some(false));
         assert!(p.api.is_some() && p.rest.is_some());
         // What a host reads back: the later sections are not its business.
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "cli": { "include": ["src/**/*.sql"], "exclude": ["src/legacy/**"] } }));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false, "cli": { "include": ["src/**/*.sql"], "exclude": ["src/legacy/**"] } }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
     }

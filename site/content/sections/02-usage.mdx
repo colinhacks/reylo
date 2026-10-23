@@ -31,7 +31,7 @@ getUser.sql;
 //      ^?
 ```
 
-The compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file.
+The compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set [`sqlcommenter: false`](#sqlcommenter) to leave it off.
 
 To get the file's contents as written, before Reylo compiles its [parameters](#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your logs and traces; Reylo's own errors about the query start with it.
 
