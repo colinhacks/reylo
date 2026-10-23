@@ -261,6 +261,11 @@ impl Level {
         !SYSTEM_COLUMNS.contains(&column) && self.items.iter().all(|i| i.shown.names.iter().all(|n| n.as_deref().is_some_and(|n| n != column)))
     }
 
+    /// Whether an item of this FROM shows a column of this name, for certain.
+    pub fn shows(&self, column: &str) -> bool {
+        self.items.iter().any(|i| i.shown.has(column))
+    }
+
     /// Whether an item of this FROM goes by this name: `None` where none of the names read is it
     /// and an item's name is not known.
     pub fn names(&self, name: &str) -> Option<bool> {

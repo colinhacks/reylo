@@ -365,6 +365,9 @@ struct Draft {
     wider: Option<Vec<Node>>,
     /// Whether the probe carries the top statement's GROUP BY ([`Builder::group`]).
     grouped: bool,
+    /// Whether the probe reads its FROM with every enclosing one already, for a bare name the
+    /// FROM alone would read as something else ([`Builder::renamed_in_probe`]).
+    widened: bool,
     items: Vec<Node>,
 }
 
@@ -678,6 +681,10 @@ impl Builder<'_> {
         if contains_param(expr) {
             return Shape::Unknown;
         }
+        // A bare name the probe over this FROM alone would read as something else is read over
+        // this FROM and every one around it, as one: a column there is a column before an item's
+        // row, as in the statement.
+        let widened = self.renamed_in_probe(expr);
         // A RETURNING's old and new rows are no relation a probe can select from: the expression
         // reads the target relation's columns in their place, and is NULL where it reads a row
         // the statement may not have.
@@ -690,11 +697,19 @@ impl Builder<'_> {
         // stays beside the arguments.
         let grouped = self.outside_aggregates() && !matches!(expr.node, Some(NodeEnum::ColumnRef(_)));
         let ctx = self.stack[self.stack.len() - 1].0;
-        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && d.row.is_none() && d.grouped == grouped) {
+        let probe = match self.drafts.iter().position(|d| d.ctx == ctx && d.row.is_none() && d.grouped == grouped && d.widened == widened) {
             Some(i) => i,
             None => match self.draft(None) {
                 Some(i) => {
                     self.drafts[i].grouped = grouped;
+                    if widened {
+                        let Some(wider) = self.drafts[i].wider.take() else {
+                            self.drafts.pop();
+                            return Shape::Unknown;
+                        };
+                        self.drafts[i].from = wider;
+                        self.drafts[i].widened = true;
+                    }
                     i
                 }
                 None => return Shape::Unknown,
@@ -714,6 +729,28 @@ impl Builder<'_> {
     /// outside the arguments of its aggregates.
     fn outside_aggregates(&self) -> bool {
         self.group.is_some() && self.stack.len() == 1 && self.in_aggregate == 0
+    }
+
+    /// Whether a bare name in `expr` may read something else in the probe than in the statement.
+    /// The probe reads it over the FROM where the builder stands alone, so a name that may be a
+    /// column of a FROM around that one, and is no column of this one for certain, may be the
+    /// whole row of an item here or in a subquery of `expr` in the probe (`p` of `posts p` inside
+    /// a query over `users`, which has a column `p`): a name is a column of any FROM in scope
+    /// before it is an item's row.
+    fn renamed_in_probe(&self, expr: &Node) -> bool {
+        let depth = self.stack.len() - 1;
+        let from = &self.stack[depth].1;
+        if self.ahead || depth == 0 || from.is_empty() {
+            return false;
+        }
+        let names = bare_names(expr);
+        if names.is_empty() {
+            return false;
+        }
+        let here = Level::of(from, &self.withs[depth], self.columns);
+        // An aggregate's FILTER reads the same FROM again, which is no FROM around it.
+        let around: Vec<Level> = self.stack[..depth].iter().zip(&self.withs).filter(|((_, f, _), _)| f != from).map(|((_, f, _), withs)| Level::of(f, withs, self.columns)).collect();
+        names.iter().any(|n| !here.shows(n) && around.iter().any(|l| !l.lacks(n)))
     }
 
     /// Whether no FROM in scope shows a column of this name, for certain.
@@ -752,7 +789,7 @@ impl Builder<'_> {
         // A subquery with no `FROM` of its own only ever resolves against the enclosing one.
         let (from, wider) = if from.is_empty() && !wider.is_empty() { (wider, None) } else { (from, Some(wider)) };
         let wider = wider.filter(|w| w.len() != from.len());
-        self.drafts.push(Draft { ctx, row, from, filter, wider, grouped: false, items: Vec::new() });
+        self.drafts.push(Draft { ctx, row, from, filter, wider, grouped: false, widened: false, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -1387,6 +1424,36 @@ fn star_alias(node: &Node) -> Option<String> {
 }
 
 /// A bare `u`, the alias form `to_jsonb` takes for a whole row.
+/// Every name a column reference of one field in `expr` reads, inside its subqueries too.
+fn bare_names(expr: &Node) -> Vec<String> {
+    fn sval(v: &Value) -> Option<&str> {
+        match v {
+            Value::Object(map) => map.iter().find_map(|(key, child)| if key == "sval" { child.as_str() } else { sval(child) }),
+            _ => None,
+        }
+    }
+    fn walk(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    let one = child.get("fields").and_then(Value::as_array).filter(|f| key == "ColumnRef" && f.len() == 1);
+                    match one.and_then(|f| sval(&f[0])) {
+                        Some(name) => out.push(name.to_string()),
+                        None => walk(child, out),
+                    }
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|i| walk(i, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(tree) = serde_json::to_value(expr) {
+        walk(&tree, &mut out);
+    }
+    out
+}
+
 fn bare_alias(node: &Node) -> Option<String> {
     match node.node.as_ref()? {
         NodeEnum::ColumnRef(c) if c.fields.len() == 1 => last_string(&c.fields),
@@ -2022,6 +2089,25 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
         assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+    }
+
+    #[test]
+    fn a_bare_name_a_probe_would_read_as_a_row_is_read_over_every_from() {
+        // `name` is a column of `users`, which the statement reads it as; over `posts name` alone
+        // it would be the whole row of `posts`.
+        let p = shapes("SELECT (SELECT jsonb_agg(name) FROM posts name WHERE name.id = 1) AS j FROM users");
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT name AS a0 FROM posts name, users"]);
+        // Inside an expression too, and beside a leaf that keeps the narrow probe.
+        let p = shapes("SELECT (SELECT jsonb_build_object('n', lower(name), 't', name.title) FROM posts name LIMIT 1) AS j FROM users");
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT lower(name) AS a0 FROM posts name, users", "SELECT name.title AS a0 FROM posts name"]);
+        // So is one in a subquery inside, whose own FROM has an item of the name.
+        let p = shapes("SELECT (SELECT jsonb_build_object('n', (SELECT count(name) FROM comments name)) FROM posts p LIMIT 1) AS j FROM users");
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT count(name) AS a0 FROM comments name, posts p, users"]);
+        // A name of a column here, or of no column around, is read as it is.
+        let p = shapes("SELECT (SELECT jsonb_agg(title) FROM posts title) AS j FROM users");
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT title AS a0 FROM posts title"]);
+        let p = shapes("SELECT (SELECT jsonb_agg(c.body) FROM comments c) AS j FROM users");
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT c.body AS a0 FROM comments c"]);
     }
 
     #[test]
