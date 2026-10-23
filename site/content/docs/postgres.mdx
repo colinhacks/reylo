@@ -725,6 +725,22 @@ values (:user_id, :total, :ships_on)
 
 Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
 
+## Database errors
+
+With [`.try()`](/#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The SQLSTATE, as `"23505"`: one of the 251 that Postgres defines, or one a function raises itself (`raise ... using errcode = 'U0001'`) |
+| `condition` | The code's name, as `"unique_violation"`, or `undefined` for a code Postgres doesn't define |
+| `severity` | `ERROR`, or `FATAL` when the session ended |
+| `message`, `detail`, `hint` | The server's texts |
+| `position` | Where in the statement the error is, as a character's place from 1 |
+| `where` | The functions the error was raised in |
+| `schema`, `table`, `column`, `dataType`, `constraint` | What the error is about: a unique violation's constraint and table, a not-null violation's column, a domain's type |
+
+Since a function may raise any code, TypeScript takes any string for `code`. Compare `condition` to have it catch a misspelled name.
+
 ## Drivers
 
 Reylo decodes its query results itself, so type parsers and options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.

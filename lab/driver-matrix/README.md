@@ -57,6 +57,7 @@ S1d to S1g give each statement the `inputs` the loader writes from the analysis 
 | S4 | INSERT ... RETURNING (Postgres and SQLite) |
 | S5a, S5b | One named parameter used twice, through the runtime lexer and through the mapper's `text` and `order` |
 | S6a, S6b | A syntax error and a unique violation reject with the driver's own error and code (SQLSTATE 42601 and 23505, ER_PARSE_ERROR and ER_DUP_ENTRY, SQLITE_ERROR and SQLITE_CONSTRAINT), never Reylo's TypeError |
+| S6c, S6d | `try` resolves to `{ value }` for the rows and rejects with Reylo's own row-count error; and it resolves to `{ error }` for the two errors above, read into its dialect's fields whichever driver ran them (SQLSTATE, condition, schema, table and constraint; MySQL's name, number, state and key; SQLite's most specific code the driver gives and its number, and the table and columns its message names), the cause the driver's own error. On a synchronous client `trySync` must give the same |
 | S7a–S7d, S7n | On a transaction: a committed write is visible; a rolled-back write is not; a savepoint rollback keeps the outer write; a failing statement rolls the whole transaction back and its error reaches the caller; a write without parameters commits |
 | S7e | On better-sqlite3 and bun:sqlite `db.transaction(fn)`, where S7a–S7d call `runSync`: a row read inside the function is usable synchronously |
 | S8 | 20 queries in flight on the shape resolve with the right rows |

@@ -78,6 +78,60 @@ const user = getUser.runSync(db, { id: 1 });
 //    ^?
 ```
 
+### `.try()`
+
+To get your database's errors as values, use `.try()`. It returns `{ value }`, or `{ error }` when the database refuses the query:
+
+```ts twoslash tab="main.ts (Postgres)" dialect="postgres"
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.condition === "unique_violation") {
+  console.log(`${result.error.constraint} is taken`);
+}
+```
+
+```ts twoslash tab="main.ts (MySQL)" dialect="mysql"
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.code === "ER_DUP_ENTRY") {
+  console.log(`${result.error.key} is taken`);
+}
+```
+
+```ts twoslash tab="main.ts (SQLite)" dialect="sqlite"
+import createUser from "./create_user.sql";
+
+const result = await createUser.try(db, {
+  name: "Ada",
+  email: "ada@example.com",
+});
+if (result.error?.code === "SQLITE_CONSTRAINT_UNIQUE") {
+  console.log(`${result.error.columns} is taken`);
+}
+```
+
+```sql tab="create_user.sql" dialect="all"
+insert into users (name, email) values (:name, :email)
+```
+
+The error is your database's own, typed with every code it defines, so TypeScript catches a misspelled one:
+
+| Database | Its code | What else it names |
+| --- | --- | --- |
+| Postgres | `code`, the SQLSTATE, and `condition`, its name | `constraint`, `table`, `column`, `schema`, `detail`, `hint`, `position` |
+| MySQL | `code`, the error's name, `errno` and `sqlState` | `key`, `constraint`, `table`, `column` |
+| SQLite | `code`, the result code's name, and `errcode` | `table`, `columns`, `constraint` |
+
+Each driver's error is read into the same fields, and the driver's own error is the `cause`. Any other error still throws, as from `.run()`: a refused connection, say. The file exports the error's type as `QueryError`. On a synchronous SQLite driver, `.trySync()` returns the result itself.
+
 ### `.with()`
 
 To bind the query to a client, call `.with()`. It returns a function that takes the parameters:

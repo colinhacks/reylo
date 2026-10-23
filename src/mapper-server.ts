@@ -90,7 +90,7 @@ export function mapperHandlers(): MapperHandlers {
         diagnostics.push(diag(size, `The content mapper has no project for this file; restart the TypeScript server.`, 0, 1, 9));
         const leading = leadingComment(sql);
         const doc = docComment(leading.prose, statementAfter(sql, leading));
-        const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
+        const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\nexport type QueryError = import("reylo").QueryError;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
         return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
       }
       // `compiled` is the statement as Reylo sends it to the database (the engine's rewritten text),
@@ -111,6 +111,7 @@ export function mapperHandlers(): MapperHandlers {
           `import type { Query } from "reylo";`,
           `export type Params = ${paramsType};`,
           `export type Row = ${rowType};`,
+          `export type QueryError = import("reylo").QueryError<${JSON.stringify(project.dialect)}>;`,
           `${sqlDoc()}export declare const sql: ${compiled === undefined ? "string" : JSON.stringify(compiled)};`,
           `${rawDoc()}export declare const raw: ${JSON.stringify(sql)};`,
           `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(", ")}];`,

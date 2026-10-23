@@ -6,9 +6,11 @@ import type { Structured } from "./rows.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns } from "./values.ts";
+import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export { checks } from "./checks.ts";
+export type { MysqlCode, MysqlQueryError, PostgresCode, PostgresCondition, PostgresQueryError, QueryError, SqliteCode, SqliteQueryError } from "./query-error.ts";
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
 export type Cardinality = "many" | "one" | "maybeOne" | "none";
@@ -37,7 +39,15 @@ export type ReyloTypes<Params, Row, C extends Cardinality> = {
   readonly input: Params;
 };
 
-export interface Query<Params, Row, C extends Cardinality, D extends Dialect>
+/**
+ * What `try` returns: the value, or the error the database raised. The other field is undefined,
+ * so either can be read first, as `if (result.error)`; the shape is Standard Schema's result, with one
+ * error where it has a list of issues.
+ */
+export type TryResult<Value, E> = { readonly value: Value; readonly error?: undefined } | { readonly error: E; readonly value?: undefined };
+
+/** A query: its statement, its parameters and result types (`Params`, `Row`), and the error its database may raise (`E`). */
+export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E = QueryError<D>>
   extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>> {
   readonly dialect: D;
   // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
@@ -74,6 +84,15 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect>
    * `db.transaction(fn)`, whose function cannot await.
    */
   runSync(client: SyncClientFor<D>, ...params: ParamsArg<Params>): Materialize<Row, C>;
+  /**
+   * Runs the statement as `run` does, and resolves to `{ value }`, or to `{ error }` where the
+   * database raised an error: its code from the database's own list, and the constraint, table or
+   * column it names. Every other error rejects, as from `run`: a refused connection, a client
+   * Reylo cannot run on, a value Reylo refuses.
+   */
+  try(client: ClientFor<D>, ...params: ParamsArg<Params>): Promise<TryResult<Materialize<Row, C>, E>>;
+  /** `try` on a synchronous SQLite client, as `runSync`: it returns the result itself. */
+  trySync(client: SyncClientFor<D>, ...params: ParamsArg<Params>): TryResult<Materialize<Row, C>, E>;
   /** The statement bound to a client, such as a transaction: `const get = q.with(tx); await get({ id: 1 })`. */
   with(client: ClientFor<D>): (...params: ParamsArg<Params>) => Promise<Materialize<Row, C>>;
 }
@@ -167,6 +186,24 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         throw named(error);
       }
     }) as Query<Params, Row, C, D>["runSync"],
+    try: ((client: ClientFor<D>, params?: Params) =>
+      run(client, params ?? ({} as Params)).then(
+        (value) => ({ value }),
+        async (error) => {
+          const read = await readQueryError(def.dialect, error);
+          if (read) return { error: read };
+          throw error;
+        },
+      )) as Query<Params, Row, C, D>["try"],
+    trySync: ((client: SyncClientFor<D>, params?: Params) => {
+      try {
+        return { value: query.runSync(client, ...([params] as ParamsArg<Params>)) };
+      } catch (error) {
+        const read = readQueryErrorSync(def.dialect, error);
+        if (read) return { error: read };
+        throw error;
+      }
+    }) as Query<Params, Row, C, D>["trySync"],
     with: ((client: ClientFor<D>) => (params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["with"],
   };
   // A synchronous client answers before run returns, but its rows and its error still come

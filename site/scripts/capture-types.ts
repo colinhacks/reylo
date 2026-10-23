@@ -139,6 +139,7 @@ async function render(session: Session, source: string, written: string, sql: st
       `import type { Query } from "reylo";`,
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
+      `export type QueryError = import("reylo").QueryError<${JSON.stringify(project.dialect)}>;`,
       `${sqlDoc()}export declare const sql: ${JSON.stringify(compiled)};`,
       `${rawDoc()}export declare const raw: ${JSON.stringify(written)};`,
       `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(', ')}];`,
