@@ -14,6 +14,7 @@
 // run them without a build; every one of them is private, so that none can be published by
 // mistake.
 import { execFileSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { build as bundle, transformSync, type Plugin } from "esbuild";
@@ -91,6 +92,9 @@ for (const db of DATABASES) {
   copyFileSync(join(from, "engine.wasm"), join(to, "engine.wasm"));
   copyFileSync(join(from, "README.md"), join(to, "README.md"));
   const half = await bundle({ ...bundled, entryPoints: [join(root, "src/tooling.ts")], outfile: join(to, "tooling.js") });
+  // reylo's entry points load it with a `require` (src/engine-package.ts), which refuses an ES
+  // module with a top-level await.
+  if (typeof (createRequire(import.meta.url)(join(to, "tooling.js")) as { default?: { sqlModule?: unknown } }).default?.sqlModule !== "function") throw new Error(`dist/${db}/tooling.js does not load with a require`);
   // The describers and their drivers are each database's own, loaded by dialect (src/engine.ts).
   const drivers = Object.keys(half.metafile.inputs).filter((input) => /node_modules\/(postgres|mysql2)\/|packages\/(postgres|mysql)\/describe\.ts$/.test(input));
   if (drivers.length) throw new Error(`dist/${db}/tooling.js bundles a describer or a driver: ${drivers.join(", ")}`);
