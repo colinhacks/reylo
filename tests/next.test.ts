@@ -43,6 +43,14 @@ test("withReylo adds the loader on the server for Turbopack and webpack, and kee
   assert.deepEqual(own.turbopack.rules["*.sql"], { loaders: ["own"] });
 });
 
+test("withReylo takes a config of Next's own keys written in place, beside the ones it reads", () => {
+  // A type check: each key here is one withReylo's own type does not name.
+  const config = withReylo({ reactStrictMode: true, turbopack: { root: "/app" }, typescript: { tsconfigPath: "tsconfig.json" }, compiler: { removeConsole: true } });
+  assert.equal(config.reactStrictMode, true);
+  assert.equal(config.turbopack.root, "/app");
+  assert.equal(config.compiler.removeConsole, true);
+});
+
 test("withReylo turns Next's type check off for its own, and leaves both off where the project turned Next's off", () => {
   const config: Built = withReylo({ typescript: { tsconfigPath: "tsconfig.app.json" } });
   assert.deepEqual(config.typescript, { tsconfigPath: "tsconfig.app.json", ignoreBuildErrors: true });
