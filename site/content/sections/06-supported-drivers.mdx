@@ -94,6 +94,16 @@ const db = mysql.createPool(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
+```ts twoslash tab="mariadb" dialect="mysql"
+// mariadb takes only a mariadb:// URL, which Reylo reads as MySQL
+import mariadb from "mariadb";
+import getUser from "./get_user.sql";
+
+const db = mariadb.createPool(process.env.DATABASE_URL);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
 ```ts twoslash tab="PlanetScale" dialect="mysql"
 // @planetscale/database 1.x: a 2.0 client is a type error
 import { connect } from "@planetscale/database";

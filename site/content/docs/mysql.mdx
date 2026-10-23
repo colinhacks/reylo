@@ -11,7 +11,7 @@ description: How Reylo types SQL queries on MySQL. The TypeScript type of each c
 | --- | --- |
 | MySQL versions | 8.0.22 or later; tested on 8.0, 8.4, 9.7 and 26.7 |
 | Connection | A `mysql://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url) |
-| Drivers | `mysql2`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` ([Drivers](#drivers)) |
+| Drivers | `mysql2`, `mariadb`, PlanetScale and `Bun.sql`, and Drizzle over `mysql2` ([Drivers](#drivers)) |
 | Type checking | Reads the schema through the `mysql2` inside `@reylosql/mysql`, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
@@ -113,7 +113,7 @@ When an expression's type depends on the value you pass, it's typed as every typ
 
 A `DECIMAL` comes back as its exact text, keeping the column's scale. So do `SUM(…)`, `AVG(…)` and division, since MySQL computes them as `DECIMAL`: `sum(total)` returns `"19.75"`, and `id / 2` returns `"0.5000"`.
 
-A `FLOAT` is a 32-bit float. On `mysql2` it comes back as its exact value; PlanetScale, and `Bun.sql` in a query without parameters, round it to its shorter text, `1.1`. A `DOUBLE` is the same on every driver.
+A `FLOAT` is a 32-bit float. On `mysql2` it comes back as its exact value; `mariadb`, PlanetScale, and `Bun.sql` in a query without parameters, round it to its shorter text, `1.1`. A `DOUBLE` is the same on every driver.
 
 <Pairs>
 
@@ -581,6 +581,28 @@ await conn.commit();
 conn.release();
 
 const callbackPool = mysqlCallbacks.createPool(process.env.DATABASE_URL);
+await getUser.run(callbackPool, { id: 1 });
+```
+
+### `mariadb`
+
+The `mariadb` driver works with a MySQL server, as the others do: the type check refuses a MariaDB server. It takes only a `mariadb://` URL, which Reylo reads as MySQL. Pass a pool or a connection, from the promise API or the callback API, or a connection taken from a pool, which can run a transaction:
+
+```ts twoslash tab="main.ts"
+import mariadb from "mariadb";
+import mariadbCallbacks from "mariadb/callback";
+import getUser from "./my_get_user.sql";
+
+const db = mariadb.createPool(process.env.DATABASE_URL);
+const user = await getUser.run(db, { id: 1 });
+
+const conn = await db.getConnection();
+await conn.beginTransaction();
+await getUser.run(conn, { id: 1 });
+await conn.commit();
+await conn.release();
+
+const callbackPool = mariadbCallbacks.createPool(process.env.DATABASE_URL);
 await getUser.run(callbackPool, { id: 1 });
 ```
 
