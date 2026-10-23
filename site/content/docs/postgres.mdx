@@ -261,7 +261,7 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. Any other extension's type, such as pgvector's `vector`, is its text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
 
 <Pairs>
 
