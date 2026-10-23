@@ -602,6 +602,8 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   const store = new DatabaseSync(":memory:").createTagStore();
   await assert.rejects(() => execute(store as never, lite, { id: 1, name: "ada" }) as Promise<unknown>, /sqlite statement on an object with .*pass its database, store\.db/);
   await assert.rejects(() => execute(null as never, my) as Promise<unknown>, /mysql statement on null/);
+  // The refusal names every client a MySQL statement runs on, mariadb's among them.
+  await assert.rejects(() => execute({} as never, my) as Promise<unknown>, /query\(text, values\) as on mariadb's pool or connection, from its promise or callback API/);
   // A pg pool handed to a SQLite statement matches no SQLite shape.
   await assert.rejects(() => execute({ query: async () => ({ rows: [] }) } as never, lite) as Promise<unknown>, /sqlite statement on an object with query/);
 });
