@@ -106,7 +106,7 @@ from orders
 
 **Values of another kind**
 
-Outside a `STRICT` table, a value of another kind, such as the text `'abc'` in an `INTEGER` column, makes `.run()` throw a `DecodeError` that names the column. To read whatever the column holds, cast it:
+Outside a `STRICT` table, a value of another kind, such as the text `'abc'` in an `INTEGER` column, makes `.run()` throw a `TypeError` that names the column. To read whatever the column holds, cast it:
 
 <Inferred>
 
@@ -188,7 +188,7 @@ An integer too large for a `number`, past ±(2^53 − 1), throws an error naming
 
 <Pairs>
 
-- `9007199254740993` → `throws DecodeError`
+- `9007199254740993` → `throws TypeError`
 - `cast(9007199254740993 as text)` → `"9007199254740993"`
 
 </Pairs>
@@ -274,7 +274,7 @@ SQLite doesn't enforce a `BOOLEAN` column, so it can hold 2, `'yes'` or a `BLOB`
 
 <Pairs>
 
-- `active` → `throws DecodeError`
+- `active` → `throws TypeError`
 - `active + 0` → `2`
 
 </Pairs>
@@ -865,7 +865,7 @@ What Reylo can't type on SQLite, and what to do instead:
 | Declared types outside a `STRICT` table, which SQLite doesn't enforce, so a value of another kind makes `.run()` throw | Make tables `strict` where you can |
 | Functions your app registers, or an extension's, which Reylo's SQLite doesn't have: the type check fails with "no such function" | Call the function in TypeScript on what `.run()` returns |
 | Attached databases and `TEMP` tables, since the type check reads one database file | None: a query on one is an error in the type check |
-| Virtual table modules: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat`, but doesn't check that your driver's does | Check your driver's SQLite yourself |
+| Virtual table modules on a driver the type check doesn't run the query on, such as `bun:sqlite` or a Durable Object: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat` | Check that driver's SQLite yourself |
 | `REAL` arithmetic with no answer, such as `1e999 * 0`, which SQLite returns as `NULL` where Reylo types a number | Write `coalesce(price * qty, 0)` where a `REAL` may hold an infinity |
 | A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
 | A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
