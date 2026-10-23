@@ -142,7 +142,7 @@ It resolves to the rows, shaped by how many the query can return:
 | An `insert`, `update` or `delete` without `returning` | `void` |
 | Anything else | `Row[]` |
 
-An imported query also has `.runSync()`, `.with()`, `.sql` and `.raw` ([Usage](https://reylo.dev/#usage)).
+An imported query also has `.runSync()`, `.try()`, `.with()`, `.sql`, `.raw` and `.source` ([Usage](https://reylo.dev/#usage)).
 
 ## What Reylo infers
 
@@ -161,7 +161,7 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 
 - **Postgres** — `pg`, postgres.js, `Bun.sql`, PGlite, Neon, `pg-promise`, `@vercel/postgres`
 - **MySQL** — `mysql2`, `mariadb`, PlanetScale, `Bun.sql`
-- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, Cloudflare D1, `sqlite3`, `sqlite`
+- **SQLite** — `better-sqlite3`, `node:sqlite`, `Bun.sql`, libSQL, Turso, Cloudflare D1 and Durable Objects, `sqlite3`, `sqlite`
 
 ## Documentation
 
