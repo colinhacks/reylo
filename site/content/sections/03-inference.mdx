@@ -12,11 +12,11 @@ Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing
 
 To type a query, Reylo has your live database prepare it, without running it, and reads the catalog. From the answer, it learns:
 
-- the parameter types
-- the column types
-- nullability, from `NOT NULL` and outer joins
-- the cardinality, from keys, aggregates, `limit 1` and `returning`
-- each column's comment (`comment on column` on Postgres, `comment '…'` on MySQL), which your editor shows on hover over a field that reads the column
+- **Parameter types** — from where each parameter is used, or its cast
+- **Column types** — from the table, or the expression that computes the column
+- **Nullability** — from `NOT NULL` and outer joins
+- **Cardinality** — from keys, aggregates, `limit 1` and `returning`
+- **Column comments** — shown when you hover a field that reads the column
 
 <Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
 
