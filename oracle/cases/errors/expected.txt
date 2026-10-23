@@ -1,7 +1,9 @@
 book_room.sql: none (id: int4, start: timestamptz, finish: timestamptz) -> {  }
 call_boom.sql: one () -> { n: int4? }
 cast_positive.sql: one (n: int4) -> { n: int4? }
+compare_literal.sql: one () -> { x: bool? }
 compare_mood.sql: many () -> { x: bool? }
+compare_param.sql: one (m: 'ok' | 'sad') -> { x: bool? }
 delete_post.sql: none (id: int4) -> {  }
 delete_user.sql: none (id: int4) -> {  }
 insert_audited.sql: none (id: int4) -> {  }

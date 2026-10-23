@@ -1,7 +1,9 @@
 book_room.sql: closed | 23502 column ["id"]; table ["rooms"] | 23505 constraint ["rooms_pkey"]; table ["rooms"] | 23514 table ["rooms"] | 23P01 constraint ["rooms_no_overlap"]; table ["rooms"]
 call_boom.sql: open
 cast_positive.sql: closed | 23514 constraint ["positive_check"]; dataType ["positive"]
+compare_literal.sql: open
 compare_mood.sql: open
+compare_param.sql: open
 delete_post.sql: closed | 23001 constraint ["comments_post_id_fkey"]; table ["comments","posts"] | 23502 column ["id","title","user_id"]; table ["posts"] | 23503 constraint ["comments_post_id_fkey","posts_user_id_fkey"]; table ["comments","posts","users"] | 23505 constraint ["posts_pkey"]; table ["posts"] | 23514 table ["posts"]
 delete_user.sql: closed | 23001 constraint ["comments_post_id_fkey"]; table ["comments","posts"] | 23502 column ["email","id","title","user_id"]; table ["posts","users"] | 23503 constraint ["comments_post_id_fkey","posts_user_id_fkey"]; table ["comments","posts","users"] | 23505 constraint ["posts_pkey","users_email_key","users_lower_email","users_pkey"]; table ["posts","users"] | 23514 constraint ["adult","positive_check"]; dataType ["positive"]; table ["posts","users"]
 insert_audited.sql: open

@@ -30,7 +30,11 @@ const IMPLICIT_OPERATORS: [&str; 6] = ["=", "<>", "<", "<=", ">", ">="];
 /// operators they call; in a type's input and output; across a foreign table; in a user's or an
 /// extension's function of a name the statement calls, whatever it takes, since a literal or a
 /// parameter of no type takes the type of the one function there is; and in a user's or an
-/// extension's operator or cast of the statement, where each type of a user's it takes is present:
+/// extension's operator or cast of the statement, where each type of a user's it takes is present.
+/// An operator also opens it where an argument of no type may take a type that is not present: a
+/// prefix operator, or one where the server has no operator of the name taking the other
+/// argument's type on both sides (`text` where neither type is present), which Postgres would pick
+/// first. Present is
 /// a column's type, a row type, a type the statement names or a function it calls returns, a
 /// preferred type or one a built-in type casts to implicitly, and what those are built of (a
 /// domain's base, an array's element and its array, a composite's fields, a range's subtype).
@@ -88,7 +92,11 @@ pub const ERRORS_QUERY: &str = concat!(
       WHERE a.attnum > 0 AND NOT a.attisdropped AND t.oid IN (SELECT oid FROM coded) \
     UNION ALL SELECT 'open', 'function', p.proname::text, NULL FROM pg_proc p WHERE p.oid >= 16384 AND p.proname = ANY($3::text[]) \
     UNION ALL SELECT 'open', 'operator', o.oprname::text, NULL FROM pg_operator o WHERE o.oid >= 16384 AND o.oprname = ANY($4::text[]) \
-      AND (o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present)) AND (o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present)) \
+      AND ((o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present)) AND (o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present)) \
+        OR o.oprleft = 0 \
+        OR NOT EXISTS (SELECT 1 FROM pg_operator b WHERE b.oid < 16384 AND b.oprname = o.oprname AND b.oprleft = b.oprright AND b.oprleft = CASE \
+          WHEN o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present) THEN o.oprleft \
+          WHEN o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present) THEN o.oprright ELSE 'text'::regtype END)) \
     UNION ALL SELECT 'open', 'type', t.typname::text, NULL FROM pg_type t WHERE t.typname = ANY($5::text[]) AND t.oid IN (SELECT oid FROM coded) \
     UNION ALL SELECT 'open', 'cast', c.oid::text, NULL FROM pg_cast c WHERE c.oid >= 16384 AND c.castmethod = 'f' \
       AND ((c.castsource < 16384 AND c.casttarget < 16384) OR c.castsource IN (SELECT oid FROM present) OR c.casttarget IN (SELECT oid FROM present)) \

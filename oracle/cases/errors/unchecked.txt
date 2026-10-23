@@ -1,3 +1,4 @@
 call_boom.sql: boom (U0001)
+compare_literal.sql: sad (U0003)
 compare_mood.sql: sad (U0003)
 judge_mood.sql: sad (U0002)
