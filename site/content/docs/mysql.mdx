@@ -372,6 +372,22 @@ from users
 
 </Inferred>
 
+**Subqueries**
+
+A scalar subquery that aggregates without a `group by` returns one row, so its `count` is non-null, whether it reads a table, a subquery in `from` or a `with` query. A column read from a `with` query or a subquery in `from` is as nullable as it is in that query.
+
+<Inferred>
+
+```sql file="my_null_subqueries.sql" dialect="mysql"
+select d.id, d.orders
+from (
+  select u.id, (select count(*) from orders o where o.user_id = u.id) as orders
+  from users u
+) d
+```
+
+</Inferred>
+
 **`WITH ROLLUP`**
 
 A `WITH ROLLUP` adds summary rows whose grouped columns are `NULL`, and the types include `null`.
