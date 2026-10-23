@@ -1924,9 +1924,10 @@ const SYSTEM_COLUMNS: &[&str] = &["tableoid", "xmin", "cmin", "xmax", "cmax", "c
 /// What [`sublink_rows`] finds in a SELECT.
 struct SublinkRows {
     /// Per target of the SELECT: for a scalar or `ARRAY` subquery whose one target is the whole
-    /// row of a table of its own FROM, or an `array_agg` of the whole row of a table of the
-    /// SELECT's FROM, that table, the name the row goes by there, whether the value is an array
-    /// of rows, and whether it is an `array_agg`.
+    /// row of a table of its own FROM, a scalar subquery whose one target is an `array_agg` of
+    /// such a row, or an `array_agg` of the whole row of a table of the SELECT's FROM (either
+    /// `array_agg` alone or under `coalesce(…, <empty array literal>)`), that table, the name the
+    /// row goes by there, whether the value is an array of rows, and whether it is an `array_agg`.
     targets: Vec<Option<(String, String, bool, bool)>>,
     /// Every table a FROM anywhere in the statement names.
     tables: Vec<String>,
@@ -1956,8 +1957,9 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
 /// of its own FROM's tables (`(select c from child c …)`, `array(select c from child c …)`), or an
-/// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`),
-/// and every table a FROM of the statement names. `None` where a name could mean something the
+/// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`) or
+/// of a scalar subquery's own (`(select array_agg(c) from child c …)`), alone or under
+/// `coalesce(…, '{}')`, and every table a FROM of the statement names. `None` where a name could mean something the
 /// statement's text does not show: a FROM item that is no plain table (a function, a derived
 /// table, `JSON_TABLE`), a table named with its schema, or one named like a WITH query. A bare
 /// name reads a column of any FROM in scope before it reads a row, which
