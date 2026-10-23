@@ -52,8 +52,9 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // no columns and any number of rows.
   const refused = analysis.diagnostics.find((d) => d.code === 6);
   if (refused) throw new Error(`${path}:${place(sql, refused.start)}: ${refused.message}`);
-  // Each parameter's type, for the drivers that bind an array or a JSON value wrong (src/execute.ts).
-  const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }) }]));
+  // Each parameter's type, for the drivers that bind an array or a JSON value wrong, and whether it
+  // takes null, which the run time refuses for one that does not (src/execute.ts).
+  const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }), nullable: p.nullable }]));
   // Each output column's name and kind, from the table the declared types come from: what the run
   // time gives each value (src/values.ts).
   const columns = analysis.columns.map((c) => [c.name, columnKind(c.type, session.project.dialect)]);

@@ -290,6 +290,8 @@ where user_id = coalesce(:user_id::int, user_id)
 
 </Inferred>
 
+Any other parameter takes no null. If one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+
 ### Dynamic filtering
 
 To filter a list by whatever the page's URL holds, give each filter a nullable parameter, which matches every row when null:
