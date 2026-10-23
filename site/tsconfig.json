@@ -23,6 +23,12 @@
       ],
       "collections/*": [
         "./.source/*"
+      ],
+      "postgres": [
+        "./node_modules/postgres"
+      ],
+      "mysql2/*": [
+        "./node_modules/mysql2/*"
       ]
     },
     "rootDirs": [
