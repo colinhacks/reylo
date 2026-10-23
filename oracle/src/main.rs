@@ -45,7 +45,11 @@
 mod mysql;
 mod seed;
 
+use reylo_engine_core::api::DbError;
+use reylo_engine_core::database::Database;
+use reylo_engine_core::replay::{self, AnswerCache, Answerer, AsyncAnswerer};
 use serde_json::{json, Map, Value};
+use std::future::Future;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -363,76 +367,52 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
     Ok((lines, unchecked))
 }
 
-/// One request to the engine of the database it names, as that database's artifact answers it: the
-/// oracle checks every database, so it links each one's crate and dispatches as no artifact does.
-pub(crate) fn engine(request: &str) -> String {
-    use reylo_engine_core::api::{call, dialect_of};
-    use reylo_engine_core::dialect::Dialect;
-    match dialect_of(request) {
-        Some(Dialect::Sqlite) => call::<reylo_engine_sqlite::Sqlite>(request),
-        Some(Dialect::Mysql) => call::<reylo_engine_mysql::Mysql>(request),
-        _ => call::<reylo_engine_postgres::Postgres>(request),
-    }
-}
-
-/// The engine's replay with every need answered on `client`.
-/// One request to the engine. Its answer nests as deeply as the statement's JSON shapes do,
-/// past serde_json's default limit of 128 levels for a statement the engine still parses, so it is
-/// read without that limit.
-fn engine_call(request: &Value) -> Result<Value, String> {
-    let text = engine(&request.to_string());
-    let mut reader = serde_json::Deserializer::from_str(&text);
-    reader.disable_recursion_limit();
-    reader.into_iter::<Value>().next().unwrap_or_else(|| Ok(Value::Null)).map_err(|e| e.to_string())
-}
+/// The Postgres engine's describe payload, which the oracle's answers decode into.
+type PgDescribe = <reylo_engine_postgres::Postgres as Database>::Describe;
 
 async fn analyze_postgres(client: &Client, sql: &str) -> Result<Value, String> {
-    let mut answers = Map::new();
-    for _ in 0..64 {
-        let request = json!({ "op": "analyze", "sql": sql, "dialect": "postgres", "answers": Value::Object(answers.clone()) });
-        let response = engine_call(&request)?;
-        match response["status"].as_str() {
-            Some("analysis") => return Ok(response["analysis"].clone()),
-            Some("need") => {
-                for need in response["needs"].as_array().cloned().unwrap_or_default() {
-                    let id = need["id"].as_str().unwrap_or_default().to_string();
-                    let answer = fulfil_postgres(client, &need).await?;
-                    answers.insert(id, answer);
-                }
-            }
-            _ => return Err(format!("the engine answered {response}")),
-        }
-    }
-    Err("the replay did not converge".into())
+    let analysis = replay::run_async::<reylo_engine_postgres::Postgres, _>(sql, &mut PgAnswers(client), &mut AnswerCache::default()).await.map_err(|e| e.to_string())?;
+    serde_json::to_value(&analysis).map_err(|e| e.to_string())
 }
 
-async fn fulfil_postgres(client: &Client, need: &Value) -> Result<Value, String> {
-    let sql = need["sql"].as_str().unwrap_or_default();
-    match need["kind"].as_str() {
-        Some("describe") => Ok(match client.prepare(sql).await {
-            Ok(stmt) => {
-                let params: Vec<u32> = stmt.params().iter().map(Type::oid).collect();
-                let columns: Vec<Value> = stmt
-                    .columns()
-                    .iter()
-                    .map(|c| json!({ "name": c.name(), "oid": c.type_().oid(), "table": c.table_oid().unwrap_or(0), "attnum": c.column_id().map_or(0, i32::from) }))
-                    .collect();
-                json!({ "describe": { "params": params, "columns": columns } })
+/// The engine's needs, answered over the oracle's `tokio-postgres` client: a describe with the
+/// statement's parameter types and each column's type, table and column number, a catalog query
+/// with its parameters bound by the types the server infers for them.
+struct PgAnswers<'a>(&'a Client);
+
+impl AsyncAnswerer<PgDescribe> for PgAnswers<'_> {
+    type Error = String;
+
+    fn describe(&mut self, sql: &str) -> impl Future<Output = Result<Result<PgDescribe, DbError>, String>> + Send {
+        let client = self.0;
+        async move {
+            match client.prepare(sql).await {
+                Ok(stmt) => {
+                    let params: Vec<u32> = stmt.params().iter().map(Type::oid).collect();
+                    let columns: Vec<Value> = stmt
+                        .columns()
+                        .iter()
+                        .map(|c| json!({ "name": c.name(), "oid": c.type_().oid(), "table": c.table_oid().unwrap_or(0), "attnum": c.column_id().map_or(0, i32::from) }))
+                        .collect();
+                    serde_json::from_value(json!({ "params": params, "columns": columns })).map(Ok).map_err(|e| e.to_string())
+                }
+                Err(e) => serde_json::from_value(pg_error(&e)).map(Err).map_err(|e| e.to_string()),
             }
-            Err(e) => json!({ "error": pg_error(&e) }),
-        }),
-        Some("query") => {
-            let params = need["params"].as_array().cloned().unwrap_or_default();
+        }
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+        let client = self.0;
+        async move {
             let stmt = client.prepare(sql).await.map_err(|e| format!("catalog query failed to prepare: {}\n    {sql}", pg_message(&e)))?;
             let mut values: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
-            for (ty, value) in stmt.params().iter().zip(&params) {
+            for (ty, value) in stmt.params().iter().zip(params) {
                 values.push(bind(ty, value).ok_or_else(|| format!("cannot bind {value} as {ty} for the catalog query\n    {sql}"))?);
             }
             let refs: Vec<&(dyn ToSql + Sync)> = values.iter().map(|v| v.as_ref() as &(dyn ToSql + Sync)).collect();
             let rows = client.query(&stmt, &refs).await.map_err(|e| format!("catalog query failed: {}\n    {sql}", pg_message(&e)))?;
-            Ok(json!({ "rows": rows.iter().map(|row| (0..row.len()).map(|i| cell(row, i)).collect::<Vec<Value>>()).collect::<Vec<_>>() }))
+            Ok(Ok(rows.iter().map(|row| (0..row.len()).map(|i| cell(row, i)).collect()).collect()))
         }
-        other => Err(format!("unknown need {other:?}")),
     }
 }
 
@@ -526,46 +506,43 @@ fn run_sqlite(case: &Path, timeout_ms: u64, given: &Map<String, Value>, dumped: 
 }
 
 fn analyze_sqlite(db: &rusqlite::Connection, sql: &str) -> Result<Value, String> {
-    let mut answers = Map::new();
-    for _ in 0..16 {
-        let request = json!({ "op": "analyze", "sql": sql, "dialect": "sqlite", "answers": Value::Object(answers.clone()) });
-        let response = engine_call(&request)?;
-        match response["status"].as_str() {
-            Some("analysis") => return Ok(response["analysis"].clone()),
-            Some("need") => {
-                for need in response["needs"].as_array().cloned().unwrap_or_default() {
-                    let id = need["id"].as_str().unwrap_or_default().to_string();
-                    if need["kind"] != "query" {
-                        return Err(format!("the SQLite path asked for {need}"));
-                    }
-                    let query = need["sql"].as_str().unwrap_or_default();
-                    let mut stmt = db.prepare(query).map_err(|e| format!("catalog query: {e}"))?;
-                    let width = stmt.column_count();
-                    let rows: Vec<Value> = stmt
-                        .query_map([], |row| {
-                            (0..width)
-                                .map(|i| {
-                                    Ok(match row.get_ref(i)? {
-                                        rusqlite::types::ValueRef::Null => Value::Null,
-                                        rusqlite::types::ValueRef::Integer(n) => json!(n),
-                                        rusqlite::types::ValueRef::Real(f) => json!(f),
-                                        rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                                        rusqlite::types::ValueRef::Blob(_) => Value::Null,
-                                    })
-                                })
-                                .collect::<Result<Vec<Value>, rusqlite::Error>>()
-                                .map(Value::Array)
-                        })
-                        .map_err(|e| e.to_string())?
-                        .collect::<Result<Vec<Value>, rusqlite::Error>>()
-                        .map_err(|e| e.to_string())?;
-                    answers.insert(id, json!({ "rows": rows }));
-                }
-            }
-            _ => return Err(format!("the engine answered {response}")),
-        }
+    let analysis = replay::run::<reylo_engine_sqlite::Sqlite, _>(sql, &mut SqliteAnswers(db), &mut AnswerCache::default()).map_err(|e| e.to_string())?;
+    serde_json::to_value(&analysis).map_err(|e| e.to_string())
+}
+
+/// The engine's catalog queries, answered from the case's SQLite file. SQLite prepares inside the
+/// engine, so it never asks to describe.
+struct SqliteAnswers<'a>(&'a rusqlite::Connection);
+
+impl Answerer<<reylo_engine_sqlite::Sqlite as Database>::Describe> for SqliteAnswers<'_> {
+    type Error = String;
+
+    fn describe(&mut self, sql: &str) -> Result<Result<<reylo_engine_sqlite::Sqlite as Database>::Describe, DbError>, String> {
+        Err(format!("the SQLite path asked to describe {sql}"))
     }
-    Err("the replay did not converge".into())
+
+    fn query(&mut self, sql: &str, _params: &[Value]) -> Result<Result<Vec<Vec<Value>>, DbError>, String> {
+        let mut stmt = self.0.prepare(sql).map_err(|e| format!("catalog query: {e}"))?;
+        let width = stmt.column_count();
+        let rows = stmt
+            .query_map([], |row| {
+                (0..width)
+                    .map(|i| {
+                        Ok(match row.get_ref(i)? {
+                            rusqlite::types::ValueRef::Null => Value::Null,
+                            rusqlite::types::ValueRef::Integer(n) => json!(n),
+                            rusqlite::types::ValueRef::Real(f) => json!(f),
+                            rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
+                            rusqlite::types::ValueRef::Blob(_) => Value::Null,
+                        })
+                    })
+                    .collect::<Result<Vec<Value>, rusqlite::Error>>()
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<Vec<Value>>, rusqlite::Error>>()
+            .map_err(|e| e.to_string())?;
+        Ok(Ok(rows))
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

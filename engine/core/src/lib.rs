@@ -20,6 +20,7 @@ pub mod fingerprint;
 pub mod fresh;
 pub mod host;
 pub mod lex;
+pub mod replay;
 pub mod schema;
 pub mod schema_type;
 pub mod shape;

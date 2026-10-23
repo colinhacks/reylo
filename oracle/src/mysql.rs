@@ -67,7 +67,11 @@
 use crate::seed::{report, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
+use reylo_engine_core::api::DbError;
+use reylo_engine_core::database::Database;
+use reylo_engine_core::replay::{self, AnswerCache, AsyncAnswerer};
 use serde_json::{json, Map, Value};
+use std::future::Future;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -168,53 +172,48 @@ pub async fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, 
 
 /// The engine's replay with every need answered on `conn`, in as many rounds as the loader gives it.
 async fn analyze(conn: &mut Conn, sql: &str) -> Result<Value, String> {
-    let mut answers = Map::new();
-    for _ in 0..16 {
-        let request = json!({ "op": "analyze", "sql": sql, "dialect": "mysql", "answers": Value::Object(answers.clone()) });
-        let response: Value = serde_json::from_str(&crate::engine(&request.to_string())).map_err(|e| e.to_string())?;
-        match response["status"].as_str() {
-            Some("analysis") => return Ok(response["analysis"].clone()),
-            Some("need") => {
-                for need in response["needs"].as_array().cloned().unwrap_or_default() {
-                    let id = need["id"].as_str().unwrap_or_default().to_string();
-                    let answer = fulfil(conn, &need).await?;
-                    answers.insert(id, answer);
-                }
-            }
-            _ => return Err(format!("the engine answered {response}")),
-        }
-    }
-    Err("the replay did not converge".into())
+    let analysis = replay::run_async::<reylo_engine_mysql::Mysql, _>(sql, &mut MyAnswers(conn), &mut AnswerCache::default()).await.map_err(|e| e.to_string())?;
+    serde_json::to_value(&analysis).map_err(|e| e.to_string())
 }
 
-async fn fulfil(conn: &mut Conn, need: &Value) -> Result<Value, String> {
-    let sql = need["sql"].as_str().unwrap_or_default();
-    match need["kind"].as_str() {
-        Some("describe") => match conn.prep(sql).await {
-            Ok(statement) => {
-                let columns: Vec<Value> = statement.columns().iter().map(|c| json!({ "name": c.name_str(), "type": c.column_type() as u8, "flags": c.flags().bits(), "charset": c.character_set(), "length": c.column_length(), "org_table": c.org_table_str(), "org_name": c.org_name_str() })).collect();
-                let params: Vec<Value> = statement.params().iter().map(|p| json!({ "type": p.column_type() as u8, "flags": p.flags().bits(), "charset": p.character_set() })).collect();
-                conn.close(statement).await.map_err(|e| e.to_string())?;
-                Ok(json!({ "mysql": { "columns": columns, "params": params } }))
+type MyDescribe = <reylo_engine_mysql::Mysql as Database>::Describe;
+
+/// The engine's needs, answered over the case's `mysql_async` session: a describe from the
+/// server's prepare, as mysql2 reports it, and a catalog query with its values written into the
+/// text, as mysql2's `query()` writes them.
+struct MyAnswers<'a>(&'a mut Conn);
+
+impl AsyncAnswerer<MyDescribe> for MyAnswers<'_> {
+    type Error = String;
+
+    fn describe(&mut self, sql: &str) -> impl Future<Output = Result<Result<MyDescribe, DbError>, String>> + Send {
+        let conn = &mut *self.0;
+        async move {
+            match conn.prep(sql).await {
+                Ok(statement) => {
+                    let columns: Vec<Value> = statement.columns().iter().map(|c| json!({ "name": c.name_str(), "type": c.column_type() as u8, "flags": c.flags().bits(), "charset": c.character_set(), "length": c.column_length(), "org_table": c.org_table_str(), "org_name": c.org_name_str() })).collect();
+                    let params: Vec<Value> = statement.params().iter().map(|p| json!({ "type": p.column_type() as u8, "flags": p.flags().bits(), "charset": p.character_set() })).collect();
+                    conn.close(statement).await.map_err(|e| e.to_string())?;
+                    serde_json::from_value(json!({ "columns": columns, "params": params })).map(Ok).map_err(|e| e.to_string())
+                }
+                Err(mysql_async::Error::Server(e)) => Ok(Err(DbError { message: e.message, code: error_name(e.code).map(String::from), position: None })),
+                Err(e) => Err(format!("the prepare did not reach the server: {e}")),
             }
-            Err(mysql_async::Error::Server(e)) => Ok(match error_name(e.code) {
-                Some(name) => json!({ "error": { "message": e.message, "code": name } }),
-                None => json!({ "error": { "message": e.message } }),
-            }),
-            Err(e) => Err(format!("the prepare did not reach the server: {e}")),
-        },
-        Some("query") => {
-            let params = need["params"].as_array().cloned().unwrap_or_default();
-            let text = interpolate(sql, &params).ok_or_else(|| format!("cannot write {params:?} into the catalog query\n    {sql}"))?;
+        }
+    }
+
+    fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, String>> + Send {
+        let conn = &mut *self.0;
+        async move {
+            let text = interpolate(sql, params).ok_or_else(|| format!("cannot write {params:?} into the catalog query\n    {sql}"))?;
             let mut result = conn.query_iter(text).await.map_err(|e| format!("catalog query failed: {}\n    {sql}", message(&e)))?;
             let types: Vec<u8> = result.columns_ref().iter().map(|c| c.column_type() as u8).collect();
             let mut rows = Vec::new();
             while let Some(row) = result.next().await.map_err(|e| format!("catalog query failed: {}\n    {sql}", message(&e)))? {
-                rows.push(Value::Array(row.unwrap().into_iter().zip(&types).map(|(value, code)| decoded(value, *code)).collect()));
+                rows.push(row.unwrap().into_iter().zip(&types).map(|(value, code)| decoded(value, *code)).collect());
             }
-            Ok(json!({ "rows": rows }))
+            Ok(Ok(rows))
         }
-        other => Err(format!("unknown need {other:?}")),
     }
 }
 
