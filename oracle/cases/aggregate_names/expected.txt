@@ -1,0 +1,9 @@
+array_agg.sql: one () -> { ids: (int8!)[]? }
+bit_aggregates.sql: one () -> { all_bits: int8?, any_bits: int8? }
+bool_aggregates.sql: one () -> { all_titled: bool?, any_first: bool?, all_positive: bool? }
+grouped.sql: many () -> { user_id: int8, titles: text }
+object_aggregates.sql: one () -> { titles: json?, titles_b: json? }
+over_no_rows.sql: one () -> { titles: text?, ids: (int8!)[]?, b: bool?, o: json? }
+string_agg.sql: one () -> { titles: text? }
+subquery_coalesce.sql: many () -> { id: int8, titles: text, ids: int8[], all_titled: bool, titles_by_id: json }
+subquery_nullable.sql: many () -> { titles: text? }
