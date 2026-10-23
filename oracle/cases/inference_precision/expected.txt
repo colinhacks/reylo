@@ -24,7 +24,8 @@ whole_row_json_left_joined.sql: many () -> { id: int4, post: { id: int4, user_id
 whole_row_json_left_joined_agg.sql: many () -> { id: int4, posts: [{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?] }
 whole_row_json_nested_join.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }?, author: { id: int4, name: text, email: text? }? }
 whole_row_json_right_joined.sql: many () -> { id: int4, author: { id: int4, name: text, email: text? }? }
-whole_row_json_self_join.sql: many () -> { id: int4, earlier: { id: int4?, name: text?, email: text? }?, later: { id: int4, name: text, email: text? }? }
+whole_row_json_self_full_join.sql: many () -> { earlier: { id: int4, name: text, email: text? }?, later: { id: int4, name: text, email: text? }? }
+whole_row_json_self_join.sql: many () -> { id: int4, earlier: { id: int4, name: text, email: text? }, later: { id: int4, name: text, email: text? }? }
 whole_row_json_view.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz?, shout: text }? }
 whole_row_json_with.sql: many () -> { id: int4, post: { user_id: int4?, title: text, published_at: timestamptz?, loud: text }? }
 whole_row_outer_joined.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?], rows: (posts{ id: int4?, user_id: int4?, title: text?, published_at: timestamptz? }?)[] }
@@ -32,3 +33,5 @@ whole_row_outer_reduced.sql: many () -> { id: int4, posts: [posts{ id: int4, use
 whole_row_preserved_side.sql: one () -> { users: [users{ id: int4, name: text, email: text? }]? }
 whole_row_read.sql: many () -> { e: events{ id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? }, doc: { id: int4, kind: 'click' | 'key', payload: json {"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"code":{"type":"string"}},"additionalProperties":true}, note: text? } }
 whole_row_self_join.sql: many () -> { id: int4, later: [users{ id: int4, name: text, email: text? }?] }
+whole_row_star_self_join.sql: many () -> { id: int4, name: text, email: text?, later: text? }
+whole_row_star_self_join_nulled.sql: many () -> { earlier: text, id: int4?, name: text?, email: text? }

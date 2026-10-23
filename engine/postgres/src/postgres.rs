@@ -1324,7 +1324,15 @@ impl<'a> Engine<'a> {
         // A table read twice: a top-level `alias.column` names its reading, though, the table the
         // alias is a reading of and whether an outer join of the top FROM nulls it, where no set
         // operation leaves the provenance unsure.
-        let aliased = if repeated && !grouping && !parsed.is_some_and(|p| p.has_set_op) { aliased_columns(sql, raw.columns.len()) } else { Vec::new() };
+        // A table's width is its columns the catalog read, where one relation goes by the name.
+        let width = |name: &str| {
+            let mut tables = known.values().filter(|(n, _)| n == name);
+            match (tables.next(), tables.next()) {
+                (Some((_, columns)), None) => Some(columns.len()),
+                _ => None,
+            }
+        };
+        let aliased = if repeated && !grouping && !parsed.is_some_and(|p| p.has_set_op) { aliased_columns(sql, raw.columns.len(), &width) } else { Vec::new() };
         // A column read straight from a WITH query, a derived table or a function in FROM is as
         // nullable as that item's own result says, whatever the catalog says of the table column
         // behind it. Each item answers by its place in the FROM, so a table read twice changes
@@ -2286,17 +2294,22 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
     catalog
 }
 
-/// For each result column that the top SELECT's target list writes as `alias.column`, where the
-/// alias is a table of the top FROM: that table's name, and whether an outer join there nulls the
-/// alias (a WHERE that rules the NULLs out is not read, which leaves the column nullable). Nothing
-/// where a `*` hides which target is which column, or the targets are not the columns.
-fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
+/// For each result column that the top SELECT's target list writes as `alias.column`, or that
+/// `alias.*` expands to, where the alias is a table of the top FROM: that table's name, and
+/// whether an outer join there nulls the alias (a WHERE that rules the NULLs out is not read,
+/// which leaves the column nullable). `width` is how many columns a table has, which `alias.*`
+/// expands to. Nothing where a bare `*`, or a star of an item `width` does not answer for, hides
+/// which target is which column, or the targets are not the columns.
+fn aliased_columns(sql: &str, count: usize, width: &dyn Fn(&str) -> Option<usize>) -> Vec<Option<(String, bool)>> {
     use pg_query::protobuf::{JoinType, Node};
-    fn items(node: &Node, nulled: bool, ctes: &[String], out: &mut HashMap<String, Option<(String, bool)>>) {
+    fn items(node: &Node, nulled: bool, ctes: &[String], out: &mut HashMap<String, Option<(String, bool)>>, qualified: &mut Vec<String>) {
         match node.node.as_ref() {
             Some(NodeEnum::RangeVar(rv)) => {
                 let alias = rv.alias.as_ref().map_or(rv.relname.clone(), |a| a.aliasname.clone());
                 let table = (!(rv.schemaname.is_empty() && ctes.contains(&rv.relname))).then(|| (rv.relname.clone(), nulled));
+                if !rv.schemaname.is_empty() {
+                    qualified.push(alias.clone());
+                }
                 out.insert(alias, table);
             }
             Some(NodeEnum::JoinExpr(j)) => {
@@ -2312,7 +2325,7 @@ fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
                 };
                 for (side, nulled) in [(j.larg.as_deref(), left), (j.rarg.as_deref(), right)] {
                     if let Some(side) = side {
-                        items(side, nulled, ctes, out);
+                        items(side, nulled, ctes, out, qualified);
                     }
                 }
             }
@@ -2331,7 +2344,7 @@ fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
     }
     let Ok(parsed) = crate::stack::parse(sql) else { return Vec::new() };
     let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Vec::new() };
-    if (select.op != pg_query::protobuf::SetOperation::SetopNone as i32 && select.op != 0) || select.target_list.len() != count {
+    if select.op != pg_query::protobuf::SetOperation::SetopNone as i32 && select.op != 0 {
         return Vec::new();
     }
     let ctes: Vec<String> = select
@@ -2343,15 +2356,31 @@ fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
             _ => None,
         })
         .collect();
-    let mut readings = HashMap::new();
+    let (mut readings, mut qualified) = (HashMap::new(), Vec::new());
     for item in &select.from_clause {
-        items(item, false, &ctes, &mut readings);
+        items(item, false, &ctes, &mut readings, &mut qualified);
     }
     let mut out = Vec::with_capacity(count);
     for target in &select.target_list {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { return Vec::new() };
-        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+        // `(x).*` is as many columns as `x` has fields, which nothing here counts.
+        if matches!(rt.val.as_deref().and_then(|v| v.node.as_ref()), Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_))))) {
             return Vec::new();
+        }
+        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+            // `a.*` is every column of the table `a` is a reading of, in order, as `a.column` is one.
+            // A table named with its schema may be another than the one its name finds.
+            let alias = match rt.val.as_deref().and_then(|v| v.node.as_ref()) {
+                Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 2 => match c.fields[0].node.as_ref() {
+                    Some(NodeEnum::String(alias)) if !qualified.contains(&alias.sval) => Some(alias.sval.as_str()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            let Some((table, nulled)) = alias.and_then(|a| readings.get(a).cloned().flatten()) else { return Vec::new() };
+            let Some(n) = width(&table) else { return Vec::new() };
+            out.extend(std::iter::repeat_n(Some((table, nulled)), n));
+            continue;
         }
         let reading = match rt.val.as_deref().and_then(|v| v.node.as_ref()) {
             Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 2 => match c.fields[0].node.as_ref() {
@@ -2361,6 +2390,9 @@ fn aliased_columns(sql: &str, count: usize) -> Vec<Option<(String, bool)>> {
             _ => None,
         };
         out.push(reading);
+    }
+    if out.len() != count {
+        return Vec::new();
     }
     out
 }
@@ -3203,6 +3235,24 @@ mod tests {
             }
         }
         panic!("the replay did not converge");
+    }
+
+    #[test]
+    fn a_star_of_a_reading_is_its_tables_columns_by_that_reading() {
+        let width = |name: &str| (name == "users").then_some(3);
+        let users = |nulled: bool| Some(("users".to_string(), nulled));
+        assert_eq!(aliased_columns("select a.*, b.name from users a left join users b on b.id > a.id", 4, &width), [users(false), users(false), users(false), users(true)]);
+        assert_eq!(aliased_columns("select a.name, b.* from users a left join users b on b.id > a.id", 4, &width), [users(false), users(true), users(true), users(true)]);
+        assert_eq!(aliased_columns("select a.*, b.* from users a full join users b on b.id = a.id", 6, &width), [users(true), users(true), users(true), users(true), users(true), users(true)]);
+        // A bare star, a star of an item whose width is not known, and a count that does not add up say nothing.
+        assert!(aliased_columns("select * from users a left join users b on b.id > a.id", 6, &width).is_empty());
+        assert!(aliased_columns("select p.*, a.name from users a left join posts p on p.user_id = a.id", 4, &width).is_empty());
+        assert!(aliased_columns("select a.* from users a left join users b on b.id > a.id", 4, &width).is_empty());
+        // `(x).*` counts as many columns as `x` has fields, and a table named with its schema may
+        // be another `users`: neither may offset the count of the other.
+        assert!(aliased_columns("select a.*, b.id, (b.addr).* from other.users a left join users b on true", 5, &|name: &str| (name == "users").then_some(2)).is_empty());
+        assert!(aliased_columns("select a.*, b.name from other.users a left join users b on true", 4, &width).is_empty());
+        assert!(aliased_columns("select a.name, (b.addr).* from users a left join users b on true", 3, &width).is_empty());
     }
 
     #[test]
