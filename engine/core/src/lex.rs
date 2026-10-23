@@ -100,13 +100,21 @@ pub struct Rewritten {
     pub order: Vec<String>,
     /// Per placeholder in text order: `(original start, original end, rewritten start, rewritten end)`.
     pub spans: Vec<(usize, usize, usize, usize)>,
+    /// Text the rewrite adds that the original does not hold, in text order: `(original offset,
+    /// rewritten start, rewritten end)`, as the collation a MySQL statement's own text needs
+    /// (the MySQL engine's `mysql_collation`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub inserted: Vec<(usize, usize, usize)>,
 }
 
 impl Rewritten {
     /// The byte offset in the original text that a byte offset in the rewritten text refers to.
     pub fn to_original(&self, pos: usize) -> usize {
         let mut delta: isize = 0;
-        for &(os, oe, rs, re) in &self.spans {
+        let mut regions = self.spans.clone();
+        regions.extend(self.inserted.iter().map(|&(at, rs, re)| (at, at, rs, re)));
+        regions.sort_by_key(|&(_, _, rs, _)| rs);
+        for (os, oe, rs, re) in regions {
             if pos >= re {
                 delta += (oe - os) as isize - (re - rs) as isize;
             } else if pos >= rs {
@@ -582,7 +590,7 @@ pub fn rewrite_with(sql: &str, lexed: &Lexed, target: Target, decorate: &dyn Fn(
     if target != Target::Question {
         order = lexed.params.clone();
     }
-    Rewritten { sql: out, order, spans }
+    Rewritten { sql: out, order, spans, inserted: Vec::new() }
 }
 
 /// The first keywords of the statements SQLite and MySQL know that are not queries: DDL,

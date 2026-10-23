@@ -19,7 +19,8 @@ export type Analysis = {
   columns: { name: string; type: EngineType; nullable: boolean; type_name: string; comment?: string }[];
   cardinality: "one" | "maybeOne" | "many" | "none";
   cardinalityReason?: string;
-  rewritten: { sql: string; order: string[]; spans: [number, number, number, number][] };
+  /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
+  rewritten: { sql: string; order: string[]; spans: [number, number, number, number][]; inserted?: [number, number, number][] };
   style: "none" | "named" | "positional" | "mixed";
   diagnostics: Diagnostic[];
   unresolved: string[];

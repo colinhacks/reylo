@@ -1,0 +1,1 @@
+select u.id from users u join json_table(:names::json('{"type": "array", "items": {"type": "string"}}'), '$[*]' columns (legacy varchar(20) collate utf8mb4_unicode_ci path '$')) as j on u.legacy = j.legacy
