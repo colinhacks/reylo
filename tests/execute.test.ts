@@ -270,6 +270,16 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
   seen.length = 0;
   await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, pq, values);
   assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}']]);
+  // Postgres refuses a sign before an ISO 8601 duration's `P`, which run returns for a negative interval.
+  const iq: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select :back::interval, :ahead::interval, :mixed::interval, :text::interval, :spans::interval[]",
+    params: ["back", "ahead", "mixed", "text", "spans"],
+    inputs: { back: s("interval"), ahead: s("interval"), mixed: s("interval"), text: s("interval"), spans: { type: { kind: "array", of: { kind: "scalar", name: "interval" } } } },
+  };
+  seen.length = 0;
+  await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, iq, { back: "-P1DT2H0.5S", ahead: "P1M", mixed: "P1M-1D", text: "-1 days", spans: ["-PT3S", "P1D"] });
+  assert.deepEqual([...seen], [["P-1DT-2H-0.5S", "P1M", "P1M-1D", "-1 days", '{"PT-3S","P1D"}']]);
   // Without inputs, as defined by hand, every value goes as it is.
   const { inputs: _, ...bare } = lq;
   seen.length = 0;

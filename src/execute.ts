@@ -8,7 +8,7 @@
 import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
-import { describe, ParameterError, postgresYear, zoned, type Columns } from "./values.ts";
+import { describe, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import type { JsonSchema } from "./engine-type.ts";
@@ -571,7 +571,8 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown): vo
 
 // What `run` returns goes back in as the database reads it (the round-trip rule, src/render.ts):
 // on Postgres a date or time with an extended or BC year in Postgres's own form, which refuses
-// `+010000` and `0000`; on SQLite a truth value, which a BOOLEAN column returns, as 1 or 0, since
+// `+010000` and `0000`, and a negative interval with each part signed (`-P1D` as `P-1D`), since
+// Postgres refuses a sign before the `P`; on SQLite a truth value, which a BOOLEAN column returns, as 1 or 0, since
 // better-sqlite3 refuses a boolean ("SQLite3 can only bind numbers, strings, bigints, buffers, and
 // null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
 // a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
@@ -582,7 +583,9 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
   if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name) : v;
   if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) ? type : type.of, e, dialect, name)) : v;
-  return typeof v === "string" && isTime(type) ? postgresYear(v) : v;
+  if (typeof v !== "string") return v;
+  if (isTime(type)) return postgresYear(v);
+  return type.kind === "scalar" && type.name === "interval" ? postgresInterval(v) : v;
 }
 
 /** A VECTOR's floats as the text `to_vector` reads; JSON's, which would write NaN and ±Infinity as null, so those are refused. */

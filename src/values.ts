@@ -9,9 +9,10 @@
 // column (`columns`, as `[name, kind]`): `bool` is a boolean; `int` and `float` a number; `int8` a
 // BigInt; `decimal` the exact decimal text; `date` the text `YYYY-MM-DD`; `timestamp` the server's
 // wall-clock text with `T` between the date and the time; `timestamptz` the instant's ISO 8601 text
-// in UTC, with `Z` and the server's fraction; `json` the parsed value; `bytes` a Uint8Array (a
-// Buffer is one); `text` the server's text, which every other type is (time, interval, uuid, an
-// enum's label, a range, a row value); `unknown` whatever the driver gives (a SQLite column with no
+// in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
+// front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `text` the server's
+// text, which every other type is (time, uuid, an enum's label, a range, a row value); `unknown`
+// whatever the driver gives (a SQLite column with no
 // declared type). `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
 // expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
 // separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
@@ -24,7 +25,7 @@ import type { EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "json" | "bytes" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "unknown";
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
@@ -41,6 +42,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   date: "string",
   timestamp: "string",
   timestamptz: "string",
+  interval: "string",
   json: "unknown",
   bytes: "Uint8Array",
   unknown: "unknown",
@@ -50,7 +52,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
  * The kind of a Postgres or MySQL base type, by the engine's name for it (MySQL's are the Postgres
  * names: a DATETIME is `timestamp`, a BIT `bytea`, a YEAR `int2`). Every type not named here is
  * its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
- * `interval`, `uuid`, `money`, `point`, `xml`, a row value).
+ * `uuid`, `money`, `point`, `xml`, a row value).
  */
 const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   bool: "bool",
@@ -64,6 +66,7 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   date: "date",
   timestamp: "timestamp",
   timestamptz: "timestamptz",
+  interval: "interval",
   json: "json",
   jsonb: "json",
   bytea: "bytes",
@@ -226,6 +229,53 @@ export function instantOfDate(d: Date, column: string): string {
   return d.toISOString().replace(/\.?0+Z$/, "Z");
 }
 
+// interval in IntervalStyle postgres: `1 year 2 mons 3 days 04:05:06.789`. Postgres keeps three
+// parts, each signed on its own: months (written as years and months), days, and a time that may
+// pass 24 hours; a part after a negative one carries `+` (`-1 days +01:00:00`).
+const INTERVAL = /^(?:([+-]?\d+) years? ?)?(?:([+-]?\d+) mons? ?)?(?:([+-]?\d+) days? ?)?(?:([+-]?)(\d+):(\d\d):(\d\d)(?:\.(\d+))?)?$/;
+
+/**
+ * An interval's text as an ISO 8601 duration, which `Temporal.Duration.from` reads: `1 year 2 mons
+ * 3 days 04:05:06.789` is `P1Y2M3DT4H5M6.789S` and zero is `PT0S`, as Postgres writes them in
+ * IntervalStyle iso_8601, and a negative interval has one sign in front, `-1 days` being `-P1D`
+ * (Postgres writes `P-1D`, which ISO 8601 and Temporal refuse). An interval whose parts differ in
+ * sign has no ISO 8601 form, so it keeps Postgres's, each part signed on its own: `1 mon -1 days`
+ * is `P1M-1D`, which Postgres reads back and Temporal refuses. `infinity` and `-infinity` stay
+ * those words.
+ */
+export function duration(x: string): string {
+  const m = INTERVAL.exec(x);
+  if (m === null || x === "") return x;
+  const time = m[4] === "-" ? -1 : 1;
+  // Each designator Postgres writes, its magnitude and its sign; a zero is left out.
+  const parts: [designator: string, magnitude: string, sign: number][] = [];
+  for (const [designator, digits] of [["Y", m[1]], ["M", m[2]], ["D", m[3]]] as const) {
+    if (digits !== undefined && +digits !== 0) parts.push([designator, String(Math.abs(+digits)), digits.startsWith("-") ? -1 : 1]);
+  }
+  const date = parts.length;
+  if (+(m[5] ?? 0) !== 0) parts.push(["H", String(+m[5]!), time]);
+  if (+(m[6] ?? 0) !== 0) parts.push(["M", String(+m[6]!), time]);
+  const fraction = (m[8] ?? "").replace(/0+$/, "");
+  if (+(m[7] ?? 0) !== 0 || fraction !== "") parts.push(["S", `${+(m[7] ?? 0)}${fraction && `.${fraction}`}`, time]);
+  if (parts.length === 0) return "PT0S";
+  const negative = parts.every(([, , sign]) => sign < 0);
+  const write = ([designator, magnitude, sign]: [string, string, number]) => `${sign < 0 && !negative ? "-" : ""}${magnitude}${designator}`;
+  const clock = parts.slice(date).map(write).join("");
+  return `${negative ? "-" : ""}P${parts.slice(0, date).map(write).join("")}${clock && `T${clock}`}`;
+}
+
+/**
+ * An interval parameter's text as Postgres reads it, the inverse of `duration` for a negative
+ * interval (the round-trip rule): Postgres refuses a sign before the `P` (`-P1DT2H`, as `.run()`
+ * returns it and Temporal writes it), and reads each part signed instead (`P-1DT-2H`). Any other
+ * text is left as it is.
+ */
+export function postgresInterval(text: string): string {
+  const m = /^\s*([+-])(P[^+-]*)$/i.exec(text);
+  if (m === null) return text;
+  return m[1] === "+" ? m[2]! : m[2]!.replace(/(\d+(?:[.,]\d+)?)([YMWDHS])/gi, "-$1$2");
+}
+
 type BufferClass = { from(data: string, encoding: string): Uint8Array; isBuffer(v: unknown): boolean };
 const NodeBuffer = (globalThis as { Buffer?: BufferClass }).Buffer;
 // TextDecoder is a global in every runtime Reylo supports; it is typed here rather than through
@@ -268,6 +318,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   date: identity,
   timestamp,
   timestamptz: instant,
+  interval: duration,
   json: (x) => JSON.parse(x),
   bytes: bytea,
   unknown: identity,
@@ -503,6 +554,8 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unk
       // Bun.sql's `infinity`.
       if (v === Infinity || v === -Infinity) return v > 0 ? "infinity" : "-infinity";
       return v;
+    case "interval":
+      return typeof v === "string" ? duration(v) : v;
     case "json":
       return typeof v === "string" ? JSON.parse(v) : v;
     case "bytes":

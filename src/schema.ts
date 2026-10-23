@@ -64,6 +64,8 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       case "float8": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "double" }, nonFinite] } : { type: "number", format: "double" };
       case "numeric": return dialect === "postgres" ? { anyOf: [{ type: "number", format: "decimal" }, nonFinite] } : { type: "number", format: "decimal" };
       case "bytea": return { type: "string", format: "hex" };
+      // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
+      case "interval": return { type: "string", description: "pg type interval" };
       // A row whose columns were not read (a subquery's): an object of them.
       case "record": return { type: "object" };
       // An hstore: an object of its keys, each value text or null.
@@ -105,6 +107,8 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
     case "int8": return { type: "integer", format: "int64" };
     case "decimal": return { type: "string", format: "decimal" };
     case "timestamptz": return { type: "string", format: "date-time" };
+    // RFC 3339's duration, which JSON Schema's `duration` format names, has no sign and no fraction.
+    case "interval": return { type: "string", description: "an ISO 8601 duration with its sign in front (P1Y2M3DT4H5M6.789S, -P1D); one whose parts differ in sign signs each part (P1M-1D)" };
     case "date": return { type: "string", format: "date" };
     // A date and a time with no zone, which RFC 3339's date-time does not admit.
     case "timestamp": return { type: "string", description: "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)" };

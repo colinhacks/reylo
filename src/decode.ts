@@ -33,7 +33,7 @@ const FIRST_USER_OID = 10000;
 
 const SCALAR_OIDS: Readonly<Record<number, ScalarKind>> = {
   16: "bool", 17: "bytes", 20: "int8", 21: "int", 23: "int", 26: "int", 700: "float", 701: "float",
-  1700: "decimal", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 114: "json", 3802: "json",
+  1700: "decimal", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 1186: "interval", 114: "json", 3802: "json",
 };
 
 // Every built-in array type and its element, as Postgres 18's pg_type lists them (none was ever
@@ -351,9 +351,10 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * The kinds Bun.sql can give in another form: a BIGINT as its digits (a BigInt with `bigint: true`),
  * a date and a timestamp as a Date read as UTC, a timestamptz as a Date, an int4[] and float4[] as a
  * typed array, an array of a type Bun does not parse (an enum's, uuid, name, a range) as its text,
- * MySQL's TINYINT(1) and a comparison as a number or a BIGINT's digits, and its BIT(1) as a boolean.
+ * MySQL's TINYINT(1) and a comparison as a number or a BIGINT's digits, and its BIT(1) as a boolean;
+ * and an interval as Postgres's text, which Reylo writes as an ISO 8601 duration.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|bytes)$|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes)$|\[\]$|\|/;
 
 export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];

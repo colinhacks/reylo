@@ -8,7 +8,7 @@
 // nobody chose is refused.
 import type { EngineType } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { describe, ParameterError, postgresYear, zoned } from "./values.ts";
+import { describe, ParameterError, postgresInterval, postgresYear, zoned } from "./values.ts";
 
 export { describe, zoned } from "./values.ts";
 
@@ -205,9 +205,14 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
       for (const byte of v) hex += (byte < 16 ? "0" : "") + byte.toString(16);
       return hex;
     }
+    case "interval":
+      // `-P1D`, as `.run()` returns a negative interval, in the form Postgres reads.
+      if (typeof v === "string") return postgresInterval(v);
+      if (typeof v === "number") return v;
+      return fail(`is ${written}; got ${describe(v)}.`);
     default:
-      // A type the run time has no rule for (time, interval, inet, …) takes the text the database
-      // reads, and a number or a truth value as JSON writes them.
+      // A type the run time has no rule for (time, inet, …) takes the text the database reads, and
+      // a number or a truth value as JSON writes them.
       if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return v;
       return fail(`is ${written}; got ${describe(v)}.`);
   }

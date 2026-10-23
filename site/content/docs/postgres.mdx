@@ -78,7 +78,8 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | `date` | `string` | `"2026-10-20"` |
 | `timestamp` | `string` | `"2026-10-20T10:00:00.123456"` |
 | `timestamptz` | `string` | `"2026-10-20T08:00:00.123456Z"` |
-| `time`, `timetz`, `interval` | `string` | `"10:00:00"`, `"1 day 02:03:04"` |
+| `time`, `timetz` | `string` | `"10:00:00"` |
+| `interval` | `string` | `"P1DT2H3M4S"` |
 | `json`, `jsonb` | `unknown` | `{ a: 1 }` |
 | `json`, `jsonb` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10, y: 20 }` |
 | JSON the statement builds (`jsonb_build_object`, `jsonb_agg`) | the object or array it builds | `{ total: 12.5 }` |
@@ -131,7 +132,7 @@ A `numeric` comes back as its exact text, keeping the column's scale, and so doe
 
 ### Dates and times
 
-No value comes back as a `Date`. A `timestamptz` is the instant in UTC, in ISO 8601 with a `Z`. The other types are the text Postgres writes, with a `T` between the date and the time of a `timestamp`:
+No value comes back as a `Date`. A `timestamptz` is the instant in UTC, in ISO 8601 with a `Z`, and an `interval` is an ISO 8601 duration. The other types are the text Postgres writes, with a `T` between the date and the time of a `timestamp`:
 
 ```ts twoslash tab="main.ts"
 import orderDates from "./pg_order_dates.sql";
@@ -144,7 +145,7 @@ const order = await orderDates.run(db, { id: 1 });
 select placed_at, ships_on from orders where id = :id
 ```
 
-If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()` and the date with `Temporal.PlainDate.from()`. You can pass each value back in as a parameter unchanged ([What a parameter takes](#what-a-parameter-takes)).
+If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`, the date with `Temporal.PlainDate.from()` and an interval with `Temporal.Duration.from()`. You can pass each value back in as a parameter unchanged ([What a parameter takes](#what-a-parameter-takes)).
 
 <Rules>
 
@@ -183,14 +184,26 @@ A `timestamptz` uses ISO 8601's extended year, as `Temporal.Instant` does. A `da
 
 </Pairs>
 
-**Times and intervals**
+**Times**
 
-A `time`, `timetz` or `interval` is the text Postgres writes in its default `DateStyle` and `IntervalStyle`. If your session changes those, the text changes too.
+A `time` or `timetz` is the text Postgres writes in its default `DateStyle`. If your session changes it, the text changes too.
 
 <Pairs>
 
 - `'10:00:00+02'::timetz` → `"10:00:00+02"`
-- `'1 day 02:03:04'::interval` → `"1 day 02:03:04"`
+
+</Pairs>
+
+**Intervals**
+
+An interval is an ISO 8601 duration with its sign in front, which `Temporal.Duration.from()` reads. Postgres signs an interval's months, days and time separately, so when those differ in sign, each part keeps its own sign: Postgres reads that form back, and `Temporal` doesn't. This holds in Postgres's default `IntervalStyle`; if your session changes it, the text is Postgres's own.
+
+<Pairs>
+
+- `'1 day 02:03:04'::interval` → `"P1DT2H3M4S"`
+- `'1 year 2 mons'::interval` → `"P1Y2M"`
+- `'-1 day'::interval` → `"-P1D"`
+- `'1 mon -1 day'::interval` → `"P1M-1D"`
 
 </Pairs>
 
@@ -261,7 +274,7 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, an `hstore` is an object of its keys, each value text or null, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
 
 <Pairs>
 
@@ -270,6 +283,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 - `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
+- `jsonb_build_object('d', '1 day 02:03:04'::interval)` → `{ d: "1 day 02:03:04" }`
 - `json_build_object('u', row(1, 'Ada'))` → `{ u: { f1: 1, f2: "Ada" } }`
 - `json_build_object('o', 7::oid)` → `{ o: "7" }`
 - `json_build_object('h', 'a=>1, b=>NULL'::hstore)` → `{ h: { a: "1", b: null } }`
@@ -647,6 +661,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `boolean` | `boolean` |
 | `date`, `timestamp`, `time` | `string` |
 | `timestamptz` | a `string` that names its zone |
+| `interval` | a `string`: an ISO 8601 duration (`-P1D` too) or Postgres's own text |
 | `json`, `jsonb` | any JSON value, or what the column's JSON Schema admits |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element's parameter type, without `null` |
