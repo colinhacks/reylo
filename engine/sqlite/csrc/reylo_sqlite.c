@@ -48,9 +48,11 @@ static Select *gInsertSelect;   /* the SELECT or VALUES that feeds the INSERT, a
 static Table *gTables[128];
 static int gnTables;
 
+/* A table of the schema the statement reads. A WITH query's table is ephemeral, as a subquery's
+** is: the statement owns it and frees it as the prepare ends, before tables() reads the list. */
 static void tableSeen(Table *pTab){
   int i;
-  if( pTab==0 || IsView(pTab) || IsVirtual(pTab) ) return;
+  if( pTab==0 || IsView(pTab) || IsVirtual(pTab) || (pTab->tabFlags & TF_Ephemeral) ) return;
   for(i=0; i<gnTables; i++) if( gTables[i]==pTab ) return;
   if( gnTables<128 ) gTables[gnTables++] = pTab;
 }

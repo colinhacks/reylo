@@ -2934,6 +2934,28 @@ mod tests {
     }
 
     #[test]
+    fn the_tree_describes_the_schema_tables_alone_and_no_with_query() {
+        // A WITH query's table belongs to the statement, which frees it as the prepare ends,
+        // before the serializer lists the tables: read then, a recursive one nested in another,
+        // whose memory SQLite had reused, ended the analysis in a crash.
+        let described = |sql: &str| {
+            let t = tree::analyze(&ddl(), sql, &[], None).expect("the tree parses");
+            assert!(t.error.is_none(), "{sql}: {:?}", t.error);
+            let mut names = t.tables.into_keys().collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        assert_eq!(described("with recent as (select user_id from posts) select user_id from recent"), ["posts"]);
+        assert_eq!(described("with recursive c (n) as (select 1 union all select n + 1 from c where n < 3) select n from c"), Vec::<String>::new());
+        assert_eq!(described("with users as (select id from main.users) select id from users"), ["users"]);
+        let nested = "with recursive t (n, x, j) as (select 1, 'a', json_array('a') union all select n + 1, null, \
+                      (with recursive u (m, y) as (select 1, t.x union all select m + 1, y from u where m < 2) select json_group_array(y) from u) \
+                      from t where n < 3) select n, x, j from t";
+        assert_eq!(described(nested), Vec::<String>::new());
+        assert!(analysis(nested).diagnostics.is_empty());
+    }
+
+    #[test]
     fn a_statement_as_deep_as_the_engine_reads_is_typed_and_one_level_past_it_is_an_error_at_the_bound() {
         // From a thread with a small stack, as a host may call from: the embedded SQLite's
         // recursion, the reading of its tree and the walks over it run on the engine's stack.

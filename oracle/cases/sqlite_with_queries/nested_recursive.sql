@@ -1,0 +1,1 @@
+with recursive t (n, x, j) as (select 1, 'a', json_array('a') union all select n + 1, null, (with recursive u (m, y) as (select 1, t.x union all select m + 1, y from u where m < 2) select json_group_array(y) from u) from t where n < 3) select n, x, j from t

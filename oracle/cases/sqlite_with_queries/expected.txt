@@ -1,0 +1,3 @@
+correlated_with.sql: many () -> { name: text, kids: integer }
+nested_recursive.sql: many () -> { n: integer, x: text?, j: text }
+shadowing_with.sql: many () -> { id: integer, name: text }
