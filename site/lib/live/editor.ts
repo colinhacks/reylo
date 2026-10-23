@@ -4,7 +4,7 @@
 // drawn as the page draws every Reylo error, a squiggle under its range and the pinned card under
 // its last line (docs-kit's `.dk-error` and `.dk-error-line`), in space the card opens there, so it
 // never covers the code.
-import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, completionStatus, moveCompletionSelection, selectedCompletion, type CompletionSource } from '@codemirror/autocomplete';
+import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, completionStatus, moveCompletionSelection, selectedCompletion, type CompletionContext, type CompletionSource } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { keywordCompletionSource, PostgreSQL, schemaCompletionSource, sql } from '@codemirror/lang-sql';
 import { bracketMatching } from '@codemirror/language';
@@ -159,6 +159,23 @@ export function createEditor(parent: HTMLElement, doc: string, highlighter: High
     if (!context.explicit && !context.matchBefore(/[\w$]{2,}$/)) return null;
     return keywords(context);
   };
+  // Nothing while a parameter's name is typed (`:id`, `:auth.user_id`, `$1`): the name is the
+  // reader's own. A cast's `::` still offers the types.
+  // lang-sql reads a word half typed after a table as its alias (`from users u whe`), and offers
+  // the word back: only the schema's own names are offered as they stand.
+  const names = new Set(Object.entries(completions).flatMap(([table, cols]) => [...table.split('.'), ...cols]));
+  const schemaSource = schemaCompletionSource(config);
+  const columns: CompletionSource = async (context) => {
+    const result = await schemaSource(context);
+    if (!result) return result;
+    const typed = context.state.sliceDoc(result.from, context.pos);
+    return { ...result, options: result.options.filter((o) => o.label !== typed || names.has(o.label)) };
+  };
+  const inParameter = (context: CompletionContext) => context.matchBefore(/(?:^|[^:]):[\w.]*$|\$\d*$/) !== null;
+  const outsideParameters =
+    (source: CompletionSource): CompletionSource =>
+    (context) =>
+      inParameter(context) ? null : source(context);
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -168,7 +185,7 @@ export function createEditor(parent: HTMLElement, doc: string, highlighter: High
         sql(config),
         // The list opens with nothing chosen, so Enter is always a new line until the arrows choose
         // an item; Tab takes the first item, or the one chosen.
-        autocompletion({ icons: false, selectOnOpen: false, override: [schemaCompletionSource(config), unqualifiedKeywords] }),
+        autocompletion({ icons: false, selectOnOpen: false, override: [outsideParameters(columns), outsideParameters(unqualifiedKeywords)] }),
         closeBrackets(),
         bracketMatching(),
         keymap.of([...closeBracketsKeymap, { key: 'Tab', run: takeCompletion }, ...completionKeymap, { key: 'Enter', run: newlineKeepingIndent }, ...defaultKeymap, ...historyKeymap, indentWithTab]),
