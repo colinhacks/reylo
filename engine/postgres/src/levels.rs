@@ -13,8 +13,11 @@
 //! query's and a join's from the statement. A proof needs the name found there for certain, and
 //! everything else is the weaker answer: a FROM item whose columns are not known (a function that
 //! returns a row type, a relation the catalog did not report, a column the statement does not
-//! name), a system column, a reference to a FROM item as a whole row, and a call that holds a
-//! subquery of its own are all read as possibly the outer query's.
+//! name), a system column, a bare name for a FROM item's whole row where the caller does not
+//! know every FROM around the subquery, and a call that holds a subquery of its own are all read
+//! as possibly the outer query's. A bare name is a column of any FROM in scope before it is an
+//! item's whole row, so `jsonb_agg(p)` is the subquery's own only where no FROM, its own or one
+//! around it, shows a column `p` ([`Level::within`]).
 //!
 //! The same columns answer the opposite question for `to_jsonb(u)`: a bare name is a column
 //! before it is a FROM item, so `u` is the item's whole row only where no FROM in scope shows a
@@ -172,6 +175,9 @@ pub struct Level {
     /// A join with USING or NATURAL, which shows the merged columns first: `*` is then not the
     /// items' columns in their order.
     merged: bool,
+    /// The FROMs of every query around this one, where the caller knows them all ([`Level::within`]):
+    /// what says a bare name no FROM in scope has a column of is an item's whole row.
+    outside: Option<Vec<Level>>,
 }
 
 impl Level {
@@ -253,6 +259,19 @@ impl Level {
         }
     }
 
+    /// This FROM inside the queries whose FROMs are `outside`, which are all of them.
+    pub fn within(mut self, outside: Vec<Level>) -> Level {
+        self.outside = Some(outside);
+        self
+    }
+
+    /// Whether a bare name is the whole row of an item of this FROM, for certain: an item goes by
+    /// it, and no FROM in scope, this one or one around it, shows a column of that name, which
+    /// Postgres reads a bare name as first.
+    fn whole_row(&self, name: &str) -> bool {
+        self.items.iter().any(|i| i.name.as_deref() == Some(name)) && self.lacks(name) && self.outside.as_ref().is_some_and(|outside| outside.iter().all(|l| l.lacks(name)))
+    }
+
     /// Whether no item of this FROM shows a column of this name, for certain: every item's
     /// columns are known by name and none is this one. A system column (`ctid`) is one every table
     /// has and no list holds.
@@ -282,8 +301,9 @@ impl Level {
 
     /// Whether the query whose FROM this is, standing inside another, is the one an aggregate
     /// call in its select list belongs to, for certain: the call reads a column of this FROM, a
-    /// qualified one by its item's name and a bare one by an item that shows its name, or reads
-    /// no column and holds no subquery. An aggregate belongs to the innermost query whose column
+    /// qualified one by its item's name and a bare one by an item that shows its name, or an
+    /// item's whole row by its bare name ([`Level::whole_row`]), or reads no column and holds no
+    /// subquery. An aggregate belongs to the innermost query whose column
     /// it reads, so one such read outside a subquery in the call settles it; a subquery's own
     /// reads, which may reach a query around this one, are not read.
     pub fn owns(&self, call: &protobuf::FuncCall) -> bool {
@@ -296,7 +316,7 @@ impl Level {
             }
         }
         (reads.is_empty() && !subquery) || reads.iter().any(|fields| match fields.as_slice() {
-            [Some(column)] => self.items.iter().any(|i| i.shown.has(column)),
+            [Some(column)] => self.items.iter().any(|i| i.shown.has(column)) || self.whole_row(column),
             // `p.title` and `p.*`. A longer form (`app.posts.title`) names a relation by its
             // schema, which an alias here does not answer to.
             [Some(item), _] => self.items.iter().any(|i| i.name.as_deref() == Some(item.as_str())),
@@ -501,6 +521,47 @@ mod tests {
             assert!(!owns(sql, &c), "{sql}");
         }
         assert!(!owns("select (select count(title) from posts) from users", &Columns::default()), "no catalog, no proof");
+    }
+
+    /// [`owns`] with the subquery inside the top query's FROM, which the caller knows.
+    fn owns_within(sql: &str, columns: &Columns) -> bool {
+        let parsed = crate::stack::parse(sql).unwrap();
+        let Some(NodeEnum::SelectStmt(top)) = parsed.protobuf.stmts[0].stmt.as_deref().and_then(|n| n.node.as_ref()) else { panic!("a SELECT") };
+        let Some(NodeEnum::ResTarget(rt)) = top.target_list[0].node.as_ref() else { panic!("a target") };
+        let Some(NodeEnum::SubLink(link)) = rt.val.as_deref().and_then(|v| v.node.as_ref()) else { panic!("a subquery") };
+        let select = link.subselect.as_deref().and_then(as_select).unwrap();
+        let Some(NodeEnum::ResTarget(inner)) = select.target_list[0].node.as_ref() else { panic!("a target") };
+        let Some(NodeEnum::FuncCall(call)) = inner.val.as_deref().and_then(|v| v.node.as_ref()) else { panic!("a call") };
+        let withs = Withs::default().with(top.with_clause.as_ref(), columns);
+        let outside = vec![Level::of(&top.from_clause, &withs, columns)];
+        Level::of(&select.from_clause, &withs.with(select.with_clause.as_ref(), columns), columns).within(outside).owns(call)
+    }
+
+    #[test]
+    fn a_bare_name_for_an_items_whole_row_is_its_own_where_every_from_around_it_is_known() {
+        let c = catalog();
+        for sql in [
+            "select (select jsonb_agg(p) from posts p) from users",
+            "select (select jsonb_agg(p) from posts p where p.user_id = u.id) from users u",
+            "select (select jsonb_agg(posts) from posts) from users",
+            "select (select jsonb_agg(s) from (select id, title from posts) s) from users",
+            "select (select jsonb_agg(p) from posts p)",
+        ] {
+            assert!(owns_within(sql, &c), "{sql}");
+            assert!(!owns(sql, &c), "around FROMs not known: {sql}");
+        }
+        for sql in [
+            // A bare name is a column of a FROM around the subquery before it is a row of its own.
+            "select (select jsonb_agg(name) from posts name) from users",
+            // An item whose columns are not known may have a column of the name, here or around.
+            "select (select jsonb_agg(p) from posts p) from users, generate_series(1, 2) g",
+            "select (select jsonb_agg(p) from posts p, generate_series(1, 2) g) from users",
+            "select (select jsonb_agg(p) from posts p) from unlisted",
+            // No item goes by the name.
+            "select (select jsonb_agg(q) from posts p) from users q",
+        ] {
+            assert!(!owns_within(sql, &c), "{sql}");
+        }
     }
 
     #[test]

@@ -49,4 +49,4 @@ subquery_own_in.sql: many () -> { n: int8 }
 subquery_own_json_nested.sql: many () -> { id: int8, posts: [{ id: int8, bodies: [text] }] }
 system_column_own.sql: many () -> { n: int8? }
 whole_row_outer.sql: many () -> { n: int8? }
-whole_row_own.sql: many () -> { n: int8? }
+whole_row_own.sql: many () -> { n: int8 }

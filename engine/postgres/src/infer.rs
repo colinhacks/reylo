@@ -408,7 +408,8 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     let withs = Withs::default().with(with.as_ref(), columns);
     // The old and the new row of a RETURNING, with the relations a bare name is a column of first.
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new() };
+    let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms };
     let mut plan = Plan::default();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -726,7 +727,7 @@ fn array_elements(node: &Node) -> Option<Vec<&Node>> {
 /// where the SELECT stands inside another statement: an aggregate counts there only when it is
 /// that SELECT's own ([`Level::owns`]).
 pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>) -> bool {
-    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new() }.aggregates(expr, true, level)
+    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None }.aggregates(expr, true, level)
 }
 
 impl Ty {
@@ -764,6 +765,10 @@ struct Reader<'a> {
     /// The columns, as written, that cannot be NULL where the reader stands: inside a CASE arm
     /// whose WHEN is strict in them, or after a WHEN that tested them `IS NULL` and failed.
     narrowed: Vec<Vec<String>>,
+    /// Every FROM in scope where the reader stands, the innermost last, where the reader knows
+    /// them all: what says a bare name in a subquery's aggregate is an item's whole row
+    /// ([`Level::within`]).
+    scope: Option<Vec<Level>>,
 }
 
 impl Reader<'_> {
@@ -1069,7 +1074,12 @@ impl Reader<'_> {
         // not read, so the inner expression is read without leaves.
         let withs = self.withs.with(select.with_clause.as_ref(), self.columns);
         let level = Level::of(&select.from_clause, &withs, self.columns);
-        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new() };
+        let scope = self.scope.as_ref().map(|outside| outside.iter().cloned().chain([level.clone()]).collect());
+        let level = match &self.scope {
+            Some(outside) => level.within(outside.clone()),
+            None => level,
+        };
+        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope };
         let value = inner_reader.read(inner);
         if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level))) {
             value
@@ -1695,7 +1705,7 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
 /// A bare `VALUES (…), (…)` arm: a column is non-null when it is in every row.
 fn values_plan(s: &SelectStmt, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let withs = Withs::default().with(s.with_clause.as_ref(), columns);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new() };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None };
     let mut rows: Vec<Vec<Expr>> = Vec::new();
     for row in &s.values_lists {
         let Some(NodeEnum::List(list)) = row.node.as_ref() else { return Plan::default() };
