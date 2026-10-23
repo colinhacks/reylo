@@ -98,6 +98,7 @@ docker run -d --name reylo-mysql -p 53306:3306 -e MYSQL_ALLOW_EMPTY_PASSWORD=yes
 
 - With a local Postgres install instead: `oracle/cluster.sh start <its bin directory> <port>` makes a throwaway cluster under `/tmp` and prints its URL, and `oracle/cluster.sh stop <port>` deletes it. On macOS a postmaster started with no locale in its environment stops at once ("postmaster became multithreaded during startup"), so set `LANG=en_US.UTF-8` for it.
 - The oracle's `json_schema_*` cases call five JSON Schema validator extensions in Postgres 18. `.github/scripts/json-schema-validators.sh` builds them against a Postgres install's `pg_config`, as the oracle job in `test.yml` does.
+- The oracle's `pgvector_types` and `postgis_types` cases need pgvector and PostGIS in that Postgres 18: on Debian and Ubuntu, PGDG's `postgresql-18-pgvector` and `postgresql-18-postgis-3`, as the oracle job installs them; Homebrew's `postgresql@18` has pgvector, and `brew install postgis` adds PostGIS.
 - CI's Postgres cluster for the oracle is made with `initdb -E UTF8 --locale=C`, so a case that depends on collation can differ on a cluster with another locale.
 - MySQL 9.7 and later start with GTIDs on, which refuses the oracle's MyISAM and MEMORY writes: start them with `--gtid-mode=OFF --enforce-gtid-consistency=OFF`. The `mysql_*` cases are blessed on MySQL 8.4.
 
@@ -137,7 +138,7 @@ The docs are `site/content/docs/`: the main page `index.mdx`, which continues in
 
 - **test**: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `packages/postgres`, `packages/mysql`, `lab/drivers` and `lab/jest`, the Jest lab's links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
 - **engine**: `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle`.
-- **oracle**: `cargo run -q -p reylo-oracle -- --url <pg> --mysql-url <mysql> --strict-coverage oracle/cases`, on Postgres 18 with the five JSON Schema validators, which `.github/scripts/json-schema-validators.sh` builds and a cache keeps, and MySQL 8.4. A failure in the step that builds the validators is not the engine's.
+- **oracle**: `cargo run -q -p reylo-oracle -- --url <pg> --mysql-url <mysql> --strict-coverage oracle/cases`, on Postgres 18 with pgvector, PostGIS and the five JSON Schema validators, which `.github/scripts/json-schema-validators.sh` builds and a cache keeps, and MySQL 8.4. A failure in the step that builds the validators is not the engine's.
 
 Run what CI runs before you push. A failing check's log: `gh pr checks <number> -R colinhacks/reylo` names the run, and `gh run view <run id> -R colinhacks/reylo --log-failed` prints what failed. Pullfrog and Copilot review every pull request, and Vercel deploys a preview of the docs site.
 
