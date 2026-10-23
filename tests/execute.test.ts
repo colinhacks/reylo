@@ -305,6 +305,28 @@ test("arrayLiteral writes a Postgres array literal as pg does: nesting, NULL, qu
   assert.equal(arrayLiteral([["a"], ["b"]], ";"), '{{"a"};{"b"}}');
 });
 
+test("postgres: a pgvector vector parameter takes an array of finite numbers, written as the text pgvector reads; an array of them as an array of those texts", async () => {
+  const seen: unknown[][] = [];
+  const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };
+  const vector = { kind: "scalar", name: "vector" } as const;
+  const nearest: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select id from items where embedding <-> :q < 1 or embedding = any(:qs) or half = :h",
+    params: ["q", "qs", "h"],
+    inputs: { q: { type: vector }, qs: { type: { kind: "array", of: vector } }, h: { type: { kind: "scalar", name: "halfvec" } } },
+  };
+  await execute(client as never, nearest, { q: [1, 2.5, -3, 1e-7], qs: [[1, 2], [3]], h: [0.5] });
+  assert.deepEqual(seen, [["[1,2.5,-3,1e-7]", '{"[1,2]","[3]"}', "[0.5]"]]);
+  // The text pgvector itself prints passes as it is.
+  await execute(client as never, nearest, { q: "[1,2]", qs: [], h: null });
+  assert.deepEqual(seen.at(-1), ["[1,2]", "{}", null]);
+  // JSON would write NaN and ±Infinity as null, and pgvector refuses them and an empty vector.
+  for (const [q, why] of [[[1, NaN], /pgvector vector, an array of finite numbers, and the element at \[1\] is NaN/], [[Infinity], /element at \[0\] is Infinity/], [["1"], /element at \[0\] is "1"/], [[], /one dimension at least; got an empty array/]] as const) {
+    await assert.rejects(execute(client as never, nearest, { q, qs: [], h: null }) as Promise<unknown>, why);
+  }
+  await assert.rejects(execute(client as never, nearest, { q: [1], qs: [[1], [NaN]], h: null }) as Promise<unknown>, /element at \[0\] is NaN/);
+});
+
 test("postgres: an array parameter is written with its element type's delimiter, which the module's inputs carry", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (config: { values: unknown[] }) => (seen.push(config.values), { rows: [], fields: [] }), getTypeParser: () => String };

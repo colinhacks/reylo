@@ -577,22 +577,31 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown): vo
 // null") and libSQL binds `true` as the REAL 1.0. A query without `inputs` gets neither. On MySQL
 // a VECTOR, MySQL's one array, as the text of its floats, `[1,2.5]`, which the engine's
 // `to_vector(?)` reads: drivers left to themselves sent an array as the text "1,2,3" (mysql2's
-// execute()) or expanded it into a list of values (mysql2's query(), mariadb).
+// execute()) or expanded it into a list of values (mysql2's query(), mariadb). On Postgres a
+// pgvector vector the same way, as the text its input reads, and an array of vectors as an array
+// of those texts.
 function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {
   if (type === undefined || v == null) return v;
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
-  if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name) : v;
-  if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) ? type : type.of, e, dialect, name)) : v;
+  if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
+  if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !isVector(type.of) ? type : type.of, e, dialect, name)) : v;
+  if (isVector(type) && Array.isArray(v)) {
+    if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${type.name}, which has one dimension at least; got an empty array.`);
+    return vectorText(v, name, `a pgvector ${type.name}`);
+  }
   if (typeof v !== "string") return v;
   if (isTime(type)) return postgresYear(v);
   return type.kind === "scalar" && type.name === "interval" ? postgresInterval(v) : v;
 }
 
-/** A VECTOR's floats as the text `to_vector` reads; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
-function vectorText(v: readonly unknown[], name: string): string {
+/** Whether `type` is one of pgvector's dense vectors, which `.run()` returns as an array of numbers. */
+const isVector = (type: EngineType): type is EngineType & { kind: "scalar" } => type.kind === "scalar" && (type.name === "vector" || type.name === "halfvec");
+
+/** A vector's floats as the text a VECTOR's `to_vector` and pgvector's input read; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
+function vectorText(v: readonly unknown[], name: string, what: string): string {
   v.forEach((e, i) => {
     if (typeof e !== "number" || !Number.isFinite(e)) {
-      throw new ParameterError(`Parameter "${name}" is a VECTOR, an array of finite numbers, and the element at [${i}] is ${typeof e === "string" ? JSON.stringify(e) : typeof e === "number" ? e : typeof e}.`);
+      throw new ParameterError(`Parameter "${name}" is ${what}, an array of finite numbers, and the element at [${i}] is ${typeof e === "string" ? JSON.stringify(e) : typeof e === "number" ? e : typeof e}.`);
     }
   });
   return JSON.stringify(v);

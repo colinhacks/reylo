@@ -74,6 +74,8 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       case "geometry": return GEOJSON;
       // An oid is not one of the numbers JSON has a number for: Postgres writes its text.
       case "oid": return { type: "string" };
+      // pgvector has no cast to JSON, so a vector inside a document is its text.
+      case "vector": case "halfvec": return { type: "string" };
     }
   } else if (input) {
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
@@ -113,6 +115,7 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
     // A date and a time with no zone, which RFC 3339's date-time does not admit.
     case "timestamp": return { type: "string", description: "a date and time without a time zone, as the database wrote it (2026-10-20T10:00:00.123456)" };
     case "bytes": return { type: "string", format: "byte", contentEncoding: "base64" };
+    case "vector": return { type: "array", items: { type: "number", format: "float" } };
     case "text": return { type: "string" };
     case "json": return {};
     case "unknown": return {};

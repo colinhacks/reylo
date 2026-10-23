@@ -88,6 +88,7 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | An enum | the union of its labels | `"admin"` |
 | A domain | its base type | its base type's |
 | A row value | `string` | `"(1,Ada)"` |
+| pgvector's `vector`, `halfvec` | `number[]` | `[1, 2.5, -3]` |
 | Every other type (`inet`, ranges, `point`, `tsvector`, `xml`, …) | `string` | `"[1,5)"` |
 
 Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
@@ -423,6 +424,18 @@ Postgres doesn't track an array's dimensions, so a two-dimensional `int[]` is st
 
 </Pairs>
 
+**pgvector's vectors**
+
+A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either takes one; `NaN`, infinities and an empty array are rejected before the query runs. A `halfvec` keeps half-precision floats, so a value comes back as the float it stored, and a `sparsevec` comes back as its text.
+
+<Pairs>
+
+- `'[1,2.5,-3]'::vector` → `[ 1, 2.5, -3 ]`
+- `'[0.1,2]'::halfvec` → `[ 0.099975586, 2 ]`
+- `'{1:1.5,3:2}/4'::sparsevec` → `"{1:1.5,3:2}/4"`
+
+</Pairs>
+
 </Rules>
 
 ### Enums and domains
@@ -666,6 +679,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `bytea` | `Uint8Array` |
 | An array | an array of its element's parameter type, without `null` |
 | An enum | the union of its labels |
+| pgvector's `vector`, `halfvec` | `number[]` |
 
 <Rules>
 

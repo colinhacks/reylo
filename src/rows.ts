@@ -182,6 +182,12 @@ function scalar(name: string, written: string, v: unknown, dialect: Dialect, fai
       if (n !== undefined && [...v].length > Number(n)) fail(`is ${written}, at most ${n} characters; got ${[...v].length}, which the database would refuse or cut.`);
       return v;
     }
+    case "vector":
+    case "halfvec":
+      // pgvector's vector, as `.run()` returns it, written as the text its input reads.
+      if (Array.isArray(v) && v.length > 0 && v.every((e) => typeof e === "number" && Number.isFinite(e))) return JSON.stringify(v);
+      if (typeof v === "string") return v;
+      return fail(`is ${written}, an array of finite numbers with one at least; got ${describe(v)}.`);
     case "uuid":
       if (typeof v === "string" && /^\{?[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}\}?$/i.test(v)) return v;
       return fail(`is ${written}, a UUID in hexadecimal; got ${describe(v)}.`);

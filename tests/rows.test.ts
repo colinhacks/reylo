@@ -69,3 +69,17 @@ test("the rows an insert writes carry the same keys, and its lists name only tho
   assert.equal(variant(text, structured, events.fields, present), `insert into events ("id", "ts") SELECT e."id", e."ts" FROM x`);
   assert.throws(() => prepareRows("p", { kind: "rows", one: true, fields: [{ ...events.fields[2]! }] }, {}, "postgres", true), /every key is left out/);
 });
+
+test("a pgvector vector member takes an array of finite numbers, written as the text pgvector reads", () => {
+  const items: RowsType = {
+    kind: "rows",
+    one: false,
+    fields: [
+      { name: "embedding", type: scalar("vector"), written: "vector(3)", nullable: false, optional: false },
+      { name: "history", type: { kind: "array", of: scalar("halfvec") }, written: "halfvec[]", nullable: true, optional: true },
+    ],
+  };
+  assert.equal(renderParamType(items), "readonly { embedding: number[]; history?: (number[] | null)[] | null }[]");
+  assert.deepEqual(prepareRows("items", items, [{ embedding: [1, 2.5, 3], history: [[0.5], null] }], "postgres", true).value, [{ embedding: "[1,2.5,3]", history: ["[0.5]", null] }]);
+  for (const embedding of [[], [1, NaN], ["1"], "x".length]) assert.throws(() => prepareRows("items", items, [{ embedding }], "postgres", true), /embedding.* is vector\(3\), an array of finite numbers with one at least/);
+});

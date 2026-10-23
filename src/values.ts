@@ -10,9 +10,10 @@
 // BigInt; `decimal` the exact decimal text; `date` the text `YYYY-MM-DD`; `timestamp` the server's
 // wall-clock text with `T` between the date and the time; `timestamptz` the instant's ISO 8601 text
 // in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
-// front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `text` the server's
-// text, which every other type is (time, uuid, an enum's label, a range, a row value); `unknown`
-// whatever the driver gives (a SQLite column with no
+// front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `vector` pgvector's
+// `vector` or `halfvec` as an array of its numbers; `text` the server's text, which every other
+// type is (time, uuid, an enum's label, a range, a row value); `unknown` whatever the driver gives
+// (a SQLite column with no
 // declared type). `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
 // expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
 // separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
@@ -25,7 +26,7 @@ import type { EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "unknown";
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
@@ -45,6 +46,7 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   interval: "string",
   json: "unknown",
   bytes: "Uint8Array",
+  vector: "number[]",
   unknown: "unknown",
 };
 
@@ -52,7 +54,8 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
  * The kind of a Postgres or MySQL base type, by the engine's name for it (MySQL's are the Postgres
  * names: a DATETIME is `timestamp`, a BIT `bytea`, a YEAR `int2`). Every type not named here is
  * its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
- * `uuid`, `money`, `point`, `xml`, a row value).
+ * `uuid`, `money`, `point`, `xml`, a row value). pgvector's `vector` and `halfvec` are
+ * extensions' types, named by their names as every created type is.
  */
 const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   bool: "bool",
@@ -70,6 +73,8 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   json: "json",
   jsonb: "json",
   bytea: "bytes",
+  vector: "vector",
+  halfvec: "vector",
 };
 
 /**
@@ -321,6 +326,8 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   interval: duration,
   json: (x) => JSON.parse(x),
   bytes: bytea,
+  // pgvector prints the shortest text of each float, `[1,2.5,1e-07]`, which JSON reads exactly.
+  vector: (x) => JSON.parse(x),
   unknown: identity,
 };
 
@@ -557,6 +564,7 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unk
     case "interval":
       return typeof v === "string" ? duration(v) : v;
     case "json":
+    case "vector":
       return typeof v === "string" ? JSON.parse(v) : v;
     case "bytes":
       if (isBytes(v)) return v;
