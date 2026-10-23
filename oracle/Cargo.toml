@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 reylo-engine-core = { path = "../engine/core" }
+reylo-engine = { path = "../engine/facade", features = ["tokio-postgres", "rusqlite", "mysql_async"] }
 reylo-engine-postgres = { path = "../engine/postgres" }
 reylo-engine-sqlite = { path = "../engine/sqlite" }
 reylo-engine-mysql = { path = "../engine/mysql" }
