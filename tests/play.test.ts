@@ -53,6 +53,10 @@ test("reylo play analyzes each statement against the project's database, without
     const res = await fetch(`${play.url}api/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sql: "select id, name, email from users", width: 20 }) });
     assert.equal(((await res.json()) as any).returns, "{\n  id: number;\n  name: string;\n  email: string | null;\n}[]");
 
+    // The schema card holds the database's own statements.
+    const card = await get(`${play.url}api/page`);
+    assert.equal(card.body.schema, "CREATE TABLE users (id integer primary key, name text not null, email text);");
+
     const schema = await get(`${play.url}api/schema`);
     assert.equal(schema.body.dialect, "sqlite");
     assert.deepEqual(schema.body.tables, [{ name: "users", columns: [{ name: "id", type: "INTEGER", nullable: true }, { name: "name", type: "TEXT", nullable: false }, { name: "email", type: "TEXT", nullable: true }] }]);

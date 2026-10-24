@@ -157,7 +157,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
   return {
     dialect,
     label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : "SQLite"} at ${session.where()} (${project.urlSource})`,
-    schema: schemaText(dialect, cat),
+    schema: (await schemaDdl(dialect, (sql) => session.query(sql))) ?? schemaText(dialect, cat),
     catalog: cat,
     async analyze(sql, width) {
       const t = performance.now();
@@ -222,7 +222,73 @@ async function pgliteBackend(root: string): Promise<Backend> {
   };
 }
 
-/** The schema as the page shows it for a database it did not create: each table's columns, as a CREATE TABLE writes them. */
+/**
+ * The database's schema as statements that would make it, for the page's schema card: SQLite's own
+ * stored statements, MySQL's \`SHOW CREATE\`, and on Postgres, which keeps no statement, one written
+ * from its catalog (types, tables with their defaults and constraints, views, indexes) for the
+ * schemas on the search path. Undefined where the database refuses, and the columns stand in.
+ */
+async function schemaDdl(dialect: Dialect, query: (sql: string) => Promise<unknown[][]>): Promise<string | undefined> {
+  try {
+    if (dialect === "sqlite") {
+      const rows = await query(`select sql as ddl from sqlite_schema where sql is not null and name not like 'sqlite_%' order by case type when 'table' then 0 when 'view' then 1 when 'index' then 2 else 3 end, name`);
+      return rows.map(([ddl]) => `${String(ddl).trim()};`).join("\n\n");
+    }
+    if (dialect === "mysql") {
+      const tables = await query("select table_name, table_type from information_schema.tables where table_schema = database() order by table_type = 'VIEW', table_name");
+      const out: string[] = [];
+      for (const [name, type] of tables as [string, string][]) {
+        const [row] = await query(`show create ${type === "VIEW" ? "view" : "table"} \`${name.replace(/`/g, "``")}\``);
+        // A table's next AUTO_INCREMENT value is its data's, not its schema's.
+        out.push(`${String(row?.[1] ?? "").replace(/ AUTO_INCREMENT=\d+/, "")};`);
+      }
+      return out.join("\n\n");
+    }
+    const rows = await query(POSTGRES_SCHEMA);
+    return rows.map(([ddl]) => String(ddl)).join("\n\n");
+  } catch {
+    return undefined;
+  }
+}
+
+const POSTGRES_SCHEMA = `with q as (
+  select n.oid, case when n.nspname = 'public' then '' else quote_ident(n.nspname) || '.' end as p
+  from pg_namespace n where n.nspname = any(current_schemas(false)) and n.nspname <> 'pg_catalog'
+)
+select ddl from (
+  select 0 as k, t.typname::text as name, format('create type %s%s as enum (%s);', q.p, quote_ident(t.typname),
+    (select string_agg(quote_literal(e.enumlabel), ', ' order by e.enumsortorder) from pg_enum e where e.enumtypid = t.oid)) as ddl
+  from pg_type t join q on q.oid = t.typnamespace where t.typtype = 'e'
+  union all
+  select 0, t.typname::text, format('create domain %s%s as %s%s%s;', q.p, quote_ident(t.typname), format_type(t.typbasetype, t.typtypmod),
+    case when t.typnotnull then ' not null' else '' end,
+    coalesce((select string_agg(' ' || pg_get_constraintdef(con.oid), '' order by con.conname) from pg_constraint con where con.contypid = t.oid and con.contype = 'c'), ''))
+  from pg_type t join q on q.oid = t.typnamespace where t.typtype = 'd'
+  union all
+  select 1, c.relname::text, format(E'create table %s%s (\n%s\n);', q.p, quote_ident(c.relname), (
+    select string_agg(line, E',\n' order by ord) from (
+      select a.attnum::int as ord, '  ' || quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod)
+        || case when a.attidentity in ('a', 'd') then ' generated ' || case a.attidentity when 'a' then 'always' else 'by default' end || ' as identity' else '' end
+        || case when a.attgenerated = 's' then ' generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
+                when d.adbin is not null and a.attidentity = '' then ' default ' || pg_get_expr(d.adbin, d.adrelid) else '' end
+        || case when a.attnotnull then ' not null' else '' end as line
+      from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
+      where a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
+      union all
+      select 100000 + row_number() over (order by con.contype <> 'p', con.contype, con.conname)::int, '  constraint ' || quote_ident(con.conname) || ' ' || pg_get_constraintdef(con.oid)
+      from pg_constraint con where con.conrelid = c.oid and con.contype in ('p', 'u', 'f', 'c', 'x')
+    ) lines))
+  from pg_class c join q on q.oid = c.relnamespace where c.relkind in ('r', 'p', 'f')
+  union all
+  select 2, c.relname::text, format(E'create %sview %s%s as\n%s;', case c.relkind when 'm' then 'materialized ' else '' end, q.p, quote_ident(c.relname), rtrim(rtrim(pg_get_viewdef(c.oid, true)), ';'))
+  from pg_class c join q on q.oid = c.relnamespace where c.relkind in ('v', 'm')
+  union all
+  select 3, i.relname::text, pg_get_indexdef(i.oid) || ';'
+  from pg_index x join pg_class i on i.oid = x.indexrelid join pg_class c on c.oid = x.indrelid join q on q.oid = c.relnamespace
+  where not exists (select 1 from pg_constraint con where con.conindid = x.indexrelid)
+) s order by k, name`;
+
+/** The schema as the page shows it where the database refuses to give it: each table's columns, as a CREATE TABLE writes them. */
 function schemaText(dialect: Dialect, cat: Catalog): string {
   const q = (name: string) => (/^[a-z_][a-z0-9_]*$/.test(name) ? name : dialect === "mysql" ? `\`${name}\`` : `"${name.replace(/"/g, '""')}"`);
   return cat.tables
