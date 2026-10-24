@@ -55,14 +55,18 @@ async function openProject(dir: string, env: Record<string, string | undefined>)
 }
 
 export class Session {
-  readonly project: ResolvedProject;
+  /** The project as resolved when the session opened, or again once a failed `direct_url` command succeeds (`#reread`). */
+  project!: ResolvedProject;
   /** The project's directory, which holds `.reylo/`. */
   readonly root: string;
   /** The engine of the project's database, or why there is none, which an analysis reports. */
-  readonly #engine: Engine | MissingEngine;
-  readonly #engineFingerprint: string;
+  #engine!: Engine | MissingEngine;
+  #engineFingerprint!: string;
   readonly #answers = new AnswerCache();
   readonly #idle: number;
+  /** Where the project was resolved from, and with what environment, for `#reread`. */
+  readonly #dir: string;
+  readonly #env: Record<string, string | undefined>;
   #io: Promise<Io> | undefined;
   /** The URL the connection opens: the project's, until a command in `direct_url` gives a fresh one. */
   #url: string | undefined;
@@ -70,32 +74,54 @@ export class Session {
   #timer: ReturnType<typeof setTimeout> | undefined;
   #schema: { value: string | null; at: number; error?: string; fatal?: boolean } | undefined;
 
-  private constructor(engine: Engine | MissingEngine, project: ResolvedProject, idle: number) {
+  private constructor(engine: Engine | MissingEngine, project: ResolvedProject, idle: number, dir: string, env: Record<string, string | undefined>) {
+    this.root = project.root;
+    this.#idle = idle;
+    this.#dir = dir;
+    this.#env = env;
+    this.#adopt(engine, project);
+  }
+
+  #adopt(engine: Engine | MissingEngine, project: ResolvedProject): void {
     this.#engine = engine;
     this.project = project;
-    this.root = project.root;
     this.#url = project.url;
-    this.#idle = idle;
     const ping = engine instanceof MissingEngine ? undefined : engine.call({ op: "ping" });
     this.#engineFingerprint = ping?.status === "ok" ? ping.fingerprint : "unknown";
+  }
+
+  /**
+   * Reads the project again while a `direct_url` command's failure is its error, as when a
+   * password manager was locked: the command runs again once its failure has stood a minute
+   * (src/project.ts), so that a session kept open, as the type check's is, recovers without a
+   * restart.
+   */
+  async #reread(): Promise<void> {
+    if (!this.project.error || !this.project.refreshUrl) return;
+    const { project, engine } = await openProject(this.#dir, this.#env);
+    if (project.error) return;
+    this.#adopt(engine, project);
+    this.#schema = undefined;
+    this.#answers.clear();
   }
 
   /** The build steps' session for the project a file or directory belongs to: one per project (and connection) and process. */
   static async for(from: string, env: Record<string, string | undefined> = process.env): Promise<Session> {
     // From the package's directory, so that a message names a file as the project sees it.
-    const { project, engine } = await openProject(packageDir(from), env);
+    const dir = packageDir(from);
+    const { project, engine } = await openProject(dir, env);
     // A setting the build step reads (`sqlcommenter`) is part of the key, so a change to it in the
     // project file reaches a running watch process.
     const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, project.sqlcommenter, engine instanceof MissingEngine ? engine.message : null]);
     let session = sessions.get(key);
-    if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE)));
+    if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE, dir, env)));
     return session;
   }
 
   /** A session of its own, for a caller that must not share one (the type check, a test); it keeps its connection until closed. */
   static async open(from: string, env: Record<string, string | undefined> = process.env, idle = Infinity): Promise<Session> {
     const { project, engine } = await openProject(from, env);
-    return new Session(engine, project, idle);
+    return new Session(engine, project, idle, from, env);
   }
 
   /** Every build-step session this process opened, for a caller that ends them (`reylo generate`). */
@@ -151,6 +177,7 @@ export class Session {
     clearTimeout(this.#timer);
     this.#busy++;
     try {
+      await this.#reread();
       const outcome = await this.#analyze(sql, options);
       return outcome.ok && this.project.dialect === "sqlite" ? await this.#onDrivers(sql, outcome) : outcome;
     } finally {

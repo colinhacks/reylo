@@ -52,7 +52,8 @@ export type ResolvedProject = {
   /**
    * Where `direct_url` runs a `$(command)`: runs each command again, past the output this process
    * keeps, and returns the URL they make now, or undefined when one fails. The session calls it
-   * when the database refuses the login, as when a short-lived token has expired.
+   * when the database refuses the login, as when a short-lived token has expired. Set too when a
+   * command failed, whose failure is then `error`.
    */
   refreshUrl: (() => string | undefined) | undefined;
   /** The files a change to which changes the project: the project file and the `.env` files. */

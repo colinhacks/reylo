@@ -505,6 +505,39 @@ test("calls refused together when a token expires share one run of the command a
   assert.equal(server.open(), 0);
 });
 
+test("a session kept open runs a failed direct_url command again once its failure has stood a minute", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
+  const server = tokenMysql(() => "token-1");
+  // The password manager is locked when the session opens, as the type check's may be at the editor's start.
+  const session = await Session.open(root, {});
+  try {
+    const failed = await session.analyze("select 1");
+    assert.equal(failed.ok, false);
+    assert.equal(!failed.ok && failed.code, 11);
+    assert.match(!failed.ok ? failed.message : "", /runs `echo run >> runs.txt; cat token.txt`, which exited with code 1/);
+    // Unlocked, the command is not run again within the minute, so that a prompt is not asked again per file.
+    writeFileSync(join(root, "token.txt"), "token-1");
+    const soon = await session.analyze("select 1");
+    assert.equal(!soon.ok && soon.code, 11);
+    assert.equal(runs(), 1);
+    // After it, the next analysis runs the command, and the session logs in with what it prints.
+    t.mock.timers.tick(60_000);
+    const later = await session.analyze("select 1");
+    // The stand-in prepares nothing, so the analysis itself still fails, past the project.
+    assert.equal(!later.ok && later.code, 5);
+    assert.equal(session.project.error, undefined);
+    assert.equal(runs(), 2);
+    assert.deepEqual(server.tried, ["token-1"]);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+});
+
 test("a refused login is told apart from a server that cannot be reached, on Postgres and MySQL", () => {
   const pg = (code: string) => new Unreachable(Object.assign(new Error("password authentication failed"), { code, severity: "FATAL" }));
   assert.ok(refusedLogin(pg("28P01")));
