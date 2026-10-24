@@ -154,6 +154,11 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   every type it takes; `any` is an argument type every type is taken to convert to; `base`
 ///   is such an argument type that is a domain (the fourth column) beside its base type (the
 ///   fifth), which is the type the server reports a column of the domain as.
+/// - `key`: a type of a user's (the fourth column) that a column of a unique index has, and
+///   whether (1, else 0) the `=` an untyped value beside such a column resolves to, the visible one
+///   of exactly that type, or else of a domain's base type, is the btree equality of the operator
+///   family of every unique index's key of that type (`pg_amop`): only then does `col = 'x'` pin
+///   such a key.
 /// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
 /// - `type`: a function name a user's type also has.
 /// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
@@ -242,6 +247,18 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'reach', NULL, ARRAY(SELECT r.s::pg_catalog.int8 FROM reach r WHERE r.u OPERATOR(pg_catalog.=) g.u ORDER BY r.s), g.u::pg_catalog.int8, NULL FROM (SELECT DISTINCT r.u FROM reach r) g \
     UNION ALL SELECT 'any', NULL, NULL, p.u::pg_catalog.int8, NULL FROM pseudo p \
     UNION ALL SELECT 'base', NULL, NULL, g.u::pg_catalog.int8, g.b::pg_catalog.int8 FROM targets g WHERE g.u OPERATOR(pg_catalog.<>) g.b \
+    UNION ALL SELECT 'key', NULL, NULL, y.c::pg_catalog.int8, (CASE WHEN y.r IS NOT NULL AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_index i \
+        CROSS JOIN LATERAL pg_catalog.generate_series(0, i.indnkeyatts OPERATOR(pg_catalog.-) 1) AS k(n) \
+        JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k.n] \
+        JOIN pg_catalog.pg_opclass oc ON oc.oid OPERATOR(pg_catalog.=) i.indclass[k.n] \
+        WHERE i.indisunique AND a.atttypid OPERATOR(pg_catalog.=) y.c AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_amop m WHERE m.amopfamily OPERATOR(pg_catalog.=) oc.opcfamily \
+          AND m.amoplefttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amoprighttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amopstrategy OPERATOR(pg_catalog.=) 3 AND m.amopopr OPERATOR(pg_catalog.=) y.r)) THEN 1 ELSE 0 END)::pg_catalog.int8 \
+      FROM (SELECT c.c, coalesce((SELECT o.oid FROM pg_catalog.pg_operator o WHERE o.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name AND o.oprleft OPERATOR(pg_catalog.=) c.c AND o.oprright OPERATOR(pg_catalog.=) c.c \
+          AND pg_catalog.pg_operator_is_visible(o.oid)), (SELECT o.oid FROM pg_catalog.pg_operator o JOIN bases x ON x.t OPERATOR(pg_catalog.=) c.c WHERE o.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name \
+          AND o.oprleft OPERATOR(pg_catalog.=) x.b AND o.oprright OPERATOR(pg_catalog.=) x.b AND pg_catalog.pg_operator_is_visible(o.oid))) AS r \
+        FROM (SELECT DISTINCT a.atttypid AS c FROM pg_catalog.pg_index i CROSS JOIN LATERAL pg_catalog.generate_series(0, i.indnkeyatts OPERATOR(pg_catalog.-) 1) AS k(n) \
+          JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k.n] \
+          WHERE i.indisunique AND a.atttypid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid) c) y \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
     WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i' AND c.castmethod OPERATOR(pg_catalog.=) 'f' \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
@@ -2642,6 +2659,9 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
                     if let (true, Some(ty)) = (domain, ty) {
                         catalog.domains.entry(rel.to_string()).or_default().insert(cols[i].clone());
                         catalog.domain_bases.insert(*ty);
+                    }
+                    if let Some(declared) = declared.as_ref().and_then(|d| d.get(i).copied().flatten()) {
+                        catalog.declared_types.entry(rel.to_string()).or_default().insert(cols[i].clone(), declared);
                     }
                 }
                 let known = catalog.column_types.entry(rel.to_string()).or_default();

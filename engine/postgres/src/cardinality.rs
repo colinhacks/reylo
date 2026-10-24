@@ -142,6 +142,8 @@ pub struct Catalog {
     /// The base types of every such column: a column of one of these types, as `column_types`
     /// gives it, may be one of a domain.
     pub domain_bases: HashSet<u32>,
+    /// Per relation as named in `column_types`, each column's declared type, a domain's by itself.
+    pub declared_types: std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
     /// Per relation, the events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) for which it,
     /// or a partition or an inheritance child of it, has an enabled row trigger that runs BEFORE
     /// the change or INSTEAD of it. Such a trigger can return NULL and skip the row, so an INSERT
@@ -2039,10 +2041,14 @@ fn catalog_name(rv: &protobuf::RangeVar) -> String {
 ///   values to one (`numeric_col = $1::float8`: 0.1 and 0.10000000000000000001 are one `float8`).
 ///   So the value's type must be one the column's operator family compares as it is
 ///   ([`compatible`]). A literal or a parameter the server types from the column adapts to it.
-/// - Where a user or an extension defined an operator named `=`, a comparison across two types may
-///   resolve to theirs, so only a value of the column's own type, or one that adapts to it, counts,
-///   or one of a type whose comparison with the column's resolves to the built-in `=`
-///   ([`crate::resolution`]): a column of a domain, or a value that may be one, proves nothing so.
+/// - Where a user or an extension defined an operator named `=`, the comparison may resolve to
+///   theirs, which need not be the index's equality: a user's `=` of a domain, beside a literal,
+///   is the domain's own. So a comparison counts where it resolves to a built-in `=` for the two
+///   types ([`crate::resolution`]), a built-in equality being as fine as any index's; across two
+///   types a column of a domain, or a value that may be one, proves nothing so. A column of a type
+///   of a user's (`citext`) counts beside an untyped value or one of its own type where the `=`
+///   that resolves to is the btree equality of every unique index's key of that type, as the
+///   trust query reads it from `pg_amop` ([`crate::resolution::Overloads::key_equality`]).
 /// - A value whose type the build cannot name counts only for a column whose type no implicit cast
 ///   maps to a wider one with loss ([`ANY_VALUE_TYPES`]). A column, or a scalar subquery's
 ///   column, on the other side has the type `type_of` gives it, from the catalog.
@@ -2053,8 +2059,12 @@ fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &prot
         return false;
     }
     let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)).copied() else { return true };
+    // The `=` beside an untyped value, or one of the column's own type, is the exact match of the
+    // column's type; a column of a domain reads as its base type, whose overloads of the domain's
+    // the resolution counts as exact matches too.
+    let own = |value: Operand| catalog.equality(Operand::Is(column_type), value) || (value != Operand::Opaque && catalog.key_equality(relation, column));
     match value_type(value, catalog, type_of) {
-        ValueType::Adapts => true,
+        ValueType::Adapts => own(Operand::Unknown),
         ValueType::Is(t) => {
             let domain = catalog.domains.get(relation).is_some_and(|d| d.contains(column));
             let operand = |t: u32, domain: bool| if domain { Operand::Opaque } else { Operand::Is(t) };
@@ -2063,7 +2073,10 @@ fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &prot
                 Some(NodeEnum::ColumnRef(_)) | Some(NodeEnum::SubLink(_)) => operand(t, catalog.domain_bases.contains(&t)),
                 _ => Operand::Is(t),
             };
-            t == column_type || (compatible(column_type, t) && catalog.equality(operand(column_type, domain), value))
+            if t == column_type {
+                return own(value);
+            }
+            compatible(column_type, t) && catalog.equality(operand(column_type, domain), value)
         }
         ValueType::Unnamed => !catalog.equality_shadowed && ANY_VALUE_TYPES.contains(&column_type),
     }
@@ -2073,6 +2086,13 @@ impl Catalog {
     /// Whether `=` over operands of these types can only resolve to the built-in one.
     fn equality(&self, left: Operand, right: Operand) -> bool {
         !self.equality_shadowed || self.overloads.as_ref().is_some_and(|o| o.0.resolve(Kind::Infix, "=", &[left, right]).is_some())
+    }
+
+    /// Whether the `=` an untyped value beside `relation`'s `column` resolves to is the btree
+    /// equality of every unique index's key of the column's declared type.
+    fn key_equality(&self, relation: &str, column: &str) -> bool {
+        let Some(declared) = self.declared_types.get(relation).and_then(|t| t.get(column)) else { return false };
+        self.overloads.as_ref().and_then(|o| o.0.key_equality(*declared)) == Some(true)
     }
 }
 
@@ -2703,6 +2723,7 @@ mod tests {
 
     #[test]
     fn a_key_holds_only_under_its_own_equality() {
+        use serde_json::json;
         let mut c = catalog();
         c.column_types.insert("users".into(), [("id".to_string(), oid::INT8), ("email".to_string(), oid::TEXT)].into_iter().collect());
         c.param_types = vec![oid::INT8];
@@ -2719,11 +2740,50 @@ mod tests {
         // A value whose type the build cannot name bounds a text key, not an int8 one.
         assert!(at("select id from users where email = lower('A@X.IO')", &c).is_ok());
         assert!(at("select email from users where id = abs(-7)", &c).is_err());
-        // With a user's `=` in the database, only the column's own type counts.
+        // With a user's `=` in the database and nothing said of its overloads, nothing counts.
         c.equality_shadowed = true;
         assert!(at("select email from users where id = 7", &c).is_err());
         c.param_types = vec![oid::INT8];
+        assert!(at("select email from users where id = $1", &c).is_err());
+        assert!(at("select id from users where email = 'a@x.io'", &c).is_err());
+        // An `=` of a type of a user's (pgvector's) leaves the built-ins over int8 and text the
+        // exact matches; one of exactly int8's types may come first on the search path.
+        let catalog_of = |rows: Vec<Vec<serde_json::Value>>| {
+            let mut shadowed = HashSet::new();
+            Some(crate::resolution::Shared(std::sync::Arc::new(crate::resolution::Overloads::read(&rows, &mut shadowed))))
+        };
+        let builtin = |l: u32, r: u32| vec![json!("builtin b"), json!("="), json!([l, r]), json!(oid::BOOL), serde_json::Value::Null];
+        let opaque = vec![json!("opaque b"), json!("="), serde_json::Value::Null, json!(2), json!(0)];
+        c.overloads = catalog_of(vec![opaque.clone(), builtin(oid::INT8, oid::INT8), builtin(oid::INT8, oid::INT4), builtin(oid::TEXT, oid::TEXT)]);
         assert!(at("select email from users where id = $1", &c).is_ok());
+        assert!(at("select email from users where id = 7", &c).is_ok());
+        assert!(at("select id from users where email = 'a@x.io'", &c).is_ok());
+        c.overloads = catalog_of(vec![vec![json!("user b"), json!("="), json!([oid::INT8, oid::INT8]), json!(0), json!(0)], builtin(oid::INT8, oid::INT8)]);
+        assert!(at("select email from users where id = $1", &c).is_err());
+        // A domain's own `=` beside a literal is the domain's, no key's equality; a citext key's
+        // `=` is its btree family's where the trust query says so.
+        const MYTEXT: u32 = 30000;
+        const CITEXT: u32 = 30100;
+        let mut d = catalog();
+        d.unique_keys.insert("u".into(), vec![vec!["d".into()], vec!["h".into()]]);
+        d.column_types.insert("u".into(), [("d".to_string(), oid::TEXT), ("h".to_string(), CITEXT)].into_iter().collect());
+        d.declared_types.insert("u".into(), [("d".to_string(), MYTEXT), ("h".to_string(), CITEXT)].into_iter().collect());
+        d.domains.insert("u".into(), ["d".to_string()].into_iter().collect());
+        d.domain_bases.insert(oid::TEXT);
+        d.equality_shadowed = true;
+        let key = |ty: u32, ok: i64| vec![json!("key"), serde_json::Value::Null, serde_json::Value::Null, json!(ty), json!(ok)];
+        d.overloads = catalog_of(vec![
+            vec![json!("user b"), json!("="), json!([MYTEXT, MYTEXT]), json!(0), json!(0)],
+            vec![json!("base"), serde_json::Value::Null, serde_json::Value::Null, json!(MYTEXT), json!(oid::TEXT)],
+            vec![json!("user b"), json!("="), json!([CITEXT, CITEXT]), json!(0), json!(0)],
+            builtin(oid::TEXT, oid::TEXT),
+            key(MYTEXT, 0),
+            key(CITEXT, 1),
+        ]);
+        assert!(at("select 1 from u where d = 'x'", &d).is_err());
+        assert!(at("select 1 from u where h = 'x'", &d).is_ok());
+        d.overloads = catalog_of(vec![vec![json!("user b"), json!("="), json!([CITEXT, CITEXT]), json!(0), json!(0)], key(CITEXT, 0)]);
+        assert!(at("select 1 from u where h = 'x'", &d).is_err(), "a unique index on a citext column under text_ops");
         // A schema-qualified relation never takes the keys of the one on the search path.
         assert!(at("select name from archive.users a where a.id = $1", &c).is_err());
         // A timestamp key compared with a timestamptz is converted through the session's time
