@@ -4,7 +4,7 @@ chained_windows.sql: many () -> { total: numeric, ahead: numeric? }
 copied_window.sql: many () -> { around: numeric, before_row: numeric? }
 count_window.sql: many () -> { n: int8 }
 following_frame.sql: many () -> { ahead: numeric? }
-grouped_sum.sql: many () -> { user_id: int4, total: numeric? }
+grouped_sum.sql: many () -> { user_id: int4, total: numeric }
 left_joined.sql: many () -> { name: text, total: numeric? }
 monthly_running.sql: many () -> { month: text?, running: numeric }
 named_window.sql: many () -> { total: numeric, last_title: text }

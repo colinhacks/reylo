@@ -450,6 +450,78 @@ pub(crate) fn window_probe(q: &Query) -> Option<(Query, Vec<usize>, Vec<usize>)>
     Some((probe, follows, always))
 }
 
+/// What a select-list item of a SELECT with a plain GROUP BY says of its column when it is an
+/// aggregate of its own, not a window call: every group holds a row, so `sum`, `avg`, `min` and
+/// `max` (DISTINCT or not) follow their argument over the group's rows, and `json_arrayagg` and
+/// `json_objectagg` are never NULL. `None` for anything else.
+pub(crate) fn grouped_aggregate(e: &Expr) -> Option<Windowed<'_>> {
+    let Expr::Function(f) = strip(e) else { return None };
+    if f.over.is_some() || f.filter.is_some() || !f.within_group.is_empty() || f.null_treatment.is_some() {
+        return None;
+    }
+    let ast::FunctionArguments::List(list) = &f.args else { return None };
+    if !list.clauses.is_empty() {
+        return None;
+    }
+    let args: Vec<&Expr> = list
+        .args
+        .iter()
+        .map(|a| match a {
+            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) => Some(x),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let name = crate::mysql::builtin(f);
+    match (name.as_str(), args.as_slice()) {
+        (n, [arg]) if WINDOW_FOLLOWING.contains(&n) => Some(Windowed::Follows(arg)),
+        ("json_arrayagg", [_]) | ("json_objectagg", [_, _]) if list.duplicate_treatment.is_none() => Some(Windowed::Always),
+        _ => None,
+    }
+}
+
+/// For a SELECT with a plain GROUP BY: the statement that selects, from the same FROM and WHERE
+/// with no GROUP BY, the argument of each select-list item [`grouped_aggregate`] finds following
+/// its argument, one column each, beside the positions of those items and of the ones never NULL.
+/// Prepared, the copy's flag for a column is the argument's on every row a group aggregates, read
+/// from the rows before they are grouped as the aggregate reads them. `None` for anything but a
+/// plain SELECT with a plain GROUP BY and such an item, and where a wildcard makes the positions
+/// unreadable. A ROLLUP is left to the server's flags, as Postgres leaves a grouping set, though
+/// measured on 8.4 it adds no row over no rows and its summary rows aggregate the rows themselves.
+pub(crate) fn grouped_probe(q: &Query) -> Option<(Query, Vec<usize>, Vec<usize>)> {
+    let SetExpr::Select(select) = q.body.as_ref() else { return None };
+    if !grouped(&select.group_by) || select.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+        return None;
+    }
+    let (mut follows, mut always, mut args) = (Vec::new(), Vec::new(), Vec::new());
+    for (i, item) in select.projection.iter().enumerate() {
+        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
+        match grouped_aggregate(e) {
+            Some(Windowed::Follows(arg)) => {
+                follows.push(i);
+                args.push(SelectItem::UnnamedExpr(arg.clone()));
+            }
+            Some(Windowed::Always) => always.push(i),
+            None => {}
+        }
+    }
+    if follows.is_empty() && always.is_empty() {
+        return None;
+    }
+    let mut probe = q.clone();
+    probe.order_by = None;
+    probe.limit_clause = None;
+    probe.locks.clear();
+    if let SetExpr::Select(select) = probe.body.as_mut() {
+        select.projection = args;
+        select.distinct = None;
+        select.group_by = GroupByExpr::Expressions(Vec::new(), Vec::new());
+        select.having = None;
+        select.named_window.clear();
+        select.qualify = None;
+    }
+    Some((probe, follows, always))
+}
+
 /// Whether a SELECT has a plain GROUP BY, where every group has a row.
 pub(crate) fn grouped(group_by: &GroupByExpr) -> bool {
     matches!(group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty()) && !rolls_up(group_by)
@@ -602,5 +674,29 @@ mod tests {
         }
         assert_eq!(probe("select *, sum(a) over () from t"), None, "a wildcard");
         assert_eq!(probe("select a, sum(a) over () from t group by a with rollup"), None, "a ROLLUP");
+    }
+
+    #[test]
+    fn an_aggregate_under_a_plain_group_by_follows_its_argument() {
+        let probe = |sql: &str| grouped_probe(&query(sql)).map(|(q, follows, always)| (q.to_string(), follows, always));
+        // The arguments, read from the rows before they are grouped, and the JSON aggregates.
+        assert_eq!(
+            probe("select distinct user_id, sum(a) as s, max(distinct b), count(*), json_arrayagg(b) as j, json_objectagg(a, b) from t where a > 0 group by user_id having count(*) > 1 order by s limit 2"),
+            Some(("SELECT a, b FROM t WHERE a > 0".into(), vec![1, 2], vec![4, 5]))
+        );
+        assert_eq!(probe("with w as (select a from t) select a, min(a) from w group by a"), Some(("WITH w AS (SELECT a FROM t) SELECT a FROM w".into(), vec![1], vec![])));
+        // No GROUP BY, a ROLLUP, a window call, a wildcard, an expression over an aggregate and
+        // the aggregates that are NULL otherwise prove nothing.
+        for sql in [
+            "select sum(a) from t",
+            "select user_id, sum(a) from t group by user_id with rollup",
+            "select user_id, sum(a) over () from t group by user_id, a",
+            "select *, sum(a) from t group by user_id",
+            "select user_id, sum(a) + 1 from t group by user_id",
+            "select user_id, var_samp(a), stddev_samp(a), group_concat(a), `sum`(a), app.sum(a) from t group by user_id",
+            "select user_id, a from t union all select user_id, max(a) from t group by user_id",
+        ] {
+            assert_eq!(probe(sql), None, "{sql}");
+        }
     }
 }

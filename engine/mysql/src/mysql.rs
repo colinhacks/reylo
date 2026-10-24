@@ -645,6 +645,11 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
             None => pending = true,
         }
     }
+    // An aggregate under a plain GROUP BY: the argument's flag over the rows it aggregates.
+    match grouped_flags(q, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
     // A window aggregate over a frame that holds the current row: the argument's flag there.
     match window_flags(q, count, host) {
         Some(found) => not_null.extend(found),
@@ -687,7 +692,28 @@ fn window_flags(q: &Query, count: Option<usize>, host: &Host) -> Lazy<Vec<usize>
         if let Ok(d) = host.describe(&probe.to_string())? {
             if Some(d.columns.len()) == count {
                 let tested = crate::mysql_nulls::tested(&probe);
-                found.extend(follows.into_iter().filter(|&i| d.columns.get(i).is_some_and(|c| c.flags & 1 != 0) || tested.contains(&i)));
+                // An argument that is an aggregate of a plain GROUP BY (`sum(max(x)) over ()`)
+                // is as NULL as that aggregate's own argument.
+                let grouped = grouped_flags(&probe, host)?;
+                found.extend(follows.into_iter().filter(|&i| d.columns.get(i).is_some_and(|c| c.flags & 1 != 0) || tested.contains(&i) || grouped.contains(&i)));
+            }
+        }
+    }
+    Some(found)
+}
+
+/// The positions of the columns that are an aggregate under a plain GROUP BY
+/// ([`crate::mysql_nulls::grouped_aggregate`]) and are never NULL: a JSON aggregate, and one that
+/// follows its argument where the statement that selects the arguments from the same FROM and
+/// WHERE flags that argument NOT NULL or the WHERE proves it. The server flags every such call
+/// nullable but the bit functions and `count`.
+fn grouped_flags(q: &Query, host: &Host) -> Lazy<Vec<usize>> {
+    let Some((probe, follows, mut found)) = crate::mysql_nulls::grouped_probe(q) else { return Some(Vec::new()) };
+    if !follows.is_empty() {
+        if let Ok(d) = host.describe(&probe.to_string())? {
+            if d.columns.len() == follows.len() {
+                let tested = crate::mysql_nulls::tested(&probe);
+                found.extend(follows.into_iter().enumerate().filter(|&(j, _)| d.columns[j].flags & 1 != 0 || tested.contains(&j)).map(|(_, i)| i));
             }
         }
     }
