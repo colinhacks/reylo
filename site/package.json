@@ -6,7 +6,8 @@
     "dev": "react-router dev",
     "build": "react-router typegen && tsc && react-router build",
     "start": "vite preview --outDir build/client --port 3311",
-    "capture": "nub scripts/capture-types.ts"
+    "capture": "nub scripts/capture-types.ts",
+    "build:play": "vite build --config vite.play.config.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "6.20.4",

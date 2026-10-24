@@ -97,6 +97,9 @@ jobs:
         working-directory: packages/postgres
       - run: nub install --frozen-lockfile
         working-directory: packages/mysql
+      # The docs site's toolchain, which builds reylo play's page into the reylo package.
+      - run: nub install --frozen-lockfile
+        working-directory: site
       # dist/reylo, dist/postgres, dist/sqlite and dist/mysql; the build refuses an engine whose version is not reylo's
       - run: nub run build
 

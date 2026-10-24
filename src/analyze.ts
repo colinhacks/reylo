@@ -172,8 +172,12 @@ export class Session {
     return newest;
   }
 
-  /** The statement's analysis: from `.reylo/` when the entry matches the schema, else from the database. */
-  async analyze(sql: string, options: { force?: boolean } = {}): Promise<Outcome> {
+  /**
+   * The statement's analysis: from `.reylo/` when the entry matches the schema, else from the
+   * database. `store: false` neither reads nor writes `.reylo/`, for a statement that is no file of
+   * the project (`reylo play`'s, analyzed at each keystroke).
+   */
+  async analyze(sql: string, options: { force?: boolean; store?: boolean } = {}): Promise<Outcome> {
     clearTimeout(this.#timer);
     this.#busy++;
     try {
@@ -183,6 +187,11 @@ export class Session {
     } finally {
       if (--this.#busy === 0 && this.#io && Number.isFinite(this.#idle)) this.#timer = setTimeout(() => this.#release(), this.#idle).unref();
     }
+  }
+
+  /** Rows of a catalog query on the session's connection, as arrays of values: what `reylo play` completes. */
+  async query(sql: string, params: unknown[] = []): Promise<unknown[][]> {
+    return (await this.#connection()).query(sql, params);
   }
 
   /**
@@ -206,7 +215,7 @@ export class Session {
     return outcome;
   }
 
-  async #analyze(sql: string, options: { force?: boolean }): Promise<Outcome> {
+  async #analyze(sql: string, options: { force?: boolean; store?: boolean }): Promise<Outcome> {
     if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
     // With no URL, `.reylo/` answers as it does where the database cannot be reached (the dialect
     // is the installed engine's), and a statement it lacks needs a URL.
@@ -225,7 +234,7 @@ export class Session {
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
       return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run reylo generate where the database can be reached.`, code: 5 };
     }
-    const entry = options.force ? undefined : readEntry(file);
+    const entry = options.force || options.store === false ? undefined : readEntry(file);
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
     const io = this.#connection();
@@ -245,7 +254,7 @@ export class Session {
       }
       return { ok: false, message: (e as Error).message, code: 5 };
     }
-    writeEntry(this.root, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
+    if (options.store !== false) writeEntry(this.root, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
     return { ok: true, analysis, source: "database", entry: file };
   }
 

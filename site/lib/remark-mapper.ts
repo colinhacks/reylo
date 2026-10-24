@@ -6,7 +6,7 @@ import { remarkCodeTab } from 'fumadocs-core/mdx-plugins';
 import type { Plugin } from 'vite';
 import { pageFiles } from './page-files.ts';
 import { isErrorExample, renderErrors } from './sql-errors.ts';
-import { formatType, resultType } from './type-format.ts';
+import { formatType, resultType } from '../../src/type-format.ts';
 
 export { pageFiles };
 

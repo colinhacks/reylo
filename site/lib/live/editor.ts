@@ -11,7 +11,7 @@ import { bracketMatching } from '@codemirror/language';
 import { EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType, type DecorationSet } from '@codemirror/view';
 import type { HighlighterCore } from 'shiki/core';
-import type { Catalog } from './catalog.ts';
+import type { Catalog } from '../../../src/play-catalog.ts';
 import { sqlCompletions } from './complete.ts';
 import { tokens } from './highlight.ts';
 

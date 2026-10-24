@@ -1,7 +1,7 @@
 import { toAgentMarkdown } from 'docs-kit/remark-sections';
 import { hashOf, INFERRED, readModules, type Dialect, type Modules } from './remark-mapper.ts';
 import { DIALECTS } from './dialects.ts';
-import { formatType, resultType } from './type-format.ts';
+import { formatType, resultType } from '../../src/type-format.ts';
 
 // The page's Markdown (lib/markdown.ts: /index.md and /llms.txt) and each heading's copy button
 // read a section from its source, where an `<Inferred>` card is its schema and statement blocks

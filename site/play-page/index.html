@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Reylo playground</title>
+    <!-- The theme before the first paint: the one last chosen here, else the system's. -->
+    <script>
+      document.documentElement.classList.add(localStorage.getItem('reylo-play-theme') || (matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'));
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="../lib/live/standalone.tsx"></script>
+  </body>
+</html>
