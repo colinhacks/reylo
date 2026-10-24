@@ -8,6 +8,7 @@ use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::errors::{called, has_word, Errors};
+use reylo_engine_core::fresh::Tables;
 use reylo_engine_core::host::Lazy;
 use serde_json::Value;
 
@@ -55,25 +56,41 @@ fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
     if literals.is_empty() { "null".to_string() } else { literals.join(", ") }
 }
 
-/// The names each error the statement may raise can carry: `Some(None)` where it may run a trigger
-/// or a stored function, is neither a query nor a write (a CALL), or writes what the parse cannot
-/// name (a table of another schema).
-pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
-    let Some(tables) = &analysis.tables else { return Some(None) };
+/// [`ERRORS_QUERY`] for a statement of `kind` that reads and writes `tables`, or `None` where it is
+/// neither a query nor a write (a CALL), or writes what the parse cannot name (a table of another
+/// schema).
+fn request(kind: &str, tables: &Tables, sql: &str) -> Option<String> {
     let unqualified = |t: &String| t.rsplit('.').next().unwrap_or(t).to_string();
     let written: Vec<String> = tables.write.iter().map(unqualified).collect();
     let read: Vec<String> = tables.read.iter().map(unqualified).collect();
-    if (analysis.kind != "select" && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
-        return Some(None);
+    if (kind != "select" && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
+        return None;
     }
-    let called = called(&analysis.rewritten.sql, Dialect::Mysql);
+    let called = called(sql, Dialect::Mysql);
     // An INSERT changes no key but through ON DUPLICATE KEY UPDATE or as a REPLACE, which deletes.
-    let cascades = !written.is_empty() && (analysis.kind != "insert" || has_word(&analysis.rewritten.sql, Dialect::Mysql, &["update", "replace"]));
-    let query = ERRORS_QUERY
-        .replace("{written}", &list(written.iter().map(String::as_str)))
-        .replace("{read}", &list(read.iter().map(String::as_str)))
-        .replace("{called}", &list(called.iter().map(String::as_str)))
-        .replace("{cascades}", if cascades { "true" } else { "false" });
+    let cascades = !written.is_empty() && (kind != "insert" || has_word(sql, Dialect::Mysql, &["update", "replace"]));
+    Some(
+        ERRORS_QUERY
+            .replace("{written}", &list(written.iter().map(String::as_str)))
+            .replace("{read}", &list(read.iter().map(String::as_str)))
+            .replace("{called}", &list(called.iter().map(String::as_str)))
+            .replace("{cascades}", if cascades { "true" } else { "false" }),
+    )
+}
+
+/// Asks [`ERRORS_QUERY`] in the statement's first round, beside its other needs, since it waits on
+/// nothing but the parse: asked only once the analysis is done, it would take a round of its own.
+pub fn prefetch(kind: &str, tables: &Tables, sql: &str, host: &Host) {
+    if let Some(query) = request(kind, tables, sql) {
+        let _ = host.query(&query, Vec::new(), Scope::Statement);
+    }
+}
+
+/// The names each error the statement may raise can carry: `Some(None)` where it may run a trigger
+/// or a stored function, or where [`request`] has no query to ask.
+pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
+    let Some(tables) = &analysis.tables else { return Some(None) };
+    let Some(query) = request(&analysis.kind, tables, &analysis.rewritten.sql) else { return Some(None) };
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))

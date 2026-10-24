@@ -149,19 +149,53 @@ pub const ERRORS_QUERY: &str = concat!(
     ) AS k(code, field, name) WHERE k.name IS NOT NULL"
 );
 
+/// The names of a list, borrowed.
+fn names(list: &[String]) -> Vec<&str> {
+    list.iter().map(String::as_str).collect()
+}
+
+/// [`ERRORS_QUERY`]'s parameters for the statement as the analysis rewrites it, or `None` where
+/// its parse names nothing the query can read, or it calls a function that runs SQL it is given.
+fn request(rewritten: &str) -> Option<Vec<Value>> {
+    let parsed = analyze::analyze(rewritten).ok()?;
+    if parsed.functions.iter().any(|f| RUNS_SQL.contains(&f.as_str()) || f == "ts_stat" || f == "ts_rewrite") {
+        return None;
+    }
+    // Each list sorted: the parse gives the tables in no fixed order, and a need is named by what it
+    // asks, so another order would be another need, asked again every round.
+    let sorted = |list: Vec<&str>| {
+        let mut list = list;
+        list.sort_unstable();
+        list.dedup();
+        json!(list)
+    };
+    let mut operators = names(&parsed.operators);
+    operators.extend(IMPLICIT_OPERATORS);
+    Some(vec![
+        sorted(names(&parsed.write_set)),
+        sorted(names(&parsed.read_set)),
+        sorted(names(&parsed.functions)),
+        sorted(operators),
+        sorted(names(&parsed.types)),
+        json!(parsed.changes_keys),
+    ])
+}
+
+/// Asks [`ERRORS_QUERY`] in the statement's first round, beside its other needs, since it waits on
+/// nothing but the parse: asked only once the analysis is done, it would take a round of its own.
+pub fn prefetch(rewritten: &str, host: &Host) {
+    if let Some(params) = request(rewritten) {
+        let _ = host.query(ERRORS_QUERY, params, Scope::Statement);
+    }
+}
+
 /// The names each error the statement may raise can carry: `Some(None)` where it may run code the
 /// server does not define, or names nothing the parse can read.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     if analysis.kind.is_empty() {
         return Some(None);
     }
-    let Ok(parsed) = analyze::analyze(&analysis.rewritten.sql) else { return Some(None) };
-    if parsed.functions.iter().any(|f| RUNS_SQL.contains(&f.as_str()) || f == "ts_stat" || f == "ts_rewrite") {
-        return Some(None);
-    }
-    let mut operators: Vec<&str> = parsed.operators.iter().map(String::as_str).collect();
-    operators.extend(IMPLICIT_OPERATORS.iter().filter(|o| !parsed.operators.iter().any(|p| p == *o)));
-    let params = vec![json!(parsed.write_set), json!(parsed.read_set), json!(parsed.functions), json!(operators), json!(parsed.types), json!(parsed.changes_keys)];
+    let Some(params) = request(&analysis.rewritten.sql) else { return Some(None) };
     let rows = host.query(ERRORS_QUERY, params, Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))
@@ -187,6 +221,18 @@ fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_query_is_asked_alike_every_round() {
+        let sql = "with p as (select o.id from orders o join users u on u.id = o.user_id join items i on i.order_id = o.id) \
+            select p.id, lower(u.name), abs(r.n) from p left join users u on true left join reviews r on r.id = p.id \
+            where r.n > 1 and u.name like 'a%'";
+        let first = request(sql).unwrap();
+        for _ in 0..32 {
+            assert_eq!(request(sql).unwrap(), first);
+        }
+        assert_eq!(first[1], json!(["items", "orders", "reviews", "users"]));
+    }
 
     #[test]
     fn an_open_row_narrows_nothing() {
