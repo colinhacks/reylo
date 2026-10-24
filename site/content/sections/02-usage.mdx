@@ -49,8 +49,6 @@ const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
 
-TypeScript checks both the parameters you pass and the result you get back. The file also exports their types by name, `Params` and `Row`.
-
 Pass a transaction the same way:
 
 ```ts twoslash dialect="postgres"
