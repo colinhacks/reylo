@@ -122,6 +122,9 @@ pub struct Overloads {
     rows: Option<HashSet<u32>>,
     /// The types of a user's that are no row and no array.
     scalars: HashSet<u32>,
+    /// The names the rules read that some row type has an attribute of: a table's, a view's or a
+    /// composite type's column, a catalog's included.
+    attributes: HashSet<String>,
 }
 
 impl Overloads {
@@ -184,6 +187,7 @@ impl Overloads {
                     "implicit" => out.implicit.extend(a),
                     "rows" => out.rows = oids(row.get(2)).map(|o| o.into_iter().collect()),
                     "scalars" => out.scalars.extend(oids(row.get(2)).unwrap_or_default()),
+                    "column" => out.attributes.extend(name.map(str::to_string)),
                     "type" => {
                         if let Some(name) = name {
                             shadowed.insert(name.to_string());
@@ -311,6 +315,12 @@ impl Overloads {
             return Some(self.scalars.contains(&ty));
         }
         self.rows.as_ref().map(|rows| !rows.contains(&ty))
+    }
+
+    /// Whether some row type has an attribute named `name`, which a call of one argument over a
+    /// row of that type reads where no function takes the row.
+    pub fn row_attribute(&self, name: &str) -> bool {
+        self.attributes.contains(name)
     }
 
     /// Whether a user's function converts some built-in type to another implicitly, which a call

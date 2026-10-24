@@ -167,6 +167,10 @@ pub struct Catalog {
     /// Every column of each relation, in order, as [`COLUMNS_QUERY`] reports them: what says
     /// which query a bare column name in a nested statement belongs to.
     pub columns: Columns,
+    /// The columns the rows the statement being proven builds may have ([`infer::row_fields`]), set
+    /// where the proof starts from the statement's text; `None` for a statement nested in one the
+    /// proof does not see, and for a view's defining statement.
+    pub row_fields: Option<HashSet<String>>,
     /// Per view, as named in `unique_keys`, its defining SELECT as `pg_get_viewdef` prints it:
     /// read as a subquery, it gives the view the keys its statement keeps ([`output_keys`]). The
     /// tables it reads are among the relations the rest of this catalog covers.
@@ -177,7 +181,7 @@ impl Catalog {
     /// This catalog for a view's defining statement, which sees none of the WITH queries of the
     /// statement that reads the view.
     fn for_view(&self) -> Catalog {
-        Catalog { enclosing_ctes: Vec::new(), nested: false, ..self.clone() }
+        Catalog { enclosing_ctes: Vec::new(), nested: false, row_fields: None, ..self.clone() }
     }
 
     /// This catalog for a statement nested in one whose WITH queries are `names`.
@@ -375,7 +379,15 @@ pub const SET_RETURNING_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_c
 /// is read on Postgres only.
 pub fn exactly_one(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
     let s = one_select(sql, dialect)?;
-    exactly_one_select(&s, dialect, trust, catalog)
+    exactly_one_select(&s, dialect, trust, &with_fields(&s, catalog))
+}
+
+/// The catalog for a proof that starts from a statement's text, with the columns the statement's
+/// own rows may have; a nested statement's are its enclosing statement's too, which the proof does
+/// not see.
+fn with_fields(s: &SelectStmt, catalog: &Catalog) -> Catalog {
+    let row_fields = (!catalog.nested).then(|| infer::row_fields(&serde_json::to_value(s).unwrap_or_default()));
+    Catalog { row_fields, ..catalog.clone() }
 }
 
 fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
@@ -399,8 +411,10 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         let withs = Withs::unknown(catalog.enclosing_ctes.iter().cloned()).with(s.with_clause.as_ref(), &catalog.columns);
         Level::of(&s.from_clause, &withs, &catalog.columns)
     });
+    // The type of a column an aggregate's argument reads, which says it is no row.
+    let from = From::read(s, catalog);
     let aggregates = s.target_list.iter().any(|target| match target.node.as_ref() {
-        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|val| infer::aggregates(val, dialect, trust, level.as_ref())),
+        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|val| infer::aggregates(val, dialect, trust, level.as_ref(), catalog.row_fields.as_ref(), &|n| from.node_type(n, catalog))),
         _ => false,
     });
     if aggregates {
@@ -603,7 +617,7 @@ pub fn at_most_one(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog
 
 fn at_most_one_here(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
     let s = one_select(sql, dialect)?;
-    at_most_one_select(&s, dialect, trust, catalog)
+    at_most_one_select(&s, dialect, trust, &with_fields(&s, catalog))
 }
 
 fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
@@ -2883,6 +2897,43 @@ mod tests {
 
     /// A stock Postgres catalog for the names these tests call: `generate_series` and `unnest`
     /// return sets, the rest do not. `todos` has a primary key and `org_members` a two-column one.
+    /// The trust check of a catalog with no object of a user's, whose row types have the attributes
+    /// named here among the names the rules read.
+    fn answered(attributes: &[&str]) -> Trust {
+        use crate::resolution::{Overloads, Shared};
+        let rows: Vec<Vec<serde_json::Value>> = attributes.iter().map(|a| vec![serde_json::json!("column"), serde_json::json!(a), serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null]).collect();
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        trust
+    }
+
+    #[test]
+    fn an_aggregate_that_may_be_a_column_of_its_row_argument_is_no_one_row() {
+        let mut c = stock();
+        c.column_types.insert("todos".into(), [("id".to_string(), oid::INT4), ("n".to_string(), oid::INT4)].into_iter().collect());
+        let none = answered(&[]);
+        let listed = answered(&["sum"]);
+        let one = |sql: &str, trust: &Trust| exactly_one(sql, Dialect::Postgres, trust, &c).is_ok();
+        // No row type has a column `sum`, and no row the statement builds does.
+        assert!(one("SELECT sum(n) AS total FROM todos", &none));
+        assert!(one("SELECT sum(todos) AS total FROM todos", &none));
+        // A row type of the catalog does: `sum(x)` over such a row is its column, a value per row,
+        // unless the argument is of a type that is no row, or is no row for certain.
+        assert!(one("SELECT sum(n) AS total FROM todos", &listed));
+        assert!(one("SELECT sum(n + 1) AS total, count(*) AS c FROM todos", &listed));
+        assert!(!one("SELECT sum(todos) AS total FROM todos", &listed));
+        assert!(!one("SELECT sum(x) AS total FROM (SELECT n AS x FROM todos) s", &listed));
+        // A row the statement builds has a column `sum`, which a whole row of it reads.
+        assert!(!one("SELECT sum(s) AS total FROM (SELECT n AS sum FROM todos) s", &none));
+        assert!(!one("WITH s AS (SELECT n AS every FROM todos) SELECT every(s) AS e FROM s", &none));
+        assert!(!one("SELECT sum(s) AS total FROM (SELECT sum FROM (SELECT n AS sum FROM todos) t) s", &none));
+        // A catalog that did not answer may have any row type.
+        assert!(!one("SELECT sum(todos) AS total FROM todos", &Trust::default()));
+        // `count`, and `sum` decorated, are the aggregates whatever the argument.
+        assert!(one("SELECT count(todos) AS n FROM todos", &listed));
+        assert!(one("SELECT sum(DISTINCT todos) AS n FROM todos", &listed));
+    }
+
     fn stock() -> Catalog {
         let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<HashSet<String>>();
         let key = |cols: &[&str]| vec![cols.iter().map(|c| c.to_string()).collect::<Vec<String>>()];
@@ -3251,8 +3302,9 @@ mod tests {
     fn a_from_of_one_row_items_is_one_row() {
         let mut c = stock();
         c.functions.extend(["now", "nextval"].map(String::from));
-        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        let trust = answered(&[]);
+        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &trust, &c);
+        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &trust, &c);
         for sql in [
             // A derived table is what the same query is as a WITH query.
             "SELECT * FROM (SELECT count(*) AS n FROM todos) s",
