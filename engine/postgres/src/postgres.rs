@@ -237,6 +237,8 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   or a domain over a row type. `scalars`: every type of a user's that is no row and no array (the
 ///   third column): a base type, an enum, a range, a multirange, or a domain over one of them. A
 ///   call of one argument over a row may read a column of it (`ParseFuncOrColumn`).
+/// - `column`: a function name (the second column) that some row type, a table's, a view's or a
+///   composite type's, has an attribute of: such a call over such a row is that column.
 /// - `type`: a function name a user's type also has.
 /// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
 ///   type has its name and no user's cast function targets it.
@@ -342,6 +344,9 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'scalars', NULL, ARRAY(SELECT t.oid::pg_catalog.int8 FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
     AND t.typcategory OPERATOR(pg_catalog.<>) 'A'::pg_catalog.\"char\" AND (t.typtype OPERATOR(pg_catalog.=) ANY ('{b,e,r,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM bases x \
     JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) x.b WHERE x.t OPERATOR(pg_catalog.=) t.oid AND b.typtype OPERATOR(pg_catalog.<>) 'c'::pg_catalog.\"char\")) ORDER BY t.oid), NULL, NULL \
+    UNION ALL SELECT 'column', a.attname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_attribute a \
+    WHERE a.attnum OPERATOR(pg_catalog.>) '0'::pg_catalog.int2 AND NOT a.attisdropped AND a.attname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
+    AND EXISTS (SELECT 1 FROM pg_catalog.pg_type t WHERE t.typrelid OPERATOR(pg_catalog.=) a.attrelid) GROUP BY a.attname \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
     WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
