@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type AddressInfo } from "node:net";
 import { reason, Unreachable } from "../src/engine.ts";
-import { forPostgresJs, openPostgresDescriber } from "../packages/postgres/describe.ts";
+import { arrayLiteral, forPostgresJs, openPostgresDescriber, parseArray } from "../packages/postgres/describe.ts";
 import { openMysqlDescriber } from "../packages/mysql/describe.ts";
 
 const unreachable = (r: PromiseSettledResult<unknown>, pattern: RegExp) => {
@@ -91,4 +91,18 @@ test("postgres.js gets libpq's TLS files as TLS options, not as server settings"
   } finally {
     rmSync(dir, { recursive: true });
   }
+});
+
+test("postgres.js gets an array parameter as an array literal, and the describer reads an array column's text as postgres.js would", () => {
+  assert.equal(arrayLiteral(["a", 'b"c', "d\\e", "f,g", null, ""]), '{"a","b\\"c","d\\\\e","f,g",NULL,""}');
+  assert.equal(arrayLiteral([16384, 2]), '{"16384","2"}');
+  assert.equal(arrayLiteral([true, false]), "{t,f}");
+  assert.equal(arrayLiteral([]), "{}");
+  assert.equal(arrayLiteral("users"), "users");
+  assert.deepEqual(parseArray('{a,"b\\"c","d\\\\e","f,g",NULL,"NULL",""}', String), ["a", 'b"c', "d\\e", "f,g", null, "NULL", ""]);
+  assert.deepEqual(parseArray("{1,2,NULL}", Number), [1, 2, null]);
+  assert.deepEqual(parseArray("{t,f}", (x) => x === "t"), [true, false]);
+  assert.deepEqual(parseArray("{}", String), []);
+  assert.deepEqual(parseArray("{{1,2},{3,4}}", Number), [[1, 2], [3, 4]]);
+  assert.deepEqual(parseArray("[0:1]={5,6}", Number), [5, 6]);
 });
