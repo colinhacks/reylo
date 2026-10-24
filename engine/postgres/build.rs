@@ -27,16 +27,31 @@ fn main() {
     fs::write(out.join("raw_convert.rs"), defs.converter()).unwrap();
     fs::write(out.join("raw_build.rs"), defs.builder()).unwrap();
     // libpg_query's deparser over nodes, with its errors caught in C (`csrc/deparse.c`).
-    cc::Build::new()
+    let mut deparse = cc::Build::new();
+    deparse
         .file(root.join("csrc/deparse.c"))
         .include(lib.join("src/postgres/include"))
         .include(lib.join("src/include"))
         .include(lib.join("src"))
-        .include(&lib)
-        .flag_if_supported("-fwrapv")
-        .flag_if_supported("-fno-strict-aliasing")
-        .warnings(false)
-        .compile("reylo_deparse");
+        .include(&lib);
+    for dir in windows_includes(&lib) {
+        deparse.include(dir);
+    }
+    deparse.flag_if_supported("-fwrapv").flag_if_supported("-fno-strict-aliasing").warnings(false).compile("reylo_deparse");
+}
+
+/// On Windows, Postgres's stand-ins for the POSIX headers it includes (`netinet/in.h`, `sys/socket.h`,
+/// …), and for MSVC the headers that compiler lacks, as pg_query's own build adds them.
+fn windows_includes(lib: &Path) -> Vec<PathBuf> {
+    let target = env::var("TARGET").unwrap();
+    let mut dirs = Vec::new();
+    if target.contains("windows") {
+        dirs.push(lib.join("src/postgres/include/port/win32"));
+        if target.contains("msvc") {
+            dirs.push(lib.join("src/postgres/include/port/win32_msvc"));
+        }
+    }
+    dirs
 }
 
 /// The C structs, and the constants and enums the converter reads, for the target being built.
@@ -49,6 +64,7 @@ fn bindings(root: &Path, lib: &Path, defs: &Defs, path: &Path) {
         .clang_arg(format!("-I{}", lib.join("src/include").display()))
         .clang_arg(format!("-I{}", lib.join("src").display()))
         .clang_arg(format!("-I{}", lib.display()))
+        .clang_args(windows_includes(lib).iter().map(|dir| format!("-I{}", dir.display())))
         .default_enum_style(bindgen::EnumVariation::Consts)
         .layout_tests(false)
         .derive_debug(false)
