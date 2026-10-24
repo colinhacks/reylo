@@ -390,7 +390,7 @@ from (
 
 **Window functions**
 
-An aggregate over a window follows its argument, and `json_arrayagg` over one is never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps it nullable.
+Over a window, `sum`, `avg`, `min` and `max` follow their argument, and `json_arrayagg` and `json_objectagg` are never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps them nullable.
 
 <Inferred>
 
