@@ -10,7 +10,7 @@ name = "reylo_engine_postgres"
 
 [build-dependencies]
 reylo-engine-build = { path = "../build-support" }
-bindgen = "0.66"
+bindgen = "0.72"
 cc = "1"
 
 [dependencies]
