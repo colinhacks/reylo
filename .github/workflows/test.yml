@@ -9,13 +9,80 @@ on:
   pull_request:
     branches:
       - main
-  # release.yml runs this same job before it stages anything, so the gate a release passes is the one every push passes
+  # release.yml runs the whole of this before it stages anything, so a release passes every check
   workflow_call:
 
 permissions:
   contents: read
 
+# A pull request's new commit cancels the run of its last one, which checked code that is gone.
+concurrency:
+  group: test-${{ github.event.pull_request.number && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.sha) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # What a pull request touches, which decides the engine's and the oracle's jobs below: a pull request
+  # that touches no engine, no oracle and no build or CI file skips both, and one that touches one
+  # database's engine runs the oracle's cases of that database alone. A push to main and a release run
+  # everything.
+  scope:
+    if: ${{ !github.event.repository.private }}
+    name: What the change touches
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      engine: ${{ steps.scope.outputs.engine }}
+      tests: ${{ steps.scope.outputs.tests }}
+      shards: ${{ steps.scope.outputs.shards }}
+    steps:
+      # A pull request's run checks out the merge of it into main: its first parent is main, so the
+      # files between the two are the ones the pull request changes, without a token that reads pull requests.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Read the changed files
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          # Every database, or the ones the change reaches.
+          everything() {
+            echo engine=true
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle'
+            echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
+          }
+          if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
+          if ! git rev-parse -q --verify HEAD^2 > /dev/null; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
+          # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
+          files=$(git diff --name-only --no-renames HEAD^1 HEAD)
+          echo "$files"
+          # Core, the oracle's own code, the build, the code lists the oracle reads, the validators' measurements
+          # the engine's tests read, and CI itself reach every database.
+          if grep -qE '^(engine/(core|build-support|wasm)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+            everything >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          postgres=false mysql=false sqlite=false
+          while read -r file; do
+            case "$file" in
+              engine/postgres/*) postgres=true ;;
+              engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
+              engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
+              oracle/cases/*) postgres=true ;;
+            esac
+          done <<<"$files"
+          tests='' shards=''
+          $postgres && { tests="$tests -p reylo-engine-postgres"; shards="$shards,\"postgres\""; }
+          $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
+          $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
+          if [ -z "$shards" ]; then
+            { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
+          else
+            { echo engine=true; echo "tests=$tests"; echo "shards=[${shards#,}]"; } >> "$GITHUB_OUTPUT"
+          fi
+
   test:
     # This file lives in the private working repository too, which `scripts/publish/publish.ts` copies it from; CI runs in the public one only.
     if: ${{ !github.event.repository.private }}
@@ -89,16 +156,24 @@ jobs:
       - run: nub run build
 
   # The engine's sources, which the job above only meets as the committed packages/<database>/engine.wasm
-  # (tests/fingerprint.test.ts checks each is their build): built natively, with no warning, and their tests run.
+  # (tests/fingerprint.test.ts checks each is their build): built natively, with no warning, and the tests
+  # of the crates the change reaches run. sccache keeps each crate's and each C file's object between runs,
+  # libpg_query's and SQLite's included, which rust-cache does not keep, since they are the workspace's own.
   engine:
-    if: ${{ !github.event.repository.private }}
+    needs: scope
+    if: ${{ !github.event.repository.private && needs.scope.outputs.engine == 'true' }}
     name: Build and test the engine
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # The patched pg_query copy the workspace's [patch] points at and the SQLite amalgamation: cargo resolves nothing without them.
       - run: engine/build.sh --prepare
@@ -107,20 +182,30 @@ jobs:
           set -o pipefail
           cargo build --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/build.log"
           ! grep -E '^warning' "$RUNNER_TEMP/build.log"
-      - run: cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle
+      - run: cargo test ${{ needs.scope.outputs.tests }}
+      - if: always()
+        run: sccache --show-stats
 
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
-  # fails the case. Postgres 18 runs on the runner rather than in a container, because the json_schema_*
-  # cases call five validator extensions built into it.
+  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, and MySQL's in three, one of
+  # them mysql_types alone, which takes as long as half the others together. Postgres 18 runs on the
+  # runner rather than in a container, because the json_schema_* cases call five validator extensions built
+  # into it; its packages are cached, since Ubuntu's mirror has taken half an hour to send them.
   oracle:
-    if: ${{ !github.event.repository.private }}
-    name: Soundness oracle on Postgres 18 and MySQL 8.4
+    needs: scope
+    if: ${{ !github.event.repository.private && needs.scope.outputs.shards != '[]' }}
+    name: Soundness oracle (${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.scope.outputs.shards) }}
     services:
       mysql:
-        image: mysql:8.4
+        # No container for a shard without MySQL's cases.
+        image: ${{ startsWith(matrix.shard, 'mysql') && 'mysql:8.4' || '' }}
         env:
           MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
         ports:
@@ -132,43 +217,106 @@ jobs:
           --health-retries 60
     env:
       PG_BIN: /usr/lib/postgresql/18/bin
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: The key of the Postgres packages
+        if: matrix.shard == 'postgres'
+        id: debs
+        run: |
+          test -n "$ImageOS" && test -n "$ImageVersion"
+          echo "key=postgres-18-debs-$ImageOS-$ImageVersion" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.shard == 'postgres'
+        id: debs-cache
+        with:
+          path: ~/postgres-debs
+          key: ${{ steps.debs.outputs.key }}
       # pgvector and PostGIS, the extensions Supabase and Neon users install most, for the pgvector_types and
       # postgis_types cases; PostGIS's package pulls in its scripts package, which holds the extension's SQL.
-      - name: Install Postgres 18, pgvector and PostGIS
-        id: pg
+      # The packages are downloaded once per runner image and installed from the cache after that.
+      - name: Download Postgres 18, pgvector and PostGIS
+        if: matrix.shard == 'postgres' && steps.debs-cache.outputs.cache-hit != 'true'
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-          sudo apt-get install -y --no-install-recommends postgresql-18 postgresql-server-dev-18 postgresql-18-pgvector postgresql-18-postgis-3
-          version=$("$PG_BIN/pg_config" --version | cut -d' ' -f2)
+          mkdir -p ~/postgres-debs/partial
+          sudo apt-get install -y --no-install-recommends --download-only -o Dir::Cache::archives="$HOME/postgres-debs" postgresql-18 postgresql-18-pgvector postgresql-18-postgis-3
+          sudo rm -rf ~/postgres-debs/partial ~/postgres-debs/lock
+          sudo chown -R "$USER" ~/postgres-debs
+      - if: matrix.shard == 'postgres' && steps.debs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/postgres-debs
+          key: ${{ steps.debs.outputs.key }}
+      - name: Install Postgres 18, pgvector and PostGIS
+        if: matrix.shard == 'postgres'
+        id: pg
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive dpkg -i ~/postgres-debs/*.deb
+          version=$("$PG_BIN/postgres" --version | awk '{print $3}')
           test -n "$version"
-          test -n "$ImageOS"
           echo "key=$ImageOS-pg$version" >> "$GITHUB_OUTPUT"
       # The validators take several minutes to build, so their staged files are cached, and saved as soon as
       # they are built rather than only when the job passes. They are compiled against the server's headers,
-      # so the key names the exact Postgres release and runner image they were built on.
+      # so the key names the exact Postgres release and runner image they were built on; the headers, and the
+      # LLVM and Clang their package pulls in, are installed only to build them.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: matrix.shard == 'postgres'
         id: validators
         with:
           path: ~/json-schema-validators
           key: json-schema-validators-${{ steps.pg.outputs.key }}-${{ hashFiles('.github/scripts/json-schema-validators.sh') }}
       - name: Build the JSON Schema validators
-        if: steps.validators.outputs.cache-hit != 'true'
-        run: sh .github/scripts/json-schema-validators.sh ~/json-schema-validators "$RUNNER_TEMP/validators" "$PG_BIN/pg_config"
-      - if: steps.validators.outputs.cache-hit != 'true'
+        if: matrix.shard == 'postgres' && steps.validators.outputs.cache-hit != 'true'
+        run: |
+          [ -f /etc/apt/sources.list.d/pgdg.sources ] || [ -f /etc/apt/sources.list.d/pgdg.list ] || sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+          sudo apt-get install -y --no-install-recommends postgresql-server-dev-18
+          sh .github/scripts/json-schema-validators.sh ~/json-schema-validators "$RUNNER_TEMP/validators" "$PG_BIN/pg_config"
+      - if: matrix.shard == 'postgres' && steps.validators.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/json-schema-validators
           key: ${{ steps.validators.outputs.cache-primary-key }}
       - name: Install the validators and start Postgres 18
+        if: matrix.shard == 'postgres'
         run: |
           sudo cp -R ~/json-schema-validators/. /
           "$PG_BIN/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust --no-sync -E UTF8 --locale=C
           "$PG_BIN/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 55432 -c listen_addresses=localhost -c unix_socket_directories=$RUNNER_TEMP" -l "$RUNNER_TEMP/postgres.log" -w start
       - run: engine/build.sh --prepare
-      - name: Run the oracle
-        run: cargo run -q -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres --mysql-url mysql://root@127.0.0.1:53306 --strict-coverage oracle/cases
+      - name: Run the oracle's cases of the shard
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          # A case's database is its name's prefix (`mysql_`, `sqlite_`, Postgres's none), as its `dialect` file says.
+          cases='' n=0
+          for dir in oracle/cases/*/; do
+            name=${dir%/}
+            name=${name##*/}
+            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; *) dialect=postgres ;; esac
+            case "$SHARD" in
+              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
+              mysql-slow) [ "$name" != mysql_types ] || cases="$cases ${dir%/}" ;;
+              mysql-1 | mysql-2)
+                if [ "$dialect" = mysql ] && [ "$name" != mysql_types ]; then
+                  n=$((n + 1))
+                  [ $((n % 2)) -ne $((${SHARD#mysql-} % 2)) ] || cases="$cases ${dir%/}"
+                fi
+                ;;
+            esac
+          done
+          case "$SHARD" in
+            postgres) servers="--url postgres://postgres@localhost:55432/postgres" ;;
+            sqlite) servers='' ;;
+            *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
+          esac
+          # shellcheck disable=SC2086
+          cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases
+      - if: always()
+        run: sccache --show-stats
