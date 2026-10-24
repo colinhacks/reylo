@@ -17,5 +17,5 @@ query_to_xml.sql: one () -> { x: xml? }
 select_logs.sql: many (id: int4) -> { id: int4 }
 select_ordered.sql: maybeOne (id: int4) -> { id: int4 }
 select_parts.sql: many (id: int4) -> { id: int4 }
-select_view.sql: many (id: int4) -> { id: int4, email: text }
+select_view.sql: maybeOne (id: int4) -> { id: int4, email: text }
 upsert_user.sql: none (id: int4, email: text, age: int4) -> {  }

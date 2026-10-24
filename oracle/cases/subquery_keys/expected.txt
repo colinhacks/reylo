@@ -1,0 +1,52 @@
+bare_name.sql: maybeOne (id: int8) -> { id: int8, title: text }
+cast.sql: many (id: text) -> { id: text, title: text }
+cross_join.sql: many (id: int8) -> { id: int8 }
+distinct.sql: maybeOne (a: int8) -> { author_id: int8 }
+distinct_expression.sql: many (a: int8) -> { author_id: int8, t: text }
+distinct_on.sql: maybeOne (a: int8) -> { author_id: int8, id: int8 }
+expression.sql: many (id: int8) -> { id: int8, title: text }
+filtered_inside.sql: maybeOne (a: int8, id: int8) -> { id: int8, title: text }
+full_join.sql: many (id: int8) -> { id: int8? }
+group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
+group_by_ordinal.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
+group_by_two.sql: many (a: int8) -> { author_id: int8, title: text, n: int8 }
+group_key_hidden.sql: many (n: int8) -> { author_id: int8, n: int8 }
+join_many.sql: many (id: int8) -> { id: int8, tag: text }
+join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
+joined_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
+key_dropped.sql: many (t: text) -> { title: text }
+lateral_pinned.sql: maybeOne (u: int8, p: int8) -> { name: text, title: text }
+lateral_source.sql: many (id: int8) -> { id: int8 }
+left_join_many.sql: many (id: int8) -> { id: int8 }
+left_join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text? }
+left_join_subquery.sql: maybeOne (p: int8, id: int8) -> { name: text, title: text? }
+limit_inside.sql: maybeOne (id: int8) -> { id: int8, title: text }
+nested.sql: maybeOne (id: int8) -> { id: int8, title: text }
+not_a_key.sql: many (e: text) -> { id: int8, author_id: int8, id: int8, email: text, name: text, deleted_at: timestamptz? } !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+null_extended_side.sql: many (id: int8) -> { id: int8?, name: text }
+partial_key_restricted.sql: maybeOne (n: text) -> { id: int8, name: text }
+partial_key_unrestricted.sql: many (n: text) -> { id: int8, name: text }
+recursive.sql: many (id: int8) -> { id: int8 }
+renamed.sql: maybeOne (id: int8) -> { post_id: int8, title: text }
+rollup.sql: many (a: int8) -> { author_id: int8?, n: int8? }
+second_key.sql: maybeOne (e: text) -> { id: int8, email: text }
+self_join_key.sql: maybeOne (id: int8) -> { id: int8, title: text }
+self_join_nonkey.sql: many (id: int8) -> { id: int8 }
+set_returning.sql: many (id: int8) -> { id: int8, x: int4 }
+star.sql: maybeOne (id: int8) -> { id: int8, author_id: int8, title: text }
+subquery.sql: maybeOne (id: int8) -> { id: int8, title: text }
+two_subqueries.sql: maybeOne (id: int8) -> { title: text, name: text }
+union_all.sql: many (id: int8) -> { id: int8 }
+values_list.sql: many (id: int4) -> { id: int4 }
+view.sql: maybeOne (id: int8) -> { id: int8, title: text }
+view_beside_with.sql: maybeOne (id: int8) -> { title: text }
+view_column_list.sql: maybeOne (id: int8) -> { post_id: int8, headline: text }
+view_group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
+view_join.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
+view_join_many.sql: many (id: int8) -> { id: int8, tag: text }
+view_of_view.sql: maybeOne (id: int8) -> { id: int8, title: text }
+view_other_schema.sql: maybeOne (id: int8) -> { id: int8, title: text }
+window_inside.sql: maybeOne (id: int8) -> { id: int8, rn: int8 }
+with_joined.sql: maybeOne (u: int8, id: int8) -> { title: text, name: text }
+with_materialized.sql: maybeOne (id: int8) -> { id: int8, title: text }
+with_query.sql: maybeOne (id: int8) -> { id: int8, title: text }
