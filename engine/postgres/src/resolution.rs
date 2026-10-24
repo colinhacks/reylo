@@ -91,8 +91,9 @@ const NOT_AGGREGATE: u32 = 8;
 pub struct Overloads {
     /// Every user's overload one of whose arguments a built-in type converts to.
     user: HashMap<(Kind, String), Vec<UserOverload>>,
-    /// The arities of a user's overloads no built-in type converts to at any argument: only a call
-    /// whose every operand is untyped may reach one.
+    /// The arities of a user's overloads no built-in type converts to at any argument, each of one
+    /// argument or more: only a call whose every operand is untyped may reach one. The query
+    /// reports one of no argument whole, which a call of none matches exactly.
     opaque: HashMap<(Kind, String), HashSet<usize>>,
     /// The built-in overloads of those names over the common types.
     builtin: HashMap<(Kind, String), Vec<Builtin>>,
@@ -253,10 +254,6 @@ impl Overloads {
             // an overload of a domain matches a value of its base type too.
             let base = |t: &u32| self.bases.get(t).copied().unwrap_or(*t);
             if users.iter().any(|u| u.args == *exact || u.args.iter().map(base).eq(exact.iter().copied()) || (kind == Kind::Function && (u.defaults > 0 || u.variadic) && u.fits(exact.len()))) {
-                return None;
-            }
-            // A call of no arguments matches every overload of none exactly.
-            if exact.is_empty() && self.opaque.get(&key).is_some_and(|arities| arities.contains(&0)) {
                 return None;
             }
             let mut matching = self.builtin.get(&key).into_iter().flatten().filter(|b| b.matches(exact));
@@ -548,7 +545,7 @@ mod tests {
     #[test]
     fn a_user_function_of_no_arguments_matches_a_call_of_none() {
         // pgcrypto's own `gen_random_uuid()`, which the search path may put first.
-        let (c, _) = catalog(vec![vec![json!("opaque f"), json!("gen_random_uuid"), Value::Null, json!(0), json!(12)], builtin("f", "gen_random_uuid", &[], oid::UUID)]);
+        let (c, _) = catalog(vec![vec![json!("user f"), json!("gen_random_uuid"), json!([]), json!(0), json!(12)], builtin("f", "gen_random_uuid", &[], oid::UUID)]);
         assert_eq!(c.resolve(Kind::Function, "gen_random_uuid", &[]), None);
     }
 }

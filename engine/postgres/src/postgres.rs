@@ -1186,8 +1186,10 @@ impl<'a> Engine<'a> {
             Ok(r) => r,
             Err(e) => return Some(Err(e)),
         };
-        // The parameters' types, which a call over a parameter is resolved with, in this
-        // statement's plans and in its probes', which number the parameters as it does.
+        // The parameters' types, by the number this statement gives each, which a call over a
+        // parameter is resolved with. A probe's plan reads them by the same numbers: a probe is
+        // planned over its own text, which keeps the statement's `$n`, and only the describe of it
+        // is renumbered from 1 (`Engine::pin`), whose parameter types no plan reads.
         let trust = &Trust { param_types: raw.params.clone(), ..trust.clone() };
         // Types for the parameters and the columns, and the casts probes pin on the parameters.
         let mut oids: Vec<u32> = raw.params.clone();

@@ -24,18 +24,17 @@ pub enum Filled {
 }
 
 /// One strict test that took a table off [`Analysis::nullable_tables`]: the column of it the test
-/// is strict in, as written, and the names its strictness rests on, the calls among them with
-/// their operands, which say for which types a user's overload of such a name is not the one.
+/// is strict in, as written, and the operators, functions and casts its strictness rests on, with
+/// their operands, which say for which types a user's of such a name is not the one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Witness {
     pub column: Vec<String>,
-    pub names: Vec<String>,
     pub(crate) calls: Vec<crate::infer::StrictCall>,
 }
 
 impl From<crate::infer::Strict> for Witness {
     fn from(s: crate::infer::Strict) -> Witness {
-        Witness { column: s.column, names: s.names, calls: s.calls }
+        Witness { column: s.column, calls: s.calls }
     }
 }
 
@@ -81,10 +80,10 @@ pub struct Analysis {
     pub nullable_tables: Vec<String>,
     /// The tables a strict top-level WHERE, or a strict ON conjunct of an inner join above the
     /// outer join that nulls them, took off `nullable_tables`, each with every witness that did:
-    /// the names of the operators, functions and casts its strictness rests on (none for `IS NOT
-    /// NULL`; see `infer::Strict`). A test proves the joined row exists only when those are the
-    /// built-in ones, which the parse alone cannot know: a host with the catalog's word puts back
-    /// a table no witness holds for.
+    /// the operators, functions and casts its strictness rests on (none for `IS NOT NULL`; see
+    /// `infer::Strict`). A test proves the joined row exists only when those are the built-in
+    /// ones, which the parse alone cannot know: a host with the catalog's word puts back a table
+    /// no witness holds for.
     pub reductions: Vec<(String, Vec<Witness>)>,
     /// Each WITH query's name beside every relation it reads, through the WITH queries it reads
     /// in turn. The describe traces a column read through the query to its table, so an outer

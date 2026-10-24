@@ -539,15 +539,6 @@ impl Trust {
     fn cast(&self, name: &str) -> bool {
         self.cast_targets.as_ref().is_none_or(|t| t.contains(name))
     }
-
-    /// Whether a name a [`Strict`] claim rests on is the built-in one: an operator or a function,
-    /// or `::type` for a cast to that type, which no user's cast function targets.
-    pub fn holds(&self, name: &str) -> bool {
-        match name.strip_prefix("::") {
-            Some(target) => self.cast(target),
-            None => self.builtin(name),
-        }
-    }
 }
 
 /// Read one rewritten statement's expression columns. SQLite's `?n` placeholders are read as
@@ -2099,20 +2090,16 @@ pub(crate) fn postgres_number(text: &str) -> Option<u32> {
     valid.then_some(oid::NUMERIC)
 }
 
-/// A column a predicate cannot pass with NULL in it, and the names of the built-in operators and
-/// functions that claim rests on: a user's operator or function of one of those names may hold
-/// for NULL, so a caller drops the claim where the trust check shadows a name, unless the calls
-/// themselves resolve to the built-ins for their operands' types (`calls`).
+/// A column a predicate cannot pass with NULL in it, and the built-in operators, functions and
+/// casts that claim rests on, each with its operands: a user's of one of those names may hold for
+/// NULL, so a caller drops the claim where a call may resolve to one ([`Trust::call_checked`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Strict {
     pub column: Vec<String>,
-    pub names: Vec<String>,
-    /// Every operator, function and cast among `names`, with its operands; a cast is in `names`
-    /// as `::type`, and here by the type's name.
     pub calls: Vec<StrictCall>,
 }
 
-/// One call a [`Strict`] claim rests on.
+/// One call a [`Strict`] claim rests on: a cast by its target type's name.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct StrictCall {
     pub kind: Kind,
@@ -2122,7 +2109,6 @@ pub(crate) struct StrictCall {
 
 impl Strict {
     fn calling(mut self, kind: Kind, name: &str, args: Vec<Node>) -> Strict {
-        self.names.push(name.to_string());
         self.calls.push(StrictCall { kind, name: name.to_string(), args });
         self
     }
@@ -2141,7 +2127,6 @@ pub(crate) fn strict_in(node: &Node) -> Vec<Strict> {
         found
             .into_iter()
             .map(|mut f| {
-                f.names.push(name.to_string());
                 f.calls.extend(pairs.iter().map(|(l, r)| StrictCall { kind: Kind::Infix, name: name.to_string(), args: vec![(*l).clone(), (*r).clone()] }));
                 f
             })
@@ -2163,7 +2148,6 @@ pub(crate) fn strict_in(node: &Node) -> Vec<Strict> {
                 kept.into_iter()
                     .filter_map(|mut k| {
                         let other = arm.iter().find(|a| a.column == k.column)?;
-                        k.names.extend(other.names.iter().cloned());
                         k.calls.extend(other.calls.iter().cloned());
                         Some(k)
                     })
@@ -2228,7 +2212,7 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
                 Some(NodeEnum::String(s)) => Some(s.sval.clone()),
                 _ => None,
             }).collect();
-            fields.map(|column| vec![Strict { column, names: Vec::new(), calls: Vec::new() }]).unwrap_or_default()
+            fields.map(|column| vec![Strict { column, calls: Vec::new() }]).unwrap_or_default()
         }
         Some(NodeEnum::AExpr(e)) if e.kind == protobuf::AExprKind::AexprOp as i32 => {
             let Some(op) = builtin_name(&e.name).filter(|o| POSTGRES_STRICT_OPERATORS.contains(&o.as_str())) else { return Vec::new() };
@@ -2246,7 +2230,6 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
                 (Some(target), Some(arg)) => nulls_with(arg)
                     .into_iter()
                     .map(|mut f| {
-                        f.names.push(format!("::{target}"));
                         f.calls.push(StrictCall { kind: Kind::Cast, name: target.clone(), args: vec![arg.clone()] });
                         f
                     })
