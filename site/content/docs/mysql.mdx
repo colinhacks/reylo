@@ -374,7 +374,7 @@ from users
 
 **Aggregates**
 
-Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
+Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
 
 <Inferred>
 
