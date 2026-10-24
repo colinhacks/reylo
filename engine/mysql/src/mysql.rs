@@ -41,6 +41,17 @@ const UNIQUE_KEYS_QUERY: &str = "select s.table_name, s.index_name, s.column_nam
     left join information_schema.columns c on c.table_schema = s.table_schema and c.table_name = s.table_name and c.column_name = s.column_name \
     where s.table_schema = database() and s.non_unique = 0 and find_in_set(s.table_name, ?) order by s.table_name, s.index_name, s.seq_in_index";
 
+/// One row per column of the named tables and views of the current schema, in order, with its
+/// type. `?` is the comma-joined table names.
+const KEY_COLUMNS_QUERY: &str = "select c.table_name, c.column_name, c.data_type from information_schema.columns c \
+    where c.table_schema = database() and find_in_set(c.table_name, ?) order by c.table_name, c.ordinal_position";
+
+/// One row per view among the named tables of the current schema: its name, its defining SELECT
+/// as the server stores it (every name qualified with the schema), and the schema. `?` is the
+/// comma-joined names.
+const VIEW_DEFINITIONS_QUERY: &str = "select v.table_name, v.view_definition, v.table_schema from information_schema.views v \
+    where v.table_schema = database() and find_in_set(v.table_name, ?)";
+
 /// One row per column of the named tables and views of the current schema. `?` is the
 /// comma-joined table names.
 const TABLE_COLUMNS_QUERY: &str = "select c.table_name, c.column_name from information_schema.columns c \
@@ -465,8 +476,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         // Its rows go into variables or a file: it returns none.
         Some(Statement::Query(q)) if assigns(q) => ("none".to_string(), None),
         Some(Statement::Query(q)) => {
-            let tables = tables_of(q);
-            let keys = if tables.is_empty() { Keys::default() } else { unique_keys(host, &tables)? };
+            let keys = catalog(host, q)?;
             cardinality(q, &keys)
         }
         Some(Statement::Insert(_)) | Some(Statement::Update(_)) | Some(Statement::Delete(_)) => ("none".to_string(), None),
@@ -1094,7 +1104,7 @@ fn constant_keys(sql: &str, statement: &Statement, rewritten: &lex::Rewritten) -
 
 /// Whether an expression is a user variable. `sqlparser` reads `@x` as a name and `` @`x` `` as a
 /// placeholder; `@@x` is a system variable, of one type.
-fn is_variable(e: &Expr) -> bool {
+pub(crate) fn is_variable(e: &Expr) -> bool {
     match e {
         Expr::Identifier(i) => i.quote_style.is_none() && i.value.starts_with('@') && !i.value.starts_with("@@"),
         Expr::Value(v) => matches!(&v.value, ast::Value::Placeholder(p) if p.starts_with('@')),
@@ -1645,17 +1655,23 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
 
 /// The unique keys of the tables a statement reads.
 #[derive(Debug, Default)]
-struct Keys {
+pub(crate) struct Keys {
     /// Per table, the column lists of its unique keys.
     of: HashMap<String, Vec<Vec<String>>>,
     /// Per table, what each key column's type compares as.
     class: HashMap<String, HashMap<String, Class>>,
+    /// Per table and view, its columns in order, each with what it compares as.
+    columns: HashMap<String, Vec<(String, Class)>>,
+    /// Per view, its defining SELECT, which names its tables with the view's schema.
+    views: HashMap<String, Query>,
+    /// The schema the views are in, which their statements qualify each name with.
+    pub(crate) schema: Option<String>,
 }
 
 /// What a value compares as. MySQL compares a string with a number as two doubles, so `'01'`,
 /// `'1'` and `'1x'` all equal `1`, and a key holds only where both sides are of one class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum Class {
+pub(crate) enum Class {
     Text,
     Number,
     /// A date or time, which a constant is converted to, or anything else.
@@ -1851,6 +1867,44 @@ fn check_documents(clause: &str) -> Vec<(String, String)> {
     out
 }
 
+/// The unique keys, columns and views of every table a query reads, and of every table those
+/// views read in turn: a round for each level of views.
+fn catalog(host: &Host, q: &Query) -> Lazy<Keys> {
+    let mut keys = Keys::default();
+    let mut names = crate::mysql_keys::tables_anywhere(q, None);
+    let mut seen: HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
+    while !names.is_empty() {
+        let joined = json!(names.join(","));
+        let found = unique_keys(host, &names);
+        let columns = host.query(KEY_COLUMNS_QUERY, vec![joined.clone()], Scope::Statement);
+        let views = host.query(VIEW_DEFINITIONS_QUERY, vec![joined], Scope::Statement);
+        let (Some(found), Some(columns), Some(views)) = (found, columns, views) else { return None };
+        keys.of.extend(found.of);
+        keys.class.extend(found.class);
+        for row in columns.unwrap_or_default() {
+            if let (Some(table), Some(column), Some(ty)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) {
+                keys.columns.entry(table.to_string()).or_default().push((column.to_ascii_lowercase(), class_of(ty)));
+            }
+        }
+        let mut next = Vec::new();
+        for row in views.unwrap_or_default() {
+            let (Some(name), Some(definition), Some(schema)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str)) else { continue };
+            // A definition the session may not read is empty, and reads as nothing.
+            let Ok(mut parsed) = Parser::parse_sql(&MySqlDialect {}, definition) else { continue };
+            let Some(Statement::Query(view)) = parsed.pop() else { continue };
+            keys.schema = Some(schema.to_string());
+            for table in crate::mysql_keys::tables_anywhere(&view, Some(schema)) {
+                if seen.insert(table.to_ascii_lowercase()) {
+                    next.push(table);
+                }
+            }
+            keys.views.insert(name.to_string(), *view);
+        }
+        names = next;
+    }
+    Some(keys)
+}
+
 fn unique_keys(host: &Host, tables: &[String]) -> Lazy<Keys> {
     let rows = host.query(UNIQUE_KEYS_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
     Some(keys_of(rows.unwrap_or_default()))
@@ -1901,12 +1955,38 @@ impl Keys {
         }
     }
 
-    fn keys(&self, table: &str) -> Option<&Vec<Vec<String>>> {
+    pub(crate) fn keys(&self, table: &str) -> Option<&Vec<Vec<String>>> {
         self.of.get(self.name(table)?).filter(|keys| !keys.is_empty())
     }
 
-    fn classes(&self, table: &str) -> Option<&HashMap<String, Class>> {
-        self.class.get(self.name(table)?)
+    /// The columns of a table or a view, in lower case, matched by name as [`Keys::name`] does.
+    pub(crate) fn columns(&self, table: &str) -> Option<&Vec<(String, Class)>> {
+        same_name(&self.columns, table)
+    }
+
+    /// What a column of a table compares as.
+    pub(crate) fn class_of(&self, table: &str, column: &str) -> Option<Class> {
+        if let Some(class) = self.name(table).and_then(|name| self.class.get(name)).and_then(|c| c.get(column)) {
+            return Some(*class);
+        }
+        self.columns(table)?.iter().find(|(c, _)| c == column).map(|(_, class)| *class)
+    }
+
+    /// A view's defining SELECT.
+    pub(crate) fn view(&self, name: &str) -> Option<&Query> {
+        same_name(&self.views, name)
+    }
+}
+
+/// The entry of `map` under `name`, or under the one name that differs from it in case alone.
+fn same_name<'m, T>(map: &'m HashMap<String, T>, name: &str) -> Option<&'m T> {
+    if let Some(found) = map.get(name) {
+        return Some(found);
+    }
+    let mut same = map.iter().filter(|(n, _)| n.eq_ignore_ascii_case(name));
+    match (same.next(), same.next()) {
+        (Some((_, found)), None) => Some(found),
+        _ => None,
     }
 }
 
@@ -1920,61 +2000,17 @@ fn class_of(data_type: &str) -> Class {
     }
 }
 
-/// A relation the top-level FROM reads: its table name as the statement writes it, and the name
-/// the statement uses for it, in lower case.
-struct Relation {
-    table: String,
-    alias: String,
-}
-
-/// The names of a query's WITH queries, in lower case: in its FROM such a name is that query,
-/// whatever table shares it.
-fn with_names(q: &Query) -> Vec<String> {
-    q.with.iter().flat_map(|w| w.cte_tables.iter().map(|c| c.alias.name.value.to_ascii_lowercase())).collect()
-}
-
-fn relations(select: &Select, with: &[String]) -> Option<Vec<Relation>> {
-    let mut out = Vec::new();
-    for twj in &select.from {
-        for factor in std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation)) {
-            match factor {
-                TableFactor::Table { name, alias, .. } => {
-                    // A table of another schema has keys the query for this one's does not read.
-                    let table = match name.0.as_slice() {
-                        [ast::ObjectNamePart::Identifier(i)] => Some(i.value.clone()),
-                        _ => None,
-                    }?;
-                    if with.contains(&table.to_ascii_lowercase()) {
-                        return None;
-                    }
-                    let alias = alias.as_ref().map(|a| a.name.value.to_ascii_lowercase()).unwrap_or_else(|| table.to_ascii_lowercase());
-                    out.push(Relation { table, alias });
-                }
-                _ => return None,
-            }
-        }
-    }
-    Some(out)
-}
-
-fn tables_of(q: &Query) -> Vec<String> {
-    match q.body.as_ref() {
-        SetExpr::Select(s) => relations(s, &with_names(q)).map(|r| r.into_iter().map(|r| r.table).collect()).unwrap_or_default(),
-        _ => Vec::new(),
-    }
-}
-
 fn cardinality(q: &Query, keys: &Keys) -> (String, Option<String>) {
     match exactly_one(q) {
         Ok(()) => ("one".into(), None),
-        Err(one_why) => match at_most_one(q, keys) {
+        Err(one_why) => match crate::mysql_keys::at_most_one(q, keys) {
             Ok(()) => ("maybeOne".into(), Some(one_why)),
             Err(why) => ("many".into(), Some(why)),
         },
     }
 }
 
-fn select_of(q: &Query) -> Result<&Select, String> {
+pub(crate) fn select_of(q: &Query) -> Result<&Select, String> {
     match q.body.as_ref() {
         SetExpr::Select(s) => Ok(s),
         SetExpr::SetOperation { .. } => Err("a set operation (UNION, INTERSECT, EXCEPT) returns any number of rows".into()),
@@ -1983,7 +2019,7 @@ fn select_of(q: &Query) -> Result<&Select, String> {
     }
 }
 
-fn const_limit(q: &Query) -> Option<Option<i64>> {
+pub(crate) fn const_limit(q: &Query) -> Option<Option<i64>> {
     let limit = match &q.limit_clause {
         Some(LimitClause::LimitOffset { limit: Some(l), .. }) => l,
         Some(LimitClause::OffsetCommaLimit { limit, .. }) => limit,
@@ -2012,7 +2048,7 @@ pub(crate) fn exactly_one(q: &Query) -> Result<(), String> {
 }
 
 /// Exactly one row before the statement's LIMIT and OFFSET apply.
-fn one_before_limit(q: &Query) -> Result<(), String> {
+pub(crate) fn one_before_limit(q: &Query) -> Result<(), String> {
     if let SetExpr::Values(v) = q.body.as_ref() {
         return if v.rows.len() == 1 { Ok(()) } else { Err("a VALUES list returns a row per row it lists".into()) };
     }
@@ -2035,124 +2071,10 @@ fn one_before_limit(q: &Query) -> Result<(), String> {
     Err("a FROM returns a row per row it matches, and only an aggregate with no GROUP BY collapses them to one".into())
 }
 
-fn at_most_one(q: &Query, keys: &Keys) -> Result<(), String> {
-    if matches!(const_limit(q), Some(Some(n)) if (0..=1).contains(&n)) {
-        return Ok(());
-    }
-    // Any other LIMIT, and an OFFSET, only remove rows: the bound is the one the statement has
-    // without them.
-    if one_before_limit(q).is_ok() {
-        return Ok(());
-    }
-    let s = select_of(q)?;
-    let Some(relations) = relations(s, &with_names(q)) else { return Err("only plain tables in the FROM are matched against a unique key, and a WITH query is none".into()) };
-    let single = relations.len() == 1;
-    let equated = equated_columns(s.selection.as_ref());
-    let pinned = |r: &Relation| -> bool {
-        let Some(table_keys) = keys.keys(&r.table) else { return false };
-        let classes = keys.classes(&r.table);
-        table_keys.iter().any(|key| {
-            !key.is_empty()
-                && key.iter().all(|c| {
-                    let class = classes.and_then(|k| k.get(c)).copied();
-                    equated.iter().any(|(alias, col, value)| owns(alias.as_deref(), col, r, single, table_keys) && col == c && compares_as_is(class, *value))
-                })
-        })
-    };
-    let grouped: Option<&[Expr]> = match &s.group_by {
-        GroupByExpr::Expressions(_, modifiers) if !modifiers.is_empty() => return Err("GROUP BY … WITH ROLLUP adds a row for every level of the grouping".into()),
-        GroupByExpr::Expressions(e, _) if !e.is_empty() => Some(e),
-        GroupByExpr::All(_) => return Err("GROUP BY ALL returns one row per group".into()),
-        _ => None,
-    };
-    if let Some(group) = grouped {
-        for r in &relations {
-            if !pinned(r) {
-                continue;
-            }
-            let table_keys = keys.keys(&r.table).cloned().unwrap_or_default();
-            let own = group.iter().all(|g| match column_ref(g) {
-                Some((alias, col)) => owns(alias.as_deref(), &col, r, single, &table_keys) && (alias.is_some() || single || table_keys.iter().flatten().any(|k| *k == col)),
-                None => false,
-            });
-            if own {
-                return Ok(());
-            }
-        }
-        return Err("GROUP BY returns one row per group; the engine proves one group only when the WHERE pins a unique key of a relation to values and every GROUP BY column belongs to that relation".into());
-    }
-    if s.having.is_some() {
-        return Err("HAVING leaves a row per group".into());
-    }
-    let [only] = relations.as_slice() else {
-        return Err(match relations.len() {
-            0 => "a SELECT with no FROM and a WHERE can return no row or one, and the engine proves that only through a LIMIT".into(),
-            _ => "a join returns a row per pair it matches, and the engine proves a single row only for one relation".into(),
-        });
-    };
-    if pinned(only) {
-        return Ok(());
-    }
-    match keys.keys(&only.table) {
-        None => Err(format!("`{}` has no unique index the engine can read, so nothing bounds the rows a WHERE matches", only.table)),
-        Some(table_keys) => {
-            let shown: Vec<String> = table_keys.iter().map(|k| format!("({})", k.join(", "))).collect();
-            Err(format!("the WHERE does not equate every column of a unique key of `{}` — it has {}", only.table, shown.join(", ")))
-        }
-    }
-}
-
-/// Whether `alias.col` (or a bare `col`) names a column of `r`: a bare name is the relation's
-/// when it is the only one, or when it is a column of one of its unique keys.
-fn owns(alias: Option<&str>, col: &str, r: &Relation, single: bool, table_keys: &[Vec<String>]) -> bool {
-    match alias {
-        Some(a) => a == r.alias,
-        None => single || table_keys.iter().flatten().any(|k| k == col),
-    }
-}
-
-/// `(qualifier, column)` of a column reference, lowercased.
-fn column_ref(e: &Expr) -> Option<(Option<String>, String)> {
-    match e {
-        Expr::Identifier(i) => Some((None, i.value.to_ascii_lowercase())),
-        Expr::CompoundIdentifier(parts) if parts.len() == 2 => Some((Some(parts[0].value.to_ascii_lowercase()), parts[1].value.to_ascii_lowercase())),
-        Expr::Nested(inner) => column_ref(inner),
-        _ => None,
-    }
-}
-
-/// The columns the WHERE equates to a value (no column read on the other side, and nothing that
-/// changes from row to row: `RAND()` and `SYSDATE()` are evaluated for each row) under ANDs, each
-/// with what the value compares as ([`value_class`]).
-fn equated_columns(selection: Option<&Expr>) -> HashSet<(Option<String>, String, Option<Class>)> {
-    let mut out = HashSet::new();
-    let mut stack: Vec<&Expr> = selection.into_iter().collect();
-    while let Some(e) = stack.pop() {
-        match e {
-            Expr::Nested(inner) => stack.push(inner),
-            Expr::BinaryOp { left, op: ast::BinaryOperator::And, right } => {
-                stack.push(left);
-                stack.push(right);
-            }
-            Expr::BinaryOp { left, op: ast::BinaryOperator::Eq, right } => {
-                for (col, other) in [(left, right), (right, left)] {
-                    if let Some((alias, column)) = column_ref(col) {
-                        if !reads_column(other) && deterministic(other) {
-                            out.insert((alias, column, value_class(other)));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
 /// Whether a key column of this class compared with a value of this one compares the column as
 /// it is: a placeholder the caller binds with the column's own type, or a value of the column's
 /// class. A date or time column converts a constant to its own type.
-fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
+pub(crate) fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
     match (key, value) {
         (Some(Class::Instant), _) => false,
         (_, None) | (None | Some(Class::Other), _) => true,
@@ -2161,7 +2083,7 @@ fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
 }
 
 /// What a compared value compares as, where the build can tell; `None` for a placeholder.
-fn value_class(e: &Expr) -> Option<Class> {
+pub(crate) fn value_class(e: &Expr) -> Option<Class> {
     // `md5` and `sha1` are not here: MySQL 9.7 and 26.7 have neither, and there a stored function
     // of the name answers the call. The same holds in `deterministic`.
     const TEXT: &[&str] = &[
@@ -2210,7 +2132,7 @@ fn value_class(e: &Expr) -> Option<Class> {
 /// Whether an expression gives every row the same value: a literal, or built-ins known to answer
 /// the same for the same arguments. A stored function may be NOT DETERMINISTIC, and so may any
 /// name not listed, which counts as changing.
-fn deterministic(e: &Expr) -> bool {
+pub(crate) fn deterministic(e: &Expr) -> bool {
     const KNOWN: &[&str] = &[
         "lower", "upper", "lcase", "ucase", "trim", "ltrim", "rtrim", "concat", "concat_ws", "abs", "round", "floor", "ceil", "ceiling", "length",
         "char_length", "character_length", "substring", "substr", "replace", "left", "right", "lpad", "rpad", "coalesce", "ifnull", "nullif", "if",
@@ -2237,7 +2159,7 @@ fn deterministic(e: &Expr) -> bool {
 }
 
 /// Whether an expression reads a column anywhere; anything the walk does not know counts as reading one.
-fn reads_column(e: &Expr) -> bool {
+pub(crate) fn reads_column(e: &Expr) -> bool {
     match e {
         // A user variable is no value the build knows the type of, and may change from row to row.
         _ if is_variable(e) => true,
@@ -2348,6 +2270,45 @@ mod tests {
     }
 
     #[test]
+    fn joins_derived_tables_and_with_queries_are_pinned_by_keys() {
+        let mut k = keys();
+        for (table, columns) in [("users", &[("id", "int"), ("email", "varchar"), ("name", "varchar")][..]), ("posts", &[("id", "bigint"), ("user_id", "bigint"), ("title", "text")][..])] {
+            k.columns.insert(table.into(), columns.iter().map(|(c, ty)| (c.to_string(), class_of(ty))).collect());
+        }
+        let rows = |sql: &str| {
+            let mut v = Parser::parse_sql(&MySqlDialect {}, sql).unwrap();
+            let Statement::Query(q) = v.pop().unwrap() else { panic!("not a query") };
+            cardinality(&q, &k).0
+        };
+        for sql in [
+            "select p.title, u.name from posts p join users u on u.id = p.user_id where p.id = ?",
+            "select p.title, u.name from posts p left join users u on u.id = p.user_id where p.id = ?",
+            "select p.title, u.name from posts p, users u where u.id = p.user_id and p.id = ?",
+            "select * from (select id, title from posts where id = ?) s",
+            "select * from (select id, title from posts) s where s.id = ?",
+            "with s as (select id, title from posts) select * from s where s.id = ?",
+            "select * from (select id as post_id from posts) s where s.post_id = ?",
+            "select * from (select p.id, u.name from posts p join users u on u.id = p.user_id) s where s.id = ?",
+            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.user_id = ?",
+            "select * from (select distinct user_id from posts) s where s.user_id = ?",
+        ] {
+            assert_eq!(rows(sql), "maybeOne", "{sql}");
+        }
+        for sql in [
+            "select p.title, u.name from posts p join users u on u.id = p.user_id where u.id = ?",
+            "select p.title from posts p join users u on u.email = p.title where p.id = ?",
+            "select * from (select title from posts) s where s.title = ?",
+            "select * from (select id + 0 as id from posts) s where s.id = ?",
+            "select * from (select id from posts union all select id from posts) s where s.id = ?",
+            "select * from (select p.id from posts p cross join users u) s where s.id = ?",
+            "select * from (select user_id, count(*) as n from posts group by user_id with rollup) s where s.user_id = ?",
+            "select p.id from posts p full outer join users u on u.id = p.user_id where p.id = ?",
+        ] {
+            assert_eq!(rows(sql), "many", "{sql}");
+        }
+    }
+
+    #[test]
     fn placeholders_parse_and_keys_prove() {
         // A name qualified with a schema is that schema's: a stored function is no aggregate,
         // and a table there has keys of its own.
@@ -2449,7 +2410,8 @@ mod tests {
                         asked = true;
                         (id, json!({ "rows": [[mode]] }))
                     }
-                    crate::api::Need::Query { id, sql, .. } if sql == VIEWS_QUERY => (id, json!({ "rows": [] })),
+                    crate::api::Need::Query { id, sql, .. } if sql == VIEWS_QUERY || sql == VIEW_DEFINITIONS_QUERY => (id, json!({ "rows": [] })),
+                    crate::api::Need::Query { id, sql, .. } if sql == KEY_COLUMNS_QUERY => (id, json!({ "rows": [["users", "id", "int"], ["users", "email", "varchar"], ["users", "name", "varchar"]] })),
                     crate::api::Need::Query { id, .. } => (id, json!({ "rows": [["users", "PRIMARY", "id", "int"], ["users", "email", "email", "varchar"]] })),
                 };
                 answers.insert(id, serde_json::from_value(answer).unwrap());

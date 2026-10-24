@@ -115,7 +115,7 @@ int_string_literal.sql: many () -> { id: int4 }
 int_table_name.sql: maybeOne (id: int4) -> { id: int4 }
 int_true.sql: maybeOne () -> { id: int4 }
 int_twice.sql: maybeOne (a: int4, b: int4) -> { id: int4 }
-int_view.sql: many (id: int4) -> { id: int4|int8 }
+int_view.sql: maybeOne (id: int4) -> { id: int4|int8 }
 int_xor.sql: many (id: int4) -> { id: int4 }
 prefix_key.sql: maybeOne (name: text) -> { name: text }
 prefix_key_scan.sql: maybeOne (name: text) -> { name: text }
