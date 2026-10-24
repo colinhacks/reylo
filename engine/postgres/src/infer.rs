@@ -515,9 +515,10 @@ impl Trust {
         Operand::Param(usize::try_from(number).ok().and_then(|n| self.param_types.get(n.checked_sub(1)?)).copied().filter(|t| *t != 0))
     }
 
-    /// Whether every overload of a user's of the function `name` aggregates, as the built-in does.
-    pub(crate) fn aggregates(&self, name: &str) -> bool {
-        self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.every_aggregate(name)) == Some(true)
+    /// Whether a call of the function `name` with `arity` arguments aggregates, as the built-in
+    /// does, whichever overload of it the server picks: none of a user's, or every one an aggregate.
+    pub(crate) fn aggregates(&self, name: &str, arity: usize) -> bool {
+        self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.every_aggregate(name, arity)) == Some(true)
     }
 
     /// Whether no overload of a user's of `name`, of this kind, returns a set.
@@ -935,7 +936,8 @@ pub fn one_value(target: &Node, dialect: Dialect, trust: &Trust) -> bool {
                     // A user's overload of the name counts where none of them returns a set, and
                     // an aggregate's arguments only where every one of them aggregates.
                     let Some(n) = name(f.get("funcname")) else { return false };
-                    if [FUNCTIONS, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON].iter().any(|list| list.contains(&n)) && trust.aggregates(n) {
+                    let arity = f.get("args").and_then(Value::as_array).map_or(0, Vec::len);
+                    if [FUNCTIONS, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON].iter().any(|list| list.contains(&n)) && trust.aggregates(n, arity) {
                         return true;
                     }
                     if !trust.returns_no_set(Kind::Function, n) || POSTGRES_SET_RETURNING.contains(&n) || !postgres_function_names().contains(&n) {
@@ -1525,7 +1527,7 @@ impl Reader<'_> {
                                 "total" | "json_group_array" => self.dialect == Dialect::Sqlite && f.args.len() == 1,
                                 _ => false,
                             };
-                            arity && self.trust.aggregates(&name)
+                            arity && self.trust.aggregates(&name, f.args.len())
                         }));
                 if aggregate && from.is_none_or(|level| level.owns(f)) {
                     return true;

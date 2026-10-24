@@ -288,16 +288,19 @@ impl Overloads {
     }
 
     /// Whether every overload of a user's of a function `name` is an aggregate, and none returns a
-    /// set, so a call of the name aggregates whichever overload the server picks. `None` where
-    /// the catalog reports none.
-    pub fn every_aggregate(&self, name: &str) -> Option<bool> {
+    /// set, so a call of the name with `arity` arguments aggregates whichever overload the server
+    /// picks. `None` where the catalog reports none.
+    pub fn every_aggregate(&self, name: &str, arity: usize) -> Option<bool> {
         // A call of one argument with no exact match may be a cast to a type of the name
-        // (`func_get_detail`), which reads each row's value.
-        if self.typed.contains(name) {
+        // (`func_get_detail`), which reads each row's value; `count(*)` has none.
+        if arity == 1 && self.typed.contains(name) {
             return Some(false);
         }
-        let flags = self.flags.get(&(Kind::Function, name.to_string()))?;
-        Some(flags & (NOT_AGGREGATE | RETURNS_SET) == 0)
+        // A name only a type has: every function of it is a built-in.
+        match self.flags.get(&(Kind::Function, name.to_string())) {
+            Some(flags) => Some(flags & (NOT_AGGREGATE | RETURNS_SET) == 0),
+            None => self.typed.contains(name).then_some(true),
+        }
     }
 
     /// Whether some overload of a user's of `name`, of this kind, returns a set; `None` where the
@@ -503,12 +506,16 @@ mod tests {
         // pgvector's `sum(vector)` is an aggregate as the built-ins are.
         let (c, _) = catalog(vec![vec![json!("opaque f"), json!("sum"), Value::Null, json!(1), json!(0)], builtin("f", "sum", &[oid::INT4], oid::INT8)]);
         assert_eq!(c.resolve(Kind::Function, "sum", &[Operand::Is(oid::INT4)]), Some(Some(oid::INT8)));
-        assert_eq!(c.every_aggregate("sum"), Some(true));
-        assert_eq!(c.every_aggregate("count"), None);
+        assert_eq!(c.every_aggregate("sum", 1), Some(true));
+        assert_eq!(c.every_aggregate("count", 1), None);
         // A domain named `max` beside a user's aggregate `max(bytea)`: `max(v)` of a `varchar`
         // is a cast to the domain.
         let (c, _) = catalog(vec![vec![json!("opaque f"), json!("max"), Value::Null, json!(1), json!(0)], vec![json!("type"), json!("max"), Value::Null, Value::Null, Value::Null]]);
-        assert_eq!(c.every_aggregate("max"), Some(false));
+        assert_eq!(c.every_aggregate("max", 1), Some(false));
+        // `count(*)` beside a domain named `count` is a call of no argument, which no cast is.
+        let (c, _) = catalog(vec![vec![json!("type"), json!("count"), Value::Null, Value::Null, Value::Null]]);
+        assert_eq!(c.every_aggregate("count", 1), Some(false));
+        assert_eq!(c.every_aggregate("count", 0), Some(true));
     }
 
     #[test]

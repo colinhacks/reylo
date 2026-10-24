@@ -1105,7 +1105,7 @@ fn is_null_const(node: &Node) -> bool {
 /// subquery return exactly one row. A call with `OVER` is a window function, one row per input.
 fn aggregates(expr: &Node, level: &Level, trust: &Trust) -> bool {
     match expr.node.as_ref() {
-        Some(NodeEnum::FuncCall(f)) => f.over.is_none() && crate::infer::builtin_name(&f.funcname).is_some_and(|n| AGG_FNS.contains(&n.as_str()) && trust.aggregates(&n)) && level.owns(f),
+        Some(NodeEnum::FuncCall(f)) => f.over.is_none() && crate::infer::builtin_name(&f.funcname).is_some_and(|n| AGG_FNS.contains(&n.as_str()) && trust.aggregates(&n, f.args.len())) && level.owns(f),
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|first| aggregates(first, level, trust)),
         Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(|arg| aggregates(arg, level, trust)),
         _ => false,
