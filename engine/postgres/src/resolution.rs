@@ -117,6 +117,11 @@ pub struct Overloads {
     /// Per type of a user's that a unique index's key has, whether the `=` an untyped value
     /// beside it resolves to is the btree equality of every such key's operator family.
     keys: HashMap<u32, bool>,
+    /// The built-in types that are rows, a catalog's row type or `record`, where the catalog
+    /// listed them.
+    rows: Option<HashSet<u32>>,
+    /// The types of a user's that are no row and no array.
+    scalars: HashSet<u32>,
 }
 
 impl Overloads {
@@ -177,6 +182,8 @@ impl Overloads {
                         }
                     }
                     "implicit" => out.implicit.extend(a),
+                    "rows" => out.rows = oids(row.get(2)).map(|o| o.into_iter().collect()),
+                    "scalars" => out.scalars.extend(oids(row.get(2)).unwrap_or_default()),
                     "type" => {
                         if let Some(name) = name {
                             shadowed.insert(name.to_string());
@@ -294,6 +301,16 @@ impl Overloads {
     /// has such a key, or the catalog did not say.
     pub fn key_equality(&self, ty: u32) -> Option<bool> {
         self.keys.get(&ty).copied()
+    }
+
+    /// Whether a value of type `ty` is no row, which a call of one argument could read a column of
+    /// (`ParseFuncOrColumn`): a built-in type the catalog does not list as a row type, or a type of
+    /// a user's it lists as a scalar. `None` for a built-in type where it listed none.
+    pub fn is_scalar(&self, ty: u32) -> Option<bool> {
+        if ty >= FIRST_USER_OID {
+            return Some(self.scalars.contains(&ty));
+        }
+        self.rows.as_ref().map(|rows| !rows.contains(&ty))
     }
 
     /// Whether a user's function converts some built-in type to another implicitly, which a call
