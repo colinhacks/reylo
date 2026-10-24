@@ -226,6 +226,14 @@ pub struct Node {
     pub order_by: Vec<Node>,
     /// A window call's PARTITION BY.
     pub partition_by: Vec<Node>,
+    /// A window call's frame: where it starts (`unbounded`, which is UNBOUNDED PRECEDING,
+    /// `preceding`, `current` or `following`) and ends (`unbounded` is UNBOUNDED FOLLOWING), and
+    /// what it excludes (`no`, `current`, `group` or `ties`), a named window's included.
+    pub frame_start: Option<String>,
+    pub frame_end: Option<String>,
+    pub exclude: Option<String>,
+    /// A window call with a FILTER.
+    pub filter: bool,
     // cast
     pub to: Option<String>,
     // operands

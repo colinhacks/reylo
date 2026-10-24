@@ -1,0 +1,1 @@
+select max(p.id) over (order by p.score range between 1e999 preceding and 1 following) as by_score, max(p.id) over (order by p.rank desc range between 0 preceding and 0 following) as by_rank, max(p.id) over (order by p.published_at range between 1 preceding and 1 following) as by_text from posts p

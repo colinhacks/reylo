@@ -484,14 +484,15 @@ from orders
 
 **Window functions**
 
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row.
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. Over a window, `min` and `max` follow their argument, unless a `filter` or a frame that can leave out the current row keeps them nullable. A `sum` or `avg` is nullable, since SQLite returns `NaN` as `NULL`, and so is `group_concat`, which libSQL and Turso return as `NULL` over a frame of empty strings.
 
 <Inferred>
 
 ```sql file="lite_null_window.sql" dialect="sqlite"
 select id,
   lag(total_cents) over (order by id) as previous_total,
-  row_number() over (order by id) as n
+  row_number() over (order by id) as n,
+  max(total_cents) over (partition by user_id) as largest_total
 from orders
 ```
 
