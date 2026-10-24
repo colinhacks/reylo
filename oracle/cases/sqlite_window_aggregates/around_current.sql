@@ -1,0 +1,1 @@
+select max(p.id) over (order by p.id rows between 1 preceding and 1 following) as rows_around, max(p.id) over (order by p.user_id groups between 1 preceding and current row) as groups_back, min(p.id) over (order by p.id rows between current row and unbounded following) as rest, max(p.id) over (order by p.id rows unbounded preceding) as running from posts p

@@ -81,6 +81,18 @@ static void key(sqlite3_str *s, const char *k){ js(s, k); sqlite3_str_appendchar
 static void kv_str(sqlite3_str *s, const char *k, const char *v){ key(s, k); js(s, v); sqlite3_str_appendchar(s, 1, ','); }
 static void kv_int(sqlite3_str *s, const char *k, int v){ key(s, k); sqlite3_str_appendf(s, "%d,", v); }
 static void kv_bool(sqlite3_str *s, const char *k, int v){ key(s, k); sqlite3_str_appendall(s, v ? "true," : "false,"); }
+#ifndef SQLITE_OMIT_WINDOWFUNC
+/* A window frame's bound by the parser's token for it. */
+static const char *frameBound(u8 e){
+  switch( e ){
+    case TK_UNBOUNDED: return "unbounded";
+    case TK_CURRENT: return "current";
+    case TK_PRECEDING: return "preceding";
+    case TK_FOLLOWING: return "following";
+    default: return "";
+  }
+}
+#endif
 /* Closes an object whose last member left a trailing comma. */
 static void closeObj(sqlite3_str *s){
   int n = sqlite3_str_length(s);
@@ -233,8 +245,16 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
       ** too, which resolving the call copied into it). */
 #ifndef SQLITE_OMIT_WINDOWFUNC
       if( IsWindowFunc(p) && p->y.pWin ){
-        key(s, "partitionBy"); exprList(s, p->y.pWin->pPartition, pSel); sqlite3_str_appendchar(s, 1, ',');
-        key(s, "orderBy"); exprList(s, p->y.pWin->pOrderBy, pSel); sqlite3_str_appendchar(s, 1, ',');
+        Window *pWin = p->y.pWin;
+        key(s, "partitionBy"); exprList(s, pWin->pPartition, pSel); sqlite3_str_appendchar(s, 1, ',');
+        key(s, "orderBy"); exprList(s, pWin->pOrderBy, pSel); sqlite3_str_appendchar(s, 1, ',');
+        /* The frame as resolving the call left it, a named window's copied in: where it starts and
+        ** ends (a start `unbounded` is UNBOUNDED PRECEDING, an end UNBOUNDED FOLLOWING), what it
+        ** excludes, and whether a FILTER narrows the rows it aggregates. */
+        kv_str(s, "frameStart", frameBound(pWin->eStart));
+        kv_str(s, "frameEnd", frameBound(pWin->eEnd));
+        kv_str(s, "exclude", pWin->eExclude==TK_CURRENT ? "current" : pWin->eExclude==TK_GROUP ? "group" : pWin->eExclude==TK_TIES ? "ties" : "no");
+        kv_bool(s, "filter", pWin->pFilter!=0);
       }else
 #endif
       if( !ExprHasProperty(p, EP_TokenOnly|EP_Reduced) && p->pLeft && p->pLeft->op==TK_ORDER && ExprUseXList(p->pLeft) ){

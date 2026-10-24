@@ -1338,6 +1338,10 @@ impl Analyzer<'_> {
             }
         }
         if n.window {
+            // A frame that always holds the current row has that row, so there an aggregate that
+            // is NULL only over no rows or only NULLs follows its argument, as under a plain GROUP
+            // BY; `sum` and `avg` stay nullable as they do there.
+            let has_a_row = holds_current_row(n);
             return match name {
                 "row_number" | "rank" | "dense_rank" | "ntile" => done("integer", Nulls::Never),
                 "percent_rank" | "cume_dist" => done("real", Nulls::Never),
@@ -1347,8 +1351,9 @@ impl Analyzer<'_> {
                 "avg" => done("real", Nulls::Always),
                 // `lag` and `lead` hand back their default where the row they read is missing.
                 "lag" | "lead" if args.len() >= 3 => typed(values_type(&[(&n.args[0], &args[0]), (&n.args[2], &args[2])]), Nulls::Always),
-                "min" | "max" | "lag" | "lead" | "first_value" | "last_value" | "nth_value" => typed(first.ty.clone(), Nulls::Always),
-                "group_concat" | "string_agg" => done("text", Nulls::Always),
+                "min" | "max" => typed(first.ty.clone(), if has_a_row { Nulls::IfArgs } else { Nulls::Always }),
+                "lag" | "lead" | "first_value" | "last_value" | "nth_value" => typed(first.ty.clone(), Nulls::Always),
+                "group_concat" | "string_agg" => done("text", if has_a_row { Nulls::IfArgs } else { Nulls::Always }),
                 _ => Fact::unknown(),
             };
         }
@@ -2597,6 +2602,22 @@ fn iif_values(count: usize) -> Vec<usize> {
 
 /// When `total` is NULL: never over integers, but over reals a `1e999` and a `-1e999` add up to
 /// NaN, which SQLite gives as NULL.
+/// Whether a call is a window call whose frame always holds the current row, as SQLite resolved
+/// it (a named window's frame copied in), with no FILTER. No frame clause is `RANGE BETWEEN
+/// UNBOUNDED PRECEDING AND CURRENT ROW`: every row through the current row's last peer, the whole
+/// partition without ORDER BY. A frame that starts UNBOUNDED PRECEDING, `n PRECEDING` or at
+/// CURRENT ROW and ends at CURRENT ROW, `n FOLLOWING` or UNBOUNDED FOLLOWING holds it in every
+/// mode: SQLite refuses a negative offset and, in RANGE mode, finds the current row within any
+/// offset of itself, a NULL, an infinity, a text and a blob included (measured on 3.51 and
+/// checked by the oracle on the embedded SQLite). A start `n FOLLOWING` or an end `n PRECEDING`
+/// can leave the row out, and `EXCLUDE CURRENT ROW` and `EXCLUDE GROUP` do; `EXCLUDE TIES` keeps it.
+fn holds_current_row(n: &Node) -> bool {
+    let start = matches!(n.frame_start.as_deref(), Some("unbounded" | "preceding" | "current"));
+    let end = matches!(n.frame_end.as_deref(), Some("unbounded" | "following" | "current"));
+    let exclude = matches!(n.exclude.as_deref(), Some("no" | "ties"));
+    n.over && !n.filter && start && end && exclude
+}
+
 fn total_nulls(arg: &Fact) -> Nulls {
     if is_integral(&arg.ty) { Nulls::Never } else { Nulls::Always }
 }
@@ -3162,6 +3183,52 @@ mod tests {
         // `concat` skips NULLs; `concat_ws` is NULL only for a NULL separator.
         let concat = analysis("select concat(email, 'x') as c, concat_ws(',', email) as w, concat_ws(email, 'a') as n from users");
         assert_eq!((col(&concat, "c").1, col(&concat, "w").1, col(&concat, "n").1), (false, false, true));
+    }
+
+    #[test]
+    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
+        let nullable = |sql: &str| col(&analysis(sql), "v").1;
+        // No frame clause, and every frame from at or before the current row to at or after it.
+        for over in [
+            "()",
+            "(order by id)",
+            "(partition by user_id)",
+            "(order by id rows between 1 preceding and 1 following)",
+            "(order by id rows unbounded preceding)",
+            "(order by id rows between current row and unbounded following)",
+            "(order by id range between 5 preceding and 0 following)",
+            "(order by id groups between 2 preceding and current row)",
+            "(order by id range between current row and current row exclude ties)",
+            "(order by id range unbounded preceding exclude no others)",
+            "w",
+            "(w order by id rows between 1 preceding and 1 following)",
+        ] {
+            for agg in ["max(title)", "min(title)", "group_concat(title)", "string_agg(title, ',')"] {
+                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
+                assert!(!nullable(&sql), "{sql}");
+            }
+            let sql = format!("select max(body) over {over} as v from posts window w as (partition by user_id)");
+            assert!(nullable(&sql), "{sql}: a NULL argument");
+            // A sum of 1e999 and -1e999 is NaN, which SQLite returns as NULL.
+            for agg in ["sum(id)", "avg(id)"] {
+                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
+                assert!(nullable(&sql), "{sql}");
+            }
+        }
+        // A frame that can leave the current row out, a FILTER, and an aggregate with no OVER.
+        for item in [
+            "max(title) over (order by id rows between 1 following and 2 following)",
+            "max(title) over (order by id rows between unbounded preceding and 1 preceding)",
+            "max(title) over (order by id rows between unbounded preceding and unbounded following exclude current row)",
+            "max(title) over (order by id range between current row and current row exclude group)",
+            "max(title) over w",
+            "max(title) filter (where id > 1) over ()",
+            "max(title) filter (where id > 1)",
+            "max(title)",
+        ] {
+            let sql = format!("select {item} as v from posts window w as (order by id rows between 2 following and unbounded following)");
+            assert!(nullable(&sql), "{sql}");
+        }
     }
 
     #[test]

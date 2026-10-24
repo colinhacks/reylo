@@ -1,0 +1,1 @@
+select min(p.title) over w as first_title, group_concat(p.title, ', ') over w as titles, string_agg(p.title, ', ') over w as joined, group_concat(p.note) over w as notes, json_group_array(p.note) over w as note_list, json_group_object(p.title, p.note) over w as by_title from posts p window w as (partition by p.user_id)
