@@ -160,6 +160,10 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   family of every unique index's key of that type (`pg_amop`): only then does `col = 'x'` pin
 ///   such a key.
 /// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
+/// - `rows`: every built-in type that is a row (the third column): a catalog's row type, `record`,
+///   or a domain over a row type. `scalars`: every type of a user's that is no row and no array (the
+///   third column): a base type, an enum, a range, a multirange, or a domain over one of them. A
+///   call of one argument over a row may read a column of it (`ParseFuncOrColumn`).
 /// - `type`: a function name a user's type also has.
 /// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
 ///   type has its name and no user's cast function targets it.
@@ -259,6 +263,12 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
         FROM (SELECT DISTINCT a.atttypid AS c FROM pg_catalog.pg_index i CROSS JOIN LATERAL pg_catalog.generate_series(0, i.indnkeyatts OPERATOR(pg_catalog.-) 1) AS k(n) \
           JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k.n] \
           WHERE i.indisunique AND a.atttypid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid) c) y \
+    UNION ALL SELECT 'rows', NULL, ARRAY(SELECT t.oid::pg_catalog.int8 FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid \
+    AND (t.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" OR t.oid OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid OR EXISTS (SELECT 1 FROM bases x JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) x.b \
+    WHERE x.t OPERATOR(pg_catalog.=) t.oid AND b.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\")) ORDER BY t.oid), NULL, NULL \
+    UNION ALL SELECT 'scalars', NULL, ARRAY(SELECT t.oid::pg_catalog.int8 FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+    AND t.typcategory OPERATOR(pg_catalog.<>) 'A'::pg_catalog.\"char\" AND (t.typtype OPERATOR(pg_catalog.=) ANY ('{b,e,r,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM bases x \
+    JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) x.b WHERE x.t OPERATOR(pg_catalog.=) t.oid AND b.typtype OPERATOR(pg_catalog.<>) 'c'::pg_catalog.\"char\")) ORDER BY t.oid), NULL, NULL \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
     WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i' AND c.castmethod OPERATOR(pg_catalog.=) 'f' \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
