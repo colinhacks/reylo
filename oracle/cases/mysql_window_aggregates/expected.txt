@@ -1,0 +1,23 @@
+aggregate_family.sql: many () -> { mean: numeric, first_title: text, bits: int8, notes: [text?], by_title: json }
+around_current.sql: many () -> { rows_around: numeric, rest: numeric, running: numeric, least_id: int4|int8, mean: numeric }
+chained_windows.sql: many () -> { total: numeric, ahead: numeric? }
+copied_window.sql: many () -> { around: numeric, before_row: numeric? }
+count_window.sql: many () -> { n: int8 }
+following_frame.sql: many () -> { ahead: numeric? }
+grouped_sum.sql: many () -> { user_id: int4, total: numeric? }
+left_joined.sql: many () -> { name: text, total: numeric? }
+monthly_running.sql: many () -> { month: text?, running: numeric }
+named_window.sql: many () -> { total: numeric, last_title: text }
+named_window_framed.sql: many () -> { ahead: numeric? }
+nullable_argument.sql: many () -> { total: float8?, last_note: text? }
+param_offsets.sql: many (1: int4, 2: int4) -> { around: numeric }
+partition_max.sql: many () -> { last_title: text }
+partition_sum.sql: many () -> { total: numeric }
+plain_sum.sql: one () -> { total: numeric? }
+preceding_end.sql: many () -> { before_row: numeric? }
+range_offsets.sql: many () -> { by_day: numeric?, by_score: numeric?, by_weight: numeric? }
+rollup_window.sql: many () -> { user_id: int4|int8?, running: numeric?, top_user: int4|int8? }
+running_sum.sql: many () -> { running: numeric }
+subquery_window.sql: many () -> { name: text, own: numeric? }
+where_tested.sql: many () -> { last_note: text }
+whole_sum.sql: many () -> { total: numeric }

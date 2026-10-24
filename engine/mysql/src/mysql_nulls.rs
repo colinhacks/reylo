@@ -302,6 +302,154 @@ fn nulls_with(e: &Expr) -> Vec<Vec<String>> {
     }
 }
 
+/// The aggregates that, as window functions, are NULL only where no non-null value reaches the
+/// frame: over a frame that holds the current row they are as NULL as their argument there.
+const WINDOW_FOLLOWING: &[&str] = &["sum", "avg", "min", "max"];
+/// The aggregates that are NULL only over no rows: over a frame that holds the current row they
+/// are an array or an object, NULL inputs and all (a NULL key is an error).
+const WINDOW_NEVER_NULL: &[&str] = &["json_arrayagg", "json_objectagg"];
+
+/// What a window call says of its result column, where its frame always holds the current row.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Windowed<'a> {
+    /// As NULL as this argument on the current row.
+    Follows(&'a Expr),
+    /// Never NULL.
+    Always,
+}
+
+/// What a select-list item of a plain SELECT says of its column when it is an aggregate called as
+/// a window function whose frame always holds the current row ([`frame_holds_current_row`]):
+/// `sum`, `avg`, `min` and `max` follow their argument, and `json_arrayagg` and `json_objectagg`
+/// are never NULL. `None` for anything else, a call with DISTINCT or a FILTER among them.
+pub(crate) fn windowed<'a>(e: &'a Expr, named: &[ast::NamedWindowDefinition]) -> Option<Windowed<'a>> {
+    let e = strip(e);
+    let Expr::Function(f) = e else { return None };
+    let over = f.over.as_ref()?;
+    if f.filter.is_some() || !f.within_group.is_empty() || f.null_treatment.is_some() {
+        return None;
+    }
+    let ast::FunctionArguments::List(list) = &f.args else { return None };
+    if list.duplicate_treatment.is_some() || !list.clauses.is_empty() {
+        return None;
+    }
+    let args: Vec<&Expr> = list
+        .args
+        .iter()
+        .map(|a| match a {
+            ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) => Some(x),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let name = crate::mysql::builtin(f);
+    if !frame_holds_current_row(over, named) {
+        return None;
+    }
+    match (name.as_str(), args.as_slice()) {
+        (n, [arg]) if WINDOW_FOLLOWING.contains(&n) => Some(Windowed::Follows(arg)),
+        ("json_arrayagg", [_]) | ("json_objectagg", [_, _]) if WINDOW_NEVER_NULL.contains(&name.as_str()) => Some(Windowed::Always),
+        _ => None,
+    }
+}
+
+/// Whether the frame of an OVER clause always holds the current row, given the SELECT's WINDOW
+/// clause. No frame clause is the whole partition, or with ORDER BY every row up to the current
+/// row's last peer. A ROWS frame that starts UNBOUNDED PRECEDING, `n PRECEDING` or at CURRENT ROW
+/// and ends at CURRENT ROW, `n FOLLOWING` or UNBOUNDED FOLLOWING holds it, and so does a RANGE
+/// frame whose bounds are unbounded or CURRENT ROW. A start `n FOLLOWING` or an end `n PRECEDING`
+/// can leave the row out, and so can a RANGE frame with an offset: measured on 8.4, over a
+/// DATETIME that holds a zero date, `range between interval 1 day preceding and interval 1 day
+/// following` finds no row for any row whose date is not NULL. A window named in the OVER clause,
+/// alone or as the base of a definition, lends its frame where the definition has none of its own.
+pub(crate) fn frame_holds_current_row(over: &ast::WindowType, named: &[ast::NamedWindowDefinition]) -> bool {
+    let mut spec = match over {
+        ast::WindowType::WindowSpec(spec) => spec,
+        ast::WindowType::NamedWindow(name) => match lookup(name, named) {
+            Some(spec) => spec,
+            None => return false,
+        },
+    };
+    // Every step names a window defined before it, so the walk ends; the bound guards a WINDOW
+    // clause the server would refuse.
+    for _ in 0..=named.len() {
+        if let Some(frame) = &spec.window_frame {
+            return holds_current_row(frame);
+        }
+        match &spec.window_name {
+            None => return true,
+            Some(name) => match lookup(name, named) {
+                Some(base) => spec = base,
+                None => return false,
+            },
+        }
+    }
+    false
+}
+
+/// The definition of the window of this name in a WINDOW clause, following a definition that is
+/// another window's name alone (`w2 AS w1`).
+fn lookup<'a>(name: &ast::Ident, named: &'a [ast::NamedWindowDefinition]) -> Option<&'a ast::WindowSpec> {
+    let mut name = name;
+    for _ in 0..=named.len() {
+        let ast::NamedWindowDefinition(_, expr) = named.iter().find(|ast::NamedWindowDefinition(n, _)| n.value.eq_ignore_ascii_case(&name.value))?;
+        match expr {
+            ast::NamedWindowExpr::WindowSpec(spec) => return Some(spec),
+            ast::NamedWindowExpr::NamedWindow(other) => name = other,
+        }
+    }
+    None
+}
+
+fn holds_current_row(frame: &ast::WindowFrame) -> bool {
+    use ast::{WindowFrameBound as B, WindowFrameUnits as U};
+    let offset = |b: &B| matches!(b, B::Preceding(Some(_)) | B::Following(Some(_)));
+    let start = matches!(frame.start_bound, B::Preceding(_) | B::CurrentRow);
+    let end = matches!(frame.end_bound, None | Some(B::CurrentRow | B::Following(_)));
+    let ranged = match frame.units {
+        U::Rows => true,
+        U::Range => !offset(&frame.start_bound) && !frame.end_bound.as_ref().is_some_and(offset),
+        U::Groups => false,
+    };
+    start && end && ranged
+}
+
+/// The statement with each select-list item that is a window call [`windowed`] finds following
+/// its argument written as that argument, and the positions of those items and of the ones never
+/// NULL: prepared, the copy's flag for such an item is the argument's on the current row, under
+/// the same FROM, WHERE and GROUP BY. `None` for anything but a plain SELECT with such an item,
+/// where a wildcard makes the positions unreadable, and under a ROLLUP, whose summary rows the
+/// window reads too: the server's flags there are left as they are.
+pub(crate) fn window_probe(q: &Query) -> Option<(Query, Vec<usize>, Vec<usize>)> {
+    let SetExpr::Select(select) = q.body.as_ref() else { return None };
+    if select.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) || rolls_up(&select.group_by) {
+        return None;
+    }
+    let (mut follows, mut always) = (Vec::new(), Vec::new());
+    let mut projection = select.projection.clone();
+    for (i, item) in select.projection.iter().enumerate() {
+        let (SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. }) = item else { continue };
+        match windowed(e, &select.named_window) {
+            Some(Windowed::Follows(arg)) => {
+                follows.push(i);
+                match &mut projection[i] {
+                    SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => *e = arg.clone(),
+                    _ => {}
+                }
+            }
+            Some(Windowed::Always) => always.push(i),
+            None => {}
+        }
+    }
+    if follows.is_empty() && always.is_empty() {
+        return None;
+    }
+    let mut probe = q.clone();
+    if let SetExpr::Select(select) = probe.body.as_mut() {
+        select.projection = projection;
+    }
+    Some((probe, follows, always))
+}
+
 /// Whether a SELECT has a plain GROUP BY, where every group has a row.
 pub(crate) fn grouped(group_by: &GroupByExpr) -> bool {
     matches!(group_by, GroupByExpr::Expressions(exprs, _) if !exprs.is_empty()) && !rolls_up(group_by)
@@ -406,5 +554,53 @@ mod tests {
         assert!(positions("select *, email from users where email > ''").is_empty());
         assert!(positions("select email from users where other.email > ''").is_empty());
         assert!(positions("select upper(email) from users where email > ''").is_empty());
+    }
+
+    #[test]
+    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
+        let probe = |sql: &str| window_probe(&query(sql)).map(|(q, follows, always)| (q.to_string(), follows, always));
+        let holds = |over: &str| probe(&format!("select sum(a) over {over} from t window w as (partition by a), v as (order by a rows between 1 following and 2 following)")).is_some();
+        // No frame clause, and a frame from at or before the current row to at or after it.
+        for over in [
+            "()",
+            "(order by a)",
+            "(partition by a)",
+            "(order by a rows between 1 preceding and 1 following)",
+            "(order by a rows unbounded preceding)",
+            "(order by a rows between current row and unbounded following)",
+            "(order by a rows between ? preceding and ? following)",
+            "(order by a range between unbounded preceding and current row)",
+            "(order by a range between current row and unbounded following)",
+            "w",
+            "(w order by a)",
+            "(w order by a rows between 1 preceding and current row)",
+        ] {
+            assert!(holds(over), "{over}");
+        }
+        // A frame that can leave the current row out, a RANGE offset, and a window not defined.
+        for over in [
+            "(order by a rows between 1 following and 2 following)",
+            "(order by a rows between unbounded preceding and 1 preceding)",
+            "(order by a range between 1 preceding and 1 following)",
+            "(order by a range between interval 1 day preceding and current row)",
+            "(order by a range between current row and 0 following)",
+            "v",
+            "x",
+            "(x order by a)",
+        ] {
+            assert!(!holds(over), "{over}");
+        }
+        // A named window lends its frame through a chain of definitions.
+        assert!(probe("select sum(a) over w2 from t window w1 as (partition by a), w2 as (w1 order by a)").is_some());
+        assert!(probe("select sum(a) over w3 from t window w1 as (order by a rows between 1 following and 1 following), w3 as (w1)").is_none());
+        // The argument takes the call's place, the JSON aggregates are never NULL, and the others
+        // prove nothing.
+        assert_eq!(probe("select id, sum(a) over () as s, max(b) over (order by id) from t"), Some(("SELECT id, a AS s, b FROM t".into(), vec![1, 2], vec![])));
+        assert_eq!(probe("select json_arrayagg(b) over () as j, json_objectagg(a, b) over () as o from t"), Some(("SELECT json_arrayagg(b) OVER () AS j, json_objectagg(a, b) OVER () AS o FROM t".into(), vec![], vec![0, 1])));
+        for item in ["sum(a)", "count(a) over ()", "var_samp(a) over ()", "group_concat(a)", "lag(a) over ()", "`sum`(a) over ()", "app.sum(a) over ()"] {
+            assert_eq!(probe(&format!("select {item} from t")), None, "{item}");
+        }
+        assert_eq!(probe("select *, sum(a) over () from t"), None, "a wildcard");
+        assert_eq!(probe("select a, sum(a) over () from t group by a with rollup"), None, "a ROLLUP");
     }
 }

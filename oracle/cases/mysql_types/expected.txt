@@ -92,5 +92,5 @@ unsigned_overflow.sql: many () -> { past: int8?, under: int8|int4? }
 update_by_key.sql: none (body: text, n: int4, id: int4) -> {  }
 update_join.sql: none (v: text) -> {  }
 update_limit.sql: none (score: int4, n: int4) -> {  }
-window.sql: many () -> { rn: int8, rk: int8, total: numeric?, previous: int4|int8?, fv: text?, nt: int8, pr: float8, n: int8 }
+window.sql: many () -> { rn: int8, rk: int8, total: numeric, previous: int4|int8?, fv: text?, nt: int8, pr: float8, n: int8 }
 with_insert.sql: none (body: text) -> {  }

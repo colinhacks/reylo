@@ -1,4 +1,4 @@
-aggregate_and_window.sql: one () -> { n: int8, total: numeric? }
+aggregate_and_window.sql: one () -> { n: int8, total: numeric }
 aggregate_any_value.sql: many () -> { name: text }
 aggregate_bit.sql: one () -> { a: int8, o: int8, x: int8 }
 aggregate_distinct.sql: one () -> { n: int8 }

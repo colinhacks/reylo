@@ -26,8 +26,8 @@ array_agg_truth_buffered.sql: one () -> { l: [bool|int8]? }
 array_agg_truth_cast.sql: many () -> { l: [bool] }
 array_agg_truth_join.sql: many () -> { l: [bool|int8] }
 array_agg_truth_object.sql: many () -> { l: [{ t: bool }] }
-array_agg_truth_window.sql: many () -> { l: [bool|int8]? }
-array_agg_window.sql: many () -> { ids: [int4]? }
+array_agg_truth_window.sql: many () -> { l: [bool|int8] }
+array_agg_window.sql: many () -> { ids: [int4] }
 cast_as_json.sql: many () -> { o: { id: int4 }, n: json? }
 json_array_literal.sql: many () -> { a: json?, none: json? }
 json_functions.sql: many () -> { a: json?, b: json?, c: text?, merged: json?, changed: json?, removed: json?, k: json?, q: text?, u: text? }

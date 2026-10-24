@@ -57,7 +57,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     let hint = if crate::mysql_derived::is_materialized(q) { crate::mysql_derived::hint() } else { String::new() };
     let grouped = crate::mysql_nulls::grouped(&select.group_by);
     let top = Level { ctx: 0, from: select.from.clone(), with: q.with.clone() };
-    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped };
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, windows: select.named_window.clone() };
     let mut columns = Vec::new();
     for item in &select.projection {
         // The server names an unaliased expression by its text, which no build reproduces
@@ -360,6 +360,8 @@ struct Builder<'a> {
     reads: Reads,
     /// Whether the statement's SELECT has a plain GROUP BY, where no group is empty.
     grouped: bool,
+    /// The statement's WINDOW clause, which an OVER clause of its own SELECT names windows of.
+    windows: Vec<ast::NamedWindowDefinition>,
 }
 
 /// How a JSON function reads the value it writes, which decides whether a truth value is
@@ -530,14 +532,19 @@ impl Builder<'_> {
                         Shape::Object { fields, non_null: true }
                     }
                     // An aggregate over no rows is NULL, so the array is non-null only under a
-                    // guard, or under a plain GROUP BY, where every group has a row, for an
-                    // aggregate of the statement's own SELECT that is no window function. One
-                    // inside a subquery may be the outer query's, which says nothing of its rows.
+                    // guard, under a plain GROUP BY, where every group has a row, or over a window
+                    // frame that always holds the current row, for an aggregate of the statement's
+                    // own SELECT. One inside a subquery may be the outer query's, which says
+                    // nothing of its rows.
                     "json_arrayagg" => {
                         if args.len() != 1 {
                             return Shape::Unknown;
                         }
-                        let non_null = self.grouped && self.stack.len() == 1 && f.over.is_none();
+                        let has_a_row = match &f.over {
+                            None => self.grouped,
+                            Some(_) => crate::mysql_nulls::windowed(e, &self.windows) == Some(crate::mysql_nulls::Windowed::Always),
+                        };
+                        let non_null = has_a_row && self.stack.len() == 1;
                         Shape::Array { items: Box::new(self.walk_as(args[0], Reads::Copy)), non_null }
                     }
                     // The value is the first argument that is not NULL. A constructor that is

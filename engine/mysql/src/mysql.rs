@@ -645,6 +645,11 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
             None => pending = true,
         }
     }
+    // A window aggregate over a frame that holds the current row: the argument's flag there.
+    match window_flags(q, count, host) {
+        Some(found) => not_null.extend(found),
+        None => pending = true,
+    }
     // The outer columns' flags without the subquery items' pessimism, by projection position.
     match outer_flags(q, host) {
         Some(found) => not_null.extend(found),
@@ -669,6 +674,24 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         })
         .collect();
     Some(Proven { flags: described.columns.iter().map(|c| c.flags & 1 != 0).collect(), columns: described.columns, not_null, shaped })
+}
+
+/// The positions of the columns that are an aggregate called as a window function over a frame
+/// that always holds the current row ([`crate::mysql_nulls::windowed`]) and are never NULL: a JSON
+/// aggregate, and one that follows its argument where the copy of the statement that selects the
+/// argument in its place flags it NOT NULL or the WHERE proves it. The server flags every such
+/// call nullable but the bit functions. `count` is how many columns the query has.
+fn window_flags(q: &Query, count: Option<usize>, host: &Host) -> Lazy<Vec<usize>> {
+    let Some((probe, follows, mut found)) = crate::mysql_nulls::window_probe(q) else { return Some(Vec::new()) };
+    if !follows.is_empty() {
+        if let Ok(d) = host.describe(&probe.to_string())? {
+            if Some(d.columns.len()) == count {
+                let tested = crate::mysql_nulls::tested(&probe);
+                found.extend(follows.into_iter().filter(|&i| d.columns.get(i).is_some_and(|c| c.flags & 1 != 0) || tested.contains(&i)));
+            }
+        }
+    }
+    Some(found)
 }
 
 /// The positions of the outer columns the statement without its subquery items flags NOT NULL

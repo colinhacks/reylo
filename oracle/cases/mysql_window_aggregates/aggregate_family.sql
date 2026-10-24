@@ -1,0 +1,1 @@
+select avg(p.id) over w as mean, min(p.title) over w as first_title, bit_or(p.id) over w as bits, json_arrayagg(p.note) over w as notes, json_objectagg(p.title, p.note) over w as by_title from posts p window w as (partition by p.user_id)
