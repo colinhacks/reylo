@@ -176,7 +176,11 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust) => Some(Vec::new()),
         _ => None,
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0 };
+    let windows = match top {
+        NodeEnum::SelectStmt(s) => s.window_clause.clone(),
+        _ => Vec::new(),
+    };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -345,6 +349,8 @@ struct Builder<'a> {
     under_aggregate: bool,
     /// How many LATERAL subqueries' targets have been read, which [`MAX_LATERAL`] bounds.
     laterals: usize,
+    /// The top statement's `WINDOW` clause, which `OVER w` names a window of.
+    windows: Vec<Node>,
 }
 
 /// A target of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]).
@@ -418,11 +424,16 @@ impl Builder<'_> {
                     if f.args.len() != 1 {
                         return Shape::Unknown;
                     }
-                    // Under a plain GROUP BY every group has a row, so an aggregate of the top
-                    // statement's own is an array there, NULL inputs and all, unless a FILTER or a
-                    // window frame leaves it none. One inside a subquery may be the outer query's
-                    // ([`crate::levels`]), which says nothing of its rows.
-                    let grouped = self.dialect == Dialect::Postgres && self.grouped && self.stack.len() == 1 && f.over.is_none() && f.agg_filter.is_none();
+                    // Under a plain GROUP BY every group has a row, and a window frame that always
+                    // holds the current row has that row, so an aggregate of the top statement's
+                    // own is an array there, NULL inputs and all, unless a FILTER leaves it none.
+                    // One inside a subquery may be the outer query's ([`crate::levels`]), which
+                    // says nothing of its rows.
+                    let has_a_row = match f.over.as_deref() {
+                        Some(over) => crate::infer::frame_holds_current_row(over, &self.windows),
+                        None => self.grouped,
+                    };
+                    let grouped = self.dialect == Dialect::Postgres && has_a_row && self.stack.len() == 1 && f.agg_filter.is_none();
                     let non_null = TOTAL_AGG_FNS.contains(&name.as_str()) || grouped;
                     // A plain aggregate of the top statement reads its argument from the rows
                     // before a grouping set nulls them; a window call reads the grouped rows.
