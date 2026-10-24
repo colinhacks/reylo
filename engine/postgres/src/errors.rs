@@ -42,7 +42,8 @@ const RUNS_SQL: [&str; 14] = [
 ///
 /// What a write reaches: the written relations, their partitions and inheritance children, a
 /// view's base relations, and, where `$6`, the tables a foreign key's action writes in turn. What a read
-/// reaches: the read relations and, through views, the relations they read. Code runs there in a
+/// reaches: the read relations, their partitions and inheritance children, whose indexes a scan of
+/// the parent may use, and, through views, the relations they read. Code runs there in a
 /// trigger or a rule; in a default, a generated column, a check, an index's expression, a
 /// partition key, a domain's default or check or a policy, which `pg_depend` ties to the functions
 /// and operators they call; in the operator class of an index or a partition key, on a read too,
@@ -66,13 +67,13 @@ pub const ERRORS_QUERY: &str = concat!(
     " UNION ALL SELECT c.oid, false FROM unnest($2::text[]) AS x(name) JOIN pg_class c ON c.oid = ",
     relation_named!("x.name"),
     "), \
-    edge(parent, child, view) AS ( \
-      SELECT inhparent, inhrelid, false FROM pg_inherits \
+    edge(parent, child, read) AS ( \
+      SELECT inhparent, inhrelid, true FROM pg_inherits \
       UNION ALL SELECT q.ev_class, d.refobjid, true FROM pg_rewrite q JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = q.oid \
         AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> q.ev_class WHERE q.rulename = '_RETURN' \
       UNION ALL SELECT confrelid, conrelid, false FROM pg_constraint WHERE $6::bool AND contype = 'f' AND (confdeltype IN ('c', 'n', 'd') OR confupdtype IN ('c', 'n', 'd'))), \
     w(oid) AS (SELECT oid FROM named WHERE written UNION SELECT e.child FROM edge e JOIN w ON e.parent = w.oid), \
-    r(oid) AS (SELECT oid FROM named UNION SELECT e.child FROM edge e JOIN r ON e.parent = r.oid WHERE e.view), \
+    r(oid) AS (SELECT oid FROM named UNION SELECT e.child FROM edge e JOIN r ON e.parent = r.oid WHERE e.read), \
     rel(oid) AS (SELECT oid FROM w UNION SELECT oid FROM r), \
     dom(oid) AS ( \
       SELECT t.oid FROM pg_attribute a JOIN w ON a.attrelid = w.oid JOIN pg_type t ON t.oid = a.atttypid WHERE a.attnum > 0 AND NOT a.attisdropped AND t.typtype = 'd' \

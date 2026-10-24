@@ -1350,6 +1350,17 @@ fn assigns(q: &ast::Query) -> bool {
     }
 }
 
+/// The kind of statement the analysis says it is.
+fn kind(read: Option<&Statement>) -> &'static str {
+    match read {
+        Some(Statement::Query(_)) => "select",
+        Some(Statement::Insert(_)) => "insert",
+        Some(Statement::Update(_)) => "update",
+        Some(Statement::Delete(_)) => "delete",
+        _ => "",
+    }
+}
+
 /// Parse with a depth bound of a fifth of [`crate::stack::MAX_DEPTH`] in place of sqlparser's
 /// default of 50: 200 levels of its recursion, which are 196 nested function calls (`coalesce`,
 /// `abs`, `json_object`), 195 nested `CASE`s, or 97 nested subqueries, which spend two levels each.
@@ -1375,17 +1386,6 @@ fn assigns(q: &ast::Query) -> bool {
 /// them is a reserved word in MySQL, so a bare one is always the unit. The token keeps its place
 /// in the text; only a probe printed from the tree (a JSON shape's) names the smaller unit, which
 /// the server types alike.
-/// The kind of statement the analysis says it is.
-fn kind(read: Option<&Statement>) -> &'static str {
-    match read {
-        Some(Statement::Query(_)) => "select",
-        Some(Statement::Insert(_)) => "insert",
-        Some(Statement::Update(_)) => "update",
-        Some(Statement::Delete(_)) => "delete",
-        _ => "",
-    }
-}
-
 fn parse(dialect: &dyn sqlparser::dialect::Dialect, sql: &str) -> Result<Vec<Statement>, sqlparser::parser::ParserError> {
     use sqlparser::keywords::Keyword;
     use sqlparser::tokenizer::{Token, Word};

@@ -31,3 +31,9 @@ create function thirteen_cmp(int, int) returns int language plpgsql immutable as
 create operator class thirteen_ops for type int using btree as operator 1 <, operator 2 <=, operator 3 =, operator 4 >=, operator 5 >, function 1 thirteen_cmp(int, int);
 create table ordered (id int);
 create unique index ordered_id on ordered (id thirteen_ops);
+create table logs (id int);
+create table logs_2026 () inherits (logs);
+create unique index logs_2026_id on logs_2026 (id thirteen_ops);
+create table parts (id int) partition by range (id);
+create table parts_a partition of parts for values from (0) to (1000000);
+create index parts_a_id on parts_a (id thirteen_ops);
