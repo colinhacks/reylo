@@ -15,6 +15,7 @@ resolver = "2"
 members = [
   "engine/build-support",
   "engine/core",
+  "engine/facade",
   "engine/postgres",
   "engine/sqlite",
   "engine/mysql",

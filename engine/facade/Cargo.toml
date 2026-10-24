@@ -1,0 +1,25 @@
+[package]
+name = "reylo-engine"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reylo's analysis engine for a Rust host: each database's engine behind a feature, the replay loop that runs an analysis to its end, and the answers to the engine's needs over tokio-postgres, rusqlite or mysql_async."
+
+[features]
+postgres = ["dep:reylo-engine-postgres"]
+sqlite = ["dep:reylo-engine-sqlite"]
+mysql = ["dep:reylo-engine-mysql"]
+# A client the engine's needs are answered over, which brings its database's engine.
+tokio-postgres = ["postgres", "dep:tokio-postgres"]
+rusqlite = ["sqlite", "dep:rusqlite"]
+mysql_async = ["mysql", "dep:mysql_async"]
+
+[dependencies]
+reylo-engine-core = { path = "../core" }
+reylo-engine-postgres = { path = "../postgres", optional = true }
+reylo-engine-sqlite = { path = "../sqlite", optional = true }
+reylo-engine-mysql = { path = "../mysql", optional = true }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+tokio-postgres = { version = "0.7", optional = true }
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"], optional = true }

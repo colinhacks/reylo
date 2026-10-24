@@ -73,11 +73,11 @@ Prefer nub over `node`, `bun`, npm, npx, pnpm and yarn: `nub install`, `nub add`
 
 ### Rust
 
-One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, the entry crates in `engine/wasm/`, and `oracle/`: one `Cargo.lock` and one `target/`. It needs a rustup toolchain with the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`; a distribution's `rustc` without it fails with "can't find crate for `std`") and wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`.
+One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, `engine/facade` (`reylo-engine`, which a Rust host links: each database's engine behind a feature, and the answers to its needs over `tokio-postgres`, `rusqlite` or `mysql_async`), the entry crates in `engine/wasm/`, and `oracle/`: one `Cargo.lock` and one `target/`. It needs a rustup toolchain with the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`; a distribution's `rustc` without it fails with "can't find crate for `std`") and wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`.
 
 ```sh
 engine/build.sh --prepare     # once per checkout, before any cargo command: cargo cannot resolve the workspace without it
-cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle
+cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle
 engine/build.sh               # rebuilds all three packages/<database>/engine.wasm
 ```
 
@@ -137,7 +137,7 @@ The docs are `site/content/docs/`: the main page `index.mdx`, which continues in
 `.github/workflows/test.yml` runs every check on each push to `main` and on each release, and on a pull request the checks its change reaches, its run for an older commit cancelled:
 
 - **test**, on every pull request: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `packages/postgres`, `packages/mysql`, `lab/drivers` and `lab/jest`, the Jest lab's links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
-- **engine**, on a pull request that changes `engine/`, `oracle/`, Cargo's files, `src/error-codes-*`, the JSON Schema validators' measurements the engine's tests read, or `.github/` (a renamed file at both its paths): `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test` of the crates the change reaches (every one, `-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle`, where it changes core, the oracle's code, the build or CI; else the engine of each database it changes).
+- **engine**, on a pull request that changes `engine/`, `oracle/`, Cargo's files, `src/error-codes-*`, the JSON Schema validators' measurements the engine's tests read, or `.github/` (a renamed file at both its paths): `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test` of the crates the change reaches (every one, `-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle`, where it changes core, `engine/facade/`, the oracle's code, the build or CI; else the engine of each database it changes).
 - **oracle**, on the same pull requests: `cargo run -q -p reylo-oracle -- --url <pg> --mysql-url <mysql> --strict-coverage <cases>`, in shards side by side (Postgres's cases, SQLite's, MySQL's in two, and `mysql_types`, the slowest, alone), each database's only where the change reaches it (`engine/<database>/` or one of its cases; everything for the files that run every engine check). Postgres 18 has pgvector, PostGIS and the five JSON Schema validators, which `.github/scripts/json-schema-validators.sh` builds and a cache keeps, with the packages of Postgres itself; MySQL is 8.4. A failure in the step that builds the validators is not the engine's.
 
 Run what CI runs before you push. A failing check's log: `gh pr checks <number> -R colinhacks/reylo` names the run, and `gh run view <run id> -R colinhacks/reylo --log-failed` prints what failed. Pullfrog and Copilot review every pull request, and Vercel deploys a preview of the docs site.

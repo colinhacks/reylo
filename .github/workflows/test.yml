@@ -50,7 +50,7 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle'
             echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
           }
           if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -58,9 +58,9 @@ jobs:
           # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
           files=$(git diff --name-only --no-renames HEAD^1 HEAD)
           echo "$files"
-          # Core, the oracle's own code, the build, the code lists the oracle reads, the validators' measurements
-          # the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(engine/(core|build-support|wasm)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
+          # oracle reads, the validators' measurements the engine's tests read, and CI itself reach every database.
+          if grep -qE '^(engine/(core|build-support|facade|wasm)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi

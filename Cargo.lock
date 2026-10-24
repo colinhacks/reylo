@@ -1224,6 +1224,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "reylo-engine"
+version = "0.0.0"
+dependencies = [
+ "mysql_async",
+ "reylo-engine-core",
+ "reylo-engine-mysql",
+ "reylo-engine-postgres",
+ "reylo-engine-sqlite",
+ "rusqlite",
+ "serde_json",
+ "tokio-postgres",
+]
+
+[[package]]
 name = "reylo-engine-build"
 version = "0.0.0"
 
@@ -1303,10 +1317,8 @@ name = "reylo-oracle"
 version = "0.0.0"
 dependencies = [
  "mysql_async",
+ "reylo-engine",
  "reylo-engine-core",
- "reylo-engine-mysql",
- "reylo-engine-postgres",
- "reylo-engine-sqlite",
  "rusqlite",
  "serde_json",
  "tokio",
