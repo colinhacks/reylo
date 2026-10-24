@@ -20,8 +20,10 @@ joined_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
 key_double_arithmetic.sql: many (x: float8) -> { id: int8 }
 key_double_cast.sql: many (x: float8) -> { id: int8 }
 key_double_constant_cast.sql: maybeOne () -> { id: int8 }
+key_double_function.sql: many (x: float8) -> { id: int8 }
 key_double_literal.sql: maybeOne () -> { id: int8 }
 key_dropped.sql: many (t: text) -> { title: text }
+key_exact_function.sql: maybeOne (x: int4) -> { id: int8 }
 key_inside.sql: maybeOne (id: int4) -> { id: int8, title: text }
 lateral_pinned.sql: maybeOne (u: int8, p: int4) -> { name: text, title: text }
 lateral_source.sql: many (id: int4) -> { id: int8 }
