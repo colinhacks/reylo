@@ -28,3 +28,6 @@ create function pair_text(pair) returns text language sql immutable as $$ select
 create cast (pair as text) with function pair_text(pair);
 create table accounts (id int primary key, status text not null check (status in ('active', 'banned')));
 insert into accounts values (1, 'active'), (2, 'banned');
+-- The search path that puts public's `=` of two int8s before pg_catalog's, for the analysis and the
+-- checks alike, which run on this session.
+set search_path = public, pg_catalog;
