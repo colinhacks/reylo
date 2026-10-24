@@ -1,4 +1,4 @@
-aggregate_family.sql: many () -> { first_title: text, titles: text, joined: text, notes: text?, note_list: [text?], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
+aggregate_family.sql: many () -> { first_title: text, titles: text?, joined: text?, notes: text?, note_list: [text?], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
 around_current.sql: many () -> { rows_around: integer, groups_back: integer, rest: integer, running: integer }
 chained_windows.sql: many () -> { top: integer }
 copied_window.sql: many () -> { around: integer, before_row: integer? }
@@ -8,7 +8,7 @@ filtered.sql: many () -> { top: integer?, plain_top: integer? }
 following_frame.sql: many () -> { ahead: integer? }
 left_joined.sql: many () -> { name: text, top: integer? }
 monthly_running.sql: many () -> { month: text?, busiest: integer, running: integer? }
-named_window.sql: many () -> { top: integer, titles: text }
+named_window.sql: many () -> { top: integer, titles: text? }
 named_window_framed.sql: many () -> { ahead: integer? }
 nullable_argument.sql: many () -> { top: real?, first_note: text? }
 param_offsets.sql: many (back: unknown, ahead: unknown) -> { around: integer }

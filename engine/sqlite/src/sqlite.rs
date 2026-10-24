@@ -1338,9 +1338,10 @@ impl Analyzer<'_> {
             }
         }
         if n.window {
-            // A frame that always holds the current row has that row, so there an aggregate that
-            // is NULL only over no rows or only NULLs follows its argument, as under a plain GROUP
-            // BY; `sum` and `avg` stay nullable as they do there.
+            // A frame that always holds the current row has that row, so there `min` and `max`
+            // follow their argument, as under a plain GROUP BY; `sum` and `avg` stay nullable as
+            // they do there. So does a window's `group_concat` or `string_agg`: before 3.47.0
+            // (libSQL and Turso run 3.45.1) it is NULL over a frame of nothing but `''`.
             let has_a_row = holds_current_row(n);
             return match name {
                 "row_number" | "rank" | "dense_rank" | "ntile" => done("integer", Nulls::Never),
@@ -1353,7 +1354,7 @@ impl Analyzer<'_> {
                 "lag" | "lead" if args.len() >= 3 => typed(values_type(&[(&n.args[0], &args[0]), (&n.args[2], &args[2])]), Nulls::Always),
                 "min" | "max" => typed(first.ty.clone(), if has_a_row { Nulls::IfArgs } else { Nulls::Always }),
                 "lag" | "lead" | "first_value" | "last_value" | "nth_value" => typed(first.ty.clone(), Nulls::Always),
-                "group_concat" | "string_agg" => done("text", if has_a_row { Nulls::IfArgs } else { Nulls::Always }),
+                "group_concat" | "string_agg" => done("text", Nulls::Always),
                 _ => Fact::unknown(),
             };
         }
@@ -2600,8 +2601,6 @@ fn iif_values(count: usize) -> Vec<usize> {
     out
 }
 
-/// When `total` is NULL: never over integers, but over reals a `1e999` and a `-1e999` add up to
-/// NaN, which SQLite gives as NULL.
 /// Whether a call is a window call whose frame always holds the current row, as SQLite resolved
 /// it (a named window's frame copied in), with no FILTER. No frame clause is `RANGE BETWEEN
 /// UNBOUNDED PRECEDING AND CURRENT ROW`: every row through the current row's last peer, the whole
@@ -2618,6 +2617,8 @@ fn holds_current_row(n: &Node) -> bool {
     n.over && !n.filter && start && end && exclude
 }
 
+/// When `total` is NULL: never over integers, but over reals a `1e999` and a `-1e999` add up to
+/// NaN, which SQLite gives as NULL.
 fn total_nulls(arg: &Fact) -> Nulls {
     if is_integral(&arg.ty) { Nulls::Never } else { Nulls::Always }
 }
@@ -3203,14 +3204,15 @@ mod tests {
             "w",
             "(w order by id rows between 1 preceding and 1 following)",
         ] {
-            for agg in ["max(title)", "min(title)", "group_concat(title)", "string_agg(title, ',')"] {
+            for agg in ["max(title)", "min(title)"] {
                 let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
                 assert!(!nullable(&sql), "{sql}");
             }
             let sql = format!("select max(body) over {over} as v from posts window w as (partition by user_id)");
             assert!(nullable(&sql), "{sql}: a NULL argument");
-            // A sum of 1e999 and -1e999 is NaN, which SQLite returns as NULL.
-            for agg in ["sum(id)", "avg(id)"] {
+            // A sum of 1e999 and -1e999 is NaN, which SQLite returns as NULL, and before 3.47.0 a
+            // window's `group_concat` of nothing but `''` is NULL.
+            for agg in ["sum(id)", "avg(id)", "group_concat(title)", "string_agg(title, ',')"] {
                 let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
                 assert!(nullable(&sql), "{sql}");
             }
