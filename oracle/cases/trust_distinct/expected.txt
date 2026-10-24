@@ -1,0 +1,4 @@
+builtin_equality.sql: many () -> { dist: bool, same: bool }
+null_side.sql: many () -> { dist: bool, same: bool }
+nullif.sql: many () -> { x: 'a' | 'b'?, y: int4? }
+user_equality.sql: many () -> { dist: bool?, same: bool? }
