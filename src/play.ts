@@ -2,28 +2,23 @@
 // database. It serves the page and an API on 127.0.0.1: each statement the page or a caller sends
 // is analyzed as the type check analyzes a file (never run), and answered with its Params, Returns
 // and diagnostics by line and column (src/play-result.ts). The database is the one the type check
-// reads, and nothing else: with no database URL, PGlite, Postgres compiled to WebAssembly, stands in
-// with a sample schema, so that the page opens on tables to query.
+// reads, and nothing else: a project that names none is told so, and pointed at reylo.dev/play.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { dirname, extname, join, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 import { styleText } from "node:util";
 import { Session } from "./analyze.ts";
-import { AnswerCache, engine, type Dialect, type Engine } from "./engine.ts";
+import type { Dialect } from "./engine.ts";
 import { catalog, CATALOG_QUERIES, type Catalog } from "./play-catalog.ts";
 import { playResult, type PlayResult } from "./play-result.ts";
-import { SAMPLE_SCHEMA } from "./play-sample.ts";
-import { pgliteIo } from "./pglite-io.ts";
 
 export const PLAY_USAGE = `Usage: reylo play [--port <n>] [--no-open]
 
 Serves the playground on http://127.0.0.1: a query editor whose Params, Returns and errors are
 Reylo's analysis of the query against the project's database, at every keystroke. Nothing is run.
-The database is the project's own, the one the type check reads. With no database URL, PGlite
-(the npm package @electric-sql/pglite, installed in the project) stands in with a sample schema.
+The database is the project's own, the one the type check reads; with none, it says how to set it.
 It opens the page in the browser; --no-open leaves it closed, for a script or an agent.
 
   http://127.0.0.1:<port>/?q=<sql>              the page, with a query in it
@@ -35,8 +30,6 @@ It opens the page in the browser; --no-open leaves it closed, for a script or an
 type Backend = {
   dialect: Dialect;
   label: string;
-  /** What the project file sets that Reylo does not read (`url` alone), said once. */
-  notice?: string;
   schema: string;
   catalog: Catalog;
   analyze(sql: string, width: number): Promise<PlayResult>;
@@ -62,8 +55,7 @@ export async function play(args: string[]): Promise<number> {
     console.error(`reylo play: ${(e as Error).message}`);
     return 1;
   }
-  const { url, label, notice } = running;
-  if (notice) console.log(styleText("yellow", notice));
+  const { url, label } = running;
   console.log(`${styleText("bold", "Reylo playground")} at ${styleText("cyan", url)}\n${styleText("dim", `${label}. The API: GET ${url}api/analyze?q=<sql>. Ctrl-C stops it.`)}`);
   if (options.open) openBrowser(url);
   await new Promise<void>((done) => {
@@ -74,7 +66,7 @@ export async function play(args: string[]): Promise<number> {
   return 0;
 }
 
-export type Playground = { url: string; label: string; notice?: string; close(): Promise<void> };
+export type Playground = { url: string; label: string; close(): Promise<void> };
 
 /** Starts the playground for the project of `cwd`, on `port` (by default the first free one from 4983): what `reylo play` runs, and the tests. */
 export async function startPlay(options: { port?: number | undefined; cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<Playground> {
@@ -93,7 +85,6 @@ export async function startPlay(options: { port?: number | undefined; cwd?: stri
   return {
     url: `http://127.0.0.1:${port}/`,
     label: backend.label,
-    ...(backend.notice ? { notice: backend.notice } : {}),
     async close() {
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
@@ -134,15 +125,15 @@ function pageDir(cwd: string): string | undefined {
   return candidates.find((dir): dir is string => !!dir && existsSync(join(dir, "index.html")));
 }
 
-/** The project's database; PGlite with the sample schema only where the project names none. */
+/** The project's database, the one its type check reads; a project that names none is refused. */
 async function openBackend(cwd: string, env: Record<string, string | undefined>): Promise<Backend> {
   const session = await Session.open(cwd, env);
   const { project } = session;
-  if (project.error) throw new Error(project.error);
-  if (project.url) return databaseBackend(session);
-  await session.close();
-  const backend = await pgliteBackend(project.root);
-  return project.notice ? { ...backend, notice: project.notice } : backend;
+  if (project.error || !project.url) {
+    await session.close();
+    throw new Error(project.error ?? `${project.missingUrl} reylo play reads the project's own database; to try Reylo without one, open https://reylo.dev/play.`);
+  }
+  return databaseBackend(session);
 }
 
 /** The project's database, through the type check's own session: its URL, its engine, its settings. */
@@ -171,54 +162,6 @@ async function databaseBackend(session: Session): Promise<Backend> {
       return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, width, ms });
     },
     close: () => session.close(),
-  };
-}
-
-/** PGlite in this process, from the project's install or reylo's own, with the sample schema. */
-async function pgliteBackend(root: string): Promise<Backend> {
-  let PGlite: typeof import("@electric-sql/pglite").PGlite | undefined;
-  for (const from of [join(root, "noop.js"), import.meta.filename]) {
-    try {
-      ({ PGlite } = (await import(pathToFileURL(createRequire(from).resolve("@electric-sql/pglite")).href)) as typeof import("@electric-sql/pglite"));
-      break;
-    } catch {}
-  }
-  if (!PGlite) {
-    throw new Error("no database URL is set, and PGlite is not installed to stand in for one: set DATABASE_URL (or url in .reylo.yaml), or install @electric-sql/pglite in the project (npm install -D @electric-sql/pglite).");
-  }
-  const schema = SAMPLE_SCHEMA;
-  const pg = await PGlite.create();
-  try {
-    await pg.exec(schema);
-  } catch (e) {
-    await pg.close();
-    throw new Error(`the sample schema does not load into PGlite: ${(e as Error).message}`);
-  }
-  const io = pgliteIo(pg);
-  const eng: Engine = await engine("postgres", root);
-  const cache = new AnswerCache();
-  const queries = CATALOG_QUERIES.postgres;
-  const cat = catalog("postgres", await io.query(queries.tables, []), await io.query(queries.functions!, []), await io.query(queries.types!, []));
-  const version = String((await io.query("select current_setting('server_version')", []))[0]![0]).split(" ")[0];
-  return {
-    dialect: "postgres",
-    label: `Postgres ${version} via PGlite, with a sample schema (no database URL is set)`,
-    schema,
-    catalog: cat,
-    async analyze(sql, width) {
-      const t = performance.now();
-      let lexed;
-      try {
-        lexed = eng.lex(sql, "postgres");
-      } catch {}
-      try {
-        const analysis = await eng.analyze(sql, "postgres", io, cache);
-        return playResult(sql, "postgres", { analysis, lexed }, { width, ms: performance.now() - t });
-      } catch (e) {
-        return playResult(sql, "postgres", { error: e as Error }, { width, ms: performance.now() - t });
-      }
-    },
-    close: () => pg.close(),
   };
 }
 

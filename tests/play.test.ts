@@ -89,15 +89,7 @@ test("reylo play answers this machine's own pages and tools, and refuses another
   }
 });
 
-test("reylo play stands PGlite in, with a sample schema, for a project that names no database", async () => {
+test("reylo play refuses a project that names no database, and says where to try Reylo without one", async () => {
   const root = project({});
-  const sample = await startPlay({ cwd: root, port: 0, env: {} });
-  try {
-    assert.match(sample.label, /^Postgres \d+\.\d+ via PGlite, with a sample schema \(no database URL is set\)$/);
-    const posts = await get(`${sample.url}api/analyze?q=${encodeURIComponent("select title from posts where id = :id")}`);
-    assert.equal(posts.body.params, "{ id: number }");
-    assert.equal(posts.body.returns, "{ title: string } | null");
-  } finally {
-    await sample.close();
-  }
+  await assert.rejects(startPlay({ cwd: root, port: 0, env: {} }), /^Error: No database URL: .*reylo play reads the project's own database; to try Reylo without one, open https:\/\/reylo\.dev\/play\.$/);
 });

@@ -12,7 +12,7 @@ import snapshotUrl from '../../.live/postgres.tar?url';
 import { analyzeStatement } from './analyze.ts';
 import type { FromChannel } from './app.tsx';
 import { instantiateEngine } from './engine.ts';
-import { pgliteIo } from '../../../src/pglite-io.ts';
+import { pgliteIo } from './pg-io.ts';
 
 export type FromWorker = FromChannel;
 

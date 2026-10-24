@@ -1,11 +1,10 @@
-// The Postgres host on PGlite (the docs' /play in the reader's tab, and `reylo play` without a
-// database URL), in the same thread as the engine: a describe is Parse, Describe and
+// The Postgres host on PGlite, in the same thread as the engine: a describe is Parse, Describe and
 // Sync sent as one execProtocol call (its RowDescription carries each column's table oid and
 // column number, which the engine's nullability reads); a catalog query is `query` with rows as
 // arrays. PGlite is one connection, and execProtocol is not queued behind `query`, so every call
 // takes its turn here.
 import type { PGlite } from "@electric-sql/pglite";
-import type { EngineIo } from "./engine-core.ts";
+import type { EngineIo } from "../../../src/engine-core.ts";
 
 const enc = new TextEncoder();
 function message(type: string, body: Uint8Array): Uint8Array {

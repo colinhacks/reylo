@@ -400,20 +400,4 @@ Install Reylo's agent skill, which gives your coding agent Reylo's rules for wri
 npx skills add colinhacks/reylo --skill using-reylo
 ```
 
-### Playground [#local-playground]
-
-Run the [playground](/play) on your own database:
-
-```sh
-npx reylo play
-```
-
-It opens http://127.0.0.1:4983 in your browser, on the database your type check reads. Edit a query, and the params, the return type and the errors Reylo infers update as you type; nothing runs. Add `?q=` and a query to the address to open it with that query. With no database URL, it starts PGlite (install `@electric-sql/pglite`) with a sample schema.
-
-Scripts and agents get the same analysis as JSON, its params, return type, cardinality and errors (start it with `--no-open`):
-
-```sh
-curl "http://127.0.0.1:4983/api/analyze" --get --data-urlencode "q=select name from users where id = :id"
-```
-
 </div>

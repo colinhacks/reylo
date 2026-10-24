@@ -15,7 +15,7 @@ import { catalog, CATALOG_QUERIES, type Catalog } from '../../../src/play-catalo
 import { instantiateEngine } from './engine.ts';
 import type { Example, PlayData } from './app.tsx';
 import { loadHighlighter, tokens } from './highlight.ts';
-import { pgliteIo } from '../../../src/pglite-io.ts';
+import { pgliteIo } from './pg-io.ts';
 
 export type { Example, PlayData } from './app.tsx';
 
