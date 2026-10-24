@@ -1,0 +1,1 @@
+select sum(p.id) over w2 as total, sum(p.id) over w3 as ahead from posts p window w1 as (partition by p.user_id), w2 as (w1 order by p.id), w3 as (w1 order by p.id rows between 1 following and 1 following)
