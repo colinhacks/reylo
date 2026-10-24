@@ -39,86 +39,159 @@ const MAX_PROBE_CALLS: usize = 64;
 
 // The catalog queries below are public so that a host with a driver of its own can bind their
 // parameters by type: each casts every parameter in its text, and the doc comment names them.
+//
+// Every operator, function, type and table each one names is `pg_catalog`'s, spelled so
+// (`OPERATOR(pg_catalog.=)`, parenthesized where it meets another, since that spelling takes no
+// operator's precedence): a search path that names `pg_catalog` after a schema of the user's puts
+// the user's objects of the same names first, and an `=` of theirs that answers NULL would empty
+// a query's answer. Every literal is typed, and every call an exact match of a built-in that takes
+// no polymorphic argument, so an overload created in `pg_catalog` itself cannot be a closer match:
+// an array is read by subscript over `generate_series` and built with `ARRAY(SELECT …)`, never
+// through `unnest` or `array_agg`. Every conversion is one a built-in `pg_cast` row makes (`oid`
+// to `int8`, `int2` to `int4`, `name` or `"char"` to `text`, a `reg*` type to `oid`), never one
+// through text, which has no such row and so may be a user's `CREATE CAST`. And no construct
+// looks `=` up by name: no `IN (…)`, `NULLIF`, `IS DISTINCT FROM` or simple `CASE`.
 
-/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them.
+/// The pairs of `$1`, an `oid[]` of relations, and `$2`, the `int2[]` of attribute numbers beside
+/// them, `$3` of each, as a `FROM` item `u(rel, att)`.
+macro_rules! pairs {
+    () => {
+        "(SELECT ($1::pg_catalog.oid[])[n] AS rel, ($2::pg_catalog.int2[])[n] AS att FROM pg_catalog.generate_series(1, $3::pg_catalog.int4) AS n) AS u"
+    };
+}
+
+/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them, `$3` how many.
 pub const ATTNOTNULL_QUERY: &str = concat!(
-    "SELECT a.attrelid::int8, a.attnum::int4 FROM pg_attribute a \
-    JOIN unnest($1::oid[], $2::int2[]) AS u(rel, att) ON a.attrelid = u.rel AND a.attnum = u.att WHERE a.attnotnull AND ",
+    "SELECT a.attrelid::pg_catalog.int8, a.attnum::pg_catalog.int4 FROM pg_catalog.pg_attribute a JOIN ",
+    pairs!(),
+    " ON a.attrelid OPERATOR(pg_catalog.=) u.rel AND a.attnum OPERATOR(pg_catalog.=) u.att WHERE a.attnotnull AND ",
     not_null_rows!("a.attrelid", "a.attname")
 );
-/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them: one row per
-/// validated, enforced CHECK on such a column, the table's on that column alone (and inherited by
-/// any child a scan reads) or the column's domain's, where the column holds `text` or `varchar`
-/// under a deterministic collation, or `json` or `jsonb`: `(relation, attnum, the column's name,
-/// the CHECK as the server prints it, and per function the CHECK calls, its name, its extension's
-/// name and that extension's version, in three arrays, then the column's type and that type's base
-/// type)`. `conenforced` is read through `to_jsonb`,
-/// since only PostgreSQL 18 has the column. A table's CHECK says nothing where the table, or a
-/// partition or child a scan reads, is a foreign table, whose rows the server never checks; a
-/// domain's input function checks every value. Nothing is read under `standard_conforming_strings`
-/// off, where the server prints a string's backslashes doubled and the parser would read them so.
-pub const CHECKS_QUERY: &str = "SELECT a.attrelid::int8, a.attnum::int4, a.attname::text, pg_catalog.pg_get_expr(k.conbin, k.conrelid, true), \
-      f.names, f.extensions, f.versions, a.atttypid::int8, (CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END)::int8 \
-    FROM unnest($1::oid[], $2::int2[]) AS u(rel, att) \
-    JOIN pg_attribute a ON a.attrelid = u.rel AND a.attnum = u.att AND NOT a.attisdropped \
-    JOIN pg_type t ON t.oid = a.atttypid \
-    JOIN pg_constraint k ON k.contype = 'c' AND k.convalidated AND coalesce((pg_catalog.to_jsonb(k) ->> 'conenforced')::bool, true) \
-      AND ((k.conrelid = a.attrelid AND k.conkey = ARRAY[a.attnum]::int2[] \
-          AND (NOT k.connoinherit OR NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhparent = a.attrelid)) \
-          AND NOT EXISTS (WITH RECURSIVE tree(rel) AS (SELECT a.attrelid UNION SELECT i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.rel) \
-            SELECT 1 FROM tree t JOIN pg_class f ON f.oid = t.rel WHERE f.relkind = 'f')) \
-        OR (t.typtype = 'd' AND k.contypid = t.oid)) \
-    LEFT JOIN LATERAL (SELECT pg_catalog.array_agg(p.proname::text ORDER BY p.oid) AS names, \
-        pg_catalog.array_agg(coalesce(e.extname::text, '') ORDER BY p.oid) AS extensions, pg_catalog.array_agg(coalesce(e.extversion, '') ORDER BY p.oid) AS versions \
-      FROM pg_depend d JOIN pg_proc p ON p.oid = d.refobjid \
-      LEFT JOIN pg_depend x ON x.classid = 'pg_catalog.pg_proc'::pg_catalog.regclass AND x.objid = p.oid AND x.deptype = 'e' \
-      LEFT JOIN pg_extension e ON e.oid = x.refobjid \
-      WHERE d.classid = 'pg_catalog.pg_constraint'::pg_catalog.regclass AND d.objid = k.oid AND d.refclassid = 'pg_catalog.pg_proc'::pg_catalog.regclass) f ON true \
-    WHERE pg_catalog.current_setting('standard_conforming_strings') = 'on' \
-      AND ((CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END) IN ('pg_catalog.text'::pg_catalog.regtype, 'pg_catalog.varchar'::pg_catalog.regtype) \
-        AND coalesce((SELECT o.collisdeterministic FROM pg_collation o WHERE o.oid = a.attcollation), true) \
-        OR (CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END) IN ('pg_catalog.json'::pg_catalog.regtype, 'pg_catalog.jsonb'::pg_catalog.regtype))";
+
+/// The functions constraint `k`'s expression calls, ordered by oid, each with its `pg_proc` row
+/// `p` and its extension's `pg_extension` row `e`, if any.
+macro_rules! check_functions {
+    () => {
+        "FROM pg_catalog.pg_depend d JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) d.refobjid \
+      LEFT JOIN pg_catalog.pg_depend x ON x.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_proc'::pg_catalog.regclass::pg_catalog.oid \
+        AND x.objid OPERATOR(pg_catalog.=) p.oid AND x.deptype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" \
+      LEFT JOIN pg_catalog.pg_extension e ON e.oid OPERATOR(pg_catalog.=) x.refobjid \
+      WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_constraint'::pg_catalog.regclass::pg_catalog.oid AND d.objid OPERATOR(pg_catalog.=) k.oid \
+        AND d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_proc'::pg_catalog.regclass::pg_catalog.oid"
+    };
+}
+
+/// One array of `$value` over the functions constraint `k` calls, ordered by oid; NULL where it
+/// calls none.
+macro_rules! check_function_array {
+    ($value:literal) => {
+        concat!("CASE WHEN EXISTS (SELECT 1 ", check_functions!(), ") THEN ARRAY(SELECT ", $value, " ", check_functions!(), " ORDER BY p.oid) END")
+    };
+}
+
+/// The base type of column type `t`: a domain's, else the type itself.
+macro_rules! base_type {
+    () => {
+        "(CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN t.typbasetype ELSE t.oid END)"
+    };
+}
+
+/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them, `$3` how many:
+/// one row per validated, enforced CHECK on such a column, the table's on that column alone (and
+/// inherited by any child a scan reads) or the column's domain's, where the column holds `text`
+/// or `varchar` under a deterministic collation, or `json` or `jsonb`: `(relation, attnum, the
+/// column's name, the CHECK as the server prints it, and per function the CHECK calls, its name,
+/// its extension's name and that extension's version, in three arrays, then the column's type and
+/// that type's base type)`. A CHECK `NOT ENFORCED` (PostgreSQL 18) is never validated, so
+/// `convalidated` leaves it out. A table's CHECK says nothing where the table, or a partition or
+/// child a scan reads, is a foreign table, whose rows the server never checks; a domain's input
+/// function checks every value. Nothing is read under `standard_conforming_strings` off, where the
+/// server prints a string's backslashes doubled and the parser would read them so.
+pub const CHECKS_QUERY: &str = concat!(
+    "SELECT a.attrelid::pg_catalog.int8, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, pg_catalog.pg_get_expr(k.conbin, k.conrelid, true), ",
+    check_function_array!("p.proname::pg_catalog.text"),
+    ", ",
+    check_function_array!("coalesce(e.extname::pg_catalog.text, ''::pg_catalog.text)"),
+    ", ",
+    check_function_array!("coalesce(e.extversion, ''::pg_catalog.text)"),
+    ", a.atttypid::pg_catalog.int8, ",
+    base_type!(),
+    "::pg_catalog.int8 FROM ",
+    pairs!(),
+    " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) u.rel AND a.attnum OPERATOR(pg_catalog.=) u.att AND NOT a.attisdropped \
+    JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+    JOIN pg_catalog.pg_constraint k ON k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" AND k.convalidated \
+      AND ((k.conrelid OPERATOR(pg_catalog.=) a.attrelid AND k.conkey[1] OPERATOR(pg_catalog.=) a.attnum AND k.conkey[2] IS NULL \
+          AND (NOT k.connoinherit OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent OPERATOR(pg_catalog.=) a.attrelid)) \
+          AND NOT EXISTS (WITH RECURSIVE tree(rel) AS (SELECT a.attrelid UNION SELECT i.inhrelid FROM tree t JOIN pg_catalog.pg_inherits i ON i.inhparent OPERATOR(pg_catalog.=) t.rel) \
+            SELECT 1 FROM tree t JOIN pg_catalog.pg_class f ON f.oid OPERATOR(pg_catalog.=) t.rel WHERE f.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\")) \
+        OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND k.contypid OPERATOR(pg_catalog.=) t.oid)) \
+    WHERE pg_catalog.current_setting('standard_conforming_strings'::pg_catalog.text) OPERATOR(pg_catalog.=) 'on'::pg_catalog.text \
+      AND (",
+    base_type!(),
+    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.text'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.varchar'::pg_catalog.regtype::pg_catalog.oid]) \
+        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true) \
+        OR ",
+    base_type!(),
+    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.json'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.jsonb'::pg_catalog.regtype::pg_catalog.oid]))"
+);
 /// Whether each column of the named relations refuses null, for a parameter written to it
 /// ([`Engine::nullable_params`]): `(relation, attnum, column, whether its NOT NULL or a domain of
 /// its type's declared NOT NULL refuses it, or the relation is a view, whose columns say nothing
 /// of what the table or the rule or trigger behind it takes, the enforced CHECKs of the table that read the column,
 /// the CHECKs of every domain of its type)`, each CHECK as the server prints it. A CHECK refuses
 /// null where it tests the column `IS NOT NULL` among its conjuncts ([`refuses_null`]); a NOT VALID
-/// one still checks every row written. `$1` is `text[]` of relation names.
+/// one still checks every row written. A CHECK `NOT ENFORCED` (PostgreSQL 18), which checks
+/// nothing, is the one the server prints with those words last. `$1` is `text[]` of relation
+/// names.
 pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, oid) AS ( \
-      SELECT a.attrelid, a.attnum, t.oid FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-        JOIN pg_type t ON t.oid = a.atttypid AND t.typtype = 'd' \
-      WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
-      UNION SELECT d.attrelid, d.attnum, t.oid FROM domains d JOIN pg_type b ON b.oid = d.oid JOIN pg_type t ON t.oid = b.typbasetype AND t.typtype = 'd') \
-    SELECT c.relname::text, a.attnum::int4, a.attname::text, \
-      a.attnotnull OR c.relkind IN ('v', 'm') OR EXISTS (SELECT 1 FROM domains d JOIN pg_type t ON t.oid = d.oid WHERE d.attrelid = a.attrelid AND d.attnum = a.attnum AND t.typnotnull), \
-      coalesce((SELECT pg_catalog.array_agg(pg_catalog.pg_get_expr(k.conbin, k.conrelid, true)) FROM pg_constraint k \
-        WHERE k.contype = 'c' AND k.conrelid = c.oid AND a.attnum = ANY(k.conkey) AND coalesce((pg_catalog.to_jsonb(k) ->> 'conenforced')::bool, true)), '{}'::text[]), \
-      coalesce((SELECT pg_catalog.array_agg(pg_catalog.pg_get_expr(k.conbin, 0, true)) FROM domains d JOIN pg_constraint k ON k.contypid = d.oid AND k.contype = 'c' \
-        WHERE d.attrelid = a.attrelid AND d.attnum = a.attnum), '{}'::text[]) \
-    FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-    WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid)";
+      SELECT a.attrelid, a.attnum, t.oid FROM pg_catalog.pg_class c \
+        JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+        JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+      WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
+      UNION SELECT d.attrelid, d.attnum, t.oid FROM domains d JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) d.oid \
+        JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) b.typbasetype AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\") \
+    SELECT c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, \
+      a.attnotnull OR c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.oid \
+        WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum AND t.typnotnull), \
+      ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, k.conrelid, true) FROM pg_catalog.pg_constraint k \
+        WHERE k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" AND k.conrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.=) ANY (k.conkey) \
+          AND NOT (pg_catalog.pg_get_constraintdef(k.oid) OPERATOR(pg_catalog.~~) '% NOT ENFORCED'::pg_catalog.text)), \
+      ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, '0'::pg_catalog.oid, true) FROM domains d \
+        JOIN pg_catalog.pg_constraint k ON k.contypid OPERATOR(pg_catalog.=) d.oid AND k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" \
+        WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum) \
+    FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)";
 /// The comment of each column that has one (`COMMENT ON COLUMN`): `(relation, attnum, the
-/// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them.
-pub const COMMENTS_QUERY: &str = "SELECT u.rel::int8, u.att::int4, d.description FROM unnest($1::oid[], $2::int2[]) AS u(rel, att) \
-    JOIN pg_description d ON d.objoid = u.rel AND d.classoid = 'pg_catalog.pg_class'::pg_catalog.regclass AND d.objsubid = u.att";
+/// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them,
+/// `$3` how many.
+pub const COMMENTS_QUERY: &str = concat!(
+    "SELECT u.rel::pg_catalog.int8, u.att::pg_catalog.int4, d.description FROM ",
+    pairs!(),
+    " JOIN pg_catalog.pg_description d ON d.objoid OPERATOR(pg_catalog.=) u.rel \
+      AND d.classoid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid AND d.objsubid OPERATOR(pg_catalog.=) u.att"
+);
 /// `$1` is `oid[]` of relations.
-pub const RELNAMES_QUERY: &str = "SELECT c.oid::int8, c.relname::text FROM pg_class c WHERE c.oid = ANY($1::oid[])";
+pub const RELNAMES_QUERY: &str =
+    "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.oid[])";
 /// The columns of the relation an INSERT writes (`$1`, its name as the statement writes it), in
 /// attnum order, each with whether a row must write it: `NOT NULL`, its own or a domain's along the
 /// domain's chain, and nothing to fill it, neither a default, an identity, a generation expression
 /// nor a domain's default. A `NOT NULL` is the one a write meets, valid or not.
 pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
     "WITH RECURSIVE cols AS (SELECT a.attname, a.attnum, a.attnotnull, a.atthasdef, a.attidentity, a.attgenerated, a.atttypid \
-      FROM pg_catalog.pg_attribute a WHERE a.attrelid = ",
-    crate::cardinality::relation_named!("$1::text"),
-    " AND a.attnum > 0 AND NOT a.attisdropped), \
-    chain(attnum, typ, depth) AS (SELECT attnum, atttypid, 0 FROM cols \
-      UNION ALL SELECT c.attnum, t.typbasetype, c.depth + 1 FROM chain c JOIN pg_catalog.pg_type t ON t.oid = c.typ WHERE t.typtype = 'd' AND c.depth < 32) \
-    SELECT cols.attname::text, cols.attnum::int4, \
-      ((cols.attnotnull OR coalesce(bool_or(t.typnotnull), false)) AND NOT cols.atthasdef AND cols.attidentity = '' AND cols.attgenerated = '' \
-        AND NOT coalesce(bool_or(t.typdefaultbin IS NOT NULL), false)) AS required \
-    FROM cols LEFT JOIN chain ON chain.attnum = cols.attnum LEFT JOIN pg_catalog.pg_type t ON t.oid = chain.typ AND t.typtype = 'd' \
+      FROM pg_catalog.pg_attribute a WHERE a.attrelid OPERATOR(pg_catalog.=) ",
+    crate::cardinality::relation_named!("$1::pg_catalog.text"),
+    " AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped), \
+    chain(attnum, typ, depth) AS (SELECT cols.attnum, cols.atttypid, 0 FROM cols \
+      UNION ALL SELECT c.attnum, t.typbasetype, c.depth OPERATOR(pg_catalog.+) 1 FROM chain c JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) c.typ \
+        WHERE t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND c.depth OPERATOR(pg_catalog.<) 32) \
+    SELECT cols.attname::pg_catalog.text, cols.attnum::pg_catalog.int4, \
+      ((cols.attnotnull OR coalesce(pg_catalog.bool_or(t.typnotnull), false)) AND NOT cols.atthasdef \
+        AND cols.attidentity OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\" AND cols.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\" \
+        AND NOT coalesce(pg_catalog.bool_or(t.typdefaultbin IS NOT NULL), false)) AS required \
+    FROM cols LEFT JOIN chain ON chain.attnum OPERATOR(pg_catalog.=) cols.attnum \
+      LEFT JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) chain.typ AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
     GROUP BY cols.attname, cols.attnum, cols.attnotnull, cols.atthasdef, cols.attidentity, cols.attgenerated ORDER BY cols.attnum"
 );
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
@@ -127,12 +200,12 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
 /// `not_null_rows`).
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
-    "SELECT c.oid::int8, c.relname::text, a.attnum::int4, a.attnotnull, \
-    CASE WHEN c.relkind IN ('v', 'm') AND a.attnum = 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, a.attname::text, \
-    a.attnotnull AND ",
+    "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
+    CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
+    a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
-    " FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-    WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
+    " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
 );
 /// What the catalog says of the names the expression rules read ([`crate::infer::Trust`]): `$1` is
 /// `text[]` of operator names, `$2` the `text[]` of function names. Each row is `(what, a name, an
@@ -186,50 +259,50 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 /// makes (`oid` to `int8`, an `oid` written as one), never one through text or between arrays,
 /// which have no such row and so may be a user's `CREATE CAST`.
 pub const TRUST_QUERY: &str = "WITH RECURSIVE \
-    domains(t, b, depth) AS (SELECT t.oid, t.typbasetype, 1 FROM pg_catalog.pg_type t WHERE t.typtype OPERATOR(pg_catalog.=) 'd' \
-    UNION ALL SELECT d.t, t.typbasetype, d.depth OPERATOR(pg_catalog.+) 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.=) 'd' \
+    domains(t, b, depth) AS (SELECT t.oid, t.typbasetype, 1 FROM pg_catalog.pg_type t WHERE t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+    UNION ALL SELECT d.t, t.typbasetype, d.depth OPERATOR(pg_catalog.+) 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
     WHERE d.depth OPERATOR(pg_catalog.<) 32), \
-    bases(t, b) AS (SELECT d.t, d.b FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.<>) 'd'), \
+    bases(t, b) AS (SELECT d.t, d.b FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.<>) 'd'::pg_catalog.\"char\"), \
     users(kind, name, args, n, defaults, flags) AS ( \
     SELECT o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
     CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] WHEN o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprleft::pg_catalog.int8] \
     ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, \
     CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN 1 ELSE 2 END, \
-    0, coalesce((p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4), 6) \
+    0, coalesce((p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")::pg_catalog.int4 OPERATOR(pg_catalog.*) 4), 6) \
     FROM pg_catalog.pg_operator o LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode \
     WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) \
     UNION ALL SELECT 'f', p.proname::pg_catalog.text, \
     ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), \
     p.pronargs::pg_catalog.int4, p.pronargdefaults, \
     (p.provariadic OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid)::pg_catalog.int4 OPERATOR(pg_catalog.+) (p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) \
-    OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4) OPERATOR(pg_catalog.+) ((p.prokind OPERATOR(pg_catalog.<>) 'a')::pg_catalog.int4 OPERATOR(pg_catalog.*) 8) \
+    OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")::pg_catalog.int4 OPERATOR(pg_catalog.*) 4) OPERATOR(pg_catalog.+) ((p.prokind OPERATOR(pg_catalog.<>) 'a'::pg_catalog.\"char\")::pg_catalog.int4 OPERATOR(pg_catalog.*) 8) \
     FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[])), \
     targets(u, b) AS (SELECT DISTINCT a.u, coalesce(x.b, a.u) FROM (SELECT u.args[i]::pg_catalog.oid AS u FROM users u CROSS JOIN LATERAL pg_catalog.generate_series(1, u.n) AS i) a \
     LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) a.u), \
     sources(s, b) AS (SELECT t.oid, coalesce(x.b, t.oid) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.oid \
-    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (t.typtype OPERATOR(pg_catalog.<>) 'p' OR t.oid OPERATOR(pg_catalog.=) ANY ('{2249,2287}'::pg_catalog.oid[]))), \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (t.typtype OPERATOR(pg_catalog.<>) 'p'::pg_catalog.\"char\" OR t.oid OPERATOR(pg_catalog.=) ANY ('{2249,2287}'::pg_catalog.oid[]))), \
     arrays(t, e) AS (SELECT t.oid, coalesce(x.b, t.typelem) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.typelem \
     WHERE t.typelem OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid AND t.typlen OPERATOR(pg_catalog.=) (-1)), \
     reach(u, s) AS ( \
     SELECT g.u, s.s FROM targets g JOIN sources s ON s.b OPERATOR(pg_catalog.=) g.b \
-    UNION SELECT g.u, s.s FROM targets g JOIN pg_catalog.pg_cast c ON c.casttarget OPERATOR(pg_catalog.=) g.b AND c.castcontext OPERATOR(pg_catalog.=) 'i' \
+    UNION SELECT g.u, s.s FROM targets g JOIN pg_catalog.pg_cast c ON c.casttarget OPERATOR(pg_catalog.=) g.b AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" \
     JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
     UNION SELECT g.u, s.s FROM targets g JOIN arrays ga ON ga.t OPERATOR(pg_catalog.=) g.b \
     JOIN arrays sa ON (sa.e OPERATOR(pg_catalog.=) ga.e) OR EXISTS (SELECT 1 FROM pg_catalog.pg_cast c \
-    WHERE c.castsource OPERATOR(pg_catalog.=) sa.e AND c.casttarget OPERATOR(pg_catalog.=) ga.e AND c.castcontext OPERATOR(pg_catalog.=) 'i') \
+    WHERE c.castsource OPERATOR(pg_catalog.=) sa.e AND c.casttarget OPERATOR(pg_catalog.=) ga.e AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\") \
     JOIN sources s ON s.b OPERATOR(pg_catalog.=) sa.t \
     WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.castsource OPERATOR(pg_catalog.=) s.b AND c.casttarget OPERATOR(pg_catalog.=) g.b) \
     UNION SELECT g.u, s.s FROM targets g JOIN sources s ON true JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) s.b \
     WHERE CASE WHEN g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078}'::pg_catalog.oid[]) THEN s.b OPERATOR(pg_catalog.=) ANY (SELECT a.t FROM arrays a) \
     WHEN g.u OPERATOR(pg_catalog.=) ANY ('{2776,5079}'::pg_catalog.oid[]) THEN NOT (s.b OPERATOR(pg_catalog.=) ANY (SELECT a.t FROM arrays a)) \
-    WHEN g.u OPERATOR(pg_catalog.=) '3500'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'e' \
-    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{3831,5080}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'r' \
-    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{4537,4538}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'm' \
-    WHEN g.u OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'c' OR s.s OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid \
-    WHEN g.u OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid THEN s.s OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid OR t.typelem OPERATOR(pg_catalog.=) ANY (SELECT c.oid FROM pg_catalog.pg_type c WHERE c.typtype OPERATOR(pg_catalog.=) 'c') \
+    WHEN g.u OPERATOR(pg_catalog.=) '3500'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" \
+    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{3831,5080}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'r'::pg_catalog.\"char\" \
+    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{4537,4538}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'm'::pg_catalog.\"char\" \
+    WHEN g.u OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" OR s.s OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid \
+    WHEN g.u OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid THEN s.s OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid OR t.typelem OPERATOR(pg_catalog.=) ANY (SELECT c.oid FROM pg_catalog.pg_type c WHERE c.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\") \
     ELSE false END), \
     pseudo(u) AS (SELECT g.u FROM targets g JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) g.u \
-    WHERE t.typtype OPERATOR(pg_catalog.=) 'p' AND NOT (g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078,2776,5079,3500,3831,5080,4537,4538,2249,2287}'::pg_catalog.oid[]))), \
+    WHERE t.typtype OPERATOR(pg_catalog.=) 'p'::pg_catalog.\"char\" AND NOT (g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078,2776,5079,3500,3831,5080,4537,4538,2249,2287}'::pg_catalog.oid[]))), \
     reached(kind, name, args, n, defaults, flags, reached) AS (SELECT u.*, \
     u.defaults OPERATOR(pg_catalog.>) 0 OR (u.flags OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 OR u.n OPERATOR(pg_catalog.=) 0 \
     OR EXISTS (SELECT 1 FROM pg_catalog.generate_series(1, u.n) AS i \
@@ -240,12 +313,12 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     WHERE NOT r.reached GROUP BY r.kind, r.name, r.n \
     UNION ALL SELECT 'builtin '::pg_catalog.text OPERATOR(pg_catalog.||) o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
     CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, o.oprresult::pg_catalog.int8, NULL \
-    FROM pg_catalog.pg_operator o WHERE o.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.<>) 'f') \
+    FROM pg_catalog.pg_operator o WHERE o.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.<>) 'f'::pg_catalog.text) \
     AND o.oprkind OPERATOR(pg_catalog.=) ANY ('{b,l}'::pg_catalog.\"char\"[]) \
     AND (o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[])) AND o.oprright OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]) \
     UNION ALL SELECT 'builtin f', p.proname::pg_catalog.text, \
     ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), p.prorettype::pg_catalog.int8, p.pronargdefaults::pg_catalog.int8 \
-    FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.=) 'f') \
+    FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.=) 'f'::pg_catalog.text) \
     AND p.provariadic OPERATOR(pg_catalog.=) '0'::pg_catalog.oid \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i WHERE NOT (p.proargtypes[i] OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]))) \
     UNION ALL SELECT 'reach', NULL, ARRAY(SELECT r.s::pg_catalog.int8 FROM reach r WHERE r.u OPERATOR(pg_catalog.=) g.u ORDER BY r.s), g.u::pg_catalog.int8, NULL FROM (SELECT DISTINCT r.u FROM reach r) g \
@@ -270,27 +343,27 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     AND t.typcategory OPERATOR(pg_catalog.<>) 'A'::pg_catalog.\"char\" AND (t.typtype OPERATOR(pg_catalog.=) ANY ('{b,e,r,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM bases x \
     JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) x.b WHERE x.t OPERATOR(pg_catalog.=) t.oid AND b.typtype OPERATOR(pg_catalog.<>) 'c'::pg_catalog.\"char\")) ORDER BY t.oid), NULL, NULL \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
-    WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i' AND c.castmethod OPERATOR(pg_catalog.=) 'f' \
+    WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
     AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
     UNION ALL SELECT 'type', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
     UNION ALL SELECT 'cast', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
-    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") \
     UNION ALL SELECT 'cast from', t.typname::pg_catalog.text, \
     ARRAY(SELECT DISTINCT s.s::pg_catalog.int8 FROM pg_catalog.pg_cast c JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
-    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'), t.oid::pg_catalog.int8, NULL \
+    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\"), t.oid::pg_catalog.int8, NULL \
     FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
-    AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
+    AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
     UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL \
     WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
 
-/// `$1` is `text[]` of relation names as the statement writes them: one row per unique index of
+/// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per unique index of
 /// each that is a plain or a partitioned table, `(the name, the index's key columns with NULL for
 /// a key part that is an expression, the index's predicate as the server prints it)`, and for such
 /// a table with no unique index one row of the name beside NULLs. These are the indexes an `ON
@@ -301,14 +374,18 @@ const JSONB_CASTS_RAISE: &str = "raise";
 /// relation, has no row.
 pub const ARBITERS_QUERY: &str = concat!(
     "SELECT x.name, \
-      (SELECT array_agg(a.attname::text ORDER BY k.ord) FROM unnest(i.indkey::int2[]) WITH ORDINALITY AS k(attnum, ord) \
-        LEFT JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum AND k.attnum > 0 WHERE k.ord <= i.indnkeyatts), \
+      CASE WHEN i.indexrelid IS NOT NULL THEN ARRAY(SELECT a.attname::pg_catalog.text \
+        FROM pg_catalog.generate_series(0, i.indnkeyatts::pg_catalog.int4 OPERATOR(pg_catalog.-) 1) AS k \
+        LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k] \
+          AND i.indkey[k] OPERATOR(pg_catalog.>) 0 \
+        ORDER BY k) END, \
       pg_catalog.pg_get_expr(i.indpred, i.indrelid, true) \
-    FROM unnest($1::text[]) AS x(name) \
-    JOIN pg_class c ON c.oid = ",
+    FROM ",
+    cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     cardinality::relation_named!("x.name"),
-    " AND c.relkind IN ('r', 'p') \
-    LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisunique AND NOT i.indisexclusion"
+    " AND c.relkind OPERATOR(pg_catalog.=) ANY ('{r,p}'::pg_catalog.\"char\"[]) \
+    LEFT JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) c.oid AND i.indisunique AND NOT i.indisexclusion"
 );
 
 /// The analysis of a Postgres statement as its author wrote it: lexed, its structured parameters
@@ -414,7 +491,7 @@ fn columns_where(needed: bool, sql: &str, host: &Host) -> Lazy<Columns> {
     if relations.is_empty() {
         return Some(Columns::default());
     }
-    let rows = host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement)?;
+    let rows = host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)?;
     Some(Columns::from_rows(&rows.unwrap_or_default()))
 }
 
@@ -436,10 +513,10 @@ fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
 /// triggers of `relations`, and which of `functions` return a set or are volatile.
 fn catalog_rows(host: &Host, functions: &[String], relations: &[String]) -> Lazy<CatalogRows> {
     let none = || Some(Ok(Vec::new()));
-    let keys = if relations.is_empty() { none() } else { host.query(cardinality::UNIQUE_KEYS_QUERY, vec![json!(relations)], Scope::Statement) };
-    let columns = if relations.is_empty() { none() } else { host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement) };
+    let keys = if relations.is_empty() { none() } else { host.query(cardinality::UNIQUE_KEYS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
+    let columns = if relations.is_empty() { none() } else { host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
     let functions = if functions.is_empty() { none() } else { host.query(cardinality::FUNCTIONS_QUERY, vec![json!(functions)], Scope::Statement) };
-    let triggers = if relations.is_empty() { none() } else { host.query(cardinality::TRIGGERS_QUERY, vec![json!(relations)], Scope::Statement) };
+    let triggers = if relations.is_empty() { none() } else { host.query(cardinality::TRIGGERS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
     let (Some(keys), Some(columns), Some(functions), Some(triggers)) = (keys, columns, functions, triggers) else { return None };
     Some(CatalogRows {
         keys: keys.unwrap_or_default(),
@@ -606,7 +683,8 @@ impl<'a> Engine<'a> {
         let arbiters = if conflicts.is_empty() {
             Some(Ok(Vec::new()))
         } else {
-            self.host.query(ARBITERS_QUERY, vec![json!(sorted(conflicts.iter().map(|c| c.relation.clone()).collect()))], Scope::Statement)
+            let relations = sorted(conflicts.iter().map(|c| c.relation.clone()).collect());
+            self.host.query(ARBITERS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)
         };
         // The columns an INSERT's rows must write, asked in this first round too.
         let insert = insert_target(&rewritten.sql);
@@ -1138,7 +1216,7 @@ impl<'a> Engine<'a> {
         let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.call_checked(c));
         let columns = if typed {
             let relations = relations_of(Some(parsed));
-            if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement)?.unwrap_or_default() }
+            if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)?.unwrap_or_default() }
         } else {
             Vec::new()
         };
@@ -1347,7 +1425,7 @@ impl<'a> Engine<'a> {
         pairs.dedup();
         let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
         let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-        let rows = self.host.query(COMMENTS_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)?;
+        let rows = self.host.query(COMMENTS_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)?;
         let stored: HashMap<(u32, i32), String> = rows
             .unwrap_or_default()
             .iter()
@@ -1386,7 +1464,7 @@ impl<'a> Engine<'a> {
         }
         let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
         let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-        let rows = self.host.query(CHECKS_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)?;
+        let rows = self.host.query(CHECKS_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)?;
         let mut out = Checks::default();
         let mut schemas: HashMap<(u32, i32), Vec<(String, Validators)>> = HashMap::new();
         for row in rows.unwrap_or_default() {
@@ -1499,7 +1577,7 @@ impl<'a> Engine<'a> {
         } else {
             let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
             let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-            self.host.query(ATTNOTNULL_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)
+            self.host.query(ATTNOTNULL_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)
         };
         let nullable_tables: Vec<String> = match parsed {
             Some(p) => self.unreduced(p, trust)?,

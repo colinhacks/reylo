@@ -4,7 +4,7 @@
 //! each constraint error may name.
 
 use crate::analyze;
-use crate::cardinality::relation_named;
+use crate::cardinality::{names, relation_named};
 use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::errors::Errors;
@@ -33,9 +33,31 @@ const RUNS_SQL: [&str; 14] = [
     "database_to_xml_and_xmlschema",
 ];
 
+/// The oid of the system catalog `$name`, as `pg_depend` names a class.
+macro_rules! catalog {
+    ($name:literal) => {
+        concat!("'pg_catalog.", $name, "'::pg_catalog.regclass::pg_catalog.oid")
+    };
+}
+
+/// The oid of `array_in`, the input function of every array type.
+macro_rules! array_in {
+    () => {
+        "'pg_catalog.array_in'::pg_catalog.regproc::pg_catalog.oid"
+    };
+}
+
+/// The name of the relation of oid `$oid`, as text.
+macro_rules! relname {
+    ($oid:literal) => {
+        concat!("(SELECT c.relname::pg_catalog.text FROM pg_catalog.pg_class c WHERE c.oid OPERATOR(pg_catalog.=) ", $oid, ")")
+    };
+}
+
 /// `$1` and `$2` are `text[]` of the relations the statement writes and reads, as it writes them;
 /// `$3`, `$4` and `$5` the functions, the operators and the types it names; `$6` whether a row it
-/// writes may change a key another table's foreign key refers to. One row `('open', why)`
+/// writes may change a key another table's foreign key refers to; `$7` and `$8` how many names
+/// `$1` and `$2` hold. One row `('open', why)`
 /// for each thing the statement may set off that a user or an extension wrote (an object with an
 /// oid of 16384 or more, the first a user's database gives), and one `('name', code, field, name)`
 /// for each name an error may carry.
@@ -62,91 +84,130 @@ const RUNS_SQL: [&str; 14] = [
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
     named(oid, written) AS ( \
-      SELECT c.oid, true FROM unnest($1::text[]) AS x(name) JOIN pg_class c ON c.oid = ",
+      SELECT c.oid, true FROM ",
+    names!("$1::pg_catalog.text[]", "$7::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
-    " UNION ALL SELECT c.oid, false FROM unnest($2::text[]) AS x(name) JOIN pg_class c ON c.oid = ",
+    " UNION ALL SELECT c.oid, false FROM ",
+    names!("$2::pg_catalog.text[]", "$8::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
     "), \
     edge(parent, child, read) AS ( \
-      SELECT inhparent, inhrelid, true FROM pg_inherits \
-      UNION ALL SELECT q.ev_class, d.refobjid, true FROM pg_rewrite q JOIN pg_depend d ON d.classid = 'pg_rewrite'::regclass AND d.objid = q.oid \
-        AND d.refclassid = 'pg_class'::regclass AND d.refobjid <> q.ev_class WHERE q.rulename = '_RETURN' \
-      UNION ALL SELECT confrelid, conrelid, false FROM pg_constraint WHERE $6::bool AND contype = 'f' AND (confdeltype IN ('c', 'n', 'd') OR confupdtype IN ('c', 'n', 'd'))), \
-    w(oid) AS (SELECT oid FROM named WHERE written UNION SELECT e.child FROM edge e JOIN w ON e.parent = w.oid), \
-    r(oid) AS (SELECT oid FROM named UNION SELECT e.child FROM edge e JOIN r ON e.parent = r.oid WHERE e.read), \
-    rel(oid) AS (SELECT oid FROM w UNION SELECT oid FROM r), \
+      SELECT h.inhparent, h.inhrelid, true FROM pg_catalog.pg_inherits h \
+      UNION ALL SELECT q.ev_class, d.refobjid, true FROM pg_catalog.pg_rewrite q JOIN pg_catalog.pg_depend d \
+        ON d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " AND d.objid OPERATOR(pg_catalog.=) q.oid \
+        AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) q.ev_class \
+        WHERE q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
+      UNION ALL SELECT k.confrelid, k.conrelid, false FROM pg_catalog.pg_constraint k WHERE $6::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+        AND (k.confdeltype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]) OR k.confupdtype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]))), \
+    w(oid) AS (SELECT n.oid FROM named n WHERE n.written UNION SELECT e.child FROM edge e JOIN w ON e.parent OPERATOR(pg_catalog.=) w.oid), \
+    r(oid) AS (SELECT n.oid FROM named n UNION SELECT e.child FROM edge e JOIN r ON e.parent OPERATOR(pg_catalog.=) r.oid WHERE e.read), \
+    rel(oid) AS (SELECT w.oid FROM w UNION SELECT r.oid FROM r), \
     dom(oid) AS ( \
-      SELECT t.oid FROM pg_attribute a JOIN w ON a.attrelid = w.oid JOIN pg_type t ON t.oid = a.atttypid WHERE a.attnum > 0 AND NOT a.attisdropped AND t.typtype = 'd' \
-      UNION SELECT t.oid FROM pg_type t WHERE t.typname = ANY($5::text[]) AND t.typtype = 'd' \
-      UNION SELECT t.typbasetype FROM dom JOIN pg_type t ON t.oid = dom.oid JOIN pg_type b ON b.oid = t.typbasetype WHERE b.typtype = 'd'), \
-    userio(oid) AS (SELECT t.oid FROM pg_type t WHERE t.oid >= 16384 AND t.typtype IN ('b', 'r', 'm', 'c') AND t.typinput <> 'array_in'::regproc), \
+      SELECT t.oid FROM pg_catalog.pg_attribute a JOIN w ON a.attrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+        WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+      UNION SELECT t.oid FROM pg_catalog.pg_type t WHERE t.typname OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]) AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+      UNION SELECT t.typbasetype FROM dom JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) dom.oid \
+        JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) t.typbasetype WHERE b.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\"), \
+    userio(oid) AS (SELECT t.oid FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+      AND t.typtype OPERATOR(pg_catalog.=) ANY ('{b,r,m,c}'::pg_catalog.\"char\"[]) AND t.typinput::pg_catalog.oid OPERATOR(pg_catalog.<>) ", array_in!(), "), \
     coded(oid) AS ( \
-      SELECT oid FROM userio \
-      UNION SELECT a.oid FROM pg_type a JOIN userio u ON a.typelem = u.oid WHERE a.typinput = 'array_in'::regproc \
-      UNION SELECT d.oid FROM pg_type d JOIN pg_type b ON b.oid = d.typbasetype WHERE d.typtype = 'd' \
-        AND (b.oid IN (SELECT oid FROM userio) OR b.typtype = 'd' OR (b.typinput = 'array_in'::regproc AND b.typelem IN (SELECT oid FROM userio)))), \
-    cons(oid) AS (SELECT c.oid FROM pg_constraint c WHERE c.conrelid IN (SELECT oid FROM w) OR c.contypid IN (SELECT oid FROM dom)), \
+      SELECT u.oid FROM userio u \
+      UNION SELECT a.oid FROM pg_catalog.pg_type a JOIN userio u ON a.typelem OPERATOR(pg_catalog.=) u.oid WHERE a.typinput::pg_catalog.oid OPERATOR(pg_catalog.=) ", array_in!(), " \
+      UNION SELECT d.oid FROM pg_catalog.pg_type d JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) d.typbasetype WHERE d.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+        AND (b.oid OPERATOR(pg_catalog.=) ANY (SELECT u.oid FROM userio u) OR b.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
+          OR (b.typinput::pg_catalog.oid OPERATOR(pg_catalog.=) ", array_in!(), " AND b.typelem OPERATOR(pg_catalog.=) ANY (SELECT u.oid FROM userio u)))), \
+    cons(oid) AS (SELECT c.oid FROM pg_catalog.pg_constraint c \
+      WHERE c.conrelid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM w) OR c.contypid OPERATOR(pg_catalog.=) ANY (SELECT dom.oid FROM dom)), \
     present(oid) AS ( \
-      SELECT a.atttypid FROM pg_attribute a JOIN rel ON a.attrelid = rel.oid WHERE a.attnum > 0 AND NOT a.attisdropped \
-      UNION SELECT c.reltype FROM pg_class c JOIN rel ON c.oid = rel.oid \
-      UNION SELECT t.oid FROM pg_type t WHERE t.typname = ANY($5::text[]) \
-      UNION SELECT p.prorettype FROM pg_proc p WHERE p.proname = ANY($3::text[]) \
-      UNION SELECT t.oid FROM pg_type t WHERE t.oid >= 16384 AND t.typispreferred \
-      UNION SELECT c.casttarget FROM pg_cast c WHERE c.castcontext = 'i' AND c.casttarget >= 16384 \
-      UNION SELECT y.oid FROM present p JOIN pg_type t ON t.oid = p.oid CROSS JOIN LATERAL ( \
+      SELECT a.atttypid FROM pg_catalog.pg_attribute a JOIN rel ON a.attrelid OPERATOR(pg_catalog.=) rel.oid WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+      UNION SELECT c.reltype FROM pg_catalog.pg_class c JOIN rel ON c.oid OPERATOR(pg_catalog.=) rel.oid \
+      UNION SELECT t.oid FROM pg_catalog.pg_type t WHERE t.typname OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]) \
+      UNION SELECT p.prorettype FROM pg_catalog.pg_proc p WHERE p.proname OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[]) \
+      UNION SELECT t.oid FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typispreferred \
+      UNION SELECT c.casttarget FROM pg_catalog.pg_cast c WHERE c.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\" AND c.casttarget OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+      UNION SELECT y.oid FROM present p JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) p.oid CROSS JOIN LATERAL ( \
         SELECT t.typbasetype UNION ALL SELECT t.typelem UNION ALL SELECT t.typarray \
-        UNION ALL SELECT a.atttypid FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped \
-        UNION ALL SELECT g.rngsubtype FROM pg_range g WHERE g.rngtypid = t.oid) AS y(oid) WHERE y.oid <> 0) \
-    SELECT 'open', 'a server newer than 18', NULL, NULL WHERE pg_catalog.current_setting('server_version_num')::int4 >= 190000 \
-    UNION ALL SELECT 'open', 'trigger', g.tgname::text, NULL FROM pg_trigger g JOIN w ON g.tgrelid = w.oid WHERE NOT g.tgisinternal AND g.tgenabled <> 'D' \
-    UNION ALL SELECT 'open', 'rule', q.rulename::text, NULL FROM pg_rewrite q JOIN w ON q.ev_class = w.oid WHERE q.rulename <> '_RETURN' AND q.ev_enabled <> 'D' \
-    UNION ALL SELECT 'open', 'foreign table', c.relname::text, NULL FROM pg_class c JOIN rel ON c.oid = rel.oid WHERE c.relkind = 'f' \
-    UNION ALL SELECT 'open', 'depends on', d.refobjid::text, NULL FROM pg_depend d \
-      WHERE d.refclassid IN ('pg_proc'::regclass, 'pg_operator'::regclass, 'pg_opclass'::regclass, 'pg_opfamily'::regclass) AND d.refobjid >= 16384 AND ( \
-        (d.classid = 'pg_type'::regclass AND d.objid IN (SELECT oid FROM dom)) OR \
-        (d.classid = 'pg_attrdef'::regclass AND d.objid IN (SELECT ad.oid FROM pg_attrdef ad JOIN rel ON ad.adrelid = rel.oid)) \
-        OR (d.classid = 'pg_constraint'::regclass AND d.objid IN (SELECT oid FROM cons)) \
-        OR (d.classid = 'pg_class'::regclass AND d.objid IN (SELECT oid FROM w UNION SELECT i.indexrelid FROM pg_index i JOIN w ON i.indrelid = w.oid)) \
-        OR (d.classid = 'pg_class'::regclass AND d.refclassid IN ('pg_opclass'::regclass, 'pg_opfamily'::regclass) \
-          AND d.objid IN (SELECT oid FROM rel UNION SELECT i.indexrelid FROM pg_index i JOIN rel ON i.indrelid = rel.oid)) \
-        OR (d.classid = 'pg_policy'::regclass AND d.objid IN (SELECT p.oid FROM pg_policy p JOIN rel ON p.polrelid = rel.oid)) \
-        OR (d.classid = 'pg_rewrite'::regclass AND d.objid IN (SELECT q.oid FROM pg_rewrite q JOIN rel ON q.ev_class = rel.oid))) \
-    UNION ALL SELECT 'open', 'column type', t.typname::text, NULL FROM pg_attribute a JOIN rel ON a.attrelid = rel.oid JOIN pg_type t ON t.oid = a.atttypid \
-      WHERE a.attnum > 0 AND NOT a.attisdropped AND t.oid IN (SELECT oid FROM coded) \
-    UNION ALL SELECT 'open', 'function', p.proname::text, NULL FROM pg_proc p WHERE p.oid >= 16384 AND p.proname = ANY($3::text[]) \
-    UNION ALL SELECT 'open', 'operator', o.oprname::text, NULL FROM pg_operator o WHERE o.oid >= 16384 AND o.oprname = ANY($4::text[]) \
-      AND ((o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present)) AND (o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present)) \
-        OR o.oprleft = 0 \
-        OR NOT EXISTS (SELECT 1 FROM pg_operator b WHERE b.oid < 16384 AND b.oprname = o.oprname AND b.oprleft = b.oprright AND b.oprleft = CASE \
-          WHEN o.oprleft < 16384 OR o.oprleft IN (SELECT oid FROM present) THEN o.oprleft \
-          WHEN o.oprright < 16384 OR o.oprright IN (SELECT oid FROM present) THEN o.oprright ELSE 'text'::regtype END)) \
-    UNION ALL SELECT 'open', 'type', t.typname::text, NULL FROM pg_type t WHERE t.typname = ANY($5::text[]) AND t.oid IN (SELECT oid FROM coded) \
-    UNION ALL SELECT 'open', 'cast', c.oid::text, NULL FROM pg_cast c WHERE c.oid >= 16384 AND c.castmethod = 'f' \
-      AND ((c.castsource < 16384 AND c.casttarget < 16384) OR c.castsource IN (SELECT oid FROM present) OR c.casttarget IN (SELECT oid FROM present)) \
+        UNION ALL SELECT a.atttypid FROM pg_catalog.pg_attribute a WHERE a.attrelid OPERATOR(pg_catalog.=) t.typrelid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+        UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid OPERATOR(pg_catalog.=) t.oid) AS y(oid) WHERE y.oid OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid) \
+    SELECT 'open'::pg_catalog.text, 'a server newer than 18'::pg_catalog.text, NULL::pg_catalog.text, NULL::pg_catalog.text \
+      WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.>=) '190000'::pg_catalog.numeric \
+    UNION ALL SELECT 'open', 'trigger', g.tgname::pg_catalog.text, NULL FROM pg_catalog.pg_trigger g JOIN w ON g.tgrelid OPERATOR(pg_catalog.=) w.oid \
+      WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+    UNION ALL SELECT 'open', 'rule', q.rulename::pg_catalog.text, NULL FROM pg_catalog.pg_rewrite q JOIN w ON q.ev_class OPERATOR(pg_catalog.=) w.oid \
+      WHERE q.rulename OPERATOR(pg_catalog.<>) '_RETURN'::pg_catalog.name AND q.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+    UNION ALL SELECT 'open', 'foreign table', c.relname::pg_catalog.text, NULL FROM pg_catalog.pg_class c JOIN rel ON c.oid OPERATOR(pg_catalog.=) rel.oid \
+      WHERE c.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+    UNION ALL SELECT 'open', 'depends on', pg_catalog.textin(pg_catalog.oidout(d.refobjid)), NULL FROM pg_catalog.pg_depend d \
+      WHERE d.refclassid OPERATOR(pg_catalog.=) ANY (ARRAY[", catalog!("pg_proc"), ", ", catalog!("pg_operator"), ", ", catalog!("pg_opclass"), ", ", catalog!("pg_opfamily"), "]) \
+        AND d.refobjid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND ( \
+        (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_type"), " AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT dom.oid FROM dom)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_attrdef"), " \
+          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT ad.oid FROM pg_catalog.pg_attrdef ad JOIN rel ON ad.adrelid OPERATOR(pg_catalog.=) rel.oid)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_constraint"), " AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT cons.oid FROM cons)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM w \
+          UNION SELECT i.indexrelid FROM pg_catalog.pg_index i JOIN w ON i.indrelid OPERATOR(pg_catalog.=) w.oid)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refclassid OPERATOR(pg_catalog.=) ANY (ARRAY[", catalog!("pg_opclass"), ", ", catalog!("pg_opfamily"), "]) \
+          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT rel.oid FROM rel UNION SELECT i.indexrelid FROM pg_catalog.pg_index i JOIN rel ON i.indrelid OPERATOR(pg_catalog.=) rel.oid)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_policy"), " \
+          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT p.oid FROM pg_catalog.pg_policy p JOIN rel ON p.polrelid OPERATOR(pg_catalog.=) rel.oid)) \
+        OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " \
+          AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT q.oid FROM pg_catalog.pg_rewrite q JOIN rel ON q.ev_class OPERATOR(pg_catalog.=) rel.oid))) \
+    UNION ALL SELECT 'open', 'column type', t.typname::pg_catalog.text, NULL FROM pg_catalog.pg_attribute a JOIN rel ON a.attrelid OPERATOR(pg_catalog.=) rel.oid \
+      JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+      WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND t.oid OPERATOR(pg_catalog.=) ANY (SELECT coded.oid FROM coded) \
+    UNION ALL SELECT 'open', 'function', p.proname::pg_catalog.text, NULL FROM pg_catalog.pg_proc p \
+      WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.proname OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[]) \
+    UNION ALL SELECT 'open', 'operator', o.oprname::pg_catalog.text, NULL FROM pg_catalog.pg_operator o \
+      WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname OPERATOR(pg_catalog.=) ANY ($4::pg_catalog.text[]) \
+      AND ((o.oprleft OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
+          AND (o.oprright OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
+        OR o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid \
+        OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_operator b WHERE b.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND b.oprname OPERATOR(pg_catalog.=) o.oprname \
+          AND b.oprleft OPERATOR(pg_catalog.=) b.oprright AND b.oprleft OPERATOR(pg_catalog.=) CASE \
+          WHEN o.oprleft OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present) THEN o.oprleft \
+          WHEN o.oprright OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present) THEN o.oprright \
+          ELSE 'pg_catalog.text'::pg_catalog.regtype::pg_catalog.oid END)) \
+    UNION ALL SELECT 'open', 'type', t.typname::pg_catalog.text, NULL FROM pg_catalog.pg_type t \
+      WHERE t.typname OPERATOR(pg_catalog.=) ANY ($5::pg_catalog.text[]) AND t.oid OPERATOR(pg_catalog.=) ANY (SELECT coded.oid FROM coded) \
+    UNION ALL SELECT 'open', 'cast', pg_catalog.textin(pg_catalog.oidout(c.oid)), NULL FROM pg_catalog.pg_cast c \
+      WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+      AND ((c.castsource OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid) \
+        OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present) OR c.casttarget OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
     UNION ALL SELECT 'name', k.code, k.field, k.name FROM ( \
-      SELECT CASE WHEN i.indisexclusion THEN '23P01' ELSE '23505' END AS code, 'constraint' AS field, ic.relname::text AS name \
-        FROM pg_index i JOIN w ON i.indrelid = w.oid JOIN pg_class ic ON ic.oid = i.indexrelid WHERE i.indisunique OR i.indisexclusion \
-      UNION ALL SELECT CASE WHEN i.indisexclusion THEN '23P01' ELSE '23505' END, 'table', c.relname::text \
-        FROM pg_index i JOIN w ON i.indrelid = w.oid JOIN pg_class c ON c.oid = i.indrelid WHERE i.indisunique OR i.indisexclusion \
-      UNION ALL SELECT '23P01', 'constraint', ic.relname::text FROM pg_index i JOIN w ON i.indrelid = w.oid JOIN pg_class ic ON ic.oid = i.indexrelid \
+      SELECT CASE WHEN i.indisexclusion THEN '23P01'::pg_catalog.text ELSE '23505'::pg_catalog.text END AS code, 'constraint'::pg_catalog.text AS field, ic.relname::pg_catalog.text AS name \
+        FROM pg_catalog.pg_index i JOIN w ON i.indrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_class ic ON ic.oid OPERATOR(pg_catalog.=) i.indexrelid \
+        WHERE i.indisunique OR i.indisexclusion \
+      UNION ALL SELECT CASE WHEN i.indisexclusion THEN '23P01' ELSE '23505' END, 'table', c.relname::pg_catalog.text \
+        FROM pg_catalog.pg_index i JOIN w ON i.indrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) i.indrelid \
+        WHERE i.indisunique OR i.indisexclusion \
+      UNION ALL SELECT '23P01', 'constraint', ic.relname::pg_catalog.text \
+        FROM pg_catalog.pg_index i JOIN w ON i.indrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_class ic ON ic.oid OPERATOR(pg_catalog.=) i.indexrelid \
         WHERE i.indisunique AND i.indisexclusion \
-      UNION ALL SELECT '23P01', 'table', c.relname::text FROM pg_index i JOIN w ON i.indrelid = w.oid JOIN pg_class c ON c.oid = i.indrelid \
+      UNION ALL SELECT '23P01', 'table', c.relname::pg_catalog.text \
+        FROM pg_catalog.pg_index i JOIN w ON i.indrelid OPERATOR(pg_catalog.=) w.oid JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) i.indrelid \
         WHERE i.indisunique AND i.indisexclusion \
-      UNION ALL SELECT '23502', 'column', a.attname::text FROM pg_attribute a JOIN w ON a.attrelid = w.oid WHERE a.attnum > 0 AND NOT a.attisdropped AND a.attnotnull \
-      UNION ALL SELECT '23502', 'table', c.relname::text FROM pg_class c JOIN w ON c.oid = w.oid \
-      UNION ALL SELECT '23502', 'dataType', t.typname::text FROM pg_type t JOIN dom ON t.oid = dom.oid WHERE t.typnotnull \
-      UNION ALL SELECT f.code, f.field, f.name FROM pg_constraint k \
-        CROSS JOIN LATERAL (VALUES ('23503', 'constraint', k.conname::text), ('23503', 'table', (SELECT relname::text FROM pg_class WHERE oid = k.conrelid)), \
-          ('23503', 'table', (SELECT relname::text FROM pg_class WHERE oid = k.confrelid))) AS f(code, field, name) \
-        WHERE k.contype = 'f' AND (k.conrelid IN (SELECT oid FROM w) OR ($6::bool AND k.confrelid IN (SELECT oid FROM w))) \
-      UNION ALL SELECT f.code, f.field, f.name FROM pg_constraint k \
-        CROSS JOIN LATERAL (VALUES ('23001', 'constraint', k.conname::text), ('23001', 'table', (SELECT relname::text FROM pg_class WHERE oid = k.conrelid)), \
-          ('23001', 'table', (SELECT relname::text FROM pg_class WHERE oid = k.confrelid))) AS f(code, field, name) \
-        WHERE $6::bool AND k.contype = 'f' AND k.confrelid IN (SELECT oid FROM w) AND 'r' IN (k.confdeltype, k.confupdtype) \
-      UNION ALL SELECT '23514', 'constraint', k.conname::text FROM pg_constraint k WHERE k.contype = 'c' AND k.oid IN (SELECT oid FROM cons) \
-      UNION ALL SELECT '23514', 'table', c.relname::text FROM pg_class c JOIN w ON c.oid = w.oid \
-      UNION ALL SELECT '23514', 'dataType', t.typname::text FROM pg_type t JOIN dom ON t.oid = dom.oid \
-      UNION ALL SELECT '23P01', 'constraint', k.conname::text FROM pg_constraint k JOIN w ON k.conrelid = w.oid WHERE k.contype = 'x' \
+      UNION ALL SELECT '23502', 'column', a.attname::pg_catalog.text FROM pg_catalog.pg_attribute a JOIN w ON a.attrelid OPERATOR(pg_catalog.=) w.oid \
+        WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND a.attnotnull \
+      UNION ALL SELECT '23502', 'table', c.relname::pg_catalog.text FROM pg_catalog.pg_class c JOIN w ON c.oid OPERATOR(pg_catalog.=) w.oid \
+      UNION ALL SELECT '23502', 'dataType', t.typname::pg_catalog.text FROM pg_catalog.pg_type t JOIN dom ON t.oid OPERATOR(pg_catalog.=) dom.oid WHERE t.typnotnull \
+      UNION ALL SELECT f.code, f.field, f.name FROM pg_catalog.pg_constraint k \
+        CROSS JOIN LATERAL (VALUES ('23503'::pg_catalog.text, 'constraint'::pg_catalog.text, k.conname::pg_catalog.text), ('23503', 'table', ", relname!("k.conrelid"), "), \
+          ('23503', 'table', ", relname!("k.confrelid"), ")) AS f(code, field, name) \
+        WHERE k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+          AND (k.conrelid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM w) OR ($6::pg_catalog.bool AND k.confrelid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM w))) \
+      UNION ALL SELECT f.code, f.field, f.name FROM pg_catalog.pg_constraint k \
+        CROSS JOIN LATERAL (VALUES ('23001'::pg_catalog.text, 'constraint'::pg_catalog.text, k.conname::pg_catalog.text), ('23001', 'table', ", relname!("k.conrelid"), "), \
+          ('23001', 'table', ", relname!("k.confrelid"), ")) AS f(code, field, name) \
+        WHERE $6::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" AND k.confrelid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM w) \
+          AND (k.confdeltype OPERATOR(pg_catalog.=) 'r'::pg_catalog.\"char\" OR k.confupdtype OPERATOR(pg_catalog.=) 'r'::pg_catalog.\"char\") \
+      UNION ALL SELECT '23514', 'constraint', k.conname::pg_catalog.text FROM pg_catalog.pg_constraint k \
+        WHERE k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" AND k.oid OPERATOR(pg_catalog.=) ANY (SELECT cons.oid FROM cons) \
+      UNION ALL SELECT '23514', 'table', c.relname::pg_catalog.text FROM pg_catalog.pg_class c JOIN w ON c.oid OPERATOR(pg_catalog.=) w.oid \
+      UNION ALL SELECT '23514', 'dataType', t.typname::pg_catalog.text FROM pg_catalog.pg_type t JOIN dom ON t.oid OPERATOR(pg_catalog.=) dom.oid \
+      UNION ALL SELECT '23P01', 'constraint', k.conname::pg_catalog.text FROM pg_catalog.pg_constraint k JOIN w ON k.conrelid OPERATOR(pg_catalog.=) w.oid \
+        WHERE k.contype OPERATOR(pg_catalog.=) 'x'::pg_catalog.\"char\" \
     ) AS k(code, field, name) WHERE k.name IS NOT NULL"
 );
 
@@ -164,21 +225,23 @@ fn request(rewritten: &str) -> Option<Vec<Value>> {
     }
     // Each list sorted: the parse gives the tables in no fixed order, and a need is named by what it
     // asks, so another order would be another need, asked again every round.
-    let sorted = |list: Vec<&str>| {
-        let mut list = list;
+    fn sorted(mut list: Vec<&str>) -> Vec<&str> {
         list.sort_unstable();
         list.dedup();
-        json!(list)
-    };
+        list
+    }
     let mut operators = names(&parsed.operators);
     operators.extend(IMPLICIT_OPERATORS);
+    let (written, read) = (sorted(names(&parsed.write_set)), sorted(names(&parsed.read_set)));
     Some(vec![
-        sorted(names(&parsed.write_set)),
-        sorted(names(&parsed.read_set)),
-        sorted(names(&parsed.functions)),
-        sorted(operators),
-        sorted(names(&parsed.types)),
+        json!(written),
+        json!(read),
+        json!(sorted(names(&parsed.functions))),
+        json!(sorted(operators)),
+        json!(sorted(names(&parsed.types))),
         json!(parsed.changes_keys),
+        json!(written.len()),
+        json!(read.len()),
     ])
 }
 
