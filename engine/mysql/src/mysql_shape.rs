@@ -696,11 +696,12 @@ impl Builder<'_> {
         // A join whose ON reads a query around it, which no table beside the join can stand in
         // for, and a WITH query of the subquery's own that does, which a WITH at the front of the
         // probe cannot, are read in a derived table of their own. The subquery's WITH goes inside
-        // it, where no enclosing FROM reads it, and only where no level around has one: MySQL
-        // hides an outer WITH inside a query that has its own.
+        // it, where no enclosing FROM reads it, and so neither reason wraps a subquery with a WITH
+        // of its own under a level with one: MySQL hides an outer WITH inside a query that has
+        // its own, and the probe would have no place for the outer one an enclosing FROM reads.
         let own = depth > 0 && self.stack[depth].with.is_some();
         let outer = self.stack[..depth].iter().any(|l| l.with.is_some());
-        let wrap = (depth > 0 && !wider.is_empty() && !from.is_empty() && (from.iter().any(correlated_on) || (own && !outer))).then(|| Wrap {
+        let wrap = (depth > 0 && !wider.is_empty() && !from.is_empty() && !(own && outer) && (own || from.iter().any(correlated_on))).then(|| Wrap {
             at: wider.len(),
             with: if own { String::new() } else { with.clone() },
             inner_with: if own { self.stack[depth].with.as_ref().map(|w| format!("{w} ")).unwrap_or_default() } else { String::new() },
@@ -1237,6 +1238,10 @@ mod tests {
             probes("select (select json_arrayagg(json_object('id', c.id, 'name', u.name)) from comments c join users u on u.id = c.user_id and c.post_id = p.id) as j from posts p")[0].1.as_deref(),
             Some("SELECT reylo_probe.* FROM posts p, LATERAL (SELECT c.id AS a0, u.name AS a1 FROM comments c JOIN users u ON u.id = c.user_id AND c.post_id = p.id) AS reylo_probe")
         );
+        // Nor where the subquery has a WITH of its own under a level with one: the derived table
+        // would hide the statement's, which an enclosing FROM reads.
+        let sql = "with posts as (select id, email as title from users) select (with r as (select 1 as k) select json_arrayagg(json_object('t', p.title, 'n', u.name)) from comments c join users u on u.id = c.user_id and c.post_id = p.id, r) as j from posts p";
+        assert!(probes(sql).iter().all(|(_, wider)| wider.as_deref().is_none_or(|w| !w.contains("reylo_probe"))), "{:?}", probes(sql));
         // One whose ON reads its own tables alone is no such join.
         assert_eq!(
             probes("select (select json_arrayagg(json_object('id', c.id, 'name', u.name)) from comments c join users u on u.id = c.user_id where c.post_id = p.id) as j from posts p")[0].1.as_deref(),
