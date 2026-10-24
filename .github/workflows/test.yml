@@ -189,7 +189,7 @@ jobs:
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
   # fails the case. The cases run in shards side by side: Postgres's, SQLite's, and MySQL's in three, one of
-  # them mysql_timeouts alone, whose statements run until their timeouts by design. Postgres 18 runs on the
+  # them mysql_types alone, which takes as long as half the others together. Postgres 18 runs on the
   # runner rather than in a container, because the json_schema_* cases call five validator extensions built
   # into it; its packages are cached, since Ubuntu's mirror has taken half an hour to send them.
   oracle:
@@ -301,12 +301,12 @@ jobs:
             name=${name##*/}
             case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; *) dialect=postgres ;; esac
             case "$SHARD" in
-              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases $dir" ;;
-              mysql-slow) [ "$name" != mysql_timeouts ] || cases="$cases $dir" ;;
+              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
+              mysql-slow) [ "$name" != mysql_types ] || cases="$cases ${dir%/}" ;;
               mysql-1 | mysql-2)
-                if [ "$dialect" = mysql ] && [ "$name" != mysql_timeouts ]; then
+                if [ "$dialect" = mysql ] && [ "$name" != mysql_types ]; then
                   n=$((n + 1))
-                  [ $((n % 2)) -ne $((${SHARD#mysql-} % 2)) ] || cases="$cases $dir"
+                  [ $((n % 2)) -ne $((${SHARD#mysql-} % 2)) ] || cases="$cases ${dir%/}"
                 fi
                 ;;
             esac
