@@ -830,7 +830,7 @@ An error inside a transaction aborts it, even when `.try()` returns the error: e
 
 ## Drivers
 
-Reylo decodes its query results itself, so type parsers and options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.
+Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.
 
 Each example below runs this query:
 
@@ -879,7 +879,7 @@ await getUser.run(reserved, { id: 1 });
 reserved.release();
 ```
 
-A client created with `transform.row` isn't supported.
+Reylo prepares its queries on each connection, as postgres.js prepares its own. Behind a pooler in transaction mode, such as PgBouncer's, create the client with `prepare: false`, and Reylo's queries run unprepared too. A client created with `transform.row` isn't supported.
 
 ### `pg-promise`
 
