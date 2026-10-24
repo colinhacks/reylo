@@ -156,9 +156,19 @@ pub struct Catalog {
     /// Every column of each relation, in order, as [`COLUMNS_QUERY`] reports them: what says
     /// which query a bare column name in a nested statement belongs to.
     pub columns: Columns,
+    /// Per view, as named in `unique_keys`, its defining SELECT as `pg_get_viewdef` prints it:
+    /// read as a subquery, it gives the view the keys its statement keeps ([`output_keys`]). The
+    /// tables it reads are among the relations the rest of this catalog covers.
+    pub views: std::collections::HashMap<String, String>,
 }
 
 impl Catalog {
+    /// This catalog for a view's defining statement, which sees none of the WITH queries of the
+    /// statement that reads the view.
+    fn for_view(&self) -> Catalog {
+        Catalog { enclosing_ctes: Vec::new(), nested: false, ..self.clone() }
+    }
+
     /// This catalog for a statement nested in one whose WITH queries are `names`.
     fn enclosed(&self, names: &[String]) -> Catalog {
         let mut inner = self.clone();
@@ -873,20 +883,27 @@ impl<'a> From<'a> {
     /// only items no row null-extends count, pinned by the WHERE or by inner joins: every row of
     /// the FROM then carries the same row of each, which is what grouping and DISTINCT ask.
     fn determined(&self, constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
-        self.determined_from(vec![false; self.items.len()], constant, dialect, trust, catalog)
+        let keys = self.derived_keys(dialect, trust, catalog);
+        self.determined_from(vec![false; self.items.len()], &keys, constant, dialect, trust, catalog)
+    }
+
+    /// The keys of each subquery, WITH query and view, by item, read from its statement
+    /// ([`output_keys`]): they pin it as a unique index pins a table. None for a table.
+    fn derived_keys(&self, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Vec<Key>> {
+        (0..self.items.len())
+            .map(|i| match &self.items[i].source {
+                Source::Relation(rv) if !catalog.views.contains_key(&catalog_name(rv)) => Vec::new(),
+                _ => self.item_keys(i, dialect, trust, catalog),
+            })
+            .collect()
     }
 
     /// [`From::determined`], with the items `done` names taken as determined from the start: with
-    /// one item alone, whether every row of it meets one row at most of each other item.
-    fn determined_from(&self, mut done: Vec<bool>, constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
+    /// one item alone, whether every row of it meets one row at most of each other item. `keys`
+    /// are [`From::derived_keys`].
+    #[allow(clippy::too_many_arguments)]
+    fn determined_from(&self, mut done: Vec<bool>, keys: &[Vec<Key>], constant: bool, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<bool> {
         let n = self.items.len();
-        // The keys of each subquery and WITH query, which pin it as a unique key pins a table.
-        let keys: Vec<Vec<Key>> = (0..n)
-            .map(|i| match &self.items[i].source {
-                Source::Subquery(..) | Source::With(..) => self.item_keys(i, dialect, trust, catalog),
-                _ => Vec::new(),
-            })
-            .collect();
         // The items of one row at most per row of the rest (rule 4).
         let per_row: Vec<bool> = self
             .items
@@ -908,7 +925,7 @@ impl<'a> From<'a> {
                 let rest = || (0..n).all(|j| j == i || done[j] || (!constant && per_row[j]));
                 let pinned = match &item.source {
                     Source::Relation(_) if per_row[i] => !constant && rest(),
-                    Source::Relation(rv) => self.key_pinned(i, rv, &done, constant, catalog),
+                    Source::Relation(rv) => self.key_pinned(i, rv, &done, constant, catalog) || self.derived_pinned(i, &keys[i], &done, constant, catalog),
                     _ if constant && item.nullable => false,
                     Source::With(cte, recursive) => !*recursive && (with_query_at_most_one(cte, dialect, trust, &catalog.enclosed(&self.ctes)) || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Subquery(sub, lateral) => (!*lateral || rest()) && (at_most_one_select(sub, dialect, trust, &catalog.enclosed(&self.ctes)).is_ok() || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
@@ -951,6 +968,7 @@ impl<'a> From<'a> {
             return Vec::new();
         }
         match &item.source {
+            Source::Relation(rv) if catalog.views.contains_key(&catalog_name(rv)) => view_select(&catalog.views[&catalog_name(rv)], |view| output_keys(view, dialect, trust, &catalog.for_view())).unwrap_or_default(),
             Source::Relation(rv) => {
                 let relation = catalog_name(rv);
                 let full = catalog.unique_keys.get(&relation).into_iter().flatten();
@@ -976,7 +994,11 @@ impl<'a> From<'a> {
             return None;
         }
         match &item.source {
-            Source::Relation(rv) => Some((catalog_name(rv), column.to_string())),
+            Source::Relation(rv) => match catalog.views.get(&catalog_name(rv)) {
+                // A view's column is the table column its statement passes through.
+                Some(definition) => view_select(definition, |view| output_base(view, column, dialect, trust, &catalog.for_view())).flatten(),
+                None => Some((catalog_name(rv), column.to_string())),
+            },
             Source::Subquery(sub, _) => output_base(sub, column, dialect, trust, &catalog.enclosed(&self.ctes)),
             Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
                 Some(NodeEnum::SelectStmt(body)) => output_base(body, column, dialect, trust, &catalog.enclosed(&self.ctes)),
@@ -1757,21 +1779,38 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
         keys.extend(key);
     }
     let n = from.items.len();
+    let derived = from.derived_keys(dialect, trust, catalog);
     for r in 0..n {
         if matches!(from.items[r].source, Source::Subquery(_, true)) {
             continue;
         }
         let mut seed = vec![false; n];
         seed[r] = true;
-        if !from.determined_from(seed, false, dialect, trust, catalog).iter().all(|d| *d) {
+        if !from.determined_from(seed, &derived, false, dialect, trust, catalog).iter().all(|d| *d) {
             continue;
         }
-        for key in from.item_keys(r, dialect, trust, catalog) {
+        let own = match &from.items[r].source {
+            Source::Relation(rv) if !catalog.views.contains_key(&catalog_name(rv)) => from.item_keys(r, dialect, trust, catalog),
+            _ => derived[r].clone(),
+        };
+        for key in own {
             let mapped: Option<Key> = key.iter().map(|p| output(r, &p.name).map(|name| Part { name, relation: p.relation.clone(), column: p.column.clone() })).collect();
             keys.extend(mapped);
         }
     }
     keys
+}
+
+/// `f` of a view's defining SELECT, as `pg_get_viewdef` prints it; `None` where it does not parse
+/// as one SELECT. The definition's names resolve as they do in the statement, which the server
+/// prints them for.
+fn view_select<T>(definition: &str, f: impl FnOnce(&SelectStmt) -> T) -> Option<T> {
+    let parsed = crate::stack::parse(definition).ok()?;
+    let [stmt] = parsed.protobuf.stmts.as_slice() else { return None };
+    match stmt.stmt.as_deref()?.node.as_ref()? {
+        NodeEnum::SelectStmt(select) => Some(f(select)),
+        _ => None,
+    }
 }
 
 /// The table column behind output column `name` of a SELECT, passed through unchanged.
@@ -2715,6 +2754,39 @@ mod tests {
             .into_iter()
             .collect(),
             ..Catalog::default()
+        }
+    }
+
+    #[test]
+    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
+        let mut c = stock();
+        c.views.insert("open_todos".into(), "SELECT id, title FROM todos WHERE done = false".into());
+        let at_most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        for sql in [
+            "select * from (select id, title from todos) s where s.id = $1",
+            "with s as (select id, title from todos) select * from s where s.id = $1",
+            "select * from (select id as todo_id from todos) s where s.todo_id = $1",
+            "select * from (select * from (select id from todos) a) b where b.id = $1",
+            "select * from (select id from todos order by id limit 10) s where s.id = $1",
+            "select * from (select t.id, u.email from todos t join users u on u.id = t.owner_id) s where s.id = $1",
+            "select * from (select t.owner_id, count(*) as n from todos t group by t.owner_id) s where s.owner_id = $1",
+            "select * from (select distinct t.owner_id from todos t) s where s.owner_id = $1",
+            "select * from (select org_id, user_id from org_members) s where s.org_id = $1 and s.user_id = $2",
+            "select * from open_todos where id = $1",
+        ] {
+            assert_eq!(at_most(sql), Ok(()), "{sql}");
+        }
+        for sql in [
+            "select * from (select title from todos) s where s.title = $1",
+            "select * from (select id + 0 as id from todos) s where s.id = $1",
+            "select * from (select id from todos union all select id from todos) s where s.id = $1",
+            "select * from (select id, generate_series(1, 2) as n from todos) s where s.id = $1",
+            "select * from (select t.id from todos t cross join users u) s where s.id = $1",
+            "select * from (select org_id, user_id from org_members) s where s.org_id = $1",
+            "select * from (select owner_id, count(*) as n from todos group by rollup (owner_id)) s where s.owner_id = $1",
+            "select s.id from users u cross join lateral (select t.id, u.id as uid from todos t) s where u.id = s.uid and s.id = $1",
+        ] {
+            assert!(at_most(sql).is_err(), "{sql}");
         }
     }
 

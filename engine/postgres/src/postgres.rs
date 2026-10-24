@@ -436,7 +436,12 @@ impl<'a> Engine<'a> {
             None => None,
         };
         let functions: &[String] = parsed.as_ref().map(|p| p.functions.as_slice()).unwrap_or(&[]);
+        let view_rows_of = |functions: &[String], relations: &[String]| catalog_rows(self.host, functions, relations);
         let catalog_rows = catalog_rows(self.host, functions, &relations);
+        // The views the statement reads give the row-count proof the keys their statements keep,
+        // from the keys of the tables they read, which are asked apart from the statement's own.
+        let (view_definitions, view_relations, view_functions) = self.viewed(&relations);
+        let view_rows = if view_definitions.is_empty() { Some(None) } else { view_rows_of(&view_functions, &view_relations).map(Some) };
         for probe in &jsonshape::probes_ahead(&rewritten.sql) {
             self.prewarm(&probe.sql);
         }
@@ -462,7 +467,7 @@ impl<'a> Engine<'a> {
             Some(target) => self.host.query(REQUIRED_COLUMNS_QUERY, vec![json!(target.relation)], Scope::Statement),
             None => Some(Ok(Vec::new())),
         };
-        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required)) = (described, trust, operators, catalog_rows, arbiters, written, required) else { return None };
+        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows)) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows) else { return None };
         let (raw, described) = match described {
             Ok(d) => d,
             Err(e) => {
@@ -472,6 +477,10 @@ impl<'a> Engine<'a> {
         };
         // The catalog the row-count proof reads, with what the describe and the trust settled.
         let mut catalog = build_catalog(&operators, catalog_rows);
+        if let Some(rows) = view_rows {
+            merge_keys(&mut catalog, build_catalog(&operators, rows));
+        }
+        catalog.views = view_definitions;
         catalog.param_types = raw.params.clone();
         trusted(&mut catalog, &trust);
         let arbiters = arbiters.unwrap_or_default();
@@ -693,6 +702,35 @@ impl<'a> Engine<'a> {
                 registry.insert_unknown(*o);
             }
         }
+    }
+
+    /// The views among `relations`, and the views those read, as far as their definitions are
+    /// known yet: each view's name to its defining SELECT, and the relations their statements read
+    /// that `relations` does not name, with the functions their statements call. Each such
+    /// relation is prefetched, so a view among them is known a round later.
+    fn viewed(&self, relations: &[String]) -> (HashMap<String, String>, Vec<String>, Vec<String>) {
+        let mut definitions = HashMap::new();
+        let mut extra = Vec::new();
+        let mut functions = Vec::new();
+        let mut seen: HashSet<String> = relations.iter().cloned().collect();
+        let mut queue: Vec<String> = relations.to_vec();
+        while let Some(name) = queue.pop() {
+            let definition = {
+                let known = self.relations.borrow();
+                let views = self.views.borrow();
+                known.iter().find(|(_, (n, _))| *n == name).and_then(|(oid, _)| views.get(oid).cloned())
+            };
+            let Some(definition) = definition else { continue };
+            let parsed = analyze::analyze(&definition).ok();
+            functions.extend(parsed.iter().flat_map(|p| p.functions.iter().cloned()));
+            let unread: Vec<String> = relations_of(parsed.as_ref()).into_iter().filter(|n| seen.insert(n.clone())).collect();
+            definitions.insert(name, definition);
+            // Unanswered, a view among them is only read a round later.
+            let _ = self.prefetch(&unread);
+            extra.extend(unread.iter().cloned());
+            queue.extend(unread);
+        }
+        (definitions, sorted(extra), sorted(functions))
     }
 
     /// Every column and every column type of the named relations, in one round, so `settle`
@@ -2320,6 +2358,27 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names.sort_unstable();
     names.dedup();
     names
+}
+
+/// The keys, column types and collations of another catalog's relations, and what it knows of
+/// functions, added to `into`: those of the tables a view reads and the functions it calls.
+fn merge_keys(into: &mut Catalog, from: Catalog) {
+    for (rel, keys) in from.unique_keys {
+        into.unique_keys.entry(rel).or_insert(keys);
+    }
+    for (rel, keys) in from.partial_keys {
+        into.partial_keys.entry(rel).or_insert(keys);
+    }
+    for (rel, types) in from.column_types {
+        into.column_types.entry(rel).or_insert(types);
+    }
+    for (rel, columns) in from.nondeterministic {
+        into.nondeterministic.entry(rel).or_insert(columns);
+    }
+    into.single_row.extend(from.single_row);
+    into.functions.extend(from.functions);
+    into.set_returning.extend(from.set_returning);
+    into.volatile.extend(from.volatile);
 }
 
 fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
