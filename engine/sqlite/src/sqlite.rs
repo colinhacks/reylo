@@ -2347,10 +2347,22 @@ impl Analyzer<'_> {
     /// pins only that join's right side, and with `constant`, which asks that every row carry the
     /// same row of an item, never: some rows may meet the null extension instead.
     fn determined(&self, sel: &Sel, constant: bool) -> Vec<bool> {
+        let derived = self.derived_keys(sel);
+        self.determined_from(sel, vec![false; sel.from.len()], &derived, constant)
+    }
+
+    /// The keys of each subquery, WITH query and view in the FROM ([`Self::output_keys`]): they
+    /// pin it to one row as a unique index pins a table. None for a table.
+    fn derived_keys(&self, sel: &Sel) -> Vec<Vec<Vec<i64>>> {
+        sel.from.iter().map(|f| f.subquery.as_ref().map(|sub| self.output_keys(sub)).unwrap_or_default()).collect()
+    }
+
+    /// [`Self::determined`], with the items `done` names taken as determined from the start: with
+    /// one item alone, whether every row of it meets one row at most of each other item.
+    fn determined_from(&self, sel: &Sel, mut done: Vec<bool>, derived: &[Vec<Vec<i64>>], constant: bool) -> Vec<bool> {
         let n = sel.from.len();
         let index: HashMap<i64, usize> = sel.from.iter().enumerate().map(|(i, f)| (f.cursor, i)).collect();
         let terms = conjuncts(sel.where_.as_ref());
-        let mut done = vec![false; n];
         loop {
             let mut changed = false;
             for i in 0..n {
@@ -2359,7 +2371,8 @@ impl Analyzer<'_> {
                 }
                 let f = &sel.from[i];
                 let pinned = if let Some(sub) = &f.subquery {
-                    !(constant && f.outer) && self.at_most_one(sub).is_ok()
+                    let usable: Vec<&Node> = terms.iter().copied().filter(|t| !t.outer_on || (!constant && t.join == f.cursor)).collect();
+                    !(constant && f.outer) && (self.at_most_one(sub).is_ok() || self.derived_pinned(&derived[i], f.cursor, &usable, &done, &index))
                 } else if let (Some(table), false, false) = (f.table.as_deref(), f.tab_func, f.virtual_) {
                     // A WHERE term's `=` rejects the null extension, so it pins even an outer
                     // join's right side for every row.
@@ -2389,11 +2402,79 @@ impl Analyzer<'_> {
         info.unique_keys.iter().any(|key| !key.is_empty() && key.iter().all(|c| pins.iter().any(|p| p.eq_ignore_ascii_case(c))))
     }
 
+    /// Whether `terms` equate every column of one of `keys` (output positions of the subquery read
+    /// through `cursor`) to a value, as [`Self::key_pinned`] equates a table's.
+    fn derived_pinned(&self, keys: &[Vec<i64>], cursor: i64, terms: &[&Node], done: &[bool], index: &HashMap<i64, usize>) -> bool {
+        let pinned: Vec<i64> = terms.iter().filter_map(|t| self.pinned_column(t, cursor, done, index)).map(|c| c.index).collect();
+        keys.iter().any(|key| !key.is_empty() && key.iter().all(|p| pinned.contains(p)))
+    }
+
+    /// The unique keys of a SELECT's rows, each a set of its output columns by position, no two of
+    /// its rows sharing a value of every one of them (NULL aside, which no `=` matches):
+    ///
+    /// - a unique key of one of its FROM items, every column of it in the select list unchanged,
+    ///   when every other item is determined against that item ([`Self::determined_from`]): each
+    ///   of its rows then meets one row at most of the rest. A WHERE, a HAVING, a LIMIT and an
+    ///   OFFSET only remove rows, and a window function adds none;
+    /// - the GROUP BY's expressions, each a column of the select list;
+    /// - under DISTINCT, the whole select list, every entry a column.
+    ///
+    /// None for a set operation or a VALUES list, which may repeat a row.
+    fn output_keys(&self, sel: &Sel) -> Vec<Vec<i64>> {
+        if sel.prior.is_some() || sel.values {
+            return Vec::new();
+        }
+        let index: HashMap<i64, usize> = sel.from.iter().enumerate().map(|(i, f)| (f.cursor, i)).collect();
+        // The output position of a column of this FROM, kept unchanged.
+        let position = |found: &dyn Fn(&Node) -> bool| sel.columns.iter().position(|c| c.expr.op == "column" && index.contains_key(&c.expr.cursor) && found(&c.expr)).map(|p| p as i64);
+        let mut keys = Vec::new();
+        if !sel.group_by.is_empty() {
+            let key: Option<Vec<i64>> = sel.group_by.iter().map(|g| if g.op == "column" { position(&|e: &Node| e.cursor == g.cursor && e.index == g.index) } else { None }).collect();
+            keys.extend(key);
+            return keys;
+        }
+        if sel.distinct && !sel.columns.is_empty() && sel.columns.iter().all(|c| c.expr.op == "column" && index.contains_key(&c.expr.cursor)) {
+            keys.push((0..sel.columns.len() as i64).collect());
+        }
+        // A RIGHT or FULL JOIN keeps rows of a side that match nothing, which the closure does not
+        // read.
+        if sel.from.iter().any(|f| f.right) {
+            return keys;
+        }
+        let derived = self.derived_keys(sel);
+        let n = sel.from.len();
+        for (r, f) in sel.from.iter().enumerate() {
+            if f.tab_func || f.virtual_ {
+                continue;
+            }
+            let mut seed = vec![false; n];
+            seed[r] = true;
+            if !self.determined_from(sel, seed, &derived, false).iter().all(|d| *d) {
+                continue;
+            }
+            if f.subquery.is_some() {
+                for key in &derived[r] {
+                    keys.extend(key.iter().map(|p| position(&|e: &Node| e.cursor == f.cursor && e.index == *p)).collect::<Option<Vec<i64>>>());
+                }
+            } else if let Some(info) = f.table.as_deref().and_then(|t| self.tree.tables.get(t)) {
+                for key in info.unique_keys.iter().filter(|k| !k.is_empty()) {
+                    keys.extend(key.iter().map(|c| position(&|e: &Node| e.cursor == f.cursor && e.column.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(c)))).collect::<Option<Vec<i64>>>());
+                }
+            }
+        }
+        keys
+    }
+
     /// The column of `cursor` a term equates to a value, if it does, under a comparison that
     /// leaves the column as it is ([`keeps_column`]) and a collation its unique index holds to:
     /// the left operand's column's, else the right's (`sqlite3BinaryCompareCollSeq`), which must
     /// be BINARY or the key's own.
     fn pins<'n>(&self, t: &'n Node, cursor: i64, done: &[bool], index: &HashMap<i64, usize>) -> Option<&'n str> {
+        self.pinned_column(t, cursor, done, index).and_then(|col| col.column.as_deref())
+    }
+
+    /// [`Self::pins`]'s column itself.
+    fn pinned_column<'n>(&self, t: &'n Node, cursor: i64, done: &[bool], index: &HashMap<i64, usize>) -> Option<&'n Node> {
         if t.op != "=" {
             return None;
         }
@@ -2408,7 +2489,7 @@ impl Analyzer<'_> {
                 && !self.calls_volatile(other)
                 && other.select.is_none()
                 && cursors(other).is_some_and(|read| read.iter().all(|c| *c != cursor && index.get(c).is_none_or(|i| done[*i])));
-            value.then_some(col.column.as_deref()).flatten()
+            value.then_some(col)
         })
     }
 
@@ -3396,6 +3477,31 @@ mod tests {
         let a = analysis("select users.id from users, json_each(:ids) j where users.id = j.value and users.name = :n");
         assert_eq!(param(&a, "ids"), "text");
         assert_eq!(param(&a, "n"), "text");
+    }
+
+    #[test]
+    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
+        let rows = |sql: &str| analysis(sql).cardinality;
+        for sql in [
+            "select * from (select id, name from users) s where s.id = :id",
+            "with s as (select id, name from users) select * from s where s.id = :id",
+            "select * from (select id as user_id from users) s where s.user_id = :id",
+            "select * from (select * from (select id from users) a) b where b.id = :id",
+            "select * from (select p.id, u.name from posts p join users u on u.id = p.user_id) s where s.id = :id",
+            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.user_id = :u",
+            "select * from (select distinct user_id from posts) s where s.user_id = :u",
+        ] {
+            assert_eq!(rows(sql), "maybeOne", "{sql}");
+        }
+        for sql in [
+            "select * from (select name from users) s where s.name = :n",
+            "select * from (select id + 0 as id from users) s where s.id = :id",
+            "select * from (select id from users union all select id from users) s where s.id = :id",
+            "select * from (select p.id from posts p cross join users u) s where s.id = :id",
+            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.n = :n",
+        ] {
+            assert_eq!(rows(sql), "many", "{sql}");
+        }
     }
 
     #[test]

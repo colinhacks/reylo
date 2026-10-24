@@ -6,5 +6,5 @@ math_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function
 operators.sql: many (p: text, a: integer, b: integer) -> { l: bool, g: bool, j: unknown?, k: unknown?, c: text, t: text, i: integer, e: text, ty: text, n: integer }
 soundex.sql: many (x: text) -> { s: text, e: text }
 strings.sql: many () -> { u: text, l: integer, s: text, r: text, t: text, i: integer, h: text, q: text, p: text, a: real?, rd: real?, nu: text?, em: text, ch: text, un: integer?, rn: integer, lk: bool }
-view.sql: many (id: integer) -> { name: text, sound: text }
+view.sql: maybeOne (id: integer) -> { name: text, sound: text }
 windows.sql: many () -> { name: text, r: integer, prev: text?, s: real?, positive: integer }
