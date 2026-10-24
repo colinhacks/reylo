@@ -29,6 +29,9 @@
       ],
       "mysql2/*": [
         "./node_modules/mysql2/*"
+      ],
+      "@electric-sql/pglite": [
+        "./node_modules/@electric-sql/pglite"
       ]
     },
     "rootDirs": [
