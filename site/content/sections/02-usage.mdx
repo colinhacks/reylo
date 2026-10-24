@@ -39,12 +39,51 @@ To get the file's contents as written, before Reylo compiles its [parameters](#n
 
 To run the query, pass it your driver's client:
 
-```ts twoslash
+```ts twoslash dialect="postgres"
+import postgres from "postgres";
 import getUser from "./get_user.sql";
+
+const db = postgres(process.env.DATABASE_URL);
 
 const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
+
+It takes a client from any of these drivers:
+
+- **Postgres**
+  - `pg`
+  - postgres.js
+  - `Bun.sql`
+  - PGlite
+  - Neon
+  - `pg-promise`
+  - `@vercel/postgres`
+  - Drizzle
+- **MySQL**
+  - `mysql2`
+  - `mariadb`
+  - PlanetScale
+  - `Bun.sql`
+  - Drizzle
+- **SQLite**
+  - `better-sqlite3`
+  - `node:sqlite`
+  - `bun:sqlite`
+  - `Bun.sql`
+  - libSQL
+  - Turso
+  - Cloudflare D1
+  - Durable Objects
+  - `sqlite3`
+  - `sqlite`
+  - Drizzle
+
+<Callout>
+
+For a complete set of examples for each driver, refer to the [Supported drivers](#supported-drivers) section.
+
+</Callout>
 
 TypeScript checks both the parameters you pass and the result you get back. The file also exports their types by name, `Params` and `Row`:
 
