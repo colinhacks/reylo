@@ -1,0 +1,1 @@
+select p.id, (select coalesce(json_agg(json_build_object('id', c.id, 'author', a.first_name, 'deleted', a.deleted_at)), '[]') from (select c.id, c.author_id from comment c where c.post_id = p.id limit 2) c join person a on a.id = c.author_id) as comments from post p

@@ -23,7 +23,7 @@ subquery_grouped_outer.sql: many () -> { name: text, c: int8, n: int8 }
 subquery_in_derived.sql: many () -> { id: int4, n: int8 }
 subquery_in_expression.sql: many () -> { id: int4, n: int8?, last: int8 }
 subquery_in_where.sql: many () -> { id: int4, name: text }
-subquery_inside_cte.sql: many () -> { id: int4, n: int8? }
+subquery_inside_cte.sql: many () -> { id: int4, n: int8 }
 subquery_min_string.sql: many () -> { id: int4, first: text? }
 subquery_no_alias.sql: many () -> { id: int4, (select count(*) from posts p where p.user_id = u.id): int8? }
 subquery_no_from.sql: many () -> { id: int4, one: int8|int4, same: text, c: int8 }

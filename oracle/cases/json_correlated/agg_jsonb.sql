@@ -1,0 +1,1 @@
+select p.id, (select coalesce(jsonb_agg(jsonb_build_object('id', c.id, 'body', c.body, 'at', c.created_at)), '[]') from (select c.id, c.body, c.created_at from comment c where c.post_id = p.id limit 2) c) as comments from post p

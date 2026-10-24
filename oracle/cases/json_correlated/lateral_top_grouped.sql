@@ -1,0 +1,1 @@
+select p.id, coalesce(json_agg(json_build_object('id', c.id, 'body', c.body)) filter (where c.id is not null), '[]') as comments from post p left join lateral (select c.id, c.body from comment c where c.post_id = p.id order by c.created_at desc limit 2) c on true group by p.id

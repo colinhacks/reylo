@@ -1,0 +1,11 @@
+agg_limit.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+agg_no_limit.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+agg_uncorrelated.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+derived_join_person.sql: many () -> { id: int4, comments: [{ id: int4, author: text?, deleted: timestamp? }] }
+join_on_correlated.sql: many () -> { id: int4, comments: [{ id: int4, author: text }] }
+lateral_inner_derived.sql: many () -> { id: int4, comments: json? }
+lateral_top_grouped.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+nested_subqueries.sql: many () -> { id: int4, posts: [{ title: text, comments: [{ body: text }] }] }
+object_limit_one.sql: many () -> { id: int4, latest: { id: int4, body: text }? }
+two_levels.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+with_correlated.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }

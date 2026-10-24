@@ -1,0 +1,1 @@
+select p.id, coalesce(c.comments, json_array()) as comments from post p left join lateral (select json_arrayagg(json_object('id', c.id, 'body', c.body)) as comments from (select c.id, c.body from comment c where c.post_id = p.id order by c.created_at desc limit 2) c) c on true
