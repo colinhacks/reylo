@@ -30,6 +30,8 @@ It opens the page in the browser; --no-open leaves it closed, for a script or an
 type Backend = {
   dialect: Dialect;
   label: string;
+  /** What the project file sets that Reylo does not read (`url` alone), said once, as `reylo generate` says it. */
+  notice?: string;
   schema: string;
   catalog: Catalog;
   analyze(sql: string, width: number): Promise<PlayResult>;
@@ -55,7 +57,8 @@ export async function play(args: string[]): Promise<number> {
     console.error(`reylo play: ${(e as Error).message}`);
     return 1;
   }
-  const { url, label } = running;
+  const { url, label, notice } = running;
+  if (notice) console.log(styleText("yellow", notice));
   console.log(`${styleText("bold", "Reylo playground")} at ${styleText("cyan", url)}\n${styleText("dim", `${label}. The API: GET ${url}api/analyze?q=<sql>. Ctrl-C stops it.`)}`);
   if (options.open) openBrowser(url);
   await new Promise<void>((done) => {
@@ -66,7 +69,7 @@ export async function play(args: string[]): Promise<number> {
   return 0;
 }
 
-export type Playground = { url: string; label: string; close(): Promise<void> };
+export type Playground = { url: string; label: string; notice?: string; close(): Promise<void> };
 
 /** Starts the playground for the project of `cwd`, on `port` (by default the first free one from 4983): what `reylo play` runs, and the tests. */
 export async function startPlay(options: { port?: number | undefined; cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<Playground> {
@@ -85,6 +88,7 @@ export async function startPlay(options: { port?: number | undefined; cwd?: stri
   return {
     url: `http://127.0.0.1:${port}/`,
     label: backend.label,
+    ...(backend.notice ? { notice: backend.notice } : {}),
     async close() {
       server.closeAllConnections();
       await new Promise<void>((done) => server.close(() => done()));
@@ -147,6 +151,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
   const cat = catalog(dialect, await rows(queries.tables), await rows(queries.functions), await rows(queries.types));
   return {
     dialect,
+    ...(project.notice ? { notice: project.notice } : {}),
     label: `${dialect === "postgres" ? "Postgres" : dialect === "mysql" ? "MySQL" : "SQLite"} at ${session.where()} (${project.urlSource})`,
     schema: (await schemaDdl(dialect, (sql) => session.query(sql))) ?? schemaText(dialect, cat),
     catalog: cat,

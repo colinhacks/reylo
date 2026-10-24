@@ -89,6 +89,18 @@ test("reylo play answers this machine's own pages and tools, and refuses another
   }
 });
 
+test("reylo play says, as reylo generate does, that a project file's url alone is not read", async () => {
+  const root = project({ ".reylo.yaml": 'url: "file:./other.db"\n' });
+  new DatabaseSync(join(root, "app.db")).close();
+  const play = await startPlay({ cwd: root, port: 0, env: { DATABASE_URL: "file:./app.db" } });
+  try {
+    assert.match(play.label, /app\.db \(DATABASE_URL in the environment\)$/);
+    assert.match(play.notice ?? "", /Reylo does not read url; set direct_url/);
+  } finally {
+    await play.close();
+  }
+});
+
 test("reylo play refuses a project that names no database, and says where to try Reylo without one", async () => {
   const root = project({});
   await assert.rejects(startPlay({ cwd: root, port: 0, env: {} }), /^Error: No database URL: .*reylo play reads the project's own database; to try Reylo without one, open https:\/\/reylo\.dev\/play\.$/);
