@@ -372,6 +372,23 @@ from users
 
 </Inferred>
 
+**Aggregates**
+
+Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
+
+<Inferred>
+
+```sql file="my_null_aggregates.sql" dialect="mysql"
+select user_id,
+  json_arrayagg(id) as order_ids,
+  max(ships_on) as last_ships_on,
+  sum(total) as spent
+from orders
+group by user_id
+```
+
+</Inferred>
+
 **Subqueries**
 
 A scalar subquery that aggregates without a `group by` returns one row, so its `count` is non-null, whether it reads a table, a subquery in `from` or a `with` query. A column read from a `with` query or a subquery in `from` is as nullable as it is in that query.
@@ -418,8 +435,6 @@ group by role with rollup
 </Inferred>
 
 </Rules>
-
-`json_arrayagg` returns `NULL` over no rows, but is non-null with a `group by`, since every group has rows.
 
 To tell Reylo a value is never null, give it a default with `coalesce` or `ifnull`, or filter out the nulls with `where x is not null`.
 
