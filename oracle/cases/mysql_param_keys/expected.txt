@@ -1,6 +1,6 @@
 case_chooses.sql: many (sort: text) -> { id: int4, name: text }
 case_direction.sql: many (desc: text) -> { id: int4, name: text }
-group_alone.sql: many (g: text) -> { n: int8 } !! reylo17: group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
+group_alone.sql: maybeOne (g: text) -> { n: int8 } !! reylo17: group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
 group_beside.sql: many (g: text) -> { name: text, n: int8 } !! reylo17: group by :g groups every row by the same value, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
 in_set_operation.sql: many (s: text) -> { id: int4|int8 } !! reylo17: order by :s sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :s when 'name' then name end
 in_subquery.sql: many (s: text) -> { id: int4 } !! reylo17: order by :s sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :s when 'name' then name end
