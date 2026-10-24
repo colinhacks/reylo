@@ -1,0 +1,20 @@
+by_expression.sql: many () -> { y: text?, n: int8, top: int4|int8 }
+derived.sql: many () -> { user_id: int4, top: int4|int8 }
+expression.sql: many () -> { user_id: int4, next: numeric?, note: text }
+grouped.sql: many () -> { user_id: int4, total: numeric, mean: numeric, first_title: text, last_at: timestamp?, score: float8? }
+grouped_distinct.sql: many () -> { user_id: int4, total: numeric, top: text }
+grouped_window.sql: many () -> { user_id: int4, top: int4|int8, total: numeric }
+having.sql: many () -> { user_id: int4, top: text }
+json.sql: many () -> { user_id: int4, by_title: json, notes: [text?] }
+left_joined.sql: many () -> { id: int4, top: text? }
+left_joined_reduced.sql: many () -> { id: int4, top: text }
+param.sql: many (1: int4) -> { user_id: int4, top: int4|int8 }
+rollup.sql: many () -> { user_id: int4|int8?, total: numeric?, top: text? }
+scalar_subquery.sql: many () -> { id: int4, top: int4|int8? }
+select_distinct.sql: many () -> { user_id: int4, top: int4|int8 }
+ungrouped.sql: one () -> { total: numeric?, top: text? }
+ungrouped_empty.sql: one () -> { top: int4|int8? }
+union_arm.sql: many () -> { user_id: int8, top: int8? }
+variance.sql: many () -> { user_id: int4, v: float8?, s: float8?, g: text?, b: int8 }
+where_tested.sql: many () -> { user_id: int4, last_note: text }
+with_query.sql: many () -> { user_id: int4, top: int4|int8 }

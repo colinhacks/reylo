@@ -1,5 +1,5 @@
 aggregates.sql: one () -> { a: int8, b: int8, c: int8, d: numeric?, e: numeric?, f: int4|int8?, g: text?, h: date?, i: text?, j: int8, k: int8, l: int8, m: float8?, o: float8?, p: [int4]?, q: json?, r: numeric?, s: int8|int4?, u: int4|int8?, v: int8, w: numeric, x: bool, z: timestamp?, aa: numeric?, ab: float8?, ac: json?, ad: text?, ae: text?, af: bytea?, ag: int2?, ah: int2?, ai: time?, aj: float8?, ak: float8? }
-aggregates_grouped.sql: many () -> { n: int4, a: int8, b: numeric?, c: text?, d: int4|int8?, e: text?, f: text, g: int8, h: numeric?, i: int8, j: date?, k: [int2] }
+aggregates_grouped.sql: many () -> { n: int4, a: int8, b: numeric, c: text, d: int4|int8?, e: text?, f: text, g: int8, h: numeric, i: int8, j: date, k: [int2] }
 aggregates_no_rows.sql: one () -> { a: int8, b: numeric?, c: int4|int8?, d: int8, e: int8, f: int8, g: int8, h: numeric?, i: float8?, j: text?, k: [int4]?, l: numeric?, m: int4|int8?, o: int4|int8?, p: bool }
 aggregates_rollup.sql: many () -> { n: int4|int8?, small: int2?, a: int8, b: numeric?, c: int8?, d: text? }
 bit_and_enum.sql: many () -> { a: bytea, b: int8|int4, c: text?, d: text, e: float8, f: text, g: float8, h: bool, i: bool, j: int2, k: int8|int4, l: bool, m: int8|int4, o: int8, p: text?, q: text?, r: text?, s: text?, u: text?, v: int8, w: int8, x: int8 }

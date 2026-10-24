@@ -2,7 +2,7 @@ aggregates.sql: one () -> { most: int8|int4?, total: numeric?, some: bool }
 buffered_and_sorted.sql: many () -> { done: bool, eq: bool? }
 columns.sql: many () -> { done: bool, maybe: bool?, unsigned_flag: bool?, small: int2?, four: int2?, bit_flag: bool?, eight: bytea? }
 comparisons.sql: many () -> { eq: bool?, ne: bool?, lt: bool?, nse: bool, isnull: bool, nottrue: bool, inl: bool?, btw: bool?, lk: bool?, re: bool?, nota: bool?, andab: bool?, orab: bool?, xorab: bool?, t: bool, f: bool }
-expressions_over_flags.sql: many () -> { zero: int8|int4, most: int2?, plus: int8|int4?, either: int2? }
+expressions_over_flags.sql: many () -> { zero: int8|int4, most: int2, plus: int8|int4?, either: int2? }
 not_truth_values.sql: many () -> { one: int8|int4, five: int8|int4, cs: int8|int4, mixed: int8|int4?, plus: int8|int4? }
 passed_through.sql: many () -> { co: bool, ifn: bool?, iff: bool?, cs: bool?, ni: bool?, sub: bool?, ex: bool }
 placeholders.sql: many (n: int4, m: int4, s: text, p: int4) -> { eq: bool?, listed: bool?, lk: bool?, co: bool? }
