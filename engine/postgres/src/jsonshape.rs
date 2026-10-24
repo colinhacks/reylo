@@ -181,7 +181,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if !is_constructor(val) && builder.lateral_target(val).is_none() {
+        if !is_constructor(val) && !builder.reads_lateral(val) {
             continue;
         }
         let Some(name) = target_name(rt) else { continue };
@@ -197,14 +197,20 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     }
     // A probe that reads one of the statement's own CTEs carries them, so a constructor reading
     // one still resolves ([`select_text`]).
-    let text = |from: &[Node], d: &Draft| {
-        let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
-        grouped_select_text(version, &d.items, from, d.filter.as_ref(), group, with.as_ref())
+    let text = |from: &[Node], inner: Option<usize>, d: &Draft| match inner {
+        Some(at) => wrapped_text(version, &d.items, &from[..at], &from[at..], d.filter.as_ref(), with.as_ref()),
+        None => {
+            let group = builder.group.as_deref().filter(|_| d.grouped).unwrap_or(&[]);
+            grouped_select_text(version, &d.items, from, d.filter.as_ref(), group, with.as_ref())
+        }
     };
+    // A probe that reads the wider FROM wraps the FROM where its constructor stands where that
+    // reads a query around it in a join's ON ([`Draft::inner`]).
+    let own = |d: &Draft| d.inner.filter(|_| d.widened);
     let probes = builder
         .drafts
         .iter()
-        .map(|d| Probe { sql: text(&d.from, d).unwrap_or_default(), wider: d.wider.as_ref().and_then(|f| text(f, d)) })
+        .map(|d| Probe { sql: text(&d.from, own(d), d).unwrap_or_default(), wider: d.wider.as_ref().and_then(|f| text(f, d.inner, d)) })
         .collect();
     let present = builder
         .drafts
@@ -217,7 +223,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
             }
             let from = from.unwrap_or_else(|| d.from.clone());
             let wider = wider.or_else(|| d.wider.clone());
-            Some(Probe { sql: text(&from, d).unwrap_or_default(), wider: wider.as_ref().and_then(|f| text(f, d)) })
+            Some(Probe { sql: text(&from, own(d), d).unwrap_or_default(), wider: wider.as_ref().and_then(|f| text(f, d.inner, d)) })
         })
         .collect();
     Plan { columns, probes, present }
@@ -361,8 +367,12 @@ struct Draft {
     /// The condition every row the context reads passed: the statement's WHERE, and an
     /// aggregate's FILTER for what it aggregates.
     filter: Option<Node>,
-    /// The same `FROM` with every enclosing one appended, for a correlated constructor.
+    /// Every enclosing `FROM`, outermost first, then this one, for a correlated constructor.
     wider: Option<Vec<Node>>,
+    /// Where in `wider` this `FROM` begins, where a join of it reads a query around it in its ON,
+    /// which no item beside the join can stand in for: the probe then reads it in a LATERAL
+    /// subquery of its own, where what is around it is a query around it again.
+    inner: Option<usize>,
     /// Whether the probe carries the top statement's GROUP BY ([`Builder::group`]).
     grouped: bool,
     /// Whether the probe reads its FROM with every enclosing one already, for a bare name the
@@ -620,6 +630,16 @@ impl Builder<'_> {
         is_constructor(&target).then_some(Lateral { body, target, nulled, alias })
     }
 
+    /// Whether `expr` is a column of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]),
+    /// alone, under a cast to JSON, or first in a `coalesce` (`coalesce(x.items, '[]')`).
+    fn reads_lateral(&self, expr: &Node) -> bool {
+        match expr.node.as_ref() {
+            Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|first| self.reads_lateral(first)),
+            Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(|arg| self.reads_lateral(arg)),
+            _ => self.lateral_target(expr).is_some(),
+        }
+    }
+
     /// What a LATERAL subquery's target builds, read in the subquery's own context: its FROM and
     /// WHERE, with every FROM around it for its correlated columns. An outer join that can null
     /// the subquery, or a grouping set of the statement, makes the value nullable.
@@ -784,14 +804,25 @@ impl Builder<'_> {
         }
         let depth = self.stack.len() - 1;
         let (ctx, from, filter) = self.stack[depth].clone();
-        let mut wider = from.clone();
-        for d in (0..depth).rev() {
-            wider.extend(self.stack[d].1.iter().cloned());
+        // The FROMs around come first, outermost first, and each subquery of one inside the top
+        // statement's is LATERAL: one may read a query around it (`(SELECT … FROM (SELECT … WHERE
+        // c.post_id = p.id) c)`), which in the probe is an item left of it. An aggregate's FILTER
+        // reads its FROM again, which is no FROM around it.
+        let mut wider: Vec<Node> = Vec::new();
+        for (d, (_, around, _)) in self.stack[..depth].iter().enumerate() {
+            if *around != from {
+                wider.extend(around.iter().cloned().map(|item| if d == 0 { item } else { lateral_item(item) }));
+            }
         }
+        // Wrapped, the FROM keeps its subqueries as they are: one made LATERAL there would read an
+        // item beside it before a query around it.
+        let inner = (depth > 0 && !wider.is_empty() && from.iter().any(correlated_on)).then_some(wider.len());
+        wider.extend(from.iter().cloned().map(|item| if depth == 0 || inner.is_some() { item } else { lateral_item(item) }));
         // A subquery with no `FROM` of its own only ever resolves against the enclosing one.
         let (from, wider) = if from.is_empty() && !wider.is_empty() { (wider, None) } else { (from, Some(wider)) };
         let wider = wider.filter(|w| w.len() != from.len());
-        self.drafts.push(Draft { ctx, row, from, filter, wider, grouped: false, widened: false, items: Vec::new() });
+        let inner = inner.filter(|_| wider.is_some());
+        self.drafts.push(Draft { ctx, row, from, filter, wider, inner, grouped: false, widened: false, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -904,6 +935,67 @@ fn from_items<'n>(node: &'n Node, nulled: bool, out: &mut Vec<(&'n Node, bool)>)
         Some(_) => out.push((node, nulled)),
         None => {}
     }
+}
+
+/// A FROM item with every subquery in it, joins followed, made LATERAL: it then reads the items
+/// left of it as it read the queries around it, where a name it means is found the same way. A
+/// name the probe would find twice, an item of the same alias or a column two of them have, fails
+/// it rather than reading another.
+fn lateral_item(mut node: Node) -> Node {
+    match node.node.as_mut() {
+        Some(NodeEnum::RangeSubselect(r)) => r.lateral = true,
+        Some(NodeEnum::JoinExpr(j)) => {
+            for side in [&mut j.larg, &mut j.rarg] {
+                if let Some(inner) = side.take() {
+                    *side = Some(Box::new(lateral_item(*inner)));
+                }
+            }
+        }
+        _ => {}
+    }
+    node
+}
+
+/// Whether a FROM item is a join whose ON reads an item no join in it holds: one of a query
+/// around it, as Postgres reads a name the join does not have. A name in a subquery of the ON is
+/// that subquery's own to find.
+fn correlated_on(node: &Node) -> bool {
+    fn items(node: &Node, names: &mut Vec<String>, quals: &mut Vec<Value>) {
+        match node.node.as_ref() {
+            Some(NodeEnum::JoinExpr(j)) => {
+                names.extend(j.alias.as_ref().map(|a| a.aliasname.clone()));
+                quals.extend(j.quals.as_deref().and_then(|q| serde_json::to_value(q).ok()));
+                for side in [j.larg.as_deref(), j.rarg.as_deref()].into_iter().flatten() {
+                    items(side, names, quals);
+                }
+            }
+            Some(_) => names.extend(item_alias(node)),
+            None => {}
+        }
+    }
+    fn qualifiers(v: &Value, out: &mut Vec<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::Array(fields)) = map.get("ColumnRef").and_then(|c| c.get("fields")) {
+                    let names: Vec<&str> = fields.iter().filter_map(|f| f.get("node")?.get("String")?.get("sval")?.as_str()).collect();
+                    if names.len() >= 2 && names.len() == fields.len() {
+                        out.push(names[names.len() - 2].to_string());
+                    }
+                }
+                map.iter().filter(|(k, _)| k.as_str() != "SubLink").for_each(|(_, child)| qualifiers(child, out));
+            }
+            Value::Array(children) => children.iter().for_each(|child| qualifiers(child, out)),
+            _ => {}
+        }
+    }
+    if !matches!(node.node, Some(NodeEnum::JoinExpr(_))) {
+        return false;
+    }
+    let (mut names, mut quals) = (Vec::new(), Vec::new());
+    items(node, &mut names, &mut quals);
+    let mut read = Vec::new();
+    quals.iter().for_each(|q| qualifiers(q, &mut read));
+    read.iter().any(|q| !names.contains(q))
 }
 
 /// The FROM items left of the LATERAL subquery `alias`: the entries before the one holding it, and
@@ -1029,8 +1121,27 @@ pub(crate) fn select_text(version: i32, items: &[Node], from: &[Node], filter: O
     grouped_select_text(version, items, from, filter, &[], with)
 }
 
-/// [`select_text`] with a GROUP BY.
-fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
+/// The alias of the subquery [`wrapped_text`] reads its columns from.
+const WRAPPED: &str = "reylo_probe";
+
+/// `SELECT * FROM <around>, LATERAL (SELECT <items> FROM <from>) AS reylo_probe`: a probe whose
+/// FROM reads the items of `around` as a subquery reads a query around it.
+fn wrapped_text(version: i32, items: &[Node], around: &[Node], from: &[Node], filter: Option<&Node>, with: Option<&protobuf::WithClause>) -> Option<String> {
+    let inner = select_stmt(items, from, filter, &[])?;
+    let mut outer = around.to_vec();
+    outer.push(Node {
+        node: Some(NodeEnum::RangeSubselect(Box::new(protobuf::RangeSubselect {
+            lateral: true,
+            subquery: Some(Box::new(Node { node: Some(NodeEnum::SelectStmt(Box::new(inner))) })),
+            alias: Some(protobuf::Alias { aliasname: WRAPPED.to_string(), colnames: Vec::new() }),
+        }))),
+    });
+    let star = Node { node: Some(NodeEnum::ColumnRef(ColumnRef { fields: vec![string_node(WRAPPED), Node { node: Some(NodeEnum::AStar(AStar {})) }], location: -1 })) };
+    grouped_select_text(version, &[star], &outer, None, &[], with)
+}
+
+/// `SELECT <items> FROM <from> WHERE <filter> GROUP BY <group>`, each item named by its position.
+fn select_stmt(items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node]) -> Option<SelectStmt> {
     if items.is_empty() {
         return None;
     }
@@ -1050,7 +1161,7 @@ fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Opti
         .collect();
     // Every enumerated field has to carry a value the deparser knows: a protobuf zero means
     // "unset", and libpg_query asserts rather than guessing.
-    let mut select = SelectStmt {
+    Some(SelectStmt {
         target_list,
         from_clause: from.to_vec(),
         where_clause: filter.map(|f| Box::new(f.clone())),
@@ -1058,7 +1169,12 @@ fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Opti
         op: protobuf::SetOperation::SetopNone as i32,
         limit_option: protobuf::LimitOption::Default as i32,
         ..Default::default()
-    };
+    })
+}
+
+/// [`select_text`] with a GROUP BY.
+fn grouped_select_text(version: i32, items: &[Node], from: &[Node], filter: Option<&Node>, group: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
+    let mut select = select_stmt(items, from, filter, group)?;
     let deparse = |select: &SelectStmt| {
         let result = ParseResult {
             version,
@@ -1495,6 +1611,40 @@ mod tests {
     }
 
     #[test]
+    fn a_correlated_derived_table_is_read_after_the_queries_around_it() {
+        // The derived table reads `p` of the query around it, which the wider probe holds as an
+        // item left of it: LATERAL, the derived table reads it there.
+        let p = shapes(
+            "SELECT p.id, (SELECT coalesce(json_agg(json_build_object('id', c.id)), '[]')
+                FROM (SELECT c.id FROM comments c WHERE c.post_id = p.id LIMIT 2) c) AS comments
+             FROM posts p",
+        );
+        assert_eq!(p.probes[0].sql, "SELECT c.id AS a0 FROM (SELECT c.id FROM comments c WHERE c.post_id = p.id LIMIT 2) c");
+        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT c.id AS a0 FROM posts p, LATERAL (SELECT c.id FROM comments c WHERE c.post_id = p.id LIMIT 2) c"));
+    }
+
+    #[test]
+    fn a_join_that_reads_a_query_around_it_in_its_on_is_read_in_a_lateral_subquery() {
+        // No item beside a join is in scope in its ON, so the FROM is a subquery of the probe's.
+        let p = shapes(
+            "SELECT p.id, (SELECT json_agg(json_build_object('id', c.id, 'name', u.name))
+                FROM comments c JOIN users u ON u.id = c.user_id AND c.post_id = p.id) AS comments
+             FROM posts p",
+        );
+        assert_eq!(
+            p.probes[0].wider.as_deref(),
+            Some("SELECT reylo_probe.* FROM posts p, LATERAL (SELECT c.id AS a0, u.name AS a1 FROM comments c JOIN users u ON u.id = c.user_id AND c.post_id = p.id) reylo_probe")
+        );
+        // A join whose ON reads its own items alone is no such join.
+        let p = shapes(
+            "SELECT p.id, (SELECT json_agg(json_build_object('id', c.id, 'name', u.name))
+                FROM comments c JOIN users u ON u.id = c.user_id WHERE c.post_id = p.id) AS comments
+             FROM posts p",
+        );
+        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT c.id AS a0, u.name AS a1 FROM posts p, comments c JOIN users u ON u.id = c.user_id"));
+    }
+
+    #[test]
     fn a_nested_aggregate_becomes_one_probe_over_the_subquery() {
         let p = shapes(
             "SELECT p.id, p.title,
@@ -1504,7 +1654,7 @@ mod tests {
         );
         assert_eq!(p.probes.len(), 1);
         assert_eq!(p.probes[0].sql, "SELECT c.id AS a0, c.body AS a1 FROM comments c");
-        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT c.id AS a0, c.body AS a1 FROM comments c, posts p"));
+        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT c.id AS a0, c.body AS a1 FROM posts p, comments c"));
         assert_eq!(p.columns.len(), 1);
         let (name, shape) = &p.columns[0];
         assert_eq!(name, "comments");
@@ -1782,7 +1932,7 @@ mod tests {
         assert_eq!(fields(&named), [Shape::Column { probe: 0, index: 0 }, Shape::Row { probe: 1 }]);
         let inner = shapes("DELETE FROM users WHERE id = 1 RETURNING jsonb_build_object('posts', (SELECT jsonb_agg(jsonb_build_object('title', new.title, 'author', old.name, 'now', (SELECT new.name))) FROM posts new WHERE new.author_id = old.id)) AS gone");
         assert_eq!(inner.probes[0].sql, "SELECT new.title AS a0, users.name AS a1 FROM posts new");
-        assert_eq!(inner.probes[0].wider.as_deref(), Some("SELECT new.title AS a0, users.name AS a1 FROM posts new, users"));
+        assert_eq!(inner.probes[0].wider.as_deref(), Some("SELECT new.title AS a0, users.name AS a1 FROM users, posts new"));
         // A MERGE reads its source through an outer join where it acts without a source row.
         let m = shapes("MERGE INTO users u USING posts s ON u.id = s.author_id WHEN MATCHED THEN UPDATE SET name = s.title WHEN NOT MATCHED BY SOURCE THEN DELETE RETURNING jsonb_build_object('title', s.title, 'was', old.name, 'is', new.name) AS change");
         assert_eq!(m.probes[0].sql, "SELECT s.title AS a0, u.name AS a1, u.name AS a2 FROM users u LEFT JOIN posts s ON true");
@@ -1885,7 +2035,7 @@ mod tests {
         assert!(matches!(&p.columns[0].1, Shape::Array { non_null: false, .. }));
         assert_eq!(p.probes[0].sql, "SELECT p.sku AS a0 FROM products p WHERE p.org_id = u.org_id");
         // The wider probe reads what the subquery can: the items left of it, and not the join.
-        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT p.sku AS a0 FROM products p, users u WHERE p.org_id = u.org_id"));
+        assert_eq!(p.probes[0].wider.as_deref(), Some("SELECT p.sku AS a0 FROM users u, products p WHERE p.org_id = u.org_id"));
         let p = shapes("SELECT x.o FROM orgs o, users u CROSS JOIN LATERAL (SELECT jsonb_build_object('n', u.name) AS o) x, teams t");
         assert_eq!(p.probes[0].sql, "SELECT u.name AS a0 FROM orgs o, users u");
         // A join with an alias of its own hides a subquery of the same name inside it.
@@ -2098,13 +2248,13 @@ mod tests {
         // `name` is a column of `users`, which the statement reads it as; over `posts name` alone
         // it would be the whole row of `posts`.
         let p = shapes("SELECT (SELECT jsonb_agg(name) FROM posts name WHERE name.id = 1) AS j FROM users");
-        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT name AS a0 FROM posts name, users"]);
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT name AS a0 FROM users, posts name"]);
         // Inside an expression too, and beside a leaf that keeps the narrow probe.
         let p = shapes("SELECT (SELECT jsonb_build_object('n', lower(name), 't', name.title) FROM posts name LIMIT 1) AS j FROM users");
-        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT lower(name) AS a0 FROM posts name, users", "SELECT name.title AS a0 FROM posts name"]);
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT lower(name) AS a0 FROM users, posts name", "SELECT name.title AS a0 FROM posts name"]);
         // So is one in a subquery inside, whose own FROM has an item of the name.
         let p = shapes("SELECT (SELECT jsonb_build_object('n', (SELECT count(name) FROM comments name)) FROM posts p LIMIT 1) AS j FROM users");
-        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT count(name) AS a0 FROM comments name, posts p, users"]);
+        assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT count(name) AS a0 FROM users, posts p, comments name"]);
         // A name of a column here, or of no column around, is read as it is.
         let p = shapes("SELECT (SELECT jsonb_agg(title) FROM posts title) AS j FROM users");
         assert_eq!(p.probes.iter().map(|p| p.sql.as_str()).collect::<Vec<_>>(), ["SELECT title AS a0 FROM posts title"]);

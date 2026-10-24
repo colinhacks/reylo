@@ -1,0 +1,1 @@
+select p.id, coalesce(x.comments, '[]') as comments from post p left join lateral (select json_agg(json_build_object('id', c.id, 'body', c.body)) as comments from comment c where c.post_id = p.id) x on true

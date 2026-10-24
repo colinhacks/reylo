@@ -1,0 +1,22 @@
+agg_bare.sql: many () -> { id: int4, comments: [{ id: int4 }]? }
+agg_correlated_outside.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+agg_jsonb.sql: many () -> { id: int4, comments: [{ id: int4, body: text, at: timestamptz }] }
+agg_limit.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+agg_no_limit.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+agg_uncorrelated.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+array_agg_row.sql: many () -> { id: int4, comments: record[] }
+derived_expression.sql: many () -> { id: int4, comments: [{ n: int4?, title: text }] }
+derived_join_person.sql: many () -> { id: int4, comments: [{ id: int4, author: text, deleted: timestamptz? }] }
+derived_left_join.sql: many () -> { id: int4, comments: [{ id: int4, author: text? }] }
+join_on_correlated.sql: many () -> { id: int4, comments: [{ id: int4, author: text }] }
+lateral_coalesce_outside.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+lateral_inner_derived.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+lateral_inner_derived_bare.sql: many () -> { id: int4, comments: [{ id: int4, body: text }]? }
+lateral_top_grouped.sql: many () -> { id: int4, comments: [{ id: int4, body: text? }] }
+nested_subqueries.sql: many () -> { id: int4, posts: [{ title: text, comments: [{ body: text }] }] }
+object_limit_one.sql: many () -> { id: int4, latest: { id: int4, body: text }? }
+row_to_json_agg.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+to_json_agg.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+to_jsonb_one.sql: many () -> { id: int4, latest: { id: int4, body: text }? }
+two_levels.sql: many () -> { id: int4, comments: [{ id: int4, body: text }] }
+with_correlated.sql: many () -> { id: int4, comments: json }

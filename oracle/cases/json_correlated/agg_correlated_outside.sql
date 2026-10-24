@@ -1,0 +1,1 @@
+select p.id, (select coalesce(json_agg(json_build_object('id', c.id, 'body', c.body)), '[]') from (select c.id, c.body, c.post_id from comment c join person a on a.id = c.author_id) c where c.post_id = p.id) as comments from post p
