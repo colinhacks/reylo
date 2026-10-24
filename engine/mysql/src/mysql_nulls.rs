@@ -416,11 +416,12 @@ fn holds_current_row(frame: &ast::WindowFrame) -> bool {
 /// The statement with each select-list item that is a window call [`windowed`] finds following
 /// its argument written as that argument, and the positions of those items and of the ones never
 /// NULL: prepared, the copy's flag for such an item is the argument's on the current row, under
-/// the same FROM, WHERE and GROUP BY. `None` for anything but a plain SELECT with such an item, and
-/// where a wildcard makes the positions unreadable.
+/// the same FROM, WHERE and GROUP BY. `None` for anything but a plain SELECT with such an item,
+/// where a wildcard makes the positions unreadable, and under a ROLLUP, whose summary rows the
+/// window reads too: the server's flags there are left as they are.
 pub(crate) fn window_probe(q: &Query) -> Option<(Query, Vec<usize>, Vec<usize>)> {
     let SetExpr::Select(select) = q.body.as_ref() else { return None };
-    if select.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) {
+    if select.projection.iter().any(|i| matches!(i, SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..))) || rolls_up(&select.group_by) {
         return None;
     }
     let (mut follows, mut always) = (Vec::new(), Vec::new());
@@ -600,5 +601,6 @@ mod tests {
             assert_eq!(probe(&format!("select {item} from t")), None, "{item}");
         }
         assert_eq!(probe("select *, sum(a) over () from t"), None, "a wildcard");
+        assert_eq!(probe("select a, sum(a) over () from t group by a with rollup"), None, "a ROLLUP");
     }
 }
