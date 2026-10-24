@@ -76,7 +76,11 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
             columns.push((alias.value.clone(), shape));
         }
     }
-    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from), wider: d.wider.as_ref().map(|f| text(&d.with, &hint, &d.items, f)) }).collect();
+    let wider = |d: &Draft, from: &[TableWithJoins]| match &d.wrap {
+        Some(w) => wrapped_text(w, &hint, &d.items, from),
+        None => text(&d.with, &hint, &d.items, from),
+    };
+    let probes = b.drafts.iter().map(|d| Probe { sql: text(&d.with, &hint, &d.items, &d.from), wider: d.wider.as_ref().map(|f| wider(d, f)) }).collect();
     b.wanted.sort_unstable();
     b.wanted.dedup();
     Plan { columns, probes, booleans: b.booleans, either: b.either, wanted: b.wanted }
@@ -236,6 +240,89 @@ fn mentions(text: &str, names: &[String]) -> bool {
     tokens.iter().any(|t| matches!(t, Token::Word(w) if names.iter().any(|n| n.eq_ignore_ascii_case(&w.value))))
 }
 
+/// The alias of the derived table [`wrapped_text`] reads its columns from.
+const WRAPPED: &str = "reylo_probe";
+
+/// `SELECT reylo_probe.* FROM <around>, LATERAL (SELECT <items> FROM <from>) AS reylo_probe`: a
+/// probe whose FROM reads the tables of `around` as a subquery reads a query around it. Each item
+/// is named by its position, since a derived table's columns need names of their own.
+fn wrapped_text(wrap: &Wrap, hint: &str, items: &[Expr], wider: &[TableWithJoins]) -> String {
+    let (around, from) = wider.split_at(wrap.at);
+    let items: Vec<String> = items.iter().enumerate().map(|(i, e)| format!("{e} AS a{i}")).collect();
+    let from: Vec<String> = from.iter().map(|f| f.to_string()).collect();
+    let mut tables: Vec<String> = around.iter().map(|f| f.to_string()).collect();
+    tables.push(format!("LATERAL ({}SELECT {} FROM {}) AS {WRAPPED}", wrap.inner_with, items.join(", "), from.join(", ")));
+    format!("{}SELECT {hint}{WRAPPED}.* FROM {}", wrap.with, tables.join(", "))
+}
+
+/// A FROM entry with every derived table in it, joins followed, made LATERAL: it then reads the
+/// tables left of it as it read the queries around it, where a name it means is found the same
+/// way. A name the probe would find twice, a table of the same alias or a column two of them
+/// have, fails it rather than reading another.
+fn lateral(mut t: TableWithJoins) -> TableWithJoins {
+    fn factor(f: &mut TableFactor) {
+        match f {
+            TableFactor::Derived { lateral, .. } => *lateral = true,
+            TableFactor::NestedJoin { table_with_joins, .. } => **table_with_joins = lateral((**table_with_joins).clone()),
+            _ => {}
+        }
+    }
+    factor(&mut t.relation);
+    t.joins.iter_mut().for_each(|j| factor(&mut j.relation));
+    t
+}
+
+/// Whether a FROM entry has a join whose ON reads a table no join of the entry holds: one of a
+/// query around it, as MySQL reads a name the join does not have. A name in a subquery of the ON
+/// is that subquery's own to find.
+fn correlated_on(t: &TableWithJoins) -> bool {
+    fn tables(t: &TableWithJoins, names: &mut Vec<String>, ons: &mut Vec<Expr>) {
+        for f in std::iter::once(&t.relation).chain(t.joins.iter().map(|j| &j.relation)) {
+            match f {
+                TableFactor::Table { name, alias, .. } => names.extend(alias.as_ref().map(|a| a.name.value.clone()).or_else(|| match name.0.last() {
+                    Some(ast::ObjectNamePart::Identifier(i)) => Some(i.value.clone()),
+                    _ => None,
+                })),
+                TableFactor::NestedJoin { table_with_joins, alias } => {
+                    names.extend(alias.as_ref().map(|a| a.name.value.clone()));
+                    tables(table_with_joins, names, ons);
+                }
+                TableFactor::Derived { alias, .. } | TableFactor::JsonTable { alias, .. } => names.extend(alias.as_ref().map(|a| a.name.value.clone())),
+                _ => {}
+            }
+        }
+        for j in &t.joins {
+            use ast::{JoinConstraint, JoinOperator as J};
+            let constraint = match &j.join_operator {
+                J::Join(c) | J::Inner(c) | J::Left(c) | J::LeftOuter(c) | J::Right(c) | J::RightOuter(c) | J::StraightJoin(c) => Some(c),
+                _ => None,
+            };
+            if let Some(JoinConstraint::On(on)) = constraint {
+                ons.push(on.clone());
+            }
+        }
+    }
+    fn qualifiers(e: &Expr, out: &mut Vec<String>) {
+        match e {
+            Expr::CompoundIdentifier(parts) if parts.len() >= 2 => out.push(parts[parts.len() - 2].value.clone()),
+            Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } | Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::IsTrue(inner) | Expr::IsFalse(inner) => qualifiers(inner, out),
+            Expr::BinaryOp { left, right, .. } => {
+                qualifiers(left, out);
+                qualifiers(right, out);
+            }
+            Expr::Between { expr, low, high, .. } => [expr, low, high].into_iter().for_each(|x| qualifiers(x, out)),
+            Expr::InList { expr, list, .. } => std::iter::once(&**expr).chain(list).for_each(|x| qualifiers(x, out)),
+            Expr::Function(f) => args(f).into_iter().flatten().for_each(|x| qualifiers(x, out)),
+            _ => {}
+        }
+    }
+    let (mut names, mut ons) = (Vec::new(), Vec::new());
+    tables(t, &mut names, &mut ons);
+    let mut read = Vec::new();
+    ons.iter().for_each(|on| qualifiers(on, &mut read));
+    read.iter().any(|q| !names.iter().any(|n| n.eq_ignore_ascii_case(q)))
+}
+
 fn text(with: &str, hint: &str, items: &[Expr], from: &[TableWithJoins]) -> String {
     let items: Vec<String> = items.iter().map(|e| e.to_string()).collect();
     if from.is_empty() {
@@ -308,10 +395,21 @@ struct Draft {
     /// The WITH the probe starts with ([`carried`]).
     with: String,
     from: Vec<TableWithJoins>,
-    /// The same `FROM` with every enclosing one appended, for a constructor whose `FROM` reads a
-    /// correlated column; tried only when the narrow form fails to prepare.
+    /// Every enclosing `FROM`, outermost first, then this one, for a constructor whose `FROM`
+    /// reads a correlated column; tried only when the narrow form fails to prepare.
     wider: Option<Vec<TableWithJoins>>,
+    /// Where the wider form reads this `FROM` in a LATERAL derived table of its own
+    /// ([`wrapped_text`]), so that what is around it is a query around it again.
+    wrap: Option<Wrap>,
     items: Vec<Expr>,
+}
+
+/// How [`wrapped_text`] reads a `FROM` in a derived table of its own: where in the wider form it
+/// begins, the WITH the probe starts with, and the one the derived table does.
+struct Wrap {
+    at: usize,
+    with: String,
+    inner_with: String,
 }
 
 impl Builder<'_> {
@@ -582,14 +680,33 @@ impl Builder<'_> {
         // An enclosing `FROM` moved into the probe reads the WITH queries of the levels inside
         // it too, which the statement does not let it see: where it names one of them, it may
         // read that query in place of its own table, so the wider form is left out.
-        let mut wider = from.clone();
         let mut inner: Vec<String> = Vec::new();
         let mut sound = true;
         for d in (0..depth).rev() {
             inner.extend(self.stack[d + 1].with.iter().flat_map(|w| w.cte_tables.iter().map(|c| c.alias.name.value.clone())));
             sound &= inner.is_empty() || !self.stack[d].from.iter().any(|t| mentions(&t.to_string(), &inner));
-            wider.extend(self.stack[d].from.iter().cloned());
         }
+        // The enclosing FROMs come first, outermost first, and each derived table of one inside
+        // the statement's is LATERAL: one may read a query around it (`(select … from (select …
+        // where c.post_id = p.id) c)`), which in the probe is a table left of it.
+        let mut wider: Vec<TableWithJoins> = Vec::new();
+        for (d, level) in self.stack[..depth].iter().enumerate() {
+            wider.extend(level.from.iter().cloned().map(|t| if d == 0 { t } else { lateral(t) }));
+        }
+        // A join whose ON reads a query around it, which no table beside the join can stand in
+        // for, and a WITH query of the subquery's own that does, which a WITH at the front of the
+        // probe cannot, are read in a derived table of their own. The subquery's WITH goes inside
+        // it, where no enclosing FROM reads it, and only where no level around has one: MySQL
+        // hides an outer WITH inside a query that has its own.
+        let own = depth > 0 && self.stack[depth].with.is_some();
+        let outer = self.stack[..depth].iter().any(|l| l.with.is_some());
+        let wrap = (depth > 0 && !wider.is_empty() && !from.is_empty() && (from.iter().any(correlated_on) || (own && !outer))).then(|| Wrap {
+            at: wider.len(),
+            with: if own { String::new() } else { with.clone() },
+            inner_with: if own { self.stack[depth].with.as_ref().map(|w| format!("{w} ")).unwrap_or_default() } else { String::new() },
+        });
+        let sound = sound || wrap.as_ref().is_some_and(|w| !w.inner_with.is_empty());
+        wider.extend(from.iter().cloned().map(|t| if depth == 0 || wrap.is_some() { t } else { lateral(t) }));
         // A subquery with no `FROM` of its own only ever resolves against the enclosing one.
         let (from, wider) = match (from.is_empty() && !wider.is_empty(), sound) {
             (true, true) => (wider, None),
@@ -598,7 +715,8 @@ impl Builder<'_> {
             (false, false) => (from, None),
         };
         let wider = wider.filter(|w| w.len() != from.len());
-        self.drafts.push(Draft { ctx, with, from, wider, items: Vec::new() });
+        let wrap = wrap.filter(|_| wider.is_some());
+        self.drafts.push(Draft { ctx, with, from, wider, wrap, items: Vec::new() });
         Some(self.drafts.len() - 1)
     }
 }
@@ -870,7 +988,7 @@ mod tests {
         let plan = plan(&q, &Columns::new());
         assert_eq!(plan.probes.len(), 2);
         assert_eq!(plan.probes[0].sql, "SELECT p.id, p.title FROM posts p");
-        assert_eq!(plan.probes[0].wider.as_deref(), Some("SELECT p.id, p.title FROM posts p, users u"));
+        assert_eq!(plan.probes[0].wider.as_deref(), Some("SELECT p.id, p.title FROM users u, posts p"));
         assert_eq!(plan.probes[1].sql, "SELECT u.email, u.id + ? FROM users u");
         assert_eq!(plan.probes[1].wider, None);
         let posts = Shape::Array { items: Box::new(Shape::Object { fields: vec![("id".into(), Shape::Column { probe: 0, index: 0 }), ("title".into(), Shape::Column { probe: 0, index: 1 })], non_null: true }), non_null: true };
@@ -1063,7 +1181,7 @@ mod tests {
         let posts = "WITH r AS (SELECT id FROM posts) ";
         // The subquery's own WITH, the statement's before it, and each nested subquery's after its parent's.
         probe("select (with r as (select id from posts) select count(id) from r) as n", &format!("{posts}SELECT count(id) FROM r"), None);
-        probe("select (with r as (select id from posts) select count(id) from r) as n from users u", &format!("{posts}SELECT count(id) FROM r"), Some(&format!("{posts}SELECT count(id) FROM r, users u")));
+        probe("select (with r as (select id from posts) select count(id) from r) as n from users u", &format!("{posts}SELECT count(id) FROM r"), Some(&format!("SELECT reylo_probe.* FROM users u, LATERAL ({posts}SELECT count(id) AS a0 FROM r) AS reylo_probe")));
         probe("with o as (select 1 as a) select (with r as (select id from posts) select count(id) from r, o) as n", "WITH o AS (SELECT 1 AS a), r AS (SELECT id FROM posts) SELECT count(id) FROM r, o", None);
         probe("select (with a as (select id from posts) select (with b as (select id from a) select count(id) from b)) as n", "WITH a AS (SELECT id FROM posts), b AS (SELECT id FROM a) SELECT count(id) FROM b", None);
         probe("select (with r as (select id from posts) select count(id) from (select id from r) d) as n", &format!("{posts}SELECT count(id) FROM (SELECT id FROM r) d"), None);
@@ -1083,10 +1201,47 @@ mod tests {
         // A query without RECURSIVE that names itself reads a table, which a RECURSIVE list would
         // read as itself: no probe.
         assert_eq!(probes("with posts as (select id from posts) select (with recursive r (n) as (select 1 union all select n + 1 from r where n < 3) select count(n) from r, posts) as c"), vec![]);
-        // An enclosing FROM that names an inner WITH query would read it in the wider form.
-        probe("select (with posts as (select id from users) select json_object('a', posts.id, 'b', p.title) from posts limit 1) as o from posts p", "WITH posts AS (SELECT id FROM users) SELECT posts.id, p.title FROM posts", None);
+        // An enclosing FROM that names an inner WITH query would read it in a wider form that
+        // carried the query at its front, so the query goes inside the derived table it reads.
+        probe(
+            "select (with posts as (select id from users) select json_object('a', posts.id, 'b', p.title) from posts limit 1) as o from posts p",
+            "WITH posts AS (SELECT id FROM users) SELECT posts.id, p.title FROM posts",
+            Some("SELECT reylo_probe.* FROM posts p, LATERAL (WITH posts AS (SELECT id FROM users) SELECT posts.id AS a0, p.title AS a1 FROM posts) AS reylo_probe"),
+        );
+        // Under a level with a WITH of its own, which MySQL hides inside a query with its own,
+        // there is no such derived table, and no wider form.
+        probe(
+            "with o as (select 1 as a) select (select (with posts as (select id from users) select json_object('a', posts.id, 'b', p.title) from posts limit 1) from posts p, o) as j",
+            "WITH o AS (SELECT 1 AS a), posts AS (SELECT id FROM users) SELECT posts.id, p.title FROM posts",
+            None,
+        );
         assert_eq!(probes("select (with posts as (select 1 as id) select json_object('t', p.title)) as o from posts p"), vec![]);
         probe("select (with r as (select 1 as id) select json_object('t', p.title)) as o from posts p", "WITH r AS (SELECT 1 AS id) SELECT p.title FROM posts p", None);
+    }
+
+    #[test]
+    fn a_correlated_from_is_read_after_the_queries_around_it() {
+        let probes = |sql: &str| plan(&query(sql), &Columns::new()).probes.into_iter().map(|p| (p.sql, p.wider)).collect::<Vec<_>>();
+        // A derived table that reads a query around it is LATERAL in the wider form, right of
+        // the tables it reads.
+        assert_eq!(
+            probes("select (select json_arrayagg(json_object('id', c.id)) from (select id from comments c where c.post_id = p.id limit 2) c) as j from posts p"),
+            vec![(
+                "SELECT c.id FROM (SELECT id FROM comments c WHERE c.post_id = p.id LIMIT 2) c".to_string(),
+                Some("SELECT c.id FROM posts p, LATERAL (SELECT id FROM comments c WHERE c.post_id = p.id LIMIT 2) c".to_string())
+            )]
+        );
+        // A join whose ON reads a query around it is read in a derived table of its own, where
+        // that query is one around it again: no table beside a join is in scope in its ON.
+        assert_eq!(
+            probes("select (select json_arrayagg(json_object('id', c.id, 'name', u.name)) from comments c join users u on u.id = c.user_id and c.post_id = p.id) as j from posts p")[0].1.as_deref(),
+            Some("SELECT reylo_probe.* FROM posts p, LATERAL (SELECT c.id AS a0, u.name AS a1 FROM comments c JOIN users u ON u.id = c.user_id AND c.post_id = p.id) AS reylo_probe")
+        );
+        // One whose ON reads its own tables alone is no such join.
+        assert_eq!(
+            probes("select (select json_arrayagg(json_object('id', c.id, 'name', u.name)) from comments c join users u on u.id = c.user_id where c.post_id = p.id) as j from posts p")[0].1.as_deref(),
+            Some("SELECT c.id, u.name FROM posts p, comments c JOIN users u ON u.id = c.user_id")
+        );
     }
 
     #[test]

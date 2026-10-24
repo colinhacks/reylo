@@ -1,0 +1,1 @@
+select p.id, (select coalesce(json_arrayagg(json_object('id', c.id, 'body', c.body)), json_array()) from (select c.id, c.body from (select c.id, c.body from comment c where c.post_id = p.id limit 5) c limit 2) c) as comments from post p

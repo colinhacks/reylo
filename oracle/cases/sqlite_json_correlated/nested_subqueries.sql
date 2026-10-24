@@ -1,0 +1,1 @@
+select u.id, (select json_group_array(json_object('title', p.title, 'comments', (select json_group_array(json_object('body', c.body)) from (select c.body from comment c where c.post_id = p.id and c.author_id = u.id limit 2) c))) from post p where p.author_id = u.id) as posts from person u

@@ -1,0 +1,1 @@
+select u.id, (select coalesce(json_arrayagg(json_object('title', p.title, 'comments', (select coalesce(json_arrayagg(json_object('body', c.body)), json_array()) from (select c.body from comment c where c.post_id = p.id and c.author_id = u.id limit 2) c))), json_array()) from post p where p.author_id = u.id) as posts from person u
