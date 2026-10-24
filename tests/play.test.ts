@@ -23,7 +23,8 @@ function project(files: Record<string, string>): string {
   return root;
 }
 
-const get = async (url: string, headers: Record<string, string> = {}) => {
+// The body is `any`: each test asserts on the JSON it expects.
+const get = async (url: string, headers: Record<string, string> = {}): Promise<{ status: number; body: any }> => {
   const res = await fetch(url, { headers });
   return { status: res.status, body: res.headers.get("content-type")?.startsWith("application/json") ? await res.json() : await res.text() };
 };
@@ -50,7 +51,7 @@ test("reylo play analyzes each statement against the project's database, without
 
     // The same as JSON in a POST, with the types broken over lines past `width`.
     const res = await fetch(`${play.url}api/analyze`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sql: "select id, name, email from users", width: 20 }) });
-    assert.equal((await res.json()).returns, "{\n  id: number;\n  name: string;\n  email: string | null;\n}[]");
+    assert.equal(((await res.json()) as any).returns, "{\n  id: number;\n  name: string;\n  email: string | null;\n}[]");
 
     const schema = await get(`${play.url}api/schema`);
     assert.equal(schema.body.dialect, "sqlite");
