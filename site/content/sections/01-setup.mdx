@@ -408,15 +408,9 @@ Run the [playground](/play) on your own database:
 npx reylo play
 ```
 
-It opens at http://127.0.0.1:4983 with your project's tables. Edit a query, and the params, the return type and the errors Reylo infers update as you type; nothing runs. Add `?q=` and a query to the address to open it with that query.
+It opens http://127.0.0.1:4983 in your browser, on the database your type check reads. Edit a query, and the params, the return type and the errors Reylo infers update as you type; nothing runs. Add `?q=` and a query to the address to open it with that query. With no database URL, it starts PGlite (install `@electric-sql/pglite`) with a sample schema.
 
-With no database URL, it starts PGlite (install `@electric-sql/pglite`) with your schema, or a directory of migrations applied in order:
-
-```sh
-npx reylo play --schema db/schema.sql
-```
-
-Scripts and agents get the same analysis as JSON, its params, return type, cardinality and errors:
+Scripts and agents get the same analysis as JSON, its params, return type, cardinality and errors (start it with `--no-open`):
 
 ```sh
 curl "http://127.0.0.1:4983/api/analyze" --get --data-urlencode "q=select name from users where id = :id"

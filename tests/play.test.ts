@@ -85,24 +85,15 @@ test("reylo play answers this machine's own pages and tools, and refuses another
   }
 });
 
-test("reylo play stands PGlite in for a project with no database URL, with its schema file's tables or a sample's", async () => {
-  const root = project({ "db/schema.sql": "create table notes (id serial primary key, body text not null, pinned boolean);" });
-  const withFile = await startPlay({ cwd: root, port: 0, env: {}, schema: "db/schema.sql" });
-  try {
-    assert.match(withFile.label, /^Postgres \d+\.\d+ via PGlite, with db\/schema\.sql$/);
-    const notes = await get(`${withFile.url}api/analyze?q=${encodeURIComponent("select body, pinned from notes where id = :id")}`);
-    assert.equal(notes.body.returns, "{ body: string; pinned: boolean | null } | null");
-    assert.equal(notes.body.params, "{ id: number }");
-  } finally {
-    await withFile.close();
-  }
+test("reylo play stands PGlite in, with a sample schema, for a project that names no database", async () => {
+  const root = project({});
   const sample = await startPlay({ cwd: root, port: 0, env: {} });
   try {
-    assert.match(sample.label, /with a sample schema$/);
-    const posts = await get(`${sample.url}api/analyze?q=${encodeURIComponent("select title from posts")}`);
-    assert.equal(posts.body.returns, "{ title: string }[]");
+    assert.match(sample.label, /^Postgres \d+\.\d+ via PGlite, with a sample schema \(no database URL is set\)$/);
+    const posts = await get(`${sample.url}api/analyze?q=${encodeURIComponent("select title from posts where id = :id")}`);
+    assert.equal(posts.body.params, "{ id: number }");
+    assert.equal(posts.body.returns, "{ title: string } | null");
   } finally {
     await sample.close();
   }
-  await assert.rejects(startPlay({ cwd: root, port: 0, env: {}, schema: "db/missing.sql" }), /--schema: .*missing\.sql does not exist/);
 });

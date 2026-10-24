@@ -1,13 +1,14 @@
 // `reylo play`: the playground of reylo.dev/play on this machine, against the project's own
 // database. It serves the page and an API on 127.0.0.1: each statement the page or a caller sends
 // is analyzed as the type check analyzes a file (never run), and answered with its Params, Returns
-// and diagnostics by line and column (src/play-result.ts). With no database URL it starts PGlite,
-// Postgres compiled to WebAssembly, with a schema file's tables or a sample schema's.
+// and diagnostics by line and column (src/play-result.ts). The database is the one the type check
+// reads, and nothing else: with no database URL, PGlite, Postgres compiled to WebAssembly, stands in
+// with a sample schema, so that the page opens on tables to query.
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
-import { dirname, extname, join, relative, resolve, sep } from "node:path";
+import { dirname, extname, join, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { styleText } from "node:util";
 import { Session } from "./analyze.ts";
@@ -17,13 +18,13 @@ import { playResult, type PlayResult } from "./play-result.ts";
 import { SAMPLE_SCHEMA } from "./play-sample.ts";
 import { pgliteIo } from "./pglite-io.ts";
 
-export const PLAY_USAGE = `Usage: reylo play [--port <n>] [--schema <file or directory>] [--open]
+export const PLAY_USAGE = `Usage: reylo play [--port <n>] [--no-open]
 
 Serves the playground on http://127.0.0.1: a query editor whose Params, Returns and errors are
 Reylo's analysis of the query against the project's database, at every keystroke. Nothing is run.
-With no database URL, it starts PGlite with the tables of --schema (a .sql file, or a directory
-of them applied in name order), or with a sample schema; PGlite is the npm package
-@electric-sql/pglite, installed in the project.
+The database is the project's own, the one the type check reads. With no database URL, PGlite
+(the npm package @electric-sql/pglite, installed in the project) stands in with a sample schema.
+It opens the page in the browser; --no-open leaves it closed, for a script or an agent.
 
   http://127.0.0.1:<port>/?q=<sql>              the page, with a query in it
   GET  /api/analyze?q=<sql>                       a query's Params, Returns and diagnostics, as JSON
@@ -56,7 +57,7 @@ export async function play(args: string[]): Promise<number> {
   }
   let running: Playground;
   try {
-    running = await startPlay({ port: options.port, schema: options.schema });
+    running = await startPlay({ port: options.port });
   } catch (e) {
     console.error(`reylo play: ${(e as Error).message}`);
     return 1;
@@ -76,11 +77,11 @@ export async function play(args: string[]): Promise<number> {
 export type Playground = { url: string; label: string; notice?: string; close(): Promise<void> };
 
 /** Starts the playground for the project of `cwd`, on `port` (by default the first free one from 4983): what `reylo play` runs, and the tests. */
-export async function startPlay(options: { port?: number | undefined; schema?: string | undefined; cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<Playground> {
+export async function startPlay(options: { port?: number | undefined; cwd?: string; env?: Record<string, string | undefined> } = {}): Promise<Playground> {
   const cwd = options.cwd ?? process.cwd();
   const page = pageDir(cwd);
   if (!page) throw new Error("the playground's page is not in this install of reylo; reinstall reylo.");
-  const backend = await openBackend(cwd, options.env ?? process.env, options.schema);
+  const backend = await openBackend(cwd, options.env ?? process.env);
   const server = createServer((req, res) => {
     handle(req, res, backend, page, () => server.address()).catch((e: unknown) => send(res, 500, { error: (e as Error).message }));
   });
@@ -101,22 +102,18 @@ export async function startPlay(options: { port?: number | undefined; schema?: s
   };
 }
 
-function parseArgs(args: string[]): { port?: number; schema?: string; open: boolean; help: boolean } | string {
-  const out: { port?: number; schema?: string; open: boolean; help: boolean } = { open: false, help: false };
+function parseArgs(args: string[]): { port?: number; open: boolean; help: boolean } | string {
+  const out: { port?: number; open: boolean; help: boolean } = { open: true, help: false };
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     const [flag, inline] = a.startsWith("--") && a.includes("=") ? [a.slice(0, a.indexOf("=")), a.slice(a.indexOf("=") + 1)] : [a, undefined];
     const value = () => inline ?? args[++i];
     if (flag === "--help" || flag === "-h") out.help = true;
-    else if (flag === "--open") out.open = true;
+    else if (flag === "--no-open") out.open = false;
     else if (flag === "--port") {
       const n = Number(value());
       if (!Number.isInteger(n) || n < 0 || n > 65535) return `--port takes a port number`;
       out.port = n;
-    } else if (flag === "--schema") {
-      const v = value();
-      if (!v) return "--schema takes a .sql file or a directory";
-      out.schema = v;
     } else return `unknown argument ${a}`;
   }
   return out;
@@ -137,13 +134,14 @@ function pageDir(cwd: string): string | undefined {
   return candidates.find((dir): dir is string => !!dir && existsSync(join(dir, "index.html")));
 }
 
-async function openBackend(cwd: string, env: Record<string, string | undefined>, schemaPath: string | undefined): Promise<Backend> {
+/** The project's database; PGlite with the sample schema only where the project names none. */
+async function openBackend(cwd: string, env: Record<string, string | undefined>): Promise<Backend> {
   const session = await Session.open(cwd, env);
   const { project } = session;
   if (project.error) throw new Error(project.error);
-  if (project.url && schemaPath === undefined) return databaseBackend(session);
+  if (project.url) return databaseBackend(session);
   await session.close();
-  const backend = await pgliteBackend(cwd, project.root, schemaPath === undefined ? undefined : resolve(cwd, schemaPath));
+  const backend = await pgliteBackend(project.root);
   return project.notice ? { ...backend, notice: project.notice } : backend;
 }
 
@@ -176,8 +174,8 @@ async function databaseBackend(session: Session): Promise<Backend> {
   };
 }
 
-/** PGlite in this process, from the project's install or reylo's own, with the schema file's tables or the sample's. */
-async function pgliteBackend(cwd: string, root: string, schemaPath: string | undefined): Promise<Backend> {
+/** PGlite in this process, from the project's install or reylo's own, with the sample schema. */
+async function pgliteBackend(root: string): Promise<Backend> {
   let PGlite: typeof import("@electric-sql/pglite").PGlite | undefined;
   for (const from of [join(root, "noop.js"), import.meta.filename]) {
     try {
@@ -188,14 +186,13 @@ async function pgliteBackend(cwd: string, root: string, schemaPath: string | und
   if (!PGlite) {
     throw new Error("no database URL is set, and PGlite is not installed to stand in for one: set DATABASE_URL (or url in .reylo.yaml), or install @electric-sql/pglite in the project (npm install -D @electric-sql/pglite).");
   }
-  const files = schemaPath === undefined ? [] : schemaFiles(schemaPath);
-  const schema = files.length ? files.map((f) => readFileSync(f, "utf8").trim()).join("\n\n") : SAMPLE_SCHEMA;
+  const schema = SAMPLE_SCHEMA;
   const pg = await PGlite.create();
   try {
     await pg.exec(schema);
   } catch (e) {
     await pg.close();
-    throw new Error(`${files.length ? relative(cwd, files.length === 1 ? files[0]! : schemaPath!) : "the sample schema"} does not load into PGlite: ${(e as Error).message}`);
+    throw new Error(`the sample schema does not load into PGlite: ${(e as Error).message}`);
   }
   const io = pgliteIo(pg);
   const eng: Engine = await engine("postgres", root);
@@ -205,7 +202,7 @@ async function pgliteBackend(cwd: string, root: string, schemaPath: string | und
   const version = String((await io.query("select current_setting('server_version')", []))[0]![0]).split(" ")[0];
   return {
     dialect: "postgres",
-    label: `Postgres ${version} via PGlite, with ${files.length ? (files.length === 1 ? relative(cwd, files[0]!) : `${files.length} files of ${relative(cwd, schemaPath!) || "."}`) : "a sample schema"}`,
+    label: `Postgres ${version} via PGlite, with a sample schema (no database URL is set)`,
     schema,
     catalog: cat,
     async analyze(sql, width) {
@@ -223,18 +220,6 @@ async function pgliteBackend(cwd: string, root: string, schemaPath: string | und
     },
     close: () => pg.close(),
   };
-}
-
-/** A schema file, or a directory's `.sql` files in name order, as migrations are applied. */
-function schemaFiles(path: string): string[] {
-  if (!existsSync(path)) throw new Error(`--schema: ${path} does not exist`);
-  if (!statSync(path).isDirectory()) return [path];
-  const files = readdirSync(path, { recursive: true, encoding: "utf8" })
-    .filter((f) => extname(f) === ".sql")
-    .sort((a, b) => a.localeCompare(b, "en", { numeric: true }))
-    .map((f) => join(path, f));
-  if (!files.length) throw new Error(`--schema: ${path} holds no .sql file`);
-  return files;
 }
 
 /** The schema as the page shows it for a database it did not create: each table's columns, as a CREATE TABLE writes them. */
