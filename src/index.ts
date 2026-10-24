@@ -7,8 +7,10 @@ import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns } from "./values.ts";
 import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
+import { listening, type QueryTrace } from "./trace.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
+export type { QueryTrace } from "./trace.ts";
 export { checks } from "./checks.ts";
 export type { MysqlCode, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
@@ -180,11 +182,16 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
     runSync: ((client: SyncClientFor<D>, params?: Params) => {
-      try {
-        return materialize(executeSync(client, module, (params ?? {}) as Record<string, unknown>) as Row[]);
-      } catch (error) {
-        throw named(error);
-      }
+      const values = (params ?? {}) as Record<string, unknown>;
+      const runOnce = () => {
+        try {
+          return materialize(executeSync(client, module, values) as Row[]);
+        } catch (error) {
+          throw named(error);
+        }
+      };
+      const tracing = listening();
+      return tracing ? tracing.traceSync(runOnce, trace(client, values, true)) : runOnce();
     }) as Query<Params, Row, C, D>["runSync"],
     try: ((client: ClientFor<D>, params?: Params) =>
       run(client, params ?? ({} as Params)).then(
@@ -206,9 +213,18 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     }) as Query<Params, Row, C, D>["trySync"],
     with: ((client: ClientFor<D>) => (params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["with"],
   };
+  // `.run()`, `.try()` and the function `.with()` returns, published on the tracing channel as one
+  // call each (src/trace.ts).
+  function run(client: ClientFor<D>, params: Params): Promise<Materialize<Row, C>> {
+    const tracing = listening();
+    return tracing ? tracing.tracePromise(() => runOnce(client, params), trace(client, params as Record<string, unknown>, false)) : runOnce(client, params);
+  }
+  function trace(client: unknown, params: Record<string, unknown>, sync: boolean): QueryTrace {
+    return { query: query as unknown as QueryTrace["query"], client, params, sync };
+  }
   // A synchronous client answers before run returns, but its rows and its error still come
   // back through the promise, so run means the same on every client.
-  function run(client: ClientFor<D>, params: Params): Promise<Materialize<Row, C>> {
+  function runOnce(client: ClientFor<D>, params: Params): Promise<Materialize<Row, C>> {
     try {
       const rows = execute(client, module, params as Record<string, unknown>);
       return Array.isArray(rows)
