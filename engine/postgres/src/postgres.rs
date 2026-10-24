@@ -245,7 +245,7 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) 'pg_catalog'::pg_catalog.regnamespace \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
     GROUP BY t.typname, t.oid \
-    UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL WHERE pg_catalog.current_setting('server_version_num')::pg_catalog.int4 OPERATOR(pg_catalog.<) 180000";
+    UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'), '999999') OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
 
