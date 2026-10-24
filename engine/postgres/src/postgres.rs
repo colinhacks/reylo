@@ -167,25 +167,36 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 /// Every operator, function and type the query calls or names is spelled as `pg_catalog`'s
 /// (`OPERATOR(pg_catalog.=)`, parenthesized, since that spelling takes no operator's precedence):
 /// a user's of the same name, which a search path naming `pg_catalog` after its schema puts first,
-/// never answers it. Every conversion in it is one a built-in `pg_cast` row makes (`oid` to
-/// `int8`, an `oidvector`'s elements one by one, an `oid` written as one), never one through text
-/// or between arrays, which have no such row and so may be a user's `CREATE CAST`.
+/// never answers it. Every call in it, of a function or an operator, is an exact match of a
+/// built-in that takes no polymorphic argument (`generate_series` of two `int4`s, `bit_or` of an
+/// `int4`, `to_number` and `current_setting` of `text`, the comparisons of two `oid`s): an
+/// overload created in `pg_catalog` itself, as an extension whose control file names that schema
+/// may, cannot be a closer match, and one of the same types cannot be created beside it. So an
+/// array is read by its subscripts and built with `ARRAY(SELECT …)`, never through `unnest`,
+/// `cardinality`, `array_agg` or `<@`. Every conversion in it is one a built-in `pg_cast` row
+/// makes (`oid` to `int8`, an `oid` written as one), never one through text or between arrays,
+/// which have no such row and so may be a user's `CREATE CAST`.
 pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     domains(t, b, depth) AS (SELECT t.oid, t.typbasetype, 1 FROM pg_catalog.pg_type t WHERE t.typtype OPERATOR(pg_catalog.=) 'd' \
     UNION ALL SELECT d.t, t.typbasetype, d.depth OPERATOR(pg_catalog.+) 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.=) 'd' \
     WHERE d.depth OPERATOR(pg_catalog.<) 32), \
     bases(t, b) AS (SELECT d.t, d.b FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.<>) 'd'), \
-    users(kind, name, args, defaults, flags) AS ( \
+    users(kind, name, args, n, defaults, flags) AS ( \
     SELECT o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
-    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] WHEN o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprleft::pg_catalog.int8] ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, \
+    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] WHEN o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprleft::pg_catalog.int8] \
+    ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, \
+    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN 1 ELSE 2 END, \
     0, coalesce((p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4), 6) \
     FROM pg_catalog.pg_operator o LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode \
     WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) \
-    UNION ALL SELECT 'f', p.proname::pg_catalog.text, ARRAY(SELECT a.x::pg_catalog.int8 FROM pg_catalog.unnest(p.proargtypes) WITH ORDINALITY AS a(x, n) ORDER BY a.n), p.pronargdefaults, \
+    UNION ALL SELECT 'f', p.proname::pg_catalog.text, \
+    ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), \
+    p.pronargs::pg_catalog.int4, p.pronargdefaults, \
     (p.provariadic OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid)::pg_catalog.int4 OPERATOR(pg_catalog.+) (p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) \
     OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4) OPERATOR(pg_catalog.+) ((p.prokind OPERATOR(pg_catalog.<>) 'a')::pg_catalog.int4 OPERATOR(pg_catalog.*) 8) \
     FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[])), \
-    targets(u, b) AS (SELECT DISTINCT a.u::pg_catalog.oid, coalesce(x.b, a.u::pg_catalog.oid) FROM users, pg_catalog.unnest(users.args) AS a(u) LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) a.u::pg_catalog.oid), \
+    targets(u, b) AS (SELECT DISTINCT a.u, coalesce(x.b, a.u) FROM (SELECT u.args[i]::pg_catalog.oid AS u FROM users u CROSS JOIN LATERAL pg_catalog.generate_series(1, u.n) AS i) a \
+    LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) a.u), \
     sources(s, b) AS (SELECT t.oid, coalesce(x.b, t.oid) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.oid \
     WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (t.typtype OPERATOR(pg_catalog.<>) 'p' OR t.oid OPERATOR(pg_catalog.=) ANY ('{2249,2287}'::pg_catalog.oid[]))), \
     arrays(t, e) AS (SELECT t.oid, coalesce(x.b, t.typelem) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.typelem \
@@ -210,23 +221,25 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     ELSE false END), \
     pseudo(u) AS (SELECT g.u FROM targets g JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) g.u \
     WHERE t.typtype OPERATOR(pg_catalog.=) 'p' AND NOT (g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078,2776,5079,3500,3831,5080,4537,4538,2249,2287}'::pg_catalog.oid[]))), \
-    reached(kind, name, args, defaults, flags, reached) AS (SELECT u.*, \
-    u.defaults OPERATOR(pg_catalog.>) 0 OR (u.flags OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 OR pg_catalog.cardinality(u.args) OPERATOR(pg_catalog.=) 0 \
-    OR EXISTS (SELECT 1 FROM pg_catalog.unnest(u.args) a WHERE a::pg_catalog.oid OPERATOR(pg_catalog.=) ANY (SELECT r.u FROM reach r UNION ALL SELECT p.u FROM pseudo p)) \
-    FROM users u), \
-    common(t) AS (SELECT pg_catalog.unnest('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[])) \
-    SELECT 'user ' OPERATOR(pg_catalog.||) r.kind, r.name, r.args, r.defaults::pg_catalog.int8, r.flags::pg_catalog.int8 FROM reached r WHERE r.reached \
-    UNION ALL SELECT 'opaque ' OPERATOR(pg_catalog.||) r.kind, r.name, NULL, pg_catalog.cardinality(r.args)::pg_catalog.int8, pg_catalog.bit_or(r.flags)::pg_catalog.int8 FROM reached r \
-    WHERE NOT r.reached GROUP BY r.kind, r.name, pg_catalog.cardinality(r.args) \
-    UNION ALL SELECT 'builtin ' OPERATOR(pg_catalog.||) o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
+    reached(kind, name, args, n, defaults, flags, reached) AS (SELECT u.*, \
+    u.defaults OPERATOR(pg_catalog.>) 0 OR (u.flags OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 OR u.n OPERATOR(pg_catalog.=) 0 \
+    OR EXISTS (SELECT 1 FROM pg_catalog.generate_series(1, u.n) AS i \
+    WHERE u.args[i]::pg_catalog.oid OPERATOR(pg_catalog.=) ANY (SELECT r.u FROM reach r UNION ALL SELECT p.u FROM pseudo p)) \
+    FROM users u) \
+    SELECT 'user '::pg_catalog.text OPERATOR(pg_catalog.||) r.kind, r.name, r.args, r.defaults::pg_catalog.int8, r.flags::pg_catalog.int8 FROM reached r WHERE r.reached \
+    UNION ALL SELECT 'opaque '::pg_catalog.text OPERATOR(pg_catalog.||) r.kind, r.name, NULL, r.n::pg_catalog.int8, pg_catalog.bit_or(r.flags)::pg_catalog.int8 FROM reached r \
+    WHERE NOT r.reached GROUP BY r.kind, r.name, r.n \
+    UNION ALL SELECT 'builtin '::pg_catalog.text OPERATOR(pg_catalog.||) o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
     CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, o.oprresult::pg_catalog.int8, NULL \
     FROM pg_catalog.pg_operator o WHERE o.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.<>) 'f') \
     AND o.oprkind OPERATOR(pg_catalog.=) ANY ('{b,l}'::pg_catalog.\"char\"[]) \
-    AND (o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY (SELECT t FROM common)) AND o.oprright OPERATOR(pg_catalog.=) ANY (SELECT t FROM common) \
-    UNION ALL SELECT 'builtin f', p.proname::pg_catalog.text, ARRAY(SELECT a.x::pg_catalog.int8 FROM pg_catalog.unnest(p.proargtypes) WITH ORDINALITY AS a(x, n) ORDER BY a.n), p.prorettype::pg_catalog.int8, p.pronargdefaults::pg_catalog.int8 \
+    AND (o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[])) AND o.oprright OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]) \
+    UNION ALL SELECT 'builtin f', p.proname::pg_catalog.text, \
+    ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), p.prorettype::pg_catalog.int8, p.pronargdefaults::pg_catalog.int8 \
     FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.=) 'f') \
-    AND p.provariadic OPERATOR(pg_catalog.=) '0'::pg_catalog.oid AND ARRAY(SELECT a.x FROM pg_catalog.unnest(p.proargtypes) AS a(x)) OPERATOR(pg_catalog.<@) ARRAY(SELECT t FROM common) \
-    UNION ALL SELECT 'reach', NULL, pg_catalog.array_agg(r.s::pg_catalog.int8 ORDER BY r.s), r.u::pg_catalog.int8, NULL FROM reach r GROUP BY r.u \
+    AND p.provariadic OPERATOR(pg_catalog.=) '0'::pg_catalog.oid \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i WHERE NOT (p.proargtypes[i] OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]))) \
+    UNION ALL SELECT 'reach', NULL, ARRAY(SELECT r.s::pg_catalog.int8 FROM reach r WHERE r.u OPERATOR(pg_catalog.=) g.u ORDER BY r.s), g.u::pg_catalog.int8, NULL FROM (SELECT DISTINCT r.u FROM reach r) g \
     UNION ALL SELECT 'any', NULL, NULL, p.u::pg_catalog.int8, NULL FROM pseudo p \
     UNION ALL SELECT 'base', NULL, NULL, g.u::pg_catalog.int8, g.b::pg_catalog.int8 FROM targets g WHERE g.u OPERATOR(pg_catalog.<>) g.b \
     UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
@@ -235,17 +248,18 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     UNION ALL SELECT 'type', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
     WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
     UNION ALL SELECT 'cast', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
-    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) 'pg_catalog'::pg_catalog.regnamespace \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
     UNION ALL SELECT 'cast from', t.typname::pg_catalog.text, \
-    coalesce(pg_catalog.array_agg(DISTINCT s.s::pg_catalog.int8) FILTER (WHERE s.s IS NOT NULL), '{}'::pg_catalog.int8[]), t.oid::pg_catalog.int8, NULL \
-    FROM pg_catalog.pg_type t JOIN pg_catalog.pg_cast c ON c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f' \
-    LEFT JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
-    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) 'pg_catalog'::pg_catalog.regnamespace \
+    ARRAY(SELECT DISTINCT s.s::pg_catalog.int8 FROM pg_catalog.pg_cast c JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
+    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'), t.oid::pg_catalog.int8, NULL \
+    FROM pg_catalog.pg_type t \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
+    AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
-    GROUP BY t.typname, t.oid \
-    UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'), '999999') OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
+    UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL \
+    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
 
