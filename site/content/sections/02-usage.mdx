@@ -18,20 +18,17 @@ const user = await getUser.run(db, { id: 1 });
 select id, name, email from users where id = :id::int
 ```
 
-Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or transaction taken from one, from any of the [supported drivers](#supported-drivers).
+Pass your database client as the first argument of `.run()`: a pool, a client, or a connection or transaction taken from one, from any of the [supported drivers](#run).
 
 ### `.sql`
 
 To get the compiled query, as Reylo sends it to your database:
 
-```ts twoslash
+```ts
 import getUser from "./get_user.sql";
 
-getUser.sql;
-//      ^?
+getUser.sql; // "select id, name, email from users where id = $1::int"
 ```
-
-The compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set [`sqlcommenter: false`](#sqlcommenter) to leave it off.
 
 To get the file's contents as written, before Reylo compiles its [parameters](#naming), use `.raw`. Its path, relative to your project, is `.source`, a name for your logs and traces; Reylo's own errors about the query start with it.
 
@@ -49,26 +46,9 @@ const user = await getUser.run(db, { id: 1 });
 //    ^?
 ```
 
-Pass a transaction the same way:
+Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers.
 
-```ts twoslash dialect="postgres"
-import postgres from "postgres";
-import createUser from "./create_user.sql";
-import getUser from "./get_user.sql";
-
-const db = postgres(process.env.DATABASE_URL);
-
-await db.begin(async (tx) => {
-  await createUser.run(tx, { name: "Ada", email: "ada@example.com" });
-  const user = await getUser.run(tx, { id: 1 });
-});
-```
-
-#### Supported drivers [#supported-drivers]
-
-Reylo has no driver of its own: it runs each query on your app's database client, from any of these drivers:
-
-**Postgres**
+#### Postgres [#postgres-drivers]
 
 ```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
 import pg from "pg";
@@ -240,7 +220,7 @@ const db = drizzle(process.env.DATABASE_URL!);
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
-**MySQL**
+#### MySQL [#mysql-drivers]
 
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
 import mysql from "mysql2/promise";
@@ -351,7 +331,7 @@ const db = drizzle(process.env.DATABASE_URL!);
 await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
-**SQLite**
+#### SQLite [#sqlite-drivers]
 
 ```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
 import Database from "better-sqlite3";

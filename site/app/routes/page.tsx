@@ -126,7 +126,8 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       // (Fumadocs' serializer would wrap each name in a span of its own).
       tree={tree as Root}
       title={main ? <HeroTitle>{title}</HeroTitle> : title}
-      toc={files.flatMap((file) => file.toc)}
+      // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
+      toc={files.flatMap((file) => file.toc).filter((item) => item.depth <= 3)}
       fold={FOLD[slug] ?? []}
       brand={<Brand />}
       github={githubUrl}

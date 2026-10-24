@@ -27,7 +27,7 @@ Each setup has a complete, working example project to copy, whose README's "How 
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
 4. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/#database
 5. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/#editors
-6. Write a first query and run it with the project's own driver: https://reylo.dev/#usage and https://reylo.dev/#supported-drivers
+6. Write a first query and run it with the project's own driver: https://reylo.dev/#usage and https://reylo.dev/#run
    For more queries, from nested JSON to bulk inserts, see https://reylo.dev/#inference
 7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add colinhacks/reylo --skill using-reylo
