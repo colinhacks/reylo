@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
+import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
@@ -41,11 +45,16 @@ test("postgres: pg-promise gets a { text, values } object, so it binds instead o
   assert.equal(types.getTypeParser(20)("9007199254740993"), 9007199254740993n);
 });
 
-test("postgres: unsafe(text, values) → rows, as on postgres.js and Bun.sql and their transactions", async () => {
+test("postgres: unsafe(text, values) → rows, as on postgres.js and Bun.sql and their transactions; postgres.js is asked to prepare the statement", async () => {
   const calls: Call[] = [];
   const tx = { unsafe: (...args: unknown[]) => (calls.push({ method: "unsafe", args }), Promise.resolve([row])) };
   assert.deepEqual(await execute(tx, pg, { id: 1, name: "ada" }), [row]);
-  assert.deepEqual(calls, [{ method: "unsafe", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]] }]);
+  assert.deepEqual(calls, [{ method: "unsafe", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"], { prepare: true }] }]);
+  // Bun.sql prepares a statement itself, and takes no options.
+  const bunCalls: Call[] = [];
+  const bun = { unsafe: (...args: unknown[]) => (bunCalls.push({ method: "unsafe", args }), Promise.resolve([row])), commitDistributed: async () => {} };
+  assert.deepEqual(await execute(bun, pg, { id: 1, name: "ada" }), [row]);
+  assert.deepEqual(bunCalls, [{ method: "unsafe", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]] }]);
 });
 
 // The module's `inputs`: :ids is an int4[] parameter, :data a jsonb one, :name text.
@@ -366,6 +375,48 @@ test("postgres: Neon's neon() before 1.0 is called with (text, values)", async (
   assert.deepEqual(calls[0]!.args.slice(0, 2), ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]]);
   // Its options take a decoder table, 0.9 too, and the fields with fullResults.
   assert.deepEqual(Object.keys(calls[0]!.args[2] as object), ["fullResults", "arrayMode", "types"]);
+});
+
+// postgres.js on a throwaway server (REYLO_TEST_PG), in a database of its own; the driver is lab/drivers'.
+const PG = process.env.REYLO_TEST_PG;
+const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
+const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
+
+test("postgres.js: a statement with parameters is prepared on its connection and run again from there, unless the client was made with prepare: false", { skip: pgLive }, async () => {
+  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
+  const admin = postgres(PG, { max: 1, onnotice: () => {} });
+  const name = `reylo_execute_prepare_${process.pid}`;
+  await admin.unsafe(`drop database if exists ${name}`);
+  await admin.unsafe(`create database ${name}`);
+  const url = new URL(PG!);
+  url.pathname = `/${name}`;
+  const prepared = postgres(url.href, { max: 1, onnotice: () => {} });
+  const unprepared = postgres(url.href, { max: 1, prepare: false, onnotice: () => {} });
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select id, name from users where id = :id::int", params: ["id"] };
+  const text = "select id, name from users where id = $1::int";
+  // pg_prepared_statements lists the statements of the connection that reads it, and how often
+  // each ran: two plans for two runs is one statement prepared once and run twice.
+  const statements = async (c: { unsafe(text: string): Promise<Record<string, unknown>[]> }) =>
+    [...(await c.unsafe("select statement, custom_plans + generic_plans as runs from pg_prepared_statements where statement = '" + text + "'"))].map((r) => ({ ...r }));
+  try {
+    await prepared.unsafe("create table users (id int primary key, name text not null); insert into users values (1, 'Ada')");
+    for (const client of [prepared, unprepared]) {
+      const reserved = await client.reserve();
+      try {
+        for (let i = 0; i < 2; i++) assert.deepEqual((await execute(reserved, q, { id: 1 })).map((r) => ({ ...(r as object) })), [{ id: 1, name: "Ada" }]);
+        assert.deepEqual(await statements(reserved), client === prepared ? [{ statement: text, runs: "2" }] : []);
+      } finally {
+        reserved.release();
+      }
+    }
+    // A transaction runs on one connection of the client, prepared too.
+    assert.deepEqual(await prepared.begin(async (tx: never) => (await execute(tx, q, { id: 1 }), statements(tx))), [{ statement: text, runs: "3" }]);
+  } finally {
+    await prepared.end();
+    await unprepared.end();
+    await admin.unsafe(`drop database if exists ${name}`);
+    await admin.end();
+  }
 });
 
 test("a parameter left out binds NULL, which postgres.js, mysql2, node:sqlite and libSQL would reject", async () => {

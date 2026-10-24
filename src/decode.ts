@@ -325,7 +325,11 @@ type BufferLike = Uint8Array;
 const textOf = utf8;
 
 export async function postgresJs(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  const pending = c.unsafe(text, params);
+  // Prepared, as postgres.js prepares its own queries: its unsafe() prepares nothing by default,
+  // so every run with a parameter took two round trips (Parse and Describe, then Bind and Execute)
+  // where a statement prepared on the connection takes one. A client made with `prepare: false`,
+  // as one behind a pooler in transaction mode is, still prepares nothing: its option wins.
+  const pending = c.unsafe(text, params, { prepare: true });
   // A client whose query has no raw() (a wrapper of postgres.js's shape): its values, given their kinds.
   if (typeof pending?.raw !== "function") return bunRows(await pending, columns);
   const raw = await pending.raw();
