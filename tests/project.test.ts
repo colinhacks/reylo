@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -113,6 +113,63 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   // A scheme reylo does not read names no dialect.
   const odd = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: ./dev.db\n" });
   assert.match(resolveProject(e, odd, {}).error!, /^Cannot tell the database from the URL \("direct_url" in \.reylo\.yaml\)/);
+});
+
+test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", async () => {
+  const e = await engine("postgres", ROOT);
+  // The command counts its runs in a file beside it, and prints a password a URL cannot hold as it is.
+  const root = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo run >> runs.txt; printf 'p@ss/w?rd&x')@db.internal:5432/app\n" });
+  const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
+  const r = resolveProject(e, root, {});
+  assert.equal(r.error, undefined);
+  assert.equal(r.url, "postgres://app:p%40ss%2Fw%3Frd%26x@db.internal:5432/app");
+  assert.equal(decodeURIComponent(new URL(r.url!).password), "p@ss/w?rd&x");
+  // Where the URL came from, never what the command printed.
+  assert.equal(r.urlSource, '"direct_url" in .reylo.yaml');
+  assert.equal(r.dialect, "postgres");
+  // Resolved again, as every build step and the type check do, the command does not run again.
+  assert.equal(resolveProject(e, root, {}).url, r.url);
+  assert.equal(runs(), 1);
+  // A refused login runs it again.
+  assert.equal(r.refreshUrl!(), r.url);
+  assert.equal(runs(), 2);
+  // A URL with no command has nothing to refresh.
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\n" }), {}).refreshUrl, undefined);
+  // A command that is the whole value prints a URL, taken as printed.
+  const whole = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: $(printf 'mysql://root:p@ss@127.0.0.1:3306/app')\n" });
+  assert.deepEqual([resolveProject(e, whole, {}).url, resolveProject(e, whole, {}).dialect], ["mysql://root:p@ss@127.0.0.1:3306/app", "mysql"]);
+});
+
+test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", async () => {
+  const e = await engine("postgres", ROOT);
+  const root = tree({
+    "package.json": "{}",
+    ".reylo.yaml": "direct_url: postgres://app:$(printf %s \"$DB_PASSWORD\")@$(printf %s \"$DB_HOST\")/app\n",
+    ".env": "DB_PASSWORD=$(touch pwned)\nDB_HOST=from-env-file\n",
+  });
+  const r = resolveProject(e, root, { DB_HOST: "from-environment" });
+  assert.equal(r.url, `postgres://app:${encodeURIComponent("$(touch pwned)")}@from-environment/app`);
+  assert.equal(existsSync(join(root, "pwned")), false);
+  // Reylo's own ${VAR}, outside a command, puts its value in as it is, never as a command.
+  const text = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:${DB_PASSWORD}@h/app\n", ".env": "DB_PASSWORD=$(touch pwned)\n" });
+  assert.equal(resolveProject(e, text, {}).url, "postgres://app:$(touch pwned)@h/app");
+  assert.equal(existsSync(join(text, "pwned")), false);
+});
+
+test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", async () => {
+  const e = await engine("postgres", ROOT);
+  const failing = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo 'no item matches' >&2; exit 3)@h/app\n" });
+  const r = resolveProject(e, failing, {});
+  assert.equal(r.url, undefined);
+  assert.equal(r.error, `.reylo.yaml: "direct_url" runs \`echo 'no item matches' >&2; exit 3\`, which exited with code 3: no item matches.`);
+  const empty = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(true)@h/app\n" });
+  assert.equal(resolveProject(e, empty, {}).error, '.reylo.yaml: "direct_url" runs `true`, which printed nothing.');
+  const open = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(printf x@h/app\n" });
+  assert.equal(resolveProject(e, open, {}).error, '.reylo.yaml: "direct_url" opens $( at column 16 and never closes it.');
+  // A variable nothing sets is said first, and the command, which may ask for a password, never runs.
+  const unset = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://${NOPE}:$(touch ran; printf x)@h/app\n" });
+  assert.match(resolveProject(e, unset, {}).error!, /names \$\{NOPE\}/);
+  assert.equal(existsSync(join(unset, "ran")), false);
 });
 
 // The type check never reads url, and a file that sets it alone is told to set direct_url.

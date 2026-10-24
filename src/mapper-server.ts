@@ -7,13 +7,12 @@ import { dirname, relative } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, withinFile } from "./module-types.ts";
-import { PROJECT_FILE, PROJECT_FILES, resolveProject, sourceName, type Dialect } from "./project.ts";
+import { PROJECT_FILE, PROJECT_FILES, resolveProject, sourceName } from "./project.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, RAW_NOTE, sqlNote, statementAfter } from "./doc-comment.ts";
 
 type Project = {
-  dialect: Dialect;
   strictParams: boolean;
   /** Whether each statement ends with a sqlcommenter comment naming its file. */
   sqlcommenter: boolean;
@@ -71,7 +70,7 @@ export function mapperHandlers(): MapperHandlers {
       const resolved = resolveProject(await anyEngine(projectDir), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file) || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
-      projects.set(p.projectHandle, { dialect: resolved.dialect, strictParams: resolved.strictParams, sqlcommenter: resolved.sqlcommenter, projectFile, session: Session.open(projectDir) });
+      projects.set(p.projectHandle, { strictParams: resolved.strictParams, sqlcommenter: resolved.sqlcommenter, projectFile, session: Session.open(projectDir) });
       const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.sqlcommenter, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
@@ -93,25 +92,37 @@ export function mapperHandlers(): MapperHandlers {
         const text = `import type { Query } from "reylo";\nexport type Params = unknown;\nexport type Row = unknown;\nexport type QueryError = import("reylo").QueryError;\n${doc}declare const query: Query<unknown, unknown, "many", "postgres">;\nexport default query;\n`;
         return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
       }
+      // The analysis first, and the dialect from the session after it: a session whose `direct_url`
+      // command has just succeeded takes the project the command's URL resolves to (src/analyze.ts).
+      const session = await project.session;
+      const outcome = await session.analyze(sql);
+      const { dialect } = session.project;
+      // The engine's lexer names the parameters. A statement it cannot read (a placeholder form the
+      // dialect would misread, named and positional mixed) comes back from the analysis as an error
+      // at its place; until then nothing is proved, so the row count is `many`.
+      let lexed: Lexed | undefined;
+      try {
+        lexed = session.lex(sql);
+      } catch {}
       // `compiled` is the statement as Reylo sends it to the database (the engine's rewritten text),
       // which an analysis that failed has not given: then `sql` is any string. The comment at the top
       // of the file and the statement go into doc comments, so a hover over the import shows the
       // prose and the statement as written, and one over its `sql` the statement as sent. The
       // rewrite changes placeholders alone, never a comment, so the compiled text starts with the
       // same comments.
-      const leading = leadingComment(sql, project.dialect);
+      const leading = leadingComment(sql, dialect);
       // `shown` is the statement the `sql` doc comment shows: the compiled text without its file's
       // comment, whose `*/` a doc comment cannot hold. The literal type carries it whole.
       const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], shown = compiled) => {
         const written = statementAfter(sql, leading);
-        const sent = shown === undefined ? undefined : statementAfter(shown, leadingComment(shown, project.dialect));
+        const sent = shown === undefined ? undefined : statementAfter(shown, leadingComment(shown, dialect));
         const sqlDoc = (indent = "") => docComment(leading.prose, sent, sqlNote(project.sqlcommenter), indent);
         const rawDoc = (indent = "") => docComment(leading.prose, written, RAW_NOTE, indent);
         const text = [
           `import type { Query } from "reylo";`,
           `export type Params = ${paramsType};`,
           `export type Row = ${rowType};`,
-          `export type QueryError = import("reylo").QueryError<${JSON.stringify(project.dialect)}>;`,
+          `export type QueryError = import("reylo").QueryError<${JSON.stringify(dialect)}>;`,
           `${sqlDoc()}export declare const sql: ${compiled === undefined ? "string" : JSON.stringify(compiled)};`,
           `${rawDoc()}export declare const raw: ${JSON.stringify(sql)};`,
           `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(", ")}];`,
@@ -120,7 +131,7 @@ export function mapperHandlers(): MapperHandlers {
           // texts go in by `typeof`, so a hover over the query names them and one over its `sql`
           // shows the statement, with the doc comment of the property here (Query's own `sql` and
           // `raw` carry none, since TypeScript would show it first and run the two together).
-          `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}> & {`,
+          `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(dialect)}> & {`,
           `${sqlDoc("  ")}  readonly sql: typeof sql;`,
           `${rawDoc("  ")}  readonly raw: typeof raw;`,
           // Every build step writes the file's path into the module, so an import's source is never
@@ -134,15 +145,6 @@ export function mapperHandlers(): MapperHandlers {
         return { extension: ".ts" as const, diagnostics, text, mappings: mapToStatement(text, sql) };
       };
 
-      // The engine's lexer names the parameters. A statement it cannot read (a placeholder form the
-      // dialect would misread, named and positional mixed) comes back from the analysis as an error
-      // at its place; until then nothing is proved, so the row count is `many`.
-      const session = await project.session;
-      let lexed: Lexed | undefined;
-      try {
-        lexed = session.lex(sql);
-      } catch {}
-      const outcome = await session.analyze(sql);
       if (!outcome.ok) {
         diagnostics.push(diag(size, outcome.message, 0, 1, outcome.code));
         return emit(undefined, "unknown", "unknown", "many", lexed?.params ?? []);
@@ -150,7 +152,7 @@ export function mapperHandlers(): MapperHandlers {
       const { analysis } = outcome;
       // The types, the diagnostics the analysis gives and the untyped parameters' are one function
       // the docs site's playground shares (src/module-types.ts).
-      const types = moduleTypes(sql, analysis, project.dialect, lexed, project.strictParams, project.projectFile);
+      const types = moduleTypes(sql, analysis, dialect, lexed, project.strictParams, project.projectFile);
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The statement as the build sends it, its file's comment included (src/sqlcommenter.ts).
       const compiled = project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, sourceName(p.fileName)) : analysis.rewritten.sql;

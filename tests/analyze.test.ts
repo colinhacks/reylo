@@ -8,7 +8,9 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
+import { mapperHandlers } from "../src/mapper-server.ts";
 import { connector, notMysql } from "../packages/mysql/describe.ts";
+import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
@@ -408,6 +410,170 @@ test("a MySQL server is not refused: the type check goes on to read its schema",
     await session.close();
     server.restore();
   }
+});
+
+// A MySQL stand-in that takes one password, and refuses any other as MySQL does (error 1045): at
+// the login, and at a later query on a connection whose password has expired since, as postgres.js
+// reports a refused login at its first query.
+function tokenMysql(accepted: () => string): { tried: string[]; open: () => number; restore: () => void } {
+  const tried: string[] = [];
+  let open = 0;
+  const refuse = () => Object.assign(new Error("Access denied for user 'root'@'localhost' (using password: YES)"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045, sqlState: "28000", fatal: true });
+  const real = connector.createConnection;
+  connector.createConnection = async (url: string) => {
+    const password = decodeURIComponent(new URL(url).password);
+    tried.push(password);
+    if (password !== accepted()) throw refuse();
+    open++;
+    let ended = false;
+    return {
+      on() {},
+      async query(q: string | { sql: string }) {
+        const sql = typeof q === "string" ? q : q.sql;
+        if (sql === "select version()") return [[["8.4.6"]], []];
+        // A turn of the event loop, so that calls made together are all waiting when one is refused.
+        await new Promise((resolve) => setImmediate(resolve));
+        if (password !== accepted()) throw refuse();
+        return [[["x"]], []];
+      },
+      async prepare() {
+        throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
+      },
+      async end() {
+        if (!ended) open--;
+        ended = true;
+      },
+    };
+  };
+  return { tried, open: () => open, restore: () => void (connector.createConnection = real) };
+}
+
+test("a login the server refuses runs direct_url's command again, once, so that an expired token is replaced", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, "token.txt"), "token-1");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
+  let current = "token-1";
+  const server = tokenMysql(() => current);
+  const session = await Session.open(root, {});
+  try {
+    // The token the session read at its start has expired, and the command now prints the next.
+    current = "token-2";
+    writeFileSync(join(root, "token.txt"), "token-2");
+    const schema = await session.schema();
+    assert.equal(schema.error, undefined);
+    assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
+    assert.deepEqual(server.tried, ["token-1", "token-2"]);
+    // A command whose fresh output is refused too is asked once, and the refusal is the error.
+    current = "token-3";
+    await session.release();
+    assert.ok(await session.recheck());
+    const refused = await session.schema();
+    assert.equal(refused.value, null);
+    assert.match(refused.error ?? "", /Access denied for user 'root'/);
+    assert.deepEqual(server.tried, ["token-1", "token-2", "token-2"]);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+});
+
+test("calls refused together when a token expires share one run of the command and one new connection", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, "token.txt"), "token-1");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
+  let current = "token-1";
+  const server = tokenMysql(() => current);
+  const session = await Session.open(root, {});
+  try {
+    assert.match((await session.schema()).value ?? "", /^[0-9a-f]{16}$/);
+    const before = runs();
+    // The token expires under an open connection, and two reads of the schema are refused at once.
+    current = "token-2";
+    writeFileSync(join(root, "token.txt"), "token-2");
+    const [changed, schema] = await Promise.all([session.recheck(), session.schema()]);
+    assert.equal(changed, false);
+    assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
+    assert.equal(runs() - before, 1);
+    assert.deepEqual(server.tried, ["token-1", "token-2"]);
+    assert.equal(server.open(), 1);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+  assert.equal(server.open(), 0);
+});
+
+test("a session kept open runs a failed direct_url command again once its failure has stood a minute", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
+  const server = tokenMysql(() => "token-1");
+  // The password manager is locked when the session opens, as the type check's may be at the editor's start.
+  const session = await Session.open(root, {});
+  try {
+    const failed = await session.analyze("select 1");
+    assert.equal(failed.ok, false);
+    assert.equal(!failed.ok && failed.code, 11);
+    assert.match(!failed.ok ? failed.message : "", /runs `echo run >> runs.txt; cat token.txt`, which exited with code 1/);
+    // Unlocked, the command is not run again within the minute, so that a prompt is not asked again per file.
+    writeFileSync(join(root, "token.txt"), "token-1");
+    const soon = await session.analyze("select 1");
+    assert.equal(!soon.ok && soon.code, 11);
+    assert.equal(runs(), 1);
+    // After it, the next analysis runs the command, and the session logs in with what it prints.
+    t.mock.timers.tick(60_000);
+    const later = await session.analyze("select 1");
+    // The stand-in prepares nothing, so the analysis itself still fails, past the project.
+    assert.equal(!later.ok && later.code, 5);
+    assert.equal(session.project.error, undefined);
+    assert.equal(runs(), 2);
+    assert.deepEqual(server.tried, ["token-1"]);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+});
+
+test("the type check names the dialect of the project a kept session recovers to", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
+  const server = tokenMysql(() => "token-1");
+  const mapper = mapperHandlers();
+  const projectHandle = `recovers-${root}`;
+  await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
+  const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
+  try {
+    // With no URL, and no engine installed in the project, the dialect is Postgres's.
+    const before = await transform();
+    assert.deepEqual(before.diagnostics.map((d) => d.code), [11]);
+    assert.match(before.text, /QueryError<"postgres">/);
+    writeFileSync(join(root, "token.txt"), "token-1");
+    t.mock.timers.tick(60_000);
+    // The stand-in prepares nothing, so the analysis fails past the project, in MySQL's terms.
+    const after = await transform();
+    assert.deepEqual(after.diagnostics.map((d) => d.code), [5]);
+    assert.match(after.text, /QueryError<"mysql">/);
+    assert.match(after.text, /"many", "mysql">/);
+  } finally {
+    await mapper.closeProject!({ projectHandle });
+    server.restore();
+  }
+});
+
+test("a refused login is told apart from a server that cannot be reached, on Postgres and MySQL", () => {
+  const pg = (code: string) => new Unreachable(Object.assign(new Error("password authentication failed"), { code, severity: "FATAL" }));
+  assert.ok(refusedLogin(pg("28P01")));
+  assert.ok(refusedLogin(pg("28000")));
+  assert.ok(refusedLogin(new Unreachable(Object.assign(new Error("Access denied"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045 }))));
+  assert.ok(!refusedLogin(pg("3D000")));
+  assert.ok(!refusedLogin(new Unreachable(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))));
 });
 
 test("the server's version names MariaDB in either form it is given, and no MySQL", () => {

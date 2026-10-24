@@ -22,6 +22,16 @@ export class Unreachable extends Error {
   }
 }
 
+/**
+ * Whether the server refused the login itself: a wrong or expired password, as against a server
+ * that cannot be reached. Postgres answers with class 28 (`28P01` for a password, `28000` for the
+ * rest, IAM authentication included), MySQL with error 1045.
+ */
+export function refusedLogin(e: unknown): boolean {
+  const err = ((e as { cause?: unknown } | null)?.cause ?? e) as { code?: string; errno?: number } | null;
+  return err?.code === "28P01" || err?.code === "28000" || err?.code === "ER_ACCESS_DENIED_ERROR" || err?.errno === 1045;
+}
+
 /** A driver error as one line: a refused connection is an AggregateError with no message of its own. */
 export function reason(e: unknown): string {
   const err = e as { message?: string; code?: string; errors?: { message?: string }[] } | undefined;

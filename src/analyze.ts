@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { anyEngine, describer, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
 import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
-import { NotMysql } from "./connection.ts";
+import { NotMysql, refusedLogin } from "./connection.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
@@ -55,44 +55,73 @@ async function openProject(dir: string, env: Record<string, string | undefined>)
 }
 
 export class Session {
-  readonly project: ResolvedProject;
+  /** The project as resolved when the session opened, or again once a failed `direct_url` command succeeds (`#reread`). */
+  project!: ResolvedProject;
   /** The project's directory, which holds `.reylo/`. */
   readonly root: string;
   /** The engine of the project's database, or why there is none, which an analysis reports. */
-  readonly #engine: Engine | MissingEngine;
-  readonly #engineFingerprint: string;
+  #engine!: Engine | MissingEngine;
+  #engineFingerprint!: string;
   readonly #answers = new AnswerCache();
   readonly #idle: number;
+  /** Where the project was resolved from, and with what environment, for `#reread`. */
+  readonly #dir: string;
+  readonly #env: Record<string, string | undefined>;
   #io: Promise<Io> | undefined;
+  /** The URL the connection opens: the project's, until a command in `direct_url` gives a fresh one. */
+  #url: string | undefined;
   #busy = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #schema: { value: string | null; at: number; error?: string; fatal?: boolean } | undefined;
 
-  private constructor(engine: Engine | MissingEngine, project: ResolvedProject, idle: number) {
-    this.#engine = engine;
-    this.project = project;
+  private constructor(engine: Engine | MissingEngine, project: ResolvedProject, idle: number, dir: string, env: Record<string, string | undefined>) {
     this.root = project.root;
     this.#idle = idle;
+    this.#dir = dir;
+    this.#env = env;
+    this.#adopt(engine, project);
+  }
+
+  #adopt(engine: Engine | MissingEngine, project: ResolvedProject): void {
+    this.#engine = engine;
+    this.project = project;
+    this.#url = project.url;
     const ping = engine instanceof MissingEngine ? undefined : engine.call({ op: "ping" });
     this.#engineFingerprint = ping?.status === "ok" ? ping.fingerprint : "unknown";
+  }
+
+  /**
+   * Reads the project again while a `direct_url` command's failure is its error, as when a
+   * password manager was locked: the command runs again once its failure has stood a minute
+   * (src/project.ts), so that a session kept open, as the type check's is, recovers without a
+   * restart.
+   */
+  async #reread(): Promise<void> {
+    if (!this.project.error || !this.project.refreshUrl) return;
+    const { project, engine } = await openProject(this.#dir, this.#env);
+    if (project.error) return;
+    this.#adopt(engine, project);
+    this.#schema = undefined;
+    this.#answers.clear();
   }
 
   /** The build steps' session for the project a file or directory belongs to: one per project (and connection) and process. */
   static async for(from: string, env: Record<string, string | undefined> = process.env): Promise<Session> {
     // From the package's directory, so that a message names a file as the project sees it.
-    const { project, engine } = await openProject(packageDir(from), env);
+    const dir = packageDir(from);
+    const { project, engine } = await openProject(dir, env);
     // A setting the build step reads (`sqlcommenter`) is part of the key, so a change to it in the
     // project file reaches a running watch process.
     const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, project.sqlcommenter, engine instanceof MissingEngine ? engine.message : null]);
     let session = sessions.get(key);
-    if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE)));
+    if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE, dir, env)));
     return session;
   }
 
   /** A session of its own, for a caller that must not share one (the type check, a test); it keeps its connection until closed. */
   static async open(from: string, env: Record<string, string | undefined> = process.env, idle = Infinity): Promise<Session> {
     const { project, engine } = await openProject(from, env);
-    return new Session(engine, project, idle);
+    return new Session(engine, project, idle, from, env);
   }
 
   /** Every build-step session this process opened, for a caller that ends them (`reylo generate`). */
@@ -148,6 +177,7 @@ export class Session {
     clearTimeout(this.#timer);
     this.#busy++;
     try {
+      await this.#reread();
       const outcome = await this.#analyze(sql, options);
       return outcome.ok && this.project.dialect === "sqlite" ? await this.#onDrivers(sql, outcome) : outcome;
     } finally {
@@ -198,17 +228,18 @@ export class Session {
     const entry = options.force ? undefined : readEntry(file);
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
+    const io = this.#connection();
     try {
-      analysis = await engine.analyze(sql, this.project.dialect, await this.#connection(), this.#answers);
+      analysis = await engine.analyze(sql, this.project.dialect, await io, this.#answers);
     } catch (e) {
       // A dead connection is reopened by the next call; a server error is reported.
       if (e instanceof Unreachable) {
-        this.#io = undefined;
+        this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: reason(e) };
         return { ok: false, message: this.cannotConnect(reason(e)), code: 5 };
       }
       if (e instanceof NotMysql) {
-        this.#io = undefined;
+        this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: this.notMysql(e), fatal: true };
         return { ok: false, message: this.#schema.error!, code: 5 };
       }
@@ -227,11 +258,12 @@ export class Session {
   async schema(): Promise<{ value: string | null; error?: string; fatal?: boolean }> {
     const now = Date.now();
     if (this.#schema && now - this.#schema.at < (this.#schema.value === null ? OFFLINE_TTL : SCHEMA_TTL)) return this.#schema;
+    const pending = this.#connection();
     let io: Io;
     try {
-      io = await this.#connection();
+      io = await pending;
     } catch (e) {
-      this.#io = undefined;
+      this.#drop(pending);
       this.#schema = e instanceof Unreachable ? { value: null, at: now, error: reason(e) } : { value: null, at: now, error: e instanceof NotMysql ? this.notMysql(e) : (e as Error).message, fatal: true };
       return this.#schema;
     }
@@ -243,7 +275,7 @@ export class Session {
       this.#schema = { value, at: now };
     } catch (e) {
       if (e instanceof Unreachable) {
-        this.#io = undefined;
+        this.#drop(pending);
         this.#schema = { value: null, at: now, error: reason(e) };
       } else {
         this.#schema = { value: `unverified ${process.pid} ${now}`, at: now };
@@ -315,38 +347,105 @@ export class Session {
   }
 
   #connection(): Promise<Io> {
-    const { dialect, url, root } = this.project;
     this.#io ??= (async (): Promise<Io> => {
-      if (dialect === "mysql") {
-        const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
-        const m = await openMysqlDescriber(url!);
-        return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
+      let first: Io;
+      try {
+        first = await this.#open(this.#url!);
+      } catch (e) {
+        const fresh = this.#freshUrl(e);
+        if (fresh === undefined) throw e;
+        first = await this.#open(fresh);
       }
-      if (dialect === "sqlite") {
-        // A file that cannot be opened is a database that cannot be reached: a build without it
-        // runs on `.reylo/`.
-        const s = await openSqliteDescriber(url!, root).catch((e) => Promise.reject(new Unreachable(e)));
-        const drivers = await openProjectDrivers(root, sqlitePath(url!, root));
-        // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
-        return {
-          describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
-          query: (text, params) => s.values(text, params),
-          close: async () => {
-            await Promise.all(drivers.map((d) => d.close().catch(() => {})));
-            await s.close();
-          },
-          drivers,
-        };
-      }
-      const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
-      const d = await openPostgresDescriber(url!);
-      return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
+      if (!this.project.refreshUrl) return first;
+      // postgres.js logs in at its first query, so a refused login can surface at any call: the
+      // call is asked once more on a connection with the command's fresh output. The calls refused
+      // together, as every call waiting when a token expires is, share one reopen, so that the
+      // command runs once and one connection replaces the old; a call that fails on a connection
+      // already replaced is asked again on the one that replaced it.
+      let current: Promise<Io> = Promise.resolve(first);
+      const again = async <T>(call: (on: Io) => Promise<T>): Promise<T> => {
+        const used = current;
+        const on = await used;
+        try {
+          return await call(on);
+        } catch (e) {
+          if (current === used) {
+            if (!refusedLogin(e)) throw e;
+            current = (async () => {
+              await on.close().catch(() => {});
+              const fresh = this.#freshUrl(e);
+              if (fresh === undefined) throw e;
+              return this.#open(fresh);
+            })();
+            current.catch(() => {});
+          }
+          return call(await current);
+        }
+      };
+      return {
+        describe: (text) => again((on) => on.describe(text)),
+        query: (text, params) => again((on) => on.query(text, params)),
+        close: () => current.then((on) => on.close(), () => {}),
+        ...(first.drivers && { drivers: first.drivers }),
+      };
     })();
     const io = this.#io;
     io.catch(() => {
       if (this.#io === io) this.#io = undefined;
     });
     return io;
+  }
+
+  /**
+   * Forgets a connection a call found dead, and closes it, since one opened in its place with a
+   * command's fresh output may be live. Only the connection that call ran on: a call that fails
+   * late never ends one opened since.
+   */
+  #drop(io: Promise<Io>): void {
+    if (this.#io !== io) return;
+    this.#io = undefined;
+    io.then((i) => i.close()).catch(() => {});
+  }
+
+  /**
+   * A URL to try instead, when the server refused the login and `direct_url`'s command now prints
+   * something else, as when a short-lived password has expired; else undefined, so that nothing
+   * is tried twice on the same password.
+   */
+  #freshUrl(e: unknown): string | undefined {
+    if (!refusedLogin(e)) return undefined;
+    const fresh = this.project.refreshUrl?.();
+    if (fresh === undefined || fresh === this.#url) return undefined;
+    this.#url = fresh;
+    return fresh;
+  }
+
+  async #open(url: string): Promise<Io> {
+    const { dialect, root } = this.project;
+    if (dialect === "mysql") {
+      const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
+      const m = await openMysqlDescriber(url);
+      return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
+    }
+    if (dialect === "sqlite") {
+      // A file that cannot be opened is a database that cannot be reached: a build without it
+      // runs on `.reylo/`.
+      const s = await openSqliteDescriber(url, root).catch((e) => Promise.reject(new Unreachable(e)));
+      const drivers = await openProjectDrivers(root, sqlitePath(url, root));
+      // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
+      return {
+        describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
+        query: (text, params) => s.values(text, params),
+        close: async () => {
+          await Promise.all(drivers.map((d) => d.close().catch(() => {})));
+          await s.close();
+        },
+        drivers,
+      };
+    }
+    const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
+    const d = await openPostgresDescriber(url);
+    return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
   }
 }
 
