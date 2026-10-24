@@ -1673,7 +1673,12 @@ pub(crate) struct Keys {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Class {
     Text,
+    /// An integer or a decimal, which compare exactly.
     Number,
+    /// A FLOAT or a DOUBLE column. An exact number compared with one compares as a double, where
+    /// two integers past 2^53 are one value, so it pins no exact key. A constant of the kind is
+    /// converted to the key's own type first, and is a number here.
+    Real,
     /// A date or time, which a constant is converted to, or anything else.
     Other,
     /// A TIMESTAMP, which a session shows as its own zone's wall-clock time. Where the clocks go
@@ -1994,7 +1999,8 @@ fn same_name<'m, T>(map: &'m HashMap<String, T>, name: &str) -> Option<&'m T> {
 fn class_of(data_type: &str) -> Class {
     match data_type.to_ascii_lowercase().as_str() {
         "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" | "enum" | "set" | "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => Class::Text,
-        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "float" | "double" | "real" | "bit" | "year" => Class::Number,
+        "tinyint" | "smallint" | "mediumint" | "int" | "integer" | "bigint" | "decimal" | "numeric" | "bit" | "year" => Class::Number,
+        "float" | "double" | "real" => Class::Real,
         "timestamp" => Class::Instant,
         _ => Class::Other,
     }
@@ -2073,11 +2079,13 @@ pub(crate) fn one_before_limit(q: &Query) -> Result<(), String> {
 
 /// Whether a key column of this class compared with a value of this one compares the column as
 /// it is: a placeholder the caller binds with the column's own type, or a value of the column's
-/// class. A date or time column converts a constant to its own type.
+/// class. A date or time column converts a constant to its own type. A FLOAT or DOUBLE key compared
+/// with an exact number converts the number, and its own values stay apart.
 pub(crate) fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
     match (key, value) {
         (Some(Class::Instant), _) => false,
         (_, None) | (None | Some(Class::Other), _) => true,
+        (Some(Class::Real), Some(Class::Number)) => true,
         (Some(k), Some(v)) => k == v,
     }
 }

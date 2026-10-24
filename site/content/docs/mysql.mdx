@@ -473,12 +473,13 @@ These don't count as a key match, so the query returns `Row[]`:
 | --- | --- |
 | A join that matches one table's key while the other table matches many rows | `from posts p join users u on u.id = p.user_id where u.id = :id` |
 | A join on a string key, compared under a collation MySQL picks | `join users u on u.email = p.email` |
+| An integer or decimal key joined on a `float` or `double` column, which MySQL compares as doubles, so two keys past 2^53 match one value | `join users u on u.id = s.score` |
 | A `distinct` or `group by` not over the key | `select distinct total …` |
 | A string key compared with a number, which MySQL compares as doubles | `where email = 5` |
 | A `TIMESTAMP` key, since two instants can show as one time when clocks go back | `where created = :at` |
 | A `WITH ROLLUP`, which adds rows | `group by id with rollup` |
 | A derived table, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
-| A view created with a column list | `create view v (user_id, label) as …` |
+| A view whose column list renames its columns | `create view v (user_id, label) as select id, name from users` |
 
 A multi-table `delete` or `update` returns nothing, and so does `select … into @variable`.
 

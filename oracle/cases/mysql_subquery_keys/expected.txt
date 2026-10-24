@@ -4,17 +4,21 @@ compared_as_number.sql: many () -> { email: text }
 cross_join.sql: many (id: int4) -> { id: int8 }
 distinct.sql: maybeOne (a: int4) -> { author_id: int8 }
 distinct_expression.sql: many (a: int4) -> { author_id: int8, t: text? }
+double_key_exact_literal.sql: maybeOne () -> { id: int8 }
 expression.sql: many (id: int4) -> { id: int8, title: text }
 filtered_inside.sql: maybeOne (a: int4, id: int4) -> { id: int8, title: text }
 group_by.sql: maybeOne (a: int4) -> { author_id: int8, n: int8 }
 group_by_ordinal.sql: maybeOne (a: int4) -> { author_id: int8, n: int8 }
 group_key_hidden.sql: many (n: int4) -> { author_id: int8, n: int8 }
+join_double_column.sql: many (id: int8) -> { name: text }
 join_many.sql: many (id: int4) -> { id: int8, tag: text }
 join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
 join_pinned.sql: maybeOne (id: int4) -> { id: int8, title: text, name: text }
 join_text_column.sql: many (id: int8) -> { title: text, name: text }
 join_unpinned.sql: many (id: int8) -> { title: text, name: text }
 joined_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
+key_double_cast.sql: maybeOne (x: float8) -> { id: int8 }
+key_double_literal.sql: maybeOne () -> { id: int8 }
 key_dropped.sql: many (t: text) -> { title: text }
 key_inside.sql: maybeOne (id: int4) -> { id: int8, title: text }
 lateral_pinned.sql: maybeOne (u: int8, p: int4) -> { name: text, title: text }
@@ -45,6 +49,7 @@ view_join.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
 view_join_many.sql: many (id: int8) -> { id: int8, tag: text }
 view_merged.sql: maybeOne (id: int8) -> { id: int8, title: text }
 view_of_view.sql: maybeOne (id: int8) -> { id: int8, title: text }
+view_swapped_columns.sql: many (id: text) -> { title: int8, id: text }
 view_temptable.sql: maybeOne (id: int8) -> { id: int8, title: text }
 window_inside.sql: maybeOne (id: int4) -> { id: int8, rn: int8 }
 with_joined.sql: maybeOne (u: int4, id: int4) -> { title: text, name: text }
