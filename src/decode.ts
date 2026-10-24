@@ -23,7 +23,8 @@
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
 // those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+import { coerce, DecodeError, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+import { lexPlaceholders } from "./lex.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -401,5 +402,123 @@ function byType(v: unknown, name: string): unknown {
   if (ArrayBuffer.isView(v) && !(v instanceof Uint8Array) && !(v instanceof DataView)) return coerce("float[]", v, name);
   return v;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Slonik: its query() runs only the queries its `sql` tag builds, and its type parsers are set on
+// the pool's connections, where they turn a numeric into a float, a timestamp into epoch
+// milliseconds and an interval into seconds. A tag made by the app's own `createSqlTag` with
+// `typeParsers` overrides them for its queries alone, so Reylo's passes every type that pg or
+// Slonik converts through as the server's text, and decodes the rows itself. Each parameter
+// appears once in a statement (engine/core/src/lex.rs), so the statement is the tag's template as
+// it stands: its text between the placeholders, and the values in their order.
+
+type SlonikTypeParser = { name: string; parse(value: string): unknown };
+type SlonikTag = { unsafe(strings: TemplateStringsArray, ...values: unknown[]): { typeParsers?: unknown } };
+type SlonikModule = { createSqlTag(configuration: { typeParsers: SlonikTypeParser[] }): SlonikTag };
+
+/**
+ * The built-in types pg's parsers (pg-types 4) or Slonik's own convert, each passed through as its
+ * text; arrays of them follow. pg leaves every other type, and an array of one, as text or as an
+ * array of its elements' text.
+ */
+const SLONIK_TEXT = [
+  "bool", "bytea", "int2", "int4", "int8", "oid", "float4", "float8", "numeric", "money", "date", "timestamp", "timestamptz", "interval",
+  "json", "jsonb", "point", "circle", "int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange",
+];
+
+/** Kinds whose value must reach Reylo as text: anything else is one a driver already converted, and may have rounded. */
+const SLONIK_STRICT = /^(decimal|date|timestamp|timestamptz|interval)(\[\])*$/;
+
+let slonikModule: Promise<SlonikModule> | undefined;
+const slonikTags = new Map<string, SlonikTag>();
+
+/**
+ * The app's own `slonik`, the package its pool came from, loaded the first time a Slonik client is
+ * passed: its name is a variable, so a bundler leaves the import for the run time.
+ */
+async function slonikTag(c: AnyClient): Promise<SlonikTag> {
+  const specifier = "slonik";
+  slonikModule ??= import(/* webpackIgnore: true */ /* @vite-ignore */ specifier) as Promise<SlonikModule>;
+  let createSqlTag: SlonikModule["createSqlTag"];
+  try {
+    ({ createSqlTag } = await slonikModule);
+  } catch (e) {
+    slonikModule = undefined;
+    throw new TypeError(`Reylo runs a query on Slonik with a sql tag from the app's own slonik package, which it could not load: ${(e as Error).message}`);
+  }
+  // The parsers the app made its pool with, which a pool names on `configuration` and its
+  // connections, transactions and savepoints on `clientConfiguration` (not in Slonik's types).
+  const own = ((c.configuration ?? c.clientConfiguration)?.typeParsers as SlonikTypeParser[] | undefined)?.map((p) => p.name) ?? [];
+  const names = [...new Set([...SLONIK_TEXT, ...own])];
+  const key = names.join(",");
+  let tag = slonikTags.get(key);
+  if (tag === undefined) slonikTags.set(key, (tag = createSqlTag({ typeParsers: names.map((name) => ({ name, parse: (value: string) => value })) })));
+  return tag;
+}
+
+/** `text`, a statement with `$n` placeholders each used once, as a template literal's strings, and its values in that order. */
+function slonikTemplate(text: string, values: readonly unknown[]): [TemplateStringsArray, unknown[]] {
+  const { params, placeholders } = lexPlaceholders(text, "postgres");
+  // A query defined by hand may use a parameter twice, which the type check refuses: Slonik's tag
+  // binds every value on its own, so the second use would be a parameter of its own type.
+  if (placeholders.length > params.length) {
+    throw new TypeError(`Reylo cannot run this statement on Slonik: it uses a parameter more than once, and Slonik's sql tag binds each use on its own, so the server would type each one separately. Use each parameter once, and select it in a with to read it twice.`);
+  }
+  const strings: string[] = [];
+  let last = 0;
+  for (const p of placeholders) {
+    strings.push(text.slice(last, p.start));
+    last = p.end;
+  }
+  strings.push(text.slice(last));
+  // A tag takes only what a template literal gives it: frozen strings and their raw form.
+  const template = Object.freeze(Object.assign(strings, { raw: Object.freeze([...strings]) })) as unknown as TemplateStringsArray;
+  return [template, placeholders.map((p) => values[Number(p.name) - 1])];
+}
+
+export async function slonik(c: AnyClient, text: string, values: readonly unknown[], columns: Columns | undefined): Promise<unknown[]> {
+  const tag = await slonikTag(c);
+  const [template, ordered] = slonikTemplate(text, values);
+  const query = tag.unsafe(template, ...ordered);
+  if (query.typeParsers === undefined) {
+    throw new TypeError(`Reylo cannot run on this Slonik: its sql tag takes no type parsers per query (createSqlTag's typeParsers option), so its pool's parsers would turn numeric, timestamp and interval values into lossy numbers. Upgrade slonik to a release that has the option.`);
+  }
+  const result = (await c.query(query)) as { rows: Record<string, unknown>[]; fields: { name: string; dataTypeId: number }[] };
+  return slonikRows(result.rows, result.fields, columns);
+}
+
+/** Slonik's rows in Reylo's representation, by each column's kind, or for a query defined by hand by its type's oid. */
+function slonikRows(rows: Record<string, unknown>[], fields: { name: string; dataTypeId: number }[], columns: Columns | undefined): unknown[] {
+  if (!rows.length) return rows;
+  const work: readonly (readonly [string, Kind, string?])[] =
+    columns ??
+    fields.map((f) => {
+      const b = builtin(f.dataTypeId);
+      return b ? ([f.name, b.kind, b.delim] as const) : ([f.name, "text"] as const);
+    });
+  // An interceptor's transformRow renames the columns (slonik-interceptor-field-name-transformation)
+  // or rewrites the row, which Reylo's types would no longer describe.
+  if (columns && !columns.every(([name]) => Object.prototype.hasOwnProperty.call(rows[0], name))) throw refuseSlonikRows();
+  for (const row of rows) {
+    for (const [name, kind, delim] of work) row[name] = slonikValue(kind, row[name], name, delim);
+  }
+  return rows;
+}
+
+/** A value as Slonik gave it: the server's text for every type Reylo's tag names, a value pg converted for the rest. */
+function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unknown {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") return textDecoder(kind, delim)(v);
+  // pg parses an array's text into an array, each element by the element type's parser, which
+  // Reylo's tag passes through for the types it names.
+  if (Array.isArray(v) && kind.endsWith("[]")) return v.map((e) => (Array.isArray(e) ? slonikValue(kind, e, name, delim) : slonikValue(kind.slice(0, -2), e, name, delim)));
+  if (SLONIK_STRICT.test(kind)) {
+    throw new DecodeError(`Column "${name}" reached Reylo already converted by Slonik's driver (${v instanceof Date ? "a Date" : typeof v}), which ignored the query's type parsers, as a custom driverFactory may: Reylo refuses it rather than return a value that may have been rounded.`);
+  }
+  return coerce(kind, v, name, delim);
+}
+
+const refuseSlonikRows = () =>
+  new TypeError(`Reylo cannot run on this Slonik pool: an interceptor rewrites every row (transformRow, such as slonik-interceptor-field-name-transformation), Reylo's too, so they would not have the columns the query declares. Run Reylo's queries on a pool made without that interceptor.`);
 
 export { DecodeError, parseArray } from "./values.ts";

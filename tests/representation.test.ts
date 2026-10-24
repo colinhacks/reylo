@@ -152,6 +152,19 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     const liteControl = (await lite.query("select created_by, tstz from t where id = 1")).rows[0];
     assert.deepEqual([typeof liteControl.created_by, liteControl.tstz instanceof Date], ["number", true], "the control: the app's own query");
     await lite.close();
+    // Slonik, with its own parsers (a numeric a float, a timestamp epoch milliseconds, an interval
+    // seconds) and one of the app's, on uuid: Reylo's rows keep the values, the app's queries its parsers.
+    const { createPool, createTypeParserPreset, sql: slonikSql } = await import("slonik");
+    const slonik = await createPool(url.href, { typeParsers: [...createTypeParserPreset(), { name: "uuid", parse: (x: string) => x.toUpperCase() }] });
+    try {
+      assert.deepEqual(plain(await q.run(slonik)), PG_ROWS, "Slonik pool");
+      assert.deepEqual(plain(await slonik.connect((c) => q.run(c))), PG_ROWS, "Slonik connection");
+      assert.deepEqual(plain(await slonik.transaction((t) => q.run(t))), PG_ROWS, "Slonik transaction");
+      const own = (await slonik.one(slonikSql.unsafe`select n, u from t where id = 1`)) as { n: unknown; u: unknown };
+      assert.deepEqual([typeof own.n, own.u], ["number", "A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11"], "the control: the app's own query");
+    } finally {
+      await slonik.end();
+    }
   } finally {
     pg.types.setTypeParser(20, parsers[20]);
     pg.types.setTypeParser(1700, parsers[1700]);
