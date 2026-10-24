@@ -389,7 +389,8 @@ function writeEntry(root: string, file: string, entry: Entry): void {
 /**
  * One query per dialect whose rows change when anything an analysis reads changes: relations and
  * their columns, inheritance, constraints, indexes, row triggers and rules (nullability and the row
- * count read them), enum labels, domains, functions, user operators (the trust check reads them), view
+ * count read them), enum labels, domains, functions with their defaults, volatility, strictness,
+ * kind and variadic argument, user operators and casts (the trust check reads them), view
  * definitions and column comments (a field's doc comment), and the server settings that change a statement's types. SQLite's whole schema is
  * its `sqlite_schema` table, and the functions of the SQLite that opened it are part of what an
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
