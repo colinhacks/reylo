@@ -269,7 +269,7 @@ select ddl from (
     select string_agg(line, E',\n' order by ord) from (
       select a.attnum::int as ord, '  ' || quote_ident(a.attname) || ' ' || format_type(a.atttypid, a.atttypmod)
         || case when a.attidentity in ('a', 'd') then ' generated ' || case a.attidentity when 'a' then 'always' else 'by default' end || ' as identity' else '' end
-        || case when a.attgenerated = 's' then ' generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ') stored'
+        || case when a.attgenerated <> '' then ' generated always as (' || pg_get_expr(d.adbin, d.adrelid) || ')' || case a.attgenerated when 's' then ' stored' else ' virtual' end
                 when d.adbin is not null and a.attidentity = '' then ' default ' || pg_get_expr(d.adbin, d.adrelid) else '' end
         || case when a.attnotnull then ' not null' else '' end as line
       from pg_attribute a left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
@@ -285,7 +285,7 @@ select ddl from (
   union all
   select 3, i.relname::text, pg_get_indexdef(i.oid) || ';'
   from pg_index x join pg_class i on i.oid = x.indexrelid join pg_class c on c.oid = x.indrelid join q on q.oid = c.relnamespace
-  where not exists (select 1 from pg_constraint con where con.conindid = x.indexrelid)
+  where not exists (select 1 from pg_constraint con where con.conindid = x.indexrelid and con.contype in ('p', 'u', 'x'))
 ) s order by k, name`;
 
 /** The schema as the page shows it where the database refuses to give it: each table's columns, as a CREATE TABLE writes them. */
