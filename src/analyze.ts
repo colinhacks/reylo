@@ -409,7 +409,8 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
     union all select 'o ' || o.oid || ' ' || o.oprname || ' ' || o.oprleft || ' ' || o.oprright || ' ' || o.oprcode::oid from pg_operator o where o.oid >= 16384
     union all select 'e ' || e.enumtypid || ' ' || e.enumsortorder || ' ' || e.enumlabel from pg_enum e
     union all select 't ' || t.oid || ' ' || t.typname || ' ' || t.typtype::text || ' ' || t.typbasetype || ' ' || t.typnotnull from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname ${NS}
-    union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
+    union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) || ' ' || p.prokind::text || ' ' || p.provolatile::text || ' ' || p.proisstrict || ' ' || p.pronargdefaults || ' ' || p.provariadic from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
+    union all select 'k ' || k.oid || ' ' || k.castsource || ' ' || k.casttarget || ' ' || k.castfunc || ' ' || k.castcontext::text || ' ' || k.castmethod::text from pg_cast k where k.oid >= 16384
     union all select 'w ' || c.oid || ' ' || md5(pg_get_viewdef(c.oid)) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and n.nspname ${NS}
     union all select 'd ' || d.objoid || ' ' || d.objsubid || ' ' || md5(d.description) from pg_description d join pg_class c on c.oid = d.objoid join pg_namespace n on n.oid = c.relnamespace where d.classoid = 'pg_class'::regclass and d.objsubid > 0 and n.nspname ${NS}
   ) t`,
