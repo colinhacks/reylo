@@ -626,7 +626,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by`, or inserts one row with `values (…)` and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key; has `limit 1` or `fetch first 1 row only`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `on conflict do nothing` and `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `on conflict do nothing` and `returning` |
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -668,6 +668,27 @@ where slug = :slug and not deleted
 ```
 
 </Inferred>
+
+**Subqueries, `with` queries and views**
+
+A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns.
+
+<Inferred>
+
+```sql file="pg_card_subquery.sql"
+select id, total
+from (
+  select o.id, o.total, u.name
+  from orders o
+  join users u on u.id = o.user_id
+  where o.paid
+) paid_orders
+where id = :id::bigint
+```
+
+</Inferred>
+
+A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast leaves no key.
 
 **What doesn't count**
 
