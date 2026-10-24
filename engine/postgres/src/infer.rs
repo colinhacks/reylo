@@ -1193,7 +1193,16 @@ impl Reader<'_> {
             Some(NodeEnum::AExpr(a)) => {
                 let distinct = [protobuf::AExprKind::AexprDistinct as i32, protobuf::AExprKind::AexprNotDistinct as i32];
                 if distinct.contains(&a.kind) {
-                    return Expr::NonNull(Some(oid::BOOL));
+                    // `a IS [NOT] DISTINCT FROM b` compares two non-null values with `=`, and is
+                    // NULL where that `=` answers NULL: a user's of the name may. With a NULL on
+                    // either side no `=` runs.
+                    let null = |n: Option<&Node>| matches!(n.and_then(|n| n.node.as_ref()), Some(NodeEnum::AConst(c)) if c.isnull);
+                    let (Some(left), Some(right)) = (a.lexpr.as_deref(), a.rexpr.as_deref()) else { return Expr::Unknown };
+                    if self.dialect != Dialect::Postgres || !self.trust.checked("=") || null(Some(left)) || null(Some(right)) {
+                        return Expr::NonNull(Some(oid::BOOL));
+                    }
+                    let operands = vec![self.read(left), self.read(right)];
+                    return self.shadowed_call(Kind::Infix, "=", &[left, right], operands, Claim::NonNull(Some(oid::BOOL)));
                 }
                 // `LIKE`, `ILIKE` and `SIMILAR TO` are operators the parse marks apart, under the
                 // operator's own name.
@@ -2990,6 +2999,22 @@ mod tests {
         assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::BOOL)]), None);
         assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::INT4)]), Some(Some(oid::INT8)));
         assert_eq!(trust.resolves(Kind::Cast, "text", &[Operand::Is(oid::BOOL)]), Some(None));
+    }
+
+    #[test]
+    fn is_distinct_from_rests_on_the_equality_it_runs() {
+        let trust = extended(Vec::new());
+        let fact = |sql: &str, leaves: &[DescribedColumn]| resolve(plan(sql, Dialect::Postgres, &trust).head[0].as_ref().expect("a claim"), Some(leaves));
+        // `=` of two `int4`s is the built-in's; of two of a type a user defined, theirs, which may
+        // answer NULL and make the test NULL.
+        assert_eq!(fact("SELECT a IS DISTINCT FROM b FROM t", &[col(true, oid::INT4), col(true, oid::INT4)]), Fact { non_null: true, type_oid: Some(oid::BOOL) });
+        assert!(!fact("SELECT a IS NOT DISTINCT FROM b FROM t", &[col(false, VECTOR), col(false, VECTOR)]).non_null);
+        // Beside a NULL no `=` runs.
+        assert!(fact("SELECT a IS DISTINCT FROM NULL FROM t", &[col(false, VECTOR)]).non_null);
+        // With `=` the built-in's alone, nothing to check.
+        assert_eq!(pg("SELECT a IS DISTINCT FROM b FROM t").head[0], Some(Expr::NonNull(Some(oid::BOOL))));
+        // NULLIF claims nothing whatever its `=` is.
+        assert_eq!(pg("SELECT nullif(1, 2)").head[0], Some(Expr::Unknown));
     }
 
     #[test]
