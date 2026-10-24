@@ -473,7 +473,7 @@ These don't count as a key match, so the query returns `Row[]`:
 | --- | --- |
 | A join that matches one table's key while the other table matches many rows | `from posts p join users u on u.id = p.user_id where u.id = :id` |
 | A join on a string key, compared under a collation MySQL picks | `join users u on u.email = p.email` |
-| An integer or decimal key joined on a `float` or `double` column, which MySQL compares as doubles, so two keys past 2^53 match one value | `join users u on u.id = s.score` |
+| An integer or decimal key compared with a `float` or `double` column, or with a parameter cast to one, which MySQL compares as doubles, so two keys past 2^53 match one value | `on u.id = s.score`, `where id = cast(:x as double)` |
 | A `distinct` or `group by` not over the key | `select distinct total …` |
 | A string key compared with a number, which MySQL compares as doubles | `where email = 5` |
 | A `TIMESTAMP` key, since two instants can show as one time when clocks go back | `where created = :at` |
