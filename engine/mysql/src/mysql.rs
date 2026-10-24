@@ -1649,9 +1649,10 @@ pub(crate) enum Class {
     Text,
     /// An integer or a decimal, which compare exactly.
     Number,
-    /// A FLOAT or a DOUBLE column. An exact number compared with one compares as a double, where
-    /// two integers past 2^53 are one value, so it pins no exact key. A constant of the kind is
-    /// converted to the key's own type first, and is a number here.
+    /// A FLOAT or a DOUBLE column, or a value read from a placeholder through one. An exact
+    /// number compared with one compares as a double, where two integers past 2^53 are one value,
+    /// so it pins no exact key. A constant of the kind is converted to the key's own type first,
+    /// and is a number here.
     Real,
     /// A date or time, which a constant is converted to, or anything else.
     Other,
@@ -2064,8 +2065,14 @@ pub(crate) fn compares_as_is(key: Option<Class>, value: Option<Class>) -> bool {
     }
 }
 
-/// What a compared value compares as, where the build can tell; `None` for a placeholder.
+/// What a compared value compares as, where the build can tell; `None` for a placeholder. A value
+/// that reads a placeholder through a FLOAT or DOUBLE (`cast(? as double)`, `? + 0e0`) is a double
+/// the server compares an exact key with as a double; a constant one it converts to the key's type
+/// first.
 pub(crate) fn value_class(e: &Expr) -> Option<Class> {
+    if approximate(e) && has_placeholder(e) {
+        return Some(Class::Real);
+    }
     // `md5` and `sha1` are not here: MySQL 9.7 and 26.7 have neither, and there a stored function
     // of the name answers the call. The same holds in `deterministic`.
     const TEXT: &[&str] = &[
@@ -2109,6 +2116,35 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
         }
         _ => Class::Other,
     })
+}
+
+/// Whether an expression is a FLOAT or DOUBLE by its form: a cast to one, a literal in scientific
+/// notation, or arithmetic over one.
+fn approximate(e: &Expr) -> bool {
+    match e {
+        Expr::Value(v) => matches!(&v.value, ast::Value::Number(n, _) if n.contains(['e', 'E'])),
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } => approximate(inner),
+        Expr::Cast { data_type, .. } => {
+            let target = data_type.to_string().to_ascii_lowercase();
+            ["double", "float", "real"].iter().any(|t| target.starts_with(t))
+        }
+        Expr::BinaryOp { left, right, .. } => approximate(left) || approximate(right),
+        _ => false,
+    }
+}
+
+/// Whether an expression reads a placeholder anywhere the walk reaches.
+fn has_placeholder(e: &Expr) -> bool {
+    match e {
+        Expr::Value(v) => matches!(v.value, ast::Value::Placeholder(_)),
+        Expr::Nested(inner) | Expr::UnaryOp { expr: inner, .. } | Expr::Cast { expr: inner, .. } => has_placeholder(inner),
+        Expr::BinaryOp { left, right, .. } => has_placeholder(left) || has_placeholder(right),
+        Expr::Function(f) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if has_placeholder(x))),
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// Whether an expression gives every row the same value: a literal, or built-ins known to answer
