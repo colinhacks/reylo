@@ -232,6 +232,12 @@ impl Overloads {
         }) {
             return None;
         }
+        // A function named like a type is a cast to it where a call of one argument matches no
+        // overload exactly (`func_get_detail`). A column of a domain, which the describe reports
+        // as of its base type, may match none where its base type would: the build cannot tell.
+        if kind == Kind::Function && operands.len() == 1 && self.typed.contains(name) {
+            return None;
+        }
         let key = (kind, name.to_string());
         let users = self.user.get(&key).map(Vec::as_slice).unwrap_or(&[]);
         // The exact match, an infix operator's untyped operand taking the other one's type.
@@ -262,11 +268,7 @@ impl Overloads {
                 return Some(matching.all(|b| b.result == result).then_some(result));
             }
         }
-        // No exact match: every candidate must be a built-in, reached by built-in conversions. A
-        // function named like a type may be a cast to it.
-        if kind == Kind::Function && operands.len() == 1 && self.typed.contains(name) {
-            return None;
-        }
+        // No exact match: every candidate must be a built-in, reached by built-in conversions.
         if users.iter().any(|u| u.reachable(kind, operands, self)) {
             return None;
         }
@@ -515,8 +517,9 @@ mod tests {
         assert_eq!(c.resolve(Kind::Function, "round", &[Operand::Is(oid::NUMERIC)]), None, "round(text, int default 0) takes one argument");
         assert_eq!(c.resolve(Kind::Function, "round", &[Operand::Is(oid::NUMERIC), Operand::Is(oid::INT4), Operand::Is(oid::INT4)]), Some(None));
         let (c, _) = catalog(vec![vec![json!("type"), json!("upper"), Value::Null, Value::Null, Value::Null], builtin("f", "upper", &[oid::TEXT], oid::TEXT)]);
-        assert_eq!(c.resolve(Kind::Function, "upper", &[Operand::Is(oid::TEXT)]), Some(Some(oid::TEXT)));
         assert_eq!(c.resolve(Kind::Function, "upper", &[Operand::Is(oid::VARCHAR)]), None, "upper(x) may be x::upper");
+        // A `text` may be a column of a domain over it, which `upper(text)` does not match exactly.
+        assert_eq!(c.resolve(Kind::Function, "upper", &[Operand::Is(oid::TEXT)]), None);
     }
 
     #[test]
