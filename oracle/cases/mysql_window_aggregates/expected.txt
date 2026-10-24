@@ -16,6 +16,7 @@ partition_sum.sql: many () -> { total: numeric }
 plain_sum.sql: one () -> { total: numeric? }
 preceding_end.sql: many () -> { before_row: numeric? }
 range_offsets.sql: many () -> { by_day: numeric?, by_score: numeric?, by_weight: numeric? }
+rollup_window.sql: many () -> { user_id: int4|int8?, running: numeric?, top_user: int4|int8? }
 running_sum.sql: many () -> { running: numeric }
 subquery_window.sql: many () -> { name: text, own: numeric? }
 where_tested.sql: many () -> { last_note: text }
