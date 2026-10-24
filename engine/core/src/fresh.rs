@@ -54,28 +54,35 @@ pub struct Fresh {
     pub defaults: Vec<[String; 2]>,
 }
 
-/// Postgres: every column of each table `{tables}` names (string literals, each a name as the
+/// Postgres: every column of each table `{tables}` names (rows of one text each, a name as the
 /// statement writes it, quoted as an identifier), a domain's not null and default counted as the
-/// column's.
+/// column's. Every operator, function and type is spelled as `pg_catalog`'s, as the engine's own
+/// catalog queries are (`engine/postgres/src/postgres.rs`), so a search path that puts a user's
+/// before them changes nothing.
 macro_rules! pg_query {
     ($expr:expr, $join:expr) => {
         concat!(
-            "SELECT r.name AS fresh_table, a.attname::text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, \
-            (a.attnotnull OR (t.typtype = 'd' AND t.typnotnull))::text AS fresh_not_null, \
-            (a.atthasdef OR a.attidentity <> '' OR (t.typtype = 'd' AND t.typdefault IS NOT NULL))::text AS fresh_default",
+            "SELECT r.name AS fresh_table, a.attname::pg_catalog.text AS fresh_column, pg_catalog.format_type(a.atttypid, a.atttypmod) AS fresh_type, \
+            (a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull))::pg_catalog.text AS fresh_not_null, \
+            (a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" \
+              OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL))::pg_catalog.text AS fresh_default",
             $expr,
-            " FROM pg_catalog.unnest(ARRAY[{tables}]::text[]) AS r(name) \
-            JOIN pg_catalog.pg_attribute a ON a.attrelid = pg_catalog.to_regclass(r.name) AND a.attnum > 0 AND NOT a.attisdropped \
-            JOIN pg_catalog.pg_type t ON t.oid = a.atttypid",
+            " FROM (VALUES {tables}) AS r(name) \
+            JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass(r.name)::pg_catalog.oid \
+              AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+            JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid",
             $join,
             " ORDER BY 1, 2"
         )
     };
 }
-const PG_QUERY: &str = pg_query!("", "");
+pub const PG_QUERY: &str = pg_query!("", "");
 /// The same with a sixth column, each default's text as a structured insert copies it, for a
 /// statement that copied one.
-const PG_QUERY_DEFAULTS: &str = pg_query!(concat!(", ", crate::structured::pg_default!(), " AS fresh_expr"), " LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum");
+pub const PG_QUERY_DEFAULTS: &str = pg_query!(
+    concat!(", ", crate::structured::pg_default!(), " AS fresh_expr"),
+    " LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) a.attrelid AND d.adnum OPERATOR(pg_catalog.=) a.attnum"
+);
 
 /// MySQL: every column of each table of the session's database that `{tables}` names.
 const MYSQL_QUERY: &str = "select c.table_name as fresh_table, c.column_name as fresh_column, c.column_type as fresh_type, cast(c.is_nullable = 'NO' as char) as fresh_not_null, \
@@ -128,7 +135,7 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     let copied: Vec<&String> = analysis.structured.iter().flat_map(|i| &i.copied).collect();
     let with_defaults = !copied.is_empty() && dialect != Dialect::Mysql;
     let query = match dialect {
-        Dialect::Postgres => (if with_defaults { PG_QUERY_DEFAULTS } else { PG_QUERY }).replace("{tables}", &literals.join(", ")),
+        Dialect::Postgres => (if with_defaults { PG_QUERY_DEFAULTS } else { PG_QUERY }).replace("{tables}", &literals.iter().map(|l| format!("({l}::pg_catalog.text)")).collect::<Vec<_>>().join(", ")),
         Dialect::Mysql => MYSQL_QUERY.replace("{tables}", &literals.join(", ")),
         Dialect::Sqlite => (if with_defaults { SQLITE_QUERY_DEFAULTS } else { SQLITE_QUERY }).replace("{tables}", &literals.iter().enumerate().map(|(k, l)| if k == 0 { format!("select {l} as value") } else { format!("select {l}") }).collect::<Vec<_>>().join(" union all ")),
     };

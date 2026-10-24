@@ -142,6 +142,8 @@ pub struct Catalog {
     /// The base types of every such column: a column of one of these types, as `column_types`
     /// gives it, may be one of a domain.
     pub domain_bases: HashSet<u32>,
+    /// Per relation as named in `column_types`, each column's declared type, a domain's by itself.
+    pub declared_types: std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
     /// Per relation, the events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) for which it,
     /// or a partition or an inheritance child of it, has an enabled row trigger that runs BEFORE
     /// the change or INSTEAD of it. Such a trigger can return NULL and skip the row, so an INSERT
@@ -165,6 +167,10 @@ pub struct Catalog {
     /// Every column of each relation, in order, as [`COLUMNS_QUERY`] reports them: what says
     /// which query a bare column name in a nested statement belongs to.
     pub columns: Columns,
+    /// The columns the rows the statement being proven builds may have ([`infer::row_fields`]), set
+    /// where the proof starts from the statement's text; `None` for a statement nested in one the
+    /// proof does not see, and for a view's defining statement.
+    pub row_fields: Option<HashSet<String>>,
     /// Per view, as named in `unique_keys`, its defining SELECT as `pg_get_viewdef` prints it:
     /// read as a subquery, it gives the view the keys its statement keeps ([`output_keys`]). The
     /// tables it reads are among the relations the rest of this catalog covers.
@@ -175,7 +181,7 @@ impl Catalog {
     /// This catalog for a view's defining statement, which sees none of the WITH queries of the
     /// statement that reads the view.
     fn for_view(&self) -> Catalog {
-        Catalog { enclosing_ctes: Vec::new(), nested: false, ..self.clone() }
+        Catalog { enclosing_ctes: Vec::new(), nested: false, row_fields: None, ..self.clone() }
     }
 
     /// This catalog for a statement nested in one whose WITH queries are `names`.
@@ -191,15 +197,48 @@ fn with_names(s: &SelectStmt) -> Vec<String> {
     s.with_clause.iter().flat_map(|w| w.ctes.iter().filter_map(cte_name).cloned()).collect()
 }
 
-/// The `pg_class` row of the relation named in the text column `$name`, as the server resolves the
-/// name the statement writes: through the search path when unqualified, and each part quoted, so
-/// a name that needs quotes (`"Users"`) resolves as written.
+/// The oid of the relation named in the text column `$name`, as the server resolves the name the
+/// statement writes: through the search path when unqualified, and each part quoted, so a name
+/// that needs quotes (`"Users"`) resolves as written.
 macro_rules! relation_named {
     ($name:literal) => {
         concat!(
-            "pg_catalog.to_regclass(CASE WHEN strpos(", $name, ", '.') > 0 \
-      THEN pg_catalog.quote_ident(split_part(", $name, ", '.', 1)) || '.' || pg_catalog.quote_ident(split_part(", $name, ", '.', 2)) \
-      ELSE pg_catalog.quote_ident(", $name, ") END)"
+            "pg_catalog.to_regclass(CASE WHEN pg_catalog.strpos(", $name, ", '.'::pg_catalog.text) OPERATOR(pg_catalog.>) 0 \
+      THEN ((pg_catalog.quote_ident(pg_catalog.split_part(", $name, ", '.'::pg_catalog.text, 1)) OPERATOR(pg_catalog.||) '.'::pg_catalog.text) \
+        OPERATOR(pg_catalog.||) pg_catalog.quote_ident(pg_catalog.split_part(", $name, ", '.'::pg_catalog.text, 2))) \
+      ELSE pg_catalog.quote_ident(", $name, ") END)::pg_catalog.oid"
+        )
+    };
+}
+
+/// The names in `$1`, a `text[]` of `$2` of them, one row each in the column `name`, as a
+/// `FROM` item: read by subscript, since `unnest` takes any array and so has overloads it could
+/// lose to.
+macro_rules! names {
+    ($names:literal, $count:literal, $alias:literal) => {
+        concat!("(SELECT (", $names, ")[n] AS name FROM pg_catalog.generate_series(1, ", $count, ") AS n) AS ", $alias)
+    };
+}
+pub(crate) use names;
+
+/// The key parts of index `i`, `k` from 0 (`indkey` and `indcollation` count from 0), each with
+/// its `pg_attribute` row `a`: the index's own for an expression part, else the table's column.
+macro_rules! key_parts {
+    () => {
+        "FROM pg_catalog.generate_series(0, i.indnkeyatts::pg_catalog.int4 OPERATOR(pg_catalog.-) 1) AS k \
+      JOIN pg_catalog.pg_attribute a ON CASE WHEN i.indkey[k] OPERATOR(pg_catalog.=) 0 \
+        THEN a.attrelid OPERATOR(pg_catalog.=) i.indexrelid AND a.attnum OPERATOR(pg_catalog.=) (k OPERATOR(pg_catalog.+) 1) \
+        ELSE a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k] AND NOT a.attisdropped END"
+    };
+}
+
+/// One value per column of relation `c`, in attribute order, as an array; `a` is the column's
+/// `pg_attribute` row and `t` its type's `pg_type` row.
+macro_rules! relation_columns {
+    ($value:literal) => {
+        concat!(
+            "ARRAY(SELECT ", $value, " FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+      WHERE a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped ORDER BY a.attnum)"
         )
     };
 }
@@ -211,7 +250,7 @@ pub const TRIGGER_ROW_INSERT: i32 = 4;
 pub const TRIGGER_ROW_DELETE: i32 = 8;
 pub const TRIGGER_ROW_UPDATE: i32 = 16;
 
-/// `$1` is `text[]` of relation names as the statement writes them: one row per relation a write
+/// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per relation a write
 /// to which may return no row or many, `(the name, the events that may skip the row, the events a
 /// rule rewrites)`, each as tgtype bits. An event may skip the row where the relation, or a
 /// partition or an inheritance child a row is routed to, has an enabled row-level trigger that
@@ -221,23 +260,31 @@ pub const TRIGGER_ROW_UPDATE: i32 = 16;
 /// for, since a write through it reaches a table whose triggers and rules these rows do not cover;
 /// an INSTEAD OF trigger returns its own row or none.
 pub const TRIGGERS_QUERY: &str = concat!(
-    "WITH RECURSIVE rels AS (SELECT c.oid AS root, c.relkind, x.name FROM unnest($1::text[]) AS x(name) JOIN pg_class c ON c.oid = ",
+    "WITH RECURSIVE rels AS (SELECT c.oid AS root, c.relkind, x.name FROM ",
+    names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
     "), \
-    tree(root, rel) AS (SELECT root, root FROM rels UNION SELECT t.root, i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.rel), \
+    tree(root, rel) AS (SELECT rels.root, rels.root FROM rels \
+      UNION SELECT t.root, i.inhrelid FROM tree t JOIN pg_catalog.pg_inherits i ON i.inhparent OPERATOR(pg_catalog.=) t.rel), \
     found AS (SELECT r.name, \
-      (coalesce((SELECT bit_or(g.tgtype::int4 & 28) FROM tree t JOIN pg_trigger g ON g.tgrelid = t.rel \
-          WHERE t.root = r.root AND NOT g.tgisinternal AND g.tgenabled <> 'D' AND g.tgtype::int4 & 1 = 1 AND g.tgtype::int4 & 66 <> 0), 0) \
-        | CASE WHEN EXISTS (SELECT 1 FROM tree t JOIN pg_class f ON f.oid = t.rel WHERE t.root = r.root AND f.relkind = 'f') THEN 28 ELSE 0 END)::int4 AS skipping, \
-      (CASE WHEN r.relkind = 'v' THEN 28 & ~coalesce((SELECT bit_or(g.tgtype::int4 & 28) FROM pg_trigger g \
-          WHERE g.tgrelid = r.root AND g.tgenabled <> 'D' AND g.tgtype::int4 & 65 = 65), 0) ELSE 0 END \
-        | coalesce((SELECT bit_or(CASE w.ev_type WHEN '2' THEN 16 WHEN '3' THEN 4 ELSE 8 END) FROM pg_rewrite w \
-          WHERE w.ev_class = r.root AND w.ev_type IN ('2', '3', '4') AND w.ev_enabled <> 'D'), 0))::int4 AS rewritten \
+      (coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) FROM tree t JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) t.rel \
+          WHERE t.root OPERATOR(pg_catalog.=) r.root AND NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 66) OPERATOR(pg_catalog.<>) 0), 0) \
+        OPERATOR(pg_catalog.|) CASE WHEN EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class f ON f.oid OPERATOR(pg_catalog.=) t.rel \
+          WHERE t.root OPERATOR(pg_catalog.=) r.root AND f.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") THEN 28 ELSE 0 END) AS skipping, \
+      ((CASE WHEN r.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" THEN 28 OPERATOR(pg_catalog.&) (OPERATOR(pg_catalog.~) coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) \
+          FROM pg_catalog.pg_trigger g WHERE g.tgrelid OPERATOR(pg_catalog.=) r.root AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 65) OPERATOR(pg_catalog.=) 65), 0)) ELSE 0 END) \
+        OPERATOR(pg_catalog.|) coalesce((SELECT pg_catalog.bit_or(CASE WHEN w.ev_type OPERATOR(pg_catalog.=) '2'::pg_catalog.\"char\" THEN 16 \
+            WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
+          WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
+            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten \
       FROM rels r) \
-    SELECT name, skipping, rewritten FROM found WHERE skipping <> 0 OR rewritten <> 0"
+    SELECT f.name, f.skipping, f.rewritten FROM found f WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0"
 );
 
-/// `$1` is `text[]` of relation names as the statement writes them (`users`, `archive.users`):
+/// `$1` is `text[]` of relation names as the statement writes them (`users`, `archive.users`), `$2` how many:
 /// one row per unique index that bounds what a scan of that relation reads, `(the name, key
 /// parts, the type oid of each part that is an expression, the predicate of a partial index)`. A
 /// part is a column's name, or an expression as the server prints it, in parentheses:
@@ -259,57 +306,72 @@ pub const TRIGGERS_QUERY: &str = concat!(
 /// the search path when unqualified.
 pub const UNIQUE_KEYS_QUERY: &str = concat!(
     "SELECT x.name, \
-      array_agg(CASE WHEN k.attnum = 0 THEN '(' || pg_catalog.pg_get_indexdef(i.indexrelid, k.ord::int, true) || ')' ELSE a.attname::text END ORDER BY k.ord), \
-      array_agg(CASE WHEN k.attnum = 0 THEN a.atttypid::int8 END ORDER BY k.ord), \
-      min(pg_catalog.pg_get_expr(i.indpred, i.indrelid, true)) \
-    FROM unnest($1::text[]) AS x(name) \
-    JOIN pg_class c ON c.oid = ",
+      ARRAY(SELECT CASE WHEN i.indkey[k] OPERATOR(pg_catalog.=) 0 \
+          THEN ('('::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.pg_get_indexdef(i.indexrelid, k OPERATOR(pg_catalog.+) 1, true)) OPERATOR(pg_catalog.||) ')'::pg_catalog.text \
+          ELSE a.attname::pg_catalog.text END ",
+    key_parts!(),
+    " ORDER BY k), \
+      ARRAY(SELECT CASE WHEN i.indkey[k] OPERATOR(pg_catalog.=) 0 THEN a.atttypid::pg_catalog.int8 END ",
+    key_parts!(),
+    " ORDER BY k), \
+      pg_catalog.pg_get_expr(i.indpred, i.indrelid, true) \
+    FROM (SELECT DISTINCT n.name FROM ",
+    names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "n"),
+    ") AS x \
+    JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
-    " JOIN pg_index i ON i.indrelid = c.oid \
-    JOIN unnest(i.indkey::int2[], i.indcollation::oid[]) WITH ORDINALITY AS k(attnum, coll, ord) ON k.ord <= i.indnkeyatts \
-    JOIN pg_attribute a ON CASE WHEN k.attnum = 0 THEN a.attrelid = i.indexrelid AND a.attnum = k.ord \
-      ELSE a.attrelid = i.indrelid AND a.attnum = k.attnum AND NOT a.attisdropped END \
+    " JOIN pg_catalog.pg_index i ON i.indrelid OPERATOR(pg_catalog.=) c.oid \
     WHERE i.indisunique AND NOT i.indisexclusion AND i.indisvalid AND i.indimmediate \
-      AND (c.relkind = 'p' OR NOT EXISTS (SELECT 1 FROM pg_inherits h WHERE h.inhparent = c.oid)) \
-    GROUP BY x.name, i.indexrelid, i.indnkeyatts \
-    HAVING count(*) = i.indnkeyatts AND bool_and(CASE WHEN k.attnum = 0 THEN k.coll = 0 OR ( \
-        pg_catalog.pg_get_indexdef(i.indexrelid, k.ord::int, true) !~* 'collate' \
-        AND NOT EXISTS (SELECT 1 FROM pg_depend d JOIN pg_attribute r ON r.attrelid = d.refobjid AND r.attnum = d.refobjsubid \
-          JOIN pg_collation o ON o.oid = r.attcollation \
-          WHERE d.classid = 'pg_class'::regclass AND d.objid = i.indexrelid AND d.refclassid = 'pg_class'::regclass \
-            AND d.refobjsubid > 0 AND NOT o.collisdeterministic)) \
-      ELSE k.coll = a.attcollation OR ( \
-        coalesce((SELECT o.collisdeterministic FROM pg_collation o WHERE o.oid = k.coll), true) \
-        AND coalesce((SELECT o.collisdeterministic FROM pg_collation o WHERE o.oid = a.attcollation), true)) END)"
+      AND (c.relkind OPERATOR(pg_catalog.=) 'p'::pg_catalog.\"char\" OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_inherits h WHERE h.inhparent OPERATOR(pg_catalog.=) c.oid)) \
+      AND (SELECT pg_catalog.count(*) ",
+    key_parts!(),
+    ") OPERATOR(pg_catalog.=) i.indnkeyatts \
+      AND NOT EXISTS (SELECT 1 ",
+    key_parts!(),
+    " WHERE NOT CASE WHEN i.indkey[k] OPERATOR(pg_catalog.=) 0 THEN i.indcollation[k] OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR ( \
+        pg_catalog.pg_get_indexdef(i.indexrelid, k OPERATOR(pg_catalog.+) 1, true) OPERATOR(pg_catalog.!~*) 'collate'::pg_catalog.text \
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_depend d \
+          JOIN pg_catalog.pg_attribute r ON r.attrelid OPERATOR(pg_catalog.=) d.refobjid AND r.attnum OPERATOR(pg_catalog.=) d.refobjsubid \
+          JOIN pg_catalog.pg_collation o ON o.oid OPERATOR(pg_catalog.=) r.attcollation \
+          WHERE d.classid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid AND d.objid OPERATOR(pg_catalog.=) i.indexrelid \
+            AND d.refclassid OPERATOR(pg_catalog.=) 'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid \
+            AND d.refobjsubid OPERATOR(pg_catalog.>) 0 AND NOT o.collisdeterministic)) \
+      ELSE i.indcollation[k] OPERATOR(pg_catalog.=) a.attcollation OR ( \
+        coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) i.indcollation[k]), true) \
+        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END)"
 );
 
-/// `$1` is `text[]` of relation names as the statement writes them: every column of each, `(the
+/// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: every column of each, `(the
 /// name, column names, their type oids, whether each one's collation is deterministic, whether the
 /// relation is a sequence, their declared type oids)`, a domain's column by its base type, whose
 /// equality it uses, and then by the domain. What the other side of an equality is when it is a
 /// column (`u.id = p.author_id`), which relation a bare column belongs to, whether a column's
 /// equality is identity, and whether the relation holds exactly one row.
 pub const COLUMNS_QUERY: &str = concat!(
-    "SELECT x.name, array_agg(a.attname::text ORDER BY a.attnum), \
-      array_agg((CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE a.atttypid END)::int8 ORDER BY a.attnum), \
-      array_agg(coalesce((SELECT o.collisdeterministic FROM pg_collation o WHERE o.oid = a.attcollation), true) ORDER BY a.attnum), \
-      bool_and(c.relkind = 'S'), array_agg(a.atttypid::int8 ORDER BY a.attnum) \
-    FROM unnest($1::text[]) AS x(name) \
-    JOIN pg_class c ON c.oid = ",
+    "SELECT x.name, ",
+    relation_columns!("a.attname::pg_catalog.text"),
+    ", ",
+    relation_columns!("(CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN t.typbasetype ELSE a.atttypid END)::pg_catalog.int8"),
+    ", ",
+    relation_columns!("coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)"),
+    ", c.relkind OPERATOR(pg_catalog.=) 'S'::pg_catalog.\"char\", ",
+    relation_columns!("a.atttypid::pg_catalog.int8"),
+    " FROM (SELECT DISTINCT n.name FROM ",
+    names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "n"),
+    ") AS x \
+    JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
-    " JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
-    JOIN pg_type t ON t.oid = a.atttypid \
-    GROUP BY x.name"
+    " WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped)"
 );
 
 /// `$1` is `text[]` of function names: `(proname, has a set-returning overload, has a volatile
 /// overload)`.
-pub const FUNCTIONS_QUERY: &str =
-    "SELECT proname::text, bool_or(proretset), bool_or(provolatile = 'v') FROM pg_proc WHERE proname::text = ANY($1::text[]) GROUP BY proname";
+pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\") \
+    FROM pg_catalog.pg_proc p WHERE p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) GROUP BY p.proname";
 
 /// Every operator some set-returning function implements.
-pub const SET_RETURNING_OPERATORS_QUERY: &str =
-    "SELECT DISTINCT o.oprname::text FROM pg_operator o JOIN pg_proc p ON p.oid = o.oprcode WHERE p.proretset";
+pub const SET_RETURNING_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_catalog.text FROM pg_catalog.pg_operator o \
+    JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid WHERE p.proretset";
 
 /// Prove that one rewritten statement (placeholders already `$n` or `?n`) returns exactly one
 /// row, or say why the build cannot, worded to finish a sentence: "a WHERE with no FROM can
@@ -317,7 +379,15 @@ pub const SET_RETURNING_OPERATORS_QUERY: &str =
 /// is read on Postgres only.
 pub fn exactly_one(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
     let s = one_select(sql, dialect)?;
-    exactly_one_select(&s, dialect, trust, catalog)
+    exactly_one_select(&s, dialect, trust, &with_fields(&s, catalog))
+}
+
+/// The catalog for a proof that starts from a statement's text, with the columns the statement's
+/// own rows may have; a nested statement's are its enclosing statement's too, which the proof does
+/// not see.
+fn with_fields(s: &SelectStmt, catalog: &Catalog) -> Catalog {
+    let row_fields = (!catalog.nested).then(|| infer::row_fields(&serde_json::to_value(s).unwrap_or_default()));
+    Catalog { row_fields, ..catalog.clone() }
 }
 
 fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
@@ -341,8 +411,10 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         let withs = Withs::unknown(catalog.enclosing_ctes.iter().cloned()).with(s.with_clause.as_ref(), &catalog.columns);
         Level::of(&s.from_clause, &withs, &catalog.columns)
     });
+    // The type of a column an aggregate's argument reads, which says it is no row.
+    let from = From::read(s, catalog);
     let aggregates = s.target_list.iter().any(|target| match target.node.as_ref() {
-        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|val| infer::aggregates(val, dialect, trust, level.as_ref())),
+        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|val| infer::aggregates(val, dialect, trust, level.as_ref(), catalog.row_fields.as_ref(), &|n| from.node_type(n, catalog))),
         _ => false,
     });
     if aggregates {
@@ -545,7 +617,7 @@ pub fn at_most_one(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog
 
 fn at_most_one_here(sql: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
     let s = one_select(sql, dialect)?;
-    at_most_one_select(&s, dialect, trust, catalog)
+    at_most_one_select(&s, dialect, trust, &with_fields(&s, catalog))
 }
 
 fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
@@ -2039,10 +2111,14 @@ fn catalog_name(rv: &protobuf::RangeVar) -> String {
 ///   values to one (`numeric_col = $1::float8`: 0.1 and 0.10000000000000000001 are one `float8`).
 ///   So the value's type must be one the column's operator family compares as it is
 ///   ([`compatible`]). A literal or a parameter the server types from the column adapts to it.
-/// - Where a user or an extension defined an operator named `=`, a comparison across two types may
-///   resolve to theirs, so only a value of the column's own type, or one that adapts to it, counts,
-///   or one of a type whose comparison with the column's resolves to the built-in `=`
-///   ([`crate::resolution`]): a column of a domain, or a value that may be one, proves nothing so.
+/// - Where a user or an extension defined an operator named `=`, the comparison may resolve to
+///   theirs, which need not be the index's equality: a user's `=` of a domain, beside a literal,
+///   is the domain's own. So a comparison counts where it resolves to a built-in `=` for the two
+///   types ([`crate::resolution`]), a built-in equality being as fine as any index's; across two
+///   types a column of a domain, or a value that may be one, proves nothing so. A column of a type
+///   of a user's (`citext`) counts beside an untyped value or one of its own type where the `=`
+///   that resolves to is the btree equality of every unique index's key of that type, as the
+///   trust query reads it from `pg_amop` ([`crate::resolution::Overloads::key_equality`]).
 /// - A value whose type the build cannot name counts only for a column whose type no implicit cast
 ///   maps to a wider one with loss ([`ANY_VALUE_TYPES`]). A column, or a scalar subquery's
 ///   column, on the other side has the type `type_of` gives it, from the catalog.
@@ -2053,8 +2129,12 @@ fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &prot
         return false;
     }
     let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)).copied() else { return true };
+    // The `=` beside an untyped value, or one of the column's own type, is the exact match of the
+    // column's type; a column of a domain reads as its base type, whose overloads of the domain's
+    // the resolution counts as exact matches too.
+    let own = |value: Operand| catalog.equality(Operand::Is(column_type), value) || (value != Operand::Opaque && catalog.key_equality(relation, column));
     match value_type(value, catalog, type_of) {
-        ValueType::Adapts => true,
+        ValueType::Adapts => own(Operand::Unknown),
         ValueType::Is(t) => {
             let domain = catalog.domains.get(relation).is_some_and(|d| d.contains(column));
             let operand = |t: u32, domain: bool| if domain { Operand::Opaque } else { Operand::Is(t) };
@@ -2063,7 +2143,10 @@ fn equality_bounds(catalog: &Catalog, relation: &str, column: &str, value: &prot
                 Some(NodeEnum::ColumnRef(_)) | Some(NodeEnum::SubLink(_)) => operand(t, catalog.domain_bases.contains(&t)),
                 _ => Operand::Is(t),
             };
-            t == column_type || (compatible(column_type, t) && catalog.equality(operand(column_type, domain), value))
+            if t == column_type {
+                return own(value);
+            }
+            compatible(column_type, t) && catalog.equality(operand(column_type, domain), value)
         }
         ValueType::Unnamed => !catalog.equality_shadowed && ANY_VALUE_TYPES.contains(&column_type),
     }
@@ -2073,6 +2156,13 @@ impl Catalog {
     /// Whether `=` over operands of these types can only resolve to the built-in one.
     fn equality(&self, left: Operand, right: Operand) -> bool {
         !self.equality_shadowed || self.overloads.as_ref().is_some_and(|o| o.0.resolve(Kind::Infix, "=", &[left, right]).is_some())
+    }
+
+    /// Whether the `=` an untyped value beside `relation`'s `column` resolves to is the btree
+    /// equality of every unique index's key of the column's declared type.
+    fn key_equality(&self, relation: &str, column: &str) -> bool {
+        let Some(declared) = self.declared_types.get(relation).and_then(|t| t.get(column)) else { return false };
+        self.overloads.as_ref().and_then(|o| o.0.key_equality(*declared)) == Some(true)
     }
 }
 
@@ -2703,6 +2793,7 @@ mod tests {
 
     #[test]
     fn a_key_holds_only_under_its_own_equality() {
+        use serde_json::json;
         let mut c = catalog();
         c.column_types.insert("users".into(), [("id".to_string(), oid::INT8), ("email".to_string(), oid::TEXT)].into_iter().collect());
         c.param_types = vec![oid::INT8];
@@ -2719,11 +2810,50 @@ mod tests {
         // A value whose type the build cannot name bounds a text key, not an int8 one.
         assert!(at("select id from users where email = lower('A@X.IO')", &c).is_ok());
         assert!(at("select email from users where id = abs(-7)", &c).is_err());
-        // With a user's `=` in the database, only the column's own type counts.
+        // With a user's `=` in the database and nothing said of its overloads, nothing counts.
         c.equality_shadowed = true;
         assert!(at("select email from users where id = 7", &c).is_err());
         c.param_types = vec![oid::INT8];
+        assert!(at("select email from users where id = $1", &c).is_err());
+        assert!(at("select id from users where email = 'a@x.io'", &c).is_err());
+        // An `=` of a type of a user's (pgvector's) leaves the built-ins over int8 and text the
+        // exact matches; one of exactly int8's types may come first on the search path.
+        let catalog_of = |rows: Vec<Vec<serde_json::Value>>| {
+            let mut shadowed = HashSet::new();
+            Some(crate::resolution::Shared(std::sync::Arc::new(crate::resolution::Overloads::read(&rows, &mut shadowed))))
+        };
+        let builtin = |l: u32, r: u32| vec![json!("builtin b"), json!("="), json!([l, r]), json!(oid::BOOL), serde_json::Value::Null];
+        let opaque = vec![json!("opaque b"), json!("="), serde_json::Value::Null, json!(2), json!(0)];
+        c.overloads = catalog_of(vec![opaque.clone(), builtin(oid::INT8, oid::INT8), builtin(oid::INT8, oid::INT4), builtin(oid::TEXT, oid::TEXT)]);
         assert!(at("select email from users where id = $1", &c).is_ok());
+        assert!(at("select email from users where id = 7", &c).is_ok());
+        assert!(at("select id from users where email = 'a@x.io'", &c).is_ok());
+        c.overloads = catalog_of(vec![vec![json!("user b"), json!("="), json!([oid::INT8, oid::INT8]), json!(0), json!(0)], builtin(oid::INT8, oid::INT8)]);
+        assert!(at("select email from users where id = $1", &c).is_err());
+        // A domain's own `=` beside a literal is the domain's, no key's equality; a citext key's
+        // `=` is its btree family's where the trust query says so.
+        const MYTEXT: u32 = 30000;
+        const CITEXT: u32 = 30100;
+        let mut d = catalog();
+        d.unique_keys.insert("u".into(), vec![vec!["d".into()], vec!["h".into()]]);
+        d.column_types.insert("u".into(), [("d".to_string(), oid::TEXT), ("h".to_string(), CITEXT)].into_iter().collect());
+        d.declared_types.insert("u".into(), [("d".to_string(), MYTEXT), ("h".to_string(), CITEXT)].into_iter().collect());
+        d.domains.insert("u".into(), ["d".to_string()].into_iter().collect());
+        d.domain_bases.insert(oid::TEXT);
+        d.equality_shadowed = true;
+        let key = |ty: u32, ok: i64| vec![json!("key"), serde_json::Value::Null, serde_json::Value::Null, json!(ty), json!(ok)];
+        d.overloads = catalog_of(vec![
+            vec![json!("user b"), json!("="), json!([MYTEXT, MYTEXT]), json!(0), json!(0)],
+            vec![json!("base"), serde_json::Value::Null, serde_json::Value::Null, json!(MYTEXT), json!(oid::TEXT)],
+            vec![json!("user b"), json!("="), json!([CITEXT, CITEXT]), json!(0), json!(0)],
+            builtin(oid::TEXT, oid::TEXT),
+            key(MYTEXT, 0),
+            key(CITEXT, 1),
+        ]);
+        assert!(at("select 1 from u where d = 'x'", &d).is_err());
+        assert!(at("select 1 from u where h = 'x'", &d).is_ok());
+        d.overloads = catalog_of(vec![vec![json!("user b"), json!("="), json!([CITEXT, CITEXT]), json!(0), json!(0)], key(CITEXT, 0)]);
+        assert!(at("select 1 from u where h = 'x'", &d).is_err(), "a unique index on a citext column under text_ops");
         // A schema-qualified relation never takes the keys of the one on the search path.
         assert!(at("select name from archive.users a where a.id = $1", &c).is_err());
         // A timestamp key compared with a timestamptz is converted through the session's time
@@ -2767,6 +2897,43 @@ mod tests {
 
     /// A stock Postgres catalog for the names these tests call: `generate_series` and `unnest`
     /// return sets, the rest do not. `todos` has a primary key and `org_members` a two-column one.
+    /// The trust check of a catalog with no object of a user's, whose row types have the attributes
+    /// named here among the names the rules read.
+    fn answered(attributes: &[&str]) -> Trust {
+        use crate::resolution::{Overloads, Shared};
+        let rows: Vec<Vec<serde_json::Value>> = attributes.iter().map(|a| vec![serde_json::json!("column"), serde_json::json!(a), serde_json::Value::Null, serde_json::Value::Null, serde_json::Value::Null]).collect();
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        trust
+    }
+
+    #[test]
+    fn an_aggregate_that_may_be_a_column_of_its_row_argument_is_no_one_row() {
+        let mut c = stock();
+        c.column_types.insert("todos".into(), [("id".to_string(), oid::INT4), ("n".to_string(), oid::INT4)].into_iter().collect());
+        let none = answered(&[]);
+        let listed = answered(&["sum"]);
+        let one = |sql: &str, trust: &Trust| exactly_one(sql, Dialect::Postgres, trust, &c).is_ok();
+        // No row type has a column `sum`, and no row the statement builds does.
+        assert!(one("SELECT sum(n) AS total FROM todos", &none));
+        assert!(one("SELECT sum(todos) AS total FROM todos", &none));
+        // A row type of the catalog does: `sum(x)` over such a row is its column, a value per row,
+        // unless the argument is of a type that is no row, or is no row for certain.
+        assert!(one("SELECT sum(n) AS total FROM todos", &listed));
+        assert!(one("SELECT sum(n + 1) AS total, count(*) AS c FROM todos", &listed));
+        assert!(!one("SELECT sum(todos) AS total FROM todos", &listed));
+        assert!(!one("SELECT sum(x) AS total FROM (SELECT n AS x FROM todos) s", &listed));
+        // A row the statement builds has a column `sum`, which a whole row of it reads.
+        assert!(!one("SELECT sum(s) AS total FROM (SELECT n AS sum FROM todos) s", &none));
+        assert!(!one("WITH s AS (SELECT n AS every FROM todos) SELECT every(s) AS e FROM s", &none));
+        assert!(!one("SELECT sum(s) AS total FROM (SELECT sum FROM (SELECT n AS sum FROM todos) t) s", &none));
+        // A catalog that did not answer may have any row type.
+        assert!(!one("SELECT sum(todos) AS total FROM todos", &Trust::default()));
+        // `count`, and `sum` decorated, are the aggregates whatever the argument.
+        assert!(one("SELECT count(todos) AS n FROM todos", &listed));
+        assert!(one("SELECT sum(DISTINCT todos) AS n FROM todos", &listed));
+    }
+
     fn stock() -> Catalog {
         let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<HashSet<String>>();
         let key = |cols: &[&str]| vec![cols.iter().map(|c| c.to_string()).collect::<Vec<String>>()];
@@ -3135,8 +3302,9 @@ mod tests {
     fn a_from_of_one_row_items_is_one_row() {
         let mut c = stock();
         c.functions.extend(["now", "nextval"].map(String::from));
-        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
+        let trust = answered(&[]);
+        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &trust, &c);
+        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &trust, &c);
         for sql in [
             // A derived table is what the same query is as a WITH query.
             "SELECT * FROM (SELECT count(*) AS n FROM todos) s",

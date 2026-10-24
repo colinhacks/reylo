@@ -29,13 +29,16 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 
 /// Reads nothing but the catalog, so it cannot fail where the extension is absent; an error
-/// here would be asked again for every statement, since a host does not keep a failure.
-pub const PROBE_QUERY: &str = "SELECT extversion::text FROM pg_extension WHERE extname = 'pgreylo'";
+/// here would be asked again for every statement, since a host does not keep a failure. Each
+/// operator and type is `pg_catalog`'s, as in the catalog queries of [`crate::postgres`].
+pub const PROBE_QUERY: &str = "SELECT e.extversion FROM pg_catalog.pg_extension e WHERE e.extname OPERATOR(pg_catalog.=) 'pgreylo'::pg_catalog.name";
 pub const VERSION_QUERY: &str = "SELECT pgreylo.version()";
-pub const ANALYZE_QUERY: &str = "SELECT pgreylo.analyze($1::text)";
-/// The needs travel as text that the server casts: a parameter described as `jsonb` makes a
-/// driver JSON-encode the string it is handed, and a JSON string is not the array.
-pub const ANSWER_QUERY: &str = "SELECT pgreylo.answer($1::text::jsonb)";
+pub const ANALYZE_QUERY: &str = "SELECT pgreylo.analyze($1::pg_catalog.text)";
+/// The needs travel as text that the server parses: a parameter described as `jsonb` makes a
+/// driver JSON-encode the string it is handed, and a JSON string is not the array. The text is
+/// read by `jsonb`'s input function, since a conversion from `text` to `jsonb` goes through no
+/// built-in cast and so may be a user's.
+pub const ANSWER_QUERY: &str = "SELECT pgreylo.answer(pg_catalog.jsonb_in(pg_catalog.textout($1::pg_catalog.text)))";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Server {

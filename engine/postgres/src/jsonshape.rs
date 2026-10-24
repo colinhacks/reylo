@@ -28,6 +28,7 @@ use crate::returning::Rows;
 use crate::types::{DescribedColumn, Field, Type};
 use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// `json_build_object(k, v, …)` and its jsonb twin: the main case. `json_object` is SQLite's
 /// spelling of it; Postgres's own `json_object` takes arrays, whose arguments are never the
@@ -162,6 +163,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         _ => None,
     };
     let withs = vec![Withs::default().with(with.as_ref(), columns)];
+    let fields = crate::infer::row_fields(&serde_json::to_value(&parsed.protobuf).unwrap_or_default());
     // A plain GROUP BY: every group has a row. A grouping set can make one of none (`GROUP BY ()`
     // over no rows is one row), so it is no plain one.
     let grouping_sets = matches!(top, NodeEnum::SelectStmt(s) if has_grouping_sets(s));
@@ -173,14 +175,14 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     // carry.
     let group = match top {
         NodeEnum::SelectStmt(s) if grouped && !s.group_clause.iter().any(|g| names_output(g, &targets)) => Some(s.group_clause.clone()),
-        NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust) => Some(Vec::new()),
+        NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust, &fields) => Some(Vec::new()),
         _ => None,
     };
     let windows = match top {
         NodeEnum::SelectStmt(s) => s.window_clause.clone(),
         _ => Vec::new(),
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -264,9 +266,9 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
 
 /// Whether a select list aggregates outside any subquery, so that without a GROUP BY every
 /// expression of it outside an aggregate's arguments is one row's.
-fn aggregating(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
+fn aggregating(targets: &[Node], dialect: Dialect, trust: &Trust, fields: &HashSet<String>) -> bool {
     targets.iter().any(|t| match t.node.as_ref() {
-        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|v| crate::infer::aggregates(v, dialect, trust, None) || constructs_aggregate(v)),
+        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|v| crate::infer::aggregates(v, dialect, trust, None, Some(fields), &|_| None) || constructs_aggregate(v)),
         _ => false,
     })
 }
@@ -351,6 +353,8 @@ struct Builder<'a> {
     laterals: usize,
     /// The top statement's `WINDOW` clause, which `OVER w` names a window of.
     windows: Vec<Node>,
+    /// The columns the statement's own rows may have ([`crate::infer::row_fields`]).
+    fields: HashSet<String>,
 }
 
 /// A target of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]).
@@ -485,7 +489,7 @@ impl Builder<'_> {
                         // own over the same `FROM`: a probe without the statement's GROUP BY
                         // would fail beside a bare column of the context's own probe. Where the
                         // statement's own expressions have a probe that carries it, that one does.
-                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None) || self.outside_aggregates() {
+                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None, Some(&self.fields), &|_| None) || self.outside_aggregates() {
                             return self.leaf(expr);
                         }
                         let top = self.stack.len() - 1;
@@ -546,7 +550,7 @@ impl Builder<'_> {
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (one over columns of a query around it is that query's, `levels`); anything
                 // else can match nothing and hand back NULL, whatever its value is.
-                if crate::infer::one_row(select, &inner, self.dialect, self.trust) || (crate::infer::keeps_one_row(select, &inner, self.dialect, self.trust) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level)))) {
+                if crate::infer::one_row(select, &inner, self.dialect, self.trust) || (crate::infer::keeps_one_row(select, &inner, self.dialect, self.trust) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level), Some(&self.fields), &|_| None))) {
                     shape
                 } else {
                     force_nullable(shape)
