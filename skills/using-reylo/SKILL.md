@@ -7,7 +7,7 @@ description: "Use in a project that imports .sql files with Reylo, which a tscon
 
 Reylo lets TypeScript import a `.sql` file as a typed query. The types come from the database itself: the parameters, the columns and their nullability, nested JSON and how many rows the query returns. Nothing is declared by hand, so a type is changed by changing the SQL or the schema, never by an annotation.
 
-The docs are one page, https://reylo.dev, also served as Markdown at https://reylo.dev/llms.txt, with a page per database: https://reylo.dev/postgres, https://reylo.dev/mysql and https://reylo.dev/sqlite. Read the section a task touches before writing SQL for it.
+The docs are https://reylo.dev, with a page per database, https://reylo.dev/postgres, https://reylo.dev/mysql and https://reylo.dev/sqlite, all served as Markdown at https://reylo.dev/llms.txt. Read the section a task touches before writing SQL for it.
 
 ## Before changing anything
 
@@ -28,7 +28,7 @@ The docs are one page, https://reylo.dev, also served as Markdown at https://rey
 
 ## Running a query
 
-- Pass the project's own database client to `.run()`: a pool, a client, a transaction or connection taken from one, or a Drizzle database over one (https://reylo.dev/#supported-drivers, https://reylo.dev/#transactions). At run time Reylo opens no connection of its own. On postgres.js, Reylo prepares each query as postgres.js prepares its own; behind a pooler in transaction mode, such as PgBouncer's, create the client with `prepare: false`, which Reylo's queries follow too.
+- Pass the project's own database client to `.run()`: a pool, a client, a transaction or connection taken from one, or a Drizzle database over one (https://reylo.dev/#supported-drivers, which shows a transaction on each driver). At run time Reylo opens no connection of its own. On postgres.js, Reylo prepares each query as postgres.js prepares its own; behind a pooler in transaction mode, such as PgBouncer's, create the client with `prepare: false`, which Reylo's queries follow too.
 - `.runSync()` returns the result itself on a synchronous SQLite client (`better-sqlite3`, `node:sqlite`, a Durable Object's `ctx.storage.sql`), so it works inside their synchronous transactions. `.with(client)` binds the query to a client.
 - The result's shape follows the row count Reylo infers: an array, one row, a row or `null`, or nothing for a write without `returning`. On Postgres and SQLite, a subquery, a `with` query or a view that selects a table's key unchanged is matched on that key like the table.
 - Every driver gives the same types: a 64-bit integer is a `bigint`, a decimal its exact text, an instant its ISO 8601 text in UTC, a pgvector `vector` a `number[]`, an `hstore` an object of its keys, and no value is a `Date`. Pass a parameter in the form `.run()` returns for its type (https://reylo.dev/#data-types).

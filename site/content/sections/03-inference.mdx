@@ -4,7 +4,7 @@ title: "Inference"
 
 ## Inference
 
-Reylo lets you use the full power of SQL provided by your database. Postgres, SQLite, and MySQL are all supported.
+Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
 
 Reylo is a [content mapper](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/#content-mappers), the kind of plugin [TypeScript 7.1](https://devblogs.microsoft.com/typescript/announcing-typescript-7-1-beta/) introduced for files that aren't TypeScript. Whenever the type checker meets a `.sql` import, in `tsc` or in your editor, it hands Reylo the file and takes back the module's types.
 
@@ -39,13 +39,16 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `date` | `string`, as `2026-10-20` |
 | `timestamp` | `string`, as `2026-10-20T10:00:00.123456` |
 | `timestamptz` | `string`, the instant in UTC, as `2026-10-20T08:00:00.123456Z` |
-| `time`, `timetz`, `interval` | `string` |
+| `time`, `timetz` | `string` |
+| `interval` | `string`, an ISO 8601 duration, as `P1DT2H3M4S` |
 | `json`, `jsonb` | [typed by its schema or the query](#json) |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element type, a `NULL` element `null` |
 | An enum | the union of its labels |
 | A domain | its base type |
 | A row value | `string` |
+| pgvector's `vector`, `halfvec` | `number[]` |
+| `hstore` | `Record<string, string \| null>` |
 | Every other type (`inet`, `cidr`, ranges, `point`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
 
 </Dialect>
@@ -122,7 +125,7 @@ Reylo adds which parameters may be null, the row count, and the shape of JSON th
 | --- | --- |
 | Parameter types | the prepared statement's metadata; whether one may be null, from the statement, as on Postgres |
 | Column types | the prepared statement's metadata; a JSON column read from its table as what its JSON Schema `CHECK` admits |
-| Nullability | the server's `NOT NULL` flag |
+| Nullability | the server's `NOT NULL` flag, then what the `where` and `group by` rule out |
 | Cardinality | primary and unique keys, aggregates; a write is `void` |
 | Nested JSON | built with `json_object` and `json_arrayagg`, typed from their arguments |
 

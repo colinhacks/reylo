@@ -58,7 +58,7 @@ create table events (
 
 ## Data types
 
-Each MySQL type maps to one TypeScript type, and `.run()` returns the same value for it on every driver:
+Each MySQL type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from a `FLOAT`'s last digits ([Decimals](#decimals)) and what `Bun.sql` loses ([Drivers](#drivers)):
 
 | SQL type | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
@@ -709,7 +709,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `unknown` |
 | A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
-| `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [JSON parameters](/#typed-json) |
+| `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/#bulk-inserts) |
 | A query past 500 operators or 200 levels of nesting | None: Reylo falls back to MySQL's own types and any number of rows |
 | A statement other than a query, such as `create index` or `show tables` | None: it returns nothing, or rows whose columns are all nullable, as MySQL reports |
 | `explain` and `call`, whose rows MySQL describes only once they run | None: each is an error |

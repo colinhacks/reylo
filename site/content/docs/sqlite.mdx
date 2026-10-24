@@ -54,7 +54,7 @@ create table events (
 
 ## Data types
 
-SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver:
+SQLite doesn't enforce column types: a column's declared type only sets its affinity, except in a `STRICT` table ([Declared types and STRICT tables](#declared-types-and-strict-tables)). Reylo types each column by its declared type, and `.run()` returns the same value for it on every driver, or throws where a driver would round it ([Drivers](#drivers)):
 
 | Declared type, or expression | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
