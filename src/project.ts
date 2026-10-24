@@ -3,12 +3,15 @@
 // `REYLO_CONFIG` names another file), is parsed by the engine so that every reylo tool reads the same YAML, and is
 // resolved here against the environment: the process environment first, then the `.env` files the
 // project file names under `env` (by default `.env.local`, then `.env`, beside it), and a `${VAR}`
-// in a URL is replaced from that. The URL's scheme names the dialect. The connection is
+// in a URL is replaced from that. A `$(command)` in `direct_url` is replaced by what the command
+// prints, so that a secret can come from a password manager or a cloud's token command instead of
+// a file. The URL's scheme names the dialect. The connection is
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo generate`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
 // is that of the one engine the project installed.
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -46,6 +49,12 @@ export type ResolvedProject = {
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
   urlSource: string;
+  /**
+   * Where `direct_url` runs a `$(command)`: runs each command again, past the output this process
+   * keeps, and returns the URL they make now, or undefined when one fails. The session calls it
+   * when the database refuses the login, as when a short-lived token has expired.
+   */
+  refreshUrl: (() => string | undefined) | undefined;
   /** The files a change to which changes the project: the project file and the `.env` files. */
   watched: string[];
   /** Why the project cannot be used, already placed (`.reylo.yaml:3:1: ...`); every transform reports it. */
@@ -136,6 +145,100 @@ function place(text: string, offset: number): string {
  */
 const TYPES_KEY = /^types[ \t]*:/m;
 
+/** How long a `$(command)` in `direct_url` may run: long enough to answer a password manager's prompt. */
+const COMMAND_TIMEOUT_MS = 120_000;
+/** How long a command's failure stands before the command is run again. */
+const FAILED_COMMAND_TTL = 60_000;
+
+/** A part of `direct_url`: text as written, or a `$(command)` whose output takes its place. */
+type UrlPart = { text: string } | { command: string };
+
+/**
+ * `direct_url` cut into its text and its `$(command)`s. A command ends at the `)` that balances
+ * its `$(`, outside quotes, as in a shell. A `$(` left open is the offset it opens at.
+ */
+function urlParts(written: string): UrlPart[] | { open: number } {
+  const parts: UrlPart[] = [];
+  let text = "";
+  for (let i = 0; i < written.length; ) {
+    if (written[i] !== "$" || written[i + 1] !== "(") {
+      text += written[i++];
+      continue;
+    }
+    let depth = 1;
+    let quote: string | undefined;
+    let j = i + 2;
+    for (; j < written.length && depth > 0; j++) {
+      const c = written[j];
+      if (quote) {
+        if (c === quote) quote = undefined;
+        else if (c === "\\" && quote === '"') j++;
+      } else if (c === "'" || c === '"') quote = c;
+      else if (c === "\\") j++;
+      else if (c === "(") depth++;
+      else if (c === ")") depth--;
+    }
+    if (depth > 0) return { open: i };
+    if (text) parts.push({ text });
+    text = "";
+    parts.push({ command: written.slice(i + 2, j - 1) });
+    i = j;
+  }
+  if (text) parts.push({ text });
+  return parts;
+}
+
+/**
+ * The commands whose output lands in the URL's user or password: between `://` and the `@` that
+ * ends them. Their output is percent-encoded there, as a password with `/`, `@` or `?` in it, such
+ * as a cloud's database token, would otherwise end the user part early; the drivers decode it. A
+ * command elsewhere, such as one that prints the whole URL, is taken as printed.
+ */
+function inUserinfo(parts: UrlPart[]): Set<UrlPart> {
+  let skeleton = "";
+  const placed = new Map<number, UrlPart>();
+  for (const part of parts) {
+    if ("text" in part) skeleton += part.text;
+    else {
+      placed.set(skeleton.length, part);
+      skeleton += "\0";
+    }
+  }
+  const inside = new Set<UrlPart>();
+  const scheme = skeleton.indexOf("://");
+  if (scheme < 0) return inside;
+  const start = scheme + 3;
+  const ends = ["/", "?", "#"].map((d) => skeleton.indexOf(d, start)).filter((k) => k >= 0);
+  const authorityEnd = Math.min(skeleton.length, ...ends);
+  const userinfoEnd = skeleton.lastIndexOf("@", authorityEnd - 1);
+  for (const [at, part] of placed) if (at >= start && at < userinfoEnd) inside.add(part);
+  return inside;
+}
+
+/** What each command printed, by directory and command: run once per process, and again on a refused login or after a failure has stood a minute. */
+const commandOutputs = new Map<string, { value: string } | { error: string; at: number }>();
+
+/** What a command prints, its trailing newlines dropped, or why it printed nothing usable. */
+function commandOutput(command: string, cwd: string, env: Record<string, string>, fresh: boolean): { value: string } | { error: string } {
+  const key = `${cwd}\0${command}`;
+  const kept = commandOutputs.get(key);
+  if (!fresh && kept && ("value" in kept || Date.now() - kept.at < FAILED_COMMAND_TTL)) return kept;
+  const run = spawnSync(command, { shell: true, cwd, env, encoding: "utf8", timeout: COMMAND_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+  const said = run.stderr?.split(/\r?\n/).map((line) => line.trim()).find(Boolean)?.slice(0, 300);
+  let outcome: { value: string } | { error: string };
+  if (run.error) {
+    const timedOut = (run.error as NodeJS.ErrnoException).code === "ETIMEDOUT";
+    outcome = { error: timedOut ? `which did not finish within ${COMMAND_TIMEOUT_MS / 1000} s` : `which could not start: ${run.error.message}` };
+  } else if (run.status !== 0) {
+    outcome = { error: `which ${run.status === null ? `ended on ${run.signal}` : `exited with code ${run.status}`}${said ? `: ${said}` : ""}` };
+  } else {
+    const value = run.stdout.replace(/(\r?\n)+$/, "");
+    outcome = value ? { value } : { error: "which printed nothing" };
+  }
+  commandOutputs.set(key, "value" in outcome ? outcome : { ...outcome, at: Date.now() });
+  return outcome;
+}
+
 /**
  * The project `projectDir` belongs to. `engine` reads the project file: any database's engine does
  * (src/engine.ts, `anyEngine`), and where none is installed a project file is the project's error.
@@ -188,19 +291,60 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     ? `No database URL: ${shown(file!)} sets url, which Reylo does not read; set direct_url there, or DATABASE_URL in the environment, .env.local or .env.`
     : `No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in ${file ? shown(file) : PROJECT_FILE}.`;
   const written = config.direct_url;
+  let refreshUrl: (() => string | undefined) | undefined;
   if (written !== undefined) {
     const missing: string[] = [];
     const sources: string[] = [];
-    url = written.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
-      const hit = lookup(name);
-      if (!hit) missing.push(name);
-      else sources.push(hit.source);
-      return hit?.value ?? "";
-    });
-    urlSource = `"direct_url" in ${shown(file!)}${sources.length ? `, ${sources.join(", ")}` : ""}`;
-    if (missing.length) {
-      error ??= `${shown(file!)}: "direct_url" names ${missing.map((m) => `\${${m}}`).join(", ")}, which neither the environment nor ${envFiles.map(shown).join(" nor ")} sets.`;
-      url = undefined;
+    const parts = urlParts(written);
+    urlSource = `"direct_url" in ${shown(file!)}`;
+    if ("open" in parts) {
+      error ??= `${shown(file!)}: "direct_url" opens $( at column ${parts.open + 1} and never closes it.`;
+    } else {
+      // The text's ${VAR}s are Reylo's; a command's are its shell's, so that no value is read as
+      // shell syntax, and its shell sees the variables the text would: the environment's, then
+      // the `.env` files'.
+      const texts = parts.map((part) =>
+        "text" in part
+          ? part.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
+              const hit = lookup(name);
+              if (!hit) missing.push(name);
+              else sources.push(hit.source);
+              return hit?.value ?? "";
+            })
+          : undefined,
+      );
+      urlSource += sources.length ? `, ${sources.join(", ")}` : "";
+      if (missing.length) {
+        error ??= `${shown(file!)}: "direct_url" names ${missing.map((m) => `\${${m}}`).join(", ")}, which neither the environment nor ${envFiles.map(shown).join(" nor ")} sets.`;
+      } else if (parts.some((part) => "command" in part)) {
+        const shellEnv: Record<string, string> = {};
+        for (const path of [...envFiles].reverse()) Object.assign(shellEnv, readEnvFile(path));
+        for (const [name, value] of Object.entries({ ...process.env, ...env })) if (value !== undefined) shellEnv[name] = value;
+        const encoded = inUserinfo(parts);
+        const build = (fresh: boolean): { url: string } | { error: string } => {
+          let built = "";
+          for (const [i, part] of parts.entries()) {
+            if ("text" in part) {
+              built += texts[i];
+              continue;
+            }
+            const out = commandOutput(part.command, root, shellEnv, fresh);
+            if ("error" in out) return { error: `${shown(file!)}: "direct_url" runs \`${part.command}\`, ${out.error}.` };
+            built += encoded.has(part) ? encodeURIComponent(out.value) : out.value;
+          }
+          return { url: built };
+        };
+        // A project that cannot be used anyway runs nothing, so that it asks for no password.
+        if (!error) {
+          const first = build(false);
+          if ("error" in first) error = first.error;
+          else url = first.url;
+          refreshUrl = () => {
+            const again = build(true);
+            return "url" in again ? again.url : undefined;
+          };
+        }
+      } else url = texts.join("");
     }
   } else {
     const hit = lookup("DATABASE_URL");
@@ -215,6 +359,6 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   // `.reylo/`, which a build with no URL reads (src/analyze.ts).
   const installed = url ? [] : installedEngines(root);
   if (installed.length === 1) dialect = installed[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, watched, error, notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 

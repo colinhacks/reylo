@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { anyEngine, describer, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
 import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
-import { NotMysql } from "./connection.ts";
+import { NotMysql, refusedLogin } from "./connection.ts";
 import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
@@ -64,6 +64,8 @@ export class Session {
   readonly #answers = new AnswerCache();
   readonly #idle: number;
   #io: Promise<Io> | undefined;
+  /** The URL the connection opens: the project's, until a command in `direct_url` gives a fresh one. */
+  #url: string | undefined;
   #busy = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #schema: { value: string | null; at: number; error?: string; fatal?: boolean } | undefined;
@@ -72,6 +74,7 @@ export class Session {
     this.#engine = engine;
     this.project = project;
     this.root = project.root;
+    this.#url = project.url;
     this.#idle = idle;
     const ping = engine instanceof MissingEngine ? undefined : engine.call({ op: "ping" });
     this.#engineFingerprint = ping?.status === "ok" ? ping.fingerprint : "unknown";
@@ -315,38 +318,77 @@ export class Session {
   }
 
   #connection(): Promise<Io> {
-    const { dialect, url, root } = this.project;
     this.#io ??= (async (): Promise<Io> => {
-      if (dialect === "mysql") {
-        const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
-        const m = await openMysqlDescriber(url!);
-        return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
+      let io: Io;
+      try {
+        io = await this.#open(this.#url!);
+      } catch (e) {
+        const fresh = this.#freshUrl(e);
+        if (fresh === undefined) throw e;
+        io = await this.#open(fresh);
       }
-      if (dialect === "sqlite") {
-        // A file that cannot be opened is a database that cannot be reached: a build without it
-        // runs on `.reylo/`.
-        const s = await openSqliteDescriber(url!, root).catch((e) => Promise.reject(new Unreachable(e)));
-        const drivers = await openProjectDrivers(root, sqlitePath(url!, root));
-        // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
-        return {
-          describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
-          query: (text, params) => s.values(text, params),
-          close: async () => {
-            await Promise.all(drivers.map((d) => d.close().catch(() => {})));
-            await s.close();
-          },
-          drivers,
-        };
-      }
-      const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
-      const d = await openPostgresDescriber(url!);
-      return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
+      if (!this.project.refreshUrl) return io;
+      // postgres.js logs in at its first query, so a refused login can surface at any call: the
+      // call is asked once more on a connection with the command's fresh output.
+      const again = async <T>(call: (on: Io) => Promise<T>): Promise<T> => {
+        try {
+          return await call(io);
+        } catch (e) {
+          const fresh = this.#freshUrl(e);
+          if (fresh === undefined) throw e;
+          await io.close().catch(() => {});
+          io = await this.#open(fresh);
+          return call(io);
+        }
+      };
+      return { describe: (text) => again((on) => on.describe(text)), query: (text, params) => again((on) => on.query(text, params)), close: () => io.close(), ...(io.drivers && { drivers: io.drivers }) };
     })();
     const io = this.#io;
     io.catch(() => {
       if (this.#io === io) this.#io = undefined;
     });
     return io;
+  }
+
+  /**
+   * A URL to try instead, when the server refused the login and `direct_url`'s command now prints
+   * something else, as when a short-lived password has expired; else undefined, so that nothing
+   * is tried twice on the same password.
+   */
+  #freshUrl(e: unknown): string | undefined {
+    if (!refusedLogin(e)) return undefined;
+    const fresh = this.project.refreshUrl?.();
+    if (fresh === undefined || fresh === this.#url) return undefined;
+    this.#url = fresh;
+    return fresh;
+  }
+
+  async #open(url: string): Promise<Io> {
+    const { dialect, root } = this.project;
+    if (dialect === "mysql") {
+      const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
+      const m = await openMysqlDescriber(url);
+      return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
+    }
+    if (dialect === "sqlite") {
+      // A file that cannot be opened is a database that cannot be reached: a build without it
+      // runs on `.reylo/`.
+      const s = await openSqliteDescriber(url, root).catch((e) => Promise.reject(new Unreachable(e)));
+      const drivers = await openProjectDrivers(root, sqlitePath(url, root));
+      // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
+      return {
+        describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
+        query: (text, params) => s.values(text, params),
+        close: async () => {
+          await Promise.all(drivers.map((d) => d.close().catch(() => {})));
+          await s.close();
+        },
+        drivers,
+      };
+    }
+    const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
+    const d = await openPostgresDescriber(url);
+    return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
   }
 }
 

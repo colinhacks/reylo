@@ -42,6 +42,13 @@ Point it at a direct connection, not a pooler: describing a query through a pool
 direct_url: postgres://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/app
 ```
 
+To keep a password out of every file, `$(…)` runs a command, such as a password manager's or a cloud's token command, and puts what it prints in its place. Reylo runs it once per editor session or build, and again when the database refuses the login, as when a token expires.
+
+```yaml title=".reylo.yaml"
+# or $(aws rds generate-db-auth-token …) for a short-lived token
+direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
+```
+
 ### `env`
 
 The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that sets a variable wins, and the environment wins over every file.

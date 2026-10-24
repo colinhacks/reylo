@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { connector, notMysql } from "../packages/mysql/describe.ts";
+import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
@@ -408,6 +409,69 @@ test("a MySQL server is not refused: the type check goes on to read its schema",
     await session.close();
     server.restore();
   }
+});
+
+// A MySQL stand-in that takes one password, and refuses any other as MySQL does (error 1045).
+function tokenMysql(accepted: () => string): { tried: string[]; restore: () => void } {
+  const tried: string[] = [];
+  const real = connector.createConnection;
+  connector.createConnection = async (url: string) => {
+    const password = decodeURIComponent(new URL(url).password);
+    tried.push(password);
+    if (password !== accepted()) {
+      throw Object.assign(new Error("Access denied for user 'root'@'localhost' (using password: YES)"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045, sqlState: "28000", fatal: true });
+    }
+    return {
+      on() {},
+      async query(q: string | { sql: string }) {
+        return [(typeof q === "string" ? q : q.sql) === "select version()" ? [["8.4.6"]] : [["x"]], []];
+      },
+      async prepare() {
+        throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
+      },
+      async end() {},
+    };
+  };
+  return { tried, restore: () => void (connector.createConnection = real) };
+}
+
+test("a login the server refuses runs direct_url's command again, once, so that an expired token is replaced", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, "token.txt"), "token-1");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
+  let current = "token-1";
+  const server = tokenMysql(() => current);
+  const session = await Session.open(root, {});
+  try {
+    // The token the session read at its start has expired, and the command now prints the next.
+    current = "token-2";
+    writeFileSync(join(root, "token.txt"), "token-2");
+    const schema = await session.schema();
+    assert.equal(schema.error, undefined);
+    assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
+    assert.deepEqual(server.tried, ["token-1", "token-2"]);
+    // A command whose fresh output is refused too is asked once, and the refusal is the error.
+    current = "token-3";
+    await session.release();
+    assert.ok(await session.recheck());
+    const refused = await session.schema();
+    assert.equal(refused.value, null);
+    assert.match(refused.error ?? "", /Access denied for user 'root'/);
+    assert.deepEqual(server.tried, ["token-1", "token-2", "token-2"]);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+});
+
+test("a refused login is told apart from a server that cannot be reached, on Postgres and MySQL", () => {
+  const pg = (code: string) => new Unreachable(Object.assign(new Error("password authentication failed"), { code, severity: "FATAL" }));
+  assert.ok(refusedLogin(pg("28P01")));
+  assert.ok(refusedLogin(pg("28000")));
+  assert.ok(refusedLogin(new Unreachable(Object.assign(new Error("Access denied"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045 }))));
+  assert.ok(!refusedLogin(pg("3D000")));
+  assert.ok(!refusedLogin(new Unreachable(Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }))));
 });
 
 test("the server's version names MariaDB in either form it is given, and no MySQL", () => {
