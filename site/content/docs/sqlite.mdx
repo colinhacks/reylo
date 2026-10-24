@@ -508,7 +508,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by`, `values` of one row, or inserts one row and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; or is an `update` or `delete` by key with `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key, an `integer primary key` or a unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1`; is a `distinct` or `group by` over values the `where` pins; or is an `update` or `delete` by key with `returning` |
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -520,6 +520,7 @@ These don't count as a key match, so the query returns `Row[]`:
 | A `TEXT` or untyped key compared with a number, which SQLite converts, so `'1'` and `'01'` both match | `where code = cast(:code as integer)` |
 | A key compared under another collation: SQLite uses the left side's, so `'x'` and `'X'` both match | `r.k = c.code`, with a `NOCASE` column on the left |
 | A column you declared named `rowid`, which isn't the real rowid | `where rowid = :id` |
+| A subquery, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
 
 ## Parameters
 
