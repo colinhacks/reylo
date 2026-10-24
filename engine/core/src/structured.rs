@@ -1990,10 +1990,11 @@ pub struct TableColumn {
 /// same objects (wiki/design.md §24).
 macro_rules! pg_default {
     () => {
-        "CASE WHEN a.attgenerated <> '' THEN NULL \
+        "CASE WHEN a.attgenerated OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" THEN NULL \
         WHEN d.adbin IS NOT NULL THEN pg_catalog.pg_get_expr(d.adbin, d.adrelid) \
-        WHEN a.attidentity = 'd' THEN 'nextval(' || pg_catalog.quote_literal(pg_catalog.pg_get_serial_sequence(a.attrelid::pg_catalog.regclass::text, a.attname::text)) || '::regclass)' \
-        WHEN t.typtype = 'd' THEN pg_catalog.pg_get_expr(t.typdefaultbin, 0) END"
+        WHEN a.attidentity OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN ('nextval('::pg_catalog.text OPERATOR(pg_catalog.||) pg_catalog.quote_literal(pg_catalog.pg_get_serial_sequence( \
+          pg_catalog.textin(pg_catalog.regclassout(a.attrelid::pg_catalog.regclass)), a.attname::pg_catalog.text))) OPERATOR(pg_catalog.||) '::regclass)'::pg_catalog.text \
+        WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN pg_catalog.pg_get_expr(t.typdefaultbin, '0'::pg_catalog.oid) END"
     };
 }
 pub(crate) use pg_default;
@@ -2003,19 +2004,19 @@ pub(crate) use pg_default;
 /// modifiers, as `format_type` writes a type for a cast, and whether the column is a view's with
 /// no default of its own.
 pub const PG_TABLE_QUERY: &str = concat!(
-    "SELECT a.attname::text, b.typname::text, \
-    pg_catalog.format_type(b.oid, CASE WHEN t.typtype = 'd' THEN t.typtypmod ELSE a.atttypmod END), \
-    a.attnotnull OR (t.typtype = 'd' AND t.typnotnull), \
-    a.atthasdef OR a.attidentity <> '' OR (t.typtype = 'd' AND t.typdefault IS NOT NULL), \
-    a.attgenerated <> '', a.attidentity = 'a', ",
+    "SELECT a.attname::pg_catalog.text, b.typname::pg_catalog.text, \
+    pg_catalog.format_type(b.oid, CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN t.typtypmod ELSE a.atttypmod END), \
+    a.attnotnull OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typnotnull), \
+    a.atthasdef OR a.attidentity OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\" OR (t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" AND t.typdefault IS NOT NULL), \
+    a.attgenerated OPERATOR(pg_catalog.<>) ''::pg_catalog.\"char\", a.attidentity OPERATOR(pg_catalog.=) 'a'::pg_catalog.\"char\", ",
     pg_default!(),
-    ", pg_catalog.format_type(a.atttypid, NULL), c.relkind = 'v' AND d.adbin IS NULL \
+    ", pg_catalog.format_type(a.atttypid, NULL::pg_catalog.int4), c.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" AND d.adbin IS NULL \
     FROM pg_catalog.pg_attribute a \
-    JOIN pg_catalog.pg_class c ON c.oid = a.attrelid \
-    JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
-    JOIN pg_catalog.pg_type b ON b.oid = CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END \
-    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum \
-    WHERE a.attrelid = pg_catalog.to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+    JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) a.attrelid \
+    JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
+    JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" THEN t.typbasetype ELSE t.oid END \
+    LEFT JOIN pg_catalog.pg_attrdef d ON d.adrelid OPERATOR(pg_catalog.=) a.attrelid AND d.adnum OPERATOR(pg_catalog.=) a.attnum \
+    WHERE a.attrelid OPERATOR(pg_catalog.=) pg_catalog.to_regclass($1::pg_catalog.text)::pg_catalog.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped ORDER BY a.attnum"
 );
 
 /// Every column of a SQLite table: its name and its schema.

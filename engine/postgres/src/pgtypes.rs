@@ -98,49 +98,66 @@ pub struct TypeRegistry {
 macro_rules! not_null_rows {
     ($rel:literal, $col:literal) => {
         concat!(
-            "NOT EXISTS (WITH RECURSIVE tree(rel) AS (SELECT ", $rel, " UNION SELECT i.inhrelid FROM tree t JOIN pg_inherits i ON i.inhparent = t.rel) \
-    SELECT 1 FROM tree t JOIN pg_attribute d ON d.attrelid = t.rel AND d.attname = ", $col, " AND NOT d.attisdropped \
-    WHERE NOT d.attnotnull OR EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = d.attrelid AND k.contype = 'n' AND k.conkey[1] = d.attnum AND NOT k.convalidated) \
-      OR EXISTS (SELECT 1 FROM pg_class f WHERE f.oid = t.rel AND f.relkind = 'f'))"
+            "NOT EXISTS (WITH RECURSIVE tree(rel) AS (SELECT ", $rel, " UNION SELECT i.inhrelid FROM tree t JOIN pg_catalog.pg_inherits i ON i.inhparent OPERATOR(pg_catalog.=) t.rel) \
+    SELECT 1 FROM tree t JOIN pg_catalog.pg_attribute d ON d.attrelid OPERATOR(pg_catalog.=) t.rel AND d.attname OPERATOR(pg_catalog.=) ", $col, " AND NOT d.attisdropped \
+    WHERE NOT d.attnotnull OR EXISTS (SELECT 1 FROM pg_catalog.pg_constraint k WHERE k.conrelid OPERATOR(pg_catalog.=) d.attrelid \
+      AND k.contype OPERATOR(pg_catalog.=) 'n'::pg_catalog.\"char\" AND k.conkey[1] OPERATOR(pg_catalog.=) d.attnum AND NOT k.convalidated) \
+      OR EXISTS (SELECT 1 FROM pg_catalog.pg_class f WHERE f.oid OPERATOR(pg_catalog.=) t.rel AND f.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\"))"
         )
     };
 }
 pub(crate) use not_null_rows;
 
+/// One value per column of the composite type `t`, in attribute order, as an array; NULL for a
+/// type that is no composite or has no column.
+macro_rules! composite_fields {
+    ($($value:tt)+) => {
+        concat!(
+            "CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" AND EXISTS (SELECT 1 FROM pg_catalog.pg_attribute a \
+      WHERE a.attrelid OPERATOR(pg_catalog.=) t.typrelid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped) \
+      THEN ARRAY(SELECT ", $($value)+, " FROM pg_catalog.pg_attribute a \
+      WHERE a.attrelid OPERATOR(pg_catalog.=) t.typrelid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped ORDER BY a.attnum) END"
+        )
+    };
+}
+
 /// The columns of one `pg_type` row `t` as [`TypeRegistry::insert_rows`] reads them: the oid, the
 /// name, `typtype`, the element and base types, an enum's labels, the name a cast spells, and a
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
 /// `NOT NULL`), so a whole-row value has its fields in the same round as its type, and the
-/// delimiter of an array of it.
+/// delimiter of an array of it. An enum of no label, or a composite of no column, has NULL for
+/// its arrays.
 macro_rules! type_columns {
     () => {
-        concat!("t.oid::int8, t.typname::text, t.typtype::text, t.typelem::int8, t.typbasetype::int8, \
-    CASE WHEN t.typtype = 'e' THEN (SELECT array_agg(e.enumlabel::text ORDER BY e.enumsortorder) FROM pg_enum e WHERE e.enumtypid = t.oid) END, \
-    pg_catalog.format_type(t.oid, NULL), \
-    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attname::text ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
-    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.atttypid::int8 ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
-    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attnotnull AND ", not_null_rows!("t.typrelid", "a.attname"), " ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
-    CASE WHEN t.typtype = 'c' THEN t.typrelid::int8 END, \
-    CASE WHEN t.typtype = 'c' THEN (SELECT array_agg(a.attnum::int4 ORDER BY a.attnum) FROM pg_attribute a WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) END, \
-    t.typdelim::text")
+        concat!("t.oid::pg_catalog.int8, t.typname::pg_catalog.text, t.typtype::pg_catalog.text, t.typelem::pg_catalog.int8, t.typbasetype::pg_catalog.int8, \
+    CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" AND EXISTS (SELECT 1 FROM pg_catalog.pg_enum e WHERE e.enumtypid OPERATOR(pg_catalog.=) t.oid) \
+      THEN ARRAY(SELECT e.enumlabel::pg_catalog.text FROM pg_catalog.pg_enum e WHERE e.enumtypid OPERATOR(pg_catalog.=) t.oid ORDER BY e.enumsortorder) END, \
+    pg_catalog.format_type(t.oid, NULL::pg_catalog.int4), ",
+    composite_fields!("a.attname::pg_catalog.text"), ", ",
+    composite_fields!("a.atttypid::pg_catalog.int8"), ", ",
+    composite_fields!(concat!("a.attnotnull AND ", not_null_rows!("t.typrelid", "a.attname"))), ", \
+    CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" THEN t.typrelid::pg_catalog.int8 END, ",
+    composite_fields!("a.attnum::pg_catalog.int4"), ", \
+    t.typdelim::pg_catalog.text")
     };
 }
 
 /// `$1` is `oid[]`.
-pub const TYPE_QUERY: &str = concat!("SELECT ", type_columns!(), " FROM pg_type t WHERE t.oid = ANY($1::oid[])");
+pub const TYPE_QUERY: &str = concat!("SELECT ", type_columns!(), " FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.oid[])");
 
 /// The same rows for every column type of the named relations, with the element and base types
 /// those name, so a statement over plain columns has its types before it is described. `$1` is
 /// `text[]` of relation names.
 pub const RELATION_TYPES_QUERY: &str = concat!(
-    "WITH cols AS (SELECT a.atttypid AS oid FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
-      WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid) AND a.attnum > 0 AND NOT a.attisdropped), \
-    wanted AS (SELECT oid FROM cols \
-      UNION SELECT t.typelem FROM pg_type t JOIN cols ON cols.oid = t.oid WHERE t.typelem <> 0 \
-      UNION SELECT t.typbasetype FROM pg_type t JOIN cols ON cols.oid = t.oid WHERE t.typbasetype <> 0) \
+    "WITH cols AS (SELECT a.atttypid AS oid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) a.attrelid \
+      WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
+        AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped), \
+    wanted AS (SELECT cols.oid FROM cols \
+      UNION SELECT t.typelem FROM pg_catalog.pg_type t JOIN cols ON cols.oid OPERATOR(pg_catalog.=) t.oid WHERE t.typelem OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid \
+      UNION SELECT t.typbasetype FROM pg_catalog.pg_type t JOIN cols ON cols.oid OPERATOR(pg_catalog.=) t.oid WHERE t.typbasetype OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid) \
     SELECT ",
     type_columns!(),
-    " FROM pg_type t WHERE t.oid IN (SELECT oid FROM wanted)"
+    " FROM pg_catalog.pg_type t WHERE t.oid OPERATOR(pg_catalog.=) ANY (SELECT w.oid FROM wanted w)"
 );
 
 /// The `pg_catalog` types with fixed oids the registry starts with, as `pg_type` reports them on
