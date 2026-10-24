@@ -1924,9 +1924,10 @@ const SYSTEM_COLUMNS: &[&str] = &["tableoid", "xmin", "cmin", "xmax", "cmax", "c
 /// What [`sublink_rows`] finds in a SELECT.
 struct SublinkRows {
     /// Per target of the SELECT: for a scalar or `ARRAY` subquery whose one target is the whole
-    /// row of a table of its own FROM, or an `array_agg` of the whole row of a table of the
-    /// SELECT's FROM, that table, the name the row goes by there, whether the value is an array
-    /// of rows, and whether it is an `array_agg`.
+    /// row of a table of its own FROM, a scalar subquery whose one target is an `array_agg` of
+    /// such a row, or an `array_agg` of the whole row of a table of the SELECT's FROM (either
+    /// `array_agg` alone or under `coalesce(…, <empty array literal>)`), that table, the name the
+    /// row goes by there, whether the value is an array of rows, and whether it is an `array_agg`.
     targets: Vec<Option<(String, String, bool, bool)>>,
     /// Every table a FROM anywhere in the statement names.
     tables: Vec<String>,
@@ -1956,8 +1957,9 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
 /// of its own FROM's tables (`(select c from child c …)`, `array(select c from child c …)`), or an
-/// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`),
-/// and every table a FROM of the statement names. `None` where a name could mean something the
+/// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`) or
+/// of a scalar subquery's own (`(select array_agg(c) from child c …)`), alone or under
+/// `coalesce(…, '{}')`, and every table a FROM of the statement names. `None` where a name could mean something the
 /// statement's text does not show: a FROM item that is no plain table (a function, a derived
 /// table, `JSON_TABLE`), a table named with its schema, or one named like a WITH query. A bare
 /// name reads a column of any FROM in scope before it reads a row, which
@@ -1998,21 +2000,46 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
             _ => None,
         }
     }
+    /// Whether a value is an empty array written as a literal: `'{}'`, `array[]`, cast or not.
+    fn empty(node: &Node) -> bool {
+        match node.node.as_ref() {
+            Some(N::TypeCast(c)) => c.arg.as_deref().is_some_and(empty),
+            Some(N::AConst(c)) => matches!(&c.val, Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval.trim() == "{}"),
+            Some(N::AArrayExpr(a)) => a.elements.is_empty(),
+            _ => false,
+        }
+    }
+    /// The table and the name of the whole row an `array_agg` of a table's whole row in `from`
+    /// aggregates (`array_agg(e)`, `array_agg(e.*)`), alone or with an empty array literal for no
+    /// rows (`coalesce(array_agg(e), '{}')`): an array of the rows the query aggregates, each a
+    /// stored row, or NULL where an outer join nulled the table, which the array's own elements
+    /// say.
+    fn aggregated(value: &Node, from: &[Node]) -> Option<(String, String)> {
+        match value.node.as_ref()? {
+            N::CoalesceExpr(c) => match c.args.as_slice() {
+                [agg, default] if empty(default) => aggregated(agg, from).filter(|_| matches!(agg.node, Some(N::FuncCall(_)))),
+                _ => None,
+            },
+            N::FuncCall(f) => {
+                let [arg] = f.args.as_slice() else { return None };
+                if crate::infer::builtin_name(&f.funcname).as_deref() != Some("array_agg") || f.agg_star || f.agg_within_group {
+                    return None;
+                }
+                let name = whole(arg)?;
+                Some((from.iter().find_map(|item| named(item, &name))?, name))
+            }
+            _ => None,
+        }
+    }
     let N::SelectStmt(select) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()? else { return None };
     let row = |target: &Node| -> Option<(String, String, bool, bool)> {
         let N::ResTarget(t) = target.node.as_ref()? else { return None };
-        // An array of the rows the SELECT aggregates: each a stored row, or NULL where an outer
-        // join nulled the table, which the array's own elements say.
-        if let N::FuncCall(f) = t.val.as_deref()?.node.as_ref()? {
-            let [arg] = f.args.as_slice() else { return None };
-            if crate::infer::builtin_name(&f.funcname).as_deref() != Some("array_agg") || f.agg_star || f.agg_within_group {
-                return None;
-            }
-            let name = whole(arg)?;
-            let relation = select.from_clause.iter().find_map(|item| named(item, &name))?;
+        let value = t.val.as_deref()?;
+        if matches!(value.node.as_ref()?, N::FuncCall(_) | N::CoalesceExpr(_)) {
+            let (relation, name) = aggregated(value, &select.from_clause)?;
             return Some((relation, name, true, true));
         }
-        let N::SubLink(s) = t.val.as_deref()?.node.as_ref()? else { return None };
+        let N::SubLink(s) = value.node.as_ref()? else { return None };
         let array = s.sub_link_type == SubLinkType::ArraySublink as i32;
         if !array && s.sub_link_type != SubLinkType::ExprSublink as i32 {
             return None;
@@ -2023,6 +2050,13 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
         }
         let [only] = inner.target_list.as_slice() else { return None };
         let N::ResTarget(only) = only.node.as_ref()? else { return None };
+        // A scalar subquery's own `array_agg` of a whole row of its FROM: the subquery's, since no
+        // table the statement reads has a column of the name ([`Engine::stored_sublinks`]).
+        if !array {
+            if let Some((relation, name)) = aggregated(only.val.as_deref()?, &inner.from_clause) {
+                return Some((relation, name, true, true));
+            }
+        }
         let N::ColumnRef(c) = only.val.as_deref()?.node.as_ref()? else { return None };
         let [field] = c.fields.as_slice() else { return None };
         let N::String(name) = field.node.as_ref()? else { return None };
@@ -2877,7 +2911,16 @@ mod tests {
             targets("SELECT array_agg(c), array_agg(c.* ORDER BY c.id), array_agg(c) FILTER (WHERE c.id > 0), array_agg(c) OVER (), array_agg(c.id), array_agg(row(c.id)), pg_catalog.array_agg(p) FROM parent p JOIN child c ON c.pid = p.id GROUP BY p.id"),
             Some(vec![agg("child", "c"), agg("child", "c"), agg("child", "c"), agg("child", "c"), None, None, agg("parent", "p")])
         );
-        assert_eq!(targets("SELECT (SELECT array_agg(c) FROM child c) FROM parent p"), Some(vec![None]));
+        // A scalar subquery's own, and one with an empty array literal for no rows; not under
+        // `ARRAY(…)`, and not with a default that may hold other rows.
+        assert_eq!(
+            targets("SELECT (SELECT array_agg(c) FROM child c), (SELECT coalesce(array_agg(c.* ORDER BY c.id), '{}') FROM child c WHERE c.pid = p.id), (SELECT coalesce(array_agg(c), array[]::child[]) FROM child c), coalesce(array_agg(p), '{}'::parent[]) FROM parent p GROUP BY p.id"),
+            Some(vec![agg("child", "c"), agg("child", "c"), agg("child", "c"), agg("parent", "p")])
+        );
+        assert_eq!(
+            targets("SELECT array(SELECT array_agg(c) FROM child c), (SELECT coalesce(array_agg(c), array[row(1)::child]) FROM child c), (SELECT coalesce('{}', array_agg(c)) FROM child c), (SELECT array_agg(c) || '{}' FROM child c) FROM parent p"),
+            Some(vec![None, None, None, None])
+        );
         assert_eq!(targets("SELECT array_agg(child) FROM child c"), Some(vec![None]));
         assert_eq!(targets("SELECT array_agg(c) FROM (SELECT 1) c"), None);
     }
