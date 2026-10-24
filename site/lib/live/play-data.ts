@@ -1,6 +1,6 @@
 // What /play is drawn with at build time (app/routes/play.tsx's loader): the main page's Postgres
 // schema, highlighted; the examples, one per subsection of the main page's Inference section, each
-// with its types; and the tables and columns the editor completes. The types come from the same
+// with its types; and what the editor completes, its tables, columns, functions and types. The types come from the same
 // engine and the same PGlite snapshot the reader's tab loads (lib/live/plugin.ts writes it before
 // the build reads it), through the same function (lib/live/analyze.ts), so the page is complete,
 // for every example, before anything loads.
@@ -10,7 +10,8 @@ import { AnswerCache } from '../../../src/engine-core.ts';
 import { pageFiles } from '../page-files.ts';
 import { collectFiles, moduleTypes, pagePostgresSchema, readModules } from '../remark-mapper.ts';
 import { formatType, resultType } from '../type-format.ts';
-import { analyzeStatement, COMPLETION_QUERY, completionSchema, type LiveResult } from './analyze.ts';
+import { analyzeStatement, type LiveResult } from './analyze.ts';
+import { catalog, FUNCTIONS_QUERY, TABLES_QUERY, TYPES_QUERY, type Catalog } from './catalog.ts';
 import { instantiateEngine } from './engine.ts';
 import { loadHighlighter, tokens, type Token } from './highlight.ts';
 import { pgliteIo } from './pg-io.ts';
@@ -32,7 +33,8 @@ export type PlayData = {
   examples: Example[];
   /** The slug of the example the page opens with. */
   start: string;
-  completions: Record<string, string[]>;
+  /** What the editor completes. */
+  catalog: Catalog;
 };
 
 /** The example the page opens with: nested JSON, a nullable object and a cardinality. */
@@ -97,7 +99,7 @@ export async function playData(): Promise<PlayData> {
     // The schema's comments follow their code by two spaces, where the docs line them up in a
     // column: the playground's pane is narrower than that column.
     const schema = pagePostgresSchema().replace(/(\S)[ \t]{2,}--/g, '$1  --');
-    return { schema: tokens(h, schema, 'sql'), examples, start: START, completions: completionSchema(await io.query(COMPLETION_QUERY, [])) };
+    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: catalog(await io.query(TABLES_QUERY, []), await io.query(FUNCTIONS_QUERY, []), await io.query(TYPES_QUERY, [])) };
   } finally {
     await pg.close();
   }

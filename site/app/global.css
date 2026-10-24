@@ -996,7 +996,8 @@ html:not(.dark) #nd-page.play .play-theme-dark {
 }
 
 #nd-page.play .cm-tooltip.cm-tooltip-autocomplete {
-  margin: 4px 0 0 -12px;
+  /* Its left margin is set where it is placed (lib/live/editor.ts): names start under the letters typed. */
+  margin-top: 4px;
 }
 
 #nd-page.play .cm-tooltip-autocomplete > ul {
@@ -1021,6 +1022,63 @@ html:not(.dark) #nd-page.play .play-theme-dark {
   text-decoration: none;
   font-weight: 600;
   color: var(--color-fd-primary);
+}
+
+
+/* Each item's kind as a grey icon before it, and its type after it, muted: a column's SQL type, a
+   function's return type (lib/live/complete.ts). The icon hangs left of the item, so its name
+   still starts under the letters typed. */
+#nd-page.play .cm-tooltip-autocomplete > ul > li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#nd-page.play .cm-completionIcon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  opacity: 1;
+  background: color-mix(in srgb, var(--color-fd-muted-foreground) 85%, transparent);
+  mask: var(--play-icon) center / 14px 14px no-repeat;
+}
+
+#nd-page.play .cm-completionIcon::after {
+  content: none;
+}
+
+#nd-page.play .cm-completionIcon-column {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='2.5' width='11' height='11' rx='1.5'/%3E%3Cpath d='M6.5 2.5v11'/%3E%3Crect x='2.5' y='2.5' width='4' height='11' rx='1.5' fill='black' stroke='none' opacity='.45'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionIcon-table {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.5' y='2.5' width='11' height='11' rx='1.5'/%3E%3Cpath d='M2.5 6.5h11M6.5 6.5v7'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionIcon-function {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10.5 2.75c-1.6-.4-2.7.3-3 1.8l-1.7 7.4c-.35 1.5-1.4 2.2-3 1.8M4.5 6.5h6'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionIcon-aggregate {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3H4l4.5 5L4 13h8'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionIcon-keyword {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5.5 4.5 2.5 8l3 3.5M10.5 4.5l3 3.5-3 3.5'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionIcon-type {
+  --play-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 3.5h10M8 3.5v9'/%3E%3C/svg%3E");
+}
+
+#nd-page.play .cm-completionDetail {
+  margin-left: auto;
+  padding-left: 16px;
+  font-style: normal;
+  font-size: 12px;
+  color: color-mix(in srgb, var(--color-fd-muted-foreground) 70%, transparent);
 }
 
 @media (max-width: 899px) {

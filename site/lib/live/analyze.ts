@@ -46,14 +46,3 @@ export async function analyzeStatement(engine: EngineCore, io: EngineIo, cache: 
   }
   return { sql, params, returns, diagnostics: diagnostics.map((d) => ({ message: d.message, code: d.code, ...place(d.start, d.length) })), ms: performance.now() - t };
 }
-
-/** The tables and their columns, for the editor's completions: `{ users: ['id', 'name', …] }`. */
-export const COMPLETION_QUERY = `select c.relname::text, a.attname::text from pg_class c join pg_namespace n on n.oid = c.relnamespace
-  join pg_attribute a on a.attrelid = c.oid and a.attnum > 0 and not a.attisdropped
-  where n.nspname = 'public' and c.relkind in ('r', 'v', 'm', 'p') order by c.relname, a.attnum`;
-
-export function completionSchema(rows: unknown[][]): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
-  for (const [table, column] of rows) (out[table as string] ??= []).push(column as string);
-  return out;
-}

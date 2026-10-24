@@ -291,7 +291,7 @@ export function Playground({ data }: { data: PlayData }) {
       const core = await h.loadHighlighter();
       if (cancelled || !editorElement.current) return;
       setHighlight({ fn: (text, lang) => h.tokens(core, text, lang) });
-      editor.current = e.createEditor(editorElement.current, start, core, data.completions, (text) => {
+      editor.current = e.createEditor(editorElement.current, start, core, data.catalog, (text) => {
         latest.current = text;
         lastEdit.current = performance.now();
         setSql(text);
