@@ -315,6 +315,15 @@ const db = new DatabaseSync("app.db");
 const user = await getUser.run(db, { id: 1 });
 ```
 
+```ts twoslash tab="bun:sqlite" dialect="sqlite"
+import { Database } from "bun:sqlite";
+import getUser from "./get_user.sql";
+
+const db = new Database("app.db");
+
+const user = await getUser.run(db, { id: 1 });
+```
+
 ```ts twoslash tab="Bun.sql" dialect="sqlite"
 import { SQL } from "bun";
 import getUser from "./get_user.sql";
@@ -421,6 +430,15 @@ try {
 }
 ```
 
+```ts twoslash tab="bun:sqlite" dialect="sqlite"
+import { Database } from "bun:sqlite";
+import getUser from "./get_user.sql";
+const db = new Database("app.db");
+// ---cut---
+// the function must not await, so it runs .runSync()
+db.transaction(() => getUser.runSync(db, { id: 1 }))();
+```
+
 ```ts twoslash tab="Bun.sql" dialect="sqlite"
 import { SQL } from "bun";
 import getUser from "./get_user.sql";
@@ -448,14 +466,7 @@ import { connect } from "@tursodatabase/database";
 import getUser from "./get_user.sql";
 const db = await connect("app.db");
 // ---cut---
-await db.exec("begin");
-try {
-  await getUser.run(db, { id: 1 });
-  await db.exec("commit");
-} catch (error) {
-  await db.exec("rollback");
-  throw error;
-}
+await db.transactionAsync((tx) => getUser.run(tx, { id: 1 }))();
 ```
 
 ```ts twoslash tab="Durable Objects" dialect="sqlite"

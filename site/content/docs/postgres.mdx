@@ -65,7 +65,7 @@ create table events (
 
 ## Data types
 
-Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver:
+Each Postgres type maps to one TypeScript type, and `.run()` returns the same value for it on every driver, apart from what `Bun.sql` loses ([Drivers](#drivers)):
 
 | SQL type | TypeScript | The value `.run()` returns |
 | --- | --- | --- |
@@ -560,9 +560,9 @@ group by user_id
 
 </Inferred>
 
-**Scalar subqueries**
+**Subqueries**
 
-A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`.
+A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query.
 
 <Inferred>
 
@@ -591,7 +591,7 @@ from orders
 
 **`union`**
 
-A `union` column is non-null when it's non-null in every branch. A column of a `with` query or a subquery in `from` is as nullable as it is in that query.
+A `union` column is non-null when it's non-null in every branch.
 
 <Inferred>
 
