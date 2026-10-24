@@ -10,6 +10,7 @@ import type * as neon1 from "neon-1";
 import type * as neon010 from "neon-010";
 import type * as neon09 from "neon-09";
 import type { IDatabase, ITask } from "pg-promise";
+import type { DatabasePool, DatabasePoolConnection, DatabaseTransactionConnection } from "slonik";
 import type { SQL, TransactionSQL, SavepointSQL, ReservedSQL } from "bun";
 import type * as my3p from "mysql2-3/promise";
 import type * as my3c from "mysql2-3";
@@ -308,600 +309,621 @@ declare const c33: ITask<{}>; // pg-promise@12.7.1 ITask (task, tx)
 /*@201*/ { const k: "promise" = kind(pgQ.run(c33, { id: 1 })); void k; }
 /*@202*/ { const k: "promise" = kind(pgQ.with(c33)({ id: 1 })); void k; }
 /*@203*/ pgQ.runSync(c33, { id: 1 });
-declare const c34: SQL; // Bun.sql@1.3.14 (bun-types) SQL
+declare const c34: DatabasePool; // slonik@next DatabasePool
 /*@204*/ pgQ.run(c34, { id: 1 });
 /*@205*/ myQ.run(c34, { id: 1 });
 /*@206*/ sqQ.run(c34, { id: 1 });
 /*@207*/ { const k: "promise" = kind(pgQ.run(c34, { id: 1 })); void k; }
 /*@208*/ { const k: "promise" = kind(pgQ.with(c34)({ id: 1 })); void k; }
 /*@209*/ pgQ.runSync(c34, { id: 1 });
-declare const c35: TransactionSQL; // Bun.sql@1.3.14 (bun-types) TransactionSQL (begin)
+declare const c35: DatabasePoolConnection; // slonik@next DatabasePoolConnection (connect)
 /*@210*/ pgQ.run(c35, { id: 1 });
 /*@211*/ myQ.run(c35, { id: 1 });
 /*@212*/ sqQ.run(c35, { id: 1 });
 /*@213*/ { const k: "promise" = kind(pgQ.run(c35, { id: 1 })); void k; }
 /*@214*/ { const k: "promise" = kind(pgQ.with(c35)({ id: 1 })); void k; }
 /*@215*/ pgQ.runSync(c35, { id: 1 });
-declare const c36: SavepointSQL; // Bun.sql@1.3.14 (bun-types) SavepointSQL (savepoint)
+declare const c36: DatabaseTransactionConnection; // slonik@next DatabaseTransactionConnection (transaction, savepoint)
 /*@216*/ pgQ.run(c36, { id: 1 });
 /*@217*/ myQ.run(c36, { id: 1 });
 /*@218*/ sqQ.run(c36, { id: 1 });
 /*@219*/ { const k: "promise" = kind(pgQ.run(c36, { id: 1 })); void k; }
 /*@220*/ { const k: "promise" = kind(pgQ.with(c36)({ id: 1 })); void k; }
 /*@221*/ pgQ.runSync(c36, { id: 1 });
-declare const c37: ReservedSQL; // Bun.sql@1.3.14 (bun-types) ReservedSQL (reserve)
+declare const c37: SQL; // Bun.sql@1.3.14 (bun-types) SQL
 /*@222*/ pgQ.run(c37, { id: 1 });
 /*@223*/ myQ.run(c37, { id: 1 });
 /*@224*/ sqQ.run(c37, { id: 1 });
 /*@225*/ { const k: "promise" = kind(pgQ.run(c37, { id: 1 })); void k; }
 /*@226*/ { const k: "promise" = kind(pgQ.with(c37)({ id: 1 })); void k; }
 /*@227*/ pgQ.runSync(c37, { id: 1 });
-declare const c38: my3p.Pool; // mysql2@3.24.5 promise Pool
+declare const c38: TransactionSQL; // Bun.sql@1.3.14 (bun-types) TransactionSQL (begin)
 /*@228*/ pgQ.run(c38, { id: 1 });
 /*@229*/ myQ.run(c38, { id: 1 });
 /*@230*/ sqQ.run(c38, { id: 1 });
-/*@231*/ { const k: "promise" = kind(myQ.run(c38, { id: 1 })); void k; }
-/*@232*/ { const k: "promise" = kind(myQ.with(c38)({ id: 1 })); void k; }
-/*@233*/ myQ.runSync(c38, { id: 1 });
-declare const c39: my3p.Connection; // mysql2@3.24.5 promise Connection
+/*@231*/ { const k: "promise" = kind(pgQ.run(c38, { id: 1 })); void k; }
+/*@232*/ { const k: "promise" = kind(pgQ.with(c38)({ id: 1 })); void k; }
+/*@233*/ pgQ.runSync(c38, { id: 1 });
+declare const c39: SavepointSQL; // Bun.sql@1.3.14 (bun-types) SavepointSQL (savepoint)
 /*@234*/ pgQ.run(c39, { id: 1 });
 /*@235*/ myQ.run(c39, { id: 1 });
 /*@236*/ sqQ.run(c39, { id: 1 });
-/*@237*/ { const k: "promise" = kind(myQ.run(c39, { id: 1 })); void k; }
-/*@238*/ { const k: "promise" = kind(myQ.with(c39)({ id: 1 })); void k; }
-/*@239*/ myQ.runSync(c39, { id: 1 });
-declare const c40: my3p.PoolConnection; // mysql2@3.24.5 promise PoolConnection
+/*@237*/ { const k: "promise" = kind(pgQ.run(c39, { id: 1 })); void k; }
+/*@238*/ { const k: "promise" = kind(pgQ.with(c39)({ id: 1 })); void k; }
+/*@239*/ pgQ.runSync(c39, { id: 1 });
+declare const c40: ReservedSQL; // Bun.sql@1.3.14 (bun-types) ReservedSQL (reserve)
 /*@240*/ pgQ.run(c40, { id: 1 });
 /*@241*/ myQ.run(c40, { id: 1 });
 /*@242*/ sqQ.run(c40, { id: 1 });
-/*@243*/ { const k: "promise" = kind(myQ.run(c40, { id: 1 })); void k; }
-/*@244*/ { const k: "promise" = kind(myQ.with(c40)({ id: 1 })); void k; }
-/*@245*/ myQ.runSync(c40, { id: 1 });
-declare const c41: my3c.Pool; // mysql2@3.24.5 callback Pool
+/*@243*/ { const k: "promise" = kind(pgQ.run(c40, { id: 1 })); void k; }
+/*@244*/ { const k: "promise" = kind(pgQ.with(c40)({ id: 1 })); void k; }
+/*@245*/ pgQ.runSync(c40, { id: 1 });
+declare const c41: my3p.Pool; // mysql2@3.24.5 promise Pool
 /*@246*/ pgQ.run(c41, { id: 1 });
 /*@247*/ myQ.run(c41, { id: 1 });
 /*@248*/ sqQ.run(c41, { id: 1 });
 /*@249*/ { const k: "promise" = kind(myQ.run(c41, { id: 1 })); void k; }
 /*@250*/ { const k: "promise" = kind(myQ.with(c41)({ id: 1 })); void k; }
 /*@251*/ myQ.runSync(c41, { id: 1 });
-declare const c42: my3c.Connection; // mysql2@3.24.5 callback Connection
+declare const c42: my3p.Connection; // mysql2@3.24.5 promise Connection
 /*@252*/ pgQ.run(c42, { id: 1 });
 /*@253*/ myQ.run(c42, { id: 1 });
 /*@254*/ sqQ.run(c42, { id: 1 });
 /*@255*/ { const k: "promise" = kind(myQ.run(c42, { id: 1 })); void k; }
 /*@256*/ { const k: "promise" = kind(myQ.with(c42)({ id: 1 })); void k; }
 /*@257*/ myQ.runSync(c42, { id: 1 });
-declare const c43: my3c.PoolConnection; // mysql2@3.24.5 callback PoolConnection
+declare const c43: my3p.PoolConnection; // mysql2@3.24.5 promise PoolConnection
 /*@258*/ pgQ.run(c43, { id: 1 });
 /*@259*/ myQ.run(c43, { id: 1 });
 /*@260*/ sqQ.run(c43, { id: 1 });
 /*@261*/ { const k: "promise" = kind(myQ.run(c43, { id: 1 })); void k; }
 /*@262*/ { const k: "promise" = kind(myQ.with(c43)({ id: 1 })); void k; }
 /*@263*/ myQ.runSync(c43, { id: 1 });
-declare const c44: my315p.Pool; // mysql2@3.15.3 promise Pool
+declare const c44: my3c.Pool; // mysql2@3.24.5 callback Pool
 /*@264*/ pgQ.run(c44, { id: 1 });
 /*@265*/ myQ.run(c44, { id: 1 });
 /*@266*/ sqQ.run(c44, { id: 1 });
 /*@267*/ { const k: "promise" = kind(myQ.run(c44, { id: 1 })); void k; }
 /*@268*/ { const k: "promise" = kind(myQ.with(c44)({ id: 1 })); void k; }
 /*@269*/ myQ.runSync(c44, { id: 1 });
-declare const c45: my315p.Connection; // mysql2@3.15.3 promise Connection
+declare const c45: my3c.Connection; // mysql2@3.24.5 callback Connection
 /*@270*/ pgQ.run(c45, { id: 1 });
 /*@271*/ myQ.run(c45, { id: 1 });
 /*@272*/ sqQ.run(c45, { id: 1 });
 /*@273*/ { const k: "promise" = kind(myQ.run(c45, { id: 1 })); void k; }
 /*@274*/ { const k: "promise" = kind(myQ.with(c45)({ id: 1 })); void k; }
 /*@275*/ myQ.runSync(c45, { id: 1 });
-declare const c46: my315p.PoolConnection; // mysql2@3.15.3 promise PoolConnection
+declare const c46: my3c.PoolConnection; // mysql2@3.24.5 callback PoolConnection
 /*@276*/ pgQ.run(c46, { id: 1 });
 /*@277*/ myQ.run(c46, { id: 1 });
 /*@278*/ sqQ.run(c46, { id: 1 });
 /*@279*/ { const k: "promise" = kind(myQ.run(c46, { id: 1 })); void k; }
 /*@280*/ { const k: "promise" = kind(myQ.with(c46)({ id: 1 })); void k; }
 /*@281*/ myQ.runSync(c46, { id: 1 });
-declare const c47: my315c.Pool; // mysql2@3.15.3 callback Pool
+declare const c47: my315p.Pool; // mysql2@3.15.3 promise Pool
 /*@282*/ pgQ.run(c47, { id: 1 });
 /*@283*/ myQ.run(c47, { id: 1 });
 /*@284*/ sqQ.run(c47, { id: 1 });
 /*@285*/ { const k: "promise" = kind(myQ.run(c47, { id: 1 })); void k; }
 /*@286*/ { const k: "promise" = kind(myQ.with(c47)({ id: 1 })); void k; }
 /*@287*/ myQ.runSync(c47, { id: 1 });
-declare const c48: my315c.Connection; // mysql2@3.15.3 callback Connection
+declare const c48: my315p.Connection; // mysql2@3.15.3 promise Connection
 /*@288*/ pgQ.run(c48, { id: 1 });
 /*@289*/ myQ.run(c48, { id: 1 });
 /*@290*/ sqQ.run(c48, { id: 1 });
 /*@291*/ { const k: "promise" = kind(myQ.run(c48, { id: 1 })); void k; }
 /*@292*/ { const k: "promise" = kind(myQ.with(c48)({ id: 1 })); void k; }
 /*@293*/ myQ.runSync(c48, { id: 1 });
-declare const c49: my315c.PoolConnection; // mysql2@3.15.3 callback PoolConnection
+declare const c49: my315p.PoolConnection; // mysql2@3.15.3 promise PoolConnection
 /*@294*/ pgQ.run(c49, { id: 1 });
 /*@295*/ myQ.run(c49, { id: 1 });
 /*@296*/ sqQ.run(c49, { id: 1 });
 /*@297*/ { const k: "promise" = kind(myQ.run(c49, { id: 1 })); void k; }
 /*@298*/ { const k: "promise" = kind(myQ.with(c49)({ id: 1 })); void k; }
 /*@299*/ myQ.runSync(c49, { id: 1 });
-declare const c50: my2p.Pool; // mysql2@2.3.3 promise Pool
+declare const c50: my315c.Pool; // mysql2@3.15.3 callback Pool
 /*@300*/ pgQ.run(c50, { id: 1 });
 /*@301*/ myQ.run(c50, { id: 1 });
 /*@302*/ sqQ.run(c50, { id: 1 });
 /*@303*/ { const k: "promise" = kind(myQ.run(c50, { id: 1 })); void k; }
 /*@304*/ { const k: "promise" = kind(myQ.with(c50)({ id: 1 })); void k; }
 /*@305*/ myQ.runSync(c50, { id: 1 });
-declare const c51: my2p.Connection; // mysql2@2.3.3 promise Connection
+declare const c51: my315c.Connection; // mysql2@3.15.3 callback Connection
 /*@306*/ pgQ.run(c51, { id: 1 });
 /*@307*/ myQ.run(c51, { id: 1 });
 /*@308*/ sqQ.run(c51, { id: 1 });
 /*@309*/ { const k: "promise" = kind(myQ.run(c51, { id: 1 })); void k; }
 /*@310*/ { const k: "promise" = kind(myQ.with(c51)({ id: 1 })); void k; }
 /*@311*/ myQ.runSync(c51, { id: 1 });
-declare const c52: my2p.PoolConnection; // mysql2@2.3.3 promise PoolConnection
+declare const c52: my315c.PoolConnection; // mysql2@3.15.3 callback PoolConnection
 /*@312*/ pgQ.run(c52, { id: 1 });
 /*@313*/ myQ.run(c52, { id: 1 });
 /*@314*/ sqQ.run(c52, { id: 1 });
 /*@315*/ { const k: "promise" = kind(myQ.run(c52, { id: 1 })); void k; }
 /*@316*/ { const k: "promise" = kind(myQ.with(c52)({ id: 1 })); void k; }
 /*@317*/ myQ.runSync(c52, { id: 1 });
-declare const c53: my2c.Pool; // mysql2@2.3.3 callback Pool
+declare const c53: my2p.Pool; // mysql2@2.3.3 promise Pool
 /*@318*/ pgQ.run(c53, { id: 1 });
 /*@319*/ myQ.run(c53, { id: 1 });
 /*@320*/ sqQ.run(c53, { id: 1 });
 /*@321*/ { const k: "promise" = kind(myQ.run(c53, { id: 1 })); void k; }
 /*@322*/ { const k: "promise" = kind(myQ.with(c53)({ id: 1 })); void k; }
 /*@323*/ myQ.runSync(c53, { id: 1 });
-declare const c54: my2c.Connection; // mysql2@2.3.3 callback Connection
+declare const c54: my2p.Connection; // mysql2@2.3.3 promise Connection
 /*@324*/ pgQ.run(c54, { id: 1 });
 /*@325*/ myQ.run(c54, { id: 1 });
 /*@326*/ sqQ.run(c54, { id: 1 });
 /*@327*/ { const k: "promise" = kind(myQ.run(c54, { id: 1 })); void k; }
 /*@328*/ { const k: "promise" = kind(myQ.with(c54)({ id: 1 })); void k; }
 /*@329*/ myQ.runSync(c54, { id: 1 });
-declare const c55: my2c.PoolConnection; // mysql2@2.3.3 callback PoolConnection
+declare const c55: my2p.PoolConnection; // mysql2@2.3.3 promise PoolConnection
 /*@330*/ pgQ.run(c55, { id: 1 });
 /*@331*/ myQ.run(c55, { id: 1 });
 /*@332*/ sqQ.run(c55, { id: 1 });
 /*@333*/ { const k: "promise" = kind(myQ.run(c55, { id: 1 })); void k; }
 /*@334*/ { const k: "promise" = kind(myQ.with(c55)({ id: 1 })); void k; }
 /*@335*/ myQ.runSync(c55, { id: 1 });
-declare const c56: ma3.Pool; // mariadb@3.5.4 Pool
+declare const c56: my2c.Pool; // mysql2@2.3.3 callback Pool
 /*@336*/ pgQ.run(c56, { id: 1 });
 /*@337*/ myQ.run(c56, { id: 1 });
 /*@338*/ sqQ.run(c56, { id: 1 });
 /*@339*/ { const k: "promise" = kind(myQ.run(c56, { id: 1 })); void k; }
 /*@340*/ { const k: "promise" = kind(myQ.with(c56)({ id: 1 })); void k; }
 /*@341*/ myQ.runSync(c56, { id: 1 });
-declare const c57: ma3.Connection; // mariadb@3.5.4 Connection
+declare const c57: my2c.Connection; // mysql2@2.3.3 callback Connection
 /*@342*/ pgQ.run(c57, { id: 1 });
 /*@343*/ myQ.run(c57, { id: 1 });
 /*@344*/ sqQ.run(c57, { id: 1 });
 /*@345*/ { const k: "promise" = kind(myQ.run(c57, { id: 1 })); void k; }
 /*@346*/ { const k: "promise" = kind(myQ.with(c57)({ id: 1 })); void k; }
 /*@347*/ myQ.runSync(c57, { id: 1 });
-declare const c58: ma3.PoolConnection; // mariadb@3.5.4 PoolConnection
+declare const c58: my2c.PoolConnection; // mysql2@2.3.3 callback PoolConnection
 /*@348*/ pgQ.run(c58, { id: 1 });
 /*@349*/ myQ.run(c58, { id: 1 });
 /*@350*/ sqQ.run(c58, { id: 1 });
 /*@351*/ { const k: "promise" = kind(myQ.run(c58, { id: 1 })); void k; }
 /*@352*/ { const k: "promise" = kind(myQ.with(c58)({ id: 1 })); void k; }
 /*@353*/ myQ.runSync(c58, { id: 1 });
-declare const c59: ma3cb.Pool; // mariadb@3.5.4 callback Pool (mariadb/callback)
+declare const c59: ma3.Pool; // mariadb@3.5.4 Pool
 /*@354*/ pgQ.run(c59, { id: 1 });
 /*@355*/ myQ.run(c59, { id: 1 });
 /*@356*/ sqQ.run(c59, { id: 1 });
 /*@357*/ { const k: "promise" = kind(myQ.run(c59, { id: 1 })); void k; }
 /*@358*/ { const k: "promise" = kind(myQ.with(c59)({ id: 1 })); void k; }
 /*@359*/ myQ.runSync(c59, { id: 1 });
-declare const c60: ma3cb.Connection; // mariadb@3.5.4 callback Connection (mariadb/callback)
+declare const c60: ma3.Connection; // mariadb@3.5.4 Connection
 /*@360*/ pgQ.run(c60, { id: 1 });
 /*@361*/ myQ.run(c60, { id: 1 });
 /*@362*/ sqQ.run(c60, { id: 1 });
 /*@363*/ { const k: "promise" = kind(myQ.run(c60, { id: 1 })); void k; }
 /*@364*/ { const k: "promise" = kind(myQ.with(c60)({ id: 1 })); void k; }
 /*@365*/ myQ.runSync(c60, { id: 1 });
-declare const c61: ma3cb.PoolConnection; // mariadb@3.5.4 callback PoolConnection (mariadb/callback)
+declare const c61: ma3.PoolConnection; // mariadb@3.5.4 PoolConnection
 /*@366*/ pgQ.run(c61, { id: 1 });
 /*@367*/ myQ.run(c61, { id: 1 });
 /*@368*/ sqQ.run(c61, { id: 1 });
 /*@369*/ { const k: "promise" = kind(myQ.run(c61, { id: 1 })); void k; }
 /*@370*/ { const k: "promise" = kind(myQ.with(c61)({ id: 1 })); void k; }
 /*@371*/ myQ.runSync(c61, { id: 1 });
-declare const c62: ma34.Pool; // mariadb@3.4.5 Pool
+declare const c62: ma3cb.Pool; // mariadb@3.5.4 callback Pool (mariadb/callback)
 /*@372*/ pgQ.run(c62, { id: 1 });
 /*@373*/ myQ.run(c62, { id: 1 });
 /*@374*/ sqQ.run(c62, { id: 1 });
 /*@375*/ { const k: "promise" = kind(myQ.run(c62, { id: 1 })); void k; }
 /*@376*/ { const k: "promise" = kind(myQ.with(c62)({ id: 1 })); void k; }
 /*@377*/ myQ.runSync(c62, { id: 1 });
-declare const c63: ma34.Connection; // mariadb@3.4.5 Connection
+declare const c63: ma3cb.Connection; // mariadb@3.5.4 callback Connection (mariadb/callback)
 /*@378*/ pgQ.run(c63, { id: 1 });
 /*@379*/ myQ.run(c63, { id: 1 });
 /*@380*/ sqQ.run(c63, { id: 1 });
 /*@381*/ { const k: "promise" = kind(myQ.run(c63, { id: 1 })); void k; }
 /*@382*/ { const k: "promise" = kind(myQ.with(c63)({ id: 1 })); void k; }
 /*@383*/ myQ.runSync(c63, { id: 1 });
-declare const c64: ma34.PoolConnection; // mariadb@3.4.5 PoolConnection
+declare const c64: ma3cb.PoolConnection; // mariadb@3.5.4 callback PoolConnection (mariadb/callback)
 /*@384*/ pgQ.run(c64, { id: 1 });
 /*@385*/ myQ.run(c64, { id: 1 });
 /*@386*/ sqQ.run(c64, { id: 1 });
 /*@387*/ { const k: "promise" = kind(myQ.run(c64, { id: 1 })); void k; }
 /*@388*/ { const k: "promise" = kind(myQ.with(c64)({ id: 1 })); void k; }
 /*@389*/ myQ.runSync(c64, { id: 1 });
-declare const c65: ma34cb.Pool; // mariadb@3.4.5 callback Pool (mariadb/callback)
+declare const c65: ma34.Pool; // mariadb@3.4.5 Pool
 /*@390*/ pgQ.run(c65, { id: 1 });
 /*@391*/ myQ.run(c65, { id: 1 });
 /*@392*/ sqQ.run(c65, { id: 1 });
 /*@393*/ { const k: "promise" = kind(myQ.run(c65, { id: 1 })); void k; }
 /*@394*/ { const k: "promise" = kind(myQ.with(c65)({ id: 1 })); void k; }
 /*@395*/ myQ.runSync(c65, { id: 1 });
-declare const c66: ma34cb.Connection; // mariadb@3.4.5 callback Connection (mariadb/callback)
+declare const c66: ma34.Connection; // mariadb@3.4.5 Connection
 /*@396*/ pgQ.run(c66, { id: 1 });
 /*@397*/ myQ.run(c66, { id: 1 });
 /*@398*/ sqQ.run(c66, { id: 1 });
 /*@399*/ { const k: "promise" = kind(myQ.run(c66, { id: 1 })); void k; }
 /*@400*/ { const k: "promise" = kind(myQ.with(c66)({ id: 1 })); void k; }
 /*@401*/ myQ.runSync(c66, { id: 1 });
-declare const c67: ma34cb.PoolConnection; // mariadb@3.4.5 callback PoolConnection (mariadb/callback)
+declare const c67: ma34.PoolConnection; // mariadb@3.4.5 PoolConnection
 /*@402*/ pgQ.run(c67, { id: 1 });
 /*@403*/ myQ.run(c67, { id: 1 });
 /*@404*/ sqQ.run(c67, { id: 1 });
 /*@405*/ { const k: "promise" = kind(myQ.run(c67, { id: 1 })); void k; }
 /*@406*/ { const k: "promise" = kind(myQ.with(c67)({ id: 1 })); void k; }
 /*@407*/ myQ.runSync(c67, { id: 1 });
-declare const c68: ma2.Pool; // mariadb@2.5.6 Pool
+declare const c68: ma34cb.Pool; // mariadb@3.4.5 callback Pool (mariadb/callback)
 /*@408*/ pgQ.run(c68, { id: 1 });
 /*@409*/ myQ.run(c68, { id: 1 });
 /*@410*/ sqQ.run(c68, { id: 1 });
 /*@411*/ { const k: "promise" = kind(myQ.run(c68, { id: 1 })); void k; }
 /*@412*/ { const k: "promise" = kind(myQ.with(c68)({ id: 1 })); void k; }
 /*@413*/ myQ.runSync(c68, { id: 1 });
-declare const c69: ma2.Connection; // mariadb@2.5.6 Connection
+declare const c69: ma34cb.Connection; // mariadb@3.4.5 callback Connection (mariadb/callback)
 /*@414*/ pgQ.run(c69, { id: 1 });
 /*@415*/ myQ.run(c69, { id: 1 });
 /*@416*/ sqQ.run(c69, { id: 1 });
 /*@417*/ { const k: "promise" = kind(myQ.run(c69, { id: 1 })); void k; }
 /*@418*/ { const k: "promise" = kind(myQ.with(c69)({ id: 1 })); void k; }
 /*@419*/ myQ.runSync(c69, { id: 1 });
-declare const c70: ma2.PoolConnection; // mariadb@2.5.6 PoolConnection
+declare const c70: ma34cb.PoolConnection; // mariadb@3.4.5 callback PoolConnection (mariadb/callback)
 /*@420*/ pgQ.run(c70, { id: 1 });
 /*@421*/ myQ.run(c70, { id: 1 });
 /*@422*/ sqQ.run(c70, { id: 1 });
 /*@423*/ { const k: "promise" = kind(myQ.run(c70, { id: 1 })); void k; }
 /*@424*/ { const k: "promise" = kind(myQ.with(c70)({ id: 1 })); void k; }
 /*@425*/ myQ.runSync(c70, { id: 1 });
-declare const c71: ps2.Connection; // @planetscale/database@2.0.0 Connection (connect())
+declare const c71: ma2.Pool; // mariadb@2.5.6 Pool
 /*@426*/ pgQ.run(c71, { id: 1 });
 /*@427*/ myQ.run(c71, { id: 1 });
 /*@428*/ sqQ.run(c71, { id: 1 });
-declare const c72: ps2.Client; // @planetscale/database@2.0.0 Client
-/*@429*/ pgQ.run(c72, { id: 1 });
-/*@430*/ myQ.run(c72, { id: 1 });
-/*@431*/ sqQ.run(c72, { id: 1 });
-declare const c73: ps2.Transaction; // @planetscale/database@2.0.0 Transaction
-/*@432*/ pgQ.run(c73, { id: 1 });
-/*@433*/ myQ.run(c73, { id: 1 });
-/*@434*/ sqQ.run(c73, { id: 1 });
-declare const c74: ps1.Connection; // @planetscale/database@1.20.2 Connection (connect())
-/*@435*/ pgQ.run(c74, { id: 1 });
-/*@436*/ myQ.run(c74, { id: 1 });
-/*@437*/ sqQ.run(c74, { id: 1 });
-/*@438*/ { const k: "promise" = kind(myQ.run(c74, { id: 1 })); void k; }
-/*@439*/ { const k: "promise" = kind(myQ.with(c74)({ id: 1 })); void k; }
-/*@440*/ myQ.runSync(c74, { id: 1 });
-declare const c75: ps1.Client; // @planetscale/database@1.20.2 Client
-/*@441*/ pgQ.run(c75, { id: 1 });
-/*@442*/ myQ.run(c75, { id: 1 });
-/*@443*/ sqQ.run(c75, { id: 1 });
-/*@444*/ { const k: "promise" = kind(myQ.run(c75, { id: 1 })); void k; }
-/*@445*/ { const k: "promise" = kind(myQ.with(c75)({ id: 1 })); void k; }
-/*@446*/ myQ.runSync(c75, { id: 1 });
-declare const c76: ps1.Transaction; // @planetscale/database@1.20.2 Transaction
-/*@447*/ pgQ.run(c76, { id: 1 });
-/*@448*/ myQ.run(c76, { id: 1 });
-/*@449*/ sqQ.run(c76, { id: 1 });
-/*@450*/ { const k: "promise" = kind(myQ.run(c76, { id: 1 })); void k; }
-/*@451*/ { const k: "promise" = kind(myQ.with(c76)({ id: 1 })); void k; }
-/*@452*/ myQ.runSync(c76, { id: 1 });
-declare const c77: BetterSqlite3.Database; // better-sqlite3 (@types/better-sqlite3 9.6.0) Database
+/*@429*/ { const k: "promise" = kind(myQ.run(c71, { id: 1 })); void k; }
+/*@430*/ { const k: "promise" = kind(myQ.with(c71)({ id: 1 })); void k; }
+/*@431*/ myQ.runSync(c71, { id: 1 });
+declare const c72: ma2.Connection; // mariadb@2.5.6 Connection
+/*@432*/ pgQ.run(c72, { id: 1 });
+/*@433*/ myQ.run(c72, { id: 1 });
+/*@434*/ sqQ.run(c72, { id: 1 });
+/*@435*/ { const k: "promise" = kind(myQ.run(c72, { id: 1 })); void k; }
+/*@436*/ { const k: "promise" = kind(myQ.with(c72)({ id: 1 })); void k; }
+/*@437*/ myQ.runSync(c72, { id: 1 });
+declare const c73: ma2.PoolConnection; // mariadb@2.5.6 PoolConnection
+/*@438*/ pgQ.run(c73, { id: 1 });
+/*@439*/ myQ.run(c73, { id: 1 });
+/*@440*/ sqQ.run(c73, { id: 1 });
+/*@441*/ { const k: "promise" = kind(myQ.run(c73, { id: 1 })); void k; }
+/*@442*/ { const k: "promise" = kind(myQ.with(c73)({ id: 1 })); void k; }
+/*@443*/ myQ.runSync(c73, { id: 1 });
+declare const c74: ps2.Connection; // @planetscale/database@2.0.0 Connection (connect())
+/*@444*/ pgQ.run(c74, { id: 1 });
+/*@445*/ myQ.run(c74, { id: 1 });
+/*@446*/ sqQ.run(c74, { id: 1 });
+declare const c75: ps2.Client; // @planetscale/database@2.0.0 Client
+/*@447*/ pgQ.run(c75, { id: 1 });
+/*@448*/ myQ.run(c75, { id: 1 });
+/*@449*/ sqQ.run(c75, { id: 1 });
+declare const c76: ps2.Transaction; // @planetscale/database@2.0.0 Transaction
+/*@450*/ pgQ.run(c76, { id: 1 });
+/*@451*/ myQ.run(c76, { id: 1 });
+/*@452*/ sqQ.run(c76, { id: 1 });
+declare const c77: ps1.Connection; // @planetscale/database@1.20.2 Connection (connect())
 /*@453*/ pgQ.run(c77, { id: 1 });
 /*@454*/ myQ.run(c77, { id: 1 });
 /*@455*/ sqQ.run(c77, { id: 1 });
-/*@456*/ { const k: "promise" = kind(sqQ.run(c77, { id: 1 })); void k; }
-/*@457*/ { const k: "promise" = kind(sqQ.with(c77)({ id: 1 })); void k; }
-/*@458*/ { const k: "value" = kind(sqQ.runSync(c77, { id: 1 })); void k; }
-declare const c78: DatabaseSync; // node:sqlite (@types/node 26.6.1) DatabaseSync
+/*@456*/ { const k: "promise" = kind(myQ.run(c77, { id: 1 })); void k; }
+/*@457*/ { const k: "promise" = kind(myQ.with(c77)({ id: 1 })); void k; }
+/*@458*/ myQ.runSync(c77, { id: 1 });
+declare const c78: ps1.Client; // @planetscale/database@1.20.2 Client
 /*@459*/ pgQ.run(c78, { id: 1 });
 /*@460*/ myQ.run(c78, { id: 1 });
 /*@461*/ sqQ.run(c78, { id: 1 });
-/*@462*/ { const k: "promise" = kind(sqQ.run(c78, { id: 1 })); void k; }
-/*@463*/ { const k: "promise" = kind(sqQ.with(c78)({ id: 1 })); void k; }
-/*@464*/ { const k: "value" = kind(sqQ.runSync(c78, { id: 1 })); void k; }
-declare const c79: SQLTagStore; // node:sqlite (@types/node 26.6.1) SQLTagStore (createTagStore())
+/*@462*/ { const k: "promise" = kind(myQ.run(c78, { id: 1 })); void k; }
+/*@463*/ { const k: "promise" = kind(myQ.with(c78)({ id: 1 })); void k; }
+/*@464*/ myQ.runSync(c78, { id: 1 });
+declare const c79: ps1.Transaction; // @planetscale/database@1.20.2 Transaction
 /*@465*/ pgQ.run(c79, { id: 1 });
 /*@466*/ myQ.run(c79, { id: 1 });
 /*@467*/ sqQ.run(c79, { id: 1 });
-declare const c80: BunDatabase; // bun:sqlite (bun-types 1.3.14) Database
-/*@468*/ pgQ.run(c80, { id: 1 });
-/*@469*/ myQ.run(c80, { id: 1 });
-/*@470*/ sqQ.run(c80, { id: 1 });
-/*@471*/ { const k: "promise" = kind(sqQ.run(c80, { id: 1 })); void k; }
-/*@472*/ { const k: "promise" = kind(sqQ.with(c80)({ id: 1 })); void k; }
-/*@473*/ { const k: "value" = kind(sqQ.runSync(c80, { id: 1 })); void k; }
-declare const c81: NodePgDatabase & { $client: pg8.Pool }; // drizzle-orm@0.45.4 (node-postgres) drizzle(pool)
-/*@474*/ pgQ.run(c81, { id: 1 });
-/*@475*/ myQ.run(c81, { id: 1 });
-/*@476*/ sqQ.run(c81, { id: 1 });
-/*@477*/ { const k: "promise" = kind(pgQ.run(c81, { id: 1 })); void k; }
-/*@478*/ { const k: "promise" = kind(pgQ.with(c81)({ id: 1 })); void k; }
-/*@479*/ pgQ.runSync(c81, { id: 1 });
-declare const c82: PostgresJsDatabase & { $client: postgres.Sql }; // drizzle-orm@0.45.4 (postgres-js) drizzle(sql)
-/*@480*/ pgQ.run(c82, { id: 1 });
-/*@481*/ myQ.run(c82, { id: 1 });
-/*@482*/ sqQ.run(c82, { id: 1 });
-/*@483*/ { const k: "promise" = kind(pgQ.run(c82, { id: 1 })); void k; }
-/*@484*/ { const k: "promise" = kind(pgQ.with(c82)({ id: 1 })); void k; }
-/*@485*/ pgQ.runSync(c82, { id: 1 });
-declare const c83: PgTransaction<NodePgQueryResultHKT, Record<string, never>, Record<string, never>>; // drizzle-orm@0.45.4 PgTransaction (db.transaction, tx.transaction)
+/*@468*/ { const k: "promise" = kind(myQ.run(c79, { id: 1 })); void k; }
+/*@469*/ { const k: "promise" = kind(myQ.with(c79)({ id: 1 })); void k; }
+/*@470*/ myQ.runSync(c79, { id: 1 });
+declare const c80: BetterSqlite3.Database; // better-sqlite3 (@types/better-sqlite3 9.6.0) Database
+/*@471*/ pgQ.run(c80, { id: 1 });
+/*@472*/ myQ.run(c80, { id: 1 });
+/*@473*/ sqQ.run(c80, { id: 1 });
+/*@474*/ { const k: "promise" = kind(sqQ.run(c80, { id: 1 })); void k; }
+/*@475*/ { const k: "promise" = kind(sqQ.with(c80)({ id: 1 })); void k; }
+/*@476*/ { const k: "value" = kind(sqQ.runSync(c80, { id: 1 })); void k; }
+declare const c81: DatabaseSync; // node:sqlite (@types/node 26.6.1) DatabaseSync
+/*@477*/ pgQ.run(c81, { id: 1 });
+/*@478*/ myQ.run(c81, { id: 1 });
+/*@479*/ sqQ.run(c81, { id: 1 });
+/*@480*/ { const k: "promise" = kind(sqQ.run(c81, { id: 1 })); void k; }
+/*@481*/ { const k: "promise" = kind(sqQ.with(c81)({ id: 1 })); void k; }
+/*@482*/ { const k: "value" = kind(sqQ.runSync(c81, { id: 1 })); void k; }
+declare const c82: SQLTagStore; // node:sqlite (@types/node 26.6.1) SQLTagStore (createTagStore())
+/*@483*/ pgQ.run(c82, { id: 1 });
+/*@484*/ myQ.run(c82, { id: 1 });
+/*@485*/ sqQ.run(c82, { id: 1 });
+declare const c83: BunDatabase; // bun:sqlite (bun-types 1.3.14) Database
 /*@486*/ pgQ.run(c83, { id: 1 });
 /*@487*/ myQ.run(c83, { id: 1 });
 /*@488*/ sqQ.run(c83, { id: 1 });
-/*@489*/ { const k: "promise" = kind(pgQ.run(c83, { id: 1 })); void k; }
-/*@490*/ { const k: "promise" = kind(pgQ.with(c83)({ id: 1 })); void k; }
-/*@491*/ pgQ.runSync(c83, { id: 1 });
-declare const c84: MySql2Database & { $client: my3p.Pool }; // drizzle-orm@0.45.4 (mysql2) drizzle(pool)
+/*@489*/ { const k: "promise" = kind(sqQ.run(c83, { id: 1 })); void k; }
+/*@490*/ { const k: "promise" = kind(sqQ.with(c83)({ id: 1 })); void k; }
+/*@491*/ { const k: "value" = kind(sqQ.runSync(c83, { id: 1 })); void k; }
+declare const c84: NodePgDatabase & { $client: pg8.Pool }; // drizzle-orm@0.45.4 (node-postgres) drizzle(pool)
 /*@492*/ pgQ.run(c84, { id: 1 });
 /*@493*/ myQ.run(c84, { id: 1 });
 /*@494*/ sqQ.run(c84, { id: 1 });
-/*@495*/ { const k: "promise" = kind(myQ.run(c84, { id: 1 })); void k; }
-/*@496*/ { const k: "promise" = kind(myQ.with(c84)({ id: 1 })); void k; }
-/*@497*/ myQ.runSync(c84, { id: 1 });
-declare const c85: MySqlTransaction<any, any, any, any>; // drizzle-orm@0.45.4 MySqlTransaction (db.transaction, tx.transaction)
+/*@495*/ { const k: "promise" = kind(pgQ.run(c84, { id: 1 })); void k; }
+/*@496*/ { const k: "promise" = kind(pgQ.with(c84)({ id: 1 })); void k; }
+/*@497*/ pgQ.runSync(c84, { id: 1 });
+declare const c85: PostgresJsDatabase & { $client: postgres.Sql }; // drizzle-orm@0.45.4 (postgres-js) drizzle(sql)
 /*@498*/ pgQ.run(c85, { id: 1 });
 /*@499*/ myQ.run(c85, { id: 1 });
 /*@500*/ sqQ.run(c85, { id: 1 });
-/*@501*/ { const k: "promise" = kind(myQ.run(c85, { id: 1 })); void k; }
-/*@502*/ { const k: "promise" = kind(myQ.with(c85)({ id: 1 })); void k; }
-/*@503*/ myQ.runSync(c85, { id: 1 });
-declare const c86: BetterSQLite3Database & { $client: BetterSqlite3.Database }; // drizzle-orm@0.45.4 (better-sqlite3) drizzle(database)
+/*@501*/ { const k: "promise" = kind(pgQ.run(c85, { id: 1 })); void k; }
+/*@502*/ { const k: "promise" = kind(pgQ.with(c85)({ id: 1 })); void k; }
+/*@503*/ pgQ.runSync(c85, { id: 1 });
+declare const c86: PgTransaction<NodePgQueryResultHKT, Record<string, never>, Record<string, never>>; // drizzle-orm@0.45.4 PgTransaction (db.transaction, tx.transaction)
 /*@504*/ pgQ.run(c86, { id: 1 });
 /*@505*/ myQ.run(c86, { id: 1 });
 /*@506*/ sqQ.run(c86, { id: 1 });
-/*@507*/ { const k: "promise" = kind(sqQ.run(c86, { id: 1 })); void k; }
-/*@508*/ { const k: "promise" = kind(sqQ.with(c86)({ id: 1 })); void k; }
-/*@509*/ { const k: "value" = kind(sqQ.runSync(c86, { id: 1 })); void k; }
-declare const c87: SQLiteTransaction<'sync', any, any, any>; // drizzle-orm@0.45.4 SQLiteTransaction (db.transaction, over better-sqlite3)
+/*@507*/ { const k: "promise" = kind(pgQ.run(c86, { id: 1 })); void k; }
+/*@508*/ { const k: "promise" = kind(pgQ.with(c86)({ id: 1 })); void k; }
+/*@509*/ pgQ.runSync(c86, { id: 1 });
+declare const c87: MySql2Database & { $client: my3p.Pool }; // drizzle-orm@0.45.4 (mysql2) drizzle(pool)
 /*@510*/ pgQ.run(c87, { id: 1 });
 /*@511*/ myQ.run(c87, { id: 1 });
 /*@512*/ sqQ.run(c87, { id: 1 });
-/*@513*/ { const k: "promise" = kind(sqQ.run(c87, { id: 1 })); void k; }
-/*@514*/ { const k: "promise" = kind(sqQ.with(c87)({ id: 1 })); void k; }
-/*@515*/ { const k: "value" = kind(sqQ.runSync(c87, { id: 1 })); void k; }
-declare const c88: LibSQLDatabase & { $client: ls018.Client }; // drizzle-orm@0.45.4 (libsql) drizzle(client)
+/*@513*/ { const k: "promise" = kind(myQ.run(c87, { id: 1 })); void k; }
+/*@514*/ { const k: "promise" = kind(myQ.with(c87)({ id: 1 })); void k; }
+/*@515*/ myQ.runSync(c87, { id: 1 });
+declare const c88: MySqlTransaction<any, any, any, any>; // drizzle-orm@0.45.4 MySqlTransaction (db.transaction, tx.transaction)
 /*@516*/ pgQ.run(c88, { id: 1 });
 /*@517*/ myQ.run(c88, { id: 1 });
 /*@518*/ sqQ.run(c88, { id: 1 });
-/*@519*/ { const k: "promise" = kind(sqQ.run(c88, { id: 1 })); void k; }
-/*@520*/ { const k: "promise" = kind(sqQ.with(c88)({ id: 1 })); void k; }
-/*@521*/ sqQ.runSync(c88, { id: 1 });
-declare const c89: SQLiteTransaction<'async', any, any, any>; // drizzle-orm@0.45.4 SQLiteTransaction (db.transaction, over libSQL)
+/*@519*/ { const k: "promise" = kind(myQ.run(c88, { id: 1 })); void k; }
+/*@520*/ { const k: "promise" = kind(myQ.with(c88)({ id: 1 })); void k; }
+/*@521*/ myQ.runSync(c88, { id: 1 });
+declare const c89: BetterSQLite3Database & { $client: BetterSqlite3.Database }; // drizzle-orm@0.45.4 (better-sqlite3) drizzle(database)
 /*@522*/ pgQ.run(c89, { id: 1 });
 /*@523*/ myQ.run(c89, { id: 1 });
 /*@524*/ sqQ.run(c89, { id: 1 });
 /*@525*/ { const k: "promise" = kind(sqQ.run(c89, { id: 1 })); void k; }
 /*@526*/ { const k: "promise" = kind(sqQ.with(c89)({ id: 1 })); void k; }
-/*@527*/ sqQ.runSync(c89, { id: 1 });
-declare const c90: NeonDatabase & { $client: neon1.Pool }; // drizzle-orm@0.45.4 (neon-serverless) drizzle(pool)
+/*@527*/ { const k: "value" = kind(sqQ.runSync(c89, { id: 1 })); void k; }
+declare const c90: SQLiteTransaction<'sync', any, any, any>; // drizzle-orm@0.45.4 SQLiteTransaction (db.transaction, over better-sqlite3)
 /*@528*/ pgQ.run(c90, { id: 1 });
 /*@529*/ myQ.run(c90, { id: 1 });
 /*@530*/ sqQ.run(c90, { id: 1 });
-/*@531*/ { const k: "promise" = kind(pgQ.run(c90, { id: 1 })); void k; }
-/*@532*/ { const k: "promise" = kind(pgQ.with(c90)({ id: 1 })); void k; }
-/*@533*/ pgQ.runSync(c90, { id: 1 });
-declare const c91: NeonHttpDatabase & { $client: neon1.NeonQueryFunction<false, false> }; // drizzle-orm@0.45.4 (neon-http) drizzle(neon())
+/*@531*/ { const k: "promise" = kind(sqQ.run(c90, { id: 1 })); void k; }
+/*@532*/ { const k: "promise" = kind(sqQ.with(c90)({ id: 1 })); void k; }
+/*@533*/ { const k: "value" = kind(sqQ.runSync(c90, { id: 1 })); void k; }
+declare const c91: LibSQLDatabase & { $client: ls018.Client }; // drizzle-orm@0.45.4 (libsql) drizzle(client)
 /*@534*/ pgQ.run(c91, { id: 1 });
 /*@535*/ myQ.run(c91, { id: 1 });
 /*@536*/ sqQ.run(c91, { id: 1 });
-/*@537*/ { const k: "promise" = kind(pgQ.run(c91, { id: 1 })); void k; }
-/*@538*/ { const k: "promise" = kind(pgQ.with(c91)({ id: 1 })); void k; }
-/*@539*/ pgQ.runSync(c91, { id: 1 });
-declare const c92: PgliteDatabase & { $client: PGlite05 }; // drizzle-orm@0.45.4 (pglite) drizzle(pglite)
+/*@537*/ { const k: "promise" = kind(sqQ.run(c91, { id: 1 })); void k; }
+/*@538*/ { const k: "promise" = kind(sqQ.with(c91)({ id: 1 })); void k; }
+/*@539*/ sqQ.runSync(c91, { id: 1 });
+declare const c92: SQLiteTransaction<'async', any, any, any>; // drizzle-orm@0.45.4 SQLiteTransaction (db.transaction, over libSQL)
 /*@540*/ pgQ.run(c92, { id: 1 });
 /*@541*/ myQ.run(c92, { id: 1 });
 /*@542*/ sqQ.run(c92, { id: 1 });
-/*@543*/ { const k: "promise" = kind(pgQ.run(c92, { id: 1 })); void k; }
-/*@544*/ { const k: "promise" = kind(pgQ.with(c92)({ id: 1 })); void k; }
-/*@545*/ pgQ.runSync(c92, { id: 1 });
-declare const c93: BunSQLDatabase & { $client: SQL }; // drizzle-orm@0.45.4 (bun-sql) drizzle(sql)
+/*@543*/ { const k: "promise" = kind(sqQ.run(c92, { id: 1 })); void k; }
+/*@544*/ { const k: "promise" = kind(sqQ.with(c92)({ id: 1 })); void k; }
+/*@545*/ sqQ.runSync(c92, { id: 1 });
+declare const c93: NeonDatabase & { $client: neon1.Pool }; // drizzle-orm@0.45.4 (neon-serverless) drizzle(pool)
 /*@546*/ pgQ.run(c93, { id: 1 });
 /*@547*/ myQ.run(c93, { id: 1 });
 /*@548*/ sqQ.run(c93, { id: 1 });
 /*@549*/ { const k: "promise" = kind(pgQ.run(c93, { id: 1 })); void k; }
 /*@550*/ { const k: "promise" = kind(pgQ.with(c93)({ id: 1 })); void k; }
 /*@551*/ pgQ.runSync(c93, { id: 1 });
-declare const c94: PlanetScaleDatabase & { $client: ps1.Client }; // drizzle-orm@0.45.4 (planetscale-serverless) drizzle(client)
+declare const c94: NeonHttpDatabase & { $client: neon1.NeonQueryFunction<false, false> }; // drizzle-orm@0.45.4 (neon-http) drizzle(neon())
 /*@552*/ pgQ.run(c94, { id: 1 });
 /*@553*/ myQ.run(c94, { id: 1 });
 /*@554*/ sqQ.run(c94, { id: 1 });
-/*@555*/ { const k: "promise" = kind(myQ.run(c94, { id: 1 })); void k; }
-/*@556*/ { const k: "promise" = kind(myQ.with(c94)({ id: 1 })); void k; }
-/*@557*/ myQ.runSync(c94, { id: 1 });
-declare const c95: DrizzleD1Database & { $client: D1Database }; // drizzle-orm@0.45.4 (d1) drizzle(d1)
+/*@555*/ { const k: "promise" = kind(pgQ.run(c94, { id: 1 })); void k; }
+/*@556*/ { const k: "promise" = kind(pgQ.with(c94)({ id: 1 })); void k; }
+/*@557*/ pgQ.runSync(c94, { id: 1 });
+declare const c95: PgliteDatabase & { $client: PGlite05 }; // drizzle-orm@0.45.4 (pglite) drizzle(pglite)
 /*@558*/ pgQ.run(c95, { id: 1 });
 /*@559*/ myQ.run(c95, { id: 1 });
 /*@560*/ sqQ.run(c95, { id: 1 });
-/*@561*/ { const k: "promise" = kind(sqQ.run(c95, { id: 1 })); void k; }
-/*@562*/ { const k: "promise" = kind(sqQ.with(c95)({ id: 1 })); void k; }
-/*@563*/ sqQ.runSync(c95, { id: 1 });
-declare const c96: BunSQLiteDatabase & { $client: BunDatabase }; // drizzle-orm@0.45.4 (bun-sqlite) drizzle(database)
+/*@561*/ { const k: "promise" = kind(pgQ.run(c95, { id: 1 })); void k; }
+/*@562*/ { const k: "promise" = kind(pgQ.with(c95)({ id: 1 })); void k; }
+/*@563*/ pgQ.runSync(c95, { id: 1 });
+declare const c96: BunSQLDatabase & { $client: SQL }; // drizzle-orm@0.45.4 (bun-sql) drizzle(sql)
 /*@564*/ pgQ.run(c96, { id: 1 });
 /*@565*/ myQ.run(c96, { id: 1 });
 /*@566*/ sqQ.run(c96, { id: 1 });
-/*@567*/ { const k: "promise" = kind(sqQ.run(c96, { id: 1 })); void k; }
-/*@568*/ { const k: "promise" = kind(sqQ.with(c96)({ id: 1 })); void k; }
-/*@569*/ { const k: "value" = kind(sqQ.runSync(c96, { id: 1 })); void k; }
-declare const c97: DrizzleSqliteDODatabase & { $client: DurableObjectStorage }; // drizzle-orm@0.45.4 (durable-sqlite) drizzle(ctx.storage)
+/*@567*/ { const k: "promise" = kind(pgQ.run(c96, { id: 1 })); void k; }
+/*@568*/ { const k: "promise" = kind(pgQ.with(c96)({ id: 1 })); void k; }
+/*@569*/ pgQ.runSync(c96, { id: 1 });
+declare const c97: PlanetScaleDatabase & { $client: ps1.Client }; // drizzle-orm@0.45.4 (planetscale-serverless) drizzle(client)
 /*@570*/ pgQ.run(c97, { id: 1 });
 /*@571*/ myQ.run(c97, { id: 1 });
 /*@572*/ sqQ.run(c97, { id: 1 });
-/*@573*/ { const k: "promise" = kind(sqQ.run(c97, { id: 1 })); void k; }
-/*@574*/ { const k: "promise" = kind(sqQ.with(c97)({ id: 1 })); void k; }
-/*@575*/ { const k: "value" = kind(sqQ.runSync(c97, { id: 1 })); void k; }
-declare const c98: ls017.Client; // @libsql/client@0.17.4 Client
+/*@573*/ { const k: "promise" = kind(myQ.run(c97, { id: 1 })); void k; }
+/*@574*/ { const k: "promise" = kind(myQ.with(c97)({ id: 1 })); void k; }
+/*@575*/ myQ.runSync(c97, { id: 1 });
+declare const c98: DrizzleD1Database & { $client: D1Database }; // drizzle-orm@0.45.4 (d1) drizzle(d1)
 /*@576*/ pgQ.run(c98, { id: 1 });
 /*@577*/ myQ.run(c98, { id: 1 });
 /*@578*/ sqQ.run(c98, { id: 1 });
 /*@579*/ { const k: "promise" = kind(sqQ.run(c98, { id: 1 })); void k; }
 /*@580*/ { const k: "promise" = kind(sqQ.with(c98)({ id: 1 })); void k; }
 /*@581*/ sqQ.runSync(c98, { id: 1 });
-declare const c99: ls017.Transaction; // @libsql/client@0.17.4 Transaction
+declare const c99: BunSQLiteDatabase & { $client: BunDatabase }; // drizzle-orm@0.45.4 (bun-sqlite) drizzle(database)
 /*@582*/ pgQ.run(c99, { id: 1 });
 /*@583*/ myQ.run(c99, { id: 1 });
 /*@584*/ sqQ.run(c99, { id: 1 });
 /*@585*/ { const k: "promise" = kind(sqQ.run(c99, { id: 1 })); void k; }
 /*@586*/ { const k: "promise" = kind(sqQ.with(c99)({ id: 1 })); void k; }
-/*@587*/ sqQ.runSync(c99, { id: 1 });
-declare const c100: ls018.Client; // @libsql/client@0.18.0 Client
+/*@587*/ { const k: "value" = kind(sqQ.runSync(c99, { id: 1 })); void k; }
+declare const c100: DrizzleSqliteDODatabase & { $client: DurableObjectStorage }; // drizzle-orm@0.45.4 (durable-sqlite) drizzle(ctx.storage)
 /*@588*/ pgQ.run(c100, { id: 1 });
 /*@589*/ myQ.run(c100, { id: 1 });
 /*@590*/ sqQ.run(c100, { id: 1 });
 /*@591*/ { const k: "promise" = kind(sqQ.run(c100, { id: 1 })); void k; }
 /*@592*/ { const k: "promise" = kind(sqQ.with(c100)({ id: 1 })); void k; }
-/*@593*/ sqQ.runSync(c100, { id: 1 });
-declare const c101: ls018.Transaction; // @libsql/client@0.18.0 Transaction
+/*@593*/ { const k: "value" = kind(sqQ.runSync(c100, { id: 1 })); void k; }
+declare const c101: ls017.Client; // @libsql/client@0.17.4 Client
 /*@594*/ pgQ.run(c101, { id: 1 });
 /*@595*/ myQ.run(c101, { id: 1 });
 /*@596*/ sqQ.run(c101, { id: 1 });
 /*@597*/ { const k: "promise" = kind(sqQ.run(c101, { id: 1 })); void k; }
 /*@598*/ { const k: "promise" = kind(sqQ.with(c101)({ id: 1 })); void k; }
 /*@599*/ sqQ.runSync(c101, { id: 1 });
-declare const c102: ls015.Client; // @libsql/client@0.15.15 Client
+declare const c102: ls017.Transaction; // @libsql/client@0.17.4 Transaction
 /*@600*/ pgQ.run(c102, { id: 1 });
 /*@601*/ myQ.run(c102, { id: 1 });
 /*@602*/ sqQ.run(c102, { id: 1 });
 /*@603*/ { const k: "promise" = kind(sqQ.run(c102, { id: 1 })); void k; }
 /*@604*/ { const k: "promise" = kind(sqQ.with(c102)({ id: 1 })); void k; }
 /*@605*/ sqQ.runSync(c102, { id: 1 });
-declare const c103: ls015.Transaction; // @libsql/client@0.15.15 Transaction
+declare const c103: ls018.Client; // @libsql/client@0.18.0 Client
 /*@606*/ pgQ.run(c103, { id: 1 });
 /*@607*/ myQ.run(c103, { id: 1 });
 /*@608*/ sqQ.run(c103, { id: 1 });
 /*@609*/ { const k: "promise" = kind(sqQ.run(c103, { id: 1 })); void k; }
 /*@610*/ { const k: "promise" = kind(sqQ.with(c103)({ id: 1 })); void k; }
 /*@611*/ sqQ.runSync(c103, { id: 1 });
-declare const c104: ls014.Client; // @libsql/client@0.14.0 Client
+declare const c104: ls018.Transaction; // @libsql/client@0.18.0 Transaction
 /*@612*/ pgQ.run(c104, { id: 1 });
 /*@613*/ myQ.run(c104, { id: 1 });
 /*@614*/ sqQ.run(c104, { id: 1 });
 /*@615*/ { const k: "promise" = kind(sqQ.run(c104, { id: 1 })); void k; }
 /*@616*/ { const k: "promise" = kind(sqQ.with(c104)({ id: 1 })); void k; }
 /*@617*/ sqQ.runSync(c104, { id: 1 });
-declare const c105: ls014.Transaction; // @libsql/client@0.14.0 Transaction
+declare const c105: ls015.Client; // @libsql/client@0.15.15 Client
 /*@618*/ pgQ.run(c105, { id: 1 });
 /*@619*/ myQ.run(c105, { id: 1 });
 /*@620*/ sqQ.run(c105, { id: 1 });
 /*@621*/ { const k: "promise" = kind(sqQ.run(c105, { id: 1 })); void k; }
 /*@622*/ { const k: "promise" = kind(sqQ.with(c105)({ id: 1 })); void k; }
 /*@623*/ sqQ.runSync(c105, { id: 1 });
-declare const c106: tu08.Database; // @tursodatabase/database@0.8.3 Database (connect())
+declare const c106: ls015.Transaction; // @libsql/client@0.15.15 Transaction
 /*@624*/ pgQ.run(c106, { id: 1 });
 /*@625*/ myQ.run(c106, { id: 1 });
 /*@626*/ sqQ.run(c106, { id: 1 });
 /*@627*/ { const k: "promise" = kind(sqQ.run(c106, { id: 1 })); void k; }
 /*@628*/ { const k: "promise" = kind(sqQ.with(c106)({ id: 1 })); void k; }
 /*@629*/ sqQ.runSync(c106, { id: 1 });
-declare const c107: tu08.Transaction; // @tursodatabase/database@0.8.3 Transaction (transactionAsync())
+declare const c107: ls014.Client; // @libsql/client@0.14.0 Client
 /*@630*/ pgQ.run(c107, { id: 1 });
 /*@631*/ myQ.run(c107, { id: 1 });
 /*@632*/ sqQ.run(c107, { id: 1 });
 /*@633*/ { const k: "promise" = kind(sqQ.run(c107, { id: 1 })); void k; }
 /*@634*/ { const k: "promise" = kind(sqQ.with(c107)({ id: 1 })); void k; }
 /*@635*/ sqQ.runSync(c107, { id: 1 });
-declare const c108: tu08c.Database; // @tursodatabase/database@0.8.3 compat Database
+declare const c108: ls014.Transaction; // @libsql/client@0.14.0 Transaction
 /*@636*/ pgQ.run(c108, { id: 1 });
 /*@637*/ myQ.run(c108, { id: 1 });
 /*@638*/ sqQ.run(c108, { id: 1 });
 /*@639*/ { const k: "promise" = kind(sqQ.run(c108, { id: 1 })); void k; }
 /*@640*/ { const k: "promise" = kind(sqQ.with(c108)({ id: 1 })); void k; }
-/*@641*/ { const k: "value" = kind(sqQ.runSync(c108, { id: 1 })); void k; }
-declare const c109: tu07.Database; // @tursodatabase/database@0.7.2 Database (connect())
+/*@641*/ sqQ.runSync(c108, { id: 1 });
+declare const c109: tu08.Database; // @tursodatabase/database@0.8.3 Database (connect())
 /*@642*/ pgQ.run(c109, { id: 1 });
 /*@643*/ myQ.run(c109, { id: 1 });
 /*@644*/ sqQ.run(c109, { id: 1 });
 /*@645*/ { const k: "promise" = kind(sqQ.run(c109, { id: 1 })); void k; }
 /*@646*/ { const k: "promise" = kind(sqQ.with(c109)({ id: 1 })); void k; }
 /*@647*/ sqQ.runSync(c109, { id: 1 });
-declare const c110: tu07.Transaction; // @tursodatabase/database@0.7.2 Transaction (transactionAsync())
+declare const c110: tu08.Transaction; // @tursodatabase/database@0.8.3 Transaction (transactionAsync())
 /*@648*/ pgQ.run(c110, { id: 1 });
 /*@649*/ myQ.run(c110, { id: 1 });
 /*@650*/ sqQ.run(c110, { id: 1 });
 /*@651*/ { const k: "promise" = kind(sqQ.run(c110, { id: 1 })); void k; }
 /*@652*/ { const k: "promise" = kind(sqQ.with(c110)({ id: 1 })); void k; }
 /*@653*/ sqQ.runSync(c110, { id: 1 });
-declare const c111: tu07c.Database; // @tursodatabase/database@0.7.2 compat Database
+declare const c111: tu08c.Database; // @tursodatabase/database@0.8.3 compat Database
 /*@654*/ pgQ.run(c111, { id: 1 });
 /*@655*/ myQ.run(c111, { id: 1 });
 /*@656*/ sqQ.run(c111, { id: 1 });
 /*@657*/ { const k: "promise" = kind(sqQ.run(c111, { id: 1 })); void k; }
 /*@658*/ { const k: "promise" = kind(sqQ.with(c111)({ id: 1 })); void k; }
 /*@659*/ { const k: "value" = kind(sqQ.runSync(c111, { id: 1 })); void k; }
-declare const c112: tu06.Database; // @tursodatabase/database@0.6.1 Database (connect())
+declare const c112: tu07.Database; // @tursodatabase/database@0.7.2 Database (connect())
 /*@660*/ pgQ.run(c112, { id: 1 });
 /*@661*/ myQ.run(c112, { id: 1 });
 /*@662*/ sqQ.run(c112, { id: 1 });
 /*@663*/ { const k: "promise" = kind(sqQ.run(c112, { id: 1 })); void k; }
 /*@664*/ { const k: "promise" = kind(sqQ.with(c112)({ id: 1 })); void k; }
 /*@665*/ sqQ.runSync(c112, { id: 1 });
-declare const c113: tu06c.Database; // @tursodatabase/database@0.6.1 compat Database
+declare const c113: tu07.Transaction; // @tursodatabase/database@0.7.2 Transaction (transactionAsync())
 /*@666*/ pgQ.run(c113, { id: 1 });
 /*@667*/ myQ.run(c113, { id: 1 });
 /*@668*/ sqQ.run(c113, { id: 1 });
 /*@669*/ { const k: "promise" = kind(sqQ.run(c113, { id: 1 })); void k; }
 /*@670*/ { const k: "promise" = kind(sqQ.with(c113)({ id: 1 })); void k; }
-/*@671*/ { const k: "value" = kind(sqQ.runSync(c113, { id: 1 })); void k; }
-declare const c114: tu04.Database; // @tursodatabase/database@0.4.4 Database (connect())
+/*@671*/ sqQ.runSync(c113, { id: 1 });
+declare const c114: tu07c.Database; // @tursodatabase/database@0.7.2 compat Database
 /*@672*/ pgQ.run(c114, { id: 1 });
 /*@673*/ myQ.run(c114, { id: 1 });
 /*@674*/ sqQ.run(c114, { id: 1 });
 /*@675*/ { const k: "promise" = kind(sqQ.run(c114, { id: 1 })); void k; }
 /*@676*/ { const k: "promise" = kind(sqQ.with(c114)({ id: 1 })); void k; }
-/*@677*/ sqQ.runSync(c114, { id: 1 });
-declare const c115: tu04c.Database; // @tursodatabase/database@0.4.4 compat Database
+/*@677*/ { const k: "value" = kind(sqQ.runSync(c114, { id: 1 })); void k; }
+declare const c115: tu06.Database; // @tursodatabase/database@0.6.1 Database (connect())
 /*@678*/ pgQ.run(c115, { id: 1 });
 /*@679*/ myQ.run(c115, { id: 1 });
 /*@680*/ sqQ.run(c115, { id: 1 });
 /*@681*/ { const k: "promise" = kind(sqQ.run(c115, { id: 1 })); void k; }
 /*@682*/ { const k: "promise" = kind(sqQ.with(c115)({ id: 1 })); void k; }
-/*@683*/ { const k: "value" = kind(sqQ.runSync(c115, { id: 1 })); void k; }
-declare const c116: s3v5.Database; // sqlite3@5.1.7 Database
+/*@683*/ sqQ.runSync(c115, { id: 1 });
+declare const c116: tu06c.Database; // @tursodatabase/database@0.6.1 compat Database
 /*@684*/ pgQ.run(c116, { id: 1 });
 /*@685*/ myQ.run(c116, { id: 1 });
 /*@686*/ sqQ.run(c116, { id: 1 });
 /*@687*/ { const k: "promise" = kind(sqQ.run(c116, { id: 1 })); void k; }
 /*@688*/ { const k: "promise" = kind(sqQ.with(c116)({ id: 1 })); void k; }
-/*@689*/ sqQ.runSync(c116, { id: 1 });
-declare const c117: s3v6.Database; // sqlite3@6.0.1 Database
+/*@689*/ { const k: "value" = kind(sqQ.runSync(c116, { id: 1 })); void k; }
+declare const c117: tu04.Database; // @tursodatabase/database@0.4.4 Database (connect())
 /*@690*/ pgQ.run(c117, { id: 1 });
 /*@691*/ myQ.run(c117, { id: 1 });
 /*@692*/ sqQ.run(c117, { id: 1 });
 /*@693*/ { const k: "promise" = kind(sqQ.run(c117, { id: 1 })); void k; }
 /*@694*/ { const k: "promise" = kind(sqQ.with(c117)({ id: 1 })); void k; }
 /*@695*/ sqQ.runSync(c117, { id: 1 });
-declare const c118: SqliteDatabase; // sqlite@5.1.1 Database (open())
+declare const c118: tu04c.Database; // @tursodatabase/database@0.4.4 compat Database
 /*@696*/ pgQ.run(c118, { id: 1 });
 /*@697*/ myQ.run(c118, { id: 1 });
 /*@698*/ sqQ.run(c118, { id: 1 });
 /*@699*/ { const k: "promise" = kind(sqQ.run(c118, { id: 1 })); void k; }
 /*@700*/ { const k: "promise" = kind(sqQ.with(c118)({ id: 1 })); void k; }
-/*@701*/ sqQ.runSync(c118, { id: 1 });
-declare const c119: D1Database; // D1 (@cloudflare/workers-types 5.20260929.1) D1Database
+/*@701*/ { const k: "value" = kind(sqQ.runSync(c118, { id: 1 })); void k; }
+declare const c119: s3v5.Database; // sqlite3@5.1.7 Database
 /*@702*/ pgQ.run(c119, { id: 1 });
 /*@703*/ myQ.run(c119, { id: 1 });
 /*@704*/ sqQ.run(c119, { id: 1 });
 /*@705*/ { const k: "promise" = kind(sqQ.run(c119, { id: 1 })); void k; }
 /*@706*/ { const k: "promise" = kind(sqQ.with(c119)({ id: 1 })); void k; }
 /*@707*/ sqQ.runSync(c119, { id: 1 });
-declare const c120: D1DatabaseSession; // D1 (@cloudflare/workers-types 5.20260929.1) D1DatabaseSession (withSession())
+declare const c120: s3v6.Database; // sqlite3@6.0.1 Database
 /*@708*/ pgQ.run(c120, { id: 1 });
 /*@709*/ myQ.run(c120, { id: 1 });
 /*@710*/ sqQ.run(c120, { id: 1 });
 /*@711*/ { const k: "promise" = kind(sqQ.run(c120, { id: 1 })); void k; }
 /*@712*/ { const k: "promise" = kind(sqQ.with(c120)({ id: 1 })); void k; }
 /*@713*/ sqQ.runSync(c120, { id: 1 });
+declare const c121: SqliteDatabase; // sqlite@5.1.1 Database (open())
+/*@714*/ pgQ.run(c121, { id: 1 });
+/*@715*/ myQ.run(c121, { id: 1 });
+/*@716*/ sqQ.run(c121, { id: 1 });
+/*@717*/ { const k: "promise" = kind(sqQ.run(c121, { id: 1 })); void k; }
+/*@718*/ { const k: "promise" = kind(sqQ.with(c121)({ id: 1 })); void k; }
+/*@719*/ sqQ.runSync(c121, { id: 1 });
+declare const c122: D1Database; // D1 (@cloudflare/workers-types 5.20260929.1) D1Database
+/*@720*/ pgQ.run(c122, { id: 1 });
+/*@721*/ myQ.run(c122, { id: 1 });
+/*@722*/ sqQ.run(c122, { id: 1 });
+/*@723*/ { const k: "promise" = kind(sqQ.run(c122, { id: 1 })); void k; }
+/*@724*/ { const k: "promise" = kind(sqQ.with(c122)({ id: 1 })); void k; }
+/*@725*/ sqQ.runSync(c122, { id: 1 });
+declare const c123: D1DatabaseSession; // D1 (@cloudflare/workers-types 5.20260929.1) D1DatabaseSession (withSession())
+/*@726*/ pgQ.run(c123, { id: 1 });
+/*@727*/ myQ.run(c123, { id: 1 });
+/*@728*/ sqQ.run(c123, { id: 1 });
+/*@729*/ { const k: "promise" = kind(sqQ.run(c123, { id: 1 })); void k; }
+/*@730*/ { const k: "promise" = kind(sqQ.with(c123)({ id: 1 })); void k; }
+/*@731*/ sqQ.runSync(c123, { id: 1 });

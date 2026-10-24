@@ -429,23 +429,36 @@ const SLONIK_TEXT = [
 /** Kinds whose value must reach Reylo as text: anything else is one a driver already converted, and may have rounded. */
 const SLONIK_STRICT = /^(decimal|date|timestamp|timestamptz|interval)(\[\])*$/;
 
-let slonikModule: Promise<SlonikModule> | undefined;
+let slonikModule: SlonikModule | undefined;
 const slonikTags = new Map<string, SlonikTag>();
+
+type NodeProcess = { argv?: string[]; cwd(): string; getBuiltinModule?(id: string): { createRequire(from: string): (id: string) => unknown } | undefined };
 
 /**
  * The app's own `slonik`, the package its pool came from, loaded the first time a Slonik client is
- * passed: its name is a variable, so a bundler leaves the import for the run time.
+ * passed. It is required through Node's `createRequire`, reached with `process.getBuiltinModule`
+ * (Node 20.16 and Bun) rather than an import, so that a bundler finds nothing to resolve or warn
+ * about in an app without Slonik; from the app's entry script, then from its working directory.
  */
-async function slonikTag(c: AnyClient): Promise<SlonikTag> {
-  const specifier = "slonik";
-  slonikModule ??= import(/* webpackIgnore: true */ /* @vite-ignore */ specifier) as Promise<SlonikModule>;
-  let createSqlTag: SlonikModule["createSqlTag"];
-  try {
-    ({ createSqlTag } = await slonikModule);
-  } catch (e) {
-    slonikModule = undefined;
-    throw new TypeError(`Reylo runs a query on Slonik with a sql tag from the app's own slonik package, which it could not load: ${(e as Error).message}`);
+function loadSlonik(): SlonikModule {
+  if (slonikModule) return slonikModule;
+  const proc = (globalThis as { process?: NodeProcess }).process;
+  const createRequire = proc?.getBuiltinModule?.("node:module")?.createRequire;
+  if (!proc || !createRequire) throw new TypeError(`Reylo runs a query on Slonik with a sql tag from the app's own slonik package, which it loads through Node's process.getBuiltinModule, and this runtime has none.`);
+  let failure: unknown;
+  for (const from of [proc.argv?.[1], `${proc.cwd()}/`]) {
+    if (!from) continue;
+    try {
+      return (slonikModule = createRequire(from)("slonik") as SlonikModule);
+    } catch (e) {
+      failure = e;
+    }
   }
+  throw new TypeError(`Reylo runs a query on Slonik with a sql tag from the app's own slonik package, which it could not load: ${(failure as Error).message}`);
+}
+
+function slonikTag(c: AnyClient): SlonikTag {
+  const { createSqlTag } = loadSlonik();
   // The parsers the app made its pool with, which a pool names on `configuration` and its
   // connections, transactions and savepoints on `clientConfiguration` (not in Slonik's types).
   const own = ((c.configuration ?? c.clientConfiguration)?.typeParsers as SlonikTypeParser[] | undefined)?.map((p) => p.name) ?? [];
@@ -477,7 +490,7 @@ function slonikTemplate(text: string, values: readonly unknown[]): [TemplateStri
 }
 
 export async function slonik(c: AnyClient, text: string, values: readonly unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  const tag = await slonikTag(c);
+  const tag = slonikTag(c);
   const [template, ordered] = slonikTemplate(text, values);
   const query = tag.unsafe(template, ...ordered);
   if (query.typeParsers === undefined) {

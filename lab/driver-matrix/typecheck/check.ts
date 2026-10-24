@@ -36,6 +36,7 @@ import type * as neon1 from "neon-1";
 import type * as neon010 from "neon-010";
 import type * as neon09 from "neon-09";
 import type { IDatabase, ITask } from "pg-promise";
+import type { DatabasePool, DatabasePoolConnection, DatabaseTransactionConnection } from "slonik";
 import type { SQL, TransactionSQL, SavepointSQL, ReservedSQL } from "bun";
 import type * as my3p from "mysql2-3/promise";
 import type * as my3c from "mysql2-3";
@@ -113,6 +114,9 @@ for (const [ns, v] of [["neon1", "1.1.0"], ["neon010", "0.10.4"], ["neon09", "0.
 }
 pg("pg-promise@12.7.1", "IDatabase (db)", "IDatabase<{}>");
 pg("pg-promise@12.7.1", "ITask (task, tx)", "ITask<{}>");
+pg("slonik@next", "DatabasePool", "DatabasePool");
+pg("slonik@next", "DatabasePoolConnection (connect)", "DatabasePoolConnection");
+pg("slonik@next", "DatabaseTransactionConnection (transaction, savepoint)", "DatabaseTransactionConnection");
 for (const [shape, type] of [["SQL", "SQL"], ["TransactionSQL (begin)", "TransactionSQL"], ["SavepointSQL (savepoint)", "SavepointSQL"], ["ReservedSQL (reserve)", "ReservedSQL"]]) {
   entries.push({ pkg: "Bun.sql@1.3.14 (bun-types)", shape: shape!, type: type!, accepts: ALL, note: "one class for the three adapters" });
 }

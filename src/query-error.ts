@@ -182,7 +182,9 @@ const record = (e: unknown): Record<string, unknown> | undefined => (typeof e ==
 export async function readQueryError(dialect: Dialect, error: unknown): Promise<QueryError | undefined> {
   if (dialect === "sqlite") return readQueryErrorSync(dialect, error);
   if (dialect === "postgres") {
-    const read = postgresError(error);
+    // Slonik wraps pg's error in its own (InputSyntaxError, UniqueIntegrityConstraintViolationError),
+    // keeping pg's as its cause.
+    const read = postgresError(error) ?? postgresError(record(error)?.cause);
     if (!read) return undefined;
     // The lists are loaded where an error needs one, so a bundle carries them apart from the run time.
     const { POSTGRES_CODES } = await import("./error-codes-postgres.ts");
