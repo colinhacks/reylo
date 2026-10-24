@@ -1,0 +1,3 @@
+domain_cast.sql: many () -> { cat: text?, l: varchar? }
+text_control.sql: many () -> { cat: text? }
+where_narrow.sql: many () -> { n: text? }

@@ -1,0 +1,1 @@
+select status from accounts

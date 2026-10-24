@@ -1,0 +1,3 @@
+outer_join_cast.sql: many () -> { title: text, name: text? }
+outer_join_cast_eq.sql: many () -> { title: text, name: text? }
+where_cast.sql: many () -> { flag: bool? }

@@ -1,0 +1,2 @@
+concat.sql: many () -> { c: text? }
+others.sql: many () -> { p: int8, e: bool, l: bool }

@@ -51,13 +51,14 @@ pub const ATTNOTNULL_QUERY: &str = concat!(
 /// any child a scan reads) or the column's domain's, where the column holds `text` or `varchar`
 /// under a deterministic collation, or `json` or `jsonb`: `(relation, attnum, the column's name,
 /// the CHECK as the server prints it, and per function the CHECK calls, its name, its extension's
-/// name and that extension's version, in three arrays)`. `conenforced` is read through `to_jsonb`,
+/// name and that extension's version, in three arrays, then the column's type and that type's base
+/// type)`. `conenforced` is read through `to_jsonb`,
 /// since only PostgreSQL 18 has the column. A table's CHECK says nothing where the table, or a
 /// partition or child a scan reads, is a foreign table, whose rows the server never checks; a
 /// domain's input function checks every value. Nothing is read under `standard_conforming_strings`
 /// off, where the server prints a string's backslashes doubled and the parser would read them so.
 pub const CHECKS_QUERY: &str = "SELECT a.attrelid::int8, a.attnum::int4, a.attname::text, pg_catalog.pg_get_expr(k.conbin, k.conrelid, true), \
-      f.names, f.extensions, f.versions \
+      f.names, f.extensions, f.versions, a.atttypid::int8, (CASE WHEN t.typtype = 'd' THEN t.typbasetype ELSE t.oid END)::int8 \
     FROM unnest($1::oid[], $2::int2[]) AS u(rel, att) \
     JOIN pg_attribute a ON a.attrelid = u.rel AND a.attnum = u.att AND NOT a.attisdropped \
     JOIN pg_type t ON t.oid = a.atttypid \
@@ -133,19 +134,134 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
     " FROM pg_class c JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped \
     WHERE c.relname = ANY($1::text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
 );
-/// Which of the names the expression rules read a user or an extension has defined (`false`
-/// beside the name), and which built-in types a cast may target (`true`; see
-/// [`crate::infer::Trust`]). `$1` is `text[]` of operator names, `$2` the `text[]` of function
-/// names. One more row, a NULL beside [`JSONB_CASTS_RAISE`], comes from a server before 18, whose
-/// cast of a JSON null to a number or a boolean raises an error where 18 answers NULL.
-pub const TRUST_QUERY: &str = "SELECT false, o.oprname::text FROM pg_operator o WHERE o.oid >= 16384 AND o.oprname::text = ANY($1::text[]) \
-    UNION ALL SELECT false, p.proname::text FROM pg_proc p WHERE p.oid >= 16384 AND p.proname::text = ANY($2::text[]) \
-    UNION ALL SELECT true, t.typname::text FROM pg_type t WHERE t.oid < 16384 AND t.typnamespace = 'pg_catalog'::regnamespace \
-      AND NOT EXISTS (SELECT 1 FROM pg_type u WHERE u.oid >= 16384 AND u.typname = t.typname) \
-      AND NOT EXISTS (SELECT 1 FROM pg_cast c WHERE c.oid >= 16384 AND c.casttarget = t.oid AND c.castmethod = 'f') \
-    UNION ALL SELECT NULL, 'jsonb casts raise' WHERE pg_catalog.current_setting('server_version_num')::int4 < 180000";
-/// The name of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
-const JSONB_CASTS_RAISE: &str = "jsonb casts raise";
+/// What the catalog says of the names the expression rules read ([`crate::infer::Trust`]): `$1` is
+/// `text[]` of operator names, `$2` the `text[]` of function names. Each row is `(what, a name, an
+/// `int8[]` of type oids, two `int8`s)`:
+///
+/// - `user b`, `user l`, `user f`: an infix operator, a prefix one or a function of a user's or an
+///   extension's (an oid from 16384 on) of one of those names, with its argument types, how many
+///   of them have defaults, and its bits: 1 variadic, 2 returns a set, 4 volatile, 8 not an
+///   aggregate. Only one some built-in type converts to at an argument, or that takes no
+///   argument, a default or a variadic one: the others are `opaque b`, `opaque l`, `opaque f`,
+///   one row per name and number of arguments, the bits or-ed, which only a call of untyped
+///   operands may reach.
+/// - `builtin b`, `builtin l`, `builtin f`: a built-in overload of a name a user also defined,
+///   whose arguments are all among the common types below, with the type it returns and how
+///   many of its arguments have defaults.
+/// - `reach`: per argument type of a user's overload (the fourth column), the built-in types the
+///   server converts to it implicitly (`can_coerce_type`): the same base type, an implicit cast
+///   between the base types, an array of elements that convert so, and for a polymorphic type
+///   every type it takes; `any` is an argument type every type is taken to convert to; `base`
+///   is such an argument type that is a domain (the fourth column) beside its base type (the
+///   fifth), which is the type the server reports a column of the domain as.
+/// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
+/// - `type`: a function name a user's type also has.
+/// - `cast`: a built-in type a cast may target and keep its argument's nullability: no user's
+///   type has its name and no user's cast function targets it.
+/// - `cast from`: a built-in type no user's type has the name of, but a user's cast function
+///   targets, with its oid and the built-in types that function's source is the base type of: a
+///   cast to it from any other built-in type is a built-in one.
+/// - `raise`, from a server before 18, whose cast of a JSON null to a number or a boolean raises
+///   an error where 18 answers NULL ([`JSONB_CASTS_RAISE`]).
+///
+/// Every operator, function and type the query calls or names is spelled as `pg_catalog`'s
+/// (`OPERATOR(pg_catalog.=)`, parenthesized, since that spelling takes no operator's precedence):
+/// a user's of the same name, which a search path naming `pg_catalog` after its schema puts first,
+/// never answers it. Every call in it, of a function or an operator, is an exact match of a
+/// built-in that takes no polymorphic argument (`generate_series` of two `int4`s, `bit_or` of an
+/// `int4`, `to_number` and `current_setting` of `text`, the comparisons of two `oid`s): an
+/// overload created in `pg_catalog` itself, as an extension whose control file names that schema
+/// may, cannot be a closer match, and one of the same types cannot be created beside it. So an
+/// array is read by its subscripts and built with `ARRAY(SELECT …)`, never through `unnest`,
+/// `cardinality`, `array_agg` or `<@`. Every conversion in it is one a built-in `pg_cast` row
+/// makes (`oid` to `int8`, an `oid` written as one), never one through text or between arrays,
+/// which have no such row and so may be a user's `CREATE CAST`.
+pub const TRUST_QUERY: &str = "WITH RECURSIVE \
+    domains(t, b, depth) AS (SELECT t.oid, t.typbasetype, 1 FROM pg_catalog.pg_type t WHERE t.typtype OPERATOR(pg_catalog.=) 'd' \
+    UNION ALL SELECT d.t, t.typbasetype, d.depth OPERATOR(pg_catalog.+) 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.=) 'd' \
+    WHERE d.depth OPERATOR(pg_catalog.<) 32), \
+    bases(t, b) AS (SELECT d.t, d.b FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.<>) 'd'), \
+    users(kind, name, args, n, defaults, flags) AS ( \
+    SELECT o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
+    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] WHEN o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprleft::pg_catalog.int8] \
+    ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, \
+    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN 1 ELSE 2 END, \
+    0, coalesce((p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4), 6) \
+    FROM pg_catalog.pg_operator o LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode \
+    WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) \
+    UNION ALL SELECT 'f', p.proname::pg_catalog.text, \
+    ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), \
+    p.pronargs::pg_catalog.int4, p.pronargdefaults, \
+    (p.provariadic OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid)::pg_catalog.int4 OPERATOR(pg_catalog.+) (p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) \
+    OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v')::pg_catalog.int4 OPERATOR(pg_catalog.*) 4) OPERATOR(pg_catalog.+) ((p.prokind OPERATOR(pg_catalog.<>) 'a')::pg_catalog.int4 OPERATOR(pg_catalog.*) 8) \
+    FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[])), \
+    targets(u, b) AS (SELECT DISTINCT a.u, coalesce(x.b, a.u) FROM (SELECT u.args[i]::pg_catalog.oid AS u FROM users u CROSS JOIN LATERAL pg_catalog.generate_series(1, u.n) AS i) a \
+    LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) a.u), \
+    sources(s, b) AS (SELECT t.oid, coalesce(x.b, t.oid) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.oid \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (t.typtype OPERATOR(pg_catalog.<>) 'p' OR t.oid OPERATOR(pg_catalog.=) ANY ('{2249,2287}'::pg_catalog.oid[]))), \
+    arrays(t, e) AS (SELECT t.oid, coalesce(x.b, t.typelem) FROM pg_catalog.pg_type t LEFT JOIN bases x ON x.t OPERATOR(pg_catalog.=) t.typelem \
+    WHERE t.typelem OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid AND t.typlen OPERATOR(pg_catalog.=) (-1)), \
+    reach(u, s) AS ( \
+    SELECT g.u, s.s FROM targets g JOIN sources s ON s.b OPERATOR(pg_catalog.=) g.b \
+    UNION SELECT g.u, s.s FROM targets g JOIN pg_catalog.pg_cast c ON c.casttarget OPERATOR(pg_catalog.=) g.b AND c.castcontext OPERATOR(pg_catalog.=) 'i' \
+    JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
+    UNION SELECT g.u, s.s FROM targets g JOIN arrays ga ON ga.t OPERATOR(pg_catalog.=) g.b \
+    JOIN arrays sa ON (sa.e OPERATOR(pg_catalog.=) ga.e) OR EXISTS (SELECT 1 FROM pg_catalog.pg_cast c \
+    WHERE c.castsource OPERATOR(pg_catalog.=) sa.e AND c.casttarget OPERATOR(pg_catalog.=) ga.e AND c.castcontext OPERATOR(pg_catalog.=) 'i') \
+    JOIN sources s ON s.b OPERATOR(pg_catalog.=) sa.t \
+    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.castsource OPERATOR(pg_catalog.=) s.b AND c.casttarget OPERATOR(pg_catalog.=) g.b) \
+    UNION SELECT g.u, s.s FROM targets g JOIN sources s ON true JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) s.b \
+    WHERE CASE WHEN g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078}'::pg_catalog.oid[]) THEN s.b OPERATOR(pg_catalog.=) ANY (SELECT a.t FROM arrays a) \
+    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{2776,5079}'::pg_catalog.oid[]) THEN NOT (s.b OPERATOR(pg_catalog.=) ANY (SELECT a.t FROM arrays a)) \
+    WHEN g.u OPERATOR(pg_catalog.=) '3500'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'e' \
+    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{3831,5080}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'r' \
+    WHEN g.u OPERATOR(pg_catalog.=) ANY ('{4537,4538}'::pg_catalog.oid[]) THEN t.typtype OPERATOR(pg_catalog.=) 'm' \
+    WHEN g.u OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid THEN t.typtype OPERATOR(pg_catalog.=) 'c' OR s.s OPERATOR(pg_catalog.=) '2249'::pg_catalog.oid \
+    WHEN g.u OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid THEN s.s OPERATOR(pg_catalog.=) '2287'::pg_catalog.oid OR t.typelem OPERATOR(pg_catalog.=) ANY (SELECT c.oid FROM pg_catalog.pg_type c WHERE c.typtype OPERATOR(pg_catalog.=) 'c') \
+    ELSE false END), \
+    pseudo(u) AS (SELECT g.u FROM targets g JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) g.u \
+    WHERE t.typtype OPERATOR(pg_catalog.=) 'p' AND NOT (g.u OPERATOR(pg_catalog.=) ANY ('{2277,5078,2776,5079,3500,3831,5080,4537,4538,2249,2287}'::pg_catalog.oid[]))), \
+    reached(kind, name, args, n, defaults, flags, reached) AS (SELECT u.*, \
+    u.defaults OPERATOR(pg_catalog.>) 0 OR (u.flags OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 OR u.n OPERATOR(pg_catalog.=) 0 \
+    OR EXISTS (SELECT 1 FROM pg_catalog.generate_series(1, u.n) AS i \
+    WHERE u.args[i]::pg_catalog.oid OPERATOR(pg_catalog.=) ANY (SELECT r.u FROM reach r UNION ALL SELECT p.u FROM pseudo p)) \
+    FROM users u) \
+    SELECT 'user '::pg_catalog.text OPERATOR(pg_catalog.||) r.kind, r.name, r.args, r.defaults::pg_catalog.int8, r.flags::pg_catalog.int8 FROM reached r WHERE r.reached \
+    UNION ALL SELECT 'opaque '::pg_catalog.text OPERATOR(pg_catalog.||) r.kind, r.name, NULL, r.n::pg_catalog.int8, pg_catalog.bit_or(r.flags)::pg_catalog.int8 FROM reached r \
+    WHERE NOT r.reached GROUP BY r.kind, r.name, r.n \
+    UNION ALL SELECT 'builtin '::pg_catalog.text OPERATOR(pg_catalog.||) o.oprkind::pg_catalog.text, o.oprname::pg_catalog.text, \
+    CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN ARRAY[o.oprright::pg_catalog.int8] ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, o.oprresult::pg_catalog.int8, NULL \
+    FROM pg_catalog.pg_operator o WHERE o.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.<>) 'f') \
+    AND o.oprkind OPERATOR(pg_catalog.=) ANY ('{b,l}'::pg_catalog.\"char\"[]) \
+    AND (o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[])) AND o.oprright OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]) \
+    UNION ALL SELECT 'builtin f', p.proname::pg_catalog.text, \
+    ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), p.prorettype::pg_catalog.int8, p.pronargdefaults::pg_catalog.int8 \
+    FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY (SELECT r.name FROM reached r WHERE r.kind OPERATOR(pg_catalog.=) 'f') \
+    AND p.provariadic OPERATOR(pg_catalog.=) '0'::pg_catalog.oid \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i WHERE NOT (p.proargtypes[i] OPERATOR(pg_catalog.=) ANY ('{25,1043,1042,19,18,21,23,20,1700,700,701,16,2950,17,1082,1083,1266,1114,1184,1186,114,3802,26,869,650,829,774,790,1560,1562,142,3614,3615}'::pg_catalog.oid[]))) \
+    UNION ALL SELECT 'reach', NULL, ARRAY(SELECT r.s::pg_catalog.int8 FROM reach r WHERE r.u OPERATOR(pg_catalog.=) g.u ORDER BY r.s), g.u::pg_catalog.int8, NULL FROM (SELECT DISTINCT r.u FROM reach r) g \
+    UNION ALL SELECT 'any', NULL, NULL, p.u::pg_catalog.int8, NULL FROM pseudo p \
+    UNION ALL SELECT 'base', NULL, NULL, g.u::pg_catalog.int8, g.b::pg_catalog.int8 FROM targets g WHERE g.u OPERATOR(pg_catalog.<>) g.b \
+    UNION ALL SELECT 'implicit', NULL, NULL, s.s::pg_catalog.int8, NULL FROM sources s \
+    WHERE EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castcontext OPERATOR(pg_catalog.=) 'i' AND c.castmethod OPERATOR(pg_catalog.=) 'f' \
+    AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND (c.castsource OPERATOR(pg_catalog.=) s.b OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT a.e FROM arrays a WHERE a.t OPERATOR(pg_catalog.=) s.b))) \
+    UNION ALL SELECT 'type', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
+    WHERE t.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND t.typname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($2::pg_catalog.text[]) \
+    UNION ALL SELECT 'cast', t.typname::pg_catalog.text, NULL, NULL, NULL FROM pg_catalog.pg_type t \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
+    UNION ALL SELECT 'cast from', t.typname::pg_catalog.text, \
+    ARRAY(SELECT DISTINCT s.s::pg_catalog.int8 FROM pg_catalog.pg_cast c JOIN sources s ON s.b OPERATOR(pg_catalog.=) c.castsource \
+    WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'), t.oid::pg_catalog.int8, NULL \
+    FROM pg_catalog.pg_type t \
+    WHERE t.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND t.typnamespace OPERATOR(pg_catalog.=) '11'::pg_catalog.oid \
+    AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f') \
+    AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
+    UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL \
+    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
+/// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
+const JSONB_CASTS_RAISE: &str = "raise";
 
 /// `$1` is `text[]` of relation names as the statement writes them: one row per unique index of
 /// each that is a plain or a partitioned table, `(the name, the index's key columns with NULL for
@@ -206,28 +322,31 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     })
 }
 
-/// Which of the names the expression rules read are the built-ins, as the catalog says: one
-/// session-scoped query.
+/// Which of the names the expression rules read are the built-ins, as the catalog says, and what
+/// it says of the overloads of the others: one session-scoped query. A server that refuses it
+/// leaves every name shadowed.
 pub fn trust(host: &Host) -> Lazy<Trust> {
     let mut operators: Vec<&str> = infer::POSTGRES_OPERATORS.to_vec();
     operators.extend(infer::POSTGRES_STRICT_OPERATORS.iter().filter(|o| !infer::POSTGRES_OPERATORS.contains(o)));
-    let operators: Vec<Value> = operators.into_iter().map(|s| json!(s)).collect();
-    let functions: Vec<Value> = infer::postgres_function_names().into_iter().map(|s| json!(s)).collect();
+    let functions = infer::postgres_function_names();
     let rows = host.query(TRUST_QUERY, vec![json!(operators), json!(functions)], Scope::Session)?;
     let mut trust = Trust { shadowed: HashSet::new(), cast_targets: Some(HashSet::new()), ..Default::default() };
-    if let Ok(rows) = rows {
-        for row in rows {
-            let Some(name) = row.get(1).and_then(as_str) else { continue };
-            match row.first().and_then(as_bool) {
-                Some(true) => {
-                    trust.cast_targets.get_or_insert_with(HashSet::new).insert(name.to_string());
+    match rows {
+        Ok(rows) => {
+            for row in &rows {
+                match row.first().and_then(as_str) {
+                    Some("cast") => {
+                        if let Some(name) = row.get(1).and_then(as_str) {
+                            trust.cast_targets.get_or_insert_with(HashSet::new).insert(name.to_string());
+                        }
+                    }
+                    Some(JSONB_CASTS_RAISE) => trust.jsonb_casts_raise = true,
+                    _ => {}
                 }
-                Some(false) => {
-                    trust.shadowed.insert(name.to_string());
-                }
-                None => trust.jsonb_casts_raise |= name == JSONB_CASTS_RAISE,
             }
+            trust.overloads = Some(crate::resolution::Shared(std::sync::Arc::new(crate::resolution::Overloads::read(&rows, &mut trust.shadowed))));
         }
+        Err(_) => trust.shadowed.extend(operators.iter().chain(&functions).map(|n| n.to_string())),
     }
     Some(trust)
 }
@@ -278,6 +397,7 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.equality_shadowed = !trust.builtin("=");
     catalog.user_operators = trust.shadowed.clone();
     catalog.cast_targets = trust.cast_targets.clone();
+    catalog.overloads = trust.overloads.clone();
 }
 
 fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
@@ -475,6 +595,7 @@ impl<'a> Engine<'a> {
                 return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
             }
         };
+        let trust = Trust { param_types: raw.params.clone(), ..trust };
         // The catalog the row-count proof reads, with what the describe and the trust settled.
         let mut catalog = build_catalog(&operators, catalog_rows);
         if let Some(rows) = view_rows {
@@ -964,24 +1085,43 @@ impl<'a> Engine<'a> {
     /// A stored row among `columns`, read whole or inside a JSON document, keeps the JSON Schema
     /// a CHECK holds its JSON columns to and the strings a CHECK keeps its string columns to, as a
     /// bare read of them does: the registry learns them. The strings only where `=` is the
-    /// built-in one a CHECK resolved to.
+    /// built-in one a CHECK resolved to ([`Engine::check_rows`]).
     fn stored_checks<'c>(&self, columns: impl Iterator<Item = &'c DescribedColumn>, trust: &Trust) -> Lazy<()> {
         let stored: Vec<u32> = columns.filter(|c| c.whole_row).map(|c| c.type_oid).collect();
         let mut rows: Vec<(u32, i32)> = stored.iter().flat_map(|o| self.registry.borrow().row_json_columns(*o)).collect();
-        if trust.builtin("=") {
-            for key in stored.iter().flat_map(|o| self.registry.borrow().row_string_columns(*o)) {
-                if !rows.contains(&key) {
-                    rows.push(key);
-                }
+        for key in stored.iter().flat_map(|o| self.registry.borrow().row_string_columns(*o)) {
+            if !rows.contains(&key) {
+                rows.push(key);
             }
         }
         if !rows.is_empty() {
-            let checks = self.check_rows(&rows)?;
+            let checks = self.check_rows(&rows, trust)?;
             let mut registry = self.registry.borrow_mut();
             registry.documents.extend(checks.documents);
             registry.values.extend(checks.values);
         }
         Some(())
+    }
+
+    /// The tables on the nullable side of an outer join, with the ones a strict WHERE reduced only
+    /// by tests that may hold of NULL put back ([`witness_holds`]). A WITH query among them brings
+    /// the relations it reads, which is where the describe traces its columns. The column types a
+    /// test's resolution reads are asked only where a test rests on a name a user also defined.
+    fn unreduced(&self, parsed: &Parsed, trust: &Trust) -> Lazy<Vec<String>> {
+        let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.call_checked(c));
+        let columns = if typed {
+            let relations = relations_of(Some(parsed));
+            if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations)], Scope::Statement)?.unwrap_or_default() }
+        } else {
+            Vec::new()
+        };
+        let mut tables = parsed.nullable_tables.clone();
+        for (relation, witnesses) in &parsed.reductions {
+            if !witnesses.iter().any(|w| witness_holds(w, relation, &columns, trust)) {
+                tables.push(relation.clone());
+            }
+        }
+        Some(parsed.nulled_tables(tables))
     }
 
     /// Ask for a probe's describe ahead of the round that reads it, when nothing has to be
@@ -1062,11 +1202,16 @@ impl<'a> Engine<'a> {
             Ok(r) => r,
             Err(e) => return Some(Err(e)),
         };
+        // The parameters' types, by the number this statement gives each, which a call over a
+        // parameter is resolved with. A probe's plan reads them by the same numbers: a probe is
+        // planned over its own text, which keeps the statement's `$n`, and only the describe of it
+        // is renumbered from 1 (`Engine::pin`), whose parameter types no plan reads.
+        let trust = &Trust { param_types: raw.params.clone(), ..trust.clone() };
         // Types for the parameters and the columns, and the casts probes pin on the parameters.
         let mut oids: Vec<u32> = raw.params.clone();
         oids.extend(raw.columns.iter().map(|c| c.oid));
         let types = self.types(&oids);
-        let checks = self.checks(sql, &raw, parsed, written, false);
+        let checks = self.checks(sql, &raw, parsed, written, false, trust);
         let comments = self.comments(sql, &raw, parsed, written);
         // The casts are set before the first probe, which is pinned with them: a probe described
         // before them and again after would be two texts, each a describe and a round.
@@ -1083,7 +1228,9 @@ impl<'a> Engine<'a> {
         *self.comments.borrow_mut() = comments;
         self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
-            if let (true, Some(values)) = (trust.builtin("="), checks.values.get(&(raw.table, raw.attnum))) {
+            // The strings a CHECK keeps the column to, where its `=` is the built-in one
+            // ([`Engine::check_rows`]); a column no CHECK lists keeps what it had.
+            if let Some(values) = checks.values.get(&(raw.table, raw.attnum)) {
                 col.values = Some(values.clone());
             }
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
@@ -1122,12 +1269,12 @@ impl<'a> Engine<'a> {
     /// column is never one. Nothing read through a set operation, whose provenance names the
     /// leftmost arm only ([`own_provenance`]). With `checked_only`, only the JSON and string
     /// columns, the ones a CHECK says something of.
-    fn checks(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool) -> Lazy<Checks> {
+    fn checks(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool, trust: &Trust) -> Lazy<Checks> {
         let own = own_provenance(sql, parsed, raw.columns.len());
         let json = |oid: u32| !checked_only || jsonshape::is_json(&self.registry.borrow(), oid) || matches!(self.registry.borrow().resolve_domain(oid), crate::pgtypes::oid::TEXT | crate::pgtypes::oid::VARCHAR);
         let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().filter(|p| !pairs.contains(p)).copied().collect::<Vec<_>>());
-        self.check_rows(&pairs)
+        self.check_rows(&pairs, trust)
     }
 
     /// The comment of each result column, by position, that reads a column as it is, and of each
@@ -1203,8 +1350,10 @@ impl<'a> Engine<'a> {
     }
 
     /// What the CHECKs of each column of `pairs`, by relation and attribute, say of its values
-    /// ([`Engine::checks`]).
-    fn check_rows(&self, pairs: &[(u32, i32)]) -> Lazy<Checks> {
+    /// ([`Engine::checks`]). The strings a CHECK keeps a column to only where each `=` it compares
+    /// them with is the built-in one: where no user defined an `=`, or where the types of its
+    /// operands, as the server prints them, resolve it to the built-in ([`check_values`]).
+    fn check_rows(&self, pairs: &[(u32, i32)], trust: &Trust) -> Lazy<Checks> {
         if pairs.is_empty() {
             return Some(Checks::default());
         }
@@ -1216,7 +1365,8 @@ impl<'a> Engine<'a> {
         for row in rows.unwrap_or_default() {
             let (Some(rel), Some(att), Some(name), Some(text)) = (row.first().and_then(as_u32), row.get(1).and_then(as_u32), row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { continue };
             let key = (rel, att as i32);
-            if let Some(values) = check_values(text, name) {
+            let types = (row.get(7).and_then(as_u32), row.get(8).and_then(as_u32));
+            if let Some(values) = check_values(text, name, types, trust) {
                 // Every CHECK holds, so a value is in each one's list.
                 out.values.entry(key).and_modify(|known| known.retain(|v| values.contains(v))).or_insert(values);
             }
@@ -1324,7 +1474,10 @@ impl<'a> Engine<'a> {
             let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
             self.host.query(ATTNOTNULL_QUERY, vec![json!(rs), json!(atts)], Scope::Statement)
         };
-        let nullable_tables: Vec<String> = parsed.map(|p| unreduced(p, trust)).unwrap_or_default();
+        let nullable_tables: Vec<String> = match parsed {
+            Some(p) => self.unreduced(p, trust)?,
+            None => Vec::new(),
+        };
         let nullable_tables: &[String] = &nullable_tables;
         let relnames = if nullable_tables.is_empty() || rels.is_empty() {
             Some(Ok(Vec::new()))
@@ -1666,12 +1819,14 @@ impl<'a> Engine<'a> {
         let types = self.types(&oids);
         // A JSON column a JSON constructor reads keeps the schema its CHECKs hold it to, and a
         // string column the strings they keep it to.
-        let checks = self.checks(sql, &raw, parsed.as_ref(), &[], true);
+        let checks = self.checks(sql, &raw, parsed.as_ref(), &[], true, trust);
         let settled = self.settle(sql, &raw, parsed.as_ref(), trust);
         let (Some(()), Some(mut described), Some(checks)) = (types, settled, checks) else { return None };
         self.stored_sublinks(sql, &mut described, trust);
         for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
-            if let (true, Some(values)) = (trust.builtin("="), checks.values.get(&(raw.table, raw.attnum))) {
+            // The strings a CHECK keeps the column to, where its `=` is the built-in one
+            // ([`Engine::check_rows`]); a column no CHECK lists keeps what it had.
+            if let Some(values) = checks.values.get(&(raw.table, raw.attnum)) {
                 col.values = Some(values.clone());
             }
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
@@ -2254,7 +2409,12 @@ fn refuses_null(text: &str, column: &str) -> bool {
     target.val.as_deref().is_some_and(|v| conjunct(v, column))
 }
 
-fn check_values(text: &str, column: &str) -> Option<Vec<String>> {
+/// The strings of [`check_values`]'s CHECK on `column`, whose type and base type `types` names,
+/// where every `=` the CHECK compares with resolves to the built-in for the types its operands
+/// print with: the server prints every conversion of an operator's operand, so a bare column is
+/// of its own type and a cast one of the cast's.
+fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), trust: &Trust) -> Option<Vec<String>> {
+    use crate::resolution::{Kind, Operand};
     use pg_query::protobuf::node::Node as N;
     let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
@@ -2271,6 +2431,27 @@ fn check_values(text: &str, column: &str) -> Option<Vec<String>> {
             _ => node,
         }
     }
+    // The type a printed operand has: its outermost cast's, where it has one. The server prints a
+    // type's name bare only where the name reads as that type, schema-qualified elsewhere.
+    let cast_type = |node: &pg_query::protobuf::Node| match node.node.as_ref() {
+        Some(N::TypeCast(t)) => match t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).as_deref() {
+            Some("text") => Some(Operand::Is(crate::pgtypes::oid::TEXT)),
+            Some("varchar") => Some(Operand::Is(crate::pgtypes::oid::VARCHAR)),
+            _ => Some(Operand::Opaque),
+        },
+        _ => None,
+    };
+    // A bare column is of its type, which a domain's CHECK reads as `VALUE` of the base type.
+    let column_type = |node: &pg_query::protobuf::Node| {
+        cast_type(node).unwrap_or(match (node.node.as_ref(), types) {
+            (Some(N::ColumnRef(c)), (Some(declared), Some(base))) => match c.fields.as_slice() {
+                [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == "value" && column != "value") => Operand::Is(base),
+                _ if declared == base => Operand::Is(base),
+                _ => Operand::Opaque,
+            },
+            _ => Operand::Opaque,
+        })
+    };
     let is_column = |node: &pg_query::protobuf::Node| match uncast(node).node.as_ref() {
         Some(N::ColumnRef(c)) => matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value")),
         _ => false,
@@ -2282,35 +2463,59 @@ fn check_values(text: &str, column: &str) -> Option<Vec<String>> {
         },
         _ => None,
     };
-    fn list(node: &pg_query::protobuf::Node, is_column: &dyn Fn(&pg_query::protobuf::Node) -> bool, string: &dyn Fn(&pg_query::protobuf::Node) -> Option<String>) -> Option<Vec<String>> {
+    // A value's type, a literal printed bare being of no type an `=` over strings takes.
+    let value_type = |node: &pg_query::protobuf::Node| cast_type(node).unwrap_or(Operand::Opaque);
+    type Comparisons = Vec<[crate::resolution::Operand; 2]>;
+    struct Read<'a> {
+        is_column: &'a dyn Fn(&pg_query::protobuf::Node) -> bool,
+        string: &'a dyn Fn(&pg_query::protobuf::Node) -> Option<String>,
+        column_type: &'a dyn Fn(&pg_query::protobuf::Node) -> crate::resolution::Operand,
+        value_type: &'a dyn Fn(&pg_query::protobuf::Node) -> crate::resolution::Operand,
+    }
+    fn list(node: &pg_query::protobuf::Node, read: &Read, compared: &mut Comparisons) -> Option<Vec<String>> {
         use pg_query::protobuf::{AExprKind, BoolExprType, NullTestType};
         match node.node.as_ref()? {
             N::BoolExpr(b) if b.boolop == BoolExprType::AndExpr as i32 => {
-                let mut lists = b.args.iter().filter_map(|a| list(a, is_column, string));
+                let mut lists = b.args.iter().filter_map(|a| list(a, read, compared));
                 let first = lists.next()?;
                 Some(lists.fold(first, |kept, other| kept.into_iter().filter(|v| other.contains(v)).collect()))
             }
             N::BoolExpr(b) if b.boolop == BoolExprType::OrExpr as i32 && b.args.len() == 2 => {
-                let null_test = |a: &pg_query::protobuf::Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(is_column));
+                let null_test = |a: &pg_query::protobuf::Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(read.is_column));
                 match (null_test(&b.args[0]), null_test(&b.args[1])) {
-                    (true, false) => list(&b.args[1], is_column, string),
-                    (false, true) => list(&b.args[0], is_column, string),
+                    (true, false) => list(&b.args[1], read, compared),
+                    (false, true) => list(&b.args[0], read, compared),
                     _ => None,
                 }
             }
             N::AExpr(e) if crate::jsonshape::last_string(&e.name).as_deref() == Some("=") && e.name.len() == 1 => {
                 let (l, r) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
-                if e.kind == AExprKind::AexprOpAny as i32 && is_column(l) {
-                    let array = match r.node.as_ref()? {
-                        N::TypeCast(t) => t.arg.as_deref()?,
-                        _ => r,
+                if e.kind == AExprKind::AexprOpAny as i32 && (read.is_column)(l) {
+                    // The elements are of the array's cast's type, or else of the one they share.
+                    let (array, element) = match r.node.as_ref()? {
+                        N::TypeCast(t) => (t.arg.as_deref()?, Some((read.value_type)(r))),
+                        _ => (r, None),
                     };
                     let Some(N::AArrayExpr(a)) = array.node.as_ref() else { return None };
-                    a.elements.iter().map(string).collect()
+                    let element = element.unwrap_or_else(|| {
+                        let types: Vec<_> = a.elements.iter().map(|e| (read.value_type)(e)).collect();
+                        match types.first() {
+                            Some(first) if types.iter().all(|t| t == first) => *first,
+                            _ => crate::resolution::Operand::Opaque,
+                        }
+                    });
+                    compared.push([(read.column_type)(l), element]);
+                    a.elements.iter().map(read.string).collect()
                 } else if e.kind == AExprKind::AexprOp as i32 {
-                    match (is_column(l), is_column(r)) {
-                        (true, false) => string(r).map(|v| vec![v]),
-                        (false, true) => string(l).map(|v| vec![v]),
+                    match ((read.is_column)(l), (read.is_column)(r)) {
+                        (true, false) => {
+                            compared.push([(read.column_type)(l), (read.value_type)(r)]);
+                            (read.string)(r).map(|v| vec![v])
+                        }
+                        (false, true) => {
+                            compared.push([(read.value_type)(l), (read.column_type)(r)]);
+                            (read.string)(l).map(|v| vec![v])
+                        }
                         _ => None,
                     }
                 } else {
@@ -2320,7 +2525,10 @@ fn check_values(text: &str, column: &str) -> Option<Vec<String>> {
             _ => None,
         }
     }
-    list(target.val.as_deref()?, &is_column, &string)
+    let mut compared = Vec::new();
+    let read = Read { is_column: &is_column, string: &string, column_type: &column_type, value_type: &value_type };
+    let values = list(target.val.as_deref()?, &read, &mut compared)?;
+    compared.iter().all(|[l, r]| trust.resolves(Kind::Infix, "=", &[*l, *r]).is_some()).then_some(values)
 }
 
 /// `ty` with what the statement says of its elements, when it is an array.
@@ -2331,18 +2539,42 @@ pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
     }
 }
 
-/// The tables on the nullable side of an outer join, with the ones a strict WHERE reduced only by
-/// operators the catalog says a user or an extension also defined put back: such an operator may
-/// be true of NULL, so its conjunct does not prove the joined row exists. A WITH query among them
-/// brings the relations it reads, which is where the describe traces its columns.
-fn unreduced(parsed: &Parsed, trust: &Trust) -> Vec<String> {
-    let mut tables = parsed.nullable_tables.clone();
-    for (relation, witnesses) in &parsed.reductions {
-        if witnesses.iter().all(|names| names.iter().any(|n| !trust.holds(n))) {
-            tables.push(relation.clone());
-        }
-    }
-    parsed.nulled_tables(tables)
+/// Whether a strict test that reduced an outer join on `relation` holds of NULL nowhere: every cast
+/// it rests on keeps its argument's nullability, and every operator and function is the built-in
+/// one, or resolves to it for its operands' types, the test's column of the type `columns` (the
+/// rows of [`cardinality::COLUMNS_QUERY`]) gives it. A user's operator may be true of NULL, so a
+/// test that rests on one does not prove the joined row exists.
+fn witness_holds(witness: &analyze::Witness, relation: &str, columns: &[Vec<Value>], trust: &Trust) -> bool {
+    use crate::resolution::Operand;
+    // A domain's column, or one the catalog does not report, is of no type the build vouches for.
+    let read = || -> Option<Operand> {
+        let name = witness.column.last()?;
+        let row = columns.iter().find(|r| r.first().and_then(as_str) == Some(relation))?;
+        let at = row.get(1).and_then(as_strings)?.iter().position(|c| c == name)?;
+        let base = row.get(2)?.as_array()?.get(at).and_then(as_u32)?;
+        let declared = row.get(5)?.as_array()?.get(at).and_then(as_u32)?;
+        Some(if base == declared { Operand::Is(base) } else { Operand::Opaque })
+    };
+    let column = || read().unwrap_or(Operand::Opaque);
+    witness.calls.iter().filter(|call| trust.call_checked(call)).all(|call| {
+        let operands: Vec<Operand> = call
+            .args
+            .iter()
+            .map(|a| match a.node.as_ref() {
+                Some(NodeEnum::ColumnRef(c)) if bare_fields(c).as_ref() == Some(&witness.column) => column(),
+                _ => infer::fixed_operand(a, trust).unwrap_or(Operand::Opaque),
+            })
+            .collect();
+        trust.resolves(call.kind, &call.name, &operands).is_some()
+    })
+}
+
+/// A column reference's names, where each is a plain name.
+fn bare_fields(c: &pg_query::protobuf::ColumnRef) -> Option<Vec<String>> {
+    c.fields.iter().map(|f| match f.node.as_ref() {
+        Some(NodeEnum::String(s)) => Some(s.sval.clone()),
+        _ => None,
+    }).collect()
 }
 
 /// The relations a statement reads or writes, as the parse names them, sorted. libpg_query
@@ -2397,6 +2629,19 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
                 for (i, col) in cols.iter().enumerate() {
                     if !deterministic.get(i).copied().unwrap_or(false) {
                         catalog.nondeterministic.entry(rel.to_string()).or_default().insert(col.clone());
+                    }
+                }
+                // A host that answers without the sixth column reports no domain: every column
+                // whose type is one a domain may have is then taken as one of a domain.
+                let declared: Option<Vec<Option<u32>>> = row.get(5).and_then(Value::as_array).map(|a| a.iter().map(as_u32).collect());
+                for (i, ty) in types.iter().enumerate() {
+                    let domain = match &declared {
+                        Some(declared) => declared.get(i).copied().flatten() != *ty,
+                        None => true,
+                    };
+                    if let (true, Some(ty)) = (domain, ty) {
+                        catalog.domains.entry(rel.to_string()).or_default().insert(cols[i].clone());
+                        catalog.domain_bases.insert(*ty);
                     }
                 }
                 let known = catalog.column_types.entry(rel.to_string()).or_default();
@@ -2773,6 +3018,7 @@ fn is_space(c: char) -> bool {
 mod tests {
     use super::*;
     use crate::api::{Answer, RawColumn, RawDescribe};
+    use crate::pgtypes::oid;
 
     /// A server that describes every statement as one text column per target and answers every
     /// catalog query with no rows: enough for the replay to run to its end.
@@ -3011,6 +3257,7 @@ mod tests {
     #[test]
     fn a_check_keeps_a_string_column_to_the_list_it_prints() {
         let list = |items: &[&str]| Some(items.iter().map(|s| s.to_string()).collect::<Vec<String>>());
+        let check_values = |text: &str, column: &str| check_values(text, column, (Some(oid::TEXT), Some(oid::TEXT)), &Trust::default());
         assert_eq!(check_values("status = ANY (ARRAY['active'::text, 'banned'::text])", "status"), list(&["active", "banned"]));
         assert_eq!(check_values("v::text = ANY (ARRAY['x'::character varying, 'y'::character varying]::text[])", "v"), list(&["x", "y"]));
         assert_eq!(check_values("VALUE = ANY (ARRAY['ok'::text, 'sad'::text])", "mood"), list(&["ok", "sad"]));
@@ -3029,6 +3276,59 @@ mod tests {
             assert_eq!(check_values(other, "status"), None, "{other}");
         }
         assert_eq!(with_values(Type::Scalar { name: "text".into() }, Some(&["a".to_string()])), Type::Enum { name: "text".into(), labels: vec!["a".into()] });
+    }
+
+    #[test]
+    fn a_strict_where_reduces_an_outer_join_where_its_operands_resolve_to_the_built_in() {
+        use crate::resolution::{Overloads, Shared};
+        // pgvector's `=`, which no built-in type converts to.
+        let rows = vec![vec![json!("opaque b"), json!("="), Value::Null, json!(2), json!(0)], vec![json!("builtin b"), json!("="), json!([oid::TEXT, oid::TEXT]), json!(oid::BOOL), Value::Null]];
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        // `users.email` is a `text`, `users.code` one of a domain over it.
+        let columns = vec![vec![json!("users"), json!(["id", "email", "code"]), json!([oid::INT8, oid::TEXT, oid::TEXT]), json!([true, true, true]), json!(false), json!([oid::INT8, oid::TEXT, 30000])]];
+        let held = |sql: &str| {
+            let parsed = analyze::analyze(sql).unwrap();
+            let (relation, witnesses) = &parsed.reductions[0];
+            witnesses.iter().any(|w| witness_holds(w, relation, &columns, &trust))
+        };
+        assert!(held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email = 'x'"));
+        assert!(!held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.code = 'x'"), "a domain's column");
+        assert!(!held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email = p.title"), "another column, of no type the test reads");
+        assert!(held("SELECT p.id FROM posts p LEFT JOIN users u ON u.id = p.author_id WHERE u.email IS NOT NULL"));
+    }
+
+    #[test]
+    fn a_check_keeps_its_strings_where_its_equality_resolves_to_the_built_in() {
+        use crate::resolution::{Overloads, Shared};
+        let list = |items: &[&str]| Some(items.iter().map(|s| s.to_string()).collect::<Vec<String>>());
+        // PostGIS's `=`, which `text` converts to; and pgvector's, which no built-in type does.
+        let row = |tag: &str, args: Value, a: Value| vec![json!(tag), json!("="), args, a, json!(0)];
+        let rows = vec![
+            row("user b", json!([20200, 20200]), json!(0)),
+            vec![json!("reach"), Value::Null, json!([oid::TEXT, oid::BYTEA]), json!(20200), Value::Null],
+            row("opaque b", Value::Null, json!(2)),
+            vec![json!("builtin b"), json!("="), json!([oid::TEXT, oid::TEXT]), json!(oid::BOOL), Value::Null],
+        ];
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        let text = (Some(oid::TEXT), Some(oid::TEXT));
+        assert_eq!(check_values("status = ANY (ARRAY['a'::text, 'b'::text])", "status", text, &trust), list(&["a", "b"]));
+        assert_eq!(check_values("status = 'a'::text", "status", text, &trust), list(&["a"]));
+        // `varchar` converts to `text` alone: only built-ins are candidates.
+        let varchar = (Some(oid::VARCHAR), Some(oid::VARCHAR));
+        assert_eq!(check_values("v::text = ANY (ARRAY['x'::character varying]::text[])", "v", varchar, &trust), list(&["x"]));
+        assert_eq!(check_values("v = 'x'::character varying", "v", varchar, &trust), list(&["x"]));
+        // A domain's own CHECK reads `VALUE`, of the base type; a domain column's type may have
+        // an `=` of its own.
+        assert_eq!(check_values("VALUE = ANY (ARRAY['ok'::text])", "mood", (Some(30000), Some(oid::TEXT)), &trust), list(&["ok"]));
+        assert_eq!(check_values("mood = 'ok'::text", "mood", (Some(30000), Some(oid::TEXT)), &trust), None);
+        // A value of no type an `=` over strings takes, or one an untyped column's CHECK compares.
+        assert_eq!(check_values("status = 'a'", "status", text, &trust), None);
+        assert_eq!(check_values("status = ANY (ARRAY['a'::text])", "status", (None, None), &trust), None);
+        // Shadowed with nothing said of its overloads, `=` proves nothing.
+        let shadowed = Trust { shadowed: ["=".to_string()].into_iter().collect(), ..Default::default() };
+        assert_eq!(check_values("status = 'a'::text", "status", text, &shadowed), None);
         assert_eq!(with_values(Type::Scalar { name: "bpchar".into() }, Some(&["a".to_string()])), Type::Scalar { name: "bpchar".into() });
     }
 
@@ -3297,26 +3597,34 @@ mod tests {
 
     #[test]
     fn the_trust_query_says_whether_the_server_casts_a_jsonb_null() {
-        let read = |rows: Vec<Vec<Value>>| {
+        let read = |rows: Result<Vec<Vec<Value>>, DbError>| {
             let mut answers: HashMap<String, Answer> = HashMap::new();
             let host = Host::new(&answers);
             assert!(trust(&host).is_none());
             let needs = host.needs();
             let [crate::api::Need::Query { id, sql, .. }] = needs.as_slice() else { panic!("one query, not {needs:?}") };
             assert_eq!(sql, TRUST_QUERY);
-            answers.insert(id.clone(), Answer::Rows { rows });
+            answers.insert(id.clone(), match rows {
+                Ok(rows) => Answer::Rows { rows },
+                Err(error) => Answer::Error { error },
+            });
             trust(&Host::new(&answers)).unwrap()
         };
-        // A server before 18 answers with one row more, a NULL beside the name: its cast of a
-        // JSON null raises an error, where 18 returns an SQL NULL.
-        let before = read(vec![vec![json!(false), json!("lower")], vec![json!(true), json!("int4")], vec![Value::Null, json!("jsonb casts raise")]]);
+        let row = |tag: &str, name: Value| vec![json!(tag), name, Value::Null, Value::Null, Value::Null];
+        let shadow = vec![json!("opaque f"), json!("lower"), Value::Null, json!(1), json!(8)];
+        // A server before 18 answers with one row more: its cast of a JSON null raises an error,
+        // where 18 returns an SQL NULL.
+        let before = read(Ok(vec![shadow.clone(), row("cast", json!("int4")), row("raise", Value::Null)]));
         assert!(before.jsonb_casts_raise);
         assert!(before.shadowed.contains("lower") && before.cast_targets.as_ref().unwrap().contains("int4"));
-        assert!(!before.shadowed.contains("jsonb casts raise") && !before.cast_targets.as_ref().unwrap().contains("jsonb casts raise"));
-        let later = read(vec![vec![json!(false), json!("lower")], vec![json!(true), json!("int4")]]);
-        assert!(!later.jsonb_casts_raise);
-        // A NULL beside any other name says nothing.
-        assert!(!read(vec![vec![Value::Null, json!("lower")]]).jsonb_casts_raise);
+        assert!(!before.shadowed.contains("raise") && !before.cast_targets.as_ref().unwrap().contains("raise"));
+        let later = read(Ok(vec![shadow, row("cast", json!("int4"))]));
+        assert!(!later.jsonb_casts_raise && later.overloads.is_some());
+        // A server that refuses the query shadows every name, and no cast keeps its argument's
+        // nullability.
+        let refused = read(Err(DbError { message: "permission denied".into(), code: None, position: None }));
+        assert!(refused.shadowed.contains("=") && refused.shadowed.contains("count") && refused.overloads.is_none());
+        assert!(refused.cast_targets.as_ref().unwrap().is_empty());
     }
 
     #[test]

@@ -30,7 +30,9 @@
 //! Everything else proves nothing and stays nullable, because a column typed non-null that can be
 //! NULL crashes a client and a column left nullable only costs it a check. On Postgres a rule
 //! also stands down when the database could resolve its operator, function, or cast to something
-//! a user or an extension created ([`Trust`]).
+//! a user or an extension created ([`Trust`]): a call of a name a user also defined reads as the
+//! built-in only where its operands' types resolve it to the built-in ([`crate::resolution`]),
+//! which is settled once the leaf probe has typed the columns it reads ([`Expr::Call`]).
 //!
 //! SQLite additionally gets a type for an expression column from the same rules: `count` is
 //! `int8` as on Postgres, a literal is its kind, a cast is its target, `||` is text, a comparison
@@ -49,6 +51,7 @@ use crate::types::DescribedColumn;
 use crate::jsonshape::{as_select, last_string, select_text, single_target, target_named_by_with, top_context};
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::oid;
+use crate::resolution::{Kind, Operand, Shared};
 use crate::returning::Rows;
 use pg_query::protobuf::{self, node::Node as NodeEnum, Node, ParseResult, RawStmt, SelectStmt};
 use std::collections::{HashMap, HashSet};
@@ -270,6 +273,113 @@ pub enum Expr {
     /// Postgres reads as an integer may index an array (`#>`, `#>>`). Typed and non-null as the JSON
     /// Schema a CHECK holds the column to says ([`json_read`]).
     JsonPath { base: Box<Expr>, path: Vec<String>, text: bool, indexes: bool },
+    /// A call of an operator or a function whose name a user or an extension also defined: what
+    /// the built-in's rule says of it where its arguments' types resolve it to the built-in
+    /// ([`Check`]), and nothing elsewhere.
+    Call(Box<Call>),
+    /// `then` where every check of one of the sets in `when` holds, `otherwise` elsewhere: a
+    /// column a strict test narrows, where the test calls a name a user also defined.
+    Trusted(Box<Trusted>),
+}
+
+/// A call [`Expr::Call`] reads: its arguments, each read once, and what holds of it where the
+/// check resolves it to the built-in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Call {
+    pub check: Check,
+    pub args: Vec<Expr>,
+    pub claim: Claim,
+}
+
+/// What a built-in's rule says of a call, in terms of its arguments.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Claim {
+    /// Non-null when the first `n` arguments are, or all of them for `None`; of the type the
+    /// built-in returns, or else the one `Ty` names.
+    Every(Option<usize>, Ty),
+    /// Never NULL, of this type or else the one the built-in returns.
+    NonNull(Option<u32>),
+    /// An array of the arguments' values (`array_agg`), never NULL itself where the flag says so.
+    Array(bool),
+}
+
+/// See [`Expr::Trusted`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Trusted {
+    pub when: Vec<Vec<Check>>,
+    pub then: Expr,
+    pub otherwise: Expr,
+}
+
+/// Whether a call of `name` over these operands resolves to the built-in ([`Trust::resolves`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Check {
+    kind: Kind,
+    name: String,
+    args: Vec<Arg>,
+    overloads: Option<Shared>,
+}
+
+/// One operand of a [`Check`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum Arg {
+    /// Its type as the server reads it, settled by the SQL: an untyped literal, a parameter, a
+    /// typed literal.
+    Fixed(Operand),
+    /// The type the call's argument at this position resolves to.
+    At(usize),
+    /// The type this expression resolves to.
+    Of(Expr),
+}
+
+impl Check {
+    /// What [`crate::resolution::Overloads::resolve`] says of the call, the arguments' types read
+    /// from their facts, or from `leaves` for an operand of its own.
+    fn resolve(&self, args: &[Fact], leaves: Option<&[DescribedColumn]>) -> Option<Option<u32>> {
+        let overloads = self.overloads.as_ref()?;
+        let typed = |t: Option<u32>| t.map_or(Operand::Opaque, Operand::Is);
+        let operands: Vec<Operand> = self
+            .args
+            .iter()
+            .map(|a| match a {
+                Arg::Fixed(o) => *o,
+                Arg::At(i) => typed(args.get(*i).and_then(|f| f.type_oid)),
+                Arg::Of(e) => typed(resolve(e, leaves).type_oid),
+            })
+            .collect();
+        overloads.0.resolve(self.kind, &self.name, &operands)
+    }
+
+    fn reads_leaf(&self) -> bool {
+        self.args.iter().any(|a| matches!(a, Arg::Of(e) if reads_leaf(e)))
+    }
+}
+
+impl Trusted {
+    fn holds(&self, leaves: Option<&[DescribedColumn]>) -> bool {
+        self.when.iter().any(|set| set.iter().all(|c| c.resolve(&[], leaves).is_some()))
+    }
+
+    fn reads_leaf(&self) -> bool {
+        reads_leaf(&self.then) || reads_leaf(&self.otherwise) || self.when.iter().flatten().any(Check::reads_leaf)
+    }
+}
+
+impl Call {
+    /// The fact of the call, with its arguments' facts, where the check holds.
+    fn fact(&self, leaves: Option<&[DescribedColumn]>) -> Option<(Fact, Vec<Fact>)> {
+        let facts: Vec<Fact> = self.args.iter().map(|a| resolve(a, leaves)).collect();
+        let result = self.check.resolve(&facts, leaves)?;
+        let fact = match &self.claim {
+            Claim::Every(first, ty) => {
+                let read = &facts[..first.unwrap_or(facts.len()).min(facts.len())];
+                Fact { non_null: !read.is_empty() && read.iter().all(|f| f.non_null), type_oid: result.or(ty.of(&facts)) }
+            }
+            Claim::NonNull(ty) => Fact { non_null: true, type_oid: ty.or(result) },
+            Claim::Array(non_null) => Fact { non_null: *non_null, type_oid: None },
+        };
+        Some((fact, facts))
+    }
 }
 
 /// The type an [`Expr::Every`] or [`Expr::Any`] carries.
@@ -282,6 +392,10 @@ pub enum Ty {
     /// `text` when every operand is a string type: Postgres's `||` over strings. Over anything
     /// else (an array, `jsonb`, a string beside a number) the build names no type.
     Concat,
+    /// The operands' type when they all agree on a number type the built-in arithmetic has an
+    /// operator of that type for (`int4 + int4` is `int4`), `%` having none for a float: an
+    /// arithmetic operator over two values of one type, or a prefix sign.
+    Arith { modulo: bool },
     /// Nothing the build can name.
     Unknown,
 }
@@ -328,11 +442,19 @@ pub struct Fact {
 /// The names a rule reads that the database could resolve to something the build has not read.
 /// On Postgres that is any operator, function, cast or type a user or an extension created: it
 /// can shadow a built-in for its own argument types and answer NULL where the built-in never
-/// does. A rule whose name is shadowed proves nothing.
+/// does. A rule whose name is shadowed proves nothing, but where its operands' types resolve the
+/// call to the built-in ([`Trust::overloads`]).
 #[derive(Debug, Clone, Default)]
 pub struct Trust {
     /// Operator and function names with a definition outside the built-ins.
     pub shadowed: HashSet<String>,
+    /// What the catalog says of the overloads of the shadowed names ([`crate::resolution`]): a
+    /// call of such a name still reads as the built-in where its operands' types resolve it to
+    /// one. `None` leaves every shadowed name proving nothing.
+    pub overloads: Option<Shared>,
+    /// The statement's parameter types in `$n` order, from its describe, which a parameter has
+    /// at every read of it but the first; empty where the build has no describe of the statement.
+    pub param_types: Vec<u32>,
     /// The built-in type names a cast may target and keep its argument's nullability. `None`
     /// trusts every name, which is what SQLite gets: nothing there can define a cast.
     pub cast_targets: Option<HashSet<String>>,
@@ -351,22 +473,72 @@ pub struct Trust {
 }
 
 impl Trust {
-    /// Whether `name`, an operator or a function a rule reads, can only resolve to a built-in.
+    /// Whether `name`, an operator or a function a rule reads, can only resolve to a built-in,
+    /// whatever its operands.
     pub fn builtin(&self, name: &str) -> bool {
         !self.shadowed.contains(name)
     }
 
-    fn cast(&self, name: &str) -> bool {
-        self.cast_targets.as_ref().is_none_or(|t| t.contains(name))
+    /// Whether a call of `name` over operands of these types resolves to the built-in, and the
+    /// type it returns where the catalog says ([`crate::resolution::Overloads::resolve`]).
+    pub fn resolves(&self, kind: Kind, name: &str, operands: &[Operand]) -> Option<Option<u32>> {
+        // A cast is named by its target type, which no operator or function shadows: whether a
+        // user's cast function may be the one is the cast targets' word.
+        let checked = match kind {
+            Kind::Cast => !self.cast(name),
+            _ => self.checked(name),
+        };
+        if !checked {
+            return Some(None);
+        }
+        self.overloads.as_ref()?.0.resolve(kind, name, operands)
     }
 
-    /// Whether a name a [`Strict`] claim rests on is the built-in one: an operator or a function,
-    /// or `::type` for a cast to that type, which no user's cast function targets.
-    pub fn holds(&self, name: &str) -> bool {
-        match name.strip_prefix("::") {
-            Some(target) => self.cast(target),
-            None => self.builtin(name),
+    /// Whether a call of `name` is the built-in only for some operands' types: a user or an
+    /// extension defined the name, or an implicit cast between built-in types by a function of
+    /// theirs, which a built-in's candidate may run on its operand.
+    pub(crate) fn checked(&self, name: &str) -> bool {
+        !self.builtin(name) || self.overloads.as_ref().is_some_and(|o| o.0.casts_implicitly())
+    }
+
+    /// Whether a call a strict claim rests on is the built-in only for some operands' types: a
+    /// cast to a type a user's cast function may target, or an operator or a function [`Trust::checked`].
+    pub(crate) fn call_checked(&self, call: &StrictCall) -> bool {
+        match call.kind {
+            Kind::Cast => !self.cast(&call.name),
+            _ => self.checked(&call.name),
         }
+    }
+
+    /// A parameter as an operand: untyped where the statement first reads it, of its type after.
+    pub fn param(&self, number: i32) -> Operand {
+        Operand::Param(usize::try_from(number).ok().and_then(|n| self.param_types.get(n.checked_sub(1)?)).copied().filter(|t| *t != 0))
+    }
+
+    /// Whether a call of the function `name` with `arity` arguments aggregates, as the built-in
+    /// does, whichever overload of it the server picks: none of a user's, or every one an aggregate.
+    pub(crate) fn aggregates(&self, name: &str, arity: usize) -> bool {
+        self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.every_aggregate(name, arity)) == Some(true)
+    }
+
+    /// Whether no overload of a user's of `name`, of this kind, returns a set.
+    fn returns_no_set(&self, kind: Kind, name: &str) -> bool {
+        self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.returns_set(kind, name)) == Some(false)
+    }
+
+    /// Whether no operator of a user's named `name`, infix or prefix, returns a set.
+    fn operator_returns_no_set(&self, name: &str) -> bool {
+        self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.operator_returns_set(name)) == Some(false)
+    }
+
+    /// The check a call of the shadowed `name` needs, where the catalog says what its overloads
+    /// are: `None` where it does not, and the call proves nothing.
+    fn check(&self, kind: Kind, name: &str, args: Vec<Arg>) -> Option<Check> {
+        self.overloads.as_ref().map(|o| Check { kind, name: name.to_string(), args, overloads: Some(o.clone()) })
+    }
+
+    fn cast(&self, name: &str) -> bool {
+        self.cast_targets.as_ref().is_none_or(|t| t.contains(name))
     }
 }
 
@@ -407,10 +579,6 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     // A grouping set nulls a grouping column in its super-aggregate rows, which a probe over the
     // `FROM` alone would never show: a leaf there proves nothing.
     let grouped = matches!(top, NodeEnum::SelectStmt(s) if s.group_clause.iter().any(|g| matches!(g.node, Some(NodeEnum::GroupingSet(_)))));
-    let scope = match top {
-        NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, trust)),
-        _ => None,
-    };
     let plain_group_by = matches!(top, NodeEnum::SelectStmt(s) if !grouped && !s.group_clause.is_empty());
     let windows: &[Node] = match top {
         NodeEnum::SelectStmt(s) => &s.window_clause,
@@ -421,6 +589,16 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
     let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows };
+    let scope = match top {
+        NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, &mut reader)),
+        _ => None,
+    };
+    // A column the WHERE narrows only by a call of a name a user also defined is narrowed in the
+    // expressions that read it too: the leaf probe writes the statement's parameters as NULLs,
+    // of no type, which check nothing there.
+    if let Some(scope) = &scope {
+        reader.narrowed.extend(scope.strict.iter().filter(|n| !n.checks.is_empty()).cloned());
+    }
     let mut plan = Plan::default();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -512,6 +690,8 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
             Some(read) => Fact { non_null: read.non_null, type_oid: Some(read.type_oid) },
             None => NOTHING,
         },
+        Expr::Call(call) => call.fact(leaves).map_or(NOTHING, |(fact, _)| fact),
+        Expr::Trusted(t) => resolve(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves),
     }
 }
 
@@ -591,6 +771,13 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
             Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(|o| may_be_jsonb(o, leaves)),
             // `->` and `#>` give the column's own JSON; `->>` and `#>>` text.
             Expr::JsonPath { text, .. } => !text,
+            // A user's overload may return anything.
+            Expr::Call(call) => match (call.fact(leaves), &call.claim) {
+                (None, _) => true,
+                (Some(_), Claim::Every(..)) => call.args.iter().any(|a| may_be_jsonb(a, leaves)),
+                (Some(_), Claim::NonNull(_) | Claim::Array(_)) => false,
+            },
+            Expr::Trusted(t) => may_be_jsonb(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves),
         },
     }
 }
@@ -605,23 +792,35 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
 /// or an operator over arrays may return any operand's elements.
 pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
     match expr {
-        Expr::Array { items, .. } => join_items(items.iter().map(|e| match e {
-            // A nested `ARRAY[…]` is a row of a multidimensional array, its elements the result's.
-            Expr::Array { .. } => items_nullable(e, leaves, is_array),
-            _ if reads_unread(e) => None,
-            _ => {
-                let fact = resolve(e, leaves);
-                match fact.type_oid {
-                    _ if !fact.non_null => Some(true),
-                    Some(t) if !is_array(t) => Some(false),
-                    _ => None,
-                }
-            }
-        })),
+        Expr::Array { items, .. } => array_items(items, leaves, is_array),
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => items_nullable(inner, leaves, is_array),
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
+        // A user's overload may return any elements.
+        Expr::Call(call) => match (call.fact(leaves), &call.claim) {
+            (None, _) | (Some(_), Claim::NonNull(_)) => None,
+            (Some(_), Claim::Array(_)) => array_items(&call.args, leaves, is_array),
+            (Some(_), Claim::Every(..)) => join_items(call.args.iter().map(|o| items_nullable(o, leaves, is_array))),
+        },
+        Expr::Trusted(t) => items_nullable(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves, is_array),
     }
+}
+
+/// What an array built from `items` says of its elements ([`items_nullable`]).
+fn array_items(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
+    join_items(items.iter().map(|e| match e {
+        // A nested `ARRAY[…]` is a row of a multidimensional array, its elements the result's.
+        Expr::Array { .. } => items_nullable(e, leaves, is_array),
+        _ if reads_unread(e) => None,
+        _ => {
+            let fact = resolve(e, leaves);
+            match fact.type_oid {
+                _ if !fact.non_null => Some(true),
+                Some(t) if !is_array(t) => Some(false),
+                _ => None,
+            }
+        }
+    }))
 }
 
 /// Whether an expression reads a column the reader had no leaf probe for ([`Expr::Unread`]).
@@ -633,6 +832,8 @@ fn reads_unread(expr: &Expr) -> bool {
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_unread),
         Expr::Array { items, .. } => items.iter().any(reads_unread),
         Expr::NonNull(_) | Expr::Unknown | Expr::Leaf(_) | Expr::Row(..) => false,
+        Expr::Call(call) => call.args.iter().any(reads_unread),
+        Expr::Trusted(t) => reads_unread(&t.then) || reads_unread(&t.otherwise),
     }
 }
 
@@ -732,11 +933,14 @@ pub fn one_value(target: &Node, dialect: Dialect, trust: &Trust) -> bool {
                     return true;
                 }
                 if let Some(f) = map.get("FuncCall") {
-                    let Some(n) = name(f.get("funcname")).filter(|n| trust.builtin(n)) else { return false };
-                    if [FUNCTIONS, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON].iter().any(|list| list.contains(&n)) {
+                    // A user's overload of the name counts where none of them returns a set, and
+                    // an aggregate's arguments only where every one of them aggregates.
+                    let Some(n) = name(f.get("funcname")) else { return false };
+                    let arity = f.get("args").and_then(Value::as_array).map_or(0, Vec::len);
+                    if [FUNCTIONS, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON].iter().any(|list| list.contains(&n)) && trust.aggregates(n, arity) {
                         return true;
                     }
-                    if POSTGRES_SET_RETURNING.contains(&n) || !postgres_function_names().contains(&n) {
+                    if !trust.returns_no_set(Kind::Function, n) || POSTGRES_SET_RETURNING.contains(&n) || !postgres_function_names().contains(&n) {
                         return false;
                     }
                 }
@@ -744,9 +948,9 @@ pub fn one_value(target: &Node, dialect: Dialect, trust: &Trust) -> bool {
                     let between = [protobuf::AExprKind::AexprBetween, protobuf::AExprKind::AexprNotBetween, protobuf::AExprKind::AexprBetweenSym, protobuf::AExprKind::AexprNotBetweenSym];
                     // `BETWEEN` is named for itself and compares with `<=` and `>=` (`<` and `>` negated).
                     let built_in = if a.get("kind").and_then(Value::as_i64).is_some_and(|k| between.iter().any(|b| *b as i64 == k)) {
-                        ["<", ">", "<=", ">="].iter().all(|o| trust.builtin(o))
+                        ["<", ">", "<=", ">="].iter().all(|o| trust.operator_returns_no_set(o))
                     } else {
-                        name(a.get("name")).is_some_and(|o| (POSTGRES_OPERATORS.contains(&o) || POSTGRES_STRICT_OPERATORS.contains(&o)) && trust.builtin(o))
+                        name(a.get("name")).is_some_and(|o| (POSTGRES_OPERATORS.contains(&o) || POSTGRES_STRICT_OPERATORS.contains(&o)) && trust.operator_returns_no_set(o))
                     };
                     if !built_in {
                         return false;
@@ -783,6 +987,21 @@ fn elements_not_jsonb(expr: Expr) -> Expr {
         Expr::Guarded(inner, types) => Expr::Guarded(Box::new(elements_not_jsonb(*inner)), types),
         Expr::NotJsonb(inner) => Expr::NotJsonb(Box::new(elements_not_jsonb(*inner))),
         Expr::Narrowed(inner) => Expr::Narrowed(Box::new(elements_not_jsonb(*inner))),
+        Expr::Call(mut call) => {
+            call.args = match call.claim {
+                Claim::Array(_) => call.args.into_iter().map(|item| match item {
+                    Expr::Array { .. } => elements_not_jsonb(item),
+                    other => Expr::NotJsonb(Box::new(other)),
+                }).collect(),
+                _ => call.args.into_iter().map(elements_not_jsonb).collect(),
+            };
+            Expr::Call(call)
+        }
+        Expr::Trusted(mut t) => {
+            t.then = elements_not_jsonb(t.then);
+            t.otherwise = elements_not_jsonb(t.otherwise);
+            Expr::Trusted(t)
+        }
         other => other,
     }
 }
@@ -819,6 +1038,11 @@ impl Ty {
                 facts.iter().all(|f| f.type_oid == Some(first)).then_some(first)
             }
             Ty::Concat => (!facts.is_empty() && facts.iter().all(|f| f.type_oid.is_some_and(|t| TEXT_TYPES.contains(&t)))).then_some(oid::TEXT),
+            Ty::Arith { modulo } => {
+                let first = facts.first()?.type_oid?;
+                let numbers: &[u32] = if modulo { &[oid::INT2, oid::INT4, oid::INT8, oid::NUMERIC] } else { NUMBER_TYPES };
+                (numbers.contains(&first) && facts.iter().all(|f| f.type_oid == Some(first))).then_some(first)
+            }
         }
     }
 }
@@ -842,14 +1066,23 @@ struct Reader<'a> {
     /// Whether the expressions belong to a SELECT with a plain `GROUP BY`, where no group is empty.
     grouped: bool,
     /// The columns, as written, that cannot be NULL where the reader stands: inside a CASE arm
-    /// whose WHEN is strict in them, or after a WHEN that tested them `IS NULL` and failed.
-    narrowed: Vec<Vec<String>>,
+    /// whose WHEN is strict in them, or after a WHEN that tested them `IS NULL` and failed, and
+    /// in a SELECT whose WHERE is strict in them by calls of names a user also defined.
+    narrowed: Vec<Narrowing>,
     /// Every FROM in scope where the reader stands, the innermost last, where the reader knows
     /// them all: what says a bare name in a subquery's aggregate is an item's whole row
     /// ([`Level::within`]).
     scope: Option<Vec<Level>>,
     /// The `WINDOW` clause of the SELECT the reader stands in, which `OVER w` names a window of.
     windows: &'a [Node],
+}
+
+/// A column, as written, that a test is strict in, where every check holds: one per call of a
+/// name a user also defined that the test rests on, none where it rests on built-ins alone.
+#[derive(Debug, Clone)]
+struct Narrowing {
+    column: Vec<String>,
+    checks: Vec<Check>,
 }
 
 impl Reader<'_> {
@@ -874,7 +1107,9 @@ impl Reader<'_> {
                 }
                 Expr::NonNull(match c.val.as_ref() {
                     Some(protobuf::a_const::Val::Ival(_)) => Some(oid::INT4),
-                    // A literal past int4, or one with a fraction or an exponent.
+                    // A literal past int4, or one with a fraction or an exponent: Postgres's
+                    // `numeric` where it is no integer, SQLite's REAL.
+                    Some(protobuf::a_const::Val::Fval(f)) if self.dialect == Dialect::Postgres => postgres_number(&f.fval),
                     Some(protobuf::a_const::Val::Fval(f)) => Some(if f.fval.parse::<i64>().is_ok() { oid::INT8 } else { oid::FLOAT8 }),
                     Some(protobuf::a_const::Val::Boolval(_)) => Some(oid::BOOL),
                     Some(protobuf::a_const::Val::Sval(_)) => Some(oid::TEXT),
@@ -901,9 +1136,14 @@ impl Reader<'_> {
                     Some(NodeEnum::String(s)) => Some(s.sval.clone()),
                     _ => None,
                 }).collect();
-                match fields {
-                    Some(fields) if self.narrowed.contains(&fields) => Expr::Narrowed(Box::new(read)),
-                    _ => read,
+                let Some(fields) = fields else { return read };
+                let when: Vec<Vec<Check>> = self.narrowed.iter().filter(|n| n.column == fields).map(|n| n.checks.clone()).collect();
+                if when.is_empty() {
+                    read
+                } else if when.iter().any(Vec::is_empty) {
+                    Expr::Narrowed(Box::new(read))
+                } else {
+                    Expr::Trusted(Box::new(Trusted { when, then: Expr::Narrowed(Box::new(read.clone())), otherwise: read }))
                 }
             }
             // `ROW(a, b)` and `(a, b)` build a row whatever their fields hold, and a cast of one
@@ -937,6 +1177,12 @@ impl Reader<'_> {
                         let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { Expr::NotJsonb(Box::new(operand)) } else { operand };
                         Expr::Every(vec![operand], POSTGRES_CASTS.iter().find(|(n, _)| *n == name).map_or(Ty::Unknown, |(_, o)| Ty::Is(*o)))
                     }
+                    // A type a user's cast function targets: the cast is a built-in one where the
+                    // operand's type is none of that function's sources.
+                    Dialect::Postgres => {
+                        let operand = if POSTGRES_JSONB_NULL_CASTS.contains(&name.as_str()) && !self.trust.jsonb_casts_raise { Expr::NotJsonb(Box::new(operand)) } else { operand };
+                        self.shadowed_call(Kind::Cast, &name, &[arg], vec![operand], Claim::Every(None, Ty::Unknown))
+                    }
                     Dialect::Sqlite | Dialect::Mysql if SQLITE_TOTAL_CASTS.contains(&name.as_str()) => {
                         let ty = SQLITE_CASTS.iter().find(|(n, _)| *n == name).map_or(Ty::Unknown, |(_, o)| Ty::Is(*o));
                         Expr::Every(vec![operand], ty)
@@ -960,7 +1206,7 @@ impl Reader<'_> {
                     return self.json_path(&op, a);
                 }
                 let accepted = match self.dialect {
-                    Dialect::Postgres => POSTGRES_OPERATORS.contains(&op.as_str()) && self.trust.builtin(&op),
+                    Dialect::Postgres => POSTGRES_OPERATORS.contains(&op.as_str()),
                     Dialect::Sqlite | Dialect::Mysql => SQLITE_OPERATORS.contains(&op.as_str()),
                 };
                 let Some(right) = a.rexpr.as_deref() else { return Expr::Unknown };
@@ -979,10 +1225,19 @@ impl Reader<'_> {
                     "||" => Ty::Concat,
                     "=" | "==" | "<>" | "!=" | "<" | ">" | "<=" | ">=" => bool_ty,
                     m if self.dialect == Dialect::Postgres && left.is_some() && POSTGRES_MATCH_OPERATORS.contains(&m) => Ty::Is(oid::BOOL),
+                    "+" | "-" | "*" | "/" if self.dialect == Dialect::Postgres => Ty::Arith { modulo: false },
+                    "%" if self.dialect == Dialect::Postgres && left.is_some() => Ty::Arith { modulo: true },
                     _ => Ty::Unknown,
                 };
                 let mut operands: Vec<Expr> = left.into_iter().map(|l| self.read(l)).collect();
                 operands.push(self.read(right));
+                // A user's operator of the name proves nothing, unless the operands' types
+                // resolve the call to the built-in.
+                if self.dialect == Dialect::Postgres && self.trust.checked(&op) {
+                    let nodes: Vec<&Node> = left.into_iter().chain([right]).collect();
+                    let kind = if left.is_some() { Kind::Infix } else { Kind::Prefix };
+                    return self.shadowed_call(kind, &op, &nodes, operands, Claim::Every(None, ty));
+                }
                 Expr::Every(operands, ty)
             }
             Some(NodeEnum::BoolExpr(b)) if !b.args.is_empty() => Expr::Every(b.args.iter().map(|a| self.read(a)).collect(), bool_ty),
@@ -1013,8 +1268,7 @@ impl Reader<'_> {
                     };
                     let before = self.narrowed.len();
                     if let (true, Some(test)) = (searched, w.expr.as_deref()) {
-                        let mut strict = Vec::new();
-                        strict_columns(test, self.trust, &mut strict);
+                        let strict = self.narrowings(test);
                         self.narrowed.extend(strict);
                     }
                     results.push(self.read(result));
@@ -1025,7 +1279,7 @@ impl Reader<'_> {
                                 Some(NodeEnum::String(s)) => Some(s.sval.clone()),
                                 _ => None,
                             }).collect();
-                            self.narrowed.extend(fields);
+                            self.narrowed.extend(fields.map(|column| Narrowing { column, checks: Vec::new() }));
                         }
                     }
                 }
@@ -1062,8 +1316,7 @@ impl Reader<'_> {
         let outer = f.over.is_some().then(|| std::mem::take(&mut self.narrowed));
         let before = self.narrowed.len();
         if let Some(filter) = f.agg_filter.as_deref() {
-            let mut strict = Vec::new();
-            strict_columns(filter, self.trust, &mut strict);
+            let strict = self.narrowings(filter);
             self.narrowed.extend(strict);
         }
         let read = self.call_unfiltered(f);
@@ -1078,6 +1331,18 @@ impl Reader<'_> {
         let Some(name) = builtin_name(&f.funcname) else { return Expr::Unknown };
         if f.agg_within_group || f.func_variadic {
             return Expr::Unknown;
+        }
+        // A function a user also defined proves what the built-in does where the arguments'
+        // types resolve the call to it. `unnest` reads its argument's elements, of no type the
+        // build can name, and so proves nothing then.
+        if self.dialect == Dialect::Postgres && self.trust.checked(&name) {
+            let Some((claim, guard)) = self.builtin_claim(f, &name) else { return Expr::Unknown };
+            let nodes: Vec<&Node> = f.args.iter().collect();
+            let mut args: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+            if let (Some(types), Some(first)) = (guard, args.first_mut()) {
+                *first = Expr::Guarded(Box::new(first.clone()), types);
+            }
+            return self.shadowed_call(Kind::Function, &name, &nodes, args, claim);
         }
         match (self.dialect, name.as_str(), f.args.len()) {
             // `count(*)`, `count(x)`, `count(DISTINCT x)`, filtered or windowed: a count of
@@ -1176,6 +1441,36 @@ impl Reader<'_> {
         }
     }
 
+    /// What the rule of a Postgres built-in says of a call of `name`, as [`Reader::call_unfiltered`]
+    /// reads it, in terms of its arguments, with the types of its first argument for which it
+    /// holds; `None` where no rule reads the call.
+    fn builtin_claim(&self, f: &protobuf::FuncCall, name: &str) -> Option<(Claim, Option<&'static [u32]>)> {
+        let window = f.over.is_some();
+        Some(match (name, f.args.len()) {
+            ("count", 0 | 1) => (Claim::NonNull(Some(oid::INT8)), None),
+            ("row_number" | "rank" | "dense_rank", 0) if window => (Claim::NonNull(Some(oid::INT8)), None),
+            ("percent_rank" | "cume_dist", 0) if window => (Claim::NonNull(Some(oid::FLOAT8)), None),
+            ("ntile", 1) if window => (Claim::Every(None, Ty::Is(oid::INT4)), None),
+            ("lag" | "lead", 3) if window => (Claim::Every(None, Ty::Unknown), None),
+            (n, 1 | 2) if self.grouped && !window && f.agg_filter.is_none() && (POSTGRES_GROUPED.contains(&n) || POSTGRES_GROUPED_NEVER_NULL.contains(&n) || POSTGRES_GROUPED_JSON.contains(&n)) => {
+                if POSTGRES_GROUPED_JSON.contains(&n) {
+                    (Claim::NonNull(None), None)
+                } else if POSTGRES_GROUPED_NEVER_NULL.contains(&n) {
+                    (Claim::Array(true), None)
+                } else {
+                    (Claim::Every(Some(1), Ty::Unknown), None)
+                }
+            }
+            ("array_agg", 1) => (Claim::Array(false), None),
+            (n, _) if POSTGRES_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
+            ("uuidv7", 0) => (Claim::NonNull(Some(oid::UUID)), None),
+            (n, 1..) if POSTGRES_FIRST_ARG.contains(&n) => (Claim::Every(Some(1), Ty::Is(oid::TEXT)), None),
+            (n, 1..) if POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => (Claim::Every(None, Ty::Unknown), POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| *t)),
+            (n, _) if POSTGRES_TOTAL.contains(&n) => (Claim::Every(None, if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown }), None),
+            _ => return None,
+        })
+    }
+
     fn sublink(&mut self, s: &protobuf::SubLink) -> Expr {
         if s.sub_link_type == protobuf::SubLinkType::ExistsSublink as i32 {
             return Expr::NonNull(Some(oid::BOOL));
@@ -1232,7 +1527,7 @@ impl Reader<'_> {
                                 "total" | "json_group_array" => self.dialect == Dialect::Sqlite && f.args.len() == 1,
                                 _ => false,
                             };
-                            arity && self.trust.builtin(&name)
+                            arity && self.trust.aggregates(&name, f.args.len())
                         }));
                 if aggregate && from.is_none_or(|level| level.owns(f)) {
                     return true;
@@ -1608,11 +1903,11 @@ struct Scope {
     using: Vec<String>,
     natural: bool,
     /// The columns the WHERE tests strictly at its top level, as written.
-    strict: Vec<Vec<String>>,
+    strict: Vec<Narrowing>,
 }
 
 impl Scope {
-    fn of(s: &SelectStmt, trust: &Trust) -> Scope {
+    fn of(s: &SelectStmt, reader: &mut Reader) -> Scope {
         let mut tables = HashMap::new();
         let mut names = Vec::new();
         let mut outer_join = false;
@@ -1623,10 +1918,7 @@ impl Scope {
         if outer_join {
             tables.clear();
         }
-        let mut strict = Vec::new();
-        if let Some(w) = s.where_clause.as_deref() {
-            strict_columns(w, trust, &mut strict);
-        }
+        let strict = s.where_clause.as_deref().map(|w| reader.narrowings(w)).unwrap_or_default();
         Scope { tables, names, using, natural, strict }
     }
 
@@ -1636,14 +1928,22 @@ impl Scope {
             Some(NodeEnum::String(s)) => Some(s.sval.clone()),
             _ => None,
         }).collect::<Option<_>>()?;
-        if self.strict.iter().any(|tested| self.same_column(tested, &fields)) {
+        let when: Vec<Vec<Check>> = self.strict.iter().filter(|tested| self.same_column(&tested.column, &fields)).map(|tested| tested.checks.clone()).collect();
+        if when.iter().any(Vec::is_empty) {
             return Some(Expr::NonNull(None));
         }
-        let [name] = fields.as_slice() else { return None };
-        let relation = self.tables.get(name)?;
-        let leaves = reader.leaves.as_mut()?;
-        leaves.push(node.clone());
-        Some(Expr::Row(leaves.len() - 1, relation.clone()))
+        let row = (|| {
+            let [name] = fields.as_slice() else { return None };
+            let relation = self.tables.get(name)?;
+            let leaves = reader.leaves.as_mut()?;
+            leaves.push(node.clone());
+            Some(Expr::Row(leaves.len() - 1, relation.clone()))
+        })();
+        if when.is_empty() {
+            return row;
+        }
+        // Narrowed by calls a user's overload may be the one of: where they resolve otherwise.
+        Some(Expr::Trusted(Box::new(Trusted { when, then: Expr::NonNull(None), otherwise: row.unwrap_or(Expr::Unknown) })))
     }
 
     /// Whether a column the WHERE tests, `tested`, is the column `read`: the same text, or one of
@@ -1693,24 +1993,127 @@ fn from_names(item: &Node, tables: &mut HashMap<String, String>, names: &mut Vec
     }
 }
 
-/// The column references a WHERE tests strictly at its top level ([`strict_in`]), where every
-/// operator and function the test rests on is the built-in one. A row the SELECT returns passed
-/// the test, so in its result that column is not NULL.
-fn strict_columns(node: &Node, trust: &Trust, out: &mut Vec<Vec<String>>) {
-    for strict in strict_in(node) {
-        if strict.names.iter().all(|n| trust.holds(n)) && !out.contains(&strict.column) {
-            out.push(strict.column);
+impl Reader<'_> {
+    /// The column references a test is strict in at its top level ([`strict_in`]), where every
+    /// cast it rests on keeps its argument's nullability, and every operator and function it rests
+    /// on is the built-in one, or else resolves to it for its operands' types: each such call is
+    /// a check of the [`Narrowing`]. A row the test passes has that column not NULL.
+    fn narrowings(&mut self, node: &Node) -> Vec<Narrowing> {
+        let mut out: Vec<Narrowing> = Vec::new();
+        for strict in strict_in(node) {
+            if out.iter().any(|n| n.column == strict.column && n.checks.is_empty()) {
+                continue;
+            }
+            let mut checks = Vec::new();
+            if strict.calls.iter().any(|c| self.trust.call_checked(c)) && (self.dialect != Dialect::Postgres || self.trust.overloads.is_none()) {
+                continue;
+            }
+            for call in &strict.calls {
+                if !self.trust.call_checked(call) {
+                    continue;
+                }
+                let args = call.args.iter().map(|a| self.operand(a)).collect();
+                checks.extend(self.trust.check(call.kind, &call.name, args));
+            }
+            if checks.is_empty() {
+                out.retain(|n| n.column != strict.column);
+            }
+            out.push(Narrowing { column: strict.column, checks });
+        }
+        out
+    }
+
+    /// An operand of a check that stands apart from any call the reader builds: what the SQL says
+    /// of its type, or the expression read.
+    fn operand(&mut self, node: &Node) -> Arg {
+        match self.fixed(node) {
+            Some(fixed) => Arg::Fixed(fixed),
+            None => Arg::Of(self.read(node)),
+        }
+    }
+
+    /// An operand's type as the server reads it, where the SQL alone says it: a string literal is
+    /// untyped, a NULL is anything a probe wrote in place of a parameter, a parameter is untyped on
+    /// its first read and typed after, and a number or a boolean is typed as `make_const` types it.
+    fn fixed(&self, node: &Node) -> Option<Operand> {
+        fixed_operand(node, self.trust)
+    }
+
+    /// A call of the shadowed `name` over `nodes` read as `args`: the claim, where the arguments'
+    /// types resolve it to the built-in.
+    fn shadowed_call(&self, kind: Kind, name: &str, nodes: &[&Node], args: Vec<Expr>, claim: Claim) -> Expr {
+        let operands = nodes.iter().enumerate().map(|(i, n)| self.fixed(n).map_or(Arg::At(i), Arg::Fixed)).collect();
+        match self.trust.check(kind, name, operands) {
+            Some(check) => Expr::Call(Box::new(Call { check, args, claim })),
+            None => Expr::Unknown,
         }
     }
 }
 
-/// A column a predicate cannot pass with NULL in it, and the names of the built-in operators and
-/// functions that claim rests on: a user's operator or function of one of those names may hold
-/// for NULL, so a caller drops the claim where the trust check shadows a name.
+/// An operand's type as the server reads it, where the SQL alone says it ([`Reader::fixed`]).
+pub(crate) fn fixed_operand(node: &Node, trust: &Trust) -> Option<Operand> {
+    match node.node.as_ref()? {
+        NodeEnum::AConst(c) if c.isnull => Some(Operand::Opaque),
+        NodeEnum::AConst(c) => Some(match c.val.as_ref() {
+            Some(protobuf::a_const::Val::Sval(_)) => Operand::Unknown,
+            Some(protobuf::a_const::Val::Ival(_)) => Operand::Is(oid::INT4),
+            Some(protobuf::a_const::Val::Fval(f)) => postgres_number(&f.fval).map_or(Operand::Opaque, Operand::Is),
+            Some(protobuf::a_const::Val::Boolval(_)) => Operand::Is(oid::BOOL),
+            Some(protobuf::a_const::Val::Bsval(_)) => Operand::Is(BIT),
+            None => Operand::Opaque,
+        }),
+        NodeEnum::ParamRef(p) => Some(trust.param(p.number)),
+        _ => None,
+    }
+}
+
+/// `bit`, the type of a bit-string literal.
+const BIT: u32 = 1560;
+
+/// The type Postgres gives a numeric literal the parse keeps as text (`make_const`): `int4` where
+/// it fits, `int8`, and `numeric` for a fraction, an exponent or an integer past `int8`. A
+/// literal written otherwise (hexadecimal, with underscores) the build does not type.
+pub(crate) fn postgres_number(text: &str) -> Option<u32> {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Some(match text.parse::<i64>() {
+            Ok(n) if i32::try_from(n).is_ok() => oid::INT4,
+            Ok(_) => oid::INT8,
+            Err(_) => oid::NUMERIC,
+        });
+    }
+    let (mantissa, exponent) = match digits.split_once(['e', 'E']) {
+        Some((m, e)) => (m, Some(e.strip_prefix(['+', '-']).unwrap_or(e))),
+        None => (digits, None),
+    };
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    let digits_only = |t: &str| t.bytes().all(|b| b.is_ascii_digit());
+    let valid = !(whole.is_empty() && fraction.is_empty()) && digits_only(whole) && digits_only(fraction) && exponent.is_none_or(|e| !e.is_empty() && digits_only(e));
+    valid.then_some(oid::NUMERIC)
+}
+
+/// A column a predicate cannot pass with NULL in it, and the built-in operators, functions and
+/// casts that claim rests on, each with its operands: a user's of one of those names may hold for
+/// NULL, so a caller drops the claim where a call may resolve to one ([`Trust::call_checked`]).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Strict {
     pub column: Vec<String>,
-    pub names: Vec<String>,
+    pub calls: Vec<StrictCall>,
+}
+
+/// One call a [`Strict`] claim rests on: a cast by its target type's name.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct StrictCall {
+    pub kind: Kind,
+    pub name: String,
+    pub args: Vec<Node>,
+}
+
+impl Strict {
+    fn calling(mut self, kind: Kind, name: &str, args: Vec<Node>) -> Strict {
+        self.calls.push(StrictCall { kind, name: name.to_string(), args });
+        self
+    }
 }
 
 /// The columns a predicate at the top level of a WHERE, or of an inner join's ON clause, is strict
@@ -1721,11 +2124,22 @@ pub(crate) struct Strict {
 /// through strict functions and operators (`lower(nickname) = $1`); a bare boolean expression.
 /// The planner's `find_nonnullable_vars` reads the same shapes.
 pub(crate) fn strict_in(node: &Node) -> Vec<Strict> {
-    let named = |mut found: Vec<Strict>, name: &str| {
-        for f in &mut found {
-            f.names.push(name.to_string());
-        }
+    // Each claim rests on these calls of the infix operator `name` too.
+    let called = |found: Vec<Strict>, name: &str, pairs: &[(&Node, &Node)]| -> Vec<Strict> {
         found
+            .into_iter()
+            .map(|mut f| {
+                f.calls.extend(pairs.iter().map(|(l, r)| StrictCall { kind: Kind::Infix, name: name.to_string(), args: vec![(*l).clone(), (*r).clone()] }));
+                f
+            })
+            .collect()
+    };
+    let list = |n: Option<&Node>| -> Vec<Node> {
+        match n.and_then(|n| n.node.as_ref()) {
+            Some(NodeEnum::List(l)) => l.items.clone(),
+            Some(_) => n.into_iter().cloned().collect(),
+            None => Vec::new(),
+        }
     };
     match node.node.as_ref() {
         Some(NodeEnum::BoolExpr(b)) if b.boolop == protobuf::BoolExprType::AndExpr as i32 => b.args.iter().flat_map(strict_in).collect(),
@@ -1736,7 +2150,7 @@ pub(crate) fn strict_in(node: &Node) -> Vec<Strict> {
                 kept.into_iter()
                     .filter_map(|mut k| {
                         let other = arm.iter().find(|a| a.column == k.column)?;
-                        k.names.extend(other.names.iter().cloned());
+                        k.calls.extend(other.calls.iter().cloned());
                         Some(k)
                     })
                     .collect()
@@ -1751,17 +2165,31 @@ pub(crate) fn strict_in(node: &Node) -> Vec<Strict> {
         Some(NodeEnum::AExpr(e)) => {
             let kind = e.kind;
             let op = builtin_name(&e.name).unwrap_or_default();
+            let Some(l) = e.lexpr.as_deref() else { return test_nulls_with(node) };
             if kind == protobuf::AExprKind::AexprIn as i32 {
-                // `x IN (…)` and `x NOT IN (…)` are NULL for a NULL x.
-                e.lexpr.as_deref().map(|l| named(nulls_with(l), &op)).unwrap_or_default()
+                // `x IN (…)` and `x NOT IN (…)` are NULL for a NULL x. The server compares `x`
+                // with each value, or with all of them as an array of a type common to them and
+                // to `x`, which is one of theirs: either way a comparison of `x` with a value of
+                // its own type or with each value.
+                let items = list(e.rexpr.as_deref());
+                let mut pairs: Vec<(&Node, &Node)> = vec![(l, l)];
+                pairs.extend(items.iter().map(|i| (l, i)));
+                called(nulls_with(l), &op, &pairs)
             } else if [protobuf::AExprKind::AexprBetween as i32, protobuf::AExprKind::AexprNotBetween as i32].contains(&kind) {
-                e.lexpr.as_deref().map(|l| named(named(nulls_with(l), ">="), "<=")).unwrap_or_default()
+                // `x BETWEEN a AND b` is `x >= a AND x <= b`, and NOT BETWEEN `x < a OR x > b`.
+                let bounds = list(e.rexpr.as_deref());
+                let [low, high] = bounds.as_slice() else { return Vec::new() };
+                let (below, above) = if kind == protobuf::AExprKind::AexprBetween as i32 { (">=", "<=") } else { ("<", ">") };
+                called(called(nulls_with(l), below, &[(l, low)]), above, &[(l, high)])
             } else if [protobuf::AExprKind::AexprLike as i32, protobuf::AExprKind::AexprIlike as i32, protobuf::AExprKind::AexprSimilar as i32].contains(&kind) {
-                let mut found: Vec<Strict> = e.lexpr.as_deref().map(nulls_with).unwrap_or_default();
+                let mut found: Vec<Strict> = nulls_with(l);
                 if kind != protobuf::AExprKind::AexprSimilar as i32 {
                     found.extend(e.rexpr.as_deref().map(nulls_with).unwrap_or_default());
                 }
-                named(found, &op)
+                match e.rexpr.as_deref() {
+                    Some(r) => called(found, &op, &[(l, r)]),
+                    None => Vec::new(),
+                }
             } else {
                 test_nulls_with(node)
             }
@@ -1786,35 +2214,29 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
                 Some(NodeEnum::String(s)) => Some(s.sval.clone()),
                 _ => None,
             }).collect();
-            fields.map(|column| vec![Strict { column, names: Vec::new() }]).unwrap_or_default()
+            fields.map(|column| vec![Strict { column, calls: Vec::new() }]).unwrap_or_default()
         }
         Some(NodeEnum::AExpr(e)) if e.kind == protobuf::AExprKind::AexprOp as i32 => {
             let Some(op) = builtin_name(&e.name).filter(|o| POSTGRES_STRICT_OPERATORS.contains(&o.as_str())) else { return Vec::new() };
-            let mut found: Vec<Strict> = e.lexpr.iter().chain(e.rexpr.iter()).flat_map(|o| nulls_with(o)).collect();
-            for f in &mut found {
-                f.names.push(op.clone());
-            }
-            found
+            let operands: Vec<Node> = e.lexpr.iter().chain(e.rexpr.iter()).map(|o| (**o).clone()).collect();
+            let kind = if e.lexpr.is_some() { Kind::Infix } else { Kind::Prefix };
+            operands.iter().flat_map(nulls_with).map(|f| f.calling(kind, &op, operands.clone())).collect()
         }
         Some(NodeEnum::FuncCall(f)) if f.over.is_none() && f.agg_filter.is_none() && !f.agg_star && !f.agg_distinct && !f.func_variadic && f.agg_order.is_empty() => {
             let Some(name) = builtin_name(&f.funcname).filter(|n| POSTGRES_STRICT.contains(&n.as_str())) else { return Vec::new() };
-            let mut found: Vec<Strict> = f.args.iter().flat_map(nulls_with).collect();
-            for s in &mut found {
-                s.names.push(name.clone());
-            }
-            found
+            f.args.iter().flat_map(nulls_with).map(|s| s.calling(Kind::Function, &name, f.args.clone())).collect()
         }
         Some(NodeEnum::TypeCast(t)) => {
             let target = t.type_name.as_ref().filter(|n| n.array_bounds.is_empty() && !n.setof && !n.pct_type).and_then(|n| builtin_name(&n.names));
-            match target.filter(|n| POSTGRES_CASTS.iter().any(|(c, _)| c == n)) {
-                Some(target) => {
-                    let mut found = t.arg.as_deref().map(nulls_with).unwrap_or_default();
-                    for f in &mut found {
-                        f.names.push(format!("::{target}"));
-                    }
-                    found
-                }
-                None => Vec::new(),
+            match (target.filter(|n| POSTGRES_CASTS.iter().any(|(c, _)| c == n)), t.arg.as_deref()) {
+                (Some(target), Some(arg)) => nulls_with(arg)
+                    .into_iter()
+                    .map(|mut f| {
+                        f.calls.push(StrictCall { kind: Kind::Cast, name: target.clone(), args: vec![arg.clone()] });
+                        f
+                    })
+                    .collect(),
+                _ => Vec::new(),
             }
         }
         _ => Vec::new(),
@@ -2020,6 +2442,8 @@ fn reads_leaf(expr: &Expr) -> bool {
         Expr::JsonPath { base, .. } => reads_leaf(base),
         Expr::Array { items, .. } => items.iter().any(reads_leaf),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread => false,
+        Expr::Call(call) => call.args.iter().any(reads_leaf),
+        Expr::Trusted(t) => t.reads_leaf(),
     }
 }
 
@@ -2483,6 +2907,108 @@ mod tests {
         let before = Trust { jsonb_casts_raise: true, ..Default::default() };
         let p = plan("SELECT j::int4 FROM docs", Dialect::Postgres, &before);
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[col(false, oid::JSONB)])).non_null);
+    }
+
+    /// A trust that knows pgvector's `=`, `+` and `sum`, which no built-in type converts to, and
+    /// PostGIS's `=`, which `text` converts to, beside the built-ins over `int4` and `text`.
+    fn extended(param_types: Vec<u32>) -> Trust {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        let opaque = |kind: &str, name: &str, arity: u32| vec![json!(format!("opaque {kind}")), json!(name), Value::Null, json!(arity), json!(0)];
+        let builtin = |kind: &str, name: &str, args: &[u32], result: u32| vec![json!(format!("builtin {kind}")), json!(name), json!(args), json!(result), Value::Null];
+        let rows = vec![
+            opaque("b", "=", 2),
+            opaque("b", "+", 2),
+            opaque("f", "sum", 1),
+            vec![json!("user b"), json!("="), json!([GEOMETRY, GEOMETRY]), json!(0), json!(0)],
+            vec![json!("reach"), Value::Null, json!([oid::TEXT, oid::BYTEA]), json!(GEOMETRY), Value::Null],
+            builtin("b", "=", &[oid::INT4, oid::INT4], oid::BOOL),
+            builtin("b", "=", &[oid::TEXT, oid::TEXT], oid::BOOL),
+            builtin("b", "+", &[oid::INT4, oid::INT4], oid::INT4),
+            builtin("f", "sum", &[oid::INT4], oid::INT8),
+        ];
+        let mut trust = Trust { param_types, non_null_params: true, ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        trust
+    }
+
+    const VECTOR: u32 = 20000;
+    const GEOMETRY: u32 = 20200;
+
+    #[test]
+    fn a_shadowed_name_proves_what_the_built_in_does_where_the_operands_resolve_to_it() {
+        let trust = extended(vec![oid::TEXT]);
+        let facts = |sql: &str, leaves: &[DescribedColumn]| -> Vec<Fact> {
+            plan(sql, Dialect::Postgres, &trust).head.iter().map(|e| resolve(e.as_ref().expect("a claim"), Some(leaves))).collect()
+        };
+        let int = facts("SELECT a + 1 AS x, a = 2 AS y, a = 'x' AS z, (a + 1) = 2 AS n FROM t", &vec![col(false, oid::INT4); 4]);
+        assert!(int.iter().all(|f| f.non_null), "{int:?}");
+        assert_eq!(int[0].type_oid, Some(oid::INT4));
+        // A vector's own `=` and `+`, whatever they answer.
+        let vector = facts("SELECT a + a AS x, a = a AS y FROM t", &vec![col(false, VECTOR); 4]);
+        assert!(vector.iter().all(|f| !f.non_null), "{vector:?}");
+        // `text` converts to `geometry`, but `text = text` is an exact match; `text = bytea` is not.
+        assert!(facts("SELECT a = 'x' AS y FROM t", &[col(false, oid::TEXT)])[0].non_null);
+        assert!(!facts("SELECT a = b AS y FROM t", &[col(false, oid::TEXT), col(false, oid::BYTEA)])[0].non_null);
+        // Two untyped operands may resolve to any overload.
+        assert!(!facts("SELECT 'a' = 'b' AS y", &[])[0].non_null);
+        // A grouped `sum` of an `int4` is the built-in's, an `int8`.
+        let grouped = facts("SELECT sum(a) AS s FROM t GROUP BY b", &[col(false, oid::INT4)]);
+        assert_eq!(grouped[0], Fact { non_null: true, type_oid: Some(oid::INT8) });
+        // A trust that says nothing of the overloads proves nothing, as before.
+        let bare = Trust { shadowed: trust.shadowed.clone(), ..Trust::default() };
+        assert_eq!(plan("SELECT a + 1 FROM t", Dialect::Postgres, &bare).head[0], Some(Expr::Unknown));
+    }
+
+    #[test]
+    fn a_cast_to_a_type_a_user_casts_to_keeps_nullability_from_any_other_source() {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        // PostGIS's cast of a `geometry` to `text`, which takes `text` off the trusted targets.
+        let rows = vec![vec![json!("cast from"), json!("text"), json!([]), json!(oid::TEXT), Value::Null]];
+        let mut trust = Trust { cast_targets: Some(HashSet::new()), non_null_params: true, param_types: vec![oid::INT4], ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        let fact = |sql: &str, leaves: &[DescribedColumn]| resolve(plan(sql, Dialect::Postgres, &trust).head[0].as_ref().expect("a claim"), Some(leaves));
+        assert_eq!(fact("SELECT a::text FROM t", &[col(false, oid::INT4)]), Fact { non_null: true, type_oid: Some(oid::TEXT) });
+        assert!(fact("SELECT 'x'::text", &[]).non_null);
+        assert!(fact("SELECT $1::text", &[]).non_null);
+        assert!(!fact("SELECT a::text FROM t", &[col(false, GEOMETRY)]).non_null);
+        // A target no row names stays distrusted.
+        assert!(!fact("SELECT a::int8 FROM t", &[col(false, oid::INT4)]).non_null);
+    }
+
+    #[test]
+    fn a_cast_resolves_by_the_cast_targets_not_by_the_shadowed_names() {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        // A user's cast function from `bool` to `int8`: `int8` is no trusted target, and no name
+        // is shadowed.
+        let rows = vec![vec![json!("cast from"), json!("int8"), json!([oid::BOOL]), json!(oid::INT8), Value::Null]];
+        let mut trust = Trust { cast_targets: Some(["text".to_string()].into_iter().collect()), ..Trust::default() };
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        assert!(trust.shadowed.is_empty());
+        assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::BOOL)]), None);
+        assert_eq!(trust.resolves(Kind::Cast, "int8", &[Operand::Is(oid::INT4)]), Some(Some(oid::INT8)));
+        assert_eq!(trust.resolves(Kind::Cast, "text", &[Operand::Is(oid::BOOL)]), Some(None));
+    }
+
+    #[test]
+    fn a_strict_where_on_a_shadowed_name_narrows_where_its_operands_resolve_to_the_built_in() {
+        let trust = extended(vec![oid::TEXT]);
+        let fact = |sql: &str, leaves: &[DescribedColumn], at: usize| resolve(plan(sql, Dialect::Postgres, &trust).head[at].as_ref().expect("a claim"), Some(leaves)).non_null;
+        // The probe reads the WHERE's column: a `text` beside a parameter typed `text`.
+        assert!(fact("SELECT name FROM t WHERE name = $1", &[col(true, oid::TEXT)], 0));
+        assert!(!fact("SELECT name FROM t WHERE name = $1", &[col(true, VECTOR)], 0));
+        // The expressions that read the column are narrowed too.
+        let p = plan("SELECT name || 'x' AS shout FROM t WHERE name = $1", Dialect::Postgres, &trust);
+        assert!(p.reads_leaves());
+        let leaves = [col(true, oid::TEXT), col(true, oid::TEXT)];
+        assert!(resolve(p.head[0].as_ref().unwrap(), Some(&leaves)).non_null);
+        // No describe of the parameter: it may be of any type.
+        let untyped = extended(Vec::new());
+        assert!(!resolve(plan("SELECT name FROM t WHERE name = $1", Dialect::Postgres, &untyped).head[0].as_ref().unwrap(), Some(&[col(true, oid::TEXT)])).non_null);
+        // A NULL a probe wrote for a parameter is of any type too.
+        assert!(!fact("SELECT name FROM t WHERE name = NULL", &[col(true, oid::TEXT)], 0));
     }
 
     #[test]

@@ -1,0 +1,8 @@
+coalesce_eq.sql: many () -> { e: bool? }
+concat.sql: many () -> { c: text? }
+eq_literal.sql: many () -> { e: bool? }
+eq_self.sql: many () -> { e: bool? }
+lower_fn.sql: many () -> { l: text? }
+outer_join.sql: many () -> { title: text, plain: text? }
+plus.sql: many () -> { p: int4? }
+where_narrow.sql: many () -> { n: text? }

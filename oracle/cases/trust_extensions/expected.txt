@@ -1,0 +1,13 @@
+arithmetic.sql: many () -> { a1: int4, a2: int4, a3: int4, neg: int4, s: numeric, nested: int4 }
+check_values.sql: many () -> { status: 'active' | 'banned' }
+comparisons.sql: many () -> { gt: bool, eq: bool, ne: bool, le: bool, vc: bool, l: bool, nested: bool }
+concatenation.sql: many () -> { e: text, n: text?, c: text }
+extension_concat.sql: many () -> { merged: hstore?, longer: ltree? }
+extension_params.sql: many (h: citext) -> { handle: citext? }
+extension_types.sql: many () -> { h: bool?, has: bool?, inside: bool?, anc: bool?, lt: bool?, left: bool?, m: citext? }
+grouped.sql: many () -> { s: int8, m: text, n: int8 }
+key_literal.sql: maybeOne () -> { email: text }
+outer_join.sql: many (e: text) -> { title: text, email: text, age: int4 }
+outer_join_extension.sql: many () -> { title: text, email: text?, age: int4? }
+total.sql: one () -> { s: int8? }
+where_param.sql: many (n: text) -> { name: text, shout: text }

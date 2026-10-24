@@ -1,2 +1,2 @@
-builtin_equality.sql: many () -> { title: text, name: text?, email: text? }
+builtin_equality.sql: many () -> { title: text, name: text, email: text }
 user_equality.sql: many () -> { title: text, name: text?, email: text? }
