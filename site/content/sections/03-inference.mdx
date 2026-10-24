@@ -466,11 +466,13 @@ Also a key match:
 </Dialect>
 <Dialect value="MySQL">
 
-Only a match on one table's own primary or unique key counts, with or without a `distinct` or `group by`. These give `many`:
+Also a key match:
 
-- a joined table's key
-- a unique index on an expression
-- a `distinct` or `group by` over pinned values that are not a key
+- a join on the joined table's numeric key
+- a `distinct` or `group by` over values the `where` pins
+- a derived table, a `with` query or a view that keeps a key
+
+A unique index on an expression gives `many`.
 
 </Dialect>
 <Dialect value="SQLite">
