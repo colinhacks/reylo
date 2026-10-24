@@ -142,7 +142,7 @@ It resolves to the rows, shaped by how many the query can return:
 | An `insert`, `update` or `delete` without `returning` | `void` |
 | Anything else | `Row[]` |
 
-An imported query also has `.runSync()`, `.try()`, `.with()`, `.sql`, `.raw` and `.source` ([Usage](https://reylo.dev/#usage)).
+An imported query also has `.runSync()`, `.try()`, `.with()`, `.sql`, `.raw` and `.source` ([Usage](https://reylo.dev/#usage)). Every query Reylo runs is published on Node's tracing channel `reylo:query`, for a tracer or a logger to subscribe to ([Tracing](https://reylo.dev/#tracing)).
 
 ## What Reylo infers
 
