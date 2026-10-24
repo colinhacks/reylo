@@ -302,14 +302,17 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
   };
   try {
     await db.unsafe(`create table a (x int, s text); create table b (x int, s text);
-      create function skip() returns trigger language plpgsql as 'begin return null; end'`);
+      create function skip() returns trigger language plpgsql as 'begin return null; end';
+      create function to_one(boolean) returns int8 language sql as 'select 1::int8';
+      create function plus(int, int) returns int language sql as 'select $1 + $2'`);
     // A query the server refuses gives "unverified <pid> <time>", a value no entry ever matches.
     const first = await fingerprint();
     assert.match(first ?? "", /^[0-9a-f]{16}$/);
     assert.equal(await fingerprint(), first);
     // Each change touches only a catalog the row count or the trust check reads: rows of b are read
     // by a scan of a, a BEFORE ROW trigger can skip an INSERT's row and a rule can replace it, a
-    // key holds only under the index's collation, and a user's operator is not the built-in one.
+    // key holds only under the index's collation, and a user's operator, cast, default argument,
+    // volatility or strictness decides which call the server makes and what it may answer.
     let last = first;
     for (const change of [
       "alter table b inherit a",
@@ -318,6 +321,11 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create rule nothing as on insert to b do instead nothing",
       `alter table a alter column s type text collate "C"`,
       "create operator === (leftarg = int, rightarg = int, function = int4eq)",
+      "create cast (boolean as int8) with function to_one(boolean)",
+      "drop cast (boolean as int8); create cast (boolean as int8) with function to_one(boolean) as implicit",
+      "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
+      "alter function plus(int, int) immutable",
+      "alter function plus(int, int) strict",
     ]) {
       await db.unsafe(change);
       const next = await fingerprint();
