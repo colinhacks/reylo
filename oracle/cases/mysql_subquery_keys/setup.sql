@@ -13,3 +13,5 @@ create view post_authors as select p.id, p.title, u.name from posts p join users
 create view author_counts as select author_id, count(*) as n from posts group by author_id;
 create view recent_posts as select * from public_posts where id > 10;
 create view post_tags as select p.id, t.tag from posts p join tags t on t.post_id = p.id;
+create table scores (id bigint primary key, score double not null, rate double not null unique);
+create view swapped (title, id) as select id, title from posts;

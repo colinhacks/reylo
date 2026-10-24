@@ -19,8 +19,9 @@
 //! ([`output_keys`]), and pin it as a table's pin the table.
 //!
 //! An equality pins a key column only where it compares the column as it is: with a value of the
-//! column's class ([`compares_as_is`]), and with a column only where both are numbers, since two
-//! strings of different collations compare under one the server picks.
+//! column's class ([`compares_as_is`]), and with a column only where both are exact numbers, since
+//! two strings of different collations compare under one the server picks, and an exact number
+//! compared with a FLOAT or DOUBLE compares as a double.
 
 use crate::mysql::{compares_as_is, const_limit, deterministic, is_variable, one_before_limit, reads_column, select_of, value_class, Class, Keys};
 use sqlparser::ast::{self, Distinct, Expr, GroupByExpr, JoinConstraint, JoinOperator, ObjectNamePart, Query, Select, SelectItem, SelectItemQualifiedWildcardKind, SetExpr, TableFactor, TableWithJoins};
@@ -183,7 +184,12 @@ impl<'a> From<'a> {
                     },
                     // A view's statement sees none of the WITH queries of the statement that reads it.
                     None => match self.keys.view(&table) {
-                        Some(view) => Source::Query(view, Vec::new()),
+                        // The stored definition leaves out a view's column list, which renames its
+                        // columns: one whose columns are not the definition's own names is not read.
+                        Some(view) => {
+                            let named: Option<Vec<String>> = self.keys.columns(&table).map(|c| c.iter().map(|(name, _)| name.clone()).collect());
+                            if named.is_some() && named == output_names(view, &[], self.keys) { Source::Query(view, Vec::new()) } else { Source::Other }
+                        }
                         None => Source::Table(table),
                     },
                 };
@@ -337,7 +343,7 @@ impl<'a> From<'a> {
         if !reads_column(value) {
             return deterministic(value) && compares_as_is(class, value_class(value));
         }
-        // Another column: both must be numbers.
+        // Another column: both must be exact numbers.
         match self.place_expr(value) {
             Some(Placed::Item(j, c)) => class == Some(Class::Number) && self.class(j, &c) == Some(Class::Number),
             _ => false,
