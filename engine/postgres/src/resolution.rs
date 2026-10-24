@@ -114,6 +114,9 @@ pub struct Overloads {
     /// Per built-in type name a user's cast function targets, the type's oid and the built-in
     /// types a cast to it from may call such a function.
     casts: HashMap<String, (u32, HashSet<u32>)>,
+    /// Per type of a user's that a unique index's key has, whether the `=` an untyped value
+    /// beside it resolves to is the btree equality of every such key's operator family.
+    keys: HashMap<u32, bool>,
 }
 
 impl Overloads {
@@ -163,6 +166,11 @@ impl Overloads {
                         }
                     }
                     "any" => out.any.extend(a),
+                    "key" => {
+                        if let (Some(ty), Some(ok)) = (a, b) {
+                            out.keys.insert(ty, ok == 1);
+                        }
+                    }
                     "base" => {
                         if let (Some(domain), Some(base)) = (a, b) {
                             out.bases.insert(domain, base);
@@ -279,6 +287,13 @@ impl Overloads {
             return None;
         }
         Some(None)
+    }
+
+    /// Whether the `=` an untyped value beside a column of `ty`, a type of a user's, resolves to is
+    /// the btree equality of every unique index's key of that type; `None` where no unique index
+    /// has such a key, or the catalog did not say.
+    pub fn key_equality(&self, ty: u32) -> Option<bool> {
+        self.keys.get(&ty).copied()
     }
 
     /// Whether a user's function converts some built-in type to another implicitly, which a call

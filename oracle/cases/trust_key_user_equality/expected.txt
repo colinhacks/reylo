@@ -1,0 +1,4 @@
+exact_type.sql: many () -> { name: text }
+int4_literal.sql: maybeOne () -> { name: text }
+literal.sql: many () -> { name: text }
+param.sql: many (id: int8) -> { name: text }

@@ -1,0 +1,5 @@
+builtin_key.sql: maybeOne (id: int8) -> { n: text }
+citext_key.sql: maybeOne () -> { n: text }
+citext_key_param.sql: maybeOne (h: citext) -> { n: text }
+domain_key.sql: many () -> { n: text }
+domain_key_param.sql: many (d: text) -> { n: text }
