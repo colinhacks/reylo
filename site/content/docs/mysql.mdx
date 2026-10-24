@@ -388,6 +388,21 @@ from (
 
 </Inferred>
 
+**Window functions**
+
+An aggregate over a window follows its argument, and `json_arrayagg` over one is never null. A frame that can leave out the current row, such as `rows between 1 following and 2 following`, or a `range` frame with an offset keeps it nullable.
+
+<Inferred>
+
+```sql file="my_null_window.sql" dialect="mysql"
+select id,
+  sum(total) over (order by placed_at) as running_total,
+  max(ships_on) over (partition by user_id) as last_ships_on
+from orders
+```
+
+</Inferred>
+
 **`WITH ROLLUP`**
 
 A `WITH ROLLUP` adds summary rows whose grouped columns are `NULL`, and the types include `null`.
