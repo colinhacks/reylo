@@ -9,33 +9,15 @@ import path from 'node:path';
 import { AnswerCache } from '../../../src/engine-core.ts';
 import { pageFiles } from '../page-files.ts';
 import { collectFiles, moduleTypes, pagePostgresSchema, readModules } from '../remark-mapper.ts';
-import { formatType, resultType } from '../type-format.ts';
+import { formatType, resultType } from '../../../src/type-format.ts';
 import { analyzeStatement, type LiveResult } from './analyze.ts';
-import { catalog, FUNCTIONS_QUERY, TABLES_QUERY, TYPES_QUERY, type Catalog } from './catalog.ts';
+import { catalog, CATALOG_QUERIES, type Catalog } from '../../../src/play-catalog.ts';
 import { instantiateEngine } from './engine.ts';
-import { loadHighlighter, tokens, type Token } from './highlight.ts';
-import { pgliteIo } from './pg-io.ts';
+import type { Example, PlayData } from './app.tsx';
+import { loadHighlighter, tokens } from './highlight.ts';
+import { pgliteIo } from '../../../src/pglite-io.ts';
 
-export type Example = {
-  /** The subsection's heading. */
-  title: string;
-  /** Its anchor on the main page, which the address names: `?example=nested-fetching`. */
-  slug: string;
-  sql: string;
-  sqlTokens: Token[][];
-  result: LiveResult;
-  params?: Token[][];
-  returns: Token[][];
-};
-
-export type PlayData = {
-  schema: Token[][];
-  examples: Example[];
-  /** The slug of the example the page opens with. */
-  start: string;
-  /** What the editor completes. */
-  catalog: Catalog;
-};
+export type { Example, PlayData } from './app.tsx';
 
 /** The example the page opens with: nested JSON, a nullable object and a cardinality. */
 const START = 'nested-fetching';
@@ -99,8 +81,14 @@ export async function playData(): Promise<PlayData> {
     // The schema's comments follow their code by two spaces, where the docs line them up in a
     // column: the playground's pane is narrower than that column.
     const schema = pagePostgresSchema().replace(/(\S)[ \t]{2,}--/g, '$1  --');
-    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: catalog(await io.query(TABLES_QUERY, []), await io.query(FUNCTIONS_QUERY, []), await io.query(TYPES_QUERY, [])) };
+    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: await readCatalog(io) };
   } finally {
     await pg.close();
   }
+}
+
+/** The playground's Postgres's catalog, as `reylo play` reads a database's. */
+async function readCatalog(io: { query(sql: string, params: unknown[]): Promise<unknown[][]> }): Promise<Catalog> {
+  const q = CATALOG_QUERIES.postgres;
+  return catalog('postgres', await io.query(q.tables, []), await io.query(q.functions!, []), await io.query(q.types!, []));
 }

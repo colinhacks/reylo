@@ -4,7 +4,7 @@
 // tokens, not parsed: a half-typed statement is the usual case, and its clauses are enough to know
 // what can follow.
 import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete';
-import type { Catalog, Table } from './catalog.ts';
+import type { Catalog, Table } from '../../../src/play-catalog.ts';
 
 type Token = { text: string; lower: string; kind: 'word' | 'quoted' | 'string' | 'number' | 'param' | 'op' | 'punct' | 'comment'; from: number; to: number; depth: number };
 

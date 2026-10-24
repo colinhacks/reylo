@@ -130,6 +130,9 @@ jobs:
         working-directory: packages/postgres
       - run: nub install --frozen-lockfile
         working-directory: packages/mysql
+      # The docs site's toolchain, which builds reylo play's page into the reylo package.
+      - run: nub install --frozen-lockfile
+        working-directory: site
       # The drivers the live tests load, and the Jest and Vitest projects the transformer's tests run.
       - run: nub install --frozen-lockfile
         working-directory: lab/drivers

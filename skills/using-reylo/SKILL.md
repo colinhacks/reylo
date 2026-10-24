@@ -37,6 +37,7 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 
 ## After a change
 
+- To read what Reylo infers for a statement without importing it, run `npx reylo play` in the background and ask `GET http://127.0.0.1:4983/api/analyze?q=<sql>` (URL-encoded): its params, return type, cardinality and errors by line and column, as JSON, from the analysis the type check runs. Nothing is run against the database (https://reylo.dev/#local-playground).
 - Run the type check. An error in a `.sql` file shows at its line and column, and `tsc` holds back the TypeScript errors while one remains, so fix the SQL first (https://reylo.dev/#errors).
 - After a migration, the type check reads the new schema: a dropped column is an error in each `.sql` file that names it and in the code that reads it. Reylo runs no migrations; use the project's own tool.
 - `.reylo/` is Reylo's cache of each query's analysis. Never edit it or commit it.

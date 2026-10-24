@@ -9,11 +9,12 @@ import engineUrl from '../../../packages/postgres/engine.wasm?url';
 import pgliteWasmUrl from '../../.live/pglite.wasm?url';
 import pgliteDataUrl from '../../.live/pglite-data.tar?url';
 import snapshotUrl from '../../.live/postgres.tar?url';
-import { analyzeStatement, type LiveResult } from './analyze.ts';
+import { analyzeStatement } from './analyze.ts';
+import type { FromChannel } from './app.tsx';
 import { instantiateEngine } from './engine.ts';
-import { pgliteIo } from './pg-io.ts';
+import { pgliteIo } from '../../../src/pglite-io.ts';
 
-export type FromWorker = { kind: 'ready'; ms: number; version: string } | { kind: 'result'; result: LiveResult } | { kind: 'failed'; message: string };
+export type FromWorker = FromChannel;
 
 // The smallest valid module: PGlite fetches initdb.wasm unless it is handed one, and a data
 // directory loaded from the snapshot never runs initdb.
@@ -62,11 +63,10 @@ async function pump() {
   running = false;
 }
 
-const started = performance.now();
 load().then(
   async ({ pg }) => {
     const version = (await pg.query<{ v: string }>("select current_setting('server_version') as v")).rows[0]!.v;
-    postMessage({ kind: 'ready', ms: performance.now() - started, version } satisfies FromWorker);
+    postMessage({ kind: 'ready', label: `Postgres ${version.split('.')[0]} via PGlite` } satisfies FromWorker);
   },
   (e) => postMessage({ kind: 'failed', message: String((e as Error)?.message ?? e) } satisfies FromWorker),
 );

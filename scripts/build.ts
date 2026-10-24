@@ -1,8 +1,8 @@
 // Builds every publishable package into dist/, one directory each, published with
 // `npm publish dist/<name>`:
 // - dist/reylo: the run time and the entry points a project names (tsconfig.build.json), compiled to
-//   JavaScript with their declarations, the README, and a package.json whose exports and content
-//   mapper name the compiled files. Node strips no types under node_modules, so an installed copy
+//   JavaScript with their declarations, the README, `reylo play`'s page in play/ (built from site/),
+//   and a package.json whose exports and content mapper name the compiled files. Node strips no types under node_modules, so an installed copy
 //   that ships TypeScript fails to load in the mapper, the bundler adapters and at run time. It
 //   carries no engine and no build step: each database's is a package of its own, an optional peer
 //   at reylo's exact version, which the entry points find from the project (src/engine-package.ts).
@@ -15,7 +15,7 @@
 // mistake.
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { build as bundle, transformSync, type Plugin } from "esbuild";
 
@@ -60,9 +60,19 @@ if (source.length) throw new Error(`dist/reylo holds TypeScript sources: ${sourc
 const wasm = files.filter((f) => f.endsWith(".wasm"));
 if (wasm.length) throw new Error(`dist/reylo holds an engine: ${wasm.join(", ")}`);
 // Nor any of the build-time half, which a run-time module would drag in by importing it.
-const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|engine-core|loader|commands|mapper-server)\.js$/.test(f));
+const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|engine-core|loader|commands|mapper-server|play|pglite-io)\.js$/.test(f));
 if (tooling.length) throw new Error(`dist/reylo holds the engine packages' build steps: ${tooling.join(", ")}`);
 console.log(`dist/reylo: ${files.length} files, package ${built.name}@${built.version}`);
+
+// `reylo play`'s page (src/play.ts), built from the docs site's playground with the site's own
+// toolchain into dist/reylo/play/, which needs the site's install (\`nub install\` in site/).
+const site = join(root, "site");
+if (!existsSync(join(site, "node_modules", "vite"))) throw new Error("site/ is not installed, and reylo play's page is built with its toolchain: run nub install in site/");
+execFileSync("nub", ["run", "build:play"], { cwd: site, env: { ...process.env, REYLO_PLAY_OUT: join(reylo, "play") }, stdio: ["ignore", "ignore", "inherit"] });
+const page = readdirSync(join(reylo, "play"), { recursive: true, encoding: "utf8" });
+if (!page.includes("index.html")) throw new Error("dist/reylo/play has no index.html");
+const pageBytes = page.reduce((n, f) => n + (statSync(join(reylo, "play", f)).isFile() ? statSync(join(reylo, "play", f)).size : 0), 0);
+console.log(`dist/reylo/play: ${page.length} files, ${Math.round(pageBytes / 1024)} KB`);
 
 // Each engine package's JavaScript is bundled into a few files with everything it reads, which also
 // leaves out the comments.

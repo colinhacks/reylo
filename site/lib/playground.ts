@@ -21,7 +21,7 @@ import { schemaType } from '../scripts/schema-type.ts';
 import { mdxOptions } from './mdx-options.ts';
 import { pageFiles } from './page-files.ts';
 import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect } from './remark-mapper.ts';
-import { formatType, resultType } from './type-format.ts';
+import { formatType, resultType } from '../../src/type-format.ts';
 
 const site = path.resolve(import.meta.dirname, '..');
 const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];

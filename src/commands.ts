@@ -1,4 +1,5 @@
-// The commands of the `reylo` CLI (src/cli.ts), which each engine package carries (src/tooling.ts).
+// The commands of the `reylo` CLI (src/cli.ts), which each engine package carries (src/tooling.ts):
+// `reylo generate`, here, and `reylo play` (src/play.ts).
 // `reylo generate`: analyzes every `.sql` file of the project into `.reylo/`, the cache that the type
 // check and the build steps share, and prints each file with a mark and every error in full. A
 // build that runs where the database cannot be reached (a CI job, a container build) runs on what
@@ -9,6 +10,7 @@ import { glob } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { styleText } from "node:util";
 import { Session } from "./analyze.ts";
+import { play, PLAY_USAGE } from "./play.ts";
 import { findProjectFile, PROJECT_FILE } from "./project.ts";
 
 const USAGE = `Usage: reylo generate [paths...] [--force]
@@ -213,10 +215,11 @@ async function generate(args: string[]): Promise<number> {
 export async function runCli(args: string[]): Promise<number> {
   const [command, ...rest] = args;
   if (command === "generate") return generate(rest);
+  if (command === "play") return play(rest);
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
-    console.log(USAGE);
+    console.log(`${USAGE}\n\n${PLAY_USAGE}`);
     return 0;
   }
-  console.error(`reylo: unknown command ${command}\n\n${USAGE}`);
+  console.error(`reylo: unknown command ${command}\n\n${USAGE}\n\n${PLAY_USAGE}`);
   return 2;
 }
