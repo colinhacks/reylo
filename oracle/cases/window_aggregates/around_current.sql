@@ -1,0 +1,1 @@
+select sum(p.id) over (order by p.id rows between 1 preceding and 1 following) as rows_around, sum(p.id) over (order by p.id groups between 1 preceding and current row) as groups_back, sum(p.id) over (order by p.id rows between current row and unbounded following) as rest, sum(p.id) over (order by p.id rows unbounded preceding) as running from posts p

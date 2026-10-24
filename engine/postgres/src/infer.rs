@@ -7,7 +7,9 @@
 //! though, and a small set of SQL constructs carries its own nullability and type:
 //!
 //! - `count(…)` is never NULL, over no rows and under `GROUP BY` alike. Every other aggregate
-//!   is NULL over no rows and proves nothing.
+//!   is NULL over no rows and proves nothing, unless it always has a row: under a plain `GROUP
+//!   BY`, or as a window function whose frame always holds the current row, it follows its
+//!   argument.
 //! - A literal other than `NULL` is never NULL.
 //! - A cast, a `||`, a comparison, `AND`/`OR`/`NOT`, and (on Postgres) arithmetic are non-null
 //!   when every operand is. SQLite turns a division by zero and a NaN into NULL, so it gets no
@@ -410,11 +412,15 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
         _ => None,
     };
     let plain_group_by = matches!(top, NodeEnum::SelectStmt(s) if !grouped && !s.group_clause.is_empty());
+    let windows: &[Node] = match top {
+        NodeEnum::SelectStmt(s) => &s.window_clause,
+        _ => &[],
+    };
     let withs = Withs::default().with(with.as_ref(), columns);
     // The old and the new row of a RETURNING, with the relations a bare name is a column of first.
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows };
     let mut plan = Plan::default();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -800,7 +806,7 @@ fn array_elements(node: &Node) -> Option<Vec<&Node>> {
 /// where the SELECT stands inside another statement: an aggregate counts there only when it is
 /// that SELECT's own ([`Level::owns`]).
 pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>) -> bool {
-    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None }.aggregates(expr, true, level)
+    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[] }.aggregates(expr, true, level)
 }
 
 impl Ty {
@@ -842,6 +848,8 @@ struct Reader<'a> {
     /// them all: what says a bare name in a subquery's aggregate is an item's whole row
     /// ([`Level::within`]).
     scope: Option<Vec<Level>>,
+    /// The `WINDOW` clause of the SELECT the reader stands in, which `OVER w` names a window of.
+    windows: &'a [Node],
 }
 
 impl Reader<'_> {
@@ -1088,10 +1096,11 @@ impl Reader<'_> {
             (Dialect::Sqlite, "total", 1) => Expr::Nullable(Box::new(Expr::NonNull(Some(oid::FLOAT8)))),
             // "The ifnull() function is equivalent to coalesce() with two arguments."
             (Dialect::Sqlite, "ifnull", 2) => Expr::Any(f.args.iter().map(|a| self.read(a)).collect(), Ty::Shared),
-            // Under a plain GROUP BY every group has a row, so an aggregate that is NULL only over
-            // no rows or only NULLs follows its argument. A FILTER can leave it no rows, a window
-            // frame can be empty, and SQLite's sum of `1e999` and `-1e999` is NaN, stored as NULL.
-            (Dialect::Postgres, n, 1 | 2) if self.grouped && f.over.is_none() && f.agg_filter.is_none() && self.trust.builtin(n) && (POSTGRES_GROUPED.contains(&n) || POSTGRES_GROUPED_NEVER_NULL.contains(&n) || POSTGRES_GROUPED_JSON.contains(&n)) => {
+            // Under a plain GROUP BY every group has a row, and a window frame that always holds
+            // the current row has that row, so there an aggregate that is NULL only over no rows
+            // or only NULLs follows its argument. A FILTER can leave it no rows, any other frame
+            // can be empty, and SQLite's sum of `1e999` and `-1e999` is NaN, stored as NULL.
+            (Dialect::Postgres, n, 1 | 2) if f.agg_filter.is_none() && self.has_a_row(f) && self.trust.builtin(n) && (POSTGRES_GROUPED.contains(&n) || POSTGRES_GROUPED_NEVER_NULL.contains(&n) || POSTGRES_GROUPED_JSON.contains(&n)) => {
                 if POSTGRES_GROUPED_JSON.contains(&n) {
                     Expr::NonNull(None)
                 } else if POSTGRES_GROUPED_NEVER_NULL.contains(&n) {
@@ -1130,6 +1139,16 @@ impl Reader<'_> {
                 Some(&ty) => Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), Ty::Is(ty)),
                 None => Expr::Unknown,
             },
+        }
+    }
+
+    /// Whether an aggregate call always has a row to aggregate: a plain one under a plain `GROUP
+    /// BY`, and a window call whose frame always holds the current row
+    /// ([`frame_holds_current_row`]).
+    fn has_a_row(&self, f: &protobuf::FuncCall) -> bool {
+        match f.over.as_deref() {
+            Some(over) => frame_holds_current_row(over, self.windows),
+            None => self.grouped,
         }
     }
 
@@ -1179,7 +1198,7 @@ impl Reader<'_> {
             Some(outside) => level.within(outside.clone()),
             None => level,
         };
-        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope };
+        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause };
         let value = inner_reader.read(inner);
         if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level))) {
             value
@@ -1802,10 +1821,49 @@ fn nulls_with(node: &Node) -> Vec<Strict> {
     }
 }
 
+/// Whether the frame of an `OVER` clause always holds the current row ([`holds_current_row`]),
+/// given the `WINDOW` clause of the SELECT it stands in. `OVER w` takes the frame of the window
+/// `w` that clause defines, and nothing where it defines none; `OVER (w …)` copies `w`'s
+/// partitioning and ordering but "always uses its own frame clause" (the server refuses to copy a
+/// window that has one), as a window defined `AS (w …)` does.
+pub(crate) fn frame_holds_current_row(over: &protobuf::WindowDef, windows: &[Node]) -> bool {
+    let frame = if over.name.is_empty() {
+        Some(over.frame_options)
+    } else {
+        windows.iter().find_map(|w| match w.node.as_ref() {
+            Some(NodeEnum::WindowDef(w)) if w.name == over.name => Some(w.frame_options),
+            _ => None,
+        })
+    };
+    frame.is_some_and(holds_current_row)
+}
+
+/// Whether a window frame, as the parser's `frameOptions` bits spell it (`FRAMEOPTION_*` in
+/// `parsenodes.h`), holds the current row of every row it is computed for. The default frame,
+/// `RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW`, runs through the current row's last peer,
+/// and the whole partition without `ORDER BY`. A frame that starts `UNBOUNDED PRECEDING`, `n
+/// PRECEDING` or at `CURRENT ROW` and ends at `CURRENT ROW`, `n FOLLOWING` or `UNBOUNDED
+/// FOLLOWING` holds it in every mode: an offset "must be non-null and non-negative" (or the
+/// statement fails), and in RANGE mode the current row's value is no distance from itself: a
+/// NULL is a peer of the NULLs, and a NaN or an infinity, an infinite offset from it included,
+/// reaches its own peers (measured on PostgreSQL 18 over float8, numeric and timestamptz). A start
+/// `n FOLLOWING` or an end `n PRECEDING` can leave the row out, and `EXCLUDE CURRENT ROW` and
+/// `EXCLUDE GROUP` do; `EXCLUDE TIES` keeps it. The two bounds the parser refuses (a start
+/// `UNBOUNDED FOLLOWING`, an end `UNBOUNDED PRECEDING`) are refused here too.
+fn holds_current_row(options: i32) -> bool {
+    const START_OFFSET_FOLLOWING: i32 = 0x02000;
+    const END_OFFSET_PRECEDING: i32 = 0x01000;
+    const START_UNBOUNDED_FOLLOWING: i32 = 0x00080;
+    const END_UNBOUNDED_PRECEDING: i32 = 0x00040;
+    const EXCLUDE_CURRENT_ROW: i32 = 0x08000;
+    const EXCLUDE_GROUP: i32 = 0x10000;
+    options & (START_OFFSET_FOLLOWING | END_OFFSET_PRECEDING | START_UNBOUNDED_FOLLOWING | END_UNBOUNDED_PRECEDING | EXCLUDE_CURRENT_ROW | EXCLUDE_GROUP) == 0
+}
+
 /// A bare `VALUES (…), (…)` arm: a column is non-null when it is in every row.
 fn values_plan(s: &SelectStmt, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let withs = Withs::default().with(s.with_clause.as_ref(), columns);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[] };
     let mut rows: Vec<Vec<Expr>> = Vec::new();
     for row in &s.values_lists {
         let Some(NodeEnum::List(list)) = row.node.as_ref() else { return Plan::default() };
@@ -2282,6 +2340,54 @@ mod tests {
     }
 
     #[test]
+    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
+        let one = |sql: &str, non_null: bool| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(&[col(!non_null, oid::INT4)])).non_null;
+        // No frame clause, with ORDER BY or without, and every frame from at or before the current
+        // row to at or after it, in every mode.
+        for over in [
+            "()",
+            "(ORDER BY a)",
+            "(PARTITION BY a)",
+            "(ORDER BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)",
+            "(ORDER BY a ROWS UNBOUNDED PRECEDING)",
+            "(ORDER BY a ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)",
+            "(ORDER BY a RANGE BETWEEN 5 PRECEDING AND 0 FOLLOWING)",
+            "(ORDER BY a GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW)",
+            "(ORDER BY a RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES)",
+            "(ORDER BY a RANGE UNBOUNDED PRECEDING EXCLUDE NO OTHERS)",
+        ] {
+            for agg in ["sum", "max", "min", "avg", "bit_or", "array_agg"] {
+                let sql = format!("SELECT {agg}(a) OVER {over} FROM t");
+                assert!(one(&sql, true), "{sql}");
+                // `array_agg` is an array of whatever its rows hold, NULLs included.
+                assert_eq!(one(&sql, false), agg == "array_agg", "{sql}: a NULL argument");
+            }
+        }
+        assert!(one("SELECT string_agg(a::text, ',') OVER () FROM t", true));
+        assert!(one("SELECT jsonb_agg(a) OVER (ORDER BY a) FROM t", false), "a JSON array of NULLs is an array");
+        // A frame that can leave the current row out, and a FILTER, can leave it no row.
+        for over in [
+            "(ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING)",
+            "(ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)",
+            "(ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW)",
+            "(ORDER BY a RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP)",
+        ] {
+            let sql = format!("SELECT sum(a) OVER {over} FROM t");
+            assert!(!one(&sql, true), "{sql}");
+        }
+        assert!(!one("SELECT sum(a) FILTER (WHERE a > 1) OVER () FROM t", true));
+        // A named window lends its frame to `OVER w`; `OVER (w …)` and `AS (w …)` use their own.
+        assert!(one("SELECT sum(a) OVER w FROM t WINDOW w AS (ORDER BY a)", true));
+        assert!(!one("SELECT sum(a) OVER w FROM t WINDOW w AS (ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING)", true));
+        assert!(!one("SELECT sum(a) OVER w FROM t WINDOW v AS (ORDER BY a)", true), "no window w");
+        assert!(one("SELECT sum(a) OVER (w ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t WINDOW w AS (PARTITION BY a)", true));
+        assert!(!one("SELECT sum(a) OVER (w ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t WINDOW w AS (PARTITION BY a)", true));
+        assert!(one("SELECT sum(a) OVER v FROM t WINDOW w AS (PARTITION BY a), v AS (w ORDER BY a ROWS 1 PRECEDING)", true));
+        // A plain aggregate with no GROUP BY is still NULL over no rows.
+        assert!(!one("SELECT sum(a) FROM t", true));
+    }
+
+    #[test]
     fn sqlite_has_no_total_arithmetic() {
         // `1/0` and `1e999 - 1e999` are both NULL on SQLite.
         assert!(!first(&lite("SELECT 1 / 0")).non_null);
@@ -2584,14 +2690,15 @@ mod tests {
 
     #[test]
     fn a_group_is_never_empty_so_its_aggregate_follows_the_argument() {
-        let p = pg("SELECT user_id, sum(views) AS total, max(views) AS top, array_agg(title) AS titles, sum(views) FILTER (WHERE views > 0) AS some, sum(views) OVER () AS running FROM posts GROUP BY user_id");
+        let p = pg("SELECT user_id, sum(views) AS total, max(views) AS top, array_agg(title) AS titles, sum(views) FILTER (WHERE views > 0) AS some, sum(views) OVER (ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING) AS next FROM posts GROUP BY user_id");
         // One leaf per column reference read: five of `views` here.
         let views = [col(false, oid::INT4), col(false, oid::INT4), col(false, oid::INT4), col(false, oid::INT4), col(false, oid::INT4)];
         assert_eq!(p.head[0], None);
         assert!(resolve(p.head[1].as_ref().unwrap(), Some(&views)).non_null);
         assert!(resolve(p.head[2].as_ref().unwrap(), Some(&views)).non_null);
         assert!(resolve(p.head[3].as_ref().unwrap(), Some(&views)).non_null);
-        // A FILTER can leave the group no rows, and a window frame can be empty.
+        // A FILTER can leave the group no rows, and a frame that leaves out the current row can be
+        // empty.
         assert!(!resolve(p.head[4].as_ref().unwrap(), Some(&views)).non_null);
         assert!(!resolve(p.head[5].as_ref().unwrap(), Some(&views)).non_null);
         // A nullable argument, no GROUP BY, a grouping set, or SQLite (a sum can be NaN, which it stores as NULL).

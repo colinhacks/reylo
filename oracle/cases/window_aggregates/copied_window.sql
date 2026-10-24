@@ -1,0 +1,1 @@
+select sum(p.id) over (w rows between 1 preceding and 1 following) as around, sum(p.id) over (w rows between 2 preceding and 1 preceding) as before from posts p window w as (partition by p.user_id order by p.id)

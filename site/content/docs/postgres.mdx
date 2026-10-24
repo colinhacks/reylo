@@ -575,14 +575,15 @@ select (select count(*) from orders) as orders,
 
 **Window functions**
 
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row.
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
 
 <Inferred>
 
 ```sql file="pg_null_window.sql"
 select id,
   lag(placed_at) over (order by placed_at) as previous,
-  row_number() over (order by placed_at) as n
+  row_number() over (order by placed_at) as n,
+  sum(total) over (order by placed_at) as running_total
 from orders
 ```
 

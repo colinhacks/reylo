@@ -1,0 +1,1 @@
+select sum(p.id) over (order by p.score range between 'infinity' preceding and 1 following) as by_score, sum(p.id) over (order by p.weight desc range between 0 preceding and 0 following) as by_weight, sum(p.id) over (order by p.published_at range between '1 day' preceding and '1 day' following) as by_day from posts p
