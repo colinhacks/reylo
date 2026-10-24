@@ -201,17 +201,18 @@ export class Session {
     const entry = options.force ? undefined : readEntry(file);
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
+    const io = this.#connection();
     try {
-      analysis = await engine.analyze(sql, this.project.dialect, await this.#connection(), this.#answers);
+      analysis = await engine.analyze(sql, this.project.dialect, await io, this.#answers);
     } catch (e) {
       // A dead connection is reopened by the next call; a server error is reported.
       if (e instanceof Unreachable) {
-        this.#io = undefined;
+        this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: reason(e) };
         return { ok: false, message: this.cannotConnect(reason(e)), code: 5 };
       }
       if (e instanceof NotMysql) {
-        this.#io = undefined;
+        this.#drop(io);
         this.#schema = { value: null, at: Date.now(), error: this.notMysql(e), fatal: true };
         return { ok: false, message: this.#schema.error!, code: 5 };
       }
@@ -230,11 +231,12 @@ export class Session {
   async schema(): Promise<{ value: string | null; error?: string; fatal?: boolean }> {
     const now = Date.now();
     if (this.#schema && now - this.#schema.at < (this.#schema.value === null ? OFFLINE_TTL : SCHEMA_TTL)) return this.#schema;
+    const pending = this.#connection();
     let io: Io;
     try {
-      io = await this.#connection();
+      io = await pending;
     } catch (e) {
-      this.#io = undefined;
+      this.#drop(pending);
       this.#schema = e instanceof Unreachable ? { value: null, at: now, error: reason(e) } : { value: null, at: now, error: e instanceof NotMysql ? this.notMysql(e) : (e as Error).message, fatal: true };
       return this.#schema;
     }
@@ -246,7 +248,7 @@ export class Session {
       this.#schema = { value, at: now };
     } catch (e) {
       if (e instanceof Unreachable) {
-        this.#io = undefined;
+        this.#drop(pending);
         this.#schema = { value: null, at: now, error: reason(e) };
       } else {
         this.#schema = { value: `unverified ${process.pid} ${now}`, at: now };
@@ -319,35 +321,63 @@ export class Session {
 
   #connection(): Promise<Io> {
     this.#io ??= (async (): Promise<Io> => {
-      let io: Io;
+      let first: Io;
       try {
-        io = await this.#open(this.#url!);
+        first = await this.#open(this.#url!);
       } catch (e) {
         const fresh = this.#freshUrl(e);
         if (fresh === undefined) throw e;
-        io = await this.#open(fresh);
+        first = await this.#open(fresh);
       }
-      if (!this.project.refreshUrl) return io;
+      if (!this.project.refreshUrl) return first;
       // postgres.js logs in at its first query, so a refused login can surface at any call: the
-      // call is asked once more on a connection with the command's fresh output.
+      // call is asked once more on a connection with the command's fresh output. The calls refused
+      // together, as every call waiting when a token expires is, share one reopen, so that the
+      // command runs once and one connection replaces the old; a call that fails on a connection
+      // already replaced is asked again on the one that replaced it.
+      let current: Promise<Io> = Promise.resolve(first);
       const again = async <T>(call: (on: Io) => Promise<T>): Promise<T> => {
+        const used = current;
+        const on = await used;
         try {
-          return await call(io);
+          return await call(on);
         } catch (e) {
-          const fresh = this.#freshUrl(e);
-          if (fresh === undefined) throw e;
-          await io.close().catch(() => {});
-          io = await this.#open(fresh);
-          return call(io);
+          if (current === used) {
+            if (!refusedLogin(e)) throw e;
+            current = (async () => {
+              await on.close().catch(() => {});
+              const fresh = this.#freshUrl(e);
+              if (fresh === undefined) throw e;
+              return this.#open(fresh);
+            })();
+            current.catch(() => {});
+          }
+          return call(await current);
         }
       };
-      return { describe: (text) => again((on) => on.describe(text)), query: (text, params) => again((on) => on.query(text, params)), close: () => io.close(), ...(io.drivers && { drivers: io.drivers }) };
+      return {
+        describe: (text) => again((on) => on.describe(text)),
+        query: (text, params) => again((on) => on.query(text, params)),
+        close: () => current.then((on) => on.close(), () => {}),
+        ...(first.drivers && { drivers: first.drivers }),
+      };
     })();
     const io = this.#io;
     io.catch(() => {
       if (this.#io === io) this.#io = undefined;
     });
     return io;
+  }
+
+  /**
+   * Forgets a connection a call found dead, and closes it, since one opened in its place with a
+   * command's fresh output may be live. Only the connection that call ran on: a call that fails
+   * late never ends one opened since.
+   */
+  #drop(io: Promise<Io>): void {
+    if (this.#io !== io) return;
+    this.#io = undefined;
+    io.then((i) => i.close()).catch(() => {});
   }
 
   /**

@@ -411,28 +411,40 @@ test("a MySQL server is not refused: the type check goes on to read its schema",
   }
 });
 
-// A MySQL stand-in that takes one password, and refuses any other as MySQL does (error 1045).
-function tokenMysql(accepted: () => string): { tried: string[]; restore: () => void } {
+// A MySQL stand-in that takes one password, and refuses any other as MySQL does (error 1045): at
+// the login, and at a later query on a connection whose password has expired since, as postgres.js
+// reports a refused login at its first query.
+function tokenMysql(accepted: () => string): { tried: string[]; open: () => number; restore: () => void } {
   const tried: string[] = [];
+  let open = 0;
+  const refuse = () => Object.assign(new Error("Access denied for user 'root'@'localhost' (using password: YES)"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045, sqlState: "28000", fatal: true });
   const real = connector.createConnection;
   connector.createConnection = async (url: string) => {
     const password = decodeURIComponent(new URL(url).password);
     tried.push(password);
-    if (password !== accepted()) {
-      throw Object.assign(new Error("Access denied for user 'root'@'localhost' (using password: YES)"), { code: "ER_ACCESS_DENIED_ERROR", errno: 1045, sqlState: "28000", fatal: true });
-    }
+    if (password !== accepted()) throw refuse();
+    open++;
+    let ended = false;
     return {
       on() {},
       async query(q: string | { sql: string }) {
-        return [(typeof q === "string" ? q : q.sql) === "select version()" ? [["8.4.6"]] : [["x"]], []];
+        const sql = typeof q === "string" ? q : q.sql;
+        if (sql === "select version()") return [[["8.4.6"]], []];
+        // A turn of the event loop, so that calls made together are all waiting when one is refused.
+        await new Promise((resolve) => setImmediate(resolve));
+        if (password !== accepted()) throw refuse();
+        return [[["x"]], []];
       },
       async prepare() {
         throw Object.assign(new Error("the stand-in prepares nothing"), { fatal: true });
       },
-      async end() {},
+      async end() {
+        if (!ended) open--;
+        ended = true;
+      },
     };
   };
-  return { tried, restore: () => void (connector.createConnection = real) };
+  return { tried, open: () => open, restore: () => void (connector.createConnection = real) };
 }
 
 test("a login the server refuses runs direct_url's command again, once, so that an expired token is replaced", async () => {
@@ -463,6 +475,34 @@ test("a login the server refuses runs direct_url's command again, once, so that 
     await session.close();
     server.restore();
   }
+});
+
+test("calls refused together when a token expires share one run of the command and one new connection", async () => {
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, "token.txt"), "token-1");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(echo run >> runs.txt; cat token.txt)@db.internal:3307/app\n");
+  const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
+  let current = "token-1";
+  const server = tokenMysql(() => current);
+  const session = await Session.open(root, {});
+  try {
+    assert.match((await session.schema()).value ?? "", /^[0-9a-f]{16}$/);
+    const before = runs();
+    // The token expires under an open connection, and two reads of the schema are refused at once.
+    current = "token-2";
+    writeFileSync(join(root, "token.txt"), "token-2");
+    const [changed, schema] = await Promise.all([session.recheck(), session.schema()]);
+    assert.equal(changed, false);
+    assert.match(schema.value ?? "", /^[0-9a-f]{16}$/);
+    assert.equal(runs() - before, 1);
+    assert.deepEqual(server.tried, ["token-1", "token-2"]);
+    assert.equal(server.open(), 1);
+  } finally {
+    await session.close();
+    server.restore();
+  }
+  assert.equal(server.open(), 0);
 });
 
 test("a refused login is told apart from a server that cannot be reached, on Postgres and MySQL", () => {
