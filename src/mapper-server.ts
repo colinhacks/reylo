@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, relative } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
-import { moduleTypes, withinFile } from "./module-types.ts";
+import { moduleTypes, queryErrorType, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject, sourceName } from "./project.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import { Session } from "./analyze.ts";
@@ -113,7 +113,7 @@ export function mapperHandlers(): MapperHandlers {
       const leading = leadingComment(sql, dialect);
       // `shown` is the statement the `sql` doc comment shows: the compiled text without its file's
       // comment, whose `*/` a doc comment cannot hold. The literal type carries it whole.
-      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], shown = compiled) => {
+      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], shown = compiled, queryError = queryErrorType(dialect, undefined)) => {
         const written = statementAfter(sql, leading);
         const sent = shown === undefined ? undefined : statementAfter(shown, leadingComment(shown, dialect));
         const sqlDoc = (indent = "") => docComment(leading.prose, sent, sqlNote(project.sqlcommenter), indent);
@@ -122,7 +122,7 @@ export function mapperHandlers(): MapperHandlers {
           `import type { Query } from "reylo";`,
           `export type Params = ${paramsType};`,
           `export type Row = ${rowType};`,
-          `export type QueryError = import("reylo").QueryError<${JSON.stringify(dialect)}>;`,
+          `export type QueryError = ${queryError};`,
           `${sqlDoc()}export declare const sql: ${compiled === undefined ? "string" : JSON.stringify(compiled)};`,
           `${rawDoc()}export declare const raw: ${JSON.stringify(sql)};`,
           `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(", ")}];`,
@@ -131,7 +131,7 @@ export function mapperHandlers(): MapperHandlers {
           // texts go in by `typeof`, so a hover over the query names them and one over its `sql`
           // shows the statement, with the doc comment of the property here (Query's own `sql` and
           // `raw` carry none, since TypeScript would show it first and run the two together).
-          `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(dialect)}> & {`,
+          `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(dialect)}, QueryError> & {`,
           `${sqlDoc("  ")}  readonly sql: typeof sql;`,
           `${rawDoc("  ")}  readonly raw: typeof raw;`,
           // Every build step writes the file's path into the module, so an import's source is never
@@ -156,7 +156,7 @@ export function mapperHandlers(): MapperHandlers {
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The statement as the build sends it, its file's comment included (src/sqlcommenter.ts).
       const compiled = project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, sourceName(p.fileName)) : analysis.rewritten.sql;
-      return emit(compiled, types.params, types.row, types.cardinality, types.names, analysis.rewritten.sql);
+      return emit(compiled, types.params, types.row, types.cardinality, types.names, analysis.rewritten.sql, types.queryError);
     },
     async closeProject(params) {
       const handle = (params as { projectHandle: string }).projectHandle;

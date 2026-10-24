@@ -254,6 +254,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         };
         return SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys: HashMap::new(), booleans: vec![false; t.columns.len()] };
@@ -294,6 +295,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
+        errors: None,
         tables: Some(tables(&t)),
     };
     crate::analysis::clashes(sql, &mut analysis, &|_| None);

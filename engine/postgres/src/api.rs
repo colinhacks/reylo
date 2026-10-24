@@ -6,6 +6,7 @@ use crate::extension::{self, Server};
 use crate::host::Host;
 use reylo_engine_core::database::{with_facts, Database};
 use reylo_engine_core::dialect::Dialect;
+use reylo_engine_core::errors::Errors;
 use reylo_engine_core::fresh::Tables;
 use reylo_engine_core::host::Lazy;
 use serde::Deserialize;
@@ -52,6 +53,11 @@ impl Database for Postgres {
     fn tables(analysis: &Analysis) -> Option<Tables> {
         let parsed = crate::analyze::analyze(&analysis.rewritten.sql).ok()?;
         Some(Tables { read: parsed.read_set, write: parsed.write_set })
+    }
+
+    /// The constraint errors the statement may raise, where it runs only the server's own code.
+    fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
+        crate::errors::errors(analysis, host)
     }
 
     /// One round of the replay, through the server's `pgreylo` extension where there is one: the

@@ -1,0 +1,12 @@
+call_commented.sql: one (n: int4) -> { n: int4|int8|float8|numeric? }
+call_quoted.sql: one (n: int4) -> { n: int4|int8? }
+call_tax.sql: one (n: int4) -> { n: int4|int8|float8|numeric? }
+delete_banned.sql: none (id: int4) -> {  }
+delete_bans.sql: none (id: int4) -> {  }
+delete_user.sql: none (id: int4) -> {  }
+insert_audited.sql: none (id: int4) -> {  }
+insert_post.sql: none (id: int4, user_id: int4, title: text) -> {  }
+insert_user.sql: none (id: int4, email: text, age: int4?) -> {  }
+select_taxed.sql: many () -> { id: int4|int8, taxed: int4|int8? }
+select_view.sql: many (id: int4) -> { id: int4|int8, email: text }
+upsert_user.sql: none (id: int4, email: text, age: int4?) -> {  }

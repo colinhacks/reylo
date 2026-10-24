@@ -5,6 +5,7 @@
 
 use crate::api::{Analysis, Answers, Describe, Response};
 use crate::dialect::Dialect;
+use crate::errors::Errors;
 use crate::fresh::{self, Tables};
 use crate::host::{Host, Lazy};
 
@@ -27,6 +28,12 @@ pub trait Database {
         analysis.tables.clone()
     }
 
+    /// The names each error the statement may raise can carry ([`crate::errors`]): `Some(None)`
+    /// where the statement may run code the database does not define, or the database narrows none.
+    fn errors(_analysis: &Analysis, _host: &Host<'_, Self::Describe>) -> Lazy<Option<Errors>> {
+        Some(None)
+    }
+
     /// One request's round: the analysis, and then the facts it relied on. Postgres overrides it
     /// to settle what the server's `pgreylo` extension offers first.
     fn round(sql: &str, answers: &Answers<Self::Describe>) -> Response {
@@ -42,14 +49,18 @@ pub trait Database {
     fn unbundle(_answers: &mut Answers<Self::Describe>) {}
 }
 
-/// The analysis with the facts it relied on, read in one more round ([`crate::fresh`]).
+/// The analysis with the facts it relied on and the errors it may raise, read in one more round
+/// ([`crate::fresh`], [`crate::errors`]).
 pub fn with_facts<D: Database + ?Sized>(mut analysis: Analysis, host: &Host<'_, D::Describe>) -> Response {
     let tables = D::tables(&analysis);
-    match fresh::facts(&analysis, D::DIALECT, tables.as_ref(), host) {
-        Some(fresh) => {
+    let fresh = fresh::facts(&analysis, D::DIALECT, tables.as_ref(), host);
+    let errors = if analysis.diagnostics.is_empty() { D::errors(&analysis, host) } else { Some(None) };
+    match (fresh, errors) {
+        (Some(fresh), Some(errors)) => {
             analysis.fresh = fresh;
+            analysis.errors = errors;
             Response::Analysis { analysis }
         }
-        None => Response::Need { needs: host.needs() },
+        _ => Response::Need { needs: host.needs() },
     }
 }

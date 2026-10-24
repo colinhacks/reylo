@@ -585,6 +585,8 @@ With [`.try()`](/#try), an error MySQL raised comes back as `{ error }`, with th
 
 Reylo names the error from MySQL's own list whichever driver ran it, since each driver keeps an older list, or MariaDB's. MySQL names a key, a constraint or a column only in its message, which Reylo reads in English, so on a server whose `lc_messages` is another language those fields are `undefined`.
 
+When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns.
+
 ## Drivers
 
 Reylo decodes its query results itself, so options you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the `mysql2` that `@reylosql/mysql` carries, whatever driver your app uses, PlanetScale and `Bun.sql` included.

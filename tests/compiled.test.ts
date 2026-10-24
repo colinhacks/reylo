@@ -149,10 +149,39 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
     const lines = declared["get_user.sql"]!.split("\n");
     assert.ok(lines.includes("export type Params = { id: number };"), declared["get_user.sql"]!);
     assert.ok(!lines.some((line) => line.startsWith("export type Values")), declared["get_user.sql"]!);
-    assert.match(lines.find((line) => line.startsWith("declare const query:"))!, /^declare const query: Query<\{ id: number \}, \{ id: number; name: string; email: string \| null \}, "maybeOne", "sqlite"> & /);
+    assert.match(lines.find((line) => line.startsWith("declare const query:"))!, /^declare const query: Query<\{ id: number \}, \{ id: number; name: string; email: string \| null \}, "maybeOne", "sqlite", QueryError> & /);
     assert.deepEqual(texts(declared["doc.sql"]!).slice(0, 2), [`export declare const sql: ${JSON.stringify(json.default.sql)};`, `export declare const raw: ${JSON.stringify(doc)};`]);
   } finally {
     db.close();
+    await closeAll();
+  }
+});
+
+test("SQLite: a statement that fires no trigger declares its QueryError narrowed to the keys and columns it writes through, and one that fires one the whole of it", async () => {
+  const root = project("file:./app.db");
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec(`
+    create table users (id integer primary key, email text unique not null);
+    create table audited (id integer primary key, n integer);
+    create trigger audited_audit after insert on audited begin update audited set n = 1 where id = new.id; end;
+  `);
+  db.close();
+  const insert = "insert into users (email) values (:email)\n";
+  const audited = "insert into audited (id) values (:id)\n";
+  try {
+    const declared = await declarations(root, { "insert_user.sql": insert, "insert_audited.sql": audited });
+    const queryError = (file: string) => /^export type QueryError = ([\s\S]*?>);$/m.exec(declared[file]!)![1];
+    assert.equal(queryError("insert_user.sql"), [
+      `import("reylo").SqliteQueryError<{`,
+      `  "SQLITE_CONSTRAINT": { columns: readonly ["email"] | readonly ["id"] | readonly ["rowid"]; table: "users" };`,
+      `  "SQLITE_CONSTRAINT_NOTNULL": { columns: readonly ["email"] | readonly ["id"]; table: "users" };`,
+      `  "SQLITE_CONSTRAINT_PRIMARYKEY": { columns: readonly ["id"]; table: "users" };`,
+      `  "SQLITE_CONSTRAINT_ROWID": { columns: readonly ["rowid"]; table: "users" };`,
+      `  "SQLITE_CONSTRAINT_UNIQUE": { columns: readonly ["email"]; table: "users" };`,
+      `}>`,
+    ].join("\n"));
+    assert.equal(queryError("insert_audited.sql"), `import("reylo").QueryError<"sqlite">`);
+  } finally {
     await closeAll();
   }
 });
@@ -192,6 +221,47 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
       `  readonly source: string;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names /*file='names.sql'*/";`, `export declare const raw: ${JSON.stringify(names)};`]);
+  } finally {
+    await closeAll();
+    await sql.end();
+    await admin.unsafe(`drop database if exists ${name}`);
+    await admin.end();
+  }
+});
+
+test("Postgres: a statement that runs only the server's own code declares its QueryError narrowed to what it writes through, and one a trigger runs on the whole of it", { skip: pgLive }, async () => {
+  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
+  const postgres = require("postgres");
+  const admin = postgres(PG, { max: 1, onnotice: () => {} });
+  const name = `reylo_query_error_${process.pid}`;
+  await admin.unsafe(`drop database if exists ${name}`);
+  await admin.unsafe(`create database ${name}`);
+  const url = new URL(PG!);
+  url.pathname = `/${name}`;
+  const sql = postgres(url.href, { max: 1, onnotice: () => {} });
+  const root = project(url.href, "postgres");
+  const insert = "insert into users (email, age) values (:email::text, :age::int)\n";
+  const audited = "insert into audited (id) values (:id::int)\n";
+  const select = "select id, email from users\n";
+  try {
+    await sql.unsafe(`
+      create table users (id int generated always as identity primary key, email text unique not null, age int constraint adult check (age >= 18));
+      create table audited (id int primary key);
+      create function audit() returns trigger language plpgsql as $$ begin return new; end $$;
+      create trigger audited_audit before insert on audited for each row execute function audit();
+    `).simple();
+    const declared = await declarations(root, { "insert_user.sql": insert, "insert_audited.sql": audited, "list_users.sql": select });
+    const queryError = (file: string) => /^export type QueryError = ([\s\S]*?>);$/m.exec(declared[file]!)![1];
+    assert.equal(queryError("insert_user.sql"), [
+      `import("reylo").PostgresQueryError<{`,
+      `  "23502": { column: "email" | "id"; table: "users" };`,
+      `  "23505": { constraint: "users_email_key" | "users_pkey"; table: "users" };`,
+      `  "23514": { constraint: "adult"; table: "users" };`,
+      `}>`,
+    ].join("\n"));
+    assert.equal(queryError("insert_audited.sql"), `import("reylo").QueryError<"postgres">`);
+    assert.equal(queryError("list_users.sql"), `import("reylo").PostgresQueryError<{}>`);
+    assert.match(declared["insert_user.sql"]!, /^declare const query: Query<.*, "none", "postgres", QueryError> & \{$/m);
   } finally {
     await closeAll();
     await sql.end();

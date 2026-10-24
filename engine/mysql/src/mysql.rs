@@ -280,6 +280,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     let names = crate::mysql_params::names(&rewritten);
     if let Some(statement) = &read {
         crate::mysql_params::prefetch(statement, &names, host);
+        crate::errors::prefetch(kind(Some(statement)), &crate::mysql_params::tables(statement), &rewritten.sql, host);
     }
     let (raw, misread) = (raw?, misread?);
     let raw = match raw {
@@ -344,6 +345,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         });
     }
@@ -458,13 +460,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             Param { name: name.clone(), ty, type_name: type_name.to_string(), nullable: nullable.contains(name), schema: None, cast: None, comment: typed.comments.get(name).cloned() }
         })
         .collect();
-    let kind = match &read {
-        Some(Statement::Query(_)) => "select",
-        Some(Statement::Insert(_)) => "insert",
-        Some(Statement::Update(_)) => "update",
-        Some(Statement::Delete(_)) => "delete",
-        _ => "",
-    };
+    let kind = kind(read.as_ref());
     let (cardinality, reason) = match &parsed {
         // Its rows go into variables or a file: it returns none.
         Some(Statement::Query(q)) if assigns(q) => ("none".to_string(), None),
@@ -498,6 +494,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
+        errors: None,
         // From the tree as the session reads the statement, also where it reads some part of it
         // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
         // turn on that.
@@ -1350,6 +1347,17 @@ fn assigns(q: &ast::Query) -> bool {
         SetExpr::Select(s) => s.into.is_some(),
         SetExpr::Query(q) => assigns(q),
         _ => false,
+    }
+}
+
+/// The kind of statement the analysis says it is.
+fn kind(read: Option<&Statement>) -> &'static str {
+    match read {
+        Some(Statement::Query(_)) => "select",
+        Some(Statement::Insert(_)) => "insert",
+        Some(Statement::Update(_)) => "update",
+        Some(Statement::Delete(_)) => "delete",
+        _ => "",
     }
 }
 

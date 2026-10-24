@@ -389,6 +389,7 @@ impl<'a> Engine<'a> {
         let rewritten = lex::rewrite(sql, lexed, Target::Dollar);
         // The parameters cast to `nullable(…)`, by the number the rewrite gave each.
         let marked: HashSet<i32> = rewritten.order.iter().enumerate().filter(|(_, name)| marked.contains(name)).map(|(k, _)| k as i32 + 1).collect();
+        crate::errors::prefetch(&rewritten.sql, self.host);
         let parsed = match analyze::analyze(&rewritten.sql) {
             Ok(p) => Some(p),
             // A statement of a kind the analysis does not read (DDL, a session setting, EXPLAIN)
@@ -577,6 +578,7 @@ impl<'a> Engine<'a> {
             unresolved,
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         };
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
@@ -634,6 +636,7 @@ impl<'a> Engine<'a> {
             unresolved: Vec::new(),
             structured: Vec::new(),
             fresh: None,
+            errors: None,
             tables: None,
         })
     }

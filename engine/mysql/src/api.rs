@@ -61,6 +61,12 @@ impl Database for Mysql {
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         crate::mysql::analyze_text(sql, host)
     }
+
+    /// The keys, foreign keys, checks and columns the statement's errors may name, where it runs no
+    /// trigger and no stored function.
+    fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::errors::Errors>> {
+        crate::errors::errors(analysis, host)
+    }
 }
 
 #[cfg(test)]

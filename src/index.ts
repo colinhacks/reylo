@@ -10,7 +10,7 @@ import { readQueryError, readQueryErrorSync, type QueryError } from "./query-err
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export { checks } from "./checks.ts";
-export type { MysqlCode, MysqlQueryError, PostgresCode, PostgresCondition, PostgresQueryError, QueryError, SqliteCode, SqliteQueryError } from "./query-error.ts";
+export type { MysqlCode, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
 export type Cardinality = "many" | "one" | "maybeOne" | "none";

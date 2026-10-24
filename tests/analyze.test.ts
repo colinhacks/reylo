@@ -568,7 +568,7 @@ test("the type check names the dialect of the project a kept session recovers to
     const after = await transform();
     assert.deepEqual(after.diagnostics.map((d) => d.code), [5]);
     assert.match(after.text, /QueryError<"mysql">/);
-    assert.match(after.text, /"many", "mysql">/);
+    assert.match(after.text, /"many", "mysql", QueryError>/);
   } finally {
     await mapper.closeProject!({ projectHandle });
     server.restore();

@@ -942,6 +942,9 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         }
                         Err(mysql_async::Error::Server(e)) => {
                             tally.fail(format!("{} ({})", e.message, e.code));
+                            if let Some(why) = crate::errors::mysql_contradiction(&analysis["errors"], e.code, &e.message) {
+                                problems.push(format!("{file}: {why} with ({shown})"));
+                            }
                             // A NULL the engine let a parameter take, which the server refuses
                             // as a NOT NULL column's or a CHECK's, is a parameter typed nullable
                             // that may not be null. The NULLs are to blame where the same run with

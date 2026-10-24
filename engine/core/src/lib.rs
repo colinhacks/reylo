@@ -16,6 +16,7 @@ pub mod api;
 pub mod config;
 pub mod database;
 pub mod dialect;
+pub mod errors;
 pub mod fingerprint;
 pub mod fresh;
 pub mod host;
