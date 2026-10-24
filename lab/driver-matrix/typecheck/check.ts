@@ -114,9 +114,9 @@ for (const [ns, v] of [["neon1", "1.1.0"], ["neon010", "0.10.4"], ["neon09", "0.
 }
 pg("pg-promise@12.7.1", "IDatabase (db)", "IDatabase<{}>");
 pg("pg-promise@12.7.1", "ITask (task, tx)", "ITask<{}>");
-pg("slonik@next", "DatabasePool", "DatabasePool");
-pg("slonik@next", "DatabasePoolConnection (connect)", "DatabasePoolConnection");
-pg("slonik@next", "DatabaseTransactionConnection (transaction, savepoint)", "DatabaseTransactionConnection");
+pg("slonik@49.12.0", "DatabasePool", "DatabasePool");
+pg("slonik@49.12.0", "DatabasePoolConnection (connect)", "DatabasePoolConnection");
+pg("slonik@49.12.0", "DatabaseTransactionConnection (transaction, savepoint)", "DatabaseTransactionConnection");
 for (const [shape, type] of [["SQL", "SQL"], ["TransactionSQL (begin)", "TransactionSQL"], ["SavepointSQL (savepoint)", "SavepointSQL"], ["ReservedSQL (reserve)", "ReservedSQL"]]) {
   entries.push({ pkg: "Bun.sql@1.3.14 (bun-types)", shape: shape!, type: type!, accepts: ALL, note: "one class for the three adapters" });
 }

@@ -49,16 +49,19 @@
     "@reylosql/sqlite": "link:packages/sqlite",
     "@types/node": "^26.6.1",
     "esbuild": "^0.28.2",
+    "slonik": "49.12.0",
     "typescript": "^7.1.0-dev.20260918.1"
   },
   "peerDependencies": {
     "@reylosql/mysql": "0.5.0",
     "@reylosql/postgres": "0.5.0",
-    "@reylosql/sqlite": "0.5.0"
+    "@reylosql/sqlite": "0.5.0",
+    "slonik": ">=49.12.0"
   },
   "peerDependenciesMeta": {
     "@reylosql/mysql": { "optional": true },
     "@reylosql/postgres": { "optional": true },
-    "@reylosql/sqlite": { "optional": true }
+    "@reylosql/sqlite": { "optional": true },
+    "slonik": { "optional": true }
   }
 }

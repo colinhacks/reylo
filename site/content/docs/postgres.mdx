@@ -921,7 +921,7 @@ await db.transaction(async (tx) => {
 });
 ```
 
-Reylo's queries get their own values whatever type parsers the pool was created with, and the pool's other queries keep them. An interceptor that renames or rewrites rows isn't supported.
+Reylo's queries get their own values whatever type parsers the pool was created with, and the pool's other queries keep them. This needs Slonik 49.12.0 or later, whose `sql` tag takes type parsers per query. An interceptor that renames or rewrites rows isn't supported.
 
 ### `Bun.sql`
 

@@ -407,10 +407,10 @@ function byType(v: unknown, name: string): unknown {
 // Slonik: its query() runs only the queries its `sql` tag builds, and its type parsers are set on
 // the pool's connections, where they turn a numeric into a float, a timestamp into epoch
 // milliseconds and an interval into seconds. A tag made by the app's own `createSqlTag` with
-// `typeParsers` overrides them for its queries alone, so Reylo's passes every type that pg or
-// Slonik converts through as the server's text, and decodes the rows itself. Each parameter
-// appears once in a statement (engine/core/src/lex.rs), so the statement is the tag's template as
-// it stands: its text between the placeholders, and the values in their order.
+// `typeParsers` (Slonik 49.12.0 and later) overrides them for its queries alone, so Reylo's passes
+// every type that pg or Slonik converts through as the server's text, and decodes the rows itself.
+// Each parameter appears once in a statement (engine/core/src/lex.rs), so the statement is the
+// tag's template as it stands: its text between the placeholders, and the values in their order.
 
 type SlonikTypeParser = { name: string; parse(value: string): unknown };
 type SlonikTag = { unsafe(strings: TemplateStringsArray, ...values: unknown[]): { typeParsers?: unknown } };
@@ -494,7 +494,7 @@ export async function slonik(c: AnyClient, text: string, values: readonly unknow
   const [template, ordered] = slonikTemplate(text, values);
   const query = tag.unsafe(template, ...ordered);
   if (query.typeParsers === undefined) {
-    throw new TypeError(`Reylo cannot run on this Slonik: its sql tag takes no type parsers per query (createSqlTag's typeParsers option), so its pool's parsers would turn numeric, timestamp and interval values into lossy numbers. Upgrade slonik to a release that has the option.`);
+    throw new TypeError(`Reylo cannot run on this Slonik: its sql tag takes no type parsers per query (createSqlTag's typeParsers option), so its pool's parsers would turn numeric, timestamp and interval values into lossy numbers. Upgrade slonik to 49.12.0 or later.`);
   }
   const result = (await c.query(query)) as { rows: Record<string, unknown>[]; fields: { name: string; dataTypeId: number }[] };
   return slonikRows(result.rows, result.fields, columns);
