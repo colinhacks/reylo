@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
+import { mapperHandlers } from "../src/mapper-server.ts";
 import { connector, notMysql } from "../packages/mysql/describe.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
@@ -534,6 +535,34 @@ test("a session kept open runs a failed direct_url command again once its failur
     assert.deepEqual(server.tried, ["token-1"]);
   } finally {
     await session.close();
+    server.restore();
+  }
+});
+
+test("the type check names the dialect of the project a kept session recovers to", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".reylo.yaml"), "direct_url: mysql://root:$(cat token.txt)@db.internal:3307/app\n");
+  const server = tokenMysql(() => "token-1");
+  const mapper = mapperHandlers();
+  const projectHandle = `recovers-${root}`;
+  await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
+  const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
+  try {
+    // With no URL, and no engine installed in the project, the dialect is Postgres's.
+    const before = await transform();
+    assert.deepEqual(before.diagnostics.map((d) => d.code), [11]);
+    assert.match(before.text, /QueryError<"postgres">/);
+    writeFileSync(join(root, "token.txt"), "token-1");
+    t.mock.timers.tick(60_000);
+    // The stand-in prepares nothing, so the analysis fails past the project, in MySQL's terms.
+    const after = await transform();
+    assert.deepEqual(after.diagnostics.map((d) => d.code), [5]);
+    assert.match(after.text, /QueryError<"mysql">/);
+    assert.match(after.text, /"many", "mysql">/);
+  } finally {
+    await mapper.closeProject!({ projectHandle });
     server.restore();
   }
 });
