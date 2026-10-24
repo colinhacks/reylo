@@ -4,11 +4,11 @@ title: "Supported drivers"
 
 ## Supported drivers
 
-To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters.
-
 The type check reads your schema through a driver of its own, so your app can use any of these.
 
 ### Postgres
+
+To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters.
 
 ```ts twoslash tab="pg" dialect="postgres" tab-group="postgres-driver"
 import pg from "pg";
@@ -182,6 +182,8 @@ await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 
 ### MySQL
 
+To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters.
+
 ```ts twoslash tab="mysql2" dialect="mysql" tab-group="mysql-driver"
 import mysql from "mysql2/promise";
 import getUser from "./get_user.sql";
@@ -292,6 +294,8 @@ await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ### SQLite
+
+To run an imported Reylo query, pass a database connection/pool into the `.run()` method along with any parameters.
 
 ```ts twoslash tab="better-sqlite3" dialect="sqlite" tab-group="sqlite-driver"
 import Database from "better-sqlite3";
