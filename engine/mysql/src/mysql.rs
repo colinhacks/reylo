@@ -2119,7 +2119,7 @@ pub(crate) fn value_class(e: &Expr) -> Option<Class> {
 }
 
 /// Whether an expression is a FLOAT or DOUBLE by its form: a cast to one, a literal in scientific
-/// notation, or arithmetic over one.
+/// notation, or arithmetic or a numeric built-in over one.
 fn approximate(e: &Expr) -> bool {
     match e {
         Expr::Value(v) => matches!(&v.value, ast::Value::Number(n, _) if n.contains(['e', 'E'])),
@@ -2129,6 +2129,11 @@ fn approximate(e: &Expr) -> bool {
             ["double", "float", "real"].iter().any(|t| target.starts_with(t))
         }
         Expr::BinaryOp { left, right, .. } => approximate(left) || approximate(right),
+        // A numeric built-in returns a double for a double argument.
+        Expr::Function(f) if ["abs", "round", "floor", "ceil", "ceiling", "truncate", "sign", "mod", "greatest", "least"].contains(&builtin(f).as_str()) => match &f.args {
+            ast::FunctionArguments::List(list) => list.args.iter().any(|a| matches!(a, ast::FunctionArg::Unnamed(ast::FunctionArgExpr::Expr(x)) if approximate(x))),
+            _ => false,
+        },
         _ => false,
     }
 }
