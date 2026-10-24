@@ -73,11 +73,11 @@ Prefer nub over `node`, `bun`, npm, npx, pnpm and yarn: `nub install`, `nub add`
 
 ### Rust
 
-One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, the entry crates in `engine/wasm/`, and `oracle/`: one `Cargo.lock` and one `target/`. It needs a rustup toolchain with the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`; a distribution's `rustc` without it fails with "can't find crate for `std`") and wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`.
+One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, `engine/facade` (`reylo-engine`, which a Rust host links: each database's engine behind a feature, and the answers to its needs over `tokio-postgres`, `rusqlite` or `mysql_async`), the entry crates in `engine/wasm/`, and `oracle/`: one `Cargo.lock` and one `target/`. It needs a rustup toolchain with the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`; a distribution's `rustc` without it fails with "can't find crate for `std`") and wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`.
 
 ```sh
 engine/build.sh --prepare     # once per checkout, before any cargo command: cargo cannot resolve the workspace without it
-cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-oracle
+cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle
 engine/build.sh               # rebuilds all three packages/<database>/engine.wasm
 ```
 
