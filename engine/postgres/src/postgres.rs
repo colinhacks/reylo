@@ -262,7 +262,9 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 /// array is read by its subscripts and built with `ARRAY(SELECT …)`, never through `unnest`,
 /// `cardinality`, `array_agg` or `<@`. Every conversion in it is one a built-in `pg_cast` row
 /// makes (`oid` to `int8`, an `oid` written as one), never one through text or between arrays,
-/// which have no such row and so may be a user's `CREATE CAST`.
+/// which have no such row and so may be a user's `CREATE CAST`, and every one is written: an operand
+/// the server converts on its own (a `regproc` beside an `oid`) matches no built-in exactly, and an
+/// operator of exactly its types created in `pg_catalog` would be the closer match.
 pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     domains(t, b, depth) AS (SELECT t.oid, t.typbasetype, 1 FROM pg_catalog.pg_type t WHERE t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
     UNION ALL SELECT d.t, t.typbasetype, d.depth OPERATOR(pg_catalog.+) 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.b AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
@@ -274,7 +276,7 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     ELSE ARRAY[o.oprleft::pg_catalog.int8, o.oprright::pg_catalog.int8] END, \
     CASE WHEN o.oprleft OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) '0'::pg_catalog.oid THEN 1 ELSE 2 END, \
     0, coalesce((p.proretset::pg_catalog.int4 OPERATOR(pg_catalog.*) 2) OPERATOR(pg_catalog.+) ((p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")::pg_catalog.int4 OPERATOR(pg_catalog.*) 4), 6) \
-    FROM pg_catalog.pg_operator o LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode \
+    FROM pg_catalog.pg_operator o LEFT JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid \
     WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) \
     UNION ALL SELECT 'f', p.proname::pg_catalog.text, \
     ARRAY(SELECT p.proargtypes[i]::pg_catalog.int8 FROM pg_catalog.generate_series(0, p.pronargs OPERATOR(pg_catalog.-) 1) AS i ORDER BY i), \

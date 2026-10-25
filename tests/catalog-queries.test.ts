@@ -175,7 +175,14 @@ function plain(value: unknown): unknown {
   return Array.isArray(value) ? value.map(plain) : value;
 }
 
-test("every catalog query answers the same rows under a search path that puts a user's operators, functions, types and casts first", { skip: live }, async () => {
+type Asked = Map<string, { sql: string; params: unknown[]; rows: unknown[][] }>;
+
+/**
+ * A database of the schema above, every catalog query the analysis of the statements above asks
+ * of it with its rows, by its text and parameters, and `body` run on the two; the database is
+ * dropped after.
+ */
+async function withAsked(body: (url: string, asked: Asked, postgres: any) => Promise<void>): Promise<void> {
   const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
   const admin = postgres(PG, { max: 1, onnotice: () => {} });
   const name = `reylo_catalog_${process.pid}`;
@@ -187,7 +194,7 @@ test("every catalog query answers the same rows under a search path that puts a 
   try {
     await db.unsafe(SCHEMA);
     const engine = await Engine.load(ENGINE);
-    const asked = new Map<string, { sql: string; params: unknown[]; rows: unknown[][] }>();
+    const asked: Asked = new Map();
     const clean = await openPostgresDescriber(url.href);
     try {
       const io = {
@@ -204,10 +211,24 @@ test("every catalog query answers the same rows under a search path that puts a 
     }
     const kinds = new Set([...asked.values()].map((q) => kindOf(q.sql)));
     assert.deepEqual([...kinds].sort(), KINDS.map(([k]) => k).sort());
+    await body(url.href, asked, postgres);
+  } finally {
+    await db.end();
+    await admin.unsafe(`drop database if exists ${name} with (force)`);
+    await admin.end();
+  }
+}
 
-    await db.unsafe(hostile());
-    await db.unsafe(`alter database ${name} set search_path = public, pg_catalog`);
-    const captured = await openPostgresDescriber(url.href);
+test("every catalog query answers the same rows under a search path that puts a user's operators, functions, types and casts first", { skip: live }, async () => {
+  await withAsked(async (url, asked, postgres) => {
+    const db = postgres(url, { max: 1, onnotice: () => {} });
+    try {
+      await db.unsafe(hostile());
+      await db.unsafe(`alter database ${new URL(url).pathname.slice(1)} set search_path = public, pg_catalog`);
+    } finally {
+      await db.end();
+    }
+    const captured = await openPostgresDescriber(url);
     try {
       assert.deepEqual([...(await captured.values("select pg_catalog.current_setting('search_path'::pg_catalog.text)"))], [["public, pg_catalog"]]);
       for (const { sql, params, rows } of asked.values()) {
@@ -238,11 +259,36 @@ test("every catalog query answers the same rows under a search path that puts a 
     } finally {
       await captured.close();
     }
-  } finally {
-    await db.end();
-    await admin.unsafe(`drop database if exists ${name} with (force)`);
-    await admin.end();
-  }
+  });
+});
+
+// An operator or a function called with an operand the server converts implicitly matches no
+// built-in exactly, and an overload of exactly the operands' types, created in pg_catalog, is the
+// closer match: `oid = regproc` reaches `=(oid, oid)` by relabeling the regproc, and a
+// `pg_catalog.=(oid, regproc)` takes it instead. The parse tree the server logs for each query
+// (`debug_print_parse`) shows every such conversion as a node of implicit format.
+test("no catalog query converts a value implicitly, so each operator and function it calls matches its operands exactly", { skip: live }, async () => {
+  await withAsked(async (url, asked, postgres) => {
+    const logged: string[] = [];
+    const db = postgres(url, { max: 1, onnotice: (n: { message: string; detail?: string }) => logged.push(`${n.message}\n${n.detail ?? ""}`) });
+    try {
+      await db.unsafe("set debug_print_parse = on");
+      await db.unsafe("set client_min_messages = log");
+      const converting: string[] = [];
+      for (const sql of new Set([...asked.values()].map((q) => q.sql))) {
+        logged.length = 0;
+        await db.unsafe(`prepare catalog_query as ${sql}`);
+        await db.unsafe("deallocate catalog_query");
+        const tree = logged.join("\n");
+        assert.match(tree, /\{QUERY/, `${kindOf(sql)}: no parse tree was logged`);
+        const implicit = tree.match(/:(?:funcformat|relabelformat|coerceformat|convertformat) 2\b/g) ?? [];
+        if (implicit.length) converting.push(`${kindOf(sql)}: ${implicit.length} implicit conversion(s)`);
+      }
+      assert.deepEqual(converting, []);
+    } finally {
+      await db.end();
+    }
+  });
 });
 
 test("the describer writes and reads the catalog queries' arrays itself, so no catalog read of postgres.js's decides how they travel", { skip: live }, async () => {
