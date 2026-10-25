@@ -55,6 +55,7 @@
     "pg": "8.23.0",
     "pg-promise": "12.7.1",
     "postgres": "3.4.9",
+    "slonik": "49.12.0",
     "sqlite": "5.1.1",
     "sqlite3": "6.0.1",
     "tailwindcss": "^4.1.0",
