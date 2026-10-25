@@ -5,7 +5,7 @@
 // transaction, savepoint, reserved or checked-out connection has the same shape
 // as the client it came from, so it is accepted wherever that client is.
 
-import { bunRows, neonCallable, postgresJs, queryPostgres } from "./decode.ts";
+import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
@@ -44,6 +44,8 @@ export type UnsafeClient = {
 export type BunSqlClient = UnsafeClient & { commitDistributed(name: string): Promise<unknown> };
 /** Neon's neon() function before 1.0, which is called with (text, params). */
 export type CallableClient = (text: string, params?: any[]) => PromiseLike<unknown[] | { rows: unknown[] }>;
+/** Slonik's pool, connections, transactions and savepoints, whose query() takes only its sql tag's queries. */
+export type SlonikClient = { query(sql: any): PromiseLike<unknown>; maybeOneFirst(...args: any[]): unknown; anyFirst(...args: any[]): unknown };
 /**
  * mysql2/promise Pool, Connection and PoolConnection (→ [rows, fields]); PlanetScale's Connection,
  * Client and transaction from 1.x (→ { rows }). PlanetScale 2.0 binds no parameters, so its
@@ -130,7 +132,7 @@ export type DrizzleSqliteTransaction = { rollback(): never; get(query: any): unk
 /** A transaction of a synchronous SQLite driver's Drizzle database, whose `all()` returns the rows themselves. */
 export type DrizzleSyncSqliteTransaction = { rollback(): never; get(query: any): unknown; all(query: any): unknown[] };
 /** Every Postgres client `run` takes, or a transaction, savepoint or connection taken from one. */
-export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction;
+export type PostgresClient = PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient | SlonikClient | DrizzleDatabase<PgQueryClient | NeonHttpClient | UnsafeClient | CallableClient> | DrizzlePgTransaction;
 /** Every MySQL client `run` takes, or a transaction or connection taken from one. */
 export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | MariadbCallbackClient | BunSqlClient | DrizzleDatabase<MysqlExecuteClient | Mysql2CallbackClient | MariadbClient | BunSqlClient> | DrizzleMysqlTransaction;
 /** Every SQLite client `run` takes, or a transaction taken from one. */
@@ -282,15 +284,25 @@ function isTurso(c: AnyClient): boolean {
   return typeof c.prepare === "function" && ((typeof c.connect === "function" && typeof c.maxWriteReplicationIndex === "function") || (typeof c.all === "function" && typeof c.batch === "function"));
 }
 
-// Slonik's pool, connections, transactions and savepoints. Its query() takes only the statements
-// its sql tag builds, and its type parsers are set on the pool's connections, which a statement
-// cannot override, so numeric, timestamp and interval values arrive as lossy numbers.
+// Slonik's pool, connections, transactions and savepoints, which have query() as pg's do but take
+// only the queries its sql tag builds (src/decode.ts, `slonik`).
 function isSlonik(c: AnyClient): boolean {
   return typeof c.maybeOneFirst === "function" && typeof c.anyFirst === "function";
 }
 
+// A value as Slonik's sql tag takes it, which is a string, a number, a boolean, a BigInt or null:
+// the rest as pg would write them, binary data as `\x` and its hex, an array as its literal, a
+// Date as its instant, and an object as its JSON. An omitted parameter binds NULL, as on pg.
+function slonikParam(v: unknown): unknown {
+  if (v === undefined || v === null) return null;
+  if (v instanceof Uint8Array) return asByteaHex(v);
+  if (Array.isArray(v)) return arrayLiteral(v);
+  if (v instanceof Date) return v.toISOString();
+  return typeof v === "object" ? JSON.stringify(v) : v;
+}
+
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
-  if (c == null || (typeof c !== "object" && typeof c !== "function") || isSlonik(c)) throw unsupported(c, query.dialect);
+  if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
   if (query.fresh && due(query)) {
@@ -325,6 +337,8 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // jsonb"): it gets an object whose toJSON() returns the value, which it binds as JSON and
       // serializes to exactly its JSON text. So does an unsafe() client without typed().
       const json = () => bound.map((v, i) => (isJsonParam(v, i) ? JSON.stringify(v) : v));
+      // Slonik before every other query(): its query() takes only its sql tag's queries.
+      if (isSlonik(c)) return await slonik(c, text, json().map(slonikParam), query.columns);
       // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
       // for a template instead of running anything. Reylo decodes every value itself (decode.ts).
       if (typeof c.query === "function") return await queryPostgres(c, text, json(), query.columns);
@@ -694,7 +708,7 @@ function indexOf(query: QueryModule, p: { name: string; start: number; end: numb
 }
 
 const accepted: Record<Dialect, string> = {
-  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; or a Drizzle database over one of them",
+  postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database over one of them",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
 };
@@ -712,9 +726,9 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
     }
     seen = names.size ? `an object with ${[...names].slice(0, 12).join(", ")}${names.size > 12 ? ", ..." : ""}` : "an object with no methods";
   }
-  // node:sqlite's tag store keeps its database on db. Kysely, Prisma and Slonik decode every value
-  // of a raw query themselves, by their own rules or the driver's parsers, before it returns.
-  // None hands out a transaction's connection.
+  // node:sqlite's tag store keeps its database on db. Kysely and Prisma decode every value of a
+  // raw query themselves, by their own rules or the driver's parsers, before it returns.
+  // Neither hands out a transaction's connection.
   const o = c as { db?: { prepare?: unknown }; selectFrom?: unknown; executeQuery?: unknown; isTransaction?: unknown; $queryRawUnsafe?: unknown; $transaction?: unknown } | null;
   const inTx = " and does not hand out its transaction's connection: take the transaction from the driver's client instead.";
   const hint =
@@ -724,8 +738,6 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
         ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`
         : typeof o?.$queryRawUnsafe === "function"
           ? ` Prisma decodes the values of its queries itself${typeof o.$transaction !== "function" ? inTx : ": pass a client of your database's driver, such as the pool its driver adapter was made with."}`
-          : o != null && isSlonik(o as AnyClient)
-            ? " Slonik decodes the values of its queries itself, by type parsers set for its whole pool, and does not hand out its connection: run Reylo's queries on a pg Pool beside it."
-            : "";
+          : "";
   return new TypeError(`reylo cannot run a ${dialect} statement on ${seen}. It takes a client with ${accepted[dialect]}.${hint}`);
 }

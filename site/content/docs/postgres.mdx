@@ -903,6 +903,26 @@ await db.tx(async (t) => {
 
 A `receive` event that rewrites results isn't supported.
 
+### `slonik`
+
+Pass the pool, or the connection or transaction a callback is handed:
+
+```ts twoslash tab="main.ts"
+import { createPool } from "slonik";
+import getUser from "./pg_get_user.sql";
+
+const db = await createPool(process.env.DATABASE_URL!);
+const user = await getUser.run(db, { id: 1 });
+
+await db.connect((connection) => getUser.run(connection, { id: 1 }));
+await db.transaction(async (tx) => {
+  await getUser.run(tx, { id: 1 });
+  await tx.transaction((sp) => getUser.run(sp, { id: 1 }));
+});
+```
+
+Reylo's queries get their own values whatever type parsers the pool was created with, and the pool's other queries keep them. This needs Slonik 49.12.0 or later, whose `sql` tag takes type parsers per query. Reylo makes that tag with the app's own `slonik`, loaded at run time from its `node_modules`, so a server that is bundled keeps `slonik` external. An interceptor with a `transformRow` or `transformRowAsync`, which renames or rewrites rows, isn't supported: Reylo refuses the client before the query runs.
+
 ### `Bun.sql`
 
 Pass the client, or a transaction, savepoint or reserved connection taken from it:

@@ -23,6 +23,9 @@ importers:
       esbuild:
         specifier: ^0.28.2
         version: 0.28.2
+      slonik:
+        specifier: 49.12.0
+        version: 49.12.0
       typescript:
         specifier: ^7.1.0-dev.20260918.1
         version: 7.1.0-dev.20260918.1
@@ -185,6 +188,45 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@opentelemetry/api@1.10.0':
+    resolution: {integrity: sha512-lMkyes8iHrG+mk6WH7X70MdCLI2RS0FwNBY1PyQ8UemaijE2m5mv5A0Niy3HtbYTFrgkUEQjFMXmSAk2hQDuPQ==}
+    engines: {node: '>=8.0.0'}
+
+  '@slonik/driver@49.12.0':
+    resolution: {integrity: sha512-I5sMVaDVabhegjsA2LVX8l/5bUFMDKV0zznIy0z1GobelW7/HP7Taibjz3IfocNGZfipP+wMwomax5VJPDLW/g==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      zod: ^3.25 || ^4
+
+  '@slonik/errors@49.12.0':
+    resolution: {integrity: sha512-2SAX5wDPjSGGE9hnhJQhxmxevmZUe8O058UW+9nCnta2hNonvoGmFrHG1AZdw47sJTSgfN/fygytRcRWmPzvoQ==}
+    engines: {node: '>=24'}
+
+  '@slonik/pg-driver@49.12.0':
+    resolution: {integrity: sha512-HkjlzpPABZZgq4XE36QOmJJyuoIGugsiBp4zolC5lNl+obGGsoh7uT2Nere4Aow9gLhfY+NQs+ylkTUqcEAt6g==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      zod: ^3.25 || ^4
+
+  '@slonik/sql-tag@49.12.0':
+    resolution: {integrity: sha512-yCkl7IDbA0+i0YwWxpFgXaPb3zPVwNljr9Pj2OVI2T5DN8K8GvzIojsKn1uO5SVZD1Odpe7CYFFOWqRjv73ciw==}
+    engines: {node: '>=24'}
+
+  '@slonik/types@49.12.0':
+    resolution: {integrity: sha512-udRC5jO0/olOqZr4FfWVLQNYBepYzg8DrxNWJXU3ssPBIDxcE6bUUF/IslegHSkC8Wu9UG3S/ue665b+E+TKTw==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      zod: ^3.25 || ^4
+
+  '@slonik/utilities@49.12.0':
+    resolution: {integrity: sha512-AFLCGSmXHj5cfBGkA1tQj9cUdxvNpr5cgH/u5yYzHunTqircKLjE7EAiNKY7QYPTQiCzCG8umLa8GNVqf8IRbg==}
+    engines: {node: '>=24'}
+    peerDependencies:
+      zod: ^3.25 || ^4
+
+  '@standard-schema/spec@1.1.0':
+    resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
+
   '@types/node@26.6.1':
     resolution: {integrity: sha512-VqGJBMCtdhqkBUCcBLvywI0NJ+KLuVzgNnlBUNFOQjqVxzo2lxLUNg1DSey8+u2u6ktswSAxg+s68QLzWHNOuA==}
 
@@ -235,6 +277,153 @@ packages:
     engines: {node: '>=18'}
     hasBin: true
 
+  eventemitter3@5.0.4:
+    resolution: {integrity: sha512-mlsTRyGaPBjPedk6Bvw+aqbsXDtoAyAzm5MO7JgU+yVRyMQ5O8bD4Kcci7BS85f93veegeCPkL8R4GLClnjLFw==}
+
+  fast-printf@1.6.10:
+    resolution: {integrity: sha512-GwTgG9O4FVIdShhbVF3JxOgSBY2+ePGsu2V/UONgoCPzF9VY6ZdBMKsHKCYQHZwNk3qNouUolRDsgVxcVA5G1w==}
+    engines: {node: '>=10.0'}
+
+  iso8601-duration@2.2.0:
+    resolution: {integrity: sha512-gyr8oFS2Xb/zaZOISDq91hAJn+KNR90iGQoKhnwhEDwswmcLsOkkICWnu19dS1I6FLhkKYmkB0llQ/3HttnM/A==}
+
+  obuf@1.1.2:
+    resolution: {integrity: sha512-PX1wu0AmAdPqOL1mWhqmlOd8kOIZQwGZw6rh7uby9fTc5lhaOWFLX3I6R1hrF9k3zUY40e6igsLGkDXK92LJNg==}
+
+  p-queue@9.3.5:
+    resolution: {integrity: sha512-Lki/zhXFVmDhesBUn/yHRLW9Bte7mE7xoFHzTR8sIomV7a2z+LxYAPkGvdfidNiu4fKSfjtawixxSHcZci5QcQ==}
+    engines: {node: '>=20'}
+
+  p-timeout@7.0.2:
+    resolution: {integrity: sha512-prbX4Z3YszrFNgH+MW5Zoeq3baXrMtP/MQnFeET90UB/GtGcGDQ5Usg9OCy6ETjTTntOw1SL2z9fMPUppN3Guw==}
+    engines: {node: '>=20'}
+
+  pg-cloudflare@1.4.1:
+    resolution: {integrity: sha512-6PQbsFWZcp9EmJEwy5cGQ2La+AMWpP46lgbb8X+U/XsHIUweYDNCpeuKck5RxL2MdVFi7krbbEi5nX4Zh7JhrQ==}
+
+  pg-connection-string@2.14.1:
+    resolution: {integrity: sha512-qR3kGNPBLpCNtz0evbKA0Y/MRFXwSSdT+pTJvYp/bXTcReZbvX1kzF0IyTc1QnxqF7AZbOeBhNL8R5mYQZV/MA==}
+    peerDependencies:
+      pg: '*'
+    peerDependenciesMeta:
+      pg:
+        optional: true
+
+  pg-cursor@2.22.1:
+    resolution: {integrity: sha512-X10ldv3wwBONQkOSwgWEbaEITMGLd92V2Zd+xsFPhDt3nhhU3hpAT08SERBChnIFmomczLax6lKXLJrHPPXfxA==}
+    peerDependencies:
+      pg: ^8
+
+  pg-int8@1.0.1:
+    resolution: {integrity: sha512-WCtabS6t3c8SkpDBUlb1kjOs7l66xsGdKpIPZsg4wR+B3+u9UAum2odSsF9tnvxg80h4ZxLWMy4pRjOsFIqQpw==}
+    engines: {node: '>=4.0.0'}
+
+  pg-numeric@1.0.2:
+    resolution: {integrity: sha512-BM/Thnrw5jm2kKLE5uJkXqqExRUY/toLHda65XgFTBTFYZyopbKjBe29Ii3RbkvlsMoFwD+tHeGaCjjv0gHlyw==}
+    engines: {node: '>=4'}
+
+  pg-pool@3.14.0:
+    resolution: {integrity: sha512-gKtPkFdQPU3DksooVLi9LsjZxrsBUZIpa+7aVx+LV5pNh0KzP4Zleud2po+ConrxbuXGBJ6Hfer6hdgpIBpBaw==}
+    peerDependencies:
+      pg: '>=8.0'
+
+  pg-protocol@1.16.1:
+    resolution: {integrity: sha512-p9VOFMiHB/ZbJATetbg+99PxssTVSQRnyuPSQ67mN1+1KBOjZaZ83ZQzltnxPhJwSsC3nwVjJ10DVJlerbFzLg==}
+
+  pg-query-stream@4.17.1:
+    resolution: {integrity: sha512-XZ6wenflIOUiT1Qss+cNNXfrm1XGQfZt/GZKagUq7ia/sIfDHiYmPUK0EehPoFu/EakvyutK/z9eah+QZhPoQQ==}
+    peerDependencies:
+      pg: ^8
+
+  pg-types@2.2.0:
+    resolution: {integrity: sha512-qTAAlrEsl8s4OiEQY69wDvcMIdQN6wdz5ojQiOy6YRMuynxenON0O5oCpJI6lshc6scgAY8qvJ2On/p+CXY0GA==}
+    engines: {node: '>=4'}
+
+  pg-types@4.1.0:
+    resolution: {integrity: sha512-o2XFanIMy/3+mThw69O8d4n1E5zsLhdO+OPqswezu7Z5ekP4hYDqlDjlmOpYMbzY2Br0ufCwJLdDIXeNVwcWFg==}
+    engines: {node: '>=10'}
+
+  pg@8.23.1:
+    resolution: {integrity: sha512-aL96AHANtWjPLDOLqnhx+ngp9+UK7ETEU8VJrDCGvsSSi/mGLcWYsS6Herg7lmaBJe4uwrfqsa7gTEFaSizDoQ==}
+    engines: {node: '>= 16.0.0'}
+    peerDependencies:
+      pg-native: '>=3.0.1'
+    peerDependenciesMeta:
+      pg-native:
+        optional: true
+
+  pgpass@1.0.5:
+    resolution: {integrity: sha512-FdW9r/jQZhSeohs1Z3sI1yxFQNFvMcnmfuj4WBMUTxOrAyLMaTcE1aAMBiTlbMNaXvBCQuVi0R7hd8udDSP7ug==}
+
+  postgres-array@2.0.0:
+    resolution: {integrity: sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA==}
+    engines: {node: '>=4'}
+
+  postgres-array@3.0.4:
+    resolution: {integrity: sha512-nAUSGfSDGOaOAEGwqsRY27GPOea7CNipJPOA7lPbdEpx5Kg3qzdP0AaWC5MlhTWV9s4hFX39nomVZ+C4tnGOJQ==}
+    engines: {node: '>=12'}
+
+  postgres-bytea@1.0.1:
+    resolution: {integrity: sha512-5+5HqXnsZPE65IJZSMkZtURARZelel2oXUEO8rH83VS/hxH5vv1uHquPg5wZs8yMAfdv971IU+kcPUczi7NVBQ==}
+    engines: {node: '>=0.10.0'}
+
+  postgres-bytea@3.0.0:
+    resolution: {integrity: sha512-CNd4jim9RFPkObHSjVHlVrxoVQXz7quwNFpz7RY1okNNme49+sVyiTvTRobiLV548Hx/hb1BG+iE7h9493WzFw==}
+    engines: {node: '>= 6'}
+
+  postgres-date@1.0.7:
+    resolution: {integrity: sha512-suDmjLVQg78nMK2UZ454hAG+OAW+HQPZ6n++TNDUX+L0+uUlLywnoxJKDou51Zm+zTCjrCl0Nq6J9C5hP9vK/Q==}
+    engines: {node: '>=0.10.0'}
+
+  postgres-date@2.1.0:
+    resolution: {integrity: sha512-K7Juri8gtgXVcDfZttFKVmhglp7epKb1K4pgrkLxehjqkrgPhfG6OO8LHLkfaqkbpjNRnra018XwAr1yQFWGcA==}
+    engines: {node: '>=12'}
+
+  postgres-interval@1.2.0:
+    resolution: {integrity: sha512-9ZhXKM/rw350N1ovuWHbGxnGh/SNJ4cnxHiM0rxE4VN41wsg8P8zWn9hv/buK00RP4WvlOyr/RBDiptyxVbkZQ==}
+    engines: {node: '>=0.10.0'}
+
+  postgres-interval@3.0.0:
+    resolution: {integrity: sha512-BSNDnbyZCXSxgA+1f5UU2GmwhoI0aU5yMxRGO8CdFEcY2BQF9xm/7MqKnYoM1nJDk8nONNWDk9WeSmePFhQdlw==}
+    engines: {node: '>=12'}
+
+  postgres-interval@4.1.0:
+    resolution: {integrity: sha512-nJLACcOHi2iyRuMJeW6CuIA0Dc0i1YEpRr26XDyHAfxPjYUJOFxwZjmOc5oFFctTTh/OlRAMlnlXEJvr170fJg==}
+    engines: {node: '>=12'}
+
+  postgres-range@1.1.4:
+    resolution: {integrity: sha512-i/hbxIE9803Alj/6ytL7UHQxRvZkI9O4Sy+J3HGc4F4oo/2eQAjTSNJ0bfxyse3bH0nuVesCk+3IRLaMtG3H6w==}
+
+  roarr@7.21.7:
+    resolution: {integrity: sha512-6X9ID9jb83kPkDxm5xLb9rZdGm6ksdDjpeL0iW5weKelJFi+NVBSowRpEuH8CdpX2x+7RW0TZaezibE7yQB7pg==}
+    engines: {node: '>=18.0'}
+
+  safe-stable-stringify@2.5.0:
+    resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
+    engines: {node: '>=10'}
+
+  semver-compare@1.0.0:
+    resolution: {integrity: sha512-YM3/ITh2MJ5MtzaM429anh+x2jiLVjqILF4m4oyQB18W7Ggea7BfqdH/wGMK7dDiMghv/6WG7znWMwUDzJiXow==}
+
+  serialize-error@12.0.0:
+    resolution: {integrity: sha512-ZYkZLAvKTKQXWuh5XpBw7CdbSzagarX39WyZ2H07CDLC5/KfsRGlIXV8d4+tfqX1M7916mRqR1QfNHSij+c9Pw==}
+    engines: {node: '>=18'}
+
+  slonik@49.12.0:
+    resolution: {integrity: sha512-KMHyRJVITMgBqcQiNZzwHQLP+Eg6h/bthI2fek7raR3hyybeQTWlECy3Ts0XdRvybKQBdqeLXyECZBN1ey69kw==}
+    engines: {node: '>=24'}
+
+  split2@4.2.0:
+    resolution: {integrity: sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg==}
+    engines: {node: '>= 10.x'}
+
+  strict-event-emitter-types@2.0.0:
+    resolution: {integrity: sha512-Nk/brWYpD85WlOgzw5h173aci0Teyv8YdIAEtV+N88nDB0dLlazZyJMIsN6eo1/AR61l+p6CJTG1JIyFaoNEEA==}
+
+  type-fest@4.41.0:
+    resolution: {integrity: sha512-TeTSQ6H5YHvpqVwBRcnLDCBnDOHWYu7IvGbHT6N8AOymcr9PJGjc1GTtiWZTYg0NCgYwvnYWEkVChQAr9bjfwA==}
+    engines: {node: '>=16'}
+
   typescript@7.1.0-dev.20260918.1:
     resolution: {integrity: sha512-/HzGzVht3sKVAGPQeCoTC5dm6pjH7ebpmqe0FXSFJ5UFL58Zjy7UHbDAn1lv6Y8JNzgDoW2GtKUVHBLbbV17ZQ==}
     engines: {node: '>=16.20.0'}
@@ -242,6 +431,13 @@ packages:
 
   undici-types@8.9.0:
     resolution: {integrity: sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==}
+
+  xtend@4.0.2:
+    resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
+    engines: {node: '>=0.4'}
+
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
 
 snapshots:
 
@@ -323,6 +519,57 @@ snapshots:
   '@esbuild/win32-x64@0.28.2':
     optional: true
 
+  '@opentelemetry/api@1.10.0': {}
+
+  '@slonik/driver@49.12.0(zod@4.6.7)':
+    dependencies:
+      '@slonik/types': 49.12.0(zod@4.6.7)
+      '@slonik/utilities': 49.12.0(zod@4.6.7)
+      roarr: 7.21.7
+      serialize-error: 12.0.0
+      strict-event-emitter-types: 2.0.0
+      zod: 4.6.7
+
+  '@slonik/errors@49.12.0(zod@4.6.7)':
+    dependencies:
+      '@slonik/types': 49.12.0(zod@4.6.7)
+
+  '@slonik/pg-driver@49.12.0(zod@4.6.7)':
+    dependencies:
+      '@slonik/driver': 49.12.0(zod@4.6.7)
+      '@slonik/errors': 49.12.0(zod@4.6.7)
+      '@slonik/sql-tag': 49.12.0
+      '@slonik/types': 49.12.0(zod@4.6.7)
+      '@slonik/utilities': 49.12.0(zod@4.6.7)
+      pg: 8.23.1
+      pg-query-stream: 4.17.1(pg@8.23.1)
+      pg-types: 4.1.0
+      postgres-array: 3.0.4
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - pg-native
+
+  '@slonik/sql-tag@49.12.0':
+    dependencies:
+      '@slonik/errors': 49.12.0(zod@4.6.7)
+      '@slonik/types': 49.12.0(zod@4.6.7)
+      roarr: 7.21.7
+      safe-stable-stringify: 2.5.0
+      serialize-error: 12.0.0
+      zod: 4.6.7
+
+  '@slonik/types@49.12.0(zod@4.6.7)':
+    dependencies:
+      zod: 4.6.7
+
+  '@slonik/utilities@49.12.0(zod@4.6.7)':
+    dependencies:
+      '@slonik/errors': 49.12.0(zod@4.6.7)
+      '@slonik/types': 49.12.0(zod@4.6.7)
+      zod: 4.6.7
+
+  '@standard-schema/spec@1.1.0': {}
+
   '@types/node@26.6.1':
     dependencies:
       undici-types: 8.9.0
@@ -377,6 +624,142 @@ snapshots:
       '@esbuild/win32-ia32': 0.28.2
       '@esbuild/win32-x64': 0.28.2
 
+  eventemitter3@5.0.4: {}
+
+  fast-printf@1.6.10: {}
+
+  iso8601-duration@2.2.0: {}
+
+  obuf@1.1.2: {}
+
+  p-queue@9.3.5:
+    dependencies:
+      eventemitter3: 5.0.4
+      p-timeout: 7.0.2
+
+  p-timeout@7.0.2: {}
+
+  pg-cloudflare@1.4.1:
+    optional: true
+
+  pg-connection-string@2.14.1(pg@8.23.1):
+    dependencies:
+      pg: 8.23.1
+
+  pg-cursor@2.22.1(pg@8.23.1):
+    dependencies:
+      pg: 8.23.1
+
+  pg-int8@1.0.1: {}
+
+  pg-numeric@1.0.2: {}
+
+  pg-pool@3.14.0(pg@8.23.1):
+    dependencies:
+      pg: 8.23.1
+
+  pg-protocol@1.16.1: {}
+
+  pg-query-stream@4.17.1(pg@8.23.1):
+    dependencies:
+      pg: 8.23.1
+      pg-cursor: 2.22.1(pg@8.23.1)
+
+  pg-types@2.2.0:
+    dependencies:
+      pg-int8: 1.0.1
+      postgres-array: 2.0.0
+      postgres-bytea: 1.0.1
+      postgres-date: 1.0.7
+      postgres-interval: 1.2.0
+
+  pg-types@4.1.0:
+    dependencies:
+      pg-int8: 1.0.1
+      pg-numeric: 1.0.2
+      postgres-array: 3.0.4
+      postgres-bytea: 3.0.0
+      postgres-date: 2.1.0
+      postgres-interval: 3.0.0
+      postgres-range: 1.1.4
+
+  pg@8.23.1:
+    dependencies:
+      pg-connection-string: 2.14.1(pg@8.23.1)
+      pg-pool: 3.14.0(pg@8.23.1)
+      pg-protocol: 1.16.1
+      pg-types: 2.2.0
+      pgpass: 1.0.5
+    optionalDependencies:
+      pg-cloudflare: 1.4.1
+
+  pgpass@1.0.5:
+    dependencies:
+      split2: 4.2.0
+
+  postgres-array@2.0.0: {}
+
+  postgres-array@3.0.4: {}
+
+  postgres-bytea@1.0.1: {}
+
+  postgres-bytea@3.0.0:
+    dependencies:
+      obuf: 1.1.2
+
+  postgres-date@1.0.7: {}
+
+  postgres-date@2.1.0: {}
+
+  postgres-interval@1.2.0:
+    dependencies:
+      xtend: 4.0.2
+
+  postgres-interval@3.0.0: {}
+
+  postgres-interval@4.1.0: {}
+
+  postgres-range@1.1.4: {}
+
+  roarr@7.21.7:
+    dependencies:
+      fast-printf: 1.6.10
+      safe-stable-stringify: 2.5.0
+      semver-compare: 1.0.0
+
+  safe-stable-stringify@2.5.0: {}
+
+  semver-compare@1.0.0: {}
+
+  serialize-error@12.0.0:
+    dependencies:
+      type-fest: 4.41.0
+
+  slonik@49.12.0:
+    dependencies:
+      '@opentelemetry/api': 1.10.0
+      '@slonik/driver': 49.12.0(zod@4.6.7)
+      '@slonik/errors': 49.12.0(zod@4.6.7)
+      '@slonik/pg-driver': 49.12.0(zod@4.6.7)
+      '@slonik/sql-tag': 49.12.0
+      '@slonik/utilities': 49.12.0(zod@4.6.7)
+      '@standard-schema/spec': 1.1.0
+      iso8601-duration: 2.2.0
+      p-queue: 9.3.5
+      postgres-interval: 4.1.0
+      roarr: 7.21.7
+      serialize-error: 12.0.0
+      strict-event-emitter-types: 2.0.0
+      zod: 4.6.7
+    transitivePeerDependencies:
+      - pg-native
+
+  split2@4.2.0: {}
+
+  strict-event-emitter-types@2.0.0: {}
+
+  type-fest@4.41.0: {}
+
   typescript@7.1.0-dev.20260918.1:
     optionalDependencies:
       '@typescript/typescript-darwin-arm64': 7.1.0-dev.20260918.1
@@ -388,3 +771,7 @@ snapshots:
       '@typescript/typescript-win32-x64': 7.1.0-dev.20260918.1
 
   undici-types@8.9.0: {}
+
+  xtend@4.0.2: {}
+
+  zod@4.6.7: {}

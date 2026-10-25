@@ -705,6 +705,56 @@ test("the driver's own error comes through unchanged", async () => {
   assert.throws(() => execute(db, { dialect: "sqlite", sql: "selec 1", params: [] }), /syntax error/);
 });
 
+test("postgres: Slonik, through a tag from its own createSqlTag that passes every converted type through as text", async () => {
+  const sent: { sql: string; values: unknown[]; typeParsers?: { name: string }[] }[] = [];
+  // Slonik's pool, connections and transactions: query() runs a token and gives pg's rows and fields.
+  // A pool has its settings on configuration; a connection, transaction or savepoint on clientConfiguration.
+  const client = (rows: Record<string, unknown>[], fields: { name: string; dataTypeId: number }[], configuration?: object, on: "configuration" | "clientConfiguration" = "configuration") => ({
+    [on]: configuration,
+    maybeOneFirst() {},
+    anyFirst() {},
+    query: async (token: (typeof sent)[number]) => (sent.push(token), { rows: rows.map((r) => ({ ...r })), fields }),
+  });
+  const row = { n: "12345678901234567890.123456789", at: "2026-10-23 05:34:56.123456-07", iv: "-1 days", nums: ["1.10", null], flag: "t", price: "$1.50" };
+  const fields = [["n", 1700], ["at", 1184], ["iv", 1186], ["nums", 1231], ["flag", 16], ["price", 790]].map(([name, dataTypeId]) => ({ name: name as string, dataTypeId: dataTypeId as number }));
+  const decoded = { n: "12345678901234567890.123456789", at: "2026-10-23T12:34:56.123456Z", iv: "-P1D", nums: ["1.10", null], flag: true, price: "$1.50" };
+  const q: QueryModule<"postgres"> = {
+    dialect: "postgres",
+    sql: "select n, at, iv, nums, flag, '$1.50'::money as price from t -- :x\nwhere id = :id and raw = :raw and note is not distinct from :note",
+    params: ["id", "raw", "note"],
+    columns: [["n", "decimal"], ["at", "timestamptz"], ["iv", "interval"], ["nums", "decimal[]"], ["flag", "bool"], ["price", "text"]],
+  };
+  assert.deepEqual(await execute(client([row], fields, { typeParsers: [{ name: "citext" }] }), q, { id: 9007199254740993n, raw: Uint8Array.of(1, 2) }), [decoded]);
+  // The statement as written, the literal and the comment untouched; the values in its order, as the tag takes them.
+  assert.equal(sent[0]!.sql, "select n, at, iv, nums, flag, '$1.50'::money as price from t -- :x\nwhere id = $slonik_1 and raw = $slonik_2 and note is not distinct from $slonik_3");
+  assert.deepEqual(sent[0]!.values, [9007199254740993n, "\\x0102", null]);
+  const names = sent[0]!.typeParsers!.map((p) => p.name);
+  for (const name of ["numeric", "timestamptz", "interval", "int8", "date", "json", "citext"]) assert.ok(names.includes(name), name);
+  // Positional placeholders out of order bind in the order they appear.
+  sent.length = 0;
+  const positional: QueryModule<"postgres"> = { dialect: "postgres", sql: "select $2::int as b, $1::text as a", params: ["1", "2"] };
+  await execute(client([], []), positional, { 1: "x", 2: 7 });
+  assert.deepEqual(sent[0]!.values, [7, "x"]);
+  // A query defined by hand, with no kinds: each column by its type's oid.
+  assert.deepEqual(await execute(client([{ at: "2026-10-23 05:34:56.123456-07" }], [{ name: "at", dataTypeId: 1184 }]), { dialect: "postgres", sql: "select at from t", params: [] }), [{ at: "2026-10-23T12:34:56.123456Z" }]);
+  // A parameter used twice would be two parameters to Slonik's tag.
+  await assert.rejects(() => execute(client([], []), pg, { id: 1, name: "ada" }) as Promise<unknown>, /uses a parameter more than once, and Slonik's sql tag binds each use on its own/);
+  // A value the driver converted anyway (a custom driverFactory ignores the query's parsers).
+  await assert.rejects(() => execute(client([{ ...row, n: 12345678901234567000 }], fields), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /Column "n" reached Reylo already converted by Slonik's driver \(number\)/);
+  // An interceptor that rewrites rows, on a pool or a transaction, is refused before anything runs.
+  sent.length = 0;
+  const transform = (_ctx: unknown, _query: unknown, r: object) => r;
+  for (const on of ["configuration", "clientConfiguration"] as const) {
+    for (const hook of ["transformRow", "transformRowAsync"]) {
+      const interceptor = { name: "camel", [hook]: hook === "transformRow" ? transform : async (...a: [unknown, unknown, object]) => transform(...a) };
+      await assert.rejects(() => execute(client([row], fields, { interceptors: [interceptor] }, on), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /one of its interceptors rewrites every row/);
+    }
+  }
+  assert.equal(sent.length, 0);
+  // An interceptor that leaves the rows alone is fine.
+  assert.deepEqual(await execute(client([row], fields, { interceptors: [{ name: "log", afterQueryExecution() {} }] }, "clientConfiguration"), q, { id: 9007199254740993n, raw: Uint8Array.of(1, 2) }), [decoded]);
+});
+
 test("an unsupported client rejects, naming what it has and what reylo takes", async () => {
   await assert.rejects(() => execute({ connect() {}, end() {} } as never, pg) as Promise<unknown>, (e: TypeError) => e instanceof TypeError && /postgres statement on an object with connect, end\. It takes a client with query\(text, values\)/.test(e.message));
   // An object with Drizzle's select() but no session over a client is no Drizzle database.
@@ -716,10 +766,6 @@ test("an unsupported client rejects, naming what it has and what reylo takes", a
   // Inside their transactions, neither hands out the connection.
   await assert.rejects(() => execute(Object.assign(new Kysely(), { isTransaction: true }) as never, pg) as Promise<unknown>, / Kysely decodes the values of its queries itself and does not hand out its transaction's connection: take the transaction from the driver's client instead\.$/);
   await assert.rejects(() => execute({ $queryRawUnsafe() {} } as never, lite) as Promise<unknown>, / Prisma decodes the values of its queries itself and does not hand out its transaction's connection/);
-  // Slonik's pool and transactions have a query() that takes only its sql tag's statements, so it
-  // is refused before Reylo calls it.
-  const slonik = { query: () => assert.fail("query() was called"), maybeOneFirst() {}, anyFirst() {}, transaction() {} };
-  await assert.rejects(() => execute(slonik as never, pg) as Promise<unknown>, /object with query, maybeOneFirst, anyFirst, transaction\. .* Slonik decodes the values of its queries itself, by type parsers set for its whole pool, and does not hand out its connection: run Reylo's queries on a pg Pool beside it\.$/);
   // node:sqlite's tag store has all() for templates; it is not sqlite3's database.
   const store = new DatabaseSync(":memory:").createTagStore();
   await assert.rejects(() => execute(store as never, lite, { id: 1, name: "ada" }) as Promise<unknown>, /sqlite statement on an object with .*pass its database, store\.db/);

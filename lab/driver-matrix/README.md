@@ -19,6 +19,7 @@ Each job runs in its own process: Node 26.7.0 by default, Node 24.19.0 for the s
 | @electric-sql/pglite | 0.5.8, 0.4.6, 0.3.16, 0.2.17 | in-process | PGlite, `db.transaction(tx)` |
 | @neondatabase/serverless | 1.1.0, 0.10.4, 0.9.5 | Postgres 14 behind a local Neon proxy | Pool, Client, PoolClient, PoolClient inside BEGIN/COMMIT (all over WebSocket), `neon()` over HTTP, `neon(url, { fullResults: true })` |
 | pg-promise | 12.7.1 | Postgres 14 (local) | `db`, `db.task(t)`, `db.tx(t)`, nested `t.tx(t2)` (a savepoint) |
+| slonik | 49.12.0 | Postgres 14 (local), with Slonik's own type parsers | the pool, a connection from `pool.connect(c)`, `pool.transaction(tx)`, nested `tx.transaction(sp)` (a savepoint) |
 | Bun.sql | Bun 1.3.14 | Postgres 14, MySQL 8.4, MySQL 8.0, SQLite file | `sql`, `sql.begin(tx)`, `tx.savepoint(sp)`, `sql.reserve()` (not on SQLite) |
 | mysql2 | 3.24.5, 3.15.3, 2.3.3 | MySQL 8.4, MySQL 8.0 | promise Pool, Connection, PoolConnection, PoolConnection inside `beginTransaction()`; callback Pool, Connection and PoolConnection passed without `.promise()` |
 | mariadb (a MySQL client) | 3.5.4, 3.4.5, 2.5.6 | MySQL 8.4 | Pool, Connection, PoolConnection, PoolConnection inside `beginTransaction()`; `mariadb/callback` Connection, Pool, and PoolConnection inside `beginTransaction()` |

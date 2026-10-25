@@ -105,6 +105,15 @@ const db = pgp(process.env.DATABASE_URL);
 const user = await getUser.run(db, { id: 1 });
 ```
 
+```ts twoslash tab="Slonik" dialect="postgres"
+import { createPool } from "slonik";
+import getUser from "./get_user.sql";
+
+const db = await createPool(process.env.DATABASE_URL!);
+
+const user = await getUser.run(db, { id: 1 });
+```
+
 ```ts twoslash tab="@vercel/postgres" dialect="postgres"
 // deprecated on npm; type-checked against Reylo, not run in its tests
 import { sql } from "@vercel/postgres";
@@ -193,6 +202,14 @@ const pgp = pgPromise();
 const db = pgp(process.env.DATABASE_URL);
 // ---cut---
 await db.tx((t) => getUser.run(t, { id: 1 }));
+```
+
+```ts twoslash tab="Slonik" dialect="postgres"
+import { createPool } from "slonik";
+import getUser from "./get_user.sql";
+const db = await createPool(process.env.DATABASE_URL!);
+// ---cut---
+await db.transaction((tx) => getUser.run(tx, { id: 1 }));
 ```
 
 ```ts twoslash tab="@vercel/postgres" dialect="postgres"
