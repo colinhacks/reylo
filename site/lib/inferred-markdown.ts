@@ -42,7 +42,7 @@ function cardMarkdown(body: string, modules: Modules): string {
     const row = /^export type Row = (.*);$/m.exec(module)?.[1] ?? 'never';
     const cardinality = /, "(one|maybeOne|many|none)", "(?:postgres|mysql|sqlite)"> & \{/.exec(module)?.[1] ?? 'many';
     const types = [
-      ...(params && params !== 'Record<never, never>' ? [`// Params\n${formatType(params, 64)}`] : []),
+      `// Params\n${params && params !== 'Record<never, never>' ? formatType(params, 64) : 'void'}`,
       `// Returns\n${formatType(resultType(row, cardinality), 64)}`,
     ].join('\n');
     const text = `\`\`\`sql\n${statement.text}\n\`\`\`\n\n\`\`\`ts\n${types}\n\`\`\``;

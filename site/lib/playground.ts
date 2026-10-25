@@ -202,7 +202,7 @@ export async function card(request: Request): Promise<Card> {
     if (own) rows.push(`<InferredRow label="Schema">\n\n${fence('sql', own)}\n\n</InferredRow>`);
     rows.push(`<InferredRow label="Query">\n\n${fence('sql', written)}\n\n</InferredRow>`);
     const typeRows = [];
-    if (types.params) typeRows.push(`<InferredRow label="Params">\n\n${fence('ts', formatType(types.params, width))}\n\n</InferredRow>`);
+    typeRows.push(`<InferredRow label="Params">\n\n${fence('ts', types.params ? formatType(types.params, width) : 'void')}\n\n</InferredRow>`);
     typeRows.push(`<InferredRow label="Returns">\n\n${fence('ts', formatType(resultType(types.row, types.cardinality), width))}\n\n</InferredRow>`);
     rows.push(`<InferredTypes>\n${typeRows.join('\n')}\n</InferredTypes>`);
     panels.push(`<Dialect value="${DIALECT_NAME[dialect]}">\n${rows.join('\n')}\n</Dialect>`);

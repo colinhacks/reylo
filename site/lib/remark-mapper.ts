@@ -482,7 +482,7 @@ const codeNode = (lang: string, value: string): MdNode => ({ type: 'code', lang,
  * Each `<Inferred>` card of the file: its schema blocks (```sql schema```, one per dialect or one for
  * every dialect) and its statement (```sql file="name.sql" dialect="…"```, once for every dialect or
  * once per dialect) become, per dialect, labelled rows, Schema (where the card has one), Query, Params
- * (where the statement has any) and Returns, holding what `.run()` takes and resolves to, read off
+ * (`void` where the statement has none) and Returns (`void` for a write that returns nothing), holding what `.run()` takes and resolves to, read off
  * the statement's captured module, in a <DialectTabs follow> that follows the page's dialect choice.
  */
 function renderInferred(tree: MdNode, blocks: Block[], modules: Modules, page: string) {
@@ -508,7 +508,7 @@ function renderInferred(tree: MdNode, blocks: Block[], modules: Modules, page: s
       if (block.schema !== undefined) rows.push(jsx('InferredRow', [['label', 'Schema']], [codeNode('sql', block.schema)]));
       rows.push(jsx('InferredRow', [['label', 'Query']], [codeNode('sql', block.node.value)]));
       const types: MdNode[] = [];
-      if (params) types.push(jsx('InferredRow', [['label', 'Params']], [codeNode('ts', formatType(params, width))]));
+      types.push(jsx('InferredRow', [['label', 'Params']], [codeNode('ts', params ? formatType(params, width) : 'void')]));
       types.push(jsx('InferredRow', [['label', 'Returns']], [codeNode('ts', formatType(resultType(row, cardinality), width))]));
       rows.push(jsx('InferredTypes', [], types));
       return jsx('Dialect', [['value', DIALECT_NAME[dialect]]], rows);
