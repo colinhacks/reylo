@@ -293,7 +293,11 @@ pub const TRIGGERS_QUERY: &str = concat!(
 /// defers it); it is no exclusion constraint's, which is what PostgreSQL 18 builds for a key
 /// `WITHOUT OVERLAPS` and marks unique all the same (`PRIMARY KEY (room, during WITHOUT OVERLAPS)`
 /// keeps two rows of one room apart only where their ranges overlap, so the room names no row, and
-/// the planner takes no such index for a unique one); the relation is not a traditional
+/// the planner takes no such index for a unique one); each part's operator class compares with the
+/// btree equality of its type's default one (`record_image_ops` compares bytes, and holds both
+/// `(1.0)` and `(1.00)`, which `=` finds equal, and so may an operator class of a superuser's: a
+/// key is pinned by the `=` the comparison resolves to, a built-in one by its type's default
+/// equality); the relation is not a traditional
 /// inheritance parent, whose scan also reads
 /// children the index does not cover (a partitioned table's unique index holds across its
 /// partitions); and each part's index collation agrees with the column's on equality (the same
@@ -326,6 +330,14 @@ pub const UNIQUE_KEYS_QUERY: &str = concat!(
       AND (SELECT pg_catalog.count(*) ",
     key_parts!(),
     ") OPERATOR(pg_catalog.=) i.indnkeyatts \
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.generate_series(0, i.indnkeyatts::pg_catalog.int4 OPERATOR(pg_catalog.-) 1) AS k \
+        JOIN pg_catalog.pg_opclass oc ON oc.oid OPERATOR(pg_catalog.=) i.indclass[k] \
+        WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_amop m \
+          JOIN pg_catalog.pg_opclass dc ON dc.opcmethod OPERATOR(pg_catalog.=) oc.opcmethod AND dc.opcintype OPERATOR(pg_catalog.=) oc.opcintype AND dc.opcdefault \
+          JOIN pg_catalog.pg_amop dm ON dm.amopfamily OPERATOR(pg_catalog.=) dc.opcfamily AND dm.amoplefttype OPERATOR(pg_catalog.=) oc.opcintype \
+            AND dm.amoprighttype OPERATOR(pg_catalog.=) oc.opcintype AND dm.amopstrategy OPERATOR(pg_catalog.=) 3 \
+          WHERE m.amopfamily OPERATOR(pg_catalog.=) oc.opcfamily AND m.amoplefttype OPERATOR(pg_catalog.=) oc.opcintype \
+            AND m.amoprighttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amopstrategy OPERATOR(pg_catalog.=) 3 AND m.amopopr OPERATOR(pg_catalog.=) dm.amopopr)) \
       AND NOT EXISTS (SELECT 1 ",
     key_parts!(),
     " WHERE NOT CASE WHEN i.indkey[k] OPERATOR(pg_catalog.=) 0 THEN i.indcollation[k] OPERATOR(pg_catalog.=) '0'::pg_catalog.oid OR ( \
