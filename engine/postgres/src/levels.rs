@@ -29,15 +29,20 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 /// The columns of the relations a statement names, in order, by the name the statement writes
-/// (`posts`, `app.posts`): the first two columns of [`crate::cardinality::COLUMNS_QUERY`]'s rows.
-/// A relation that is missing is one whose columns are not known.
+/// (`posts`, `app.posts`): the first two columns of [`crate::cardinality::COLUMNS_QUERY`]'s rows,
+/// and the third, each column's type (a domain's by its base type), where the host gave it. A
+/// relation that is missing is one whose columns are not known.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Columns(HashMap<String, Vec<String>>);
+pub struct Columns(HashMap<String, Vec<String>>, HashMap<String, Vec<Option<u32>>>);
 
 impl Columns {
     pub fn from_rows(rows: &[Vec<Value>]) -> Columns {
         let named = |row: &Vec<Value>| Some((crate::host::as_str(row.first()?)?.to_string(), crate::host::as_strings(row.get(1)?)?));
-        Columns(rows.iter().filter_map(named).collect())
+        let typed = |row: &Vec<Value>| {
+            let types: Vec<Option<u32>> = row.get(2)?.as_array()?.iter().map(crate::host::as_u32).collect();
+            Some((crate::host::as_str(row.first()?)?.to_string(), types))
+        };
+        Columns(rows.iter().filter_map(named).collect(), rows.iter().filter_map(typed).collect())
     }
 
     pub fn insert(&mut self, relation: impl Into<String>, columns: Vec<String>) {
@@ -47,11 +52,17 @@ impl Columns {
     fn of(&self, relation: &str) -> Option<&Vec<String>> {
         self.0.get(relation)
     }
+
+    /// The type of a relation's column, where the host gave it.
+    fn type_of(&self, relation: &str, column: &str) -> Option<u32> {
+        let position = self.0.get(relation)?.iter().position(|c| c == column)?;
+        self.1.get(relation)?.get(position).copied().flatten()
+    }
 }
 
 impl<R: Into<String>, C: Into<String>> FromIterator<(R, Vec<C>)> for Columns {
     fn from_iter<I: IntoIterator<Item = (R, Vec<C>)>>(iter: I) -> Self {
-        Columns(iter.into_iter().map(|(r, c)| (r.into(), c.into_iter().map(Into::into).collect())).collect())
+        Columns(iter.into_iter().map(|(r, c)| (r.into(), c.into_iter().map(Into::into).collect())).collect(), HashMap::new())
     }
 }
 
@@ -166,6 +177,9 @@ impl Withs {
 struct Item {
     name: Option<String>,
     shown: Shown,
+    /// The catalog's relation the item is, by the name [`Columns`] keys it under, where its columns
+    /// keep their names.
+    relation: Option<String>,
 }
 
 /// The FROM of one query.
@@ -203,15 +217,17 @@ impl Level {
                         }
                     }
                 };
+                let relation = (with.is_none() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty()))
+                    .then(|| if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) });
                 let name = rv.alias.as_ref().map_or_else(|| rv.relname.clone(), |a| a.aliasname.clone());
-                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()) });
+                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let shown = match r.subquery.as_deref().and_then(as_select) {
                     Some(select) => shown_by(select, withs, columns),
                     None => Shown::unknown(),
                 };
-                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()) });
+                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()), relation: None });
             }
             Some(NodeEnum::RangeFunction(r)) => {
                 // `f(…) AS r (k int, v text)` is the columns it defines, and WITH ORDINALITY one
@@ -227,7 +243,7 @@ impl Level {
                     Shown::unknown().renamed(r.alias.as_ref())
                 };
                 let name = r.alias.as_ref().map(|a| a.aliasname.clone()).or_else(|| crate::infer::function_item_name(r));
-                self.items.push(Item { name, shown });
+                self.items.push(Item { name, shown, relation: None });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 let mut inner = Level::default();
@@ -237,12 +253,12 @@ impl Level {
                 inner.merged |= j.is_natural || !j.using_clause.is_empty();
                 match &j.alias {
                     // An alias on the join hides the names of the items under it.
-                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)) }),
+                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)), relation: None }),
                     None => {
                         // `USING (id) AS x` names the merged columns and hides nothing.
                         if let Some(alias) = &j.join_using_alias {
                             let names = j.using_clause.iter().map(|n| last_string(std::slice::from_ref(n))).collect();
-                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false } });
+                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false }, relation: None });
                         }
                         self.merged |= inner.merged;
                         self.items.extend(inner.items);
@@ -255,7 +271,7 @@ impl Level {
                 }
             }
             // XMLTABLE, JSON_TABLE and whatever else a FROM takes: an item of unknown columns.
-            _ => self.items.push(Item { name: None, shown: Shown::unknown() }),
+            _ => self.items.push(Item { name: None, shown: Shown::unknown(), relation: None }),
         }
     }
 
@@ -278,6 +294,39 @@ impl Level {
     pub fn lacks(&self, column: &str) -> bool {
         const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid", "rowid", "_rowid_"];
         !SYSTEM_COLUMNS.contains(&column) && self.items.iter().all(|i| i.shown.names.iter().all(|n| n.as_deref().is_some_and(|n| n != column)))
+    }
+
+    /// The type of the column a reference reads in this FROM, from the catalog, where it is a
+    /// column of a table here for certain: qualified by the name of one item here, or bare and
+    /// shown by one item here and by none of the others, which a bare name reads before any FROM
+    /// around this one. `None` for any other expression.
+    pub fn column_type(&self, node: &Node, columns: &Columns) -> Option<u32> {
+        let Some(NodeEnum::ColumnRef(c)) = node.node.as_ref() else { return None };
+        let fields: Vec<&str> = c.fields.iter().map(|f| match f.node.as_ref() {
+            Some(NodeEnum::String(s)) => Some(s.sval.as_str()),
+            _ => None,
+        }).collect::<Option<_>>()?;
+        let (item, column) = match fields.as_slice() {
+            [qualifier, column] => {
+                let mut named = self.items.iter().filter(|i| i.name.as_deref() == Some(*qualifier));
+                let item = named.next()?;
+                if named.next().is_some() {
+                    return None;
+                }
+                (item, *column)
+            }
+            [column] => {
+                let mut showing = self.items.iter().enumerate().filter(|(_, i)| i.shown.has(column));
+                let (at, item) = showing.next()?;
+                let alone = self.items.iter().enumerate().all(|(i, other)| i == at || other.shown.names.iter().all(|n| n.as_deref().is_some_and(|n| n != *column)));
+                if showing.next().is_some() || !alone {
+                    return None;
+                }
+                (item, *column)
+            }
+            _ => return None,
+        };
+        columns.type_of(item.relation.as_deref()?, column)
     }
 
     /// Whether an item of this FROM shows a column of this name, for certain.

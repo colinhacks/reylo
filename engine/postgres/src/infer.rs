@@ -1739,7 +1739,7 @@ impl Reader<'_> {
         };
         let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields };
         let value = inner_reader.read(inner);
-        if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level), &|_| None)) {
+        if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level), &|n| level.column_type(n, self.columns))) {
             value
         } else {
             Expr::Nullable(Box::new(value))
@@ -3359,8 +3359,21 @@ mod tests {
         assert!(!first(&pg("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n")).non_null);
         assert!(!first(&plan("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n", Dialect::Postgres, &self::answered(&["max"]))).non_null);
         assert!(!first(&plan("SELECT (SELECT coalesce(max(q), 0) FROM (SELECT n AS max FROM todos) q) AS n", Dialect::Postgres, &answered)).non_null);
-        // An argument that is no row for certain makes it the aggregate.
+        // An argument that is no row for certain makes it the aggregate, and so does a column of a
+        // type that is none, which the catalog gives.
         assert!(first(&plan("SELECT (SELECT coalesce(max(t.n + 1), 0) FROM todos t) AS n", Dialect::Postgres, &self::answered(&["max"]))).non_null);
+        let typed = Columns::from_rows(&[
+            vec![serde_json::json!("todos"), serde_json::json!(["id", "owner_id", "title", "n"]), serde_json::json!([oid::INT4, oid::INT4, oid::TEXT, oid::INT4])],
+            vec![serde_json::json!("pairs"), serde_json::json!(["id", "p"]), serde_json::json!([oid::INT4, 20400])],
+        ]);
+        let listed = self::answered(&["max"]);
+        let typed_plan = |sql: &str| first(&super::plan(sql, Dialect::Postgres, &listed, &typed)).non_null;
+        assert!(typed_plan("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n"));
+        assert!(typed_plan("SELECT (SELECT coalesce(max(n), 0) FROM todos) AS n"));
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(x.p), 0) FROM pairs x) AS n"));
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(t), 0) FROM todos t) AS n"));
+        // A bare name two items show is no column of either for certain.
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(id), 0) FROM todos, pairs) AS n"));
         // Not an aggregate: it may match no row.
         assert!(!first(&pg("SELECT (SELECT 1 FROM todos LIMIT 1) AS n")).non_null);
         // An aggregate whose one row a clause can take away.

@@ -175,7 +175,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     // carry.
     let group = match top {
         NodeEnum::SelectStmt(s) if grouped && !s.group_clause.iter().any(|g| names_output(g, &targets)) => Some(s.group_clause.clone()),
-        NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust, &fields) => Some(Vec::new()),
+        NodeEnum::SelectStmt(s) if s.group_clause.is_empty() && aggregating(&targets, dialect, trust, &fields, &Level::of(&from, &withs[0], columns), columns) => Some(Vec::new()),
         _ => None,
     };
     let windows = match top {
@@ -266,9 +266,9 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
 
 /// Whether a select list aggregates outside any subquery, so that without a GROUP BY every
 /// expression of it outside an aggregate's arguments is one row's.
-fn aggregating(targets: &[Node], dialect: Dialect, trust: &Trust, fields: &HashSet<String>) -> bool {
+fn aggregating(targets: &[Node], dialect: Dialect, trust: &Trust, fields: &HashSet<String>, from: &Level, columns: &Columns) -> bool {
     targets.iter().any(|t| match t.node.as_ref() {
-        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|v| crate::infer::aggregates(v, dialect, trust, None, Some(fields), &|_| None) || constructs_aggregate(v)),
+        Some(NodeEnum::ResTarget(rt)) => rt.val.as_deref().is_some_and(|v| crate::infer::aggregates(v, dialect, trust, None, Some(fields), &|n| from.column_type(n, columns)) || constructs_aggregate(v)),
         _ => false,
     })
 }
@@ -489,7 +489,8 @@ impl Builder<'_> {
                         // own over the same `FROM`: a probe without the statement's GROUP BY
                         // would fail beside a bare column of the context's own probe. Where the
                         // statement's own expressions have a probe that carries it, that one does.
-                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None, Some(&self.fields), &|_| None) || self.outside_aggregates() {
+                        let from = Level::of(&self.stack[self.stack.len() - 1].1, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+                        if !crate::infer::aggregates(expr, self.dialect, self.trust, None, Some(&self.fields), &|n| from.column_type(n, self.columns)) || self.outside_aggregates() {
                             return self.leaf(expr);
                         }
                         let top = self.stack.len() - 1;
@@ -550,7 +551,7 @@ impl Builder<'_> {
                 // A scalar subquery is one row only when it is an ungrouped aggregate of its own
                 // (one over columns of a query around it is that query's, `levels`); anything
                 // else can match nothing and hand back NULL, whatever its value is.
-                if crate::infer::one_row(select, &inner, self.dialect, self.trust) || (crate::infer::keeps_one_row(select, &inner, self.dialect, self.trust) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level), Some(&self.fields), &|_| None))) {
+                if crate::infer::one_row(select, &inner, self.dialect, self.trust) || (crate::infer::keeps_one_row(select, &inner, self.dialect, self.trust) && (aggregates(&inner, &level, self.trust) || crate::infer::aggregates(&inner, self.dialect, self.trust, Some(&level), Some(&self.fields), &|n| level.column_type(n, self.columns)))) {
                     shape
                 } else {
                     force_nullable(shape)
