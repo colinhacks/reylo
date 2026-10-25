@@ -278,7 +278,7 @@ test("a parameter as a whole sort key is an error the type check places, and a b
   }
 });
 
-test("the Postgres fingerprint runs on the server, holds while nothing changes, and moves with each catalog the analysis reads", { skip: live }, async () => {
+test("the Postgres fingerprint runs on the server, holds while nothing changes, and moves with each catalog the analysis reads, under a search path that puts a user's `||` first", { skip: live }, async () => {
   const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
   const admin = postgres(PG, { max: 1, onnotice: () => {} });
   const name = `reylo_fingerprint_${process.pid}`;
@@ -309,11 +309,20 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     const first = await fingerprint();
     assert.match(first ?? "", /^[0-9a-f]{16}$/);
     assert.equal(await fingerprint(), first);
+    // A user's `||` that answers NULL, which a search path naming pg_catalog after public puts
+    // before the built-in: the query builds its text with pg_catalog's own, so every row still
+    // reads, and the fingerprint moves with each change below.
+    await db.unsafe(`create function cat_null(text, text) returns text language sql immutable as 'select null::pg_catalog.text';
+      create operator public.|| (leftarg = text, rightarg = text, function = cat_null)`);
+    await admin.unsafe(`alter database ${name} set search_path = public, pg_catalog`);
+    const hostile = await fingerprint();
+    assert.notEqual(hostile, first);
+    assert.equal(await fingerprint(), hostile);
     // Each change touches only a catalog the row count or the trust check reads: rows of b are read
     // by a scan of a, a BEFORE ROW trigger can skip an INSERT's row and a rule can replace it, a
     // key holds only under the index's collation, and a user's operator, cast, default argument,
     // volatility or strictness decides which call the server makes and what it may answer.
-    let last = first;
+    let last = hostile;
     for (const change of [
       "alter table b inherit a",
       "create trigger skip before insert on a for each row execute function skip()",

@@ -68,9 +68,83 @@ export function forPostgresJs(url: string): { url: string; ssl?: "verify-full" |
   return binding === "require" ? { url: stripped, ssl: "verify-full" } : { url: stripped };
 }
 
+/**
+ * An array parameter as the text of an array literal, which the query's own cast
+ * (`$1::pg_catalog.text[]`) reads: postgres.js serializes an array by the array types it reads from
+ * the catalog when it connects, and the connection reads none (below).
+ */
+export function arrayLiteral(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  const item = (x: unknown): string =>
+    Array.isArray(x) ? (arrayLiteral(x) as string) : x === null || x === undefined ? "NULL" : typeof x === "boolean" ? (x ? "t" : "f") : `"${String(x).replace(/[\\"]/g, "\\$&")}"`;
+  return `{${value.map(item).join(",")}}`;
+}
+
+/** How postgres.js reads an element of each built-in array type a catalog query answers. */
+const ELEMENTS: Record<number, (x: string) => unknown> = {
+  1000: (x) => x === "t",
+  1005: Number,
+  1007: Number,
+  1028: Number,
+  1021: Number,
+  1022: Number,
+  1016: String,
+  1009: String,
+  1015: String,
+  1003: String,
+  1002: String,
+  1014: String,
+};
+
+/**
+ * The text of a one-dimensional or nested array of `oid`'s type as values: an unquoted `NULL` is
+ * null, and a quoted element has its backslash escapes undone.
+ */
+export function parseArray(text: string, element: (x: string) => unknown): unknown {
+  let i = text.startsWith("[") ? text.indexOf("=") + 1 : 0;
+  const read = (): unknown[] => {
+    const out: unknown[] = [];
+    i++; // "{"
+    if (text[i] === "}") {
+      i++;
+      return out;
+    }
+    for (;;) {
+      if (text[i] === "{") out.push(read());
+      else if (text[i] === '"') {
+        let value = "";
+        for (i++; text[i] !== '"'; i++) value += text[i] === "\\" ? text[++i] : text[i];
+        i++;
+        out.push(element(value));
+      } else {
+        const end = Math.min(...[",", "}"].map((c) => text.indexOf(c, i)).filter((n) => n >= 0));
+        const raw = text.slice(i, end).trim();
+        i = end;
+        out.push(raw === "NULL" ? null : element(raw));
+      }
+      if (text[i++] === "}") return out;
+    }
+  };
+  return read();
+}
+
+/** Rows, as objects or as arrays, with each column of a built-in array type read as an array. */
+function withArrays<R extends readonly unknown[]>(rows: R, key: (column: { name: string }, i: number) => string | number): R {
+  const columns: { name: string; type: number }[] = (rows as { columns?: { name: string; type: number }[] }).columns ?? [];
+  const arrays = columns.map((c, i) => [key(c, i), ELEMENTS[c.type]] as const).filter((a): a is readonly [string | number, (x: string) => unknown] => a[1] !== undefined);
+  for (const row of rows as unknown as Record<string | number, unknown>[]) {
+    for (const [k, element] of arrays) if (typeof row[k] === "string") row[k] = parseArray(row[k] as string, element);
+  }
+  return rows;
+}
+
 export async function openPostgresDescriber(url: string): Promise<Describer> {
   const target = forPostgresJs(url);
-  const sql = postgres(target.url, { max: 1, prepare: false, onnotice: () => {}, connect_timeout: CONNECT_TIMEOUT_SECONDS, ...(target.ssl && { ssl: target.ssl }) });
+  // `fetch_types` off: postgres.js would read the catalog's array types at connect with a query of
+  // bare operators (`b.oid = a.typelem`), which a user's `=` captures under a search path that puts
+  // their schema before pg_catalog, and arrays would then travel as text both ways. The catalog
+  // queries' arrays are read and written here instead (`arrayLiteral`, `parseArray`).
+  const sql = postgres(target.url, { max: 1, prepare: false, fetch_types: false, onnotice: () => {}, connect_timeout: CONNECT_TIMEOUT_SECONDS, ...(target.ssl && { ssl: target.ssl }) });
   // postgres.js runs these queries one at a time and connects again for each one queued behind
   // a failure, so five transforms against a host that never answers would wait five timeouts
   // (ending the client does not release the queue). The first failure answers every call that
@@ -100,8 +174,8 @@ export async function openPostgresDescriber(url: string): Promise<Describer> {
         columns: (d.columns as any[]).map((c) => ({ name: c.name, oid: c.type, table: c.table, attnum: c.number })),
       };
     },
-    query: (text, params = []) => guard(() => sql.unsafe(text, params as any[])),
-    values: (text, params = []) => guard(() => sql.unsafe(text, params as any[]).values()),
+    query: (text, params = []) => guard(async () => withArrays(await sql.unsafe(text, params.map(arrayLiteral) as any[]), (c) => c.name)),
+    values: (text, params = []) => guard(async () => withArrays(await sql.unsafe(text, params.map(arrayLiteral) as any[]).values(), (_, i) => i)),
     close: () => sql.end({ timeout: 0 }),
   };
 }

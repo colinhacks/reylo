@@ -1,0 +1,4 @@
+cte_star.sql: many () -> { s: int4? }
+from_table_fn.sql: many () -> { s: int8? }
+lateral_out.sql: many () -> { s: int4? }
+sublink.sql: one () -> { s: int8? }

@@ -3,7 +3,9 @@ casts.sql: many (p: int8) -> { t: text, l: text, f: int8?, w: int8, p: int8, b: 
 check_values.sql: many () -> { status: 'active' | 'banned' }
 exact_builtin.sql: many () -> { small: bool, plus: int4, cat: text, l: text, times: int4 }
 implicit_route.sql: many () -> { p: int8? }
+key_cast.sql: many () -> { name: text }
 key_literal.sql: maybeOne () -> { name: text }
+key_param.sql: many (id: int8) -> { name: text }
 outer_join_builtin.sql: many () -> { title: text, name: text, age: int4 }
 outer_join_user.sql: many () -> { title: text, name: text?, age: int4? }
 polymorphic.sql: many () -> { c: text? }

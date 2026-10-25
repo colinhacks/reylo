@@ -1,0 +1,4 @@
+default_operator_class.sql: maybeOne () -> { id: int4 }
+join.sql: many () -> { id: int4 }
+subquery.sql: many () -> { id: int4 }
+user_operator_class.sql: many () -> { id: int4 }

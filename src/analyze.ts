@@ -506,28 +506,48 @@ function writeEntry(root: string, file: string, entry: Entry): void {
  * analysis reads: another Node has another SQLite. A `"char"` column is cast to text:
  * `text || "char"` is ambiguous, and a query the server refuses leaves every entry unverified.
  */
-const NS = `not in ('pg_catalog', 'information_schema') and n.nspname !~ '^pg_(toast|temp)'`;
+// The Postgres query names every operator, function, type and table as pg_catalog's, and converts a
+// value to text only by a built-in cast (a name, a "char", a boolean) or by its type's output
+// function (`textin(oidout(…))`), as the engine's catalog queries do (engine/postgres/src/postgres.rs):
+// under a search path that puts a user's schema before pg_catalog, a user's `||` that answers NULL
+// would leave every row NULL, and the fingerprint would never move. Each row is the text the plain
+// `||` of each field makes. The server's own `pg_get_viewdef` and `pg_get_ruledef` read a rule
+// through a query of bare operators, which a user's `=` of oids answers too: a view's or a rule's
+// row is then NULL, and left out.
+const NS = `not (n.nspname operator(pg_catalog.=) any ('{pg_catalog,information_schema}'::pg_catalog.name[])) and n.nspname operator(pg_catalog.!~) '^pg_(toast|temp)'::pg_catalog.text`;
+const cat = (...parts: string[]) => parts.join(" operator(pg_catalog.||) ");
+const lit = (s: string) => `'${s}'::pg_catalog.text`;
+const line = (tag: string, ...fields: string[]) => cat(lit(`${tag} `), ...fields.flatMap((f, i) => (i ? [lit(" "), f] : [f])));
+const out = (type: string, value: string) => `pg_catalog.textin(pg_catalog.${type}out(${value}))`;
+const txt = (value: string) => `${value}::pg_catalog.text`;
+const md5 = (value: string) => `pg_catalog.md5(${value})`;
+const or = (value: string) => `coalesce(${value}, ''::pg_catalog.text)`;
+const eq = (a: string, b: string) => `${a} operator(pg_catalog.=) ${b}`;
+const rel = (alias: string, column: string) => `join pg_catalog.pg_class c on ${eq("c.oid", `${alias}.${column}`)} join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")}`;
+const PG_CLASS = "'pg_catalog.pg_class'::pg_catalog.regclass::pg_catalog.oid";
+const USER = "'16384'::pg_catalog.oid";
+const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_agg(t.x, E'\\n'::pg_catalog.text order by t.x), ''::pg_catalog.text)) from (
+    select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)")} as x
+    union all select ${line("r", out("oid", "c.oid"), cat(txt("n.nspname"), lit("."), txt("c.relname")), txt("c.relkind"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where ${NS}
+    union all select ${line("a", out("oid", "a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), out("oid", "a.atttypid"), txt("a.attnotnull"), out("oid", "a.attcollation"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
+    union all select ${line("h", out("oid", "h.inhrelid"), out("oid", "h.inhparent"), out("int4", "h.inhseqno"))} from pg_catalog.pg_inherits h ${rel("h", "inhrelid")} where ${NS}
+    union all select ${line("c", out("oid", "o.conrelid"), out("oid", "o.contypid"), txt("o.conname"), "pg_catalog.pg_get_constraintdef(o.oid)")} from pg_catalog.pg_constraint o join pg_catalog.pg_namespace n on ${eq("n.oid", "o.connamespace")} where ${NS}
+    union all select ${line("i", out("oid", "i.indexrelid"), txt("i.indisvalid"), "pg_catalog.pg_get_indexdef(i.indexrelid)")} from pg_catalog.pg_index i ${rel("i", "indrelid")} where ${NS}
+    union all select ${line("g", out("oid", "g.tgrelid"), txt("g.tgname"), out("int2", "g.tgtype"), txt("g.tgenabled"))} from pg_catalog.pg_trigger g ${rel("g", "tgrelid")} where not g.tgisinternal and ${NS}
+    union all select ${line("u", out("oid", "w.ev_class"), txt("w.rulename"), txt("w.ev_type"), txt("w.ev_enabled"), md5("pg_catalog.pg_get_ruledef(w.oid)"))} from pg_catalog.pg_rewrite w ${rel("w", "ev_class")} where w.rulename operator(pg_catalog.<>) '_RETURN'::pg_catalog.name and ${NS}
+    union all select ${line("o", out("oid", "o.oid"), txt("o.oprname"), out("oid", "o.oprleft"), out("oid", "o.oprright"), out("oid", "o.oprcode::pg_catalog.oid"))} from pg_catalog.pg_operator o where o.oid operator(pg_catalog.>=) ${USER}
+    union all select ${line("e", out("oid", "e.enumtypid"), out("float4", "e.enumsortorder"), txt("e.enumlabel"))} from pg_catalog.pg_enum e
+    union all select ${line("t", out("oid", "t.oid"), txt("t.typname"), txt("t.typtype"), out("oid", "t.typbasetype"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
+    union all select ${line("f", out("oid", "p.oid"), txt("p.proname"), out("oid", "p.prorettype"), txt("p.proretset"), out("oidvector", "p.proargtypes"), md5(or("p.prosrc")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), out("oid", "p.provariadic"))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
+    union all select ${line("k", out("oid", "k.oid"), out("oid", "k.castsource"), out("oid", "k.casttarget"), out("oid", "k.castfunc"), txt("k.castcontext"), txt("k.castmethod"))} from pg_catalog.pg_cast k where k.oid operator(pg_catalog.>=) ${USER}
+    union all select ${line("w", out("oid", "c.oid"), md5("pg_catalog.pg_get_viewdef(c.oid)"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where c.relkind operator(pg_catalog.=) any ('{v,m}'::pg_catalog."char"[]) and ${NS}
+    union all select ${line("x", out("oid", "d.adrelid"), out("int2", "d.adnum"), md5("pg_catalog.pg_get_expr(d.adbin, d.adrelid)"))} from pg_catalog.pg_attrdef d ${rel("d", "adrelid")} where ${NS}
+    union all select ${line("p", out("oid", "p.polrelid"), txt("p.polname"), txt("p.polcmd"), txt("p.polpermissive"), md5(cat(or("pg_catalog.pg_get_expr(p.polqual, p.polrelid)"), lit(" "), or("pg_catalog.pg_get_expr(p.polwithcheck, p.polrelid)"))))} from pg_catalog.pg_policy p ${rel("p", "polrelid")} where ${NS}
+    union all select ${line("q", out("oid", "q.oid"), txt("q.opcname"), out("oid", "q.opcmethod"), out("oid", "q.opcintype"))} from pg_catalog.pg_opclass q where q.oid operator(pg_catalog.>=) ${USER}
+    union all select ${line("d", out("oid", "d.objoid"), out("int4", "d.objsubid"), md5("d.description"))} from pg_catalog.pg_description d ${rel("d", "objoid")} where ${eq("d.classoid", PG_CLASS)} and d.objsubid operator(pg_catalog.>) 0 and ${NS}
+  ) t`;
 const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
-  postgres: `select md5(coalesce(string_agg(x, E'\\n' order by x), '')) from (
-    select 'v ' || current_setting('server_version_num') || ' ' || current_setting('search_path') as x
-    union all select 'r ' || c.oid || ' ' || n.nspname || '.' || c.relname || ' ' || c.relkind::text from pg_class c join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
-    union all select 'a ' || a.attrelid || ' ' || a.attnum || ' ' || a.attname || ' ' || a.atttypid || ' ' || a.attnotnull || ' ' || a.attcollation from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace where a.attnum > 0 and not a.attisdropped and n.nspname ${NS}
-    union all select 'h ' || h.inhrelid || ' ' || h.inhparent || ' ' || h.inhseqno from pg_inherits h join pg_class c on c.oid = h.inhrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
-    union all select 'c ' || o.conrelid || ' ' || o.contypid || ' ' || o.conname || ' ' || pg_get_constraintdef(o.oid) from pg_constraint o join pg_namespace n on n.oid = o.connamespace where n.nspname ${NS}
-    union all select 'i ' || i.indexrelid || ' ' || i.indisvalid || ' ' || pg_get_indexdef(i.indexrelid) from pg_index i join pg_class c on c.oid = i.indrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
-    union all select 'g ' || g.tgrelid || ' ' || g.tgname || ' ' || g.tgtype || ' ' || g.tgenabled::text from pg_trigger g join pg_class c on c.oid = g.tgrelid join pg_namespace n on n.oid = c.relnamespace where not g.tgisinternal and n.nspname ${NS}
-    union all select 'u ' || w.ev_class || ' ' || w.rulename || ' ' || w.ev_type::text || ' ' || w.ev_enabled::text || ' ' || md5(pg_get_ruledef(w.oid)) from pg_rewrite w join pg_class c on c.oid = w.ev_class join pg_namespace n on n.oid = c.relnamespace where w.rulename <> '_RETURN' and n.nspname ${NS}
-    union all select 'o ' || o.oid || ' ' || o.oprname || ' ' || o.oprleft || ' ' || o.oprright || ' ' || o.oprcode::oid from pg_operator o where o.oid >= 16384
-    union all select 'e ' || e.enumtypid || ' ' || e.enumsortorder || ' ' || e.enumlabel from pg_enum e
-    union all select 't ' || t.oid || ' ' || t.typname || ' ' || t.typtype::text || ' ' || t.typbasetype || ' ' || t.typnotnull || ' ' || md5(coalesce(t.typdefault, '')) from pg_type t join pg_namespace n on n.oid = t.typnamespace where n.nspname ${NS}
-    union all select 'f ' || p.oid || ' ' || p.proname || ' ' || p.prorettype || ' ' || p.proretset || ' ' || p.proargtypes::text || ' ' || md5(coalesce(p.prosrc, '')) || ' ' || p.prokind::text || ' ' || p.provolatile::text || ' ' || p.proisstrict || ' ' || p.pronargdefaults || ' ' || p.provariadic from pg_proc p join pg_namespace n on n.oid = p.pronamespace where n.nspname ${NS}
-    union all select 'k ' || k.oid || ' ' || k.castsource || ' ' || k.casttarget || ' ' || k.castfunc || ' ' || k.castcontext::text || ' ' || k.castmethod::text from pg_cast k where k.oid >= 16384
-    union all select 'w ' || c.oid || ' ' || md5(pg_get_viewdef(c.oid)) from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('v', 'm') and n.nspname ${NS}
-    union all select 'x ' || d.adrelid || ' ' || d.adnum || ' ' || md5(pg_get_expr(d.adbin, d.adrelid)) from pg_attrdef d join pg_class c on c.oid = d.adrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
-    union all select 'p ' || p.polrelid || ' ' || p.polname || ' ' || p.polcmd::text || ' ' || p.polpermissive || ' ' || md5(coalesce(pg_get_expr(p.polqual, p.polrelid), '') || ' ' || coalesce(pg_get_expr(p.polwithcheck, p.polrelid), '')) from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace where n.nspname ${NS}
-    union all select 'q ' || q.oid || ' ' || q.opcname || ' ' || q.opcmethod || ' ' || q.opcintype from pg_opclass q where q.oid >= 16384
-    union all select 'd ' || d.objoid || ' ' || d.objsubid || ' ' || md5(d.description) from pg_description d join pg_class c on c.oid = d.objoid join pg_namespace n on n.oid = c.relnamespace where d.classoid = 'pg_class'::regclass and d.objsubid > 0 and n.nspname ${NS}
-  ) t`,
+  postgres: POSTGRES_FINGERPRINT,
   mysql: `select concat_ws(' ', @@version, @@sql_mode, count(*), sum(crc32(x)), bit_xor(crc32(x))) from (
     select concat_ws(' ', 'c', table_name, column_name, ordinal_position, column_type, is_nullable, column_key, extra, coalesce(generation_expression, ''), md5(column_comment)) as x from information_schema.columns where table_schema = database()
     union all select concat_ws(' ', 's', table_name, index_name, non_unique, seq_in_index, column_name) from information_schema.statistics where table_schema = database()

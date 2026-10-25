@@ -114,6 +114,18 @@ pub struct Overloads {
     /// Per built-in type name a user's cast function targets, the type's oid and the built-in
     /// types a cast to it from may call such a function.
     casts: HashMap<String, (u32, HashSet<u32>)>,
+    /// Per type of a user's that a unique index's key has, whether the `=` an untyped value
+    /// beside it resolves to is the btree equality of every such key's operator family.
+    keys: HashMap<u32, bool>,
+    /// The built-in types that are rows, a catalog's row type or `record`, where the catalog
+    /// listed them.
+    rows: Option<HashSet<u32>>,
+    /// The types of a user's that are no row and no array.
+    scalars: HashSet<u32>,
+    /// The names the rules read that some row type has an attribute of: a table's, a view's or a
+    /// composite type's column, a catalog's included, and a function's OUT, INOUT or TABLE
+    /// parameter, a column of the rows it returns.
+    attributes: HashSet<String>,
 }
 
 impl Overloads {
@@ -163,12 +175,20 @@ impl Overloads {
                         }
                     }
                     "any" => out.any.extend(a),
+                    "key" => {
+                        if let (Some(ty), Some(ok)) = (a, b) {
+                            out.keys.insert(ty, ok == 1);
+                        }
+                    }
                     "base" => {
                         if let (Some(domain), Some(base)) = (a, b) {
                             out.bases.insert(domain, base);
                         }
                     }
                     "implicit" => out.implicit.extend(a),
+                    "rows" => out.rows = oids(row.get(2)).map(|o| o.into_iter().collect()),
+                    "scalars" => out.scalars.extend(oids(row.get(2)).unwrap_or_default()),
+                    "column" => out.attributes.extend(name.map(str::to_string)),
                     "type" => {
                         if let Some(name) = name {
                             shadowed.insert(name.to_string());
@@ -279,6 +299,29 @@ impl Overloads {
             return None;
         }
         Some(None)
+    }
+
+    /// Whether the `=` an untyped value beside a column of `ty`, a type of a user's, resolves to is
+    /// the btree equality of every unique index's key of that type; `None` where no unique index
+    /// has such a key, or the catalog did not say.
+    pub fn key_equality(&self, ty: u32) -> Option<bool> {
+        self.keys.get(&ty).copied()
+    }
+
+    /// Whether a value of type `ty` is no row, which a call of one argument could read a column of
+    /// (`ParseFuncOrColumn`): a built-in type the catalog does not list as a row type, or a type of
+    /// a user's it lists as a scalar. `None` for a built-in type where it listed none.
+    pub fn is_scalar(&self, ty: u32) -> Option<bool> {
+        if ty >= FIRST_USER_OID {
+            return Some(self.scalars.contains(&ty));
+        }
+        self.rows.as_ref().map(|rows| !rows.contains(&ty))
+    }
+
+    /// Whether some row type has an attribute named `name`, which a call of one argument over a
+    /// row of that type reads where no function takes the row.
+    pub fn row_attribute(&self, name: &str) -> bool {
+        self.attributes.contains(name)
     }
 
     /// Whether a user's function converts some built-in type to another implicitly, which a call

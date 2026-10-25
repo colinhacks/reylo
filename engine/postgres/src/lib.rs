@@ -12,6 +12,8 @@
 pub mod analyze;
 pub mod api;
 pub mod cardinality;
+#[cfg(test)]
+mod catalog_queries;
 pub mod errors;
 pub mod extension;
 pub mod host;

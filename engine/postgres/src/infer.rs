@@ -162,6 +162,20 @@ pub const POSTGRES_STRICT: &[&str] = &[
     "abs", "round", "floor", "ceil", "ceiling", "trunc", "sign", "sqrt", "cbrt", "exp", "ln", "log", "power", "mod",
     "date_trunc", "date_part", "extract", "age",
 ];
+/// The functions the rules read with a built-in of one argument that takes a row (`"any"`,
+/// `anyelement`, `anynonarray`, `record`, or a variadic `"any"`): a call of one over a row is that
+/// function, never a column of the row.
+const POSTGRES_ROW_TAKERS: &[&str] = &[
+    "count", "row_to_json", "to_json", "to_jsonb", "array_agg", "json_agg", "jsonb_agg", "concat", "num_nulls", "num_nonnulls",
+    "quote_nullable", "quote_literal", "json_build_object", "json_build_array", "jsonb_build_object", "jsonb_build_array",
+];
+/// The functions the rules read with a built-in that may return a row: `min` and `max` of a
+/// `record` (PostgreSQL 16 on), and `lag` and `lead` of an `anyelement`. What they return proves
+/// nothing of its type.
+const POSTGRES_ROW_RESULTS: &[&str] = &["min", "max", "lag", "lead"];
+/// The never-null functions the rules read that take no argument but two (`random(min, max)`):
+/// a call of one is no call of theirs.
+const POSTGRES_NO_ARGUMENT: &[&str] = &["now", "clock_timestamp", "statement_timestamp", "transaction_timestamp", "gen_random_uuid", "uuidv4", "random"];
 /// The window functions a rule reads (see `Reader::call`).
 pub const POSTGRES_WINDOW: &[&str] = &["row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead"];
 /// Postgres aggregates that answer NULL only over no rows or over nothing but NULLs. Under a
@@ -277,6 +291,11 @@ pub enum Expr {
     /// the built-in's rule says of it where its arguments' types resolve it to the built-in
     /// ([`Check`]), and nothing elsewhere.
     Call(Box<Call>),
+    /// The one argument of a call Postgres may read as a column of it: non-null as the inner
+    /// expression is only where its type is one the build knows is no row ([`is_scalar`]), its
+    /// type the inner one's. A call `f(x)` no function matches is `x.f` where `x` is a row
+    /// (`ParseFuncOrColumn`), which is NULL where that column is.
+    NotRow(Box<Expr>, Option<Shared>),
     /// `then` where every check of one of the sets in `when` holds, `otherwise` elsewhere: a
     /// column a strict test narrows, where the test calls a name a user also defined.
     Trusted(Box<Trusted>),
@@ -521,6 +540,12 @@ impl Trust {
         self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.every_aggregate(name, arity)) == Some(true)
     }
 
+    /// Whether some row type of the catalog may have an attribute named `name`: as the trust
+    /// query says, and any where it did not.
+    pub(crate) fn row_attribute(&self, name: &str) -> bool {
+        self.overloads.as_ref().is_none_or(|o| o.0.row_attribute(name))
+    }
+
     /// Whether no overload of a user's of `name`, of this kind, returns a set.
     fn returns_no_set(&self, kind: Kind, name: &str) -> bool {
         self.builtin(name) || self.overloads.as_ref().and_then(|o| o.0.returns_set(kind, name)) == Some(false)
@@ -588,7 +613,8 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     // The old and the new row of a RETURNING, with the relations a bare name is a column of first.
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows };
+    let fields = row_fields(&serde_json::to_value(&parsed.protobuf).unwrap_or_default());
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields) };
     let scope = match top {
         NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, &mut reader)),
         _ => None,
@@ -692,6 +718,53 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
         },
         Expr::Call(call) => call.fact(leaves).map_or(NOTHING, |(fact, _)| fact),
         Expr::Trusted(t) => resolve(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves),
+        Expr::NotRow(inner, overloads) => {
+            let fact = resolve(inner, leaves);
+            Fact { non_null: fact.non_null && fact.type_oid.is_some_and(|t| is_scalar(t, overloads.as_ref())), ..fact }
+        }
+    }
+}
+
+/// The row types below `FirstGenbkiObjectId`, the same on PostgreSQL 14 to 18: `pg_type`,
+/// `pg_attribute`, `pg_proc`, `pg_class`, `pg_database`, `pg_authid`, `pg_auth_members`,
+/// `pg_shseclabel`, `pg_subscription`, and `record`. Every other catalog's row type has an oid of
+/// 10000 or more, which `initdb` assigns.
+const ROWS_BELOW_GENBKI: &[u32] = &[71, 75, 81, 83, 1248, 2249, 2842, 2843, 4066, 6101];
+/// `FirstGenbkiObjectId`: every built-in type below it is one of the server's own source.
+const FIRST_GENBKI_OID: u32 = 10000;
+
+/// Whether a value of type `ty` is no row, which a call of one argument could read a column of
+/// (`ParseFuncOrColumn`): as the trust query lists the row types and the types of a user's that are
+/// none ([`crate::resolution::Overloads::is_scalar`]), or where it did not, a built-in type below
+/// 10000 but those [`ROWS_BELOW_GENBKI`] names.
+fn is_scalar(ty: u32, overloads: Option<&Shared>) -> bool {
+    overloads.and_then(|o| o.0.is_scalar(ty)).unwrap_or(ty < FIRST_GENBKI_OID && !ROWS_BELOW_GENBKI.contains(&ty))
+}
+
+/// Whether an argument is no row whatever the build knows of its type, so that a call of one
+/// argument over it is never a column of it: a constant, a parameter, a test, and a call of a
+/// function or an operator the rules read, none of whose built-ins returns a row. The rules prove
+/// such a call non-null only where it is the built-in, a projection of its own argument included
+/// ([`Expr::NotRow`]); one they do not prove non-null leaves the call over it unproven too.
+fn no_row(node: &Node) -> bool {
+    use protobuf::AExprKind as K;
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(_) | NodeEnum::ParamRef(_) | NodeEnum::BoolExpr(_) | NodeEnum::NullTest(_) | NodeEnum::BooleanTest(_) | NodeEnum::SqlvalueFunction(_)) => true,
+        // A scalar subquery is the value of its one column, which may be a row; `ARRAY(…)` is an
+        // array, and the others are tests.
+        Some(NodeEnum::SubLink(s)) => s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32,
+        Some(NodeEnum::FuncCall(f)) => builtin_name(&f.funcname).is_some_and(|n| !POSTGRES_ROW_RESULTS.contains(&n.as_str()) && postgres_function_names().contains(&n.as_str())),
+        // An operator returns what its function does, a user's a row if they wrote it so, and
+        // `LIKE` and `SIMILAR TO` are the operators `~~` and `~`; the rest test, and the server
+        // refuses an `=` beside `ANY`, `IN` or `IS DISTINCT FROM` that returns no boolean.
+        Some(NodeEnum::AExpr(a)) => match K::try_from(a.kind) {
+            Ok(K::AexprOp | K::AexprLike | K::AexprIlike | K::AexprSimilar) => {
+                builtin_name(&a.name).is_some_and(|o| POSTGRES_OPERATORS.contains(&o.as_str()) || POSTGRES_STRICT_OPERATORS.contains(&o.as_str()))
+            }
+            Ok(K::AexprNullif) | Err(_) => false,
+            Ok(_) => true,
+        },
+        _ => false,
     }
 }
 
@@ -767,7 +840,7 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
         None => match expr {
             Expr::NonNull(_) | Expr::Array { .. } => false,
             Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) => true,
-            Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => may_be_jsonb(inner, leaves),
+            Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => may_be_jsonb(inner, leaves),
             Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(|o| may_be_jsonb(o, leaves)),
             // `->` and `#>` give the column's own JSON; `->>` and `#>>` text.
             Expr::JsonPath { text, .. } => !text,
@@ -793,7 +866,7 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
 pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> bool) -> Option<bool> {
     match expr {
         Expr::Array { items, .. } => array_items(items, leaves, is_array),
-        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => items_nullable(inner, leaves, is_array),
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => items_nullable(inner, leaves, is_array),
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
         // A user's overload may return any elements.
@@ -827,7 +900,7 @@ fn array_items(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &dy
 fn reads_unread(expr: &Expr) -> bool {
     match expr {
         Expr::Unread => true,
-        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => reads_unread(inner),
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_unread(inner),
         Expr::JsonPath { base, .. } => reads_unread(base),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_unread),
         Expr::Array { items, .. } => items.iter().any(reads_unread),
@@ -987,6 +1060,7 @@ fn elements_not_jsonb(expr: Expr) -> Expr {
         Expr::Guarded(inner, types) => Expr::Guarded(Box::new(elements_not_jsonb(*inner)), types),
         Expr::NotJsonb(inner) => Expr::NotJsonb(Box::new(elements_not_jsonb(*inner))),
         Expr::Narrowed(inner) => Expr::Narrowed(Box::new(elements_not_jsonb(*inner))),
+        Expr::NotRow(inner, overloads) => Expr::NotRow(Box::new(elements_not_jsonb(*inner)), overloads),
         Expr::Call(mut call) => {
             call.args = match call.claim {
                 Claim::Array(_) => call.args.into_iter().map(|item| match item {
@@ -1024,8 +1098,142 @@ fn array_elements(node: &Node) -> Option<Vec<&Node>> {
 /// proves a row count (`cardinality`) rather than a nullability. `level` is the SELECT's FROM
 /// where the SELECT stands inside another statement: an aggregate counts there only when it is
 /// that SELECT's own ([`Level::owns`]).
-pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>) -> bool {
-    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[] }.aggregates(expr, true, level)
+///
+/// A call of one argument that Postgres may read as a column of a row counts only where it is an
+/// aggregate for certain ([`aggregate_for_certain`]): `fields` are the columns the statement's own
+/// rows may have ([`row_fields`]), `None` where the caller does not see the whole statement, and
+/// `arg_type` gives the type of a column an argument reads where the caller knows it.
+pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>, fields: Option<&HashSet<String>>, arg_type: &dyn Fn(&Node) -> Option<u32>) -> bool {
+    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields }.aggregates(expr, true, level, arg_type)
+}
+
+/// The aggregates the rules read that no built-in of takes a row on every server Reylo supports
+/// (`min` and `max` of a `record` are PostgreSQL 16's): a call of one over a row that has a column
+/// of its name is that column (`ParseFuncOrColumn`), a value per row and no aggregate.
+const POSTGRES_PROJECTED_AGGREGATES: &[&str] = &["sum", "avg", "min", "max", "bit_and", "bit_or", "bool_and", "bool_or", "every"];
+
+/// Whether Postgres may read a call as a column of its one argument, where the argument is a row
+/// and no function of the name takes it (`ParseFuncOrColumn`'s projection): one argument, an
+/// unqualified name, and nothing of an aggregate's or a window's around it.
+fn projection_shaped(f: &protobuf::FuncCall) -> bool {
+    f.args.len() == 1
+        && f.funcname.len() == 1
+        && f.agg_order.is_empty()
+        && f.agg_filter.is_none()
+        && !f.agg_star
+        && !f.agg_distinct
+        && f.over.is_none()
+        && !f.func_variadic
+        && !matches!(f.args[0].node, Some(NodeEnum::NamedArgExpr(_)))
+}
+
+/// Whether a call of the aggregate `name` is one for certain, rather than a column of its
+/// argument: a call Postgres cannot read as a projection, or one whose argument is no row for
+/// certain ([`no_row_for_certain`]), or is of a type that is none, or is a row of no type that has
+/// a column of that name: no row type of the catalog has an attribute of it
+/// ([`Trust::row_attribute`]) and no row the statement builds has a column of it (`fields`).
+pub(crate) fn aggregate_for_certain(f: &protobuf::FuncCall, name: &str, dialect: Dialect, trust: &Trust, fields: Option<&HashSet<String>>, arg_type: &dyn Fn(&Node) -> Option<u32>) -> bool {
+    if dialect != Dialect::Postgres || !POSTGRES_PROJECTED_AGGREGATES.contains(&name) || !projection_shaped(f) {
+        return true;
+    }
+    let arg = &f.args[0];
+    no_row_for_certain(arg, trust)
+        || arg_type(arg).is_some_and(|t| is_scalar(t, trust.overloads.as_ref()))
+        || (!trust.row_attribute(name) && fields.is_some_and(|fields| !fields.contains(name)))
+}
+
+/// Whether a value is no row whatever the statement's tables hold: a constant, a parameter, a test,
+/// an array subquery, a built-in operator of a name no user also defined, and a call of a function
+/// the rules read that no user also defined and that returns no row over an argument that is none
+/// for certain. Unlike [`no_row`], nothing proves such a value non-null first.
+fn no_row_for_certain(node: &Node, trust: &Trust) -> bool {
+    use protobuf::AExprKind as K;
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(_) | NodeEnum::ParamRef(_) | NodeEnum::BoolExpr(_) | NodeEnum::NullTest(_) | NodeEnum::BooleanTest(_) | NodeEnum::SqlvalueFunction(_)) => true,
+        Some(NodeEnum::SubLink(s)) => s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32,
+        Some(NodeEnum::AExpr(a)) => match K::try_from(a.kind) {
+            Ok(K::AexprOp | K::AexprLike | K::AexprIlike | K::AexprSimilar) => builtin_name(&a.name)
+                .is_some_and(|o| (POSTGRES_OPERATORS.contains(&o.as_str()) || POSTGRES_STRICT_OPERATORS.contains(&o.as_str())) && trust.builtin(&o)),
+            Ok(K::AexprNullif) | Err(_) => false,
+            Ok(_) => true,
+        },
+        // `lower` and `upper` of a range are its element, which may be a row.
+        Some(NodeEnum::FuncCall(f)) => builtin_name(&f.funcname).is_some_and(|n| {
+            !POSTGRES_ROW_RESULTS.contains(&n.as_str())
+                && !["lower", "upper", "unnest"].contains(&n.as_str())
+                && postgres_function_names().contains(&n.as_str())
+                && trust.builtin(&n)
+                && (!projection_shaped(f) || POSTGRES_ROW_TAKERS.contains(&n.as_str()) || no_row_for_certain(&f.args[0], trust))
+        }),
+        _ => false,
+    }
+}
+
+/// The names of the columns a row the statement itself builds may have, which a call of one
+/// argument over such a row may read: every column a subquery or a function in a FROM, a WITH
+/// query or a RETURNING list shows, an alias's column list, and the columns `XMLTABLE` and
+/// `JSON_TABLE` define. A target with no alias counts every name written in it, which is where the
+/// server takes its column's name from (`FigureColname`), and a function in a FROM every name in
+/// it. A table's and a composite type's columns are the catalog's ([`Trust::row_attribute`]).
+pub fn row_fields(tree: &serde_json::Value) -> HashSet<String> {
+    use serde_json::Value;
+    fn strings(v: &Value, out: &mut HashSet<String>) {
+        match v {
+            Value::String(s) => {
+                out.insert(s.clone());
+            }
+            Value::Object(map) => map.values().for_each(|c| strings(c, out)),
+            Value::Array(items) => items.iter().for_each(|c| strings(c, out)),
+            _ => {}
+        }
+    }
+    /// The columns a query a FROM or a WITH reads shows: its targets', each arm's of a set
+    /// operation, and a write's RETURNING list's.
+    fn shown(v: &Value, out: &mut HashSet<String>) {
+        let Some(map) = v.get("node").and_then(Value::as_object).and_then(|n| n.values().next()) else { return };
+        for arm in ["larg", "rarg"] {
+            if let Some(arm) = map.get(arm).filter(|a| !a.is_null()) {
+                shown(&serde_json::json!({ "node": { "SelectStmt": arm } }), out);
+            }
+        }
+        let returning = map.get("returning_clause").and_then(|c| c.get("exprs"));
+        for list in [map.get("target_list"), returning] {
+            for target in list.and_then(Value::as_array).into_iter().flatten() {
+                let Some(rt) = target.pointer("/node/ResTarget") else { continue };
+                match rt.get("name").and_then(Value::as_str).filter(|n| !n.is_empty()) {
+                    Some(name) => {
+                        out.insert(name.to_string());
+                    }
+                    None => strings(rt.get("val").unwrap_or(&Value::Null), out),
+                }
+            }
+        }
+    }
+    fn walk(v: &Value, out: &mut HashSet<String>) {
+        match v {
+            Value::Object(map) => {
+                for (key, child) in map {
+                    match key.as_str() {
+                        "RangeSubselect" => shown(child.get("subquery").unwrap_or(&Value::Null), out),
+                        "CommonTableExpr" => {
+                            strings(child.get("aliascolnames").unwrap_or(&Value::Null), out);
+                            shown(child.get("ctequery").unwrap_or(&Value::Null), out);
+                        }
+                        "RangeFunction" | "RangeTableFunc" | "JsonTable" => strings(child, out),
+                        // A FROM item's alias is a field, `alias`, of the item; a join's too.
+                        "alias" | "Alias" => strings(child.get("colnames").unwrap_or(&Value::Null), out),
+                        _ => {}
+                    }
+                    walk(child, out);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|c| walk(c, out)),
+            _ => {}
+        }
+    }
+    let mut out = HashSet::new();
+    walk(tree, &mut out);
+    out
 }
 
 impl Ty {
@@ -1075,6 +1283,9 @@ struct Reader<'a> {
     scope: Option<Vec<Level>>,
     /// The `WINDOW` clause of the SELECT the reader stands in, which `OVER w` names a window of.
     windows: &'a [Node],
+    /// The columns the statement's own rows may have ([`row_fields`]); `None` where the reader
+    /// does not see the whole statement.
+    fields: Option<&'a HashSet<String>>,
 }
 
 /// A column, as written, that a test is strict in, where every check holds: one per call of a
@@ -1193,7 +1404,16 @@ impl Reader<'_> {
             Some(NodeEnum::AExpr(a)) => {
                 let distinct = [protobuf::AExprKind::AexprDistinct as i32, protobuf::AExprKind::AexprNotDistinct as i32];
                 if distinct.contains(&a.kind) {
-                    return Expr::NonNull(Some(oid::BOOL));
+                    // `a IS [NOT] DISTINCT FROM b` compares two non-null values with `=`, and is
+                    // NULL where that `=` answers NULL: a user's of the name may. With a NULL on
+                    // either side no `=` runs.
+                    let null = |n: Option<&Node>| matches!(n.and_then(|n| n.node.as_ref()), Some(NodeEnum::AConst(c)) if c.isnull);
+                    let (Some(left), Some(right)) = (a.lexpr.as_deref(), a.rexpr.as_deref()) else { return Expr::Unknown };
+                    if self.dialect != Dialect::Postgres || !self.trust.checked("=") || null(Some(left)) || null(Some(right)) {
+                        return Expr::NonNull(Some(oid::BOOL));
+                    }
+                    let operands = vec![self.read(left), self.read(right)];
+                    return self.shadowed_call(Kind::Infix, "=", &[left, right], operands, Claim::NonNull(Some(oid::BOOL)));
                 }
                 // `LIKE`, `ILIKE` and `SIMILAR TO` are operators the parse marks apart, under the
                 // operator's own name.
@@ -1332,13 +1552,19 @@ impl Reader<'_> {
         if f.agg_within_group || f.func_variadic {
             return Expr::Unknown;
         }
+        // A call of one argument no function matches is a column of it where the argument is a
+        // row: a function of none (`now(t)`) is then that column alone.
+        let projection = self.projection(f, &name);
+        if projection && POSTGRES_NO_ARGUMENT.contains(&name.as_str()) {
+            return Expr::Unknown;
+        }
         // A function a user also defined proves what the built-in does where the arguments'
         // types resolve the call to it. `unnest` reads its argument's elements, of no type the
         // build can name, and so proves nothing then.
         if self.dialect == Dialect::Postgres && self.trust.checked(&name) {
             let Some((claim, guard)) = self.builtin_claim(f, &name) else { return Expr::Unknown };
             let nodes: Vec<&Node> = f.args.iter().collect();
-            let mut args: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+            let mut args: Vec<Expr> = self.args(f, projection);
             if let (Some(types), Some(first)) = (guard, args.first_mut()) {
                 *first = Expr::Guarded(Box::new(first.clone()), types);
             }
@@ -1371,7 +1597,7 @@ impl Reader<'_> {
                 } else if POSTGRES_GROUPED_NEVER_NULL.contains(&n) {
                     Expr::Array { non_null: true, items: f.args.iter().take(1).map(|a| self.read(a)).collect() }
                 } else {
-                    Expr::Every(f.args.iter().take(1).map(|a| self.read(a)).collect(), Ty::Unknown)
+                    Expr::Every(self.args(f, projection).into_iter().take(1).collect(), Ty::Unknown)
                 }
             }
             // Anywhere else `array_agg` may see no rows and be NULL, but its elements are still the
@@ -1389,7 +1615,7 @@ impl Reader<'_> {
                 None => Expr::Unknown,
             },
             (Dialect::Postgres, "uuidv7", 0) if self.trust.builtin("uuidv7") => Expr::NonNull(Some(oid::UUID)),
-            (Dialect::Postgres, n, 1..) if POSTGRES_FIRST_ARG.contains(&n) && self.trust.builtin(n) => Expr::Every(f.args.iter().take(1).map(|a| self.read(a)).collect(), Ty::Is(oid::TEXT)),
+            (Dialect::Postgres, n, 1..) if POSTGRES_FIRST_ARG.contains(&n) && self.trust.builtin(n) => Expr::Every(self.args(f, projection).into_iter().take(1).collect(), Ty::Is(oid::TEXT)),
             (Dialect::Postgres, n, 1..) if self.trust.builtin(n) && POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => {
                 let types = POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| *t).unwrap_or(&[]);
                 let mut operands: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
@@ -1398,10 +1624,10 @@ impl Reader<'_> {
             }
             (Dialect::Postgres, n, _) if POSTGRES_TOTAL.contains(&n) && self.trust.builtin(n) => {
                 let ty = if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown };
-                Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), ty)
+                Expr::Every(self.args(f, projection), ty)
             }
             _ => match self.trust.total.get(name.as_str()) {
-                Some(&ty) => Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), Ty::Is(ty)),
+                Some(&ty) => Expr::Every(self.args(f, projection), Ty::Is(ty)),
                 None => Expr::Unknown,
             },
         }
@@ -1439,6 +1665,24 @@ impl Reader<'_> {
             Expr::Narrowed(inner) if matches!(*inner, Expr::Leaf(_)) => Expr::JsonPath { base: Box::new(Expr::Narrowed(inner)), path: keys, text, indexes },
             _ => Expr::Unknown,
         }
+    }
+
+    /// Whether Postgres may read this call of `name` as a column of its one argument, where that
+    /// argument is a row and no function matches (`ParseFuncOrColumn`'s projection): one argument,
+    /// an unqualified name, nothing of an aggregate's or a window's around it, and a name whose
+    /// built-ins take no row, which would match one.
+    fn projection(&self, f: &protobuf::FuncCall, name: &str) -> bool {
+        self.dialect == Dialect::Postgres && projection_shaped(f) && !POSTGRES_ROW_TAKERS.contains(&name)
+    }
+
+    /// A call's arguments, the one of a call that may be a column of it read as [`Expr::NotRow`]
+    /// unless it is no row whatever its type ([`no_row`]).
+    fn args(&mut self, f: &protobuf::FuncCall, projection: bool) -> Vec<Expr> {
+        let mut args: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+        if let (true, Some(first)) = (projection && !no_row(&f.args[0]), args.first_mut()) {
+            *first = Expr::NotRow(Box::new(first.clone()), self.trust.overloads.clone());
+        }
+        args
     }
 
     /// What the rule of a Postgres built-in says of a call of `name`, as [`Reader::call_unfiltered`]
@@ -1493,9 +1737,9 @@ impl Reader<'_> {
             Some(outside) => level.within(outside.clone()),
             None => level,
         };
-        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause };
+        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields };
         let value = inner_reader.read(inner);
-        if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level))) {
+        if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level), &|n| level.column_type(n, self.columns))) {
             value
         } else {
             Expr::Nullable(Box::new(value))
@@ -1512,7 +1756,7 @@ impl Reader<'_> {
     /// of a subquery the expression is a target of, an aggregate that is not that subquery's for
     /// certain is left out: one over columns of a query around it belongs to that query, and
     /// leaves the subquery a row per row of its FROM ([`Level::owns`]).
-    fn aggregates(&self, expr: &Node, ordered_sets: bool, from: Option<&Level>) -> bool {
+    fn aggregates(&self, expr: &Node, ordered_sets: bool, from: Option<&Level>, arg_type: &dyn Fn(&Node) -> Option<u32>) -> bool {
         let children: Vec<&Node> = match expr.node.as_ref() {
             Some(NodeEnum::FuncCall(f)) => {
                 let aggregate = f.over.is_none()
@@ -1527,7 +1771,7 @@ impl Reader<'_> {
                                 "total" | "json_group_array" => self.dialect == Dialect::Sqlite && f.args.len() == 1,
                                 _ => false,
                             };
-                            arity && self.trust.aggregates(&name, f.args.len())
+                            arity && self.trust.aggregates(&name, f.args.len()) && aggregate_for_certain(f, &name, self.dialect, self.trust, self.fields, arg_type)
                         }));
                 if aggregate && from.is_none_or(|level| level.owns(f)) {
                     return true;
@@ -1550,7 +1794,7 @@ impl Reader<'_> {
             }
             _ => Vec::new(),
         };
-        children.into_iter().any(|c| self.aggregates(c, ordered_sets, from))
+        children.into_iter().any(|c| self.aggregates(c, ordered_sets, from, arg_type))
     }
 }
 
@@ -2285,7 +2529,7 @@ fn holds_current_row(options: i32) -> bool {
 /// A bare `VALUES (…), (…)` arm: a column is non-null when it is in every row.
 fn values_plan(s: &SelectStmt, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let withs = Withs::default().with(s.with_clause.as_ref(), columns);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[] };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None };
     let mut rows: Vec<Vec<Expr>> = Vec::new();
     for row in &s.values_lists {
         let Some(NodeEnum::List(list)) = row.node.as_ref() else { return Plan::default() };
@@ -2438,7 +2682,7 @@ fn reads_leaf(expr: &Expr) -> bool {
         Expr::Leaf(_) | Expr::Row(..) => true,
         Expr::Nullable(inner) => reads_leaf(inner),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_leaf),
-        Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) => reads_leaf(inner),
+        Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_leaf(inner),
         Expr::JsonPath { base, .. } => reads_leaf(base),
         Expr::Array { items, .. } => items.iter().any(reads_leaf),
         Expr::NonNull(_) | Expr::Unknown | Expr::Unread => false,
@@ -2505,6 +2749,30 @@ mod tests {
 
     fn lite(sql: &str) -> Plan {
         plan(sql, Dialect::Sqlite, &Trust::default())
+    }
+
+    /// The trust check of a catalog with no object of a user's, whose row types have the attributes
+    /// named here among the names the rules read.
+    fn answered(attributes: &[&str]) -> Trust {
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        let rows: Vec<Vec<Value>> = attributes.iter().map(|a| vec![json!("column"), json!(a), Value::Null, Value::Null, Value::Null]).collect();
+        let mut trust = Trust::default();
+        trust.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut trust.shadowed))));
+        trust
+    }
+
+    #[test]
+    fn a_statement_s_own_rows_have_the_columns_its_from_items_show() {
+        let fields = |sql: &str| row_fields(&serde_json::to_value(&crate::stack::parse(sql).unwrap().protobuf).unwrap());
+        let f = fields("WITH w (every) AS (SELECT 1) SELECT sum(x) AS total, max(y) FROM (SELECT a AS sum, b FROM t) s, generate_series(1, 2) g (bit_or), LATERAL (SELECT avg(c) FROM u) v, (SELECT n FROM t) q (bool_and), t AS x (bool_or), (t JOIN u USING (id)) AS j (min)");
+        for name in ["every", "sum", "b", "bit_or", "generate_series", "g", "avg", "c", "bool_and", "bool_or", "min"] {
+            assert!(f.contains(name), "{name}");
+        }
+        // The top statement's own targets name no row the statement reads.
+        assert!(!f.contains("total") && !f.contains("max") && !f.contains("x"));
+        assert!(fields("WITH d AS (DELETE FROM t RETURNING min(1) OVER () , id AS bool_and) SELECT 1").contains("bool_and"));
+        assert!(fields("SELECT sum(n) FROM t").is_empty());
     }
 
     /// The first column's answer with no leaf probe.
@@ -2993,6 +3261,68 @@ mod tests {
     }
 
     #[test]
+    fn is_distinct_from_rests_on_the_equality_it_runs() {
+        let trust = extended(Vec::new());
+        let fact = |sql: &str, leaves: &[DescribedColumn]| resolve(plan(sql, Dialect::Postgres, &trust).head[0].as_ref().expect("a claim"), Some(leaves));
+        // `=` of two `int4`s is the built-in's; of two of a type a user defined, theirs, which may
+        // answer NULL and make the test NULL.
+        assert_eq!(fact("SELECT a IS DISTINCT FROM b FROM t", &[col(true, oid::INT4), col(true, oid::INT4)]), Fact { non_null: true, type_oid: Some(oid::BOOL) });
+        assert!(!fact("SELECT a IS NOT DISTINCT FROM b FROM t", &[col(false, VECTOR), col(false, VECTOR)]).non_null);
+        // Beside a NULL no `=` runs.
+        assert!(fact("SELECT a IS DISTINCT FROM NULL FROM t", &[col(false, VECTOR)]).non_null);
+        // With `=` the built-in's alone, nothing to check.
+        assert_eq!(pg("SELECT a IS DISTINCT FROM b FROM t").head[0], Some(Expr::NonNull(Some(oid::BOOL))));
+        // NULLIF claims nothing whatever its `=` is.
+        assert_eq!(pg("SELECT nullif(1, 2)").head[0], Some(Expr::Unknown));
+    }
+
+    #[test]
+    fn a_call_that_may_be_a_column_of_its_row_argument_proves_nothing() {
+        const PAIR: u32 = 20400;
+        const CITEXT: u32 = 20500;
+        let fact = |sql: &str, leaves: &[DescribedColumn], trust: &Trust| resolve(plan(sql, Dialect::Postgres, trust).head[0].as_ref().expect("a claim"), Some(leaves)).non_null;
+        let plain = Trust::default();
+        // `length(t)` over a row no `length` takes is the row's column `length`, which may be
+        // NULL: a table's or a composite type's row, `record`, a shared catalog's row.
+        assert!(fact("SELECT length(name) FROM t", &[col(false, oid::TEXT)], &plain));
+        for row in [PAIR, 2249, 1248, 12001] {
+            assert!(!fact("SELECT length(p) FROM t", &[col(false, row)], &plain), "{row}");
+            assert!(!fact("SELECT abs(p) FROM t", &[col(false, row)], &plain), "{row}");
+        }
+        assert!(!fact("SELECT md5(t) FROM t", &[col(false, PAIR)], &plain));
+        // Qualified or decorated, it is the function.
+        assert!(fact("SELECT pg_catalog.length(p) FROM t", &[col(false, PAIR)], &plain));
+        // A call or a constant the rules read is no row whatever its type, and a call over it is the
+        // function where it is non-null.
+        assert!(fact("SELECT length(upper(name)) FROM t", &[col(false, oid::TEXT)], &plain));
+        assert!(fact("SELECT length(name || 'x') FROM t", &[col(false, oid::TEXT)], &plain));
+        assert!(fact("SELECT abs(length(name)) FROM t", &[col(false, oid::TEXT)], &plain));
+        assert!(fact("SELECT md5('x')", &[], &plain));
+        // `max` of a row may be a row, and a column of its own over a `record` before 16.
+        assert!(!fact("SELECT length(max(p)) FROM t GROUP BY id", &[col(false, oid::TEXT)], &plain));
+        // A function of no argument over one is that column alone; `concat_ws` of one too.
+        assert_eq!(pg("SELECT now(t) FROM t").head[0], Some(Expr::Unknown));
+        assert!(!fact("SELECT concat_ws(p) FROM t", &[col(false, PAIR)], &plain));
+        // Under a GROUP BY an aggregate of a row may be its column too.
+        assert!(!fact("SELECT sum(p) FROM t GROUP BY id", &[col(false, PAIR)], &plain));
+        assert!(fact("SELECT sum(n) FROM t GROUP BY id", &[col(false, oid::INT4)], &plain));
+        // A function that takes any row is one over it.
+        assert!(fact("SELECT to_jsonb(p) FROM t", &[col(false, PAIR)], &plain));
+        // A type of a user's is no row where the trust query lists it a scalar, and the built-in
+        // rows are the ones it lists.
+        use crate::resolution::{Overloads, Shared};
+        use serde_json::{json, Value};
+        let rows = vec![vec![json!("rows"), Value::Null, json!([71, 1248, 2249]), Value::Null, Value::Null], vec![json!("scalars"), Value::Null, json!([CITEXT]), Value::Null, Value::Null]];
+        let mut listed = Trust::default();
+        listed.overloads = Some(Shared(std::sync::Arc::new(Overloads::read(&rows, &mut listed.shadowed))));
+        assert!(fact("SELECT length(h) FROM t", &[col(false, CITEXT)], &listed));
+        assert!(!fact("SELECT length(h) FROM t", &[col(false, CITEXT)], &plain));
+        assert!(!fact("SELECT length(p) FROM t", &[col(false, PAIR)], &listed));
+        assert!(!fact("SELECT length(p) FROM t", &[col(false, 1248)], &listed));
+        assert!(fact("SELECT length(p) FROM t", &[col(false, 12001)], &listed));
+    }
+
+    #[test]
     fn a_strict_where_on_a_shadowed_name_narrows_where_its_operands_resolve_to_the_built_in() {
         let trust = extended(vec![oid::TEXT]);
         let fact = |sql: &str, leaves: &[DescribedColumn], at: usize| resolve(plan(sql, Dialect::Postgres, &trust).head[at].as_ref().expect("a claim"), Some(leaves)).non_null;
@@ -3021,8 +3351,29 @@ mod tests {
 
     #[test]
     fn a_scalar_subquery_is_non_null_only_as_an_ungrouped_aggregate() {
+        let answered = answered(&[]);
         assert!(first(&pg("SELECT (SELECT count(*) FROM todos t WHERE t.owner_id = o.id) AS n FROM owners o")).non_null);
-        assert!(first(&pg("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n")).non_null);
+        assert!(first(&plan("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n", Dialect::Postgres, &answered)).non_null);
+        // `max(t.n)` may be a column of `t.n` where a row type has a column `max`, or a catalog
+        // that did not answer may, and a row the statement builds may.
+        assert!(!first(&pg("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n")).non_null);
+        assert!(!first(&plan("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n", Dialect::Postgres, &self::answered(&["max"]))).non_null);
+        assert!(!first(&plan("SELECT (SELECT coalesce(max(q), 0) FROM (SELECT n AS max FROM todos) q) AS n", Dialect::Postgres, &answered)).non_null);
+        // An argument that is no row for certain makes it the aggregate, and so does a column of a
+        // type that is none, which the catalog gives.
+        assert!(first(&plan("SELECT (SELECT coalesce(max(t.n + 1), 0) FROM todos t) AS n", Dialect::Postgres, &self::answered(&["max"]))).non_null);
+        let typed = Columns::from_rows(&[
+            vec![serde_json::json!("todos"), serde_json::json!(["id", "owner_id", "title", "n"]), serde_json::json!([oid::INT4, oid::INT4, oid::TEXT, oid::INT4])],
+            vec![serde_json::json!("pairs"), serde_json::json!(["id", "p"]), serde_json::json!([oid::INT4, 20400])],
+        ]);
+        let listed = self::answered(&["max"]);
+        let typed_plan = |sql: &str| first(&super::plan(sql, Dialect::Postgres, &listed, &typed)).non_null;
+        assert!(typed_plan("SELECT (SELECT coalesce(max(t.n), 0) FROM todos t) AS n"));
+        assert!(typed_plan("SELECT (SELECT coalesce(max(n), 0) FROM todos) AS n"));
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(x.p), 0) FROM pairs x) AS n"));
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(t), 0) FROM todos t) AS n"));
+        // A bare name two items show is no column of either for certain.
+        assert!(!typed_plan("SELECT (SELECT coalesce(max(id), 0) FROM todos, pairs) AS n"));
         // Not an aggregate: it may match no row.
         assert!(!first(&pg("SELECT (SELECT 1 FROM todos LIMIT 1) AS n")).non_null);
         // An aggregate whose one row a clause can take away.
@@ -3087,7 +3438,7 @@ mod tests {
             "SELECT (SELECT count(title) FROM (SELECT id, title FROM todos) t WHERE false) AS n FROM owners",
             "WITH t AS (SELECT * FROM todos) SELECT (SELECT coalesce(sum(n), 0) FROM t) AS n FROM owners",
         ] {
-            assert!(first(&pg(sql)).non_null, "{sql}");
+            assert!(first(&plan(sql, Dialect::Postgres, &answered)).non_null, "{sql}");
         }
         // A bare column is the innermost FROM's that has it: `name` is a column of `owners` alone,
         // so these aggregates are the outer query's too.

@@ -1,0 +1,16 @@
+aggregate_alias_columns.sql: many () -> { b: bool? }
+aggregate_column.sql: one () -> { total: int8?, c: int8, z: int8, a: numeric }
+aggregate_composite.sql: many () -> { total: int4?, b: int4? }
+aggregate_json.sql: one () -> { j: { total: int4? } }
+aggregate_scalar_subquery.sql: one () -> { total: int4? }
+aggregate_subquery_row.sql: many () -> { total: int4 }
+aggregate_table_alias.sql: many () -> { b: int4 }
+aggregate_typed_subquery.sql: one () -> { total: int8, bare: int8, j: { t: int8 } }
+aggregate_whole_row.sql: many () -> { total: int4?, e: bool? }
+aggregate_with_row.sql: many () -> { e: int4 }
+composite_column.sql: many () -> { l: int4?, m: text?, q: int4? }
+grouped.sql: many () -> { total: int4?, e: bool? }
+row_takers.sql: many () -> { j: { id: int4, length: int4?, md5: text?, abs: int4?, cardinality: int4?, now: timestamptz?, concat_ws: text?, uuidv7: uuid? }, r: { id: int4, length: int4?, md5: text?, abs: int4?, cardinality: int4?, now: timestamptz?, concat_ws: text?, uuidv7: uuid? }, n: int8 }
+scalar.sql: many () -> { l: int4, m: text, u: int4, a: int4, x: int4, n: int4 }
+subquery_row.sql: one () -> { l: int4? }
+whole_row.sql: many () -> { l: int4?, m: text?, a: int4?, c: int4?, n: timestamptz?, w: text?, u: uuid? }
