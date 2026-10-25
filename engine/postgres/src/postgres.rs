@@ -231,7 +231,9 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   whether (1, else 0) the `=` an untyped value beside such a column resolves to, the visible one
 ///   of exactly that type, or else of a domain's base type, is the btree equality of the operator
 ///   family of every unique index's key of that type (`pg_amop`): only then does `col = 'x'` pin
-///   such a key.
+///   such a key. An enum's, or a domain's over one, is the built-in `=(anyenum, anyenum)` where no
+///   `=` of a user's takes the enum, exactly, through a domain over it or by a polymorphic
+///   argument, and no implicit cast converts it.
 /// - `implicit`: a built-in type a user's implicit cast function converts to a built-in type.
 /// - `rows`: every built-in type that is a row (the third column): a catalog's row type, `record`,
 ///   or a domain over a row type. `scalars`: every type of a user's that is no row and no array (the
@@ -335,7 +337,17 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
           AND m.amoplefttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amoprighttype OPERATOR(pg_catalog.=) oc.opcintype AND m.amopstrategy OPERATOR(pg_catalog.=) 3 AND m.amopopr OPERATOR(pg_catalog.=) y.r)) THEN 1 ELSE 0 END)::pg_catalog.int8 \
       FROM (SELECT c.c, coalesce((SELECT o.oid FROM pg_catalog.pg_operator o WHERE o.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name AND o.oprleft OPERATOR(pg_catalog.=) c.c AND o.oprright OPERATOR(pg_catalog.=) c.c \
           AND pg_catalog.pg_operator_is_visible(o.oid)), (SELECT o.oid FROM pg_catalog.pg_operator o JOIN bases x ON x.t OPERATOR(pg_catalog.=) c.c WHERE o.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name \
-          AND o.oprleft OPERATOR(pg_catalog.=) x.b AND o.oprright OPERATOR(pg_catalog.=) x.b AND pg_catalog.pg_operator_is_visible(o.oid))) AS r \
+          AND o.oprleft OPERATOR(pg_catalog.=) x.b AND o.oprright OPERATOR(pg_catalog.=) x.b AND pg_catalog.pg_operator_is_visible(o.oid)), \
+          (SELECT o.oid FROM pg_catalog.pg_operator o CROSS JOIN (SELECT coalesce((SELECT x.b FROM bases x WHERE x.t OPERATOR(pg_catalog.=) c.c), c.c) AS e) v \
+          JOIN pg_catalog.pg_type et ON et.oid OPERATOR(pg_catalog.=) v.e AND et.typtype OPERATOR(pg_catalog.=) 'e'::pg_catalog.\"char\" \
+          WHERE o.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND o.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name \
+          AND o.oprleft OPERATOR(pg_catalog.=) '3500'::pg_catalog.oid AND o.oprright OPERATOR(pg_catalog.=) '3500'::pg_catalog.oid \
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_operator u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.oprname OPERATOR(pg_catalog.=) '='::pg_catalog.name \
+            AND (u.oprleft OPERATOR(pg_catalog.=) ANY (ARRAY[c.c, v.e, '2283'::pg_catalog.oid, '2776'::pg_catalog.oid, '3500'::pg_catalog.oid, '5077'::pg_catalog.oid, '5079'::pg_catalog.oid]) \
+            OR u.oprright OPERATOR(pg_catalog.=) ANY (ARRAY[c.c, v.e, '2283'::pg_catalog.oid, '2776'::pg_catalog.oid, '3500'::pg_catalog.oid, '5077'::pg_catalog.oid, '5079'::pg_catalog.oid]) \
+            OR u.oprleft OPERATOR(pg_catalog.=) ANY (SELECT x.t FROM bases x WHERE x.b OPERATOR(pg_catalog.=) v.e) \
+            OR u.oprright OPERATOR(pg_catalog.=) ANY (SELECT x.t FROM bases x WHERE x.b OPERATOR(pg_catalog.=) v.e))) \
+          AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_cast k WHERE k.castsource OPERATOR(pg_catalog.=) v.e AND k.castcontext OPERATOR(pg_catalog.=) 'i'::pg_catalog.\"char\"))) AS r \
         FROM (SELECT DISTINCT a.atttypid AS c FROM pg_catalog.pg_index i CROSS JOIN LATERAL pg_catalog.generate_series(0, i.indnkeyatts OPERATOR(pg_catalog.-) 1) AS k(n) \
           JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) i.indrelid AND a.attnum OPERATOR(pg_catalog.=) i.indkey[k.n] \
           WHERE i.indisunique AND a.atttypid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid) c) y \

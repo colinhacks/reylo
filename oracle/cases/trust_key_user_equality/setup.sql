@@ -5,6 +5,13 @@
 create function eq8_true(int8, int8) returns bool language sql immutable as $$ select true $$;
 create operator public.= (leftarg = int8, rightarg = int8, function = eq8_true);
 create table t (id bigint primary key, name text not null);
+-- An `=` of an enum and a text, true for any operands, which a string literal beside the enum's
+-- key resolves to over the built-in `=` of every enum: it matches the enum exactly on the left.
+create type mood as enum ('calm', 'busy');
+create function mood_text_true(mood, text) returns bool language sql immutable as $$ select true $$;
+create operator public.= (leftarg = mood, rightarg = text, function = mood_text_true);
+create table e (m mood primary key, n text not null);
+insert into e values ('calm', 'a'), ('busy', 'b');
 insert into t values (1, 'a'), (2, 'b'), (5, 'c');
 -- For the analysis and the checks alike, which run on this session.
 set search_path = public, pg_catalog;

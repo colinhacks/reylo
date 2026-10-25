@@ -1,3 +1,4 @@
+enum_key.sql: many () -> { n: text }
 exact_type.sql: many () -> { name: text }
 int4_literal.sql: maybeOne () -> { name: text }
 literal.sql: many () -> { name: text }
