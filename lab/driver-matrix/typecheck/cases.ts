@@ -309,21 +309,21 @@ declare const c33: ITask<{}>; // pg-promise@12.7.1 ITask (task, tx)
 /*@201*/ { const k: "promise" = kind(pgQ.run(c33, { id: 1 })); void k; }
 /*@202*/ { const k: "promise" = kind(pgQ.with(c33)({ id: 1 })); void k; }
 /*@203*/ pgQ.runSync(c33, { id: 1 });
-declare const c34: DatabasePool; // slonik@next DatabasePool
+declare const c34: DatabasePool; // slonik@49.12.0 DatabasePool
 /*@204*/ pgQ.run(c34, { id: 1 });
 /*@205*/ myQ.run(c34, { id: 1 });
 /*@206*/ sqQ.run(c34, { id: 1 });
 /*@207*/ { const k: "promise" = kind(pgQ.run(c34, { id: 1 })); void k; }
 /*@208*/ { const k: "promise" = kind(pgQ.with(c34)({ id: 1 })); void k; }
 /*@209*/ pgQ.runSync(c34, { id: 1 });
-declare const c35: DatabasePoolConnection; // slonik@next DatabasePoolConnection (connect)
+declare const c35: DatabasePoolConnection; // slonik@49.12.0 DatabasePoolConnection (connect)
 /*@210*/ pgQ.run(c35, { id: 1 });
 /*@211*/ myQ.run(c35, { id: 1 });
 /*@212*/ sqQ.run(c35, { id: 1 });
 /*@213*/ { const k: "promise" = kind(pgQ.run(c35, { id: 1 })); void k; }
 /*@214*/ { const k: "promise" = kind(pgQ.with(c35)({ id: 1 })); void k; }
 /*@215*/ pgQ.runSync(c35, { id: 1 });
-declare const c36: DatabaseTransactionConnection; // slonik@next DatabaseTransactionConnection (transaction, savepoint)
+declare const c36: DatabaseTransactionConnection; // slonik@49.12.0 DatabaseTransactionConnection (transaction, savepoint)
 /*@216*/ pgQ.run(c36, { id: 1 });
 /*@217*/ myQ.run(c36, { id: 1 });
 /*@218*/ sqQ.run(c36, { id: 1 });

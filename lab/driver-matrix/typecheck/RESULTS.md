@@ -214,24 +214,24 @@ None.
 | pg-promise@12.7.1 | ITask (task, tx) | run(...) is typed as a promise | accepted | accepted | ok |
 | pg-promise@12.7.1 | ITask (task, tx) | with(...)(...) is typed as a promise | accepted | accepted | ok |
 | pg-promise@12.7.1 | ITask (task, tx) | runSync(...) is refused | rejected | rejected | ok |
-| slonik@next | DatabasePool | run on a postgres query | accepted | accepted | ok |
-| slonik@next | DatabasePool | run on a mysql query | rejected | rejected | ok |
-| slonik@next | DatabasePool | run on a sqlite query | rejected | rejected | ok |
-| slonik@next | DatabasePool | run(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabasePool | with(...)(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabasePool | runSync(...) is refused | rejected | rejected | ok |
-| slonik@next | DatabasePoolConnection (connect) | run on a postgres query | accepted | accepted | ok |
-| slonik@next | DatabasePoolConnection (connect) | run on a mysql query | rejected | rejected | ok |
-| slonik@next | DatabasePoolConnection (connect) | run on a sqlite query | rejected | rejected | ok |
-| slonik@next | DatabasePoolConnection (connect) | run(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabasePoolConnection (connect) | with(...)(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabasePoolConnection (connect) | runSync(...) is refused | rejected | rejected | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | run on a postgres query | accepted | accepted | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | run on a mysql query | rejected | rejected | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | run on a sqlite query | rejected | rejected | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | run(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | with(...)(...) is typed as a promise | accepted | accepted | ok |
-| slonik@next | DatabaseTransactionConnection (transaction, savepoint) | runSync(...) is refused | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePool | run on a postgres query | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePool | run on a mysql query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePool | run on a sqlite query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePool | run(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePool | with(...)(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePool | runSync(...) is refused | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | run on a postgres query | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | run on a mysql query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | run on a sqlite query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | run(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | with(...)(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabasePoolConnection (connect) | runSync(...) is refused | rejected | rejected | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | run on a postgres query | accepted | accepted | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | run on a mysql query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | run on a sqlite query | rejected | rejected | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | run(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | with(...)(...) is typed as a promise | accepted | accepted | ok |
+| slonik@49.12.0 | DatabaseTransactionConnection (transaction, savepoint) | runSync(...) is refused | rejected | rejected | ok |
 | Bun.sql@1.3.14 (bun-types) | SQL | run on a postgres query | accepted | accepted | ok |
 | Bun.sql@1.3.14 (bun-types) | SQL | run on a mysql query | accepted | accepted | ok |
 | Bun.sql@1.3.14 (bun-types) | SQL | run on a sqlite query | accepted | accepted | ok |
