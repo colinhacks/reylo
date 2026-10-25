@@ -4,7 +4,7 @@ aggregate_bit.sql: one () -> { a: int8, o: int8, x: int8 }
 aggregate_distinct.sql: one () -> { n: int8 }
 aggregate_for_update.sql: one () -> { n: int8 }
 aggregate_group_by.sql: many () -> { name: text, n: int8 }
-aggregate_group_by_constant.sql: many () -> { n: int8 }
+aggregate_group_by_constant.sql: maybeOne () -> { n: int8 }
 aggregate_group_concat.sql: one () -> { names: text? }
 aggregate_having.sql: many () -> { n: int8 }
 aggregate_having_true.sql: many () -> { n: int8 }
@@ -31,21 +31,21 @@ key_bare_in_join_group.sql: maybeOne (email: text) -> { email: text, n: int8 }
 key_composite.sql: maybeOne (post: int4, tag: text) -> { tag: text }
 key_composite_partial.sql: many (post: int4) -> { tag: text }
 key_cross_join.sql: many (id: int4) -> { id: int4 }
-key_derived.sql: many (id: int4) -> { id: int4 }
+key_derived.sql: maybeOne (id: int4) -> { id: int4 }
 key_exists.sql: maybeOne (id: int4) -> { id: int4 }
 key_group_by.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
 key_group_by_bare.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
-key_group_by_expression.sql: many (id: int4) -> { n: int8 }
+key_group_by_expression.sql: maybeOne (id: int4) -> { n: int8 }
 key_group_by_having.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
 key_group_by_joined_column.sql: many (id: int4) -> { title: text, n: int8 }
 key_group_by_other_column.sql: maybeOne (id: int4) -> { name: text, n: int8 }
-key_group_by_position.sql: many (id: int4) -> { name: text, n: int8 }
+key_group_by_position.sql: maybeOne (id: int4) -> { name: text, n: int8 }
 key_group_by_rollup.sql: many (id: int4) -> { id: int4|int8?, n: int8 }
 key_group_by_rollup_single.sql: many (id: int4) -> { id: int4|int8?, n: int8 }
 key_in_subquery.sql: maybeOne (id: int4) -> { id: int4 }
 key_into_variable.sql: none (id: int4) -> {  }
 key_join.sql: many (id: int4) -> { id: int4, title: text }
-key_join_both.sql: many (id: int4, post: int4) -> { id: int4, title: text }
+key_join_both.sql: maybeOne (id: int4, post: int4) -> { id: int4, title: text }
 key_left_join.sql: many (id: int4) -> { id: int4, title: text? }
 key_order_limit.sql: maybeOne (id: int4) -> { id: int4 }
 key_parenthesized.sql: many (id: int4) -> { id: int4 }
@@ -53,13 +53,13 @@ key_parenthesized_limit.sql: maybeOne () -> { id: int4 }
 key_partition.sql: maybeOne (id: int4) -> { id: int4 }
 key_straight_join.sql: maybeOne (id: int4) -> { id: int4 }
 key_union.sql: many (id: int4, other: int4) -> { id: int4|int8 }
-key_view.sql: many (id: int4) -> { id: int4|int8 }
+key_view.sql: maybeOne (id: int4) -> { id: int4|int8 }
 key_window.sql: maybeOne (id: int4) -> { id: int4, r: int8 }
-key_with.sql: many (id: int4) -> { id: int4 }
+key_with.sql: maybeOne (id: int4) -> { id: int4 }
 key_with_shadows_in_subquery.sql: one () -> { n: int8 }
 key_with_shadows_recursive.sql: many (id: int4) -> { id: int8|int4 }
 key_with_shadows_table.sql: many (id: int4) -> { id: int8|int4 }
-lateral.sql: many (id: int4) -> { id: int4, n: int8 }
+lateral.sql: maybeOne (id: int4) -> { id: int4, n: int8 }
 no_from.sql: one () -> { one: int8|int4 }
 no_from_dual.sql: many () -> { one: int8|int4 }
 no_from_dual_where.sql: many () -> { one: int8|int4 }

@@ -21,6 +21,6 @@ union.sql: many () -> { id: int4|int8 }
 union_counts.sql: many () -> { n: int8? }
 where_rejects_null.sql: many () -> { id: int4, next: int8 }
 wildcard.sql: many () -> { id: int4, name: text, email: text?, n: int8 }
-with_in_derived.sql: many () -> { n: int8 }
+with_in_derived.sql: maybeOne () -> { n: int8 }
 with_left_join.sql: many () -> { id: int4, next: int8? }
 with_query.sql: many () -> { id: int4, n: int8 }

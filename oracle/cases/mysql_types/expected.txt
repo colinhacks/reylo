@@ -33,7 +33,7 @@ param_coalesce_column.sql: many (n: int4, m: int4) -> { n: int8|float8|numeric?,
 param_comparison.sql: many (n: int4, m: int4, o: int4, p: text, q: int4) -> { bigger: bool?, same: bool?, listed: bool?, missing: bool, inside: bool? }
 param_date_arithmetic.sql: one (at: date, start: timestamp, a: timestamp, b: timestamp, c: timestamp) -> { next: date|timestamp|time|text?, later: timestamp|date|time|text?, days: int8|int4?, y: int2? }
 param_decimal.sql: many (price: numeric, exact: numeric) -> { id: int4 }
-param_derived.sql: many (n: int4, m: int4) -> { x: int8|float8|numeric?, y: int8|float8|numeric }
+param_derived.sql: maybeOne (n: int4, m: int4) -> { x: int8|float8|numeric?, y: int8|float8|numeric }
 param_div.sql: one (n: int4) -> { half: int8|float8|numeric? }
 param_divided.sql: one (n: int4) -> { half: numeric|int8|float8? }
 param_float.sql: many (f: float8, d: float8) -> { id: int4 }
@@ -77,7 +77,7 @@ param_times_float.sql: many (x: float8) -> { scaled: float8|int8|numeric? }
 param_union.sql: many (a: text) -> { x: text? }
 param_union_first_integer.sql: many (a: text) -> { x: text? }
 param_window.sql: many (n: float8, m: int4) -> { total: float8|int8|numeric?, previous: int4|int8|float8|numeric? }
-param_with.sql: many (n: int4) -> { doubled: int8|float8|numeric? }
+param_with.sql: maybeOne (n: int4) -> { doubled: int8|float8|numeric? }
 removed_hashes.sql: many () -> { m: text? }
 replace_values.sql: none (id: int4, body: text) -> {  }
 signed_plus_unsigned.sql: many () -> { mixed: int8?, past: int8?, under: int8|int4? }
