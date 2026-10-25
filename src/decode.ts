@@ -490,11 +490,12 @@ function slonikTemplate(text: string, values: readonly unknown[]): [TemplateStri
 }
 
 export async function slonik(c: AnyClient, text: string, values: readonly unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  // An interceptor's transformRow renames the columns (slonik-interceptor-field-name-transformation)
-  // or rewrites each row, which Reylo's types would no longer describe. It is refused before the
-  // statement runs, since a write that committed and then reported an error invites a retry.
-  const interceptors = (c.configuration ?? c.clientConfiguration)?.interceptors as { transformRow?: unknown }[] | undefined;
-  if (interceptors?.some((i) => typeof i?.transformRow === "function")) throw refuseSlonikRows();
+  // An interceptor's transformRow or transformRowAsync renames the columns
+  // (slonik-interceptor-field-name-transformation) or rewrites each row, which Reylo's types would
+  // no longer describe. It is refused before the statement runs, since a write that committed and
+  // then reported an error invites a retry.
+  const interceptors = (c.configuration ?? c.clientConfiguration)?.interceptors as { transformRow?: unknown; transformRowAsync?: unknown }[] | undefined;
+  if (interceptors?.some((i) => typeof i?.transformRow === "function" || typeof i?.transformRowAsync === "function")) throw refuseSlonikRows();
   const tag = slonikTag(c);
   const [template, ordered] = slonikTemplate(text, values);
   const query = tag.unsafe(template, ...ordered);
@@ -534,6 +535,6 @@ function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unkn
 }
 
 const refuseSlonikRows = () =>
-  new TypeError(`Reylo cannot run on this Slonik client: one of its interceptors rewrites every row (transformRow, such as slonik-interceptor-field-name-transformation), Reylo's too, so they would not have the columns the query declares. Run Reylo's queries on a pool made without that interceptor.`);
+  new TypeError(`Reylo cannot run on this Slonik client: one of its interceptors rewrites every row (transformRow or transformRowAsync, such as slonik-interceptor-field-name-transformation), Reylo's too, so they would not have the columns the query declares. Run Reylo's queries on a pool made without that interceptor.`);
 
 export { DecodeError, parseArray } from "./values.ts";

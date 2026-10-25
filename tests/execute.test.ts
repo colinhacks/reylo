@@ -743,9 +743,12 @@ test("postgres: Slonik, through a tag from its own createSqlTag that passes ever
   await assert.rejects(() => execute(client([{ ...row, n: 12345678901234567000 }], fields), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /Column "n" reached Reylo already converted by Slonik's driver \(number\)/);
   // An interceptor that rewrites rows, on a pool or a transaction, is refused before anything runs.
   sent.length = 0;
-  const transformRow = (_ctx: unknown, _query: unknown, r: object) => r;
+  const transform = (_ctx: unknown, _query: unknown, r: object) => r;
   for (const on of ["configuration", "clientConfiguration"] as const) {
-    await assert.rejects(() => execute(client([row], fields, { interceptors: [{ name: "camel", transformRow }] }, on), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /one of its interceptors rewrites every row/);
+    for (const hook of ["transformRow", "transformRowAsync"]) {
+      const interceptor = { name: "camel", [hook]: hook === "transformRow" ? transform : async (...a: [unknown, unknown, object]) => transform(...a) };
+      await assert.rejects(() => execute(client([row], fields, { interceptors: [interceptor] }, on), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /one of its interceptors rewrites every row/);
+    }
   }
   assert.equal(sent.length, 0);
   // An interceptor that leaves the rows alone is fine.
