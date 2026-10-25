@@ -1220,7 +1220,8 @@ pub fn row_fields(tree: &serde_json::Value) -> HashSet<String> {
                             shown(child.get("ctequery").unwrap_or(&Value::Null), out);
                         }
                         "RangeFunction" | "RangeTableFunc" | "JsonTable" => strings(child, out),
-                        "Alias" => strings(child.get("colnames").unwrap_or(&Value::Null), out),
+                        // A FROM item's alias is a field, `alias`, of the item; a join's too.
+                        "alias" | "Alias" => strings(child.get("colnames").unwrap_or(&Value::Null), out),
                         _ => {}
                     }
                     walk(child, out);
@@ -2764,8 +2765,8 @@ mod tests {
     #[test]
     fn a_statement_s_own_rows_have_the_columns_its_from_items_show() {
         let fields = |sql: &str| row_fields(&serde_json::to_value(&crate::stack::parse(sql).unwrap().protobuf).unwrap());
-        let f = fields("WITH w (every) AS (SELECT 1) SELECT sum(x) AS total, max(y) FROM (SELECT a AS sum, b FROM t) s, generate_series(1, 2) g (bit_or), LATERAL (SELECT avg(c) FROM u) v");
-        for name in ["every", "sum", "b", "bit_or", "generate_series", "g", "avg", "c"] {
+        let f = fields("WITH w (every) AS (SELECT 1) SELECT sum(x) AS total, max(y) FROM (SELECT a AS sum, b FROM t) s, generate_series(1, 2) g (bit_or), LATERAL (SELECT avg(c) FROM u) v, (SELECT n FROM t) q (bool_and), t AS x (bool_or), (t JOIN u USING (id)) AS j (min)");
+        for name in ["every", "sum", "b", "bit_or", "generate_series", "g", "avg", "c", "bool_and", "bool_or", "min"] {
             assert!(f.contains(name), "{name}");
         }
         // The top statement's own targets name no row the statement reads.
