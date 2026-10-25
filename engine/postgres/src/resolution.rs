@@ -123,7 +123,8 @@ pub struct Overloads {
     /// The types of a user's that are no row and no array.
     scalars: HashSet<u32>,
     /// The names the rules read that some row type has an attribute of: a table's, a view's or a
-    /// composite type's column, a catalog's included.
+    /// composite type's column, a catalog's included, and a function's OUT, INOUT or TABLE
+    /// parameter, a column of the rows it returns.
     attributes: HashSet<String>,
 }
 
