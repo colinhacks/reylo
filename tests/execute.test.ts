@@ -708,8 +708,9 @@ test("the driver's own error comes through unchanged", async () => {
 test("postgres: Slonik, through a tag from its own createSqlTag that passes every converted type through as text", async () => {
   const sent: { sql: string; values: unknown[]; typeParsers?: { name: string }[] }[] = [];
   // Slonik's pool, connections and transactions: query() runs a token and gives pg's rows and fields.
-  const client = (rows: Record<string, unknown>[], fields: { name: string; dataTypeId: number }[], configuration?: object) => ({
-    configuration,
+  // A pool has its settings on configuration; a connection, transaction or savepoint on clientConfiguration.
+  const client = (rows: Record<string, unknown>[], fields: { name: string; dataTypeId: number }[], configuration?: object, on: "configuration" | "clientConfiguration" = "configuration") => ({
+    [on]: configuration,
     maybeOneFirst() {},
     anyFirst() {},
     query: async (token: (typeof sent)[number]) => (sent.push(token), { rows: rows.map((r) => ({ ...r })), fields }),
@@ -738,10 +739,17 @@ test("postgres: Slonik, through a tag from its own createSqlTag that passes ever
   assert.deepEqual(await execute(client([{ at: "2026-10-23 05:34:56.123456-07" }], [{ name: "at", dataTypeId: 1184 }]), { dialect: "postgres", sql: "select at from t", params: [] }), [{ at: "2026-10-23T12:34:56.123456Z" }]);
   // A parameter used twice would be two parameters to Slonik's tag.
   await assert.rejects(() => execute(client([], []), pg, { id: 1, name: "ada" }) as Promise<unknown>, /uses a parameter more than once, and Slonik's sql tag binds each use on its own/);
-  // A value the driver converted anyway (a custom driverFactory ignores the query's parsers), and rows an interceptor renamed.
+  // A value the driver converted anyway (a custom driverFactory ignores the query's parsers).
   await assert.rejects(() => execute(client([{ ...row, n: 12345678901234567000 }], fields), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /Column "n" reached Reylo already converted by Slonik's driver \(number\)/);
-  const { nums: _, ...camel } = { ...row, numList: row.nums };
-  await assert.rejects(() => execute(client([camel], fields), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /an interceptor rewrites every row/);
+  // An interceptor that rewrites rows, on a pool or a transaction, is refused before anything runs.
+  sent.length = 0;
+  const transformRow = (_ctx: unknown, _query: unknown, r: object) => r;
+  for (const on of ["configuration", "clientConfiguration"] as const) {
+    await assert.rejects(() => execute(client([row], fields, { interceptors: [{ name: "camel", transformRow }] }, on), q, { id: 1, raw: Uint8Array.of(1) }) as Promise<unknown>, /one of its interceptors rewrites every row/);
+  }
+  assert.equal(sent.length, 0);
+  // An interceptor that leaves the rows alone is fine.
+  assert.deepEqual(await execute(client([row], fields, { interceptors: [{ name: "log", afterQueryExecution() {} }] }, "clientConfiguration"), q, { id: 9007199254740993n, raw: Uint8Array.of(1, 2) }), [decoded]);
 });
 
 test("an unsupported client rejects, naming what it has and what reylo takes", async () => {
