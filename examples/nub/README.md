@@ -44,6 +44,6 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 
 ## Notes
 
-- `NODE_COMPAT=1` in the environment makes nub run as plain Node, which skips `nub.jsonc`: a `.sql` import then fails with `ERR_UNKNOWN_FILE_EXTENSION`. A process started under nub's `node` shim passes it on, so unset it if a `.sql` import stops loading.
+- Setting `NODE_COMPAT=1` in the environment makes nub run as plain Node, which skips `nub.jsonc`: a `.sql` import then fails with `ERR_UNKNOWN_FILE_EXTENSION`. A process started under nub's `node` shim passes it on, so unset it if a `.sql` import stops loading.
 - The preload analyzes each `.sql` file as it loads, against `DATABASE_URL` in `.env` or the environment, as the type check does.
 - SQLite infers no union from a `check` constraint, so `role` is a `string` here, where Postgres's enum gives `"admin" | "member"`.
