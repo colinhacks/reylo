@@ -480,13 +480,23 @@ pub fn trust(host: &Host) -> Lazy<Trust> {
 
 /// The catalog the row-count proof reads for a statement that calls `functions` and reads
 /// `relations`: which of those functions return a set, the unique keys of those relations, and
-/// every operator a set-returning function implements.
+/// every operator a set-returning function implements. A view among the relations comes with its
+/// defining statement and the keys of the tables that statement reads, as an analysis reads them.
 pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<Catalog> {
+    let relations = sorted(relations.to_vec());
+    let engine = Engine::new(host);
+    let prefetched = engine.prefetch(&relations);
     let operators = set_returning_operators(host);
-    let rows = catalog_rows(host, functions, &sorted(relations.to_vec()));
+    let rows = catalog_rows(host, functions, &relations);
     let trust = trust(host);
-    let (Some(operators), Some(rows), Some(trust)) = (operators, rows, trust) else { return None };
+    let (Some(()), Some(operators), Some(rows), Some(trust)) = (prefetched, operators, rows, trust) else { return None };
+    let (views, view_relations, view_functions) = engine.viewed(&relations);
+    let view_rows = if views.is_empty() { None } else { Some(catalog_rows(host, &view_functions, &view_relations)?) };
     let mut catalog = build_catalog(&operators, rows);
+    if let Some(rows) = view_rows {
+        merge_keys(&mut catalog, build_catalog(&operators, rows));
+    }
+    catalog.views = views;
     trusted(&mut catalog, &trust);
     Some(catalog)
 }
@@ -3854,6 +3864,41 @@ mod tests {
             }
         }
         panic!("the replay did not converge");
+    }
+
+    #[test]
+    fn the_row_count_catalog_reads_a_view_by_the_keys_its_statement_keeps() {
+        // A host that runs the proof itself asks for the catalog of the relations a statement
+        // reads; a view among them comes with its defining statement and the keys of the tables it
+        // reads, through a view over a view too.
+        let views = [(16500, "recent_todos", " SELECT open_todos.id, open_todos.title FROM open_todos;"), (16490, "open_todos", " SELECT todos.id, todos.title FROM todos WHERE NOT todos.done;"), (16480, "todos", "")];
+        let mut answers = HashMap::new();
+        for _ in 0..16 {
+            let host = Host::new(&answers);
+            if let Some(catalog) = catalog(&host, &[], &["recent_todos".to_string()]) {
+                assert_eq!(catalog.views.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>(), ["open_todos", "recent_todos"].into());
+                assert_eq!(catalog.unique_keys.get("todos"), Some(&vec![vec!["id".to_string()]]));
+                let at_most_one = |sql: &str| cardinality::at_most_one(sql, reylo_engine_core::dialect::Dialect::Postgres, &Trust::default(), &catalog);
+                assert_eq!(at_most_one("SELECT title FROM recent_todos WHERE id = $1"), Ok(()));
+                assert!(at_most_one("SELECT title FROM recent_todos WHERE title = $1").is_err());
+                return;
+            }
+            for need in host.needs() {
+                let crate::api::Need::Query { id, sql, params, .. } = need else { panic!("the catalog asks for no describe") };
+                let named = |name: &str| params[0].as_array().is_some_and(|names| names.iter().any(|n| n == name));
+                let rows = match sql.as_str() {
+                    RELATION_COLUMNS_QUERY => views
+                        .iter()
+                        .filter(|(_, name, _)| named(name))
+                        .map(|(oid, name, definition)| vec![json!(oid), json!(name), json!(1), json!(true), if definition.is_empty() { Value::Null } else { json!(definition) }, json!("id"), json!(true)])
+                        .collect(),
+                    cardinality::UNIQUE_KEYS_QUERY if named("todos") => vec![vec![json!("todos"), json!(["id"]), json!([23]), Value::Null]],
+                    _ => vec![],
+                };
+                answers.insert(id, Answer::Rows { rows });
+            }
+        }
+        panic!("the catalog did not settle");
     }
 
     #[test]
