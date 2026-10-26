@@ -1,19 +1,19 @@
-bare_name.sql: maybeOne (id: int4) -> { id: int8, title: text }
+bare_name.sql: maybeOne (id: int8) -> { id: int8, title: text }
 comma_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
 compared_as_number.sql: many () -> { email: text }
-cross_join.sql: many (id: int4) -> { id: int8 }
-distinct.sql: maybeOne (a: int4) -> { author_id: int8 }
-distinct_expression.sql: many (a: int4) -> { author_id: int8, t: text? }
+cross_join.sql: many (id: int8) -> { id: int8 }
+distinct.sql: maybeOne (a: int8) -> { author_id: int8 }
+distinct_expression.sql: many (a: int8) -> { author_id: int8, t: text? }
 double_key_exact_literal.sql: maybeOne () -> { id: int8 }
 expression.sql: many (id: int4) -> { id: int8, title: text }
-filtered_inside.sql: maybeOne (a: int4, id: int4) -> { id: int8, title: text }
-group_by.sql: maybeOne (a: int4) -> { author_id: int8, n: int8 }
-group_by_ordinal.sql: maybeOne (a: int4) -> { author_id: int8, n: int8 }
+filtered_inside.sql: maybeOne (a: int4, id: int8) -> { id: int8, title: text }
+group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
+group_by_ordinal.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
 group_key_hidden.sql: many (n: int4) -> { author_id: int8, n: int8 }
 join_double_column.sql: many (id: int8) -> { name: text }
-join_many.sql: many (id: int4) -> { id: int8, tag: text }
+join_many.sql: many (id: int8) -> { id: int8, tag: text }
 join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
-join_pinned.sql: maybeOne (id: int4) -> { id: int8, title: text, name: text }
+join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
 join_text_column.sql: many (id: int8) -> { title: text, name: text }
 join_unpinned.sql: many (id: int8) -> { title: text, name: text }
 joined_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
@@ -27,24 +27,24 @@ key_exact_function.sql: maybeOne (x: int4) -> { id: int8 }
 key_inside.sql: maybeOne (id: int4) -> { id: int8, title: text }
 lateral_pinned.sql: maybeOne (u: int8, p: int4) -> { name: text, title: text }
 lateral_source.sql: many (id: int4) -> { id: int8 }
-left_join_many.sql: many (id: int4) -> { id: int8 }
+left_join_many.sql: many (id: int8) -> { id: int8 }
 left_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text? }
-left_join_pinned.sql: maybeOne (id: int4) -> { id: int8, title: text, name: text? }
-limit_inside.sql: maybeOne (id: int4) -> { id: int8, title: text }
-nested.sql: maybeOne (id: int4) -> { id: int8, title: text }
+left_join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text? }
+limit_inside.sql: maybeOne (id: int8) -> { id: int8, title: text }
+nested.sql: maybeOne (id: int8) -> { id: int8, title: text }
 not_a_key.sql: many (e: text) -> { id: int8, email: text }
-null_extended_side.sql: many (id: int4) -> { id: int8?, name: text }
+null_extended_side.sql: many (id: int8) -> { id: int8?, name: text }
 recursive.sql: many (id: int4) -> { id: int8 }
-renamed.sql: maybeOne (id: int4) -> { post_id: int8, title: text }
+renamed.sql: maybeOne (id: int8) -> { post_id: int8, title: text }
 right_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text? }
-rollup.sql: many (a: int4) -> { author_id: int8?, n: int8 }
+rollup.sql: many (a: int8) -> { author_id: int8?, n: int8 }
 second_key.sql: maybeOne (e: text) -> { id: int8, email: text }
-self_join_nonkey.sql: many (id: int4) -> { id: int8 }
-star.sql: maybeOne (id: int4) -> { id: int8, author_id: int8, title: text }
+self_join_nonkey.sql: many (id: int8) -> { id: int8 }
+star.sql: maybeOne (id: int8) -> { id: int8, author_id: int8, title: text }
 straight_join.sql: maybeOne (id: int8) -> { title: text, name: text }
-subquery.sql: maybeOne (id: int4) -> { id: int8, title: text }
-two_subqueries.sql: maybeOne (id: int4) -> { title: text, name: text }
-two_withs.sql: maybeOne (id: int4) -> { id: int8, title: text }
+subquery.sql: maybeOne (id: int8) -> { id: int8, title: text }
+two_subqueries.sql: maybeOne (id: int8) -> { title: text, name: text }
+two_withs.sql: maybeOne (id: int8) -> { id: int8, title: text }
 union_all.sql: many (id: int4) -> { id: int8 }
 view.sql: maybeOne (id: int8) -> { id: int8, title: text }
 view_column_list.sql: many (id: int8) -> { post_id: int8, headline: text }
@@ -55,6 +55,8 @@ view_merged.sql: maybeOne (id: int8) -> { id: int8, title: text }
 view_of_view.sql: maybeOne (id: int8) -> { id: int8, title: text }
 view_swapped_columns.sql: many (id: text) -> { title: int8, id: text }
 view_temptable.sql: maybeOne (id: int8) -> { id: int8, title: text }
-window_inside.sql: maybeOne (id: int4) -> { id: int8, rn: int8 }
-with_joined.sql: maybeOne (u: int4, id: int4) -> { title: text, name: text }
-with_query.sql: maybeOne (id: int4) -> { id: int8, title: text }
+window_inside.sql: maybeOne (id: int8) -> { id: int8, rn: int8 }
+with_joined.sql: maybeOne (u: int4, id: int8) -> { title: text, name: text }
+with_query.sql: maybeOne (id: int8) -> { id: int8, title: text }
+with_shadows_table.sql: maybeOne (id: int8) -> { id: int8, title: text }
+with_sibling_shadow.sql: maybeOne (id: int8) -> { id: int8 }
