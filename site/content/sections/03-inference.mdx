@@ -528,11 +528,11 @@ Run unrelated subqueries side by side, in one query and one round trip. With no 
 <Inferred>
 
 ```sql file="dashboard.sql" dialect="postgres"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*)::int from users) as user_count,
-  (select count(*)::int from posts where user_id = :user_id) as post_count,
+  (select count(*)::int from posts) as post_count,
   (
     select coalesce(jsonb_agg(jsonb_build_object(
       'id', r.id,
@@ -543,11 +543,11 @@ select
 ```
 
 ```sql file="dashboard.sql" dialect="mysql"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*) from users) as user_count,
-  (select count(*) from posts where user_id = :user_id) as post_count,
+  (select count(*) from posts) as post_count,
   (
     select coalesce(json_arrayagg(json_object(
       'id', r.id,
@@ -558,11 +558,11 @@ select
 ```
 
 ```sql file="dashboard.sql" dialect="sqlite"
--- the five latest posts
-with recent as (select id, title from posts order by id desc limit 5)
+-- the latest posts
+with recent as (select id, title from posts order by id desc limit :limit::int)
 select
   (select count(*) from users) as user_count,
-  (select count(*) from posts where user_id = :user_id) as post_count,
+  (select count(*) from posts) as post_count,
   (
     select json_group_array(json_object(
       'id', r.id,
