@@ -480,13 +480,23 @@ pub fn trust(host: &Host) -> Lazy<Trust> {
 
 /// The catalog the row-count proof reads for a statement that calls `functions` and reads
 /// `relations`: which of those functions return a set, the unique keys of those relations, and
-/// every operator a set-returning function implements.
+/// every operator a set-returning function implements. A view among the relations comes with its
+/// defining statement and the keys of the tables that statement reads, as an analysis reads them.
 pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<Catalog> {
+    let relations = sorted(relations.to_vec());
+    let engine = Engine::new(host);
+    let prefetched = engine.prefetch(&relations);
     let operators = set_returning_operators(host);
-    let rows = catalog_rows(host, functions, &sorted(relations.to_vec()));
+    let rows = catalog_rows(host, functions, &relations);
     let trust = trust(host);
-    let (Some(operators), Some(rows), Some(trust)) = (operators, rows, trust) else { return None };
+    let (Some(()), Some(operators), Some(rows), Some(trust)) = (prefetched, operators, rows, trust) else { return None };
+    let (views, view_relations, view_functions) = engine.viewed(&relations)?;
+    let view_rows = if views.is_empty() { None } else { Some(catalog_rows(host, &view_functions, &view_relations)?) };
     let mut catalog = build_catalog(&operators, rows);
+    if let Some(rows) = view_rows {
+        merge_keys(&mut catalog, build_catalog(&operators, rows));
+    }
+    catalog.views = views;
     trusted(&mut catalog, &trust);
     Some(catalog)
 }
@@ -687,8 +697,12 @@ impl<'a> Engine<'a> {
         let catalog_rows = catalog_rows(self.host, functions, &relations);
         // The views the statement reads give the row-count proof the keys their statements keep,
         // from the keys of the tables they read, which are asked apart from the statement's own.
-        let (view_definitions, view_relations, view_functions) = self.viewed(&relations);
-        let view_rows = if view_definitions.is_empty() { Some(None) } else { view_rows_of(&view_functions, &view_relations).map(Some) };
+        let viewed = self.viewed(&relations);
+        let view_rows = match &viewed {
+            Some((definitions, _, _)) if definitions.is_empty() => Some(None),
+            Some((_, relations, functions)) => view_rows_of(functions, relations).map(Some),
+            None => None,
+        };
         for probe in &jsonshape::probes_ahead(&rewritten.sql) {
             self.prewarm(&probe.sql);
         }
@@ -715,7 +729,7 @@ impl<'a> Engine<'a> {
             Some(target) => self.host.query(REQUIRED_COLUMNS_QUERY, vec![json!(target.relation)], Scope::Statement),
             None => Some(Ok(Vec::new())),
         };
-        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows)) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows) else { return None };
+        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows), Some((view_definitions, _, _))) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows, viewed) else { return None };
         let (raw, described) = match described {
             Ok(d) => d,
             Err(e) => {
@@ -953,14 +967,15 @@ impl<'a> Engine<'a> {
         }
     }
 
-    /// The views among `relations`, and the views those read, as far as their definitions are
-    /// known yet: each view's name to its defining SELECT, and the relations their statements read
-    /// that `relations` does not name, with the functions their statements call. Each such
-    /// relation is prefetched, so a view among them is known a round later.
-    fn viewed(&self, relations: &[String]) -> (HashMap<String, String>, Vec<String>, Vec<String>) {
+    /// The views among `relations`, and the views those read: each view's name to its defining
+    /// SELECT, and the relations their statements read that `relations` does not name, with the
+    /// functions their statements call. Each such relation is prefetched, so a view among them is
+    /// known a round later, and the answer waits until every one is.
+    fn viewed(&self, relations: &[String]) -> Lazy<(HashMap<String, String>, Vec<String>, Vec<String>)> {
         let mut definitions = HashMap::new();
         let mut extra = Vec::new();
         let mut functions = Vec::new();
+        let mut answered = true;
         let mut seen: HashSet<String> = relations.iter().cloned().collect();
         let mut queue: Vec<String> = relations.to_vec();
         while let Some(name) = queue.pop() {
@@ -974,12 +989,13 @@ impl<'a> Engine<'a> {
             functions.extend(parsed.iter().flat_map(|p| p.functions.iter().cloned()));
             let unread: Vec<String> = relations_of(parsed.as_ref()).into_iter().filter(|n| seen.insert(n.clone())).collect();
             definitions.insert(name, definition);
-            // Unanswered, a view among them is only read a round later.
-            let _ = self.prefetch(&unread);
+            // Unanswered, a view among them is only read a round later, and until then the views
+            // are not all known: which list a relation is asked in turns on the views known so far.
+            answered &= self.prefetch(&unread).is_some();
             extra.extend(unread.iter().cloned());
             queue.extend(unread);
         }
-        (definitions, sorted(extra), sorted(functions))
+        answered.then(|| (definitions, sorted(extra), sorted(functions)))
     }
 
     /// Every column and every column type of the named relations, in one round, so `settle`
@@ -3854,6 +3870,60 @@ mod tests {
             }
         }
         panic!("the replay did not converge");
+    }
+
+    #[test]
+    fn the_row_count_catalog_reads_a_view_by_the_keys_its_statement_keeps() {
+        // A host that runs the proof itself asks for the catalog of the relations a statement
+        // reads; a view among them comes with its defining statement and the keys of the tables it
+        // reads, through a view over a view too.
+        // `c_v` reads `x`, which reads `y`, which reads `todos`; `a_v` reads `y` and `z`, so which
+        // prefetch asks for `y` turns on how much of `c_v`'s chain is known yet.
+        let views = [
+            (16500, "recent_todos", " SELECT open_todos.id, open_todos.title FROM open_todos;"),
+            (16490, "open_todos", " SELECT todos.id, todos.title FROM todos WHERE NOT todos.done;"),
+            (16510, "a_v", " SELECT y.id, y.title FROM y JOIN z ON z.id = y.id;"),
+            (16520, "c_v", " SELECT x.id, x.title FROM x;"),
+            (16530, "x", " SELECT y.id, y.title FROM y;"),
+            (16540, "y", " SELECT todos.id, todos.title FROM todos;"),
+            (16480, "todos", ""),
+            (16550, "z", ""),
+        ];
+        let settle = |relations: &[&str]| -> Catalog {
+            let relations: Vec<String> = relations.iter().map(|r| r.to_string()).collect();
+            let mut answers = HashMap::new();
+            for _ in 0..16 {
+                let host = Host::new(&answers);
+                if let Some(catalog) = catalog(&host, &[], &relations) {
+                    return catalog;
+                }
+                for need in host.needs() {
+                    let crate::api::Need::Query { id, sql, params, .. } = need else { panic!("the catalog asks for no describe") };
+                    let named = |name: &str| params[0].as_array().is_some_and(|names| names.iter().any(|n| n == name));
+                    let rows = match sql.as_str() {
+                        RELATION_COLUMNS_QUERY => views
+                            .iter()
+                            .filter(|(_, name, _)| named(name))
+                            .map(|(oid, name, definition)| vec![json!(oid), json!(name), json!(1), json!(true), if definition.is_empty() { Value::Null } else { json!(definition) }, json!("id"), json!(true)])
+                            .collect(),
+                        cardinality::UNIQUE_KEYS_QUERY if named("todos") => vec![vec![json!("todos"), json!(["id"]), json!([23]), Value::Null]],
+                        _ => vec![],
+                    };
+                    answers.insert(id, Answer::Rows { rows });
+                }
+            }
+            panic!("the catalog did not settle");
+        };
+        let names = |c: &Catalog| c.views.keys().map(String::as_str).collect::<std::collections::BTreeSet<_>>().into_iter().map(String::from).collect::<Vec<_>>();
+        let at_most_one = |sql: &str, c: &Catalog| cardinality::at_most_one(sql, reylo_engine_core::dialect::Dialect::Postgres, &Trust::default(), c);
+        let catalog = settle(&["recent_todos"]);
+        assert_eq!(names(&catalog), ["open_todos", "recent_todos"]);
+        assert_eq!(catalog.unique_keys.get("todos"), Some(&vec![vec!["id".to_string()]]));
+        assert_eq!(at_most_one("SELECT title FROM recent_todos WHERE id = $1", &catalog), Ok(()));
+        assert!(at_most_one("SELECT title FROM recent_todos WHERE title = $1", &catalog).is_err());
+        let catalog = settle(&["a_v", "c_v"]);
+        assert_eq!(names(&catalog), ["a_v", "c_v", "x", "y"]);
+        assert_eq!(at_most_one("SELECT title FROM c_v WHERE id = $1", &catalog), Ok(()));
     }
 
     #[test]
