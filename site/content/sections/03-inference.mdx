@@ -147,20 +147,6 @@ Reylo reads the schema from the database file and [prepares](https://sqlite.org/
 
 </Details>
 
-### Column types
-
-Each column comes back with its type:
-
-<Inferred>
-
-```sql file="inferred_users.sql" dialect="all"
-select id, name
-from users
-where role = :role
-```
-
-</Inferred>
-
 ### Named parameters [#naming]
 
 For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
@@ -220,6 +206,20 @@ A call to a function your application registers fails the type check, cast or no
 </DialectTabs>
 
 </Details>
+
+### Column types
+
+Each column comes back with its type:
+
+<Inferred>
+
+```sql file="inferred_users.sql" dialect="all"
+select id, name
+from users
+where role = :role
+```
+
+</Inferred>
 
 ### Left joins
 
