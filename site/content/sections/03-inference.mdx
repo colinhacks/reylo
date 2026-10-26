@@ -231,7 +231,7 @@ A left join makes the joined table's columns nullable:
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
-where u.id = :user_id
+where u.id = :user_id::int
 ```
 
 </Inferred>
@@ -677,7 +677,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
-where u.id = :id
+where u.id = :id::int
 ```
 
 ```sql file="users_with_posts.sql" dialect="mysql"
@@ -700,7 +700,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
-where u.id = :id
+where u.id = :id::int
 ```
 
 ```sql file="users_with_posts.sql" dialect="sqlite"
@@ -723,7 +723,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
-where u.id = :id
+where u.id = :id::int
 ```
 
 </Inferred>
@@ -769,13 +769,13 @@ create table events (
 ```sql file="inferred_event_payloads.sql" dialect="postgres"
 select id, payload
 from events
-where id = :id
+where id = :id::int
 ```
 
 ```sql file="inferred_event_payloads.sql" dialect="mysql"
 select id, payload
 from events
-where id = :id
+where id = :id::int
 ```
 
 </Inferred>
@@ -1256,13 +1256,13 @@ create table events (
 ```sql file="inferred_event_payloads_union.sql" dialect="postgres"
 select id, payload
 from events
-where id = :id
+where id = :id::int
 ```
 
 ```sql file="inferred_event_payloads_union.sql" dialect="mysql"
 select id, payload
 from events
-where id = :id
+where id = :id::int
 ```
 
 </Inferred>
