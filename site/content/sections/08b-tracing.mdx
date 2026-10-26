@@ -1,0 +1,41 @@
+---
+title: "Tracing"
+---
+
+## Tracing
+
+Reylo publishes every query it runs on Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, so your tracer or logger can wrap each one in a span:
+
+```ts twoslash
+type Span = { recordException(error: unknown): void; end(): void };
+declare const tracer: { startSpan(name: string, options: { attributes: Record<string, unknown> }): Span };
+// ---cut---
+import { tracingChannel } from "node:diagnostics_channel";
+import type { QueryTrace } from "reylo";
+
+const queries = tracingChannel<QueryTrace & { span: Span }>("reylo:query");
+
+queries.subscribe({
+  start(ctx) {
+    ctx.span = tracer.startSpan("db.query", {
+      attributes: {
+        "db.query.summary": ctx.query.source,
+        "db.query.text": ctx.query.sql,
+      },
+    });
+  },
+  error(ctx) {
+    ctx.span.recordException(ctx.error);
+  },
+  end(ctx) {
+    if (ctx.sync) ctx.span.end();
+  },
+  asyncEnd(ctx) {
+    ctx.span.end();
+  },
+});
+```
+
+Each event carries the `query`, its `params`, the `client`, and then its `result` or `error`. Calls to `.runSync()` and `.trySync()` set `sync` and end on `end`; every other call ends on `asyncEnd`.
+
+The channel is there on Node, on Bun, and on Cloudflare Workers with the `nodejs_compat` flag. Elsewhere, queries run untraced.
