@@ -684,24 +684,6 @@ html:not(.dark) #nd-page.play .play-theme-dark {
     border-top: 1px solid var(--color-fd-border);
   }
 
-  #nd-page.play .play-bar {
-    flex-wrap: wrap;
-    height: auto;
-    min-height: var(--play-head);
-    padding-block: 8px 4px;
-    row-gap: 0;
-  }
-
-  #nd-page.play .play-status {
-    order: 1;
-    flex-basis: 100%;
-    padding-bottom: 4px;
-  }
-
-  #nd-page.play .play-nav {
-    margin-left: auto;
-  }
-
   #nd-page.play .play-pane-head {
     height: auto;
     min-height: var(--play-head);
@@ -726,5 +708,26 @@ html:not(.dark) #nd-page.play .play-theme-dark {
   #nd-page.play .play-editor .dk-error-line .twoslash-popup-container {
     width: 100%;
     margin-inline: 0;
+  }
+}
+
+/* The status shares the brand's line until the bar is too narrow for both, about 455px. */
+@media (width < 30rem) {
+  #nd-page.play .play-bar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--play-head);
+    padding-block: 8px 4px;
+    row-gap: 0;
+  }
+
+  #nd-page.play .play-status {
+    order: 1;
+    flex-basis: 100%;
+    padding-bottom: 4px;
+  }
+
+  #nd-page.play .play-nav {
+    margin-left: auto;
   }
 }
