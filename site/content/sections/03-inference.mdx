@@ -156,6 +156,7 @@ Each column comes back with its type:
 ```sql file="inferred_users.sql" dialect="all"
 select id, name
 from users
+where role = :role
 ```
 
 </Inferred>
@@ -230,11 +231,12 @@ A left join makes the joined table's columns nullable:
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
+where u.id = :user_id
 ```
 
 </Inferred>
 
-A null check on one joined column makes the whole joined row non-null:
+A test in the `where` that fails on null, like a comparison, makes the whole joined row non-null:
 
 <Inferred>
 
@@ -242,7 +244,7 @@ A null check on one joined column makes the whole joined row non-null:
 select u.name, p.title
 from users u
 left join posts p on p.user_id = u.id
-where p.published_at is not null
+where p.published_at > :since
 ```
 
 </Inferred>
@@ -258,6 +260,7 @@ select u.name,
   coalesce(u.email, '') as email,
   exists (select 1 from posts p where p.user_id = u.id) as has_posts
 from users u
+where u.role = :role
 ```
 
 </Inferred>
@@ -529,7 +532,7 @@ Run unrelated subqueries side by side, in one query and one round trip. With no 
 with recent as (select id, title from posts order by id desc limit 5)
 select
   (select count(*)::int from users) as user_count,
-  (select count(*)::int from posts) as post_count,
+  (select count(*)::int from posts where user_id = :user_id) as post_count,
   (
     select coalesce(jsonb_agg(jsonb_build_object(
       'id', r.id,
@@ -544,7 +547,7 @@ select
 with recent as (select id, title from posts order by id desc limit 5)
 select
   (select count(*) from users) as user_count,
-  (select count(*) from posts) as post_count,
+  (select count(*) from posts where user_id = :user_id) as post_count,
   (
     select coalesce(json_arrayagg(json_object(
       'id', r.id,
@@ -559,7 +562,7 @@ select
 with recent as (select id, title from posts order by id desc limit 5)
 select
   (select count(*) from users) as user_count,
-  (select count(*) from posts) as post_count,
+  (select count(*) from posts where user_id = :user_id) as post_count,
   (
     select json_group_array(json_object(
       'id', r.id,
@@ -607,6 +610,8 @@ create table events (
 ```sql file="inferred_event_kinds.sql" dialect="postgres"
 select id, kind
 from events
+order by id desc
+limit :limit::int
 ```
 
 </Inferred>
@@ -622,6 +627,7 @@ select u.name,
   jsonb_agg(jsonb_build_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
@@ -630,6 +636,7 @@ select u.name,
   json_arrayagg(json_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
@@ -638,6 +645,7 @@ select u.name,
   json_group_array(json_object('id', p.id, 'title', p.title)) as posts
 from users u
 join posts p on p.user_id = u.id
+where p.published_at > :since
 group by u.id
 ```
 
@@ -669,6 +677,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
+where u.id = :id
 ```
 
 ```sql file="users_with_posts.sql" dialect="mysql"
@@ -691,6 +700,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
+where u.id = :id
 ```
 
 ```sql file="users_with_posts.sql" dialect="sqlite"
@@ -713,6 +723,7 @@ select u.id, u.name,
     limit 1
   ) as latest_post
 from users u
+where u.id = :id
 ```
 
 </Inferred>
@@ -758,11 +769,13 @@ create table events (
 ```sql file="inferred_event_payloads.sql" dialect="postgres"
 select id, payload
 from events
+where id = :id
 ```
 
 ```sql file="inferred_event_payloads.sql" dialect="mysql"
 select id, payload
 from events
+where id = :id
 ```
 
 </Inferred>
@@ -1243,11 +1256,13 @@ create table events (
 ```sql file="inferred_event_payloads_union.sql" dialect="postgres"
 select id, payload
 from events
+where id = :id
 ```
 
 ```sql file="inferred_event_payloads_union.sql" dialect="mysql"
 select id, payload
 from events
+where id = :id
 ```
 
 </Inferred>
