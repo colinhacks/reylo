@@ -201,6 +201,10 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
 /// table's where the statement reads one; a qualified one is the table its name or alias names.
 fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target)> {
     let mut out = Vec::new();
+    let with = match statement {
+        Statement::Query(q) => q.with.as_ref().filter(|w| !w.recursive),
+        _ => None,
+    };
     let (from, filters): (Vec<&TableWithJoins>, Vec<&Expr>) = match statement {
         Statement::Query(q) => match q.body.as_ref() {
             SetExpr::Select(s) => (s.from.iter().collect(), s.selection.iter().chain(s.having.iter()).collect()),
@@ -214,18 +218,40 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
         _ => return out,
     };
     // The tables by the name the statement reads each by; `plain` where every item is a table.
+    // A derived table or a WITH query is read through to the table column each of its columns
+    // passes through unchanged ([`crate::mysql_keys::output_origin`]).
     let mut tables: Vec<(String, String)> = Vec::new();
+    let mut derived: Vec<(String, &Query)> = Vec::new();
     let mut plain = true;
+    let mut items = 0;
     for twj in &from {
         for factor in std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation)) {
+            items += 1;
             match factor {
-                TableFactor::Table { name, alias, .. } => match table_name(name) {
-                    Some(table) => {
-                        let by = alias.as_ref().map(|a| a.name.value.clone()).unwrap_or_else(|| table.clone());
-                        tables.push((by.to_ascii_lowercase(), table));
+                TableFactor::Table { name, alias, args: None, .. } => {
+                    let cte = with.and_then(|w| match name.0.as_slice() {
+                        [ast::ObjectNamePart::Identifier(n)] => w.cte_tables.iter().find(|c| c.alias.name.value.eq_ignore_ascii_case(&n.value) && c.alias.columns.is_empty()),
+                        _ => None,
+                    });
+                    match (cte, table_name(name)) {
+                        (Some(cte), _) => {
+                            plain = false;
+                            let by = alias.as_ref().map(|a| a.name.value.clone()).unwrap_or_else(|| cte.alias.name.value.clone());
+                            if alias.as_ref().is_none_or(|a| a.columns.is_empty()) {
+                                derived.push((by.to_ascii_lowercase(), cte.query.as_ref()));
+                            }
+                        }
+                        (None, Some(table)) => {
+                            let by = alias.as_ref().map(|a| a.name.value.clone()).unwrap_or_else(|| table.clone());
+                            tables.push((by.to_ascii_lowercase(), table));
+                        }
+                        (None, None) => plain = false,
                     }
-                    None => plain = false,
-                },
+                }
+                TableFactor::Derived { lateral: false, subquery, alias: Some(alias), .. } if alias.columns.is_empty() => {
+                    plain = false;
+                    derived.push((alias.name.value.to_ascii_lowercase(), subquery.as_ref()));
+                }
                 _ => plain = false,
             }
         }
@@ -233,9 +259,14 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
     let column = |e: &Expr| -> Option<(String, String)> {
         match e {
             Expr::Identifier(i) if plain && tables.len() == 1 => Some((tables[0].1.clone(), i.value.to_ascii_lowercase())),
+            Expr::Identifier(i) if items == 1 && derived.len() == 1 => crate::mysql_keys::output_origin(derived[0].1, &i.value.to_ascii_lowercase()),
             Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
                 let by = parts[0].value.to_ascii_lowercase();
-                tables.iter().find(|(b, _)| *b == by).map(|(_, t)| (t.clone(), parts[1].value.to_ascii_lowercase()))
+                let name = parts[1].value.to_ascii_lowercase();
+                match tables.iter().find(|(b, _)| *b == by) {
+                    Some((_, t)) => Some((t.clone(), name)),
+                    None => derived.iter().find(|(b, _)| *b == by).and_then(|(_, q)| crate::mysql_keys::output_origin(q, &name)),
+                }
             }
             _ => None,
         }

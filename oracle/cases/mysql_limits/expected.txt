@@ -7,7 +7,7 @@ count_limit_param.sql: maybeOne (n: int4) -> { n: int8 }
 count_offset_0.sql: maybeOne () -> { n: int8 }
 count_offset_1.sql: maybeOne () -> { n: int8 }
 count_offset_param.sql: maybeOne (skip: int4) -> { n: int8 }
-derived_limit.sql: maybeOne (id: int4) -> { name: text? }
+derived_limit.sql: maybeOne (id: int8) -> { name: text? }
 key_comma.sql: maybeOne (id: int8) -> { id: int8, name: text? }
 key_limit_0.sql: maybeOne (id: int8) -> { id: int8, name: text? }
 key_limit_5.sql: maybeOne (id: int8) -> { id: int8, name: text? }
