@@ -29,10 +29,10 @@ use sqlparser::ast::{self, Distinct, Expr, GroupByExpr, JoinConstraint, JoinOper
 /// The WITH queries in scope, outermost first: each name in lower case, its body (`None` for one
 /// of a RECURSIVE WITH, or one that renames its columns), and how many of the entries before it
 /// its body sees.
-type Ctes<'a> = Vec<(String, Option<&'a Query>, usize)>;
+pub(crate) type Ctes<'a> = Vec<(String, Option<&'a Query>, usize)>;
 
 /// `outer` with a query's own WITH queries after it.
-fn ctes_of<'a>(q: &'a Query, outer: &[(String, Option<&'a Query>, usize)]) -> Ctes<'a> {
+pub(crate) fn ctes_of<'a>(q: &'a Query, outer: &[(String, Option<&'a Query>, usize)]) -> Ctes<'a> {
     let mut out: Ctes<'a> = outer.to_vec();
     if let Some(w) = &q.with {
         for c in &w.cte_tables {
@@ -550,10 +550,11 @@ fn output_class(q: &Query, outer: &[(String, Option<&Query>, usize)], keys: &Key
 
 /// The table and column that output column `name` (lower case) of a query passes through
 /// unchanged, the table by the name the query writes it, read without the catalog: a derived table
-/// or a WITH query through its select list, down to a table.
-pub(crate) fn output_origin(q: &Query, name: &str) -> Option<(String, String)> {
+/// or a WITH query through its select list, down to a table. `outer` are the WITH queries the
+/// query sees ([`ctes_of`]), so that none of their names is read as a table.
+pub(crate) fn output_origin(q: &Query, outer: &[(String, Option<&Query>, usize)], name: &str) -> Option<(String, String)> {
     let keys = Keys::default();
-    origin_in(q, &[], &keys, name)
+    origin_in(q, outer, &keys, name)
 }
 
 fn origin_in(q: &Query, outer: &[(String, Option<&Query>, usize)], keys: &Keys, name: &str) -> Option<(String, String)> {

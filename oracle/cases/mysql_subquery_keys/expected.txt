@@ -44,7 +44,7 @@ star.sql: maybeOne (id: int8) -> { id: int8, author_id: int8, title: text }
 straight_join.sql: maybeOne (id: int8) -> { title: text, name: text }
 subquery.sql: maybeOne (id: int8) -> { id: int8, title: text }
 two_subqueries.sql: maybeOne (id: int8) -> { title: text, name: text }
-two_withs.sql: maybeOne (id: int4) -> { id: int8, title: text }
+two_withs.sql: maybeOne (id: int8) -> { id: int8, title: text }
 union_all.sql: many (id: int4) -> { id: int8 }
 view.sql: maybeOne (id: int8) -> { id: int8, title: text }
 view_column_list.sql: many (id: int8) -> { post_id: int8, headline: text }
@@ -58,3 +58,5 @@ view_temptable.sql: maybeOne (id: int8) -> { id: int8, title: text }
 window_inside.sql: maybeOne (id: int8) -> { id: int8, rn: int8 }
 with_joined.sql: maybeOne (u: int4, id: int8) -> { title: text, name: text }
 with_query.sql: maybeOne (id: int8) -> { id: int8, title: text }
+with_shadows_table.sql: maybeOne (id: int8) -> { id: int8, title: text }
+with_sibling_shadow.sql: maybeOne (id: int8) -> { id: int8 }
