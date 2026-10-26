@@ -4,7 +4,12 @@ title: "Errors"
 
 ## Errors
 
-An error in a query shows at its line and column, in your editor as you type and in `tsc`. Your database checks each query, so a misspelled column is the database's own error:
+An error in a query shows at its line and column, in your editor as you type and in `tsc`. TypeScript's own language server reports it, inside the `.sql` file itself, so Reylo needs no editor plugin. Your editor needs only:
+
+- **TypeScript 7.1** installed in your project ([Install](#install))
+- **The TypeScript 7 extension**, pointed at your project's TypeScript ([Editor](#editors)). Zed shows an error inside a `.sql` file only in `tsc`.
+
+Your database checks each query, so a misspelled column is the database's own error:
 
 ```sql tab="get_user.sql" dialect="all" errors
 select id, nmae, email
