@@ -91,6 +91,10 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   // mysql2's binary protocol gives a BIGINT as its digits, mariadb's text protocol as a BigInt.
   assert.deepEqual(my["~standard"].query.decode([["9007199254740993", "2026-10-22 14:46:00.000000", "1.50", 1]]), { id: 9007199254740993n, at: "2026-10-22T14:46:00.000000", amount: "1.50", ok: true });
   assert.deepEqual(my["~standard"].query.decode([[9007199254740993n, "2026-10-22 14:46:00", "1.50", "1"]]), { id: 9007199254740993n, at: "2026-10-22T14:46:00", amount: "1.50", ok: true });
+  // A column that may be a DATETIME takes the T too, as `.run()` gives it.
+  const either = defineQuery<{}, { at: string }, "many", "mysql">({ dialect: "mysql", sql: "select coalesce(at, d) as at from t", params: [], columns: [["at", "timestamp|date"]] });
+  assert.deepEqual(either["~standard"].query.decode([["2026-10-22 14:46:00"]]), [{ at: "2026-10-22T14:46:00" }]);
+
   const lite = defineQuery<{ ok: boolean }, { id: bigint; ok: boolean }, "many", "sqlite">({
     dialect: "sqlite",
     sql: "select id, ok from t where ok = :ok",

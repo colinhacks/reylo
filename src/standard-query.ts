@@ -7,7 +7,12 @@
 //
 // Every Reylo query is one, with the same input and output as `.run()`: `encode` binds as
 // `.run()` binds, its checks included, and `decode` gives each value its kind and the result its
-// cardinality as `.run()` does.
+// cardinality as `.run()` does. Two things `.run()` does need its client, and a Standard Query,
+// which has none, does neither: it never checks that the schema still matches the one the
+// statement was typed against (src/fresh.ts), and on MySQL it keeps a DATETIME's, TIMESTAMP's or
+// TIME's fraction digits as the driver read them, which are the column's own over the text
+// protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
+// from the column's metadata.
 import { normalize } from "./decode-sqlite.ts";
 import { compile, rawStatement, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
@@ -80,8 +85,9 @@ function decoder(dialect: Dialect, name: string, kind: string, delim: string | u
       return fromText(v);
     };
   }
-  // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it.
-  if (kind === "timestamp") return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
+  // column that may be one included (src/decode-mysql.ts, `mariadb`).
+  if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
   return (v) => coerce(kind, v, name, delim);
 }
 
