@@ -1,6 +1,6 @@
 // /play/og.png?q=<sql> (or ?example=<slug>), which vercel.json routes to api/play-og/image.mjs: the link preview of a shared query (lib/live/share-card.tsx), a 1200 × 630 PNG. The page of a shared address names it (lib/live/share-page.ts); /play/og.png with neither is the static card of the example the page opens with, drawn at build time (app/routes/play-og.tsx). Bundled by vite.share.config.ts into .share/play-og.mjs; it loads Shiki, Satori and the fonts, and neither the engine nor PGlite.
 import { playCard } from './share-card.tsx';
-import { examples } from './share-examples.ts';
+import { examples } from './share-shown.ts';
 import { sharedQuery } from './share.ts';
 
 // The card depends on its address alone, and the address carries the card's version (`v`), so the CDN and the crawlers keep it.
@@ -13,8 +13,9 @@ export function playOg(fonts: URL) {
     const shared = sharedQuery(new URL(request.url).searchParams, examples);
     if (!shared) return new Response('name the query: ?q=<sql> or ?example=<slug>\n', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
     try {
-      const card = await playCard(shared.sql, fonts, { 'content-type': 'image/png', 'cache-control': KEPT, 'x-content-type-options': 'nosniff' });
-      return request.method === 'HEAD' ? new Response(null, { status: card.status, headers: card.headers }) : card;
+      // ImageResponse draws in its body's stream, so the body is read here, where a failure to draw is still a 500 rather than a cut-off PNG kept for a year.
+      const png = await (await playCard(shared.sql, fonts)).arrayBuffer();
+      return new Response(request.method === 'HEAD' ? null : png, { headers: { 'content-type': 'image/png', 'cache-control': KEPT, 'x-content-type-options': 'nosniff' } });
     } catch (error) {
       console.error(error);
       return new Response('the card could not be drawn\n', { status: 500, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
