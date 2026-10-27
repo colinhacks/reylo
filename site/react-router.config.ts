@@ -12,7 +12,7 @@ const pages = readdirSync('content/docs')
 
 export default {
   ssr: false,
-  prerender: [...pages, ...pages.map((page) => `${page === '/' ? '/index' : page}.md`), '/404', '/play', '/play/og.png', '/llms.txt', '/robots.txt', '/sitemap.xml', '/manifest.webmanifest', '/opengraph-image.png'],
+  prerender: [...pages, ...pages.map((page) => `${page === '/' ? '/index' : page}.md`), '/404', '/play', '/play/og.png', '/play/api.md', '/llms.txt', '/robots.txt', '/sitemap.xml', '/manifest.webmanifest', '/opengraph-image.png'],
   buildEnd() {
     copyFileSync('build/client/404/index.html', 'build/client/404.html');
   },

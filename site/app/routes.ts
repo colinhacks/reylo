@@ -16,6 +16,8 @@ export default [
   route('play', 'routes/play.tsx'),
   // Its link preview, the card of the query it opens with (a shared query's card is drawn on request).
   route('play/og.png', 'routes/play-og.tsx'),
+  // Its API, as Markdown for an agent.
+  route('play/api.md', 'routes/play-api-md.ts'),
   // The local playground (app/routes/playground.tsx), on the dev server only: it needs scratch databases.
   ...(process.env.NODE_ENV === 'production' ? [] : [route('playground', 'routes/playground.tsx')]),
   route('llms.txt', 'routes/llms.ts'),
