@@ -3,7 +3,8 @@
 // renamed `.tar` (the CDN compresses a tar and leaves an `application/octet-stream` as it is), and
 // a snapshot of a PGlite data directory holding the main page's Postgres schema, made here in Node
 // by the same PGlite the page loads. The worker imports each with `?url`, so the build emits them
-// with hashed names.
+// with hashed names. The playground's API (lib/live/api.ts) reads the same files on the server,
+// with a copy of the Postgres engine, since a function carries files from site/ only.
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -22,12 +23,14 @@ async function writeFiles(): Promise<void> {
   const pkg = path.dirname(path.dirname(require.resolve('@electric-sql/pglite')));
   const version = JSON.parse(readFileSync(path.join(pkg, 'package.json'), 'utf8')).version as string;
   const schema = pagePostgresSchema();
-  const key = createHash('sha256').update(JSON.stringify([version, schema, STUB_SQL])).digest('hex');
+  const engine = readFileSync(path.join(site, '..', 'packages', 'postgres', 'engine.wasm'));
+  const key = createHash('sha256').update(JSON.stringify([version, schema, STUB_SQL, createHash('sha256').update(engine).digest('hex')])).digest('hex');
   const keyFile = path.join(out, 'key');
   if (existsSync(keyFile) && readFileSync(keyFile, 'utf8') === key) return;
   mkdirSync(out, { recursive: true });
   copyFileSync(path.join(pkg, 'dist', 'pglite.wasm'), path.join(out, 'pglite.wasm'));
   copyFileSync(path.join(pkg, 'dist', 'pglite.data'), path.join(out, 'pglite-data.tar'));
+  writeFileSync(path.join(out, 'engine.wasm'), engine);
   const { PGlite } = await import('@electric-sql/pglite');
   // pg_jsonschema exists for PGlite in no form; the stub gives the engine the catalog rows it reads.
   const pg = await PGlite.create({ extensions: { pgJsonschemaStub: pgJsonschemaStub as unknown as Extension } });

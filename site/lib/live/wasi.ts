@@ -5,8 +5,10 @@
 const ESUCCESS = 0, EBADF = 8, ENOSYS = 52;
 
 export class ProcExit extends Error {
-  constructor(public code: number) {
+  code: number;
+  constructor(code: number) {
     super(`the engine exited with ${code}`);
+    this.code = code;
   }
 }
 
