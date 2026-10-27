@@ -72,8 +72,8 @@ jobs:
           $data = "$env:RUNNER_TEMP\mysql"
           & "$bin\mysqld.exe" --no-defaults --initialize-insecure "--datadir=$data" --console 2>&1 | Out-Null
           Start-Process -FilePath "$bin\mysqld.exe" -ArgumentList "--no-defaults", "--datadir=$data", "--port=53306", "--bind-address=127.0.0.1", "--mysqlx=OFF", "--named-pipe", "--socket=reylo-mysql", "--log-error=$env:RUNNER_TEMP\mysql.log" -NoNewWindow
-          for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" -uroot -h127.0.0.1 -P53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
-          & "$bin\mysql.exe" -uroot -h127.0.0.1 -P53306 -e "select version(); create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
+          for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
+          & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
       - run: nub run typecheck
       # The loader's tests, one file at a time so that a hang names its file: those without a database
       # everywhere, and Postgres's and MySQL's on the runner's servers.
