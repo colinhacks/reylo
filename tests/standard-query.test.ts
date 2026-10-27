@@ -91,7 +91,6 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   // mysql2's binary protocol gives a BIGINT as its digits, mariadb's text protocol as a BigInt.
   assert.deepEqual(my["~standard"].query.decode([["9007199254740993", "2026-10-22 14:46:00.000000", "1.50", 1]]), { id: 9007199254740993n, at: "2026-10-22T14:46:00.000000", amount: "1.50", ok: true });
   assert.deepEqual(my["~standard"].query.decode([[9007199254740993n, "2026-10-22 14:46:00", "1.50", "1"]]), { id: 9007199254740993n, at: "2026-10-22T14:46:00", amount: "1.50", ok: true });
-
   const lite = defineQuery<{ ok: boolean }, { id: bigint; ok: boolean }, "many", "sqlite">({
     dialect: "sqlite",
     sql: "select id, ok from t where ok = :ok",
@@ -106,6 +105,25 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   });
   assert.deepEqual(lite["~standard"].query.encode({ ok: true }), [1]);
   assert.deepEqual(lite["~standard"].query.decode([[1n, 0n]]), [{ id: 1n, ok: false }]);
+
+  // SQLite decodes through `.run()`'s own normalizing: a value of a storage class the column's type
+  // does not allow, which a table that is not STRICT stores, is refused, and an integer in a column
+  // with no type is a number however the driver read it.
+  const loose = defineQuery<{}, { n: number; s: string; u: unknown }, "many", "sqlite">({
+    dialect: "sqlite",
+    sql: "select n, s, u from loose",
+    params: [],
+    columns: [
+      ["n", "int"],
+      ["s", "text"],
+      ["u", "unknown"],
+    ],
+  });
+  const lq = loose["~standard"].query;
+  assert.deepEqual(lq.decode([[1n, "a", 2n]]), [{ n: 1, s: "a", u: 2 }]);
+  assert.throws(() => lq.decode([["abc", "a", null]]), /Column "n" is typed number and holds the text "abc"/);
+  assert.throws(() => lq.decode([[1, new Uint8Array([1]), null]]), /Column "s" is typed string and holds a BLOB of 1 byte/);
+  assert.throws(() => lq.decode([[2n ** 60n, "a", null]]), /"n"/);
 });
 
 test("a query defined by hand without its columns cannot decode, and says so", () => {

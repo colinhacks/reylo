@@ -8,6 +8,7 @@
 // Every Reylo query is one, with the same input and output as `.run()`: `encode` binds as
 // `.run()` binds, its checks included, and `decode` gives each value its kind and the result its
 // cardinality as `.run()` does.
+import { normalize } from "./decode-sqlite.ts";
 import { compile, rawStatement, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { coerce, DecodeError, textDecoder } from "./values.ts";
@@ -70,7 +71,7 @@ export declare namespace StandardQueryV1 {
     : [input: StandardTypedV1.InferInput<Q>];
 }
 
-/** A column's raw value as its kind: on Postgres from its text, on MySQL and SQLite from whatever form the driver read. */
+/** A column's raw value as its kind, on Postgres from its text, on MySQL from whatever form the driver read. SQLite's rows go through `normalize` whole. */
 function decoder(dialect: Dialect, name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
   if (dialect === "postgres") {
     const fromText = textDecoder(kind, delim);
@@ -80,7 +81,7 @@ function decoder(dialect: Dialect, name: string, kind: string, delim: string | u
     };
   }
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it.
-  if (dialect === "mysql" && kind === "timestamp") return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  if (kind === "timestamp") return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
   return (v) => coerce(kind, v, name, delim);
 }
 
@@ -108,15 +109,19 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
     decode(rows) {
       const columns = module.columns;
       if (columns === undefined) throw new TypeError("A query defined by hand without its columns cannot map rows to its output: a module a build step writes carries them.");
-      decoders ??= columns.map(([name, kind, delim]) => decoder(module.dialect, name, kind, delim));
-      return materialize(
-        rows.map((raw) => {
-          if (raw.length !== columns.length) throw new DecodeError(`The statement selects ${columns.length} columns, and a row has ${raw.length}.`);
-          const row: Record<string, unknown> = {};
-          for (let i = 0; i < raw.length; i++) row[columns[i]![0]] = raw[i] === null || raw[i] === undefined ? null : decoders![i]!(raw[i]);
-          return row;
-        }),
-      );
+      // SQLite's values go through `.run()`'s own `normalize`, its refusals of a storage class the
+      // column's type does not allow included. Its default reading suits a driver whose integer
+      // mode is unknown: a BigInt is read exact, and a number past 2^53 in an INTEGER column is
+      // refused as a rounded one.
+      const sqlite = module.dialect === "sqlite";
+      if (!sqlite) decoders ??= columns.map(([name, kind, delim]) => decoder(module.dialect, name, kind, delim));
+      const keyed = rows.map((raw) => {
+        if (raw.length !== columns.length) throw new DecodeError(`The statement selects ${columns.length} columns, and a row has ${raw.length}.`);
+        const row: Record<string, unknown> = {};
+        for (let i = 0; i < raw.length; i++) row[columns[i]![0]] = raw[i] === null || raw[i] === undefined ? null : sqlite ? raw[i] : decoders![i]!(raw[i]);
+        return row;
+      });
+      return materialize(sqlite ? (normalize(keyed, columns) as Record<string, unknown>[]) : keyed);
     },
   };
 }
