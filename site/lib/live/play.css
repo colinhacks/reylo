@@ -736,3 +736,144 @@ html:not(.dark) #nd-page.play .play-theme-dark {
     margin-left: auto;
   }
 }
+
+/* The API link, a button drawn as the bar's links are. */
+#nd-page.play button.play-nav-link {
+  border: 0;
+  background: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* The API dialog (lib/live/api-dialog.tsx): the page's popover, centred over a dimmed page, its
+   body scrolling under a fixed head. */
+#nd-page.play .play-api {
+  /* Centred in the window: the site's reset takes the browser's own margins away. */
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  height: fit-content;
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100dvh - 64px);
+  padding: 0;
+  border: 0;
+  border-radius: var(--play-radius-pop);
+  background: var(--play-surface-pop);
+  color: var(--color-fd-foreground);
+  box-shadow: var(--play-shadow-pop);
+  overflow: hidden;
+}
+
+#nd-page.play .play-api[open] {
+  display: flex;
+  flex-direction: column;
+}
+
+#nd-page.play .play-api::backdrop {
+  background: rgb(0 0 0 / 0.55);
+}
+
+#nd-page.play .play-api-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  height: var(--play-head);
+  padding: 0 calc(var(--play-pad) - 8px) 0 var(--play-pad);
+  border-bottom: 1px solid var(--color-fd-border);
+}
+
+#nd-page.play .play-api-head h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-api-body {
+  overflow: auto;
+  padding: 16px var(--play-pad) 24px;
+  font-size: var(--play-ui);
+  line-height: 1.6;
+}
+
+#nd-page.play .play-api-body p {
+  margin: 0 0 8px;
+}
+
+#nd-page.play .play-api-body h3 {
+  margin: 24px 0 8px;
+  font-size: var(--play-label);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page.play .play-api-body code {
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  color: var(--color-fd-headings);
+  overflow-wrap: anywhere;
+}
+
+#nd-page.play .play-api-code {
+  position: relative;
+  margin: 8px 0 12px;
+}
+
+#nd-page.play .play-api-code pre {
+  margin: 0;
+  padding: 10px 64px 10px 12px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: var(--play-radius);
+  background: var(--color-fd-background);
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--color-fd-foreground);
+}
+
+/* JSON keeps its lines and scrolls sideways where they are wider than the dialog. */
+#nd-page.play .play-api-code pre[data-nowrap] {
+  padding-right: 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+#nd-page.play .play-api-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--color-fd-border);
+  border-radius: var(--play-radius);
+  background: var(--play-surface-pop);
+  color: var(--color-fd-muted-foreground);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#nd-page.play .play-api-copy:hover {
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-api-body dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 16px;
+  margin: 4px 0 12px;
+}
+
+#nd-page.play .play-api-body dt {
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-api-body dd {
+  margin: 0;
+}
