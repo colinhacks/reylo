@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 
@@ -6,6 +7,8 @@ const live = path.join(import.meta.dirname, 'lib', 'live');
 
 export default defineConfig({
   publicDir: false,
+  // The examples /play shows, which the page's loader wrote while `react-router build` ran (lib/live/share-shown.ts).
+  define: { __PLAY_EXAMPLES__: readFileSync(path.join(import.meta.dirname, '.live', 'play-examples.json'), 'utf8') },
   build: {
     ssr: true,
     outDir: path.join(import.meta.dirname, '.share'),

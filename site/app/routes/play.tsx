@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import type { Route } from './+types/play';
 import { Playground } from '@/components/play';
 import { siteUrl } from '@/lib/layout.shared';
@@ -8,8 +8,16 @@ import { cardAlt, cardSize, shareTags } from '@/lib/live/share';
 // The playground, at /play (components/play.tsx): drawn at build time with the main page's Postgres schema and the types of the statement it opens with (lib/live/play-data.ts), then live in the reader's tab. Its link preview is the card of that statement (app/routes/play-og.tsx), whose address carries a hash of the card's module, so that a change to the card is a new address to the caches of X and Slack. A shared address, /play?q=<sql>, is served by a function that names the card of its own query in these same tags (lib/live/share-page.ts).
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');
-  const card = await readFile('lib/live/share-card.tsx');
-  return { ...(await playData()), og: createHash('sha256').update(card).digest('hex').slice(0, 16) };
+  const data = await playData();
+  // The examples the page shows, which the share functions, built after this page, preview by slug (lib/live/share-shown.ts).
+  const shown = data.examples.map((e) => ({ slug: e.slug, sql: e.sql }));
+  await mkdir('.live', { recursive: true });
+  await writeFile('.live/play-examples.json', JSON.stringify(shown));
+  // The card's version: everything it is drawn from, so that any change to it is a new address to X's and Slack's caches.
+  const hash = createHash('sha256');
+  for (const file of ['lib/live/share-card.tsx', 'lib/live/share.ts', 'components/wordmark.tsx', 'assets/fonts/Geist-600.ttf', 'assets/fonts/GeistMono-400.ttf']) hash.update(await readFile(file));
+  hash.update(JSON.stringify(shown));
+  return { ...data, og: hash.digest('hex').slice(0, 16) };
 }
 
 const description = 'Edit a SQL query against a sample Postgres schema and see the types Reylo infers for it, with Postgres running in your browser.';
