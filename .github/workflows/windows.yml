@@ -78,6 +78,42 @@ jobs:
           Start-Service ReyloMySQL
           for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
           & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
+      - name: Debug the named pipe
+        continue-on-error: true
+        run: |
+          "/c/Program Files/MySQL/MySQL Server 8.0/bin/mysql.exe" --protocol=PIPE --socket=reylo-mysql --user=root -e "select 'pipe ok', current_user()" || true
+          cat > "$RUNNER_TEMP/pipe.mjs" <<'EOF'
+          import { connect } from "node:net";
+          const s = connect(String.raw`\\.\pipe\reylo-mysql`);
+          s.on("connect", () => console.log("connected"));
+          s.on("data", (d) => { console.log("greeting", d.length, JSON.stringify(d.subarray(0, 24).toString("latin1"))); s.destroy(); });
+          s.on("error", (e) => console.log("error", e));
+          EOF
+          node "$RUNNER_TEMP/pipe.mjs"
+          cat > "$RUNNER_TEMP/bridge.mjs" <<'EOF'
+          import { hostUrl } from "../reylo/reylo/src/host-url.ts";
+          import { connect } from "node:net";
+          const h = await hostUrl("mysql://root@localhost/reylo_windows?socketPath=" + encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`));
+          console.log(h.url);
+          const port = Number(new URL(h.url).port);
+          const s = connect(port, "127.0.0.1");
+          s.on("data", (d) => { console.log("through the bridge", d.length); s.destroy(); h.close(); });
+          s.on("close", () => { console.log("closed"); h.close(); });
+          s.on("error", (e) => console.log("error", e));
+          EOF
+          node "$RUNNER_TEMP/bridge.mjs"
+      - run: nub install --frozen-lockfile
+        working-directory: lab/jest
+      # The Jest lab reaches the package and its database's engine through links into this checkout,
+      # native ones, which Git's bash makes only when asked.
+      - name: Link the lab the tests load
+        env:
+          MSYS: winsymlinks:nativestrict
+        run: |
+          mkdir -p lab/jest/node_modules/@reylosql
+          ln -sfn ../../.. lab/jest/node_modules/reylo
+          ln -sfn ../../../../packages/sqlite lab/jest/node_modules/@reylosql/sqlite
+          ls -la lab/jest/node_modules/reylo lab/jest/node_modules/@reylosql/
       - run: nub run typecheck
       # The loader's tests: those without a database everywhere, and Postgres's and MySQL's on the
       # runner's servers.
@@ -89,7 +125,7 @@ jobs:
           nub run test
         continue-on-error: true
       - name: Debug the D1 proxy
-        continue-on-error: true
+        if: false
         run: |
           d="$RUNNER_TEMP/d1" && mkdir -p "$d"
           echo '{"name":"reylo-test","main":"worker.js","compatibility_date":"2026-10-01","d1_databases":[{"binding":"DB","database_name":"reylo-test","database_id":"00000000-0000-0000-0000-000000000000"}]}' > "$d/wrangler.jsonc"
