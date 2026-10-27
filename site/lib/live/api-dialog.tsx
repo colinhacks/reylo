@@ -11,7 +11,7 @@ export type ApiDocs = {
   schema: string;
   /** The page's own address, where it answers `?q=` with JSON when asked for JSON. */
   page?: string;
-  /** What a query is analyzed against, ending the sentence that opens the dialog. */
+  /** What a query is analyzed against: "the page's sample schema". */
   against: string;
   /** The query of the examples. */
   example: string;
@@ -63,8 +63,9 @@ export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean;
       .catch(() => setAnswer(''));
   }, [open, answer, api]);
 
-  const get = `curl ${shell(api.analyze)} --get --data-urlencode ${shell(`q=${api.example}`)}`;
-  const post = `curl ${shell(api.analyze)} -H 'content-type: application/json' -d ${shell(JSON.stringify({ sql: api.example }))}`;
+  const path = (url: string) => new URL(url).pathname;
+  // Encoded as a browser writes a form, a space as `+`, which reads more easily than `%20`.
+  const q = `?${new URLSearchParams({ q: api.example })}`;
 
   return (
     <dialog
@@ -89,54 +90,28 @@ export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean;
         </button>
       </div>
       <div className="play-api-body">
-        <p>The playground's analysis as JSON, for scripts and agents. A query is analyzed, never run, against {api.against}.</p>
-
-        <h3>Analyze a query</h3>
-        <p>
-          <code>GET {api.analyze}?q=&lt;sql&gt;</code>
-        </p>
-        <CodeBlock text={get} copy />
-        {answer !== '' && <CodeBlock text={answer ?? '…'} wrap={false} />}
-        <dl>
-          <dt>params</dt>
-          <dd>The type of its parameters; absent when it takes none.</dd>
-          <dt>returns</dt>
-          <dd>
-            What <code>.run()</code> resolves to.
-          </dd>
-          <dt>element</dt>
-          <dd>
-            One row's type: what <code>returns</code> holds one or many of, by <code>cardinality</code>.
-          </dd>
-          <dt>cardinality</dt>
-          <dd>
-            How many rows it returns: <code>many</code>, <code>one</code>, <code>maybeOne</code> or <code>none</code>.
-          </dd>
-          <dt>diagnostics</dt>
-          <dd>
-            Each error's <code>message</code> and <code>code</code>, and where it is: <code>line</code>, <code>column</code>, <code>endLine</code>, <code>endColumn</code>.
-          </dd>
-        </dl>
-        <p>
-          A POST takes the query in a JSON body. Add <code>width</code> to break the types over lines wider than that many characters.
-        </p>
-        <CodeBlock text={post} copy />
-
-        <h3>List the schema</h3>
-        <p>
-          <code>GET {api.schema}</code>
-        </p>
-        <p>The tables with their columns and types, and the functions and type names the editor completes.</p>
-
         {api.page && (
-          <>
-            <h3>Share a link</h3>
-            <p>
-              The page's address holds the query as you type, as <code>?q=</code>. Asked for JSON, that same address answers like <code>/analyze</code>, so a link you share works for an agent too:
-            </p>
-            <CodeBlock text={`curl -H 'accept: application/json' ${shell(`${api.page}?q=${encodeURIComponent(api.example)}`)}`} copy />
-          </>
+          <section>
+            <h3>
+              GET {path(api.page)}?q=&lt;sql&gt;
+            </h3>
+            <p>The playground's own link, asked for JSON, answers with the query's types, so a link you share works for an agent too.</p>
+            <CodeBlock text={`curl -H 'accept: application/json' ${shell(api.page + q)}`} copy />
+          </section>
         )}
+        <section>
+          <h3>
+            GET {path(api.analyze)}?q=&lt;sql&gt;
+          </h3>
+          <p>A query's params, return type, row type, cardinality and errors, analyzed against {api.against} and never run.</p>
+          <CodeBlock text={`curl ${shell(api.analyze + q)}`} copy />
+          {answer !== '' && <CodeBlock text={answer ?? '…'} wrap={false} />}
+        </section>
+        <section>
+          <h3>GET {path(api.schema)}</h3>
+          <p>The tables with their columns and types, and the functions and type names the editor completes.</p>
+          <CodeBlock text={`curl ${shell(api.schema)}`} copy />
+        </section>
       </div>
     </dialog>
   );

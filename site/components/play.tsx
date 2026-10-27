@@ -13,7 +13,7 @@ const api = {
   analyze: 'https://reylo.dev/play/api/analyze',
   schema: 'https://reylo.dev/play/api/schema',
   page: 'https://reylo.dev/play',
-  against: "Postgres 18 holding this page's sample schema of users, posts and events",
+  against: "the page's sample schema",
   example: 'select name from users where id = :id',
 };
 
