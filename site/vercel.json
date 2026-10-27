@@ -11,7 +11,8 @@
     {
       "src": "^/play$",
       "has": [{ "type": "query", "key": "q" }, { "type": "header", "key": "accept", "value": "^(?!.*text/html).*application/json.*$" }],
-      "dest": "/api/play/analyze"
+      "dest": "/api/play/analyze",
+      "headers": { "Vary": "Accept" }
     },
     {
       "src": "^/$",
@@ -35,7 +36,7 @@
   ],
   "headers": [
     {
-      "source": "/:page(|postgres|mysql|sqlite)",
+      "source": "/:page(|postgres|mysql|sqlite|play)",
       "headers": [{ "key": "Vary", "value": "Accept" }]
     },
     {
