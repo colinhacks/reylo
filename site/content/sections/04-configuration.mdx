@@ -70,7 +70,7 @@ strict_params: false
 
 ### `sqlcommenter`
 
-Each compiled query ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. Set `sqlcommenter: false` to leave it off.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. The query's [`.sql`](#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true
