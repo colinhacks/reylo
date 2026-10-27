@@ -2,6 +2,7 @@
 // Types come from the content mapper; values come from the runtime loader.
 import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
+import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
@@ -11,6 +12,7 @@ import { listening, type QueryTrace } from "./trace.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export type { QueryTrace } from "./trace.ts";
+export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
 export type { MysqlCode, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
@@ -50,7 +52,7 @@ export type TryResult<Value, E> = { readonly value: Value; readonly error?: unde
 
 /** A query: its statement, its parameters and result types (`Params`, `Row`), and the error its database may raise (`E`). */
 export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E = QueryError<D>>
-  extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>> {
+  extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>>, StandardQueryV1<Params, Materialize<Row, C>, D> {
   readonly dialect: D;
   // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
   // and what they are (src/doc-comment.ts, `sqlNote` and `RAW_NOTE`), and TypeScript would show
@@ -72,7 +74,8 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
   readonly inputSchema: Record<string, unknown>;
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
   readonly outputSchema: Record<string, unknown>;
-  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>>;
+  /** Standard JSON Schema's `jsonSchema` and Standard Query's `query`: a driver that supports Standard Query runs the import with the same input and output as `.run()`. */
+  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D>;
   readonly "~reylo": ReyloTypes<Params, Row, C>;
   /**
    * Runs the statement on the client, or on a transaction or connection taken from it. The
@@ -178,6 +181,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         input: () => def.jsonSchema?.input ?? missingSchema(),
         output: () => def.jsonSchema?.output ?? missingSchema(),
       },
+      query: standardQuery(module, (rows) => materialize(rows as Row[])),
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
