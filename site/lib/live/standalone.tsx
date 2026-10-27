@@ -68,7 +68,11 @@ function Play({ page }: { page: Page }) {
     return { schema: page.schema, examples: [], query, catalog: page.catalog };
   }, [page]);
   const connect = useMemo(() => () => serverChannel(page.label), [page]);
-  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/colinhacks/reylo" />;
+  const api = useMemo(() => {
+    const table = page.catalog.tables[0]?.name;
+    return { analyze: `${location.origin}/api/analyze`, schema: `${location.origin}/api/schema`, against: "your project's database", example: table ? `select * from ${table}` : 'select 1' };
+  }, [page]);
+  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/colinhacks/reylo" api={api} />;
 }
 
 const root = createRoot(document.getElementById('root')!);

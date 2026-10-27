@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSPr
 import type { Catalog } from '../../../src/play-catalog.ts';
 import type { PlayResult } from '../../../src/play-result.ts';
 import { Wordmark } from '../../components/wordmark.tsx';
+import { ApiDialog, type ApiDocs } from './api-dialog.tsx';
 import type { Editor } from './editor.ts';
 import type { Token } from './highlight.ts';
 
@@ -249,7 +250,8 @@ function ExamplePicker({ examples, current, onPick }: { examples: Example[]; cur
 /** The query it opens with when there are no examples: its types empty, shown as `…`, until its first answer comes. */
 const nothing = (sql: string): LiveResult => ({ sql, params: '', returns: '', diagnostics: [], ms: 0 });
 
-export function PlayApp({ data, connect, theme, labels, home, github }: { data: PlayData; connect(): Channel; theme: Theme; labels: Labels; home: string; github: string }) {
+export function PlayApp({ data, connect, theme, labels, home, github, api }: { data: PlayData; connect(): Channel; theme: Theme; labels: Labels; home: string; github: string; api: ApiDocs }) {
+  const [apiOpen, setApiOpen] = useState(false);
   // One object per page's data: the effects below depend on it.
   const first = useMemo(() => data.examples.find((e) => e.slug === data.start) ?? { sql: data.query ?? '', result: nothing(data.query ?? ''), slug: undefined }, [data]);
   const [sql, setSql] = useState(first.sql);
@@ -415,6 +417,9 @@ export function PlayApp({ data, connect, theme, labels, home, github }: { data: 
         <StatusLine status={status} labels={labels} />
         <span className="play-grow" />
         <nav className="play-nav">
+          <button type="button" className="play-nav-link" aria-haspopup="dialog" onClick={() => setApiOpen(true)}>
+            API
+          </button>
           <a href={home} className="play-nav-link">
             Docs
           </a>
@@ -424,6 +429,7 @@ export function PlayApp({ data, connect, theme, labels, home, github }: { data: 
           <ThemeButton theme={theme} />
         </nav>
       </header>
+      <ApiDialog api={api} open={apiOpen} onClose={() => setApiOpen(false)} />
       <main className="play-main">
         <section className="play-pane play-query" aria-label="Query">
           <div className="play-pane-head">
