@@ -248,7 +248,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env): ResolvedProject {
   const file = findProjectFile(projectDir, env);
   const root = file ? dirname(file) : packageDir(projectDir);
-  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path) || path : path);
+  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;
   if (file) {
