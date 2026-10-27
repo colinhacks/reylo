@@ -13,6 +13,8 @@ export type PlayResult = {
   params?: string;
   /** What `.run()` resolves to. */
   returns: string;
+  /** One row's type, as the query's `element`: what `returns` holds one or many of, by `cardinality`. */
+  element?: string;
   /** How many rows it returns: `many`, `one`, `maybeOne` or `none`; absent where it cannot be analyzed. */
   cardinality?: string;
   diagnostics: PlayDiagnostic[];
@@ -41,6 +43,7 @@ export function playResult(
       sql,
       ...(types.params === "Record<never, never>" ? {} : { params: formatType(types.params, width) }),
       returns: formatType(types.row === "unknown" ? "unknown" : resultType(types.row, types.cardinality), width),
+      element: formatType(types.row, width),
       cardinality: types.cardinality,
       diagnostics: types.diagnostics.map(placed),
       ms,

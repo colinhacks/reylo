@@ -41,7 +41,7 @@ test("reylo play analyzes each statement against the project's database, without
 
     const user = await get(q("select id, name, email from users where id = :id"));
     assert.equal(user.status, 200);
-    assert.deepEqual({ ...user.body, ms: 0 }, { sql: "select id, name, email from users where id = :id", params: "{ id: number }", returns: "{ id: number; name: string; email: string | null } | null", cardinality: "maybeOne", diagnostics: [], ms: 0 });
+    assert.deepEqual({ ...user.body, ms: 0 }, { sql: "select id, name, email from users where id = :id", params: "{ id: number }", returns: "{ id: number; name: string; email: string | null } | null", element: "{ id: number; name: string; email: string | null }", cardinality: "maybeOne", diagnostics: [], ms: 0 });
 
     // An error is placed as an editor counts: by line and column.
     const bad = await get(q("select id,\n  nope\nfrom users"));
