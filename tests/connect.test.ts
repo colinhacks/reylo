@@ -231,12 +231,20 @@ test("the bridge to a Unix socket closes a connection that does not carry its to
   }
 });
 
+test("a socket the bridge cannot open is reported with its reason, a Unix socket or a Windows named pipe", async () => {
+  const path = process.platform === "win32" ? String.raw`\\.\pipe\reylo-no-such-socket` : join(mkdtempSync(join(tmpdir(), "reylo-sock-")), "mysql.sock");
+  await assert.rejects((await engine("mysql", ROOT)).open(`mysql://root@localhost/app?socketPath=${encodeURIComponent(path)}`), (e: Error) => e instanceof Unreachable && e.message.startsWith(`cannot open the socket ${path}: connect ENOENT`));
+});
+
 test("PGHOST names the socket's directory where the URL names no host, as libpq reads it", async () => {
-  const bridged = await hostUrl("postgres://u@/d", { PGHOST: "/var/run/postgresql", PGPORT: "5433" });
+  // As on a system with Unix sockets: the bridge itself is a TCP server, which every system opens.
+  const bridged = await hostUrl("postgres://u@/d", { PGHOST: "/var/run/postgresql", PGPORT: "5433" }, "linux");
   assert.ok(bridged.bridge);
   assert.match(bridged.url, /^postgres:\/\/u@127\.0\.0\.1:\d+\/d$/);
   bridged.close();
   // A host in the URL, or a TCP host in PGHOST, is no socket.
   assert.equal((await hostUrl("postgres://u@db/d", { PGHOST: "/var/run/postgresql" })).bridge, undefined);
   assert.equal((await hostUrl("postgres://u@/d", { PGHOST: "db.internal" })).bridge, undefined);
+  // Node opens no Unix socket on Windows, so the URL is refused with what to write instead.
+  await assert.rejects(hostUrl("postgres://u@/d?host=/var/run/postgresql", {}, "win32"), (e: Error) => e instanceof Unreachable && /names the Unix socket \/var\/run\/postgresql\/\.s\.PGSQL\.5432, which Node cannot open on Windows: name the server's host and port/.test(e.message));
 });
