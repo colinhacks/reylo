@@ -25,6 +25,7 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 - Many rows to insert are one JSON parameter whose cast carries their JSON Schema (https://reylo.dev/#bulk-inserts, https://reylo.dev/#typed-json).
 - A column is nullable or not as the schema and the query make it: `not null`, a left join, `coalesce`. Change those to change the type.
 - On Postgres, a JSON column a JSON Schema `CHECK` holds is typed by that schema, and so is a key read from it with a literal key, `payload -> 'x'` or `payload ->> 'x'`. Any other value read out of a document is `unknown` until a cast types it (https://reylo.dev/postgres#json).
+- To see how Reylo types a query before writing it into the project, ask the playground's API: `GET https://reylo.dev/play/api/analyze?q=<sql>` answers with its Params, Returns and diagnostics as JSON (`POST` with `{"sql": "<sql>"}` works too). It runs on Postgres, against the docs' example schema of `users`, `posts` and `events`, which `GET https://reylo.dev/play/api/schema` lists; the project's own database is what decides.
 
 ## Running a query
 
