@@ -77,12 +77,6 @@ export function statementAfter(sql: string, leading: Leading): string {
   return sql.slice(leading.end).trim();
 }
 
-/** What `sql` is, after the statement in its doc comment. */
-export const sqlNote = (commented: boolean) =>
-  `The statement as Reylo sends it to the database, as the module's \`sql\` export: \`:id\` is \`$1\` on Postgres and \`?\` on MySQL and SQLite, ${commented ? "each cast is the dialect's own, and a comment naming the file ends it" : "and each cast is the dialect's own"}.`;
-/** What `raw` is, after the statement in its doc comment. */
-export const RAW_NOTE = "The `.sql` file's contents, exactly as written, as the module's `raw` export.";
-
 /**
  * A JSDoc comment, indented by `indent`: the prose, then `sql` in a fenced `sql` block, then
  * `note`, each a paragraph where it is given. A star before a slash would end the comment, so a

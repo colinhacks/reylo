@@ -101,16 +101,16 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
     assert.match(hover, /title: string;\s+body: string \| null;/);
 
     // The hover over the import shows the comment at the top of the file as prose, then the
-    // statement as written; the one over its `.sql` the statement as Reylo sends it, the comment
-    // taken off both. The doc comments' lines in the module move nothing the definitions below
-    // land on.
+    // statement as written; the one over its `.sql` the compiled statement, once, as its type,
+    // without the comment naming the file. The doc comment's lines in the module move nothing the
+    // definitions below land on.
     const hoverAt = async (position: Position): Promise<string> => (await lsp.request("textDocument/hover", { textDocument: { uri }, position }))?.contents?.value ?? "";
     const statementBlock = "```sql\nselect id, title, body\nfrom posts\nwhere id > :after\n```";
     const imported = await hoverAt(at("posts from", 0));
     assert.ok(imported.endsWith(`\nevery post after one\n\n${statementBlock}`), imported);
     const sent = await hoverAt(at("posts.sql;", 7));
-    assert.match(sent, /^\(property\) sql: "\\n-- every post after one\\nselect id, title, body\\nfrom posts\\nwhere id > \? \/\*file='queries%2Fposts\.sql'\*\/"$/m);
-    assert.ok(sent.includes("\nevery post after one\n\n```sql\nselect id, title, body\nfrom posts\nwhere id > ?\n```\n\nThe statement as Reylo sends it"), sent);
+    assert.match(sent, /^\(property\) sql: "\\n-- every post after one\\nselect id, title, body\\nfrom posts\\nwhere id > \?"$/m);
+    assert.ok(!sent.includes("```sql"), sent);
     // A line of the statement that starts with `@` stays in the code block, not a tag after it.
     let added = "";
     for (let i = 0; i < 100 && !added.includes("```sql"); i++) {

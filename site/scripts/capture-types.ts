@@ -28,8 +28,7 @@ import postgres from 'postgres';
 import mysql from 'mysql2/promise';
 import { Session } from '../../src/analyze.ts';
 import { ident, renderParamType, renderType } from '../../src/render.ts';
-import { docComment, leadingComment, RAW_NOTE, sqlNote, statementAfter } from '../../src/doc-comment.ts';
-import { withSqlcommenter } from '../../src/sqlcommenter.ts';
+import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
 import { queryErrorType } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
@@ -118,7 +117,8 @@ function compile(sql: string, dialect: Dialect): string {
 /**
  * The module src/mapper.ts's `transform` returns for the statement, copied from there (keep the two
  * in step): `written` is the file's text, declared as `raw`, and `sql` what the engine reads; the
- * module's `sql` is the engine's compiled text, the statement as Reylo sends it to the database.
+ * module's `sql` is the engine's compiled text, without the comment naming the file that the run
+ * time adds where it sends the statement.
  * One change: a typed JSON parameter takes the type computed from its schema (`json`), where the
  * loader says `unknown`.
  */
@@ -129,24 +129,21 @@ async function render(session: Session, source: string, written: string, sql: st
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? `${rendered} | null` : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], plain = compiled, queryError = queryErrorType(project.dialect, undefined)) => {
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined)) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
-    const sent = statementAfter(plain, leadingComment(plain, project.dialect));
-    const sqlDoc = (indent = '') => docComment(prose, sent, sqlNote(project.sqlcommenter), indent);
-    const rawDoc = (indent = '') => docComment(prose, shown, RAW_NOTE, indent);
     return [
       `import type { Query } from "reylo";`,
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
       `export type QueryError = ${queryError};`,
-      `${sqlDoc()}export declare const sql: ${JSON.stringify(compiled)};`,
-      `${rawDoc()}export declare const raw: ${JSON.stringify(written)};`,
+      `export declare const sql: ${JSON.stringify(compiled)};`,
+      `export declare const raw: ${JSON.stringify(written)};`,
       `export declare const params: readonly [${names.map((n) => JSON.stringify(n)).join(', ')}];`,
       `${docComment(prose, shown)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(project.dialect)}, QueryError> & {`,
-      `${sqlDoc('  ')}  readonly sql: typeof sql;`,
-      `${rawDoc('  ')}  readonly raw: typeof raw;`,
+      `  readonly sql: typeof sql;`,
+      `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
       `};`,
       `export default query;`,
@@ -176,7 +173,7 @@ async function render(session: Session, source: string, written: string, sql: st
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === 'object' && 'default' in q.schema)).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, source) : analysis.rewritten.sql, paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, analysis.rewritten.sql, queryErrorType(dialect, analysis.errors)), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors)), analysis };
 }
 
 // ---- The scratch databases ----

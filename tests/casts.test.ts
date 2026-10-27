@@ -29,7 +29,7 @@ function project(driver?: string): string {
   return root;
 }
 
-/** The module a build step writes for `sql`, imported, and the statement it sends (the query's `sql`), its file's comment checked and left off. */
+/** The module a build step writes for `sql`, imported, and its compiled statement (the query's `sql`), which Reylo sends with its file's comment after it. */
 async function built(root: string, url: string, name: string, sql: string) {
   const file = join(root, `${name}.sql`);
   writeFileSync(file, sql);
@@ -38,10 +38,9 @@ async function built(root: string, url: string, name: string, sql: string) {
   const out = join(root, `${name}.mjs`);
   writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
   const module = await import(pathToFileURL(out).href);
-  const sent = module.default.sql as string;
-  const comment = ` /*file='${name}.sql'*/`;
-  assert.ok(sent.endsWith(comment), sent);
-  return { query: module.default, text: sent.slice(0, -comment.length), code };
+  const text = module.default.sql as string;
+  assert.equal(module.default["~standard"].query.text, `${text} /*file='${name}.sql'*/`);
+  return { query: module.default, text, code };
 }
 
 const plain = (rows: readonly object[]) => [...rows].map((r) => ({ ...r }));
