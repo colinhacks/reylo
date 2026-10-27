@@ -45,6 +45,7 @@ const shell = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean; onClose(): void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [answer, setAnswer] = useState<string>();
+  const pressedOutside = useRef(false);
 
   useEffect(() => {
     const d = dialog.current;
@@ -71,9 +72,11 @@ export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean;
       className="play-api"
       aria-labelledby="play-api-title"
       onClose={onClose}
+      onPointerDown={(e) => (pressedOutside.current = e.target === e.currentTarget)}
       onClick={(e) => {
-        // A click on the backdrop, outside the dialog's box, closes it.
-        if (e.target === e.currentTarget) onClose();
+        // A press and its release both on the backdrop, outside the dialog's box, close it; a text
+        // selection dragged from inside out to the backdrop does not.
+        if (pressedOutside.current && e.target === e.currentTarget) onClose();
       }}
     >
       <div className="play-api-head">
