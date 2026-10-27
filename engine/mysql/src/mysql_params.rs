@@ -12,6 +12,7 @@ use crate::api::Scope;
 use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex;
+use crate::mysql_keys::Cte;
 use serde_json::json;
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins};
 use std::collections::{HashMap, HashSet};
@@ -201,48 +202,78 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
 /// table's where the statement reads one; a qualified one is the table its name or alias names.
 fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target)> {
     let mut out = Vec::new();
-    // The statement's WITH queries, each with those its body sees; one that is recursive or
-    // renames its columns has no body to read through.
-    let ctes = match statement {
-        Statement::Query(q) => crate::mysql_keys::ctes_of(q, &[]),
-        _ => Vec::new(),
-    };
-    let (from, filters): (Vec<&TableWithJoins>, Vec<&Expr>) = match statement {
-        Statement::Query(q) => match q.body.as_ref() {
-            SetExpr::Select(s) => (s.from.iter().collect(), s.selection.iter().chain(s.having.iter()).collect()),
-            _ => return out,
-        },
-        Statement::Update(update) => (std::iter::once(&update.table).collect(), update.selection.iter().collect()),
+    match statement {
+        Statement::Query(q) => compared_query(q, &[], names, &mut out),
+        Statement::Update(update) => compared_select(&[&update.table], update.selection.iter().collect(), &[], names, &mut out),
         Statement::Delete(delete) => {
             let (ast::FromTable::WithFromKeyword(from) | ast::FromTable::WithoutKeyword(from)) = &delete.from;
-            (from.iter().collect(), delete.selection.iter().collect())
+            compared_select(&from.iter().collect::<Vec<_>>(), delete.selection.iter().collect(), &[], names, &mut out);
         }
-        _ => return out,
-    };
+        _ => {}
+    }
+    out
+}
+
+/// The comparisons of a query: its body's, and those inside each of its WITH queries, each read
+/// with the WITH queries it sees ([`crate::mysql_keys::ctes_of`]).
+fn compared_query<'a>(q: &'a Query, outer: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
+    let ctes = crate::mysql_keys::ctes_of(q, outer);
+    for (_, body, sees, _) in ctes.iter().skip(outer.len()) {
+        if let Some(body) = body {
+            compared_query(body, &ctes[..*sees], names, out);
+        }
+    }
+    compared_body(&q.body, &ctes, names, out);
+}
+
+fn compared_body<'a>(body: &'a SetExpr, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
+    match body {
+        SetExpr::Select(s) => compared_select(&s.from.iter().collect::<Vec<_>>(), s.selection.iter().chain(s.having.iter()).collect(), ctes, names, out),
+        SetExpr::SetOperation { left, right, .. } => {
+            compared_body(left, ctes, names, out);
+            compared_body(right, ctes, names, out);
+        }
+        SetExpr::Query(q) => compared_query(q, ctes, names, out),
+        _ => {}
+    }
+}
+
+/// The comparisons of one SELECT (or an UPDATE's or a DELETE's WHERE) over its FROM, in its WHERE,
+/// its HAVING and its joins' ON clauses, and those inside its derived tables. A column of a
+/// derived table or a WITH query is read through to each table column it passes through unchanged
+/// ([`crate::mysql_keys::output_origins`]): one, or one per side of a set operation, whose types
+/// [`typed`] keeps only where they agree.
+fn compared_select<'a>(from: &[&'a TableWithJoins], filters: Vec<&'a Expr>, ctes: &[Cte<'a>], names: &Names, out: &mut Vec<(String, String, Target)>) {
     // The tables by the name the statement reads each by; `plain` where every item is a table.
-    // A derived table or a WITH query is read through to the table column each of its columns
-    // passes through unchanged ([`crate::mysql_keys::output_origin`]).
     let mut tables: Vec<(String, String)> = Vec::new();
-    let mut derived: Vec<(String, &Query, &[(String, Option<&Query>, usize)])> = Vec::new();
+    let mut derived: Vec<(String, &Query, &[Cte], Vec<String>)> = Vec::new();
     let mut plain = true;
     let mut items = 0;
-    for twj in &from {
+    let listed = |alias: &Option<ast::TableAlias>| -> Vec<String> { alias.as_ref().map(|a| a.columns.iter().map(|c| c.name.value.to_ascii_lowercase()).collect()).unwrap_or_default() };
+    for twj in from {
         for factor in std::iter::once(&twj.relation).chain(twj.joins.iter().map(|j| &j.relation)) {
             items += 1;
             match factor {
                 TableFactor::Table { name, alias, args: None, .. } => {
                     // A name one of the statement's WITH queries has is that query, never a table.
                     let cte = match name.0.as_slice() {
-                        [ast::ObjectNamePart::Identifier(n)] => ctes.iter().rposition(|(c, _, _)| *c == n.value.to_ascii_lowercase()),
+                        [ast::ObjectNamePart::Identifier(n)] => ctes.iter().rposition(|(c, _, _, _)| *c == n.value.to_ascii_lowercase()),
                         _ => None,
                     };
                     match (cte, table_name(name)) {
                         (Some(at), _) => {
                             plain = false;
-                            let (cte_name, body, sees) = &ctes[at];
+                            let (cte_name, body, sees, columns) = &ctes[at];
                             let by = alias.as_ref().map(|a| a.name.value.to_ascii_lowercase()).unwrap_or_else(|| cte_name.clone());
-                            if let (Some(body), true) = (body, alias.as_ref().is_none_or(|a| a.columns.is_empty())) {
-                                derived.push((by, body, &ctes[..*sees]));
+                            if let Some(body) = body {
+                                let mut renamed = columns.clone();
+                                for (at, name) in listed(alias).into_iter().enumerate() {
+                                    match renamed.get_mut(at) {
+                                        Some(slot) => *slot = name,
+                                        None => renamed.push(name),
+                                    }
+                                }
+                                derived.push((by, body, &ctes[..*sees], renamed));
                             }
                         }
                         (None, Some(table)) => {
@@ -252,34 +283,39 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
                         (None, None) => plain = false,
                     }
                 }
-                TableFactor::Derived { lateral: false, subquery, alias: Some(alias), .. } if alias.columns.is_empty() => {
+                TableFactor::Derived { lateral, subquery, alias, .. } => {
                     plain = false;
-                    derived.push((alias.name.value.to_ascii_lowercase(), subquery.as_ref(), &ctes[..]));
+                    compared_query(subquery, ctes, names, out);
+                    if let (false, Some(a)) = (lateral, alias) {
+                        derived.push((a.name.value.to_ascii_lowercase(), subquery.as_ref(), ctes, listed(alias)));
+                    }
                 }
                 _ => plain = false,
             }
         }
     }
-    let column = |e: &Expr| -> Option<(String, String)> {
+    let column = |e: &Expr| -> Vec<(String, String)> {
         match e {
-            Expr::Identifier(i) if plain && tables.len() == 1 => Some((tables[0].1.clone(), i.value.to_ascii_lowercase())),
-            Expr::Identifier(i) if items == 1 && derived.len() == 1 => crate::mysql_keys::output_origin(derived[0].1, derived[0].2, &i.value.to_ascii_lowercase()),
+            Expr::Identifier(i) if plain && tables.len() == 1 => vec![(tables[0].1.clone(), i.value.to_ascii_lowercase())],
+            Expr::Identifier(i) if items == 1 && derived.len() == 1 => crate::mysql_keys::output_origins(derived[0].1, derived[0].2, &derived[0].3, &i.value.to_ascii_lowercase()),
             Expr::CompoundIdentifier(parts) if parts.len() == 2 => {
                 let by = parts[0].value.to_ascii_lowercase();
                 let name = parts[1].value.to_ascii_lowercase();
                 match tables.iter().find(|(b, _)| *b == by) {
-                    Some((_, t)) => Some((t.clone(), name)),
-                    None => derived.iter().find(|(b, _, _)| *b == by).and_then(|(_, q, sees)| crate::mysql_keys::output_origin(q, sees, &name)),
+                    Some((_, t)) => vec![(t.clone(), name)],
+                    None => derived.iter().find(|(b, _, _, _)| *b == by).map(|(_, q, sees, columns)| crate::mysql_keys::output_origins(q, sees, columns, &name)).unwrap_or_default(),
                 }
             }
-            _ => None,
+            _ => Vec::new(),
         }
     };
-    fn walk(e: &Expr, names: &Names, column: &dyn Fn(&Expr) -> Option<(String, String)>, out: &mut Vec<(String, String, Target)>) {
+    fn walk(e: &Expr, names: &Names, column: &dyn Fn(&Expr) -> Vec<(String, String)>, out: &mut Vec<(String, String, Target)>) {
         use ast::BinaryOperator::*;
         let pair = |col: &Expr, p: &Expr, out: &mut Vec<(String, String, Target)>| {
-            if let (Some((table, name)), Some(param)) = (column(col), direct(p, names)) {
-                out.push((param, table, Target::Name(name)));
+            if let Some(param) = direct(p, names) {
+                for (table, name) in column(col) {
+                    out.push((param.clone(), table, Target::Name(name)));
+                }
             }
         };
         match e {
@@ -304,10 +340,20 @@ fn compared(statement: &Statement, names: &Names) -> Vec<(String, String, Target
             _ => {}
         }
     }
-    for filter in filters {
-        walk(filter, names, &column, &mut out);
+    let ons = from.iter().flat_map(|twj| twj.joins.iter()).filter_map(|j| match &j.join_operator {
+        ast::JoinOperator::Join(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::Inner(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::Left(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::LeftOuter(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::Right(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::RightOuter(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::CrossJoin(ast::JoinConstraint::On(e))
+        | ast::JoinOperator::StraightJoin(ast::JoinConstraint::On(e)) => Some(e),
+        _ => None,
+    });
+    for filter in filters.into_iter().chain(ons) {
+        walk(filter, names, &column, out);
     }
-    out
 }
 
 /// The parameters the caller may pass null for, by name, and each one cast to `nullable(…)` that is
