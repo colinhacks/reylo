@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "react-router dev",
-    "build": "react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts",
+    "build": "react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts",
     "start": "vite preview --outDir build/client --port 3311",
     "capture": "nub scripts/capture-types.ts",
     "build:play": "vite build --config vite.play.config.ts"

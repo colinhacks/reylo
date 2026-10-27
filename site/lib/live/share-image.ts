@@ -1,15 +1,9 @@
-// /play/og.png?q=<sql> (or ?example=<slug>), which vercel.json routes to api/play-og/image.mjs: the
-// link preview of a shared query (lib/live/share-card.tsx), a 1200 × 630 PNG. The page of a shared
-// address names it (lib/live/share-page.ts); /play/og.png with neither is the static card of the
-// example the page opens with, drawn at build time (app/routes/play-og.tsx). Bundled by
-// vite.api.config.ts into .live/api/play-og.mjs; it loads Shiki, Satori and the fonts, and neither
-// the engine nor PGlite.
+// /play/og.png?q=<sql> (or ?example=<slug>), which vercel.json routes to api/play-og/image.mjs: the link preview of a shared query (lib/live/share-card.tsx), a 1200 × 630 PNG. The page of a shared address names it (lib/live/share-page.ts); /play/og.png with neither is the static card of the example the page opens with, drawn at build time (app/routes/play-og.tsx). Bundled by vite.share.config.ts into .share/play-og.mjs; it loads Shiki, Satori and the fonts, and neither the engine nor PGlite.
 import { playCard } from './share-card.tsx';
 import { examples } from './share-examples.ts';
 import { sharedQuery } from './share.ts';
 
-// The card depends on its address alone, and the address carries the card's version (`v`), so
-// the CDN and the crawlers keep it.
+// The card depends on its address alone, and the address carries the card's version (`v`), so the CDN and the crawlers keep it.
 const KEPT = 'public, max-age=86400, s-maxage=31536000';
 
 /** The handler, with the fonts read from `fonts`, the site's assets/fonts directory. */

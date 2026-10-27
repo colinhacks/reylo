@@ -1,15 +1,6 @@
-// The link preview of a query on /play: the query itself, highlighted, as the playground shows it,
-// under the playground's bar. Drawn by @vercel/og's ImageResponse (Satori) at 1200 × 630, in the
-// site's dark theme: Geist and Geist Mono (assets/fonts, SIL Open Font License) on the dark page's
-// colours, the SQL in Shiki's GitHub Dark. The build draws /play's own card with it, of the example
-// the page opens with (app/routes/play-og.tsx), and the share function draws one per shared query
-// (lib/live/share-image.ts). It loads Shiki's core, the SQL grammar and one theme, and nothing of
-// the engine or PGlite.
+// The link preview of a query on /play: the query itself, highlighted, as the playground shows it, under the playground's bar. Drawn by @vercel/og's ImageResponse (Satori) at 1200 × 630, in the site's dark theme: Geist and Geist Mono (assets/fonts, SIL Open Font License) on the dark page's colours, the SQL in Shiki's GitHub Dark. The build draws /play's own card with it, of the example the page opens with (app/routes/play-og.tsx), and the share function draws one per shared query (lib/live/share-image.ts). It loads Shiki's core, the SQL grammar and one theme, and nothing of the engine or PGlite.
 //
-// The query is the hero: the largest size at which it fits without wrapping a line, else the
-// largest at which it fits with its long lines wrapped (each continuation indented two columns past
-// its line), else the smallest size, cut after the last row that fits, with an ellipsis on a row of
-// its own. Satori lays out flex boxes only, so every element with more than one child is a flex box.
+// The query is the hero: the largest size at which it fits without wrapping a line, else the largest at which it fits with its long lines wrapped (each continuation indented two columns past its line), else the smallest size, cut after the last row that fits, with an ellipsis on a row of its own. Satori lays out flex boxes only, so every element with more than one child is a flex box.
 import { readFile } from 'node:fs/promises';
 import type { ReactNode } from 'react';
 import { createHighlighterCore, type HighlighterCore } from 'shiki/core';

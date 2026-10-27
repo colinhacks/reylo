@@ -1,5 +1,4 @@
-// The playground's examples by their slugs, for the share functions: read from the main page's
-// Inference section, which the bundle carries as text (vite.api.config.ts), as the build reads it.
+// The playground's examples by their slugs, for the share functions: read from the main page's Inference section, which the bundle carries as text (vite.share.config.ts), as the build reads it.
 import source from '../../content/sections/03-inference.mdx?raw';
 import { inferenceStatements, START } from './inference.ts';
 

@@ -1,15 +1,10 @@
-// A shared /play address, `/play?q=<sql>` or `/play?example=<slug>`, and its link preview: what the
-// share functions (lib/live/share-image.ts, lib/live/share-page.ts) read from the address, and the
-// page's meta tags rewritten to name the card of that query. Plain functions, with no import, so
-// that both functions and the card (lib/live/share-card.tsx) take them as they are.
+// A shared /play address, `/play?q=<sql>` or `/play?example=<slug>`, and its link preview: what the share functions (lib/live/share-image.ts, lib/live/share-page.ts) read from the address, and the page's meta tags rewritten to name the card of that query. Plain functions, with no import, so that both functions and the card (lib/live/share-card.tsx) take them as they are.
 
 /** The card's size, which the page's meta tags state. */
 export const cardSize = { width: 1200, height: 630 };
 
 /**
- * The longest query text a card reads, and the longest an image's address carries. Far more than
- * a card ever shows (at its smallest size it holds 14 rows of 80-odd columns), so a query cut here
- * still runs past the card's last row and gets its ellipsis.
+ * The longest query text a card reads, and the longest an image's address carries. Far more than a card ever shows (at its smallest size it holds 14 rows of 80-odd columns), so a query cut here still runs past the card's last row and gets its ellipsis.
  */
 export const CARD_TEXT_BUDGET = 2400;
 
@@ -39,11 +34,7 @@ export function escapeHtml(text: string): string {
 export type ShareTags = Record<'og:url' | 'og:image' | 'og:image:alt' | 'twitter:image' | 'twitter:image:alt', string>;
 
 /**
- * The link preview's tags for a shared address on `origin`, or nothing when it names no query: the
- * address itself, and the card of its query, /play/og.png with the same query and the card's
- * `version`. The share function writes them into the prerendered page (lib/live/share-page.ts),
- * and the page's `meta` gives the same ones in the reader's tab (app/routes/play.tsx), so that the
- * head hydrates as it was served.
+ * The link preview's tags for a shared address on `origin`, or nothing when it names no query: the address itself, and the card of its query, /play/og.png with the same query and the card's `version`. The share function writes them into the prerendered page (lib/live/share-page.ts), and the page's `meta` gives the same ones in the reader's tab (app/routes/play.tsx), so that the head hydrates as it was served.
  */
 export function shareTags(params: URLSearchParams, examples: ReadonlyMap<string, string>, origin: string, version: string | undefined): ShareTags | undefined {
   const shared = sharedQuery(params, examples);
@@ -70,8 +61,7 @@ export function metaContent(html: string, key: string): string | undefined {
 }
 
 /**
- * The page with each tag of `tags` set to its value, escaped: in place where the page has the tag,
- * so that the head hydrates as the page renders it, else added at the end of the head.
+ * The page with each tag of `tags` set to its value, escaped: in place where the page has the tag, so that the head hydrates as the page renders it, else added at the end of the head.
  */
 export function rewriteMeta(html: string, tags: Partial<ShareTags>): string {
   const left = new Map(Object.entries(tags));

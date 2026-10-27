@@ -5,12 +5,7 @@ import { Playground } from '@/components/play';
 import { siteUrl } from '@/lib/layout.shared';
 import { cardAlt, cardSize, shareTags } from '@/lib/live/share';
 
-// The playground, at /play (components/play.tsx): drawn at build time with the main page's
-// Postgres schema and the types of the statement it opens with (lib/live/play-data.ts), then
-// live in the reader's tab. Its link preview is the card of that statement (app/routes/play-og.tsx),
-// whose address carries a hash of the card's module, so that a change to the card is a new address
-// to the caches of X and Slack. A shared address, /play?q=<sql>, is served by a function that names
-// the card of its own query in these same tags (lib/live/share-page.ts).
+// The playground, at /play (components/play.tsx): drawn at build time with the main page's Postgres schema and the types of the statement it opens with (lib/live/play-data.ts), then live in the reader's tab. Its link preview is the card of that statement (app/routes/play-og.tsx), whose address carries a hash of the card's module, so that a change to the card is a new address to the caches of X and Slack. A shared address, /play?q=<sql>, is served by a function that names the card of its own query in these same tags (lib/live/share-page.ts).
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');
   const card = await readFile('lib/live/share-card.tsx');
@@ -22,8 +17,7 @@ const description = 'Edit a SQL query against a sample Postgres schema and see t
 export function meta({ loaderData, location }: Route.MetaArgs): Route.MetaDescriptors {
   const title = 'Reylo playground: a query and its types, live';
   const examples = new Map(loaderData?.examples.map((e) => [e.slug, e.sql]));
-  // A shared query's own card, on the address the reader opened, as its page was served; else the
-  // card of the example the page opens with.
+  // A shared query's own card, on the address the reader opened, as its page was served; else the card of the example the page opens with.
   const origin = typeof window === 'undefined' ? siteUrl : window.location.origin;
   const tags = shareTags(new URLSearchParams(location.search), examples, origin, loaderData?.og) ?? {
     'og:url': `${siteUrl}/play`,

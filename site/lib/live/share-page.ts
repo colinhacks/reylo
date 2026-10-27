@@ -1,9 +1,4 @@
-// /play?q=<sql> (or ?example=<slug>) asked for a page, which vercel.json routes to
-// api/play-og/page.mjs: /play's prerendered page, its link preview naming the card of that query
-// (/play/og.png with the same query, lib/live/share-image.ts) rather than the page's own, so that
-// a shared query shows itself on X, Slack and the rest. Only the preview's meta tags change, in
-// place, to the ones the page's `meta` gives in the reader's tab, so the head hydrates as served. Bundled by vite.api.config.ts into
-// .live/api/play-page.mjs, with the page's HTML inside it.
+// /play?q=<sql> (or ?example=<slug>) asked for a page, which vercel.json routes to api/play-og/page.mjs: /play's prerendered page, its link preview naming the card of that query (/play/og.png with the same query, lib/live/share-image.ts) rather than the page's own, so that a shared query shows itself on X, Slack and the rest. Only the preview's meta tags change, in place, to the ones the page's `meta` gives in the reader's tab, so the head hydrates as served. Bundled by vite.share.config.ts into .share/play-page.mjs, with the page's HTML inside it.
 import page from '../../build/client/play/index.html?raw';
 import { examples } from './share-examples.ts';
 import { metaContent, rewriteMeta, shareTags } from './share.ts';
