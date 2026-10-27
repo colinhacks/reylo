@@ -41,7 +41,7 @@ async function built(root: string, name: string, raw: string) {
   const { code } = await sqlModule(file, raw);
   const out = join(root, `${name}.mjs`);
   writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
-  return (await import(pathToFileURL(out).href)) as { default: { sql: string; raw: string; run(client: unknown, params?: unknown): Promise<unknown> }; sql: string; raw: string };
+  return (await import(pathToFileURL(out).href)) as { default: { sql: string; raw: string; "~standard": { query: { text: string } }; run(client: unknown, params?: unknown): Promise<unknown> }; sql: string; raw: string };
 }
 
 /** The declaration the content mapper writes for each file, through its own JSON-RPC process, as the type check runs it. */
@@ -123,28 +123,31 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
   const doc = `select json_extract(:doc::json, '$.a') as a, :tags::json('{ "type": "array", "items": { "type": "string" } }') as tags\n`;
   try {
     const getUser = await built(root, "get_user", GET_USER);
-    assert.equal(getUser.default.sql, "select id, name, email from users where id = ? /*file='get_user.sql'*/");
+    assert.equal(getUser.default.sql, "select id, name, email from users where id = ?");
+    // The statement Reylo sends ends with the comment naming the file, which `sql` leaves out.
+    assert.equal(getUser.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user.sql'*/");
     assert.equal(getUser.default.raw, GET_USER);
     assert.equal(getUser.sql, getUser.default.sql);
     assert.equal(getUser.raw, GET_USER);
     assert.deepEqual({ ...((await getUser.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
     const json = await built(root, "doc", doc);
-    assert.equal(json.default.sql, "select json_extract(json(?), '$.a') as a, ? as tags /*file='doc.sql'*/");
+    assert.equal(json.default.sql, "select json_extract(json(?), '$.a') as a, ? as tags");
     assert.equal(json.default.raw, doc);
     assert.deepEqual({ ...((await json.default.run(db, { doc: { a: 5 }, tags: ["x"] })) as object) }, { a: 5, tags: '["x"]' });
     await closeAll();
     const declared = await declarations(root, { "get_user.sql": GET_USER, "doc.sql": doc });
     assert.deepEqual(texts(declared["get_user.sql"]!), [
-      `export declare const sql: "select id, name, email from users where id = ? /*file='get_user.sql'*/";`,
+      `export declare const sql: "select id, name, email from users where id = ?";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
     ]);
-    // The query's doc comment is the statement as written; its `sql`'s the statement as sent.
+    // The query's doc comment is the statement as written; `sql` and `raw` carry none, so a hover
+    // over either shows its text once, as its type.
     assert.ok(declared["get_user.sql"]!.includes("/**\n * ```sql\n * select id, name, email from users where id = :id\n * ```\n */\ndeclare const query:"), declared["get_user.sql"]!);
-    assert.ok(declared["get_user.sql"]!.includes("  /**\n   * ```sql\n   * select id, name, email from users where id = ?\n   * ```\n   *\n   * The statement as Reylo sends it"), declared["get_user.sql"]!);
+    assert.equal(declared["get_user.sql"]!.split("/**").length, 2, declared["get_user.sql"]!);
     // The parameters are one object type, with no tuple beside it.
     const lines = declared["get_user.sql"]!.split("\n");
     assert.ok(lines.includes("export type Params = { id: number };"), declared["get_user.sql"]!);
@@ -201,26 +204,26 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
   try {
     await sql.unsafe(`create table users (id int generated always as identity primary key, name text not null, email text); insert into users (name, email) values ('Ada', 'ada@example.com')`).simple();
     const getUser = await built(root, "get_user", GET_USER);
-    assert.equal(getUser.default.sql, "select id, name, email from users where id = $1 /*file='get_user.sql'*/");
+    assert.equal(getUser.default.sql, "select id, name, email from users where id = $1");
     assert.equal(getUser.sql, getUser.default.sql);
     assert.equal(getUser.default.raw, GET_USER);
     assert.equal(getUser.raw, GET_USER);
     assert.deepEqual({ ...((await getUser.default.run(sql, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
     const json = await built(root, "names", names);
-    assert.equal(json.default.sql, "select $1::jsonb as names /*file='names.sql'*/");
+    assert.equal(json.default.sql, "select $1::jsonb as names");
     assert.equal(json.default.raw, names);
     assert.deepEqual({ ...((await json.default.run(sql, { names: ["a", "b"] })) as object) }, { names: ["a", "b"] });
     await closeAll();
     const declared = await declarations(root, { "get_user.sql": GET_USER, "names.sql": names });
     assert.deepEqual(texts(declared["get_user.sql"]!), [
-      `export declare const sql: "select id, name, email from users where id = $1 /*file='get_user.sql'*/";`,
+      `export declare const sql: "select id, name, email from users where id = $1";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
     ]);
-    assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names /*file='names.sql'*/";`, `export declare const raw: ${JSON.stringify(names)};`]);
+    assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
     await closeAll();
     await sql.end();
@@ -288,26 +291,26 @@ test("MySQL: `sql` has `?` placeholders and writes a typed JSON parameter's cast
     await db.query("create table users (id int auto_increment primary key, name varchar(100) not null, email varchar(100))");
     await db.query("insert into users (name, email) values ('Ada', 'ada@example.com')");
     const getUser = await built(root, "get_user", GET_USER);
-    assert.equal(getUser.default.sql, "select id, name, email from users where id = ? /*file='get_user.sql'*/");
+    assert.equal(getUser.default.sql, "select id, name, email from users where id = ?");
     assert.equal(getUser.sql, getUser.default.sql);
     assert.equal(getUser.default.raw, GET_USER);
     assert.equal(getUser.raw, GET_USER);
     assert.deepEqual({ ...((await getUser.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
     const json = await built(root, "names", names);
-    assert.equal(json.default.sql, "select cast(? as json) as names /*file='names.sql'*/");
+    assert.equal(json.default.sql, "select cast(? as json) as names");
     assert.equal(json.default.raw, names);
     assert.deepEqual({ ...((await json.default.run(db, { names: ["a", "b"] })) as object) }, { names: ["a", "b"] });
     await closeAll();
     const declared = await declarations(root, { "get_user.sql": GET_USER, "names.sql": names });
     assert.deepEqual(texts(declared["get_user.sql"]!), [
-      `export declare const sql: "select id, name, email from users where id = ? /*file='get_user.sql'*/";`,
+      `export declare const sql: "select id, name, email from users where id = ?";`,
       `export declare const raw: "select id, name, email from users where id = :id\\n";`,
       `declare const query: Query<…> & {`,
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
     ]);
-    assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select cast(? as json) as names /*file='names.sql'*/";`, `export declare const raw: ${JSON.stringify(names)};`]);
+    assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select cast(? as json) as names";`, `export declare const raw: ${JSON.stringify(names)};`]);
   } finally {
     await closeAll();
     await db.end();
@@ -316,7 +319,7 @@ test("MySQL: `sql` has `?` placeholders and writes a typed JSON parameter's cast
   }
 });
 
-test("sqlcommenter: false leaves the comment off, at run time and in the declaration, and a running build sees the change", async () => {
+test("the comment naming the file is sent and left out of sql, sqlcommenter: false leaves it off, and a running build sees the change", async () => {
   const root = project("file:./app.db");
   writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: false\n");
   const db = new DatabaseSync(join(root, "app.db"));
@@ -324,15 +327,18 @@ test("sqlcommenter: false leaves the comment off, at run time and in the declara
   db.exec("insert into users (name, email) values ('Ada', 'ada@example.com')");
   try {
     const plain = await built(root, "get_user", GET_USER);
-    assert.equal(plain.sql, "select id, name, email from users where id = ?\n");
+    assert.equal(plain.sql, "select id, name, email from users where id = ?");
+    assert.equal(plain.default["~standard"].query.text, "select id, name, email from users where id = ?");
     assert.deepEqual({ ...((await plain.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
     const declared = await declarations(root, { "get_user.sql": GET_USER });
-    assert.ok(texts(declared["get_user.sql"]!).includes(`export declare const sql: "select id, name, email from users where id = ?\\n";`), declared["get_user.sql"]!);
-    assert.ok(declared["get_user.sql"]!.includes("and each cast is the dialect's own."), declared["get_user.sql"]!);
-    // The same process, after the project file turns it back on: the session it builds with is a new one.
+    assert.ok(texts(declared["get_user.sql"]!).includes(`export declare const sql: "select id, name, email from users where id = ?";`), declared["get_user.sql"]!);
+    // The same process, after the project file turns it back on: the session it builds with is a
+    // new one, and the statement it sends ends with the comment, which `sql` leaves out.
     writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: true\n");
     const tagged = await built(root, "get_user_again", GET_USER);
-    assert.equal(tagged.sql, "select id, name, email from users where id = ? /*file='get_user_again.sql'*/");
+    assert.equal(tagged.sql, "select id, name, email from users where id = ?");
+    assert.equal(tagged.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user_again.sql'*/");
+    assert.deepEqual({ ...((await tagged.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
   } finally {
     db.close();
     await closeAll();

@@ -54,12 +54,10 @@ export type TryResult<Value, E> = { readonly value: Value; readonly error?: unde
 export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E = QueryError<D>>
   extends StandardTypedV1<Params, Materialize<Row, C>>, StandardJSONSchemaV1<Params, Materialize<Row, C>>, StandardQueryV1<Params, Materialize<Row, C>, D> {
   readonly dialect: D;
-  // `sql` and `raw` carry no doc comment here: each module declares them again with its statement
-  // and what they are (src/doc-comment.ts, `sqlNote` and `RAW_NOTE`), and TypeScript would show
-  // this one first, run together with that one. `sql` is the base text: a structured parameter
-  // (`::rows`, `::row`, src/rows.ts) in a MySQL insert has its column lists written again for the
-  // keys each call carries. Said here and not in `sqlNote`, whose text the docs site shows in its
-  // hovers, which leave structured parameters out.
+  // `sql` and `raw` carry no doc comment: each module declares them as their own text, which a
+  // hover shows. `sql` is the base text: a structured parameter (`::rows`, `::row`, src/rows.ts) in a
+  // MySQL insert has its column lists written again for the keys each call carries, and the
+  // statement Reylo sends ends with the comment naming its file, which `sql` leaves out.
   readonly sql: string;
   readonly raw: string;
   /** Parameter names in binding order. */
@@ -127,6 +125,8 @@ export type QueryDefinition = {
   fresh?: Fresh;
   /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
+  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
+  sqlcommenter?: boolean;
   cardinality?: Cardinality;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
   /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
@@ -154,6 +154,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,
+    sqlcommenter: def.sqlcommenter,
     checks: def.checks,
   };
   let compiled: string | undefined;

@@ -14,7 +14,7 @@
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
 import { normalize } from "./decode-sqlite.ts";
-import { compile, rawStatement, type Dialect, type QueryModule } from "./execute.ts";
+import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { coerce, DecodeError, textDecoder } from "./values.ts";
 
@@ -99,7 +99,8 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   let text: string | undefined;
   let decoders: ((v: unknown) => unknown)[] | undefined;
   // A closure, not `this`: a driver may take `encode` off the object.
-  const statementText = () => (text ??= compile(module).text);
+  // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.
+  const statementText = () => (text ??= sentText(module, compile(module).text));
   return {
     dialect: module.dialect,
     get text() {

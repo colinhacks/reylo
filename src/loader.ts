@@ -8,7 +8,6 @@ import { existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { Session } from "./analyze.ts";
 import { sourceName } from "./project.ts";
-import { withSqlcommenter } from "./sqlcommenter.ts";
 import { querySchemas } from "./schema.ts";
 import { arrayDelimiter, columnKind } from "./values.ts";
 
@@ -65,10 +64,12 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     const delimiter = arrayDelimiter(c.type);
     return delimiter === undefined ? [c.name, kind] : [c.name, kind, delimiter];
   });
+  const source = sourceName(path);
+  // The compiled statement without the file's trailing blank lines; the comment naming the file
+  // is added where the statement is sent (src/execute.ts, `sentText`).
+  const text = analysis.rewritten.sql.trimEnd();
   // A structured parameter's lists, at JavaScript's offsets into the statement (the engine's are
   // UTF-8 bytes).
-  const source = sourceName(path);
-  const text = session.project.sqlcommenter ? withSqlcommenter(analysis.rewritten.sql, source) : analysis.rewritten.sql;
   const structured = (analysis.structured ?? []).map((s) => ({ name: s.name, lists: s.lists.map((l) => ({ start: utf16(text, l.start), end: utf16(text, l.end), entries: l.entries })) }));
   // A typed JSON, structured or cast parameter is checked with reylo's `checks`, imported only where
   // the statement has one, so that an app none of whose statements has one bundles none of them
@@ -77,12 +78,13 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.type.kind === "rows" || (p.type.kind === "json" && p.type.schema !== undefined && !p.nullable));
   const code = [
     `import { defineQuery${checked ? ", checks" : ""} } from "reylo";`,
-    // `sql` is the statement as Reylo sends it to the database, `raw` the file as written; the
-    // definition's own `sql` is the statement as written and its `text` the compiled one.
+    // `sql` is the compiled statement and `raw` the file as written; the definition's own `sql` is
+    // the statement as written and its `text` the compiled one. The comment naming the file
+    // (src/sqlcommenter.ts) is added where the statement is sent, so `sql` leaves it out.
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };

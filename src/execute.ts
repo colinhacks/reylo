@@ -11,6 +11,7 @@ import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-s
 import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
+import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import type { Checks } from "./checks.ts";
 import type { Structured } from "./rows.ts";
@@ -165,6 +166,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly fresh?: Fresh | undefined;
   /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
+  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
+  readonly sqlcommenter?: boolean | undefined;
   /** The checks of a typed JSON, structured or cast parameter (src/checks.ts), which a build step passes where the statement has one. */
   readonly checks?: Checks | undefined;
 };
@@ -475,7 +478,14 @@ function statement(query: QueryModule, params: ParamsInput) {
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
   if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.type.kind !== "rows" ? JSON.stringify(v) : v));
+  // The comment naming the file goes on last, after a structured parameter's lists are written.
+  bound.text = sentText(query, bound.text);
   return bound;
+}
+
+/** `text` as Reylo sends it: with the comment naming the query's file, where the module asks for one (src/sqlcommenter.ts). */
+export function sentText(query: QueryModule, text: string): string {
+  return query.sqlcommenter && query.source ? withSqlcommenter(text, query.source) : text;
 }
 
 /**
