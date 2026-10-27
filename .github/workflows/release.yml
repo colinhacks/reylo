@@ -216,8 +216,16 @@ jobs:
             git push "$remote" "refs/tags/v$VERSION"
           fi
           tagged="$(git ls-remote origin "refs/tags/v$VERSION" | cut -f1)"
-          # `identical` or `ahead`: release is the tag, or the tag with docs fixes on it. A missing release answers 404.
-          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$tagged...release" --jq .status 2> /dev/null)" || status=missing
+          # `identical` or `ahead`: release is the tag, or the tag with docs fixes on it. Only a missing branch (ls-remote's exit 2) counts as missing; any other failure, of ls-remote or of the compare, fails the step rather than move release back, and a re-run is safe.
+          set +e
+          git ls-remote --exit-code --heads origin release > /dev/null
+          found=$?
+          set -e
+          case "$found" in
+            0) status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$tagged...release" --jq .status)" ;;
+            2) status=missing ;;
+            *) echo "::error::could not read whether release exists (git ls-remote exited $found)"; exit 1 ;;
+          esac
           case "$status" in
             identical | ahead)
               echo "release already holds v$VERSION ($status), and is left as it is"
