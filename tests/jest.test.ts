@@ -79,7 +79,10 @@ function cachedProject() {
 
 test("Vitest's module cache makes a .sql module again after a migration", { skip }, () => {
   const { dir, exec, seen } = cachedProject();
-  const vitest = () => assert.equal(run("vitest/vitest.mjs", ["run"], "", dir).status, 0);
+  const vitest = () => {
+    const r = run("vitest/vitest.mjs", ["run"], "", dir);
+    assert.equal(r.status, 0, r.output);
+  };
   vitest();
   exec("create unique index users_email on users(email)");
   vitest();
@@ -91,7 +94,10 @@ test("Vitest's watch mode makes a .sql module again when the type check analyzes
   const { dir, exec, seen } = cachedProject();
   // The type check (here `reylo generate`) writes the statement's entry to `.reylo/`, which the
   // module is built from; it is there before Vitest starts, so that its first run writes none.
-  const generate = () => assert.equal(spawnSync(process.execPath, [`${root}/src/cli.ts`, "generate"], { cwd: dir, env: env() }).status, 0);
+  const generate = () => {
+    const r = spawnSync(process.execPath, [`${root}/src/cli.ts`, "generate"], { cwd: dir, env: env(), encoding: "utf8" });
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+  };
   generate();
   const watch = spawn(process.execPath, [`${lab}/node_modules/vitest/vitest.mjs`, "--watch"], { cwd: dir, env: env(), stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
