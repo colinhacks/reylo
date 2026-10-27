@@ -191,7 +191,7 @@ function ExamplePicker({ examples, current, onPick }: { examples: Example[]; cur
     <div className="play-picker" ref={root}>
       <button type="button" className="play-button" aria-haspopup="listbox" aria-expanded={open} data-open={open || undefined} onClick={() => setOpen(!open)}>
         <span className="play-picker-label" data-custom={title ? undefined : true}>
-          {title ?? 'Custom query'}
+          {title ?? 'Pick an example query'}
         </span>
         <Icon d={DOWN} />
       </button>
@@ -253,7 +253,8 @@ export function PlayApp({ data, connect, theme, labels, home, github }: { data: 
   // One object per page's data: the effects below depend on it.
   const first = useMemo(() => data.examples.find((e) => e.slug === data.start) ?? { sql: data.query ?? '', result: nothing(data.query ?? ''), slug: undefined }, [data]);
   const [sql, setSql] = useState(first.sql);
-  const [example, setExample] = useState<string | undefined>(first.slug);
+  // The example the reader picked, or the address names: none at first, though the editor opens on one.
+  const [example, setExample] = useState<string | undefined>(undefined);
   const [result, setResult] = useState<LiveResult>(first.result);
   // The last answer without errors, whose types stay up, dimmed, while the query has an error.
   const [good, setGood] = useState<LiveResult>(first.result);
