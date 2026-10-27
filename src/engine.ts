@@ -5,14 +5,15 @@
 // of a statement is one request on a connection it opened (engine/native, built as a component by
 // engine/build.sh), whose sockets jco's preview2-shim opens as Node's (src/component.ts). The
 // requests that need no database (`ping`, `lex`, `config`) go to an instance in this thread, which
-// answers at once; the rest go to an instance in a worker (src/engine-worker.ts), where a call may
-// wait on the network without holding this thread.
+// answers at once; each connection's go to an instance in a worker of its own (src/engine-worker.ts),
+// where a call may wait on the network without holding this thread or another connection.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { instantiate, type ComponentExports, type CoreModule, type Instantiate } from "./component.ts";
+import { guestPath, instantiate, type ComponentExports, type CoreModule, type Instantiate } from "./component.ts";
+import { hostUrl, type HostUrl } from "./host-url.ts";
 import { NotMysql, Unreachable } from "./connection.ts";
 import { EngineCore, type Analysis, type Described, type Dialect } from "./engine-core.ts";
 
@@ -153,9 +154,6 @@ export interface Connection {
 export class Engine extends EngineCore {
   readonly path: string;
   readonly #modules: Record<string, CoreModule>;
-  #worker: Worker | undefined;
-  #pending = new Map<number, (answer: Answer) => void>();
-  #next = 1;
 
   private constructor(path: string, modules: Record<string, CoreModule>, here: ComponentExports) {
     super((request) => here.call(request));
@@ -163,57 +161,85 @@ export class Engine extends EngineCore {
     this.#modules = modules;
   }
 
-  /** The component in `dir`: its core modules compiled once, here and for the worker alike. */
+  /** The component in `dir`: its core modules compiled once, here and for each connection's worker alike. */
   static async load(dir: string): Promise<Engine> {
     const modules: Record<string, CoreModule> = {};
     await Promise.all(readdirSync(dir).filter((n) => n.endsWith(".wasm")).map(async (n) => void (modules[n] = await WA.compile(readFileSync(join(dir, n))))));
     const { instantiate: run } = (await import(pathToFileURL(join(dir, "engine.js")).href)) as { instantiate: Instantiate };
-    return new Engine(dir, modules, instantiate(run, modules, false));
-  }
-
-  /** A connection to the database `url` names (a SQLite database's path), opened by the engine; an Unreachable where it cannot be. */
-  async open(url: string): Promise<Connection> {
-    const conn = (await this.#ask({ op: "open", url })).conn!;
-    return {
-      analyze: async (sql) => (await this.#ask({ op: "run", conn, sql })).analysis!,
-      query: async (sql, params) => (await this.#ask({ op: "query", conn, sql, params })).rows!,
-      describe: async (sql) => {
-        const d = await this.#ask({ op: "describe", conn, sql });
-        return { params: d.params!.map((oid) => ({ oid })), columns: d.columns! };
-      },
-      forget: async () => void (await this.#ask({ op: "forget", conn })),
-      close: async () => void (await this.#ask({ op: "close", conn }).catch(() => {})),
-    };
+    return new Engine(dir, modules, await instantiate(run, modules, false));
   }
 
   /**
-   * A request to the engine's worker. A refused login and a database that cannot be reached are an
-   * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
-   * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
-   * failure is an Error.
+   * A connection to the database `url` names (a SQLite database's path), opened by the engine in a
+   * worker of its own, so that a server slow to answer holds up no other connection; an Unreachable
+   * where it cannot be opened.
    */
-  async #ask(request: object): Promise<Answer> {
-    const worker = this.#start();
-    const id = this.#next++;
-    const answer = await new Promise<Answer>((resolve) => {
-      this.#pending.set(id, resolve);
-      worker.ref();
-      worker.postMessage(JSON.stringify({ ...request, id }));
-    });
-    if (answer.status === "notMysql") throw new NotMysql(answer.server!);
-    if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
-    if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code });
-    return answer;
+  async open(url: string): Promise<Connection> {
+    const target: HostUrl = url.includes("://") ? await hostUrl(url) : { url: url === ":memory:" ? url : guestPath(url), close: () => {} };
+    const channel = new Channel(this.path, this.#modules);
+    const ask = async (request: object) => settled(await channel.ask(request));
+    let conn: number;
+    try {
+      conn = (await ask({ op: "open", url: target.url })).conn!;
+    } catch (e) {
+      channel.end();
+      target.close();
+      throw e;
+    }
+    return {
+      analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis!,
+      query: async (sql, params) => (await ask({ op: "query", conn, sql, params })).rows!,
+      describe: async (sql) => {
+        const d = await ask({ op: "describe", conn, sql });
+        return { params: d.params!.map((oid) => ({ oid })), columns: d.columns! };
+      },
+      forget: async () => void (await ask({ op: "forget", conn })),
+      close: async () => {
+        await ask({ op: "close", conn }).catch(() => {});
+        channel.end();
+        target.close();
+      },
+    };
   }
+}
 
-  /** The worker, started on the first request: it keeps this process alive only while a request waits on it, so that a build ends when its work does. */
-  #start(): Worker {
-    if (this.#worker) return this.#worker;
+/**
+ * An answer as the session reads it. A refused login and a database that cannot be reached are an
+ * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
+ * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
+ * failure is an Error.
+ */
+function settled(answer: Answer): Answer {
+  if (answer.status === "notMysql") throw new NotMysql(answer.server!);
+  if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
+  if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code });
+  return answer;
+}
+
+/**
+ * One connection's worker: the component, its network on, answering that connection's requests in
+ * turn. It keeps this process alive only while a request waits on it, so that a build ends when its
+ * work does; a worker that fails or stops answers what waits on it, and everything after, as a
+ * database that cannot be reached, and the session opens another.
+ */
+class Channel {
+  readonly #worker: Worker;
+  readonly #pending = new Map<number, (answer: Answer) => void>();
+  #next = 1;
+  #ended: string | undefined;
+
+  constructor(path: string, modules: Record<string, CoreModule>) {
     // The worker's own file, beside this one: a `.ts` file in this repository, a `.js` one in an engine package.
     const extension = import.meta.url.slice(import.meta.url.lastIndexOf("."));
-    const worker = new Worker(new URL(`./engine-worker${extension}`, import.meta.url), { workerData: { js: pathToFileURL(join(this.path, "engine.js")).href, modules: this.#modules } });
+    // Without the app's own flags (a preload such as reylo/register), and without Node's watch-mode
+    // report, which would arrive here as messages for each module the worker loads (src/component.ts).
+    const env = { ...process.env };
+    delete env.WATCH_REPORT_DEPENDENCIES;
+    const worker = new Worker(new URL(`./engine-worker${extension}`, import.meta.url), { workerData: { js: pathToFileURL(join(path, "engine.js")).href, modules }, env, execArgv: [] });
     this.#worker = worker;
-    worker.on("message", (line: string) => {
+    worker.unref();
+    worker.on("message", (line: unknown) => {
+      if (typeof line !== "string") return;
       let answer: Answer & { id?: number };
       try {
         answer = JSON.parse(line);
@@ -227,13 +253,27 @@ export class Engine extends EngineCore {
       if (this.#pending.size === 0) worker.unref();
     });
     const ended = (why: string) => {
-      if (this.#worker !== worker) return;
-      this.#worker = undefined;
-      for (const resolve of this.#pending.values()) resolve({ status: "unreachable", message: why });
+      this.#ended ??= why;
+      for (const resolve of this.#pending.values()) resolve({ status: "unreachable", message: this.#ended });
       this.#pending.clear();
     };
-    worker.on("error", (e: Error) => ended(`the engine ${this.path} failed: ${e.message}`));
-    worker.on("exit", (code) => ended(`the engine ${this.path} stopped (${code})`));
-    return worker;
+    worker.on("error", (e: Error) => ended(`the engine ${path} failed: ${e.message}`));
+    worker.on("exit", (code) => ended(`the engine ${path} stopped (${code})`));
+  }
+
+  ask(request: object): Promise<Answer> {
+    if (this.#ended) return Promise.resolve({ status: "unreachable", message: this.#ended });
+    const id = this.#next++;
+    return new Promise<Answer>((resolve) => {
+      this.#pending.set(id, resolve);
+      this.#worker.ref();
+      this.#worker.postMessage(JSON.stringify({ ...request, id }));
+    });
+  }
+
+  /** The worker stopped, with the connection it held. */
+  end(): void {
+    this.#ended ??= "the connection is closed";
+    void this.#worker.terminate();
   }
 }

@@ -4,9 +4,9 @@
 //! ([`cardinality`]), the nested JSON shapes ([`jsonshape`]) and the `pgreylo` handshake
 //! ([`extension`]).
 //!
-//! Three hosts link it: the facade, `reylo-engine`, and the program built from it, `engine/native`,
-//! whose WebAssembly component the package `@reylosql/postgres` carries; `pgreylo`, which calls [`postgres::analyze`] inside the server, and Reylo
-//! Framework, which replays [`postgres::describe`], [`postgres::trust`] and [`postgres::catalog`]
+//! It is linked by the facade, `reylo-engine`, and the program built on it, `engine/native`, whose
+//! WebAssembly component the package `@reylosql/postgres` carries; by `pgreylo`, which calls
+//! [`postgres::analyze`] inside the server; and by Reylo Framework, which replays [`postgres::describe`], [`postgres::trust`] and [`postgres::catalog`]
 //! through its own driver and reads the parse-tree modules directly.
 
 pub mod analyze;

@@ -29,9 +29,8 @@ pg_query = { path = "engine/postgres/.patched/pg_query" }
 
 [profile.release]
 # 3 rather than "s": 7 µs less CPU on a 50-row read (71 against 78 with the other fixes), for a
-# Reylo Framework binary 31 % larger (20.3 to 26.6 MB stripped, measured 2026-10-03). The engine's wasm
-# stays "s" and without LTO: engine/build.sh sets CARGO_PROFILE_RELEASE_OPT_LEVEL and _LTO for its own
-# build.
+# Reylo Framework binary 31 % larger (20.3 to 26.6 MB stripped, measured 2026-10-03). The engine's
+# components stay "s" and without LTO, by the profile of their own workspace (engine/wasip2/Cargo.toml).
 opt-level = 3
 lto = true
 codegen-units = 1

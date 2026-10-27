@@ -520,7 +520,8 @@ test("a session kept open runs a failed direct_url command again once its failur
     assert.equal(!later.ok && later.code, 5);
     assert.equal(session.project.error, undefined);
     assert.equal(runs(), 2);
-    assert.deepEqual(server.tried, ["token-1"]);
+    // The connection the stand-in drops at the prepare is opened once more for the same analysis.
+    assert.deepEqual(server.tried, ["token-1", "token-1"]);
   } finally {
     await session.close();
     await server.close();

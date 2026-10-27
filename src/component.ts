@@ -1,29 +1,51 @@
 // What this thread and the engine's worker (src/engine-worker.ts) share about an engine component:
-// its exports, how jco's transpiled module instantiates it, and the WASI it is given. The component
-// is engine/wasip2, transpiled by jco into its engine package's `engine/` (engine/build.sh), whose
-// imports jco's preview2-shim answers: files through `node:fs`, sockets through `node:net`.
-import { WASIShim } from "@bytecodealliance/preview2-shim/instantiation";
+// the WASI it is given. The component is engine/wasip2, transpiled by jco into its engine package's
+// `engine/` (engine/build.sh), whose imports jco's preview2-shim answers: files through `node:fs`,
+// sockets through `node:net`. Its exports are typed in src/engine-core.ts, which imports nothing,
+// so that the docs site types them without the shim's Node build.
+import { resolve } from "node:path";
+import type { ComponentExports, CoreModule, Instantiate } from "./engine-core.ts";
 
-/** A compiled core module of the component, opaque here: the WebAssembly namespace is not typed through the DOM lib. */
-export type CoreModule = unknown;
+export type { ComponentExports, CoreModule, Instantiate } from "./engine-core.ts";
 
-/** The two exports of an engine component (engine/wasip2/src/lib.rs). */
-export interface ComponentExports {
-  /** The core's answer to a request that needs no database: `ping`, `lex`, `config`, and `analyze` with the host's answers. */
-  call(request: string): string;
-  /** The answer to a request on a connection the engine opens itself: `open`, `run`, `query`, `forget`, `close`. */
-  serve(request: string): string;
+type Shim = typeof import("@bytecodealliance/preview2-shim/instantiation");
+let shim: Promise<Shim> | undefined;
+
+/**
+ * jco's preview2-shim, imported once per thread. Importing it starts its I/O worker, which must not
+ * inherit Node's watch-mode report (`node --watch` sets WATCH_REPORT_DEPENDENCIES in the process it
+ * runs): a worker under it reports each module it loads to the thread that started it as a message,
+ * and the shim fails on a message that is not its own. The variable is hidden while the shim loads.
+ */
+function loadShim(): Promise<Shim> {
+  return (shim ??= (async () => {
+    const report = process.env.WATCH_REPORT_DEPENDENCIES;
+    delete process.env.WATCH_REPORT_DEPENDENCIES;
+    try {
+      return await import("@bytecodealliance/preview2-shim/instantiation");
+    } finally {
+      if (report !== undefined) process.env.WATCH_REPORT_DEPENDENCIES = report;
+    }
+  })());
 }
 
-/** The transpiled component's `instantiate`, as `jco transpile --instantiation sync` writes it. */
-export type Instantiate = (getCoreModule: (name: string) => CoreModule, imports: object) => ComponentExports;
+/**
+ * A path on this machine as the component reaches it through the preopen `/`: the same path, or on
+ * Windows the path with forward slashes under `/` (`C:\app\dev.db` is `/C:/app/dev.db`, a share's
+ * `\\host\share\db` is `/host/share/db`), which the shim maps back to the drive or the share.
+ */
+export function guestPath(path: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === "win32" ? `/${path.replace(/\\/g, "/").replace(/^\/+/, "")}` : path;
+}
 
 /**
  * The component instantiated over its compiled core modules. The engine reaches the host's files
- * as its own process would (a SQLite database, a root certificate file) and, where `network` is
- * set, opens connections.
+ * as its own process would (a SQLite database, a root certificate file), with `NODE_EXTRA_CA_CERTS`
+ * read from where Node reads it, and, where `network` is set, opens connections.
  */
-export function instantiate(run: Instantiate, modules: Record<string, CoreModule>, network: boolean): ComponentExports {
-  const env = Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined);
-  return run((name) => modules[name]!, new WASIShim({ sandbox: { preopens: { "/": "/" }, env: Object.fromEntries(env), enableNetwork: network } }).getImportObject());
+export async function instantiate(run: Instantiate, modules: Record<string, CoreModule>, network: boolean): Promise<ComponentExports> {
+  const { WASIShim } = await loadShim();
+  const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
+  if (env.NODE_EXTRA_CA_CERTS) env.NODE_EXTRA_CA_CERTS = guestPath(resolve(env.NODE_EXTRA_CA_CERTS));
+  return run((name) => modules[name]!, new WASIShim({ sandbox: { preopens: { "/": "/" }, env, enableNetwork: network } }).getImportObject());
 }

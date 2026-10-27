@@ -20,6 +20,7 @@ pub mod mysql;
 pub mod postgres;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 mod tls;
 
 /// One database's program: the core's own requests, and those that need a connection.
@@ -70,6 +71,7 @@ pub async fn answer<P: Program>(program: &mut P, line: &str) -> String {
 }
 
 /// A URL parameter's value, percent-decoded.
+#[cfg(any(feature = "postgres", feature = "mysql"))]
 pub(crate) fn decode(value: &str) -> String {
     let bytes = value.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());

@@ -434,12 +434,19 @@ export class Session {
 
   async #open(url: string): Promise<Io> {
     const { dialect, root } = this.project;
-    const engine = this.#engine as Engine;
+    // The URL names a database whose engine the project lacks: its error, as the import's.
+    if (this.#engine instanceof MissingEngine) throw this.#engine;
     // The engine opens the database itself: on SQLite the file the project names, and the statement
     // is prepared on the app's own SQLite drivers too, which are the app's, not the engine's.
     const target = dialect === "sqlite" ? sqlitePath(url, root) : url;
-    const c = await engine.open(target);
-    const drivers = dialect === "sqlite" ? await openProjectDrivers(root, target) : undefined;
+    const c = await this.#engine.open(target);
+    let drivers: SqliteDriver[] | undefined;
+    try {
+      drivers = dialect === "sqlite" ? await openProjectDrivers(root, target) : undefined;
+    } catch (e) {
+      await c.close();
+      throw e;
+    }
     return {
       analyze: (sql) => c.analyze(sql),
       query: (text, params) => c.query(text, params),
