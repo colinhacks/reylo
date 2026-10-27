@@ -60,4 +60,6 @@ A test that expects a wrong email fails in each passing config. The built packag
 
 Vitest needs only `reylo/vite` (`vitest.config.mjs`). Without the plugin, Vite fails to parse `query.sql`, and a wrong expectation fails the run.
 
+Vitest keeps a transformed module across runs on disk (`fsModuleCache`, on by default from Vitest 5.0.5; this lab's 5.0.3 has it off), keyed by its file's text, and in watch mode keeps that key until the file changes. A migration changes a `.sql` module and not its file, so the plugin's `configureVitest` has Vitest keep no `.sql` module. `tests/jest.test.ts` checks this in a project outside the repository with the cache on. Across runs, with a unique index added between them, the second run reads `maybeOne`. Under `vitest --watch`, the run after `reylo generate` writes the new analysis reads it too. Without the hook, both runs keep `many`. Vitest 5.0.5 behaves the same with no cache setting in its config.
+
 `tests/jest.test.ts` at the root runs the preload control, both Jest configs and Vitest, and skips when the lab is not installed.
