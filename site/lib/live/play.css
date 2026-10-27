@@ -273,6 +273,11 @@ html:not(.dark) #nd-page.play .play-theme-dark {
   color: var(--color-fd-muted-foreground);
 }
 
+/* Each section of examples set apart from the one above it. */
+#nd-page.play .play-menu [role='group'] + [role='group'] {
+  margin-top: 12px;
+}
+
 #nd-page.play .play-menu-item {
   display: flex;
   align-items: center;
