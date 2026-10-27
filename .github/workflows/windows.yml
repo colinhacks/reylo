@@ -64,14 +64,18 @@ jobs:
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -v ON_ERROR_STOP=1 -c "create user certuser" -c "create database reylo_windows owner certuser"
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U certuser -d reylo_windows -v ON_ERROR_STOP=1 -c "create table users (id integer primary key, name text not null)"
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -At -c "select version()"
-      # MySQL 8.0, which the runner carries, on TCP and on a named pipe.
+      # MySQL 8.0, which the runner carries, on TCP and on a named pipe: a Windows service, since the
+      # runner stops every process a step started when the step ends.
       - name: Start MySQL with a named pipe
         shell: pwsh
         run: |
           $bin = "C:\Program Files\MySQL\MySQL Server 8.0\bin"
-          $data = "$env:RUNNER_TEMP\mysql"
-          & "$bin\mysqld.exe" --no-defaults --initialize-insecure "--datadir=$data" --console 2>&1 | Out-Null
-          Start-Process -FilePath "$bin\mysqld.exe" -ArgumentList "--no-defaults", "--datadir=$data", "--port=53306", "--bind-address=127.0.0.1", "--mysqlx=OFF", "--named-pipe", "--socket=reylo-mysql", "--log-error=$env:RUNNER_TEMP\mysql.log" -NoNewWindow
+          $data = "$env:RUNNER_TEMP\mysql".Replace("\", "/")
+          $ini = "$env:RUNNER_TEMP\reylo-mysql.ini"
+          Set-Content $ini "[mysqld]`ndatadir=$data`nport=53306`nbind-address=127.0.0.1`nmysqlx=OFF`nnamed-pipe=ON`nsocket=reylo-mysql`nlog-error=$data.log"
+          & "$bin\mysqld.exe" "--defaults-file=$ini" --initialize-insecure
+          & "$bin\mysqld.exe" --install ReyloMySQL "--defaults-file=$ini"
+          Start-Service ReyloMySQL
           for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
           & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
       - run: nub run typecheck
@@ -86,7 +90,7 @@ jobs:
           for f in tests/*.test.ts; do
             echo "::group::$f"
             status=0
-            timeout 600 node --test --test-timeout=180000 "$f" || status=$?
+            timeout 600 nub --test --test-timeout=180000 "$f" || status=$?
             echo "::endgroup::"
             [ "$status" = 0 ] || { echo "::error::$f exited $status"; failed+=("$f"); }
           done

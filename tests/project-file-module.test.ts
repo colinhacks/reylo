@@ -11,7 +11,8 @@ import { join } from "node:path";
 // nothing, and neither an import of it nor a `<name>.reylo.yaml` that `include` takes in is read as a
 // query. The type check runs as a project runs it, over SQLite, so no server is needed.
 const ROOT = join(import.meta.dirname, "..");
-const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 
 test("a project file in the mapper's extensions is a module that declares nothing, never a query", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-project-file-")));
@@ -44,7 +45,7 @@ test("a project file in the mapper's extensions is a module that declares nothin
       ``,
     ].join("\n"),
   );
-  const r = spawnSync(TSC, ["-p", "tsconfig.json", "--runExternalCode", "--pretty", "false"], { cwd: root, encoding: "utf8" });
+  const r = spawnSync(process.execPath, [TSC, "-p", "tsconfig.json", "--runExternalCode", "--pretty", "false"], { cwd: root, encoding: "utf8" });
   assert.equal(r.stdout + r.stderr, "");
   assert.equal(r.status, 0);
 });

@@ -13,7 +13,8 @@ import { pathToFileURL } from "node:url";
 // runs as an editor runs it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so
 // no server is needed.
 const ROOT = join(import.meta.dirname, "..");
-const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 
 type Position = { line: number; character: number };
 type Range = { start: Position; end: Position };
@@ -40,7 +41,7 @@ function project(): string {
 
 /** A language server over stdio with LSP framing, as an editor talks to it. */
 function server(root: string) {
-  const child = spawn(TSC, ["--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn(process.execPath, [TSC, "--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
   const pending = new Map<number, (result: any) => void>();
   let buffer = Buffer.alloc(0);
   const write = (message: object) => {

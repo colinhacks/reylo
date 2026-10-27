@@ -18,7 +18,8 @@ const PG = process.env.REYLO_TEST_PG;
 const MYSQL = process.env.REYLO_TEST_MYSQL;
 const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
 const MAPPER = fileURLToPath(new URL("../src/mapper.ts", import.meta.url));
-const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
@@ -223,7 +224,7 @@ test("MySQL: a field that reads a column as it is carries the column's comment, 
 
 /** A language server over stdio with LSP framing, as an editor talks to it. */
 function server(root: string) {
-  const child = spawn(TSC, ["--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn(process.execPath, [TSC, "--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
   const pending = new Map<number, (result: any) => void>();
   let buffer = Buffer.alloc(0);
   const write = (message: object) => {

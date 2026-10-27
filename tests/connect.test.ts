@@ -17,6 +17,8 @@ const PG = process.env.REYLO_TEST_PG;
 const MYSQL = process.env.REYLO_TEST_MYSQL;
 const noPg = !PG && "REYLO_TEST_PG names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
+// Node listens on no Unix socket on Windows, where a path names a named pipe.
+const noUnixSockets = process.platform === "win32" && "Node opens no Unix socket on Windows";
 
 /** A Unix socket in a directory of its own that pipes each connection to the TCP server `url` names, as a server listening on its socket. */
 async function socketFor(url: string, name: string): Promise<{ dir: string; path: string; server: Server }> {
@@ -75,9 +77,9 @@ test("analyses waiting on a server that never answers fail together, at the one 
 test("the files a Postgres URL names are resolved from the working directory and mapped to the engine's paths", async () => {
   const { url } = await hostUrl("postgres://u@h/d?sslmode=verify-ca&sslrootcert=certs/root.pem&sslcert=%2Fabs%2Fc.pem&sslkey=k.pem&application_name=a+b");
   const params = new URLSearchParams(url.slice(url.indexOf("?") + 1));
-  assert.equal(params.get("sslrootcert"), resolve("certs/root.pem"));
-  assert.equal(params.get("sslcert"), "/abs/c.pem");
-  assert.equal(params.get("sslkey"), resolve("k.pem"));
+  assert.equal(params.get("sslrootcert"), guestPath(resolve("certs/root.pem")));
+  assert.equal(params.get("sslcert"), guestPath(resolve("/abs/c.pem")));
+  assert.equal(params.get("sslkey"), guestPath(resolve("k.pem")));
   // Every other parameter is passed on as written.
   assert.match(url, /&application_name=a\+b$/);
   assert.equal((await hostUrl("postgres://u@h/d?sslrootcert=system")).url, "postgres://u@h/d?sslrootcert=system");
@@ -87,7 +89,7 @@ test("the files a Postgres URL names are resolved from the working directory and
   assert.equal(guestPath("/app/dev.db", "linux"), "/app/dev.db");
 });
 
-test("a URL that names a Unix socket is opened through a bridge, on Postgres and on MySQL", { skip: noPg || noMysql }, async () => {
+test("a URL that names a Unix socket is opened through a bridge, on Postgres and on MySQL", { skip: noUnixSockets || noPg || noMysql }, async () => {
   const pg = await socketFor(PG!, ".s.PGSQL.5432");
   const my = await socketFor(MYSQL!, "mysql.sock");
   const { pathname: database, username } = new URL(PG!);
@@ -187,7 +189,7 @@ async function knock(url: string, bytes: Buffer): Promise<Buffer> {
   return Buffer.concat(read);
 }
 
-test("the bridge to a Unix socket closes a connection that does not carry its token, before the server reads it", async () => {
+test("the bridge to a Unix socket closes a connection that does not carry its token, before the server reads it", { skip: noUnixSockets }, async () => {
   // Postgres: the socket is not even opened for a connection that does not open with the token.
   const dir = mkdtempSync(join(tmpdir(), "reylo-sock-"));
   let reached = 0;

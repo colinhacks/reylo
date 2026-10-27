@@ -42,6 +42,9 @@ async function analyze(root: string, env: Record<string, string>, sql: string, o
 
 const SELECT = "select id, name from users where id = :id";
 
+// A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
+const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
+
 test("a statement is analyzed against the database once, and read from .reylo/ by every process after", async () => {
   const { root, env } = project();
   const first = await analyze(root, env, SELECT);
@@ -462,7 +465,7 @@ test("on Postgres, a login the server refuses runs direct_url's command again, o
   }
 });
 
-test("calls refused together when a token expires share one run of the command and one new connection", async () => {
+test("calls refused together when a token expires share one run of the command and one new connection", { skip: posixShell }, async () => {
   let current = "token-1";
   const server = await mysqlStandIn({ version: "8.4.6", accepts: () => current, passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
@@ -494,7 +497,7 @@ test("calls refused together when a token expires share one run of the command a
   await server.close();
 });
 
-test("a session kept open runs a failed direct_url command again once its failure has stood a minute", async (t) => {
+test("a session kept open runs a failed direct_url command again once its failure has stood a minute", { skip: posixShell }, async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const server = await mysqlStandIn({ version: "8.4.6", accepts: () => "token-1", passwords: TOKENS });
   const root = mkdtempSync(join(tmpdir(), "reylo-token-"));
