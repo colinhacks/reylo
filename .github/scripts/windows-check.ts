@@ -71,13 +71,17 @@ function sqliteDb(path: string, wal = false): DatabaseSync {
 }
 
 /** One way to name the database: `reylo generate` must type the query, and for SQLite `tsc` must too. */
-function check(name: string, url: string, { env = {}, tsc = true, observe = false }: { env?: Record<string, string>; tsc?: boolean; observe?: boolean } = {}) {
+function check(name: string, url: string, { env = {}, tsc = true, refused }: { env?: Record<string, string>; tsc?: boolean; refused?: RegExp } = {}) {
   writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
   rmSync(join(project, ".reylo"), { recursive: true, force: true });
   const generate = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "generate"], project, false, env);
   const typed = generate.status === 0 && generate.out.includes("✓");
   console.log(`\n== ${name}: ${url}\n${generate.out.trim()}`);
-  if (!typed && !observe) failures.push(`${name}: reylo generate exited ${generate.status}`);
+  if (refused) {
+    if (generate.status !== 1 || !refused.test(generate.out)) failures.push(`${name}: reylo generate did not refuse it with ${refused}`);
+    return;
+  }
+  if (!typed) failures.push(`${name}: reylo generate exited ${generate.status}`);
   if (!tsc) return;
   rmSync(join(project, ".reylo"), { recursive: true, force: true });
   const check = run(process.execPath, [join(project, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--runExternalCode"], project, false, env);
@@ -125,10 +129,11 @@ if (pg && certs) {
   check("Postgres, relative TLS files", `${pg}?sslmode=verify-ca&sslrootcert=certs/root.crt&sslcert=certs/client.crt&sslkey=certs/client.key`, { tsc: false });
   check("Postgres, PGSSL* in the environment", pg, { tsc: false, env: { PGSSLMODE: "verify-ca", PGSSLROOTCERT: join(elsewhere, "root.crt"), PGSSLCERT: "certs\\client.crt", PGSSLKEY: join(project, "certs", "client.key") } });
   check("Postgres, NODE_EXTRA_CA_CERTS", `${pg}?sslrootcert=system${client(join(project, "certs"))}`, { tsc: false, env: { NODE_EXTRA_CA_CERTS: join(elsewhere, "root.crt") } });
-  // A Unix socket's directory and a named pipe: neither is a TCP port.
-  check("Postgres, a socket directory", `postgres://postgres@/reylo_windows?host=/tmp`, { tsc: false, observe: true });
+  // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
+  // socket directory, which Node cannot open on Windows, is refused with what to write instead.
   check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
-  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent("\\\\.\\pipe\\reylo-mysql")}`, { tsc: false, observe: true });
+  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false });
+  check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });
 }
 
 if (subst.status === 0) run("subst", ["R:", "/D"], project);
