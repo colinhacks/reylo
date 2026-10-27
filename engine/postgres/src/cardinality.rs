@@ -157,6 +157,10 @@ pub struct Catalog {
     /// subquery, a WITH query's body or a set operation's arm is proven on its own as: such a
     /// name read there unqualified is that WITH query, never the table of the same name.
     pub enclosing_ctes: Vec<String>,
+    /// The statements of those WITH queries that a reference to one is read through, in the order
+    /// they are in scope: each name, its SELECT as the parser deparses it, and the column names
+    /// its column list gives, if any. A recursive WITH query has none, and is read as nothing.
+    pub enclosing_bodies: Vec<(String, String, Vec<String>)>,
     /// Whether the statement being proven is a subquery of another one, whose columns it may read
     /// (a `SUBQ` site of the framework, proven on its own). An aggregate over such columns alone
     /// belongs to that statement and leaves the subquery a row per row of its FROM, so a nested
@@ -181,7 +185,7 @@ impl Catalog {
     /// This catalog for a view's defining statement, which sees none of the WITH queries of the
     /// statement that reads the view.
     fn for_view(&self) -> Catalog {
-        Catalog { enclosing_ctes: Vec::new(), nested: false, row_fields: None, ..self.clone() }
+        Catalog { enclosing_ctes: Vec::new(), enclosing_bodies: Vec::new(), nested: false, row_fields: None, ..self.clone() }
     }
 
     /// This catalog for a statement nested in one whose WITH queries are `names`.
@@ -190,6 +194,39 @@ impl Catalog {
         inner.enclosing_ctes.extend(names.iter().cloned());
         inner
     }
+
+    /// [`Catalog::enclosed`] for a statement nested in one whose WITH queries are `names`, with the
+    /// statements of the first `upto` of `with`'s queries (every one, for `None`) in scope, so
+    /// that a reference to one reads its keys. A WITH query's body sees those before it.
+    fn scoped(&self, names: &[String], with: Option<&protobuf::WithClause>, upto: Option<usize>) -> Catalog {
+        let mut inner = self.enclosed(names);
+        for cte in with.filter(|w| !w.recursive).into_iter().flat_map(|w| w.ctes.iter().take(upto.unwrap_or(usize::MAX))) {
+            let Some(NodeEnum::CommonTableExpr(cte)) = cte.node.as_ref() else { continue };
+            let Some(NodeEnum::SelectStmt(body)) = cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) else { continue };
+            if let Some(text) = deparse_select(body) {
+                inner.enclosing_bodies.push((cte.ctename.clone(), text, cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect()));
+            }
+        }
+        inner
+    }
+}
+
+/// A SELECT as text, deparsed by the library that parsed it.
+fn deparse_select(select: &SelectStmt) -> Option<String> {
+    let version = crate::stack::parse("SELECT 1").ok()?.protobuf.version;
+    let tree = protobuf::ParseResult { version, stmts: vec![protobuf::RawStmt { stmt: Some(Box::new(protobuf::Node { node: Some(NodeEnum::SelectStmt(Box::new(select.clone()))) })), stmt_location: 0, stmt_len: 0 }] };
+    crate::stack::deparse(&tree).ok()
+}
+
+/// `f` of the statement of the WITH query of an enclosing statement named `name`, under the catalog
+/// it is read in (the WITH queries before it in scope), with its column list; `None` where none is
+/// in scope.
+fn enclosing_body<T>(catalog: &Catalog, name: &str, f: impl FnOnce(&SelectStmt, &Catalog, &[String]) -> T) -> Option<T> {
+    let at = catalog.enclosing_bodies.iter().rposition(|(n, _, _)| n == name)?;
+    let (_, text, columns) = &catalog.enclosing_bodies[at];
+    let mut scoped = catalog.clone();
+    scoped.enclosing_bodies.truncate(at);
+    view_select(text, |body| f(body, &scoped, columns))
 }
 
 /// The names of a SELECT's own WITH queries.
@@ -805,6 +842,8 @@ struct From<'a> {
     natural: bool,
     /// Why no closure holds over this FROM at all.
     refused: Option<&'static str>,
+    /// The statement's own WITH queries, whose statements a subquery or a WITH query reads.
+    with: Option<&'a protobuf::WithClause>,
 }
 
 /// One FROM item.
@@ -818,6 +857,8 @@ struct Item<'a> {
     /// Whether its alias renames its columns (`users u (a, b)`), so a column's name is not the
     /// catalog's.
     renamed: bool,
+    /// The names its alias gives its columns, by position.
+    columns: Vec<String>,
 }
 
 enum Source<'a> {
@@ -828,7 +869,7 @@ enum Source<'a> {
     /// A subquery, and whether it is LATERAL.
     Subquery(&'a SelectStmt, bool),
     /// A WITH query of an enclosing statement, read by name: the proof does not read its body.
-    Enclosing,
+    Enclosing(String),
     /// A function, or the several of `ROWS FROM (…)`.
     Function(&'a protobuf::RangeFunction),
     /// `TABLESAMPLE`, `XMLTABLE`, `JSON_TABLE`: nothing the proof reads.
@@ -857,7 +898,7 @@ impl<'a> From<'a> {
     fn read(s: &'a SelectStmt, catalog: &Catalog) -> From<'a> {
         let mut ctes = with_names(s);
         ctes.extend(catalog.enclosing_ctes.iter().cloned());
-        let mut from = From { items: Vec::new(), conjuncts: Vec::new(), ctes, using: Vec::new(), natural: false, refused: None };
+        let mut from = From { items: Vec::new(), conjuncts: Vec::new(), ctes, using: Vec::new(), natural: false, refused: None, with: s.with_clause.as_ref() };
         for item in &s.from_clause {
             from.flatten(item, s.with_clause.as_ref(), false);
         }
@@ -873,13 +914,14 @@ impl<'a> From<'a> {
     fn single(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>) -> From<'a> {
         let ctes = with.iter().flat_map(|w| w.ctes.iter().filter_map(cte_name).cloned()).collect();
         let (alias, renamed) = rv.alias.as_ref().map_or_else(|| (rv.relname.clone(), false), |a| (a.aliasname.clone(), !a.colnames.is_empty()));
-        let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed };
+        let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed, columns: Vec::new() };
         let conjuncts = where_clause.into_iter().flat_map(conjuncts_of).map(|node| Conjunct { node, may_pin: None, inner: true }).collect();
-        From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None }
+        From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None, with }
     }
 
     fn flatten(&mut self, node: &'a protobuf::Node, with: Option<&'a protobuf::WithClause>, nullable: bool) {
         let named = |a: &protobuf::Alias| (a.aliasname.clone(), !a.colnames.is_empty());
+        let columns = |a: Option<&protobuf::Alias>| a.map(|a| a.colnames.iter().filter_map(field_name).map(String::from).collect()).unwrap_or_default();
         match node.node.as_ref() {
             Some(NodeEnum::RangeVar(rv)) => {
                 let (alias, renamed) = rv.alias.as_ref().map(named).unwrap_or_else(|| (rv.relname.clone(), false));
@@ -891,10 +933,10 @@ impl<'a> From<'a> {
                 });
                 let source = match cte {
                     Some((c, recursive)) => Source::With(c, recursive),
-                    None if rv.schemaname.is_empty() && self.ctes.contains(&rv.relname) => Source::Enclosing,
+                    None if rv.schemaname.is_empty() && self.ctes.contains(&rv.relname) => Source::Enclosing(rv.relname.clone()),
                     None => Source::Relation(rv),
                 };
-                self.items.push(Item { alias, source, nullable, renamed });
+                self.items.push(Item { alias, source, nullable, renamed, columns: columns(rv.alias.as_ref()) });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let (alias, renamed) = r.alias.as_ref().map(named).unwrap_or_default();
@@ -902,7 +944,7 @@ impl<'a> From<'a> {
                     Some(NodeEnum::SelectStmt(sub)) => Source::Subquery(sub, r.lateral),
                     _ => Source::Opaque,
                 };
-                self.items.push(Item { alias, source, nullable, renamed });
+                self.items.push(Item { alias, source, nullable, renamed, columns: columns(r.alias.as_ref()) });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 use protobuf::JoinType;
@@ -965,7 +1007,7 @@ impl<'a> From<'a> {
                     _ => Source::Opaque,
                 };
                 match alias {
-                    Some(alias) => self.items.push(Item { alias, source, nullable, renamed: true }),
+                    Some(alias) => self.items.push(Item { alias, source, nullable, renamed: true, columns: Vec::new() }),
                     None => self.refused = Some("a FROM item the engine cannot name"),
                 }
             }
@@ -1023,7 +1065,8 @@ impl<'a> From<'a> {
                     Source::With(cte, recursive) => !*recursive && (with_query_at_most_one(cte, dialect, trust, &catalog.enclosed(&self.ctes)) || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Subquery(sub, lateral) => (!*lateral || rest()) && (at_most_one_select(sub, dialect, trust, &catalog.enclosed(&self.ctes)).is_ok() || self.derived_pinned(i, &keys[i], &done, constant, catalog)),
                     Source::Function(f) => !constant && rest() && one_row_function(f, catalog).is_ok(),
-                    Source::Enclosing | Source::Opaque => false,
+                    Source::Enclosing(_) => self.derived_pinned(i, &keys[i], &done, constant, catalog),
+                    Source::Opaque => false,
                 };
                 if pinned {
                     done[i] = true;
@@ -1040,9 +1083,6 @@ impl<'a> From<'a> {
     /// query `i` ([`output_keys`]), as [`From::key_pinned`] pins a table's.
     fn derived_pinned(&self, i: usize, keys: &[Key], done: &[bool], constant: bool, catalog: &Catalog) -> bool {
         let item = &self.items[i];
-        if item.renamed {
-            return false;
-        }
         let usable = |c: &Conjunct| match &c.may_pin {
             None => true,
             Some(may) => may.contains(&i) && (!constant || (c.inner && !item.nullable)),
@@ -1057,33 +1097,54 @@ impl<'a> From<'a> {
     /// WITH query's from its statement ([`output_keys`]). A key over an expression is none here.
     fn item_keys(&self, i: usize, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
         let item = &self.items[i];
-        if item.renamed {
+        if item.renamed && matches!(item.source, Source::Relation(_)) {
             return Vec::new();
         }
         match &item.source {
             Source::Relation(rv) if catalog.views.contains_key(&catalog_name(rv)) => view_select(&catalog.views[&catalog_name(rv)], |view| output_keys(view, dialect, trust, &catalog.for_view())).unwrap_or_default(),
+            // A key over an expression maps only to a select list that keeps the expression.
             Source::Relation(rv) => {
                 let relation = catalog_name(rv);
                 let full = catalog.unique_keys.get(&relation).into_iter().flatten();
                 let partial = catalog.partial_keys.get(&relation).into_iter().flatten().filter(|(_, p)| self.restricts(i, p)).map(|(k, _)| k);
-                full.chain(partial)
-                    .filter(|k| !k.is_empty() && k.iter().all(|c| !c.starts_with('(')))
-                    .map(|k| k.iter().map(|c| Part { name: c.clone(), relation: relation.clone(), column: c.clone() }).collect())
-                    .collect()
+                full.chain(partial).filter(|k| !k.is_empty()).map(|k| k.iter().map(|c| Part { name: c.clone(), relation: relation.clone(), column: c.clone() }).collect()).collect()
             }
-            Source::Subquery(sub, _) => output_keys(sub, dialect, trust, &catalog.enclosed(&self.ctes)),
-            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(body)) => output_keys(body, dialect, trust, &catalog.enclosed(&self.ctes)),
-                _ => Vec::new(),
-            },
-            _ => Vec::new(),
+            _ => self.through(i, catalog, |body, scope, columns| renamed_keys(output_keys(body, dialect, trust, scope), body, columns)).unwrap_or_default(),
+        }
+    }
+
+    /// `f` of the statement of subquery, WITH query or enclosing WITH query `i`, under the catalog
+    /// it is read in, with the names its column lists give its columns by position (the WITH
+    /// query's own, then the alias's).
+    fn through<T>(&self, i: usize, catalog: &Catalog, f: impl FnOnce(&SelectStmt, &Catalog, &[String]) -> T) -> Option<T> {
+        let item = &self.items[i];
+        let overlay = |inner: &[String]| -> Vec<String> {
+            let mut columns = inner.to_vec();
+            for (at, name) in item.columns.iter().enumerate() {
+                match columns.get_mut(at) {
+                    Some(slot) => *slot = name.clone(),
+                    None => columns.push(name.clone()),
+                }
+            }
+            columns
+        };
+        match &item.source {
+            Source::Subquery(sub, _) => Some(f(sub, &catalog.scoped(&self.ctes, self.with, None), &item.columns)),
+            Source::With(cte, false) => {
+                let Some(NodeEnum::SelectStmt(body)) = cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) else { return None };
+                let at = self.with.and_then(|w| w.ctes.iter().position(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(c)) if std::ptr::eq(c.as_ref(), *cte))));
+                let own: Vec<String> = cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect();
+                Some(f(body, &catalog.scoped(&self.ctes, self.with, Some(at.unwrap_or(0))), &overlay(&own)))
+            }
+            Source::Enclosing(name) => enclosing_body(catalog, name, |body, scope, own| f(body, scope, &overlay(own))),
+            _ => None,
         }
     }
 
     /// The table column behind column `column` of item `i`, passed through unchanged.
     fn base(&self, i: usize, column: &str, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Option<(String, String)> {
         let item = &self.items[i];
-        if item.renamed {
+        if item.renamed && matches!(item.source, Source::Relation(_)) {
             return None;
         }
         match &item.source {
@@ -1092,12 +1153,7 @@ impl<'a> From<'a> {
                 Some(definition) => view_select(definition, |view| output_base(view, column, dialect, trust, &catalog.for_view())).flatten(),
                 None => Some((catalog_name(rv), column.to_string())),
             },
-            Source::Subquery(sub, _) => output_base(sub, column, dialect, trust, &catalog.enclosed(&self.ctes)),
-            Source::With(cte, false) if cte.aliascolnames.is_empty() => match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(body)) => output_base(body, column, dialect, trust, &catalog.enclosed(&self.ctes)),
-                _ => None,
-            },
-            _ => None,
+            _ => self.through(i, catalog, |body, scope, columns| inner_name(column, body, columns).and_then(|inner| output_base(body, &inner, dialect, trust, scope))).flatten(),
         }
     }
 
@@ -1112,6 +1168,47 @@ impl<'a> From<'a> {
             [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
             _ => None,
         }
+    }
+
+    /// The output column of SELECT `s` that is key part `p` of table `r`, an expression of an index
+    /// (`(lower(email))`), where the select list keeps the expression under an alias of its own.
+    fn kept_expression(&self, s: &SelectStmt, r: usize, p: &Part) -> Option<Part> {
+        let alias = &self.items[r].alias;
+        s.target_list.iter().find_map(|t| {
+            let Some(NodeEnum::ResTarget(t)) = t.node.as_ref() else { return None };
+            let value = t.val.as_deref()?;
+            (!t.name.is_empty() && !self.mentions_merged(value) && matches_expression(value, &p.name, alias)).then(|| Part { name: t.name.clone(), relation: p.relation.clone(), column: p.column.clone() })
+        })
+    }
+
+    /// The output column that stands for key part `p` of table `r`, which the select list leaves
+    /// out: a column of another table that an equality holding of every row of the FROM (the
+    /// WHERE's, or an inner join's) makes equal to it, of the same type and both compared as
+    /// identity, so that equal values of the one are equal values of the other.
+    fn equated_output(&self, r: usize, p: &Part, output: &dyn Fn(usize, &str) -> Option<String>, catalog: &Catalog) -> Option<Part> {
+        if catalog.equality_shadowed || !matches!(self.items[r].source, Source::Relation(_)) || !identity(catalog, &p.relation, &p.column) {
+            return None;
+        }
+        let alias = &self.items[r].alias;
+        let ty = |relation: &str, column: &str| catalog.column_types.get(relation).and_then(|t| t.get(column)).copied();
+        self.conjuncts.iter().filter(|c| c.inner).find_map(|c| {
+            let Some(NodeEnum::AExpr(e)) = c.node.node.as_ref() else { return None };
+            if !is_equality(e) || e.name.len() != 1 {
+                return None;
+            }
+            let (l, rhs) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
+            [(l, rhs), (rhs, l)].into_iter().find_map(|(side, other)| {
+                if self.own(side, alias).as_deref() != Some(p.name.as_str()) {
+                    return None;
+                }
+                let Some(NodeEnum::ColumnRef(oc)) = other.node.as_ref() else { return None };
+                let (j, column) = self.column(oc, catalog)?;
+                let Source::Relation(rv) = &self.items[j].source else { return None };
+                let relation = catalog_name(rv);
+                let same = j != r && !self.items[j].renamed && ty(&p.relation, &p.column).is_some() && ty(&p.relation, &p.column) == ty(&relation, &column) && identity(catalog, &relation, &column);
+                same.then(|| output(j, &column).map(|name| Part { name, relation, column })).flatten()
+            })
+        })
     }
 
     /// Whether the equalities pin every column of a unique key of item `i`.
@@ -1276,7 +1373,8 @@ impl<'a> From<'a> {
             return None;
         }
         match parts.as_slice() {
-            [q, column] => self.items.iter().position(|it| it.alias == *q && !it.renamed).map(|i| (i, column.to_string())),
+            // A renamed table's columns are not the catalog's; a renamed subquery's go by their new names.
+            [q, column] => self.items.iter().position(|it| it.alias == *q && !(it.renamed && matches!(it.source, Source::Relation(_)))).map(|i| (i, column.to_string())),
             [column] if self.merged(column) => None,
             [column] => {
                 let mut having = (0..self.items.len()).filter(|i| self.has_column(*i, column, catalog));
@@ -1492,7 +1590,7 @@ impl<'a> From<'a> {
                 }
             }
             Source::With(cte, _) => format!("the WITH query `{}` returns any number of rows", cte.ctename),
-            Source::Enclosing => format!("`{}` is a WITH query of an enclosing statement, which returns any number of rows", item.alias),
+            Source::Enclosing(_) => format!("`{}` is a WITH query of an enclosing statement, which returns any number of rows", item.alias),
             Source::Subquery(..) => format!("the subquery `{}` returns any number of rows", item.alias),
             Source::Function(_) | Source::Opaque => format!("`{}` in the FROM is a function or table function, which returns any number of rows", item.alias),
         }
@@ -1788,7 +1886,10 @@ type Key = Vec<Part>;
 /// None at all for a set operation, a VALUES list, or a set-returning call at this level, which
 /// repeats a row (`SELECT id, generate_series(1, 2) FROM posts`).
 fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
-    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() || s.into_clause.is_some() {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        return set_keys(s, left, right, dialect, trust, &catalog.scoped(&with_names(s), s.with_clause.as_ref(), None));
+    }
+    if !s.values_lists.is_empty() || s.into_clause.is_some() {
         return Vec::new();
     }
     if s.group_clause.iter().any(|g| matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(_)))) {
@@ -1888,11 +1989,119 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
             _ => derived[r].clone(),
         };
         for key in own {
-            let mapped: Option<Key> = key.iter().map(|p| output(r, &p.name).map(|name| Part { name, relation: p.relation.clone(), column: p.column.clone() })).collect();
+            // A key column the select list leaves out still counts where the WHERE pins it to
+            // one value, or where an inner equality keeps a column of the same value in the list.
+            let mapped: Option<Key> = key
+                .iter()
+                .filter_map(|p| match output(r, &p.name) {
+                    Some(name) => Some(Some(Part { name, relation: p.relation.clone(), column: p.column.clone() })),
+                    None if p.name.starts_with('(') => Some(from.kept_expression(s, r, p)),
+                    None if matches!(from.items[r].source, Source::Relation(_)) && from.pinned_by_value(r, &p.name, catalog) => None,
+                    None => Some(from.equated_output(r, p, &output, catalog)),
+                })
+                .collect();
             keys.extend(mapped);
         }
     }
     keys
+}
+
+/// The keys of a set operation's rows. Without ALL every operator returns distinct rows, so the
+/// whole row is a key, where each column passes one table column through on both sides and the
+/// two are of one type, whose equality the row's columns then compare under. INTERSECT returns only
+/// rows of its left side, and EXCEPT a subset of them, with ALL or without, so those keep its keys.
+/// UNION ALL has none.
+fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+    use protobuf::SetOperation as Op;
+    let mut keys = Vec::new();
+    if s.op == Op::SetopIntersect as i32 || s.op == Op::SetopExcept as i32 {
+        keys.extend(output_keys(left, dialect, trust, catalog));
+    }
+    if !s.all {
+        let whole = || -> Option<Key> {
+            let (names, others) = (output_names(left)?, output_names(right)?);
+            if names.len() != others.len() {
+                return None;
+            }
+            names
+                .iter()
+                .zip(&others)
+                .map(|(name, other)| {
+                    let (name, other) = (name.as_deref()?, other.as_deref()?);
+                    let (relation, column) = output_base(left, name, dialect, trust, catalog)?;
+                    let (other_relation, other_column) = output_base(right, other, dialect, trust, catalog)?;
+                    let ty = |r: &str, c: &str| catalog.column_types.get(r).and_then(|t| t.get(c)).copied();
+                    (ty(&relation, &column).is_some() && ty(&relation, &column) == ty(&other_relation, &other_column)).then(|| Part { name: name.to_string(), relation, column })
+                })
+                .collect()
+        };
+        keys.extend(whole());
+    }
+    keys
+}
+
+/// The names of a SELECT's output columns by position: an alias, or a column's own name, and
+/// `None` for an entry the engine does not name. `None` for the whole where the list holds `*`,
+/// whose width the statement does not say. A set operation's are its first arm's.
+fn output_names(s: &SelectStmt) -> Option<Vec<Option<String>>> {
+    if let Some(left) = s.larg.as_deref() {
+        return output_names(left);
+    }
+    s.target_list
+        .iter()
+        .map(|t| {
+            let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Some(None) };
+            if !r.name.is_empty() {
+                return Some(Some(r.name.clone()));
+            }
+            match r.val.as_deref().and_then(|v| v.node.as_ref()) {
+                Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => None,
+                Some(NodeEnum::ColumnRef(c)) => Some(c.fields.iter().filter_map(field_name).last().map(String::from)),
+                _ => Some(None),
+            }
+        })
+        .collect()
+}
+
+/// A SELECT's output names after a column list renames them by position.
+fn renamed_names(body: &SelectStmt, columns: &[String]) -> Option<Vec<Option<String>>> {
+    let mut names = output_names(body)?;
+    for (at, name) in columns.iter().enumerate() {
+        *names.get_mut(at)? = Some(name.clone());
+    }
+    Some(names)
+}
+
+/// `keys` of a SELECT's rows, each column by the name a column list gives it. A key whose column
+/// the statement's own names do not tell apart is dropped.
+fn renamed_keys(keys: Vec<Key>, body: &SelectStmt, columns: &[String]) -> Vec<Key> {
+    if columns.is_empty() {
+        return keys;
+    }
+    let (Some(names), Some(renamed)) = (output_names(body), renamed_names(body, columns)) else { return Vec::new() };
+    let at = |name: &str| {
+        let mut found = names.iter().enumerate().filter(|(_, n)| n.as_deref() == Some(name)).map(|(i, _)| i);
+        match (found.next(), found.next()) {
+            (Some(i), None) => Some(i),
+            _ => None,
+        }
+    };
+    keys.into_iter()
+        .filter_map(|key| key.into_iter().map(|p| Some(Part { name: renamed.get(at(&p.name)?)?.clone()?, ..p })).collect())
+        .collect()
+}
+
+/// The statement's own name for the column a column list calls `column`.
+fn inner_name(column: &str, body: &SelectStmt, columns: &[String]) -> Option<String> {
+    if columns.is_empty() {
+        return Some(column.to_string());
+    }
+    let (names, renamed) = (output_names(body)?, renamed_names(body, columns)?);
+    let mut found = renamed.iter().enumerate().filter(|(_, n)| n.as_deref() == Some(column)).map(|(i, _)| i);
+    match (found.next(), found.next()) {
+        (Some(i), None) => names.get(i)?.clone(),
+        _ => None,
+    }
 }
 
 /// `f` of a view's defining SELECT, as `pg_get_viewdef` prints it; `None` where it does not parse

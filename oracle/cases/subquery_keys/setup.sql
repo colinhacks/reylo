@@ -15,3 +15,4 @@ create view author_counts as select author_id, count(*) as n from posts group by
 create view recent_posts as select * from public_posts where id > 10;
 create view archived as select id, title from archive.posts;
 create view post_tags as select p.id, t.tag from posts p join tags t on t.post_id = p.id;
+create unique index users_email_lower on users (lower(email));
