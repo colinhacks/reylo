@@ -44,6 +44,8 @@
     "test": "node --test 'tests/**/*.test.ts'"
   },
   "devDependencies": {
+    "@bytecodealliance/jco": "1.39.0",
+    "@bytecodealliance/preview2-shim": "0.30.0",
     "@reylosql/mysql": "link:packages/mysql",
     "@reylosql/postgres": "link:packages/postgres",
     "@reylosql/sqlite": "link:packages/sqlite",

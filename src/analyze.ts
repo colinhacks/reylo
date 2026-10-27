@@ -7,10 +7,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { anyEngine, describer, engine, reason, AnswerCache, MissingEngine, Unreachable, type Analysis, type Engine, type EngineIo } from "./engine.ts";
-import { packageDir, resolveProject, type ResolvedProject } from "./project.ts";
+import { anyEngine, engine, reason, MissingEngine, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
+import { packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
-import { openSqliteDescriber, sqlitePath } from "./sqlite-describe.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
 /** What `.reylo/` holds for one statement. */
@@ -27,8 +26,13 @@ export type Outcome =
   | { ok: true; analysis: Analysis; source: "cache" | "database"; entry: string }
   | { ok: false; message: string; code: number };
 
-/** On SQLite, `drivers` are the app's own, which each statement is prepared on too (src/sqlite-drivers.ts). */
-type Io = EngineIo & { close(): Promise<void>; drivers?: SqliteDriver[] };
+/**
+ * A connection the engine holds (src/engine.ts): `analyze` runs a statement's whole analysis over
+ * it, `query` runs the schema's fingerprint, and `forget` drops the answers the engine keeps once
+ * the schema changes. On SQLite, `drivers` are the app's own, which each statement is prepared on
+ * too (src/sqlite-drivers.ts).
+ */
+type Io = { analyze(sql: string): Promise<Analysis>; query(sql: string, params: unknown[]): Promise<unknown[][]>; forget(): Promise<void>; close(): Promise<void>; drivers?: SqliteDriver[] };
 
 const ENTRY_VERSION = 1;
 // How long a schema fingerprint is trusted, as long as a statement answer: a migration shows up
@@ -62,7 +66,6 @@ export class Session {
   /** The engine of the project's database, or why there is none, which an analysis reports. */
   #engine!: Engine | MissingEngine;
   #engineFingerprint!: string;
-  readonly #answers = new AnswerCache();
   readonly #idle: number;
   /** Where the project was resolved from, and with what environment, for `#reread`. */
   readonly #dir: string;
@@ -102,7 +105,6 @@ export class Session {
     if (project.error) return;
     this.#adopt(engine, project);
     this.#schema = undefined;
-    this.#answers.clear();
   }
 
   /** The build steps' session for the project a file or directory belongs to: one per project (and connection) and process. */
@@ -129,7 +131,7 @@ export class Session {
     return [...sessions.values()];
   }
 
-  lex(sql: string) {
+  lex(sql: string): Lexed {
     if (this.#engine instanceof MissingEngine) throw this.#engine;
     return this.#engine.lex(sql, this.project.dialect);
   }
@@ -239,7 +241,7 @@ export class Session {
     let analysis: Analysis;
     const io = this.#connection();
     try {
-      analysis = await engine.analyze(sql, this.project.dialect, await io, this.#answers);
+      analysis = await (await io).analyze(sql);
     } catch (e) {
       // A dead connection is reopened by the next call; a server error is reported.
       if (e instanceof Unreachable) {
@@ -280,7 +282,7 @@ export class Session {
       const rows = await io.query(FINGERPRINT[this.project.dialect], []);
       const value = createHash("sha256").update(JSON.stringify(rows)).digest("hex").slice(0, 16);
       // The engine's answers describe the old schema too.
-      if (this.#schema?.value && this.#schema.value !== value) this.#answers.clear();
+      if (this.#schema?.value && this.#schema.value !== value) await io.forget().catch(() => {});
       this.#schema = { value, at: now };
     } catch (e) {
       if (e instanceof Unreachable) {
@@ -366,8 +368,8 @@ export class Session {
         first = await this.#open(fresh);
       }
       if (!this.project.refreshUrl) return first;
-      // postgres.js logs in at its first query, so a refused login can surface at any call: the
-      // call is asked once more on a connection with the command's fresh output. The calls refused
+      // A refused login can surface at any call, where a token expired while the session was open:
+      // the call is asked once more on a connection with the command's fresh output. The calls refused
       // together, as every call waiting when a token expires is, share one reopen, so that the
       // command runs once and one connection replaces the old; a call that fails on a connection
       // already replaced is asked again on the one that replaced it.
@@ -392,8 +394,9 @@ export class Session {
         }
       };
       return {
-        describe: (text) => again((on) => on.describe(text)),
+        analyze: (sql) => again((on) => on.analyze(sql)),
         query: (text, params) => again((on) => on.query(text, params)),
+        forget: () => again((on) => on.forget()),
         close: () => current.then((on) => on.close(), () => {}),
         ...(first.drivers && { drivers: first.drivers }),
       };
@@ -431,30 +434,22 @@ export class Session {
 
   async #open(url: string): Promise<Io> {
     const { dialect, root } = this.project;
-    if (dialect === "mysql") {
-      const { openMysqlDescriber } = await describer<typeof import("../packages/mysql/describe.ts")>("mysql", root);
-      const m = await openMysqlDescriber(url);
-      return { describe: (text) => m.describe(text), query: (text, params) => m.values(text, params), close: () => m.close() };
-    }
-    if (dialect === "sqlite") {
-      // A file that cannot be opened is a database that cannot be reached: a build without it
-      // runs on `.reylo/`.
-      const s = await openSqliteDescriber(url, root).catch((e) => Promise.reject(new Unreachable(e)));
-      const drivers = await openProjectDrivers(root, sqlitePath(url, root));
-      // The engine prepares SQLite statements inside its own SQLite; it never asks to describe.
-      return {
-        describe: () => Promise.reject(new Error("SQLite is described inside the engine")),
-        query: (text, params) => s.values(text, params),
-        close: async () => {
-          await Promise.all(drivers.map((d) => d.close().catch(() => {})));
-          await s.close();
-        },
-        drivers,
-      };
-    }
-    const { openPostgresDescriber } = await describer<typeof import("../packages/postgres/describe.ts")>("postgres", root);
-    const d = await openPostgresDescriber(url);
-    return { describe: (text) => d.describe(text), query: (text, params) => d.values(text, params), close: () => d.close() };
+    const engine = this.#engine as Engine;
+    // The engine opens the database itself: on SQLite the file the project names, and the statement
+    // is prepared on the app's own SQLite drivers too, which are the app's, not the engine's.
+    const target = dialect === "sqlite" ? sqlitePath(url, root) : url;
+    const c = await engine.open(target);
+    const drivers = dialect === "sqlite" ? await openProjectDrivers(root, target) : undefined;
+    return {
+      analyze: (sql) => c.analyze(sql),
+      query: (text, params) => c.query(text, params),
+      forget: () => c.forget(),
+      close: async () => {
+        await Promise.all((drivers ?? []).map((d) => d.close().catch(() => {})));
+        await c.close();
+      },
+      ...(drivers && { drivers }),
+    };
   }
 }
 

@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
-# Builds each database's engine to a wasm32-wasip1 artifact of its own, the `engine.wasm` of its
-# npm package: `packages/postgres/engine.wasm`, `packages/sqlite/engine.wasm` and
-# `packages/mysql/engine.wasm`, from the entry crates in `wasm/`.
+# Builds each database's engine as one WebAssembly component (`wasm32-wasip2`, from wasip2/): the
+# engine and the program that connects it to its database (native/), behind the exports `call` and
+# `serve`, transpiled by jco into its npm package's `engine/` directory, which the loader runs
+# through jco's preview2-shim (src/engine.ts). One artifact for every platform: the connections it
+# opens are WASI sockets, which the shim opens as Node's.
 #
 #   engine/build.sh --prepare            the inputs below, and nothing else
-#   engine/build.sh                      every database's artifact, in one cargo invocation
-#   engine/build.sh postgres [sqlite …]  the artifacts named
+#   engine/build.sh                      every database's component
+#   engine/build.sh postgres [sqlite …]  the components named
 #
-# Inputs: a Rust toolchain with the `wasm32-wasip1` target, and wasi-sdk 34 (set WASI_SDK_PATH,
-# or unpack it under `.wasi-sdk/`). The `pg_query` crate is the Postgres 18 parser: upstream's
-# `pg-18` branch (pganalyze/pg_query.rs, pull request 79, "Release 18.0.0", not on crates.io yet)
-# at the commit `postgres/vendor/pg_query-source.sh` pins, with the libpg_query commit its submodule names (tag 18.1.0, the
-# grammar of Postgres 18.6), each fetched from GitHub by commit and checked against a SHA-256, and
-# the patch from `postgres/vendor/` applied into `postgres/.patched/pg_query`. SQLite is the 3.53.4
-# amalgamation fetched into `sqlite/.sqlite/` with the hooks of `sqlite/csrc/patch-sqlite.py`
-# applied; this script prepares both. `./build.sh --prepare` stops after that, which is what a
-# native `cargo test` needs, and what any cargo command in the workspace needs first (the workspace
-# `[patch]` points at the copy).
+# Inputs: rustup's `wasm32-wasip2` target, wasi-sdk 34 (set WASI_SDK_PATH, or unpack it under
+# `.wasi-sdk/`) and jco from the root's install. The `pg_query` crate is the Postgres 18 parser:
+# upstream's `pg-18` branch (pganalyze/pg_query.rs, pull request 79, "Release 18.0.0", not on
+# crates.io yet) at the commit `postgres/vendor/pg_query-source.sh` pins, with the libpg_query commit
+# its submodule names (tag 18.1.0, the grammar of Postgres 18.6), each fetched from GitHub by commit
+# and checked against a SHA-256, and the patch from `postgres/vendor/` applied into
+# `postgres/.patched/pg_query`. SQLite is the 3.53.4 amalgamation fetched into `sqlite/.sqlite/`
+# with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
+# crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
+# `./build.sh --prepare` stops after that, which is what a native `cargo test` needs, and what any
+# cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
 set -euo pipefail
 cd "$(dirname "$0")"
 DATABASES=(postgres sqlite mysql)
@@ -41,6 +44,22 @@ sha256() {
 }
 # What the copy was made from: a change of either commit or of the patch makes it again.
 PG_QUERY_SOURCE="$PG_QUERY_COMMIT $LIBPG_QUERY_COMMIT $(sha256 "$PG_QUERY_PATCH")"
+# tokio-postgres reads wasm32 as a browser, which has no sockets, and resolves host names on a
+# thread, which wasip2 has not: the component builds it with the patch beside it.
+TP=wasip2/.patched/tokio-postgres
+TP_SHA256=a528f7d280f6d5b9cd149635c8705b0dd049754bc67d81d31fa25169a93809d3
+TP_SOURCE="$TP_SHA256 $(sha256 wasip2/tokio-postgres-0.7.18.patch)"
+if [ "$(cat $TP/.source 2>/dev/null || true)" != "$TP_SOURCE" ]; then
+  rm -rf "$TP" && mkdir -p wasip2/.patched
+  curl -fsSL -A reylo-build -o wasip2/.patched/tokio-postgres.crate https://static.crates.io/crates/tokio-postgres/tokio-postgres-0.7.18.crate
+  if [ "$(sha256 wasip2/.patched/tokio-postgres.crate)" != "$TP_SHA256" ]; then
+    echo "tokio-postgres 0.7.18: the crate's SHA-256 is $(sha256 wasip2/.patched/tokio-postgres.crate), expected $TP_SHA256" >&2
+    exit 1
+  fi
+  tar -xzf wasip2/.patched/tokio-postgres.crate -C wasip2/.patched && mv wasip2/.patched/tokio-postgres-0.7.18 "$TP" && rm wasip2/.patched/tokio-postgres.crate
+  (cd "$TP" && patch -s -p1 < ../../tokio-postgres-0.7.18.patch)
+  echo "$TP_SOURCE" > "$TP/.source"
+fi
 if [ "$(cat $PATCHED/pg_query/.source 2>/dev/null || true)" != "$PG_QUERY_SOURCE" ]; then
   # Straight from GitHub, not through `cargo fetch`: the workspace's `[patch]` points at the
   # copy this makes, so cargo resolves nothing until it exists. A commit's archive holds no
@@ -71,6 +90,11 @@ if [ "${1:-}" = "--prepare" ]; then
   exit 0
 fi
 
+if [ $# -gt 0 ]; then WANTED=("$@"); else WANTED=("${DATABASES[@]}"); fi
+for db in "${WANTED[@]}"; do
+  case " ${DATABASES[*]} " in *" $db "*) ;; *) echo "no engine for $db: build.sh builds ${DATABASES[*]}" >&2; exit 2 ;; esac
+done
+
 if [ -z "${WASI_SDK_PATH:-}" ]; then
   WASI_SDK_PATH=$(ls -d .wasi-sdk/wasi-sdk-* 2>/dev/null | head -1 || true)
 fi
@@ -81,55 +105,41 @@ fi
 WASI_SDK_PATH=$(cd "$WASI_SDK_PATH" && pwd)
 SYSROOT="$WASI_SDK_PATH/share/wasi-sysroot"
 STUBS="$(pwd)/postgres/vendor/stubs"
+JCO="$(cd .. && pwd)/node_modules/@bytecodealliance/jco/dist/jco.js"
+[ -f "$JCO" ] || { echo "jco not found: nub install at the repository's root" >&2; exit 1; }
 
-
-export CC_wasm32_wasip1="$WASI_SDK_PATH/bin/clang"
-export AR_wasm32_wasip1="$WASI_SDK_PATH/bin/llvm-ar"
-# The artifacts are published, so they name no path on the machine that built them: the
-# checkout, the Cargo registry and wasi-sdk are written as /reylo, /cargo and /wasi-sdk wherever
-# the Rust panic locations and the C sources' __FILE__ would record them. A build from any checkout
-# then gives the same bytes, as long as it builds every artifact in one run: `build.sh sqlite`
-# alone gives other bytes, since cargo unifies the features of the crates the three share.
+# The components are published, so they name no path on the machine that built them: the checkout,
+# the Cargo registry and wasi-sdk are written as /reylo, /cargo and /wasi-sdk wherever the Rust
+# panic locations and the C sources' __FILE__ would record them.
 REPO_ROOT=$(cd .. && pwd)
 CARGO_HOME_DIR=$(cd "${CARGO_HOME:-$HOME/.cargo}" 2>/dev/null && pwd || echo "$HOME/.cargo")
 PREFIX_MAPS="-ffile-prefix-map=$REPO_ROOT=/reylo -ffile-prefix-map=$CARGO_HOME_DIR=/cargo -ffile-prefix-map=$WASI_SDK_PATH=/wasi-sdk"
-export CFLAGS_wasm32_wasip1="--sysroot=$SYSROOT -I $STUBS -include $STUBS/wasi_extra.h -mllvm -wasm-enable-sjlj -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID $PREFIX_MAPS"
-export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip1="--sysroot=$SYSROOT --target=wasm32-wasip1 -I $STUBS"
-# The shadow stack, where C and the Rust frames that spill keep their locals, is 8 MiB rather than
-# the 1 MiB rustc links by default: the analysis of a statement as deep as libpg_query hands over
-# (src/stack.rs) needs about 0.5 MiB of it. libpg_query cannot find the bounds of a WebAssembly
-# stack and keeps its default budget of 100 kB of it, which stops a statement nested about twice
-# that deep while the JavaScript engine's own stack, which every wasm call also spends, has room.
-# `--compress-relocations` writes each index and address the linker fills in at its own length
-# rather than padded to five bytes, which needs the artifact stripped (`CARGO_PROFILE_RELEASE_STRIP`
-# below); together they leave out a quarter of each artifact and change no instruction.
-export CARGO_TARGET_WASM32_WASIP1_RUSTFLAGS="-C link-arg=-L$SYSROOT/lib/wasm32-wasip1 -C link-arg=-lwasi-emulated-signal -C link-arg=-lwasi-emulated-process-clocks -C link-arg=-lwasi-emulated-mman -C link-arg=-lwasi-emulated-getpid -C link-arg=-lsetjmp -C link-arg=-zstack-size=8388608 -C link-arg=--compress-relocations --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
+export CC_wasm32_wasip2="$WASI_SDK_PATH/bin/clang" AR_wasm32_wasip2="$WASI_SDK_PATH/bin/llvm-ar"
+# The C flags for every C crate, ring's among them, which compiles with -nostdlibinc and so cannot
+# take the stubs as an `-include`: the stubs come last on the include path, and what the include
+# defined is defined on the command line. Exceptions are exnref, the exception-handling proposal as
+# it was standardized, since jco and wasmtime refuse the legacy `try`.
+export CFLAGS_wasm32_wasip2="--sysroot=$SYSROOT -idirafter $STUBS -DEHOSTDOWN=9001 -Dsigjmp_buf=jmp_buf -Dsigsetjmp(b,m)=setjmp(b) -Dsiglongjmp(b,v)=longjmp(b,v) -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID $PREFIX_MAPS"
+export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip2="--sysroot=$SYSROOT --target=wasm32-wasip2 -I $STUBS"
+# tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where C and the
+# Rust frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
+# libpg_query hands over (core/src/stack.rs) needs about 0.5 MiB of it.
+export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="--cfg tokio_unstable -C link-arg=-L$SYSROOT/lib/wasm32-wasip2 -C link-arg=-lwasi-emulated-signal -C link-arg=-lwasi-emulated-process-clocks -C link-arg=-lwasi-emulated-mman -C link-arg=-lwasi-emulated-getpid -C link-arg=-lsetjmp -C link-arg=-zstack-size=8388608 --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
+# SQLite's SQL functions that Node's own SQLite has and rusqlite's bundled build leaves out, so that
+# the SQLite engine's function list, which it refuses a statement by, has them too.
+export LIBSQLITE3_FLAGS="${LIBSQLITE3_FLAGS:-} -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY"
 
-# The artifacts asked for, every database's by default.
-if [ $# -gt 0 ]; then WANTED=("$@"); else WANTED=("${DATABASES[@]}"); fi
-PACKAGES=()
+# One build per database: each is the same crate with another database's program behind its
+# exports, and wasip2/ is a workspace of its own, so that its tokio-postgres patch reaches no native
+# build. The components are built without LTO: the depth a statement may nest was measured on that
+# code, and LTO's larger frames spend more of the JavaScript engine's stack at the bound.
+TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target/wasip2}"
 for db in "${WANTED[@]}"; do
-  case " ${DATABASES[*]} " in
-    *" $db "*) PACKAGES+=(-p "reylo-engine-$db-wasm") ;;
-    *) echo "no engine for $db: build.sh builds ${DATABASES[*]}" >&2; exit 2 ;;
-  esac
-done
-
-# The entry crates are members of the workspace in `..`, so the artifacts land in the workspace's
-# `target/`. The workspace's release profile is `opt-level = 3` for Reylo Framework's server; the
-# wasm the loader ships is built for size. It is built without LTO, as the one artifact of a single
-# `["cdylib", "rlib"]` crate always was (cargo runs no LTO for a crate that is also an rlib): LTO
-# inlines across crates into larger frames, every wasm frame is a frame on the JavaScript engine's
-# own stack, and the depth a statement may nest (`core/src/stack.rs`) and the loader's depth tests
-# were measured on code built this way; with LTO a MySQL statement at the bound overflows Node's
-# stack. One invocation for every artifact, so the crates they share are built once. The artifacts
-# are stripped of the name section, the name of every function, which only a stack trace reads: a
-# trap reports `wasm-function[N]` instead, which a build of the same commit without the strip names.
-export CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_STRIP=symbols
-TARGET_DIR="${CARGO_TARGET_DIR:-$(cd .. && pwd)/target}"
-cargo build --release --target wasm32-wasip1 "${PACKAGES[@]}"
-for db in "${WANTED[@]}"; do
-  mkdir -p "../packages/$db"
-  cp "$TARGET_DIR/wasm32-wasip1/release/reylo_engine_${db}_wasm.wasm" "../packages/$db/engine.wasm"
-  ls -l "../packages/$db/engine.wasm"
+  CARGO_TARGET_DIR="$TARGET_DIR/$db" cargo build --manifest-path wasip2/Cargo.toml --release --target wasm32-wasip2 --features "$db"
+  OUT="../packages/$db/engine"
+  rm -rf "$OUT" && mkdir -p "$OUT"
+  node "$JCO" transpile "$TARGET_DIR/$db/wasm32-wasip2/release/reylo_engine_wasip2.wasm" -o "$OUT" --name engine --instantiation sync --bindgen-enable-wasm-exnref --no-typescript --quiet
+  # The loader types the component itself (src/component.ts); jco writes declarations with sync instantiation all the same.
+  rm -rf "$OUT/interfaces" "$OUT"/*.d.ts
+  ls -l "$OUT"/*.wasm "$OUT"/engine.js
 done

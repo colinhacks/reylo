@@ -3,8 +3,8 @@
 //! statement for the row-count proof ([`mysql`]), the nested JSON shapes ([`mysql_shape`]) and the
 //! parameters the caller may pass null for ([`mysql_params`]).
 //!
-//! Its WebAssembly artifact (`engine/wasm/mysql`, the package `@reylosql/mysql`) is its one host
-//! besides the oracle.
+//! Its hosts are the facade, `reylo-engine`, which the oracle links, and the program built from it,
+//! `engine/native`, whose WebAssembly component the package `@reylosql/mysql` carries.
 
 pub mod api;
 pub mod errors;

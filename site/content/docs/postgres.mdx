@@ -12,7 +12,7 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | Postgres versions | 14 to 18 |
 | Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url). Connect directly, not through a pooler such as PgBouncer. |
 | Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
-| Type checking | Reads the schema through the postgres.js inside `@reylosql/postgres`, so your project needs no driver for it |
+| Type checking | The engine in `@reylosql/postgres` connects to Postgres itself, so your project needs no driver for it |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -831,7 +831,7 @@ An error inside a transaction aborts it, even when `.try()` returns the error: e
 
 ## Drivers
 
-Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema through the postgres.js that `@reylosql/postgres` carries, whatever driver your app uses.
+Reylo decodes its query results itself, so type parsers and transforms you set on your client don't affect Reylo's queries, and Reylo's don't affect yours. Type checking reads your schema over the engine's own connection, whatever driver your app uses.
 
 Each example below runs this query:
 

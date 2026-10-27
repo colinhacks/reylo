@@ -1,26 +1,31 @@
-// The analysis engine: one WASI reactor per database, `engine.wasm` of the database's own npm
-// package (`@reylosql/postgres`, `@reylosql/sqlite`, `@reylosql/mysql`), which a project installs
-// beside reylo and which is found from the project first, then from reylo's own install; each
-// loads once per process. The engine is pure. `analyze` replays it: every round it either answers
-// or names what it still needs — statements to describe, catalog queries to run — and this module
-// fulfils those through the project's own driver and calls again.
-import { readFileSync } from "node:fs";
+// The analysis engine: one WebAssembly component per database, in the `engine/` directory of the
+// database's npm package (`@reylosql/postgres`, `@reylosql/sqlite`, `@reylosql/mysql`), which a
+// project installs beside reylo and which is found from the project first, then from reylo's own
+// install; each loads once per process. The engine connects to the database itself: the analysis
+// of a statement is one request on a connection it opened (engine/native, built as a component by
+// engine/build.sh), whose sockets jco's preview2-shim opens as Node's (src/component.ts). The
+// requests that need no database (`ping`, `lex`, `config`) go to an instance in this thread, which
+// answers at once; the rest go to an instance in a worker (src/engine-worker.ts), where a call may
+// wait on the network without holding this thread.
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { WASI as WasiClass } from "node:wasi";
+import { Worker } from "node:worker_threads";
+import { instantiate, type ComponentExports, type CoreModule, type Instantiate } from "./component.ts";
+import { NotMysql, Unreachable } from "./connection.ts";
+import { EngineCore, type Analysis, type Described, type Dialect } from "./engine-core.ts";
 
 export type { EngineType } from "./engine-type.ts";
 export { reason, Unreachable } from "./connection.ts";
 export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
 export { AnswerCache, EngineCore } from "./engine-core.ts";
-import { EngineCore, type Dialect, type Instance, type Memory } from "./engine-core.ts";
+
 /**
- * Each database's engine: an npm package that carries its artifact, `engine.wasm`, reylo's
- * build-time half (src/tooling.ts), and on Postgres and MySQL its describer with the driver inside
- * (`describer`). Each is an optional peer of reylo's, at reylo's own version, so a project installs
- * the ones for its databases. Every one carries the same core, which lexes and reads the project
- * file.
+ * Each database's engine: an npm package that carries its component, transpiled into `engine/`,
+ * and reylo's build-time half (src/tooling.ts). Each is an optional peer of reylo's, at reylo's own
+ * version, so a project installs the ones for its databases. Every one carries the same core, which
+ * lexes and reads the project file.
  */
 export const ENGINE_PACKAGES: Record<Dialect, string> = { postgres: "@reylosql/postgres", sqlite: "@reylosql/sqlite", mysql: "@reylosql/mysql" };
 
@@ -58,44 +63,26 @@ export class MissingEngine extends Error {
 }
 
 /**
- * Where `dialect`'s engine is: the project's own install first, as its drivers are found
- * (`describer`, below), then reylo's. `from` is where reylo looks after the project, its own module
- * unless a test says otherwise.
+ * Where `dialect`'s engine is, the `engine/` directory of its package: the project's own install
+ * first, then reylo's. `from` is where reylo looks after the project, its own module unless a test
+ * says otherwise.
  */
 export function enginePath(dialect: Dialect, projectDir: string, from: string = import.meta.url): string | undefined {
   for (const base of [join(projectDir, "package.json"), from]) {
     try {
-      return createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
+      const dir = join(dirname(createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/package.json`)), "engine");
+      if (existsSync(join(dir, "engine.js"))) return dir;
     } catch {}
   }
   return undefined;
 }
 
-/**
- * The half of `dialect`'s analysis that talks to its database, `@reylosql/<database>/describe`:
- * packages/postgres/describe.ts and packages/mysql/describe.ts, each with its driver inside.
- * Found as its engine is, and loaded once per process and file. SQLite has none: it prepares inside
- * the engine and reads the database file through `node:sqlite`.
- */
-export function describer<T>(dialect: "postgres" | "mysql", projectDir: string, from: string = import.meta.url): Promise<T> {
-  for (const base of [join(projectDir, "package.json"), from]) {
-    let path: string;
-    try {
-      path = createRequire(base).resolve(`${ENGINE_PACKAGES[dialect]}/describe`);
-    } catch {
-      continue;
-    }
-    return import(pathToFileURL(path).href) as Promise<T>;
-  }
-  return Promise.reject(MissingEngine.of(dialect));
-}
-
 const engines = new Map<string, Promise<Engine>>();
 
 /**
- * The engine of one database as `projectDir` finds it, loaded once per process and file. It
+ * The engine of one database as `projectDir` finds it, loaded once per process and directory. It
  * rejects with a MissingEngine where none is installed, where the package is another version than
- * reylo, and where its artifact reads another database's statements.
+ * reylo, and where its component reads another database's statements.
  */
 export function engine(dialect: Dialect, projectDir: string, from?: string): Promise<Engine> {
   const path = enginePath(dialect, projectDir, from);
@@ -146,50 +133,107 @@ export async function anyEngine(projectDir: string, from?: string): Promise<Engi
 
 // The WebAssembly namespace is a global in every runtime reylo supports; it is typed here
 // rather than through the DOM lib.
-const WA = (globalThis as unknown as { WebAssembly: { compile(bytes: Uint8Array): Promise<unknown>; instantiate(module: unknown, imports: object): Promise<Instance> } }).WebAssembly;
+const WA = (globalThis as unknown as { WebAssembly: { compile(bytes: Uint8Array): Promise<CoreModule> } }).WebAssembly;
 
-// Node warns "ExperimentalWarning: WASI is an experimental feature" when `node:wasi` first loads
-// in a thread, not when a WASI is made, so a static import printed that line before anything else
-// in every program run under `reylo/register`. The module is loaded here instead, when the engine
-// is, while a filter on `process.emitWarning`, which Node's own warning goes through, swallows that
-// one warning and passes every other through. Node 24 and Bun both have `getBuiltinModule`.
-const WASI_WARNING = "WASI is an experimental feature and might change at any time";
-function loadWasi(): { WASI: typeof WasiClass } {
-  const emitWarning = process.emitWarning;
-  process.emitWarning = function (this: unknown, warning: string | Error, ...rest: unknown[]) {
-    const message = typeof warning === "string" ? warning : warning.message;
-    const type = typeof warning === "string" ? (typeof rest[0] === "string" ? rest[0] : (rest[0] as { type?: string } | undefined)?.type) : warning.name;
-    if (message === WASI_WARNING && type === "ExperimentalWarning") return;
-    return (emitWarning as (...args: unknown[]) => void).call(this, warning, ...rest);
-  } as typeof process.emitWarning;
-  try {
-    return process.getBuiltinModule("node:wasi");
-  } finally {
-    process.emitWarning = emitWarning;
-  }
+type Answer = { status: string; message?: string; code?: string; conn?: number; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
+
+/** What a session asks of a connection the engine holds. */
+export interface Connection {
+  analyze(sql: string): Promise<Analysis>;
+  /** A query, its parameters bound and its rows read as the engine's catalog queries are. */
+  query(sql: string, params: unknown[]): Promise<unknown[][]>;
+  /** A statement described as the engine's own describe reads it, for a host that runs the engine's analysis itself (EngineCore's `analyze`); Postgres only. */
+  describe(sql: string): Promise<Described>;
+  /** The schema changed: the answers the engine keeps for this connection are stale. */
+  forget(): Promise<void>;
+  close(): Promise<void>;
 }
 
-/** The engine loaded from a file with Node's (or Bun's) `node:wasi`. */
+/** A database's engine component, loaded from its package's `engine/`. */
 export class Engine extends EngineCore {
-  static async load(path: URL | string): Promise<Engine> {
-    const module = await WA.compile(readFileSync(path));
-    const { WASI } = loadWasi();
-    const wasi = new WASI({ version: "preview1", args: ["reylo-engine"], env: {} });
-    // Bun's node:wasi has neither getImportObject nor initialize: it takes the imports from
-    // wasiImport, and its start(instance) only sets the memory of a reactor, which has no _start.
-    // Its random_get returns the length instead of 0 before Bun 1.4 (oven-sh/bun#35438), which
-    // the engine's first hash map reads as a failure, so it is replaced.
-    const bun = typeof (wasi as { getImportObject?: unknown }).getImportObject !== "function";
-    let instance: Instance;
-    const random_get = (ptr: number, len: number) => {
-      const memory = instance.exports.memory as Memory;
-      for (let at = 0; at < len; at += 65536) crypto.getRandomValues(new Uint8Array(memory.buffer, ptr + at, Math.min(65536, len - at)));
-      return 0;
-    };
-    instance = await WA.instantiate(module, bun ? { wasi_snapshot_preview1: { ...wasi.wasiImport, random_get } } : wasi.getImportObject());
-    if (bun) wasi.start(instance as never);
-    else wasi.initialize(instance as never);
-    return new Engine(instance);
+  readonly path: string;
+  readonly #modules: Record<string, CoreModule>;
+  #worker: Worker | undefined;
+  #pending = new Map<number, (answer: Answer) => void>();
+  #next = 1;
+
+  private constructor(path: string, modules: Record<string, CoreModule>, here: ComponentExports) {
+    super((request) => here.call(request));
+    this.path = path;
+    this.#modules = modules;
   }
 
+  /** The component in `dir`: its core modules compiled once, here and for the worker alike. */
+  static async load(dir: string): Promise<Engine> {
+    const modules: Record<string, CoreModule> = {};
+    await Promise.all(readdirSync(dir).filter((n) => n.endsWith(".wasm")).map(async (n) => void (modules[n] = await WA.compile(readFileSync(join(dir, n))))));
+    const { instantiate: run } = (await import(pathToFileURL(join(dir, "engine.js")).href)) as { instantiate: Instantiate };
+    return new Engine(dir, modules, instantiate(run, modules, false));
+  }
+
+  /** A connection to the database `url` names (a SQLite database's path), opened by the engine; an Unreachable where it cannot be. */
+  async open(url: string): Promise<Connection> {
+    const conn = (await this.#ask({ op: "open", url })).conn!;
+    return {
+      analyze: async (sql) => (await this.#ask({ op: "run", conn, sql })).analysis!,
+      query: async (sql, params) => (await this.#ask({ op: "query", conn, sql, params })).rows!,
+      describe: async (sql) => {
+        const d = await this.#ask({ op: "describe", conn, sql });
+        return { params: d.params!.map((oid) => ({ oid })), columns: d.columns! };
+      },
+      forget: async () => void (await this.#ask({ op: "forget", conn })),
+      close: async () => void (await this.#ask({ op: "close", conn }).catch(() => {})),
+    };
+  }
+
+  /**
+   * A request to the engine's worker. A refused login and a database that cannot be reached are an
+   * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
+   * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
+   * failure is an Error.
+   */
+  async #ask(request: object): Promise<Answer> {
+    const worker = this.#start();
+    const id = this.#next++;
+    const answer = await new Promise<Answer>((resolve) => {
+      this.#pending.set(id, resolve);
+      worker.ref();
+      worker.postMessage(JSON.stringify({ ...request, id }));
+    });
+    if (answer.status === "notMysql") throw new NotMysql(answer.server!);
+    if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
+    if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code });
+    return answer;
+  }
+
+  /** The worker, started on the first request: it keeps this process alive only while a request waits on it, so that a build ends when its work does. */
+  #start(): Worker {
+    if (this.#worker) return this.#worker;
+    // The worker's own file, beside this one: a `.ts` file in this repository, a `.js` one in an engine package.
+    const extension = import.meta.url.slice(import.meta.url.lastIndexOf("."));
+    const worker = new Worker(new URL(`./engine-worker${extension}`, import.meta.url), { workerData: { js: pathToFileURL(join(this.path, "engine.js")).href, modules: this.#modules } });
+    this.#worker = worker;
+    worker.on("message", (line: string) => {
+      let answer: Answer & { id?: number };
+      try {
+        answer = JSON.parse(line);
+      } catch {
+        return;
+      }
+      const resolve = this.#pending.get(answer.id!);
+      if (!resolve) return;
+      this.#pending.delete(answer.id!);
+      resolve(answer);
+      if (this.#pending.size === 0) worker.unref();
+    });
+    const ended = (why: string) => {
+      if (this.#worker !== worker) return;
+      this.#worker = undefined;
+      for (const resolve of this.#pending.values()) resolve({ status: "unreachable", message: why });
+      this.#pending.clear();
+    };
+    worker.on("error", (e: Error) => ended(`the engine ${this.path} failed: ${e.message}`));
+    worker.on("exit", (code) => ended(`the engine ${this.path} stopped (${code})`));
+    return worker;
+  }
 }

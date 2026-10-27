@@ -1,5 +1,5 @@
 // Compiles SQLite's amalgamation, patched with the engine's resolution hooks, together with
-// the tree serializer in `csrc/reylo_sqlite.c`, for the native and the wasm32-wasip1 target alike.
+// the tree serializer in `csrc/reylo_sqlite.c`, for the native and the wasm32-wasip2 target alike.
 // `build.sh` fetches the amalgamation and applies `csrc/patch-sqlite.py`; this script only compiles.
 use std::env;
 use std::path::PathBuf;
@@ -46,13 +46,12 @@ fn main() {
         .define("SQLITE_OMIT_DEPRECATED", None)
         .define("SQLITE_OMIT_SHARED_CACHE", None)
         .define("SQLITE_TEMP_STORE", "3");
-    if !target.starts_with("wasm32") {
-        // A native consumer of this rlib may link its own SQLite (Reylo Framework links rusqlite's bundled
-        // one), so the amalgamation's public API stays private to this translation unit: only
-        // `reylo_sqlite_analyze` and `reylo_sqlite_free` are exported, and nothing here is
-        // reachable from, or shadows, the other copy.
-        build.define("SQLITE_API", "static").define("SQLITE_EXTERN", "");
-    }
+    // Every consumer of this rlib may link its own SQLite (the engine's program links rusqlite's
+    // bundled one to read a database file, in the component and natively alike), so the
+    // amalgamation's public API stays private to this translation unit: only `reylo_sqlite_analyze`
+    // and `reylo_sqlite_free` are exported, and nothing here is reachable from, or shadows, the other
+    // copy.
+    build.define("SQLITE_API", "static").define("SQLITE_EXTERN", "");
     if target.contains("linux") {
         // The amalgamation defines `_GNU_SOURCE` for itself, but `csrc/reylo_sqlite.c` has
         // included system headers before it gets there, and glibc then hides `mremap`.

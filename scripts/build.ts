@@ -7,17 +7,19 @@
 //   carries no engine and no build step: each database's is a package of its own, an optional peer
 //   at reylo's exact version, which the entry points find from the project (src/engine-package.ts).
 // - dist/postgres, dist/sqlite, dist/mysql: `@reylosql/<database>`, at reylo's version, with its
-//   `engine.wasm` (built by engine/build.sh and committed), its package.json and README, and
-//   reylo's build-time half (src/tooling.ts) bundled into `tooling.js`. The Postgres and MySQL
-//   packages also carry their describer with its driver inside, `describe.js`.
+//   engine component in `engine/` (built by engine/build.sh and committed), its package.json and
+//   README, reylo's build-time half (src/tooling.ts) bundled into `tooling.js`, the worker the
+//   engine opens its connections in (src/engine-worker.ts) bundled into `engine-worker.js`, and the
+//   I/O worker of jco's preview2-shim, which both bundle, beside them. Nothing in it is
+//   platform-specific, and it depends on nothing.
 // The repository's own package.json files keep pointing at the sources, so the tests and the labs
 // run them without a build; every one of them is private, so that none can be published by
 // mistake.
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { build as bundle, transformSync, type Plugin } from "esbuild";
+import { copyFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { build as bundle, transformSync } from "esbuild";
 
 const root = join(import.meta.dirname, "..");
 const dist = join(root, "dist");
@@ -60,7 +62,7 @@ if (source.length) throw new Error(`dist/reylo holds TypeScript sources: ${sourc
 const wasm = files.filter((f) => f.endsWith(".wasm"));
 if (wasm.length) throw new Error(`dist/reylo holds an engine: ${wasm.join(", ")}`);
 // Nor any of the build-time half, which a run-time module would drag in by importing it.
-const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|engine-core|loader|commands|mapper-server|play)\.js$/.test(f));
+const tooling = files.filter((f) => /^src\/(tooling|analyze|engine|engine-core|engine-worker|component|loader|commands|mapper-server|play)\.js$/.test(f));
 if (tooling.length) throw new Error(`dist/reylo holds the engine packages' build steps: ${tooling.join(", ")}`);
 console.log(`dist/reylo: ${files.length} files, package ${built.name}@${built.version}`);
 
@@ -77,45 +79,37 @@ console.log(`dist/reylo/play: ${page.length} files, ${Math.round(pageBytes / 102
 // Each engine package's JavaScript is bundled into a few files with everything it reads, which also
 // leaves out the comments.
 const bundled = { bundle: true, platform: "node", format: "esm", target: "node24", legalComments: "inline", logLevel: "warning", metafile: true } as const;
-// mysql2 is CommonJS, and reads Node's own modules with a `require`, which an ES module has not.
-const withRequire = { js: `import { createRequire as reyloCreateRequire } from "node:module";\nconst require = reyloCreateRequire(import.meta.url);` };
-// MySQL converts every result to the connection's character set, and Reylo connects in UTF-8, so
-// mysql2 never decodes the East Asian multi-byte sets whose tables are most of iconv-lite's size.
-const noMultiByte: Plugin = {
-  name: "reylo-no-multibyte",
-  setup(build) {
-    build.onResolve({ filter: /^\.\/dbcs-(data|codec)$/ }, (args) => (args.importer.includes("iconv-lite") ? { path: args.path, namespace: "reylo-empty" } : undefined));
-    build.onLoad({ filter: /.*/, namespace: "reylo-empty" }, () => ({ contents: "module.exports = {};", loader: "js" }));
-  },
-};
-const DESCRIBERS: Partial<Record<(typeof DATABASES)[number], string>> = { postgres: "packages/postgres/describe.ts", mysql: "packages/mysql/describe.ts" };
+// jco's preview2-shim, which tooling.js and engine-worker.js bundle, starts its own I/O worker from
+// this file beside the module that bundles it, and loads its native addon (jco-node-fs) only for a
+// call the engine never makes, through a `require` of its own that the bundle leaves out.
+const shimWorker = join(dirname(createRequire(join(root, "package.json")).resolve("@bytecodealliance/preview2-shim/instantiation")), "..", "io", "worker-thread.bundle.js");
 
 for (const db of DATABASES) {
   const from = join(root, "packages", db);
   const to = join(dist, db);
   mkdirSync(to);
-  // Its driver is a development dependency in the repository and bundled into describe.js.
   const { private: _p, exports: entries, devDependencies: _dev, ...engine } = JSON.parse(readFileSync(join(from, "package.json"), "utf8"));
   if (engine.version !== pkg.version) throw new Error(`packages/${db}/package.json is ${engine.version}, and reylo is ${pkg.version}; they move together`);
   const exported = Object.fromEntries(Object.entries(entries as Record<string, string>).map(([key, path]) => [key, js(path)]));
   writeFileSync(join(to, "package.json"), JSON.stringify({ ...engine, exports: exported }, null, 2) + "\n");
-  copyFileSync(join(from, "engine.wasm"), join(to, "engine.wasm"));
+  cpSync(join(from, "engine"), join(to, "engine"), { recursive: true });
   copyFileSync(join(from, "README.md"), join(to, "README.md"));
+  // Before anything loads the bundles: loading the shim starts its I/O worker from this file.
+  copyFileSync(shimWorker, join(to, "worker-thread.bundle.js"));
   const half = await bundle({ ...bundled, entryPoints: [join(root, "src/tooling.ts")], outfile: join(to, "tooling.js") });
   // reylo's entry points load it with a `require` (src/engine-package.ts), which refuses an ES
   // module with a top-level await.
   if (typeof (createRequire(import.meta.url)(join(to, "tooling.js")) as { default?: { sqlModule?: unknown } }).default?.sqlModule !== "function") throw new Error(`dist/${db}/tooling.js does not load with a require`);
-  // The describers and their drivers are each database's own, loaded by dialect (src/engine.ts).
-  const drivers = Object.keys(half.metafile.inputs).filter((input) => /node_modules\/(postgres|mysql2)\/|packages\/(postgres|mysql)\/describe\.ts$/.test(input));
-  if (drivers.length) throw new Error(`dist/${db}/tooling.js bundles a describer or a driver: ${drivers.join(", ")}`);
+  // The engine connects to its database itself: no driver, and nothing native, is bundled.
+  const native = Object.keys(half.metafile.inputs).filter((input) => /node_modules\/(postgres|mysql2|@bytecodealliance\/jco-node-fs)\//.test(input));
+  if (native.length) throw new Error(`dist/${db}/tooling.js bundles a driver or a native addon: ${native.join(", ")}`);
+  await bundle({ ...bundled, entryPoints: [join(root, "src/engine-worker.ts")], outfile: join(to, "engine-worker.js") });
   // A child process src/sqlite-drivers.ts starts beside the module that starts it.
   await bundle({ ...bundled, entryPoints: [join(root, "src/d1-proxy.ts")], outfile: join(to, "d1-proxy.js") });
-  const describer = DESCRIBERS[db];
-  // Minified, being the drivers' code more than Reylo's.
-  if (describer) await bundle({ ...bundled, entryPoints: [join(root, describer)], outfile: join(to, "describe.js"), banner: withRequire, plugins: [noMultiByte], minify: true });
   const shipped = readdirSync(to);
   const missing = (engine.files as string[]).filter((f) => !shipped.includes(f));
   if (missing.length) throw new Error(`dist/${db} is missing what its package.json lists: ${missing.join(", ")}`);
-  const sizes = shipped.filter((f) => f !== "package.json" && f !== "README.md").map((f) => `${f} ${readFileSync(join(to, f)).length} bytes`);
+  const size = (path: string): number => (statSync(path).isDirectory() ? readdirSync(path).reduce((n, f) => n + size(join(path, f)), 0) : statSync(path).size);
+  const sizes = shipped.filter((f) => f !== "package.json" && f !== "README.md").map((f) => `${f} ${size(join(to, f))} bytes`);
   console.log(`dist/${db}: package ${engine.name}@${engine.version}, ${sizes.join(", ")}`);
 }

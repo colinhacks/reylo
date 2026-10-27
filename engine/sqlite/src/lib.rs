@@ -3,8 +3,8 @@
 //! engine's hooks ([`sqlite_tree`]), and the function tables and row-count proof over it
 //! ([`sqlite`]). No other parser is linked: what SQLite resolves is what the analysis reads.
 //!
-//! Two hosts link it: its WebAssembly artifact (`engine/wasm/sqlite`, the package
-//! `@reylosql/sqlite`) and Reylo Framework, which runs [`sqlite::analyze_ddl`] over a connection of
+//! Two hosts link it: the facade, `reylo-engine`, and the program built from it, `engine/native`,
+//! whose WebAssembly component the package `@reylosql/sqlite` carries; and Reylo Framework, which runs [`sqlite::analyze_ddl`] over a connection of
 //! its own.
 
 pub mod api;

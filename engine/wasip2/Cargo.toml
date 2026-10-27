@@ -1,0 +1,44 @@
+# Reylo's engine as one WebAssembly component per database (`wasm32-wasip2`): the native program
+# (engine/native) behind two exports, `call` and `serve`, which the loader runs through jco's
+# preview2-shim (src/engine.ts, src/engine-worker.ts), whose WASI sockets open the engine's own
+# connections.
+#
+# A workspace of its own, so that its one patch, tokio-postgres made to build its `runtime` for
+# wasip2 (tokio-postgres-0.7.18.patch, applied into .patched/ by engine/build.sh --prepare), reaches
+# no native build. Build it with engine/build.sh.
+[workspace]
+resolver = "2"
+members = ["."]
+
+[package]
+name = "reylo-engine-wasip2"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reylo's engine as a WebAssembly component per database: the native program's requests, answered by the exports `call` and `serve`, over connections it opens itself through WASI sockets."
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+postgres = ["reylo-engine-native/postgres"]
+mysql = ["reylo-engine-native/mysql"]
+sqlite = ["reylo-engine-native/sqlite"]
+
+[build-dependencies]
+reylo-engine-build = { path = "../build-support" }
+
+[dependencies]
+reylo-engine-native = { path = "../native", default-features = false }
+tokio = { version = "1.51", features = ["rt", "time", "net"] }
+serde_json = "1"
+wit-bindgen = "0.63"
+
+[patch.crates-io]
+pg_query = { path = "../postgres/.patched/pg_query" }
+tokio-postgres = { path = ".patched/tokio-postgres" }
+
+[profile.release]
+opt-level = "s"
+strip = "symbols"
+panic = "abort"
