@@ -4,7 +4,7 @@ title: "Tracing"
 
 ## Tracing
 
-Reylo publishes every query it runs on Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, so your tracer or logger can wrap each one in a span:
+To add observability (o11y) to your queries, subscribe to Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, where Reylo publishes every query it runs, and wrap each one in a span:
 
 ```ts twoslash
 type Span = { recordException(error: unknown): void; end(): void };

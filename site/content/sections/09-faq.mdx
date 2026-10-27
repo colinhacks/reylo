@@ -35,4 +35,9 @@ No, not yet: Reylo reads your types from a live database, so a type check or a b
 Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](#data-types).
 
 </Accordion>
+<Accordion title="How do I add observability to my queries?" id="faq-observability">
+
+Reylo publishes every query it runs on Node's tracing channel `reylo:query`, so your tracer, logger or other o11y tool can wrap each one in a span. [Tracing](#tracing) shows how.
+
+</Accordion>
 </Accordions>
