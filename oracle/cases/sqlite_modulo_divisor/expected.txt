@@ -1,0 +1,6 @@
+divide_half.sql: many () -> { r: real }
+half.sql: many () -> { r: real? }
+half_almost.sql: many () -> { r: real? }
+milli.sql: many () -> { r: real? }
+two.sql: many () -> { r: integer }
+two_half.sql: many () -> { r: real }
