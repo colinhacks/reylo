@@ -4,7 +4,7 @@
   "buildCommand": "pnpm run build",
   "outputDirectory": "build/client",
   "functions": {
-    "api/play/*.mjs": { "memory": 1024, "maxDuration": 30, "includeFiles": ".live/{engine.wasm,postgres.tar,pglite.wasm,pglite-data.tar}" },
+    "api/play/*.mjs": { "memory": 1024, "maxDuration": 30, "includeFiles": ".live/{engine/*.wasm,postgres.tar,pglite.wasm,pglite-data.tar}" },
     "api/play-og/image.mjs": { "memory": 1024, "maxDuration": 15, "includeFiles": "assets/fonts/{Geist-600,GeistMono-400}.ttf" },
     "api/play-og/page.mjs": { "maxDuration": 10 }
   },
