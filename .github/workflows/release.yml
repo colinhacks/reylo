@@ -195,22 +195,29 @@ jobs:
         with:
           persist-credentials: false
 
-      # the job token cannot create a tag, so it is pushed with the deploy key the ruleset exempts, and the key file is gone after the push; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
-      - name: Tag the release
+      # the job token cannot create a tag or move `release`, so both are pushed with the deploy key the rulesets exempt, and the key file is gone when the step ends, however it ends; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
+      # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto it since the last release, which main holds too. It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. The tag is a lightweight one, so `ls-remote` names its commit.
+      - name: Tag the release and move the docs to it
         env:
           VERSION: ${{ needs.stage.outputs.version }}
           RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
-            echo "v$VERSION is already tagged"
-            exit 0
-          fi
+          trap 'rm -f "$RUNNER_TEMP/release-tag-key"' EXIT
           printf '%s\n' "$RELEASE_TAG_KEY" > "$RUNNER_TEMP/release-tag-key"
           chmod 600 "$RUNNER_TEMP/release-tag-key"
           echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
-          git tag "v$VERSION" "$GITHUB_SHA"
-          GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/release-tag-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" git push "git@github.com:$GITHUB_REPOSITORY.git" "refs/tags/v$VERSION"
-          rm "$RUNNER_TEMP/release-tag-key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/release-tag-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          remote="git@github.com:$GITHUB_REPOSITORY.git"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$VERSION" > /dev/null; then
+            echo "v$VERSION is already tagged"
+          else
+            git tag "v$VERSION" "$GITHUB_SHA"
+            git push "$remote" "refs/tags/v$VERSION"
+          fi
+          tagged="$(git ls-remote origin "refs/tags/v$VERSION" | cut -f1)"
+          git cat-file -e "$tagged^{commit}" 2> /dev/null || git fetch --quiet --depth=1 origin "$tagged"
+          git push --force "$remote" "$tagged:refs/heads/release"
+          echo "release is at v$VERSION ($tagged)"
 
       # the notes go through env and a file so their text can't break out of the command; a re-dispatch with corrected notes rewrites an existing release's body
       - name: Create release
