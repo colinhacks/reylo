@@ -672,7 +672,7 @@ where slug = :slug and not deleted
 
 **Subqueries, `with` queries and views**
 
-A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns.
+A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, when its `group by` or `distinct` lists the columns, or when it is a `union`, `intersect` or `except` without `all`. A key column its `where` pins to one value may be left out, and a column list renames the key's columns.
 
 <Inferred>
 

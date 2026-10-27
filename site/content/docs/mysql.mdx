@@ -479,7 +479,7 @@ These don't count as a key match, so the query returns `Row[]`:
 | A `TIMESTAMP` key, since two instants can show as one time when clocks go back | `where created = :at` |
 | A `WITH ROLLUP`, which adds rows | `group by id with rollup` |
 | A derived table, a `with` query or a view that passes the key through an expression, repeats rows with `union all`, or joins several rows per row of the keyed table | `select * from (select id + 0 as id from users) u where u.id = :id` |
-| A view whose column list renames its columns | `create view v (user_id, label) as select id, name from users` |
+| A `union` of columns that are not all integers or decimals, which MySQL compares under a type it picks | `select email from users union select name from users` |
 
 A multi-table `delete` or `update` returns nothing, and so does `select … into @variable`.
 
