@@ -28,7 +28,8 @@ const DATABASES = ["postgres", "sqlite", "mysql", "duckdb"] as const;
 
 rmSync(dist, { recursive: true, force: true });
 const reylo = join(dist, "reylo");
-execFileSync(join(root, "node_modules/.bin/tsc"), ["-p", join(root, "tsconfig.build.json")], { stdio: "inherit" });
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+execFileSync(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", join(root, "tsconfig.build.json")], { stdio: "inherit" });
 // The comments stay in the sources and in the declarations, where an editor shows them. The
 // JavaScript ships without them, since they are about a third of its size.
 for (const file of readdirSync(reylo, { recursive: true, encoding: "utf8" }).filter((f) => f.endsWith(".js"))) {
