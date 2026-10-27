@@ -10,6 +10,7 @@ import { Session } from "../src/analyze.ts";
 import { guestPath } from "../src/component.ts";
 import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
+import { mysqlStandIn } from "./mysql-stand-in.ts";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const PG = process.env.REYLO_TEST_PG;
@@ -133,11 +134,17 @@ test("a connection waiting on a server that never answers holds up no other conn
   try {
     const e = await engine("postgres", ROOT);
     const waiting = e.open(`postgres://postgres@127.0.0.1:${(silent.address() as AddressInfo).port}/x`).catch((err: unknown) => err);
-    const t0 = Date.now();
-    const c = await e.open(PG!);
-    assert.deepEqual((await c.analyze("select 3 as z")).columns.map((col) => col.name), ["z"]);
-    assert.ok(Date.now() - t0 < 5_000, `took ${Date.now() - t0} ms`);
-    await c.close();
+    const healthy = (async () => {
+      const c = await e.open(PG!);
+      try {
+        return (await c.analyze("select 3 as z")).columns.map((col) => col.name);
+      } finally {
+        await c.close();
+      }
+    })();
+    // The healthy connection's analysis ends while the other still waits out its connect timeout.
+    assert.equal(await Promise.race([healthy.then(() => "healthy"), waiting.then(() => "silent")]), "healthy");
+    assert.deepEqual(await healthy, ["z"]);
     assert.ok((await waiting) instanceof Unreachable);
   } finally {
     silent.close();
@@ -154,4 +161,68 @@ await c.close();`;
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, WATCH_REPORT_DEPENDENCIES: "1" }, encoding: "utf8", timeout: 30_000 });
   assert.equal(run.stderr, "");
   assert.equal(run.stdout.trim(), "x");
+});
+
+/** A connection to `url`'s host and port that writes `bytes`, and resolves with what it read once the bridge closed it. */
+async function knock(url: string, bytes: Buffer): Promise<Buffer> {
+  const { hostname, port } = new URL(url.replace(/^[a-z]+:/, "http:"));
+  const socket = connect(Number(port), hostname);
+  const read: Buffer[] = [];
+  socket.on("data", (chunk: Buffer) => read.push(chunk));
+  socket.on("error", () => {});
+  socket.write(bytes);
+  await new Promise((done) => socket.on("close", done));
+  return Buffer.concat(read);
+}
+
+test("the bridge to a Unix socket closes a connection that does not carry its token, before the server reads it", async () => {
+  // Postgres: the socket is not even opened for a connection that does not open with the token.
+  const dir = mkdtempSync(join(tmpdir(), "reylo-sock-"));
+  let reached = 0;
+  const pgSocket = createServer((socket) => {
+    reached++;
+    socket.destroy();
+  });
+  await new Promise<void>((done) => pgSocket.listen(join(dir, ".s.PGSQL.5432"), done));
+  // MySQL: the server speaks first, so the stand-in is reached, but no login reaches it.
+  const standIn = await mysqlStandIn({ version: "8.4.6" });
+  const my = await socketFor(`mysql://root@127.0.0.1:${standIn.port}`, "mysql.sock");
+  try {
+    const pg = await hostUrl(`postgres://postgres@/app?host=${dir}`);
+    assert.ok(pg.bridge && pg.url.startsWith("postgres://postgres@127.0.0.1:"), pg.url);
+    // A startup message for user postgres, as another local process would send it.
+    const startup = Buffer.from("\0\0\0\x24\0\x03\0\0user\0postgres\0database\0app\0\0", "latin1");
+    assert.equal((await knock(pg.url, Buffer.concat([startup, startup]))).length, 0);
+    assert.equal(reached, 0);
+    pg.close();
+    const mysql = await hostUrl(`mysql://root@localhost/app?socketPath=${encodeURIComponent(my.path)}`);
+    assert.ok(mysql.bridge && mysql.url.startsWith("mysql://root@127.0.0.1:"), mysql.url);
+    // A login with no connection attributes, after the greeting the bridge passes on.
+    const login = Buffer.alloc(36);
+    login.writeUIntLE(32, 0, 3);
+    login[3] = 1;
+    login.writeUInt32LE(0x200 | 0x8000, 4);
+    const greeting = await knock(mysql.url, login);
+    assert.ok(greeting.length > 4 && greeting[4] === 10, "the greeting reached the client");
+    // The greeting's capabilities offer no TLS, so the login that answers it is read in plain text.
+    // After the protocol byte and the version, the connection id (4), the scramble's first part (8) and a filler byte.
+    const capabilities = greeting.readUInt16LE(greeting.indexOf(0, 5) + 1 + 4 + 8 + 1);
+    assert.equal(capabilities & 0x0800, 0);
+    assert.deepEqual(standIn.tried, []);
+    mysql.close();
+  } finally {
+    pgSocket.close();
+    my.server.close();
+    await standIn.close();
+  }
+});
+
+test("PGHOST names the socket's directory where the URL names no host, as libpq reads it", async () => {
+  const bridged = await hostUrl("postgres://u@/d", { PGHOST: "/var/run/postgresql", PGPORT: "5433" });
+  assert.ok(bridged.bridge);
+  assert.match(bridged.url, /^postgres:\/\/u@127\.0\.0\.1:\d+\/d$/);
+  bridged.close();
+  // A host in the URL, or a TCP host in PGHOST, is no socket.
+  assert.equal((await hostUrl("postgres://u@db/d", { PGHOST: "/var/run/postgresql" })).bridge, undefined);
+  assert.equal((await hostUrl("postgres://u@/d", { PGHOST: "db.internal" })).bridge, undefined);
 });

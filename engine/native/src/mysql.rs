@@ -21,6 +21,9 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// The error a server answers a refused login with.
 const ACCESS_DENIED: u16 = 1045;
 
+/// The connection attribute that carries the token of the host's bridge to a Unix socket.
+const BRIDGE_ATTRIBUTE: &str = "reylo_bridge";
+
 #[derive(Default)]
 pub struct Mysql {
     connections: HashMap<u64, Connection>,
@@ -29,8 +32,9 @@ pub struct Mysql {
 
 struct Connection {
     conn: Conn,
-    /// The URL it was opened from, to open it again.
+    /// The URL it was opened from, and the token of the host's bridge to a Unix socket, to open it again.
     url: String,
+    bridge: Option<String>,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
 }
@@ -44,7 +48,7 @@ impl Connection {
 
     /// The connection opened again where the server dropped it, as the old one is.
     async fn reopen(&mut self) -> Result<(), Value> {
-        self.conn = connect(&self.url).await?;
+        self.conn = connect(&self.url, self.bridge.as_deref()).await?;
         Ok(())
     }
 }
@@ -61,10 +65,11 @@ impl Program for Mysql {
         Some(match op {
             "open" => {
                 let url = request["url"].as_str().unwrap_or_default();
-                match connect(url).await {
+                let bridge = request["bridge"].as_str().map(String::from);
+                match connect(url, bridge.as_deref()).await {
                     Ok(conn) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { conn, url: url.to_string(), answers: AnswerCache::default() });
+                        self.connections.insert(self.next, Connection { conn, url: url.to_string(), bridge, answers: AnswerCache::default() });
                         json!({ "status": "opened", "conn": self.next })
                     }
                     Err(failure) => failure,
@@ -148,9 +153,14 @@ fn closed(id: u64) -> Value {
     json!({ "status": "unreachable", "message": format!("connection {id} is closed") })
 }
 
-/// A connection to the MySQL server a URL names, refused where the server is MariaDB.
-async fn connect(url: &str) -> Result<Conn, Value> {
-    let opts = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
+/// A connection to the MySQL server a URL names, refused where the server is MariaDB. Where the URL
+/// is the host's bridge to a Unix socket (src/host-url.ts), the login carries the bridge's `token`
+/// as a connection attribute, which is how the bridge knows it from any other local process's.
+async fn connect(url: &str, bridge: Option<&str>) -> Result<Conn, Value> {
+    let mut opts = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
+    if let Some(token) = bridge {
+        opts = OptsBuilder::from_opts(opts).connect_attribute(BRIDGE_ATTRIBUTE, token).into();
+    }
     let mut conn = match tokio::time::timeout(CONNECT_TIMEOUT, Conn::new(opts)).await {
         Err(_) => return Err(json!({ "status": "unreachable", "message": "no answer within 10 seconds" })),
         Ok(Err(e)) => return Err(failure(&e)),

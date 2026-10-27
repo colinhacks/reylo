@@ -35,8 +35,9 @@ pub struct Postgres {
 
 struct Connection {
     client: Client,
-    /// The URL it was opened from, to open it again.
+    /// The URL it was opened from, and the token of the host's bridge to a Unix socket, to open it again.
     url: String,
+    bridge: Option<String>,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
 }
@@ -46,7 +47,7 @@ impl Connection {
     /// connection only from the request that finds it so, since its connection's task runs only
     /// while a request does: that request is answered over the new one.
     async fn reopen(&mut self) -> Result<(), Value> {
-        self.client = connect(&self.url).await?;
+        self.client = connect(&self.url, self.bridge.as_deref()).await?;
         Ok(())
     }
 }
@@ -63,10 +64,11 @@ impl Program for Postgres {
         Some(match op {
             "open" => {
                 let url = request["url"].as_str().unwrap_or_default();
-                match connect(url).await {
+                let bridge = request["bridge"].as_str().map(String::from);
+                match connect(url, bridge.as_deref()).await {
                     Ok(client) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { client, url: url.to_string(), answers: AnswerCache::default() });
+                        self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::default() });
                         json!({ "status": "opened", "conn": self.next })
                     }
                     Err(failure) => failure,
@@ -160,21 +162,41 @@ fn lost(message: &str) -> Value {
     json!({ "status": "unreachable", "message": message.lines().next().unwrap_or_default() })
 }
 
-/// A connection to the database a libpq URL names.
-async fn connect(url: &str) -> Result<Client, Value> {
-    let Parsed { config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
+/// A connection to the database a libpq URL names. Where the URL is the host's bridge to a Unix
+/// socket (src/host-url.ts), the connection opens with the bridge's `token`, which is how the bridge
+/// knows it from any other local process's, and carries no TLS, which libpq does not use over a
+/// Unix socket either.
+async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
+    let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
     let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
-    let connecting = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls));
-    let (client, connection) = match tokio::time::timeout(config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1), connecting).await {
-        Err(_) => return Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
-        Ok(Err(e)) => return Err(failure(&e)),
-        Ok(Ok(pair)) => pair,
+    let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
+    let connecting = async {
+        let Some(token) = bridge else {
+            let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            return Ok(client);
+        };
+        let unreachable = |e: std::io::Error| json!({ "status": "unreachable", "message": format!("cannot reach the host's bridge to the socket: {e}") });
+        let (host, port) = match (config.get_hosts().first(), config.get_ports().first()) {
+            (Some(tokio_postgres::config::Host::Tcp(host)), Some(port)) => (host.clone(), *port),
+            _ => return Err(json!({ "status": "error", "message": "the host's bridge names no TCP host and port" })),
+        };
+        let mut stream = tokio::net::TcpStream::connect((host.as_str(), port)).await.map_err(unreachable)?;
+        tokio::io::AsyncWriteExt::write_all(&mut stream, token.as_bytes()).await.map_err(unreachable)?;
+        config.ssl_mode(SslMode::Disable);
+        let (client, connection) = config.connect_raw(stream, tokio_postgres::NoTls).await.map_err(|e| failure(&e))?;
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        Ok(client)
     };
-    tokio::spawn(async move {
-        let _ = connection.await;
-    });
-    Ok(client)
+    match tokio::time::timeout(timeout, connecting).await {
+        Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
+        Ok(result) => result,
+    }
 }
 
 /// A libpq URL read: tokio-postgres's configuration, how much of the server's certificate to check,

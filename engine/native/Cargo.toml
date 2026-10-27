@@ -30,7 +30,7 @@ required-features = ["sqlite"]
 reylo-engine = { path = "../facade" }
 reylo-engine-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
-tokio = { version = "1", features = ["rt", "io-std", "io-util", "time"] }
+tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
 tokio-postgres = { version = "0.7", optional = true }
 tokio-postgres-rustls = { version = "0.13", optional = true }
 # TLS over rustls and ring, as the Postgres program's.

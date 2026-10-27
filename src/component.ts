@@ -38,14 +38,18 @@ export function guestPath(path: string, platform: NodeJS.Platform = process.plat
   return platform === "win32" ? `/${path.replace(/\\/g, "/").replace(/^\/+/, "")}` : path;
 }
 
+/** The variables that name a file the engine reads: Node's extra roots, and libpq's TLS files. */
+const FILE_VARIABLES = ["NODE_EXTRA_CA_CERTS", "PGSSLROOTCERT", "PGSSLCERT", "PGSSLKEY"];
+
 /**
  * The component instantiated over its compiled core modules. The engine reaches the host's files
- * as its own process would (a SQLite database, a root certificate file), with `NODE_EXTRA_CA_CERTS`
- * read from where Node reads it, and, where `network` is set, opens connections.
+ * as its own process would (a SQLite database, a root certificate file), each variable that names a
+ * file resolved from this process's working directory as Node and libpq resolve it, and, where
+ * `network` is set, opens connections.
  */
 export async function instantiate(run: Instantiate, modules: Record<string, CoreModule>, network: boolean): Promise<ComponentExports> {
   const { WASIShim } = await loadShim();
   const env = Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined));
-  if (env.NODE_EXTRA_CA_CERTS) env.NODE_EXTRA_CA_CERTS = guestPath(resolve(env.NODE_EXTRA_CA_CERTS));
+  for (const name of FILE_VARIABLES) if (env[name] && env[name] !== "system") env[name] = guestPath(resolve(env[name]));
   return run((name) => modules[name]!, new WASIShim({ sandbox: { preopens: { "/": "/" }, env, enableNetwork: network } }).getImportObject());
 }

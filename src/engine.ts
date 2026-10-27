@@ -180,7 +180,7 @@ export class Engine extends EngineCore {
     const ask = async (request: object) => settled(await channel.ask(request));
     let conn: number;
     try {
-      conn = (await ask({ op: "open", url: target.url })).conn!;
+      conn = (await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) })).conn!;
     } catch (e) {
       channel.end();
       target.close();
