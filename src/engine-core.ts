@@ -75,8 +75,22 @@ export type Response =
   | { status: "configError"; error: { message: string; start: number; end: number } }
   | { status: "error"; message: string };
 
-/** An engine's request function: one JSON request in, its answer out (the component's `call` export, src/component.ts). */
+/** An engine's request function: one JSON request in, its answer out (the component's `call` export). */
 export type EngineCall = (request: string) => string;
+
+/** A compiled core module of an engine component, opaque here: the WebAssembly namespace is not typed through the DOM lib. */
+export type CoreModule = unknown;
+
+/** The two exports of an engine component (engine/wasip2/src/lib.rs). */
+export interface ComponentExports {
+  /** The core's answer to a request that needs no database: `ping`, `lex`, `config`, and `analyze` with the host's answers. */
+  call(request: string): string;
+  /** The answer to a request on a connection the engine opens itself: `open`, `run`, `query`, `describe`, `forget`, `close`. */
+  serve(request: string): string;
+}
+
+/** The transpiled component's `instantiate`, as `jco transpile --instantiation sync` writes it. */
+export type Instantiate = (getCoreModule: (name: string) => CoreModule, imports: object) => ComponentExports;
 
 /**
  * An engine's core: its requests that need no database, and the analysis of a statement whose

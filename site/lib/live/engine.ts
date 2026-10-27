@@ -3,9 +3,8 @@
 // from PGlite itself (lib/live/pg-io.ts), so only the component's `call` runs, and the shim, its
 // browser build in the reader's tab, opens nothing.
 import { WASIShim } from '@bytecodealliance/preview2-shim/instantiation';
-import type { Instantiate } from '../../../src/component.ts';
-import { EngineCore } from '../../../src/engine-core.ts';
-// jco's output carries no declarations: src/component.ts types it.
+import { EngineCore, type Instantiate } from '../../../src/engine-core.ts';
+// jco's output carries no declarations: src/engine-core.ts types it.
 import * as component from '../../../packages/postgres/engine/engine.js';
 
 /** The engine over its compiled core modules, by the names jco gave them (engine.core.wasm, engine.core2.wasm, …). */
