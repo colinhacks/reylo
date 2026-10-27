@@ -196,11 +196,12 @@ jobs:
           persist-credentials: false
 
       # the job token cannot create a tag or move `release`, so both are pushed with the deploy key the rulesets exempt, and the key file is gone when the step ends, however it ends; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
-      # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto it since the last release, which main holds too. It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. The tag is a lightweight one, so `ls-remote` names its commit.
+      # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto the previous release, which main holds too. It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. Where `release` already holds the tag (that dispatch, or a re-run of this job), it is left as it is, docs fixes cherry-picked onto it since included; the shallow checkout can't tell, so GitHub's compare does. The tag is a lightweight one, so `ls-remote` names its commit.
       - name: Tag the release and move the docs to it
         env:
           VERSION: ${{ needs.stage.outputs.version }}
           RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/release-tag-key"' EXIT
           printf '%s\n' "$RELEASE_TAG_KEY" > "$RUNNER_TEMP/release-tag-key"
@@ -215,9 +216,18 @@ jobs:
             git push "$remote" "refs/tags/v$VERSION"
           fi
           tagged="$(git ls-remote origin "refs/tags/v$VERSION" | cut -f1)"
-          git cat-file -e "$tagged^{commit}" 2> /dev/null || git fetch --quiet --depth=1 origin "$tagged"
-          git push --force "$remote" "$tagged:refs/heads/release"
-          echo "release is at v$VERSION ($tagged)"
+          # `identical` or `ahead`: release is the tag, or the tag with docs fixes on it. A missing release answers 404.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/$tagged...release" --jq .status 2> /dev/null)" || status=missing
+          case "$status" in
+            identical | ahead)
+              echo "release already holds v$VERSION ($status), and is left as it is"
+              ;;
+            *)
+              git cat-file -e "$tagged^{commit}" 2> /dev/null || git fetch --quiet --depth=1 origin "$tagged"
+              git push --force "$remote" "$tagged:refs/heads/release"
+              echo "release moved to v$VERSION ($tagged) from $status"
+              ;;
+          esac
 
       # the notes go through env and a file so their text can't break out of the command; a re-dispatch with corrected notes rewrites an existing release's body
       - name: Create release
