@@ -51,6 +51,9 @@ test("postgres: the statement, its database, and each value as the text the serv
   assert.throws(() => q.encode({ tags: [1] }), (e) => e instanceof ParameterError && /"id" is missing/.test(e.message));
   // The input is an object, as `.run()` takes it.
   assert.throws(() => q.encode([7]), ParameterError);
+  // A driver may take `encode` off the object.
+  const { encode } = q;
+  assert.deepEqual(encode({ id: 7 }), ["7", null, null, null, null]);
 });
 
 test("postgres: decode gives each value its kind, and the output its cardinality, as .run() does", () => {

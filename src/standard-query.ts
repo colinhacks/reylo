@@ -8,7 +8,7 @@
 // Every Reylo query is one, with the same input and output as `.run()`: `encode` binds as
 // `.run()` binds, its checks included, and `decode` gives each value its kind and the result its
 // cardinality as `.run()` does.
-import { rawStatement, type Dialect, type QueryModule } from "./execute.ts";
+import { compile, rawStatement, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { coerce, DecodeError, textDecoder } from "./values.ts";
 
@@ -91,16 +91,18 @@ function decoder(dialect: Dialect, name: string, kind: string, delim: string | u
 export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>, materialize: (rows: Record<string, unknown>[]) => Output): StandardQueryV1.Query<Output, D> {
   let text: string | undefined;
   let decoders: ((v: unknown) => unknown)[] | undefined;
+  // A closure, not `this`: a driver may take `encode` off the object.
+  const statementText = () => (text ??= compile(module).text);
   return {
     dialect: module.dialect,
     get text() {
-      return (text ??= rawStatement(module, {}, false).text);
+      return statementText();
     },
     encode(input) {
-      const bound = rawStatement(module, input === undefined ? {} : input, true);
+      const bound = rawStatement(module, input === undefined ? {} : input);
       // A structured parameter in a MySQL insert writes its column lists again for the keys a call
       // carries, so its text depends on the input: such a statement runs through `.run()`.
-      if (bound.text !== this.text) throw new TypeError(`${module.source ? `${module.source}: ` : ""}This statement's text depends on its input (a structured parameter in an insert names the keys it carries), so it runs through .run(), not as a Standard Query.`);
+      if (bound.text !== statementText()) throw new TypeError(`${module.source ? `${module.source}: ` : ""}This statement's text depends on its input (a structured parameter in an insert names the keys it carries), so it runs through .run(), not as a Standard Query.`);
       return bound.values as StandardQueryV1.RawValue<D>[];
     },
     decode(rows) {

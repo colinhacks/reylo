@@ -482,11 +482,9 @@ function statement(query: QueryModule, params: ParamsInput) {
  * The statement and its values in the database's raw form, which a Standard Query's `encode`
  * returns (src/standard-query.ts), bound as `.run()` binds them, its checks included: on Postgres
  * each value's text, which a driver binds with no declared type, so the server reads it as the
- * parameter's type; on MySQL and SQLite each value as a driver binds it. `check` false gives the
- * text alone, for the statement's `text`.
+ * parameter's type; on MySQL and SQLite each value as a driver binds it.
  */
-export function rawStatement(query: QueryModule, params: unknown, check: boolean): { text: string; values: unknown[] } {
-  if (!check) return { text: compile(query).text, values: [] };
+export function rawStatement(query: QueryModule, params: unknown): { text: string; values: unknown[] } {
   checkParams(query, params);
   const { text, values, names } = statement(query, params);
   if (query.dialect !== "postgres") return { text, values };
