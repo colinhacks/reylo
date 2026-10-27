@@ -99,6 +99,8 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
     ] as const) {
       const c = await (await engine(dialect, ROOT)).open(url);
       assert.deepEqual((await c.analyze("select 1 as x")).columns.map((col) => col.name), ["x"], url);
+      // The bridge's token never reaches the server, which shows a session's attributes to its accounts.
+      if (dialect === "mysql") assert.deepEqual(await c.query("select count(*) from performance_schema.session_connect_attrs where attr_name = 'reylo_bridge'", []), [[0]]);
       await c.close();
     }
   } finally {

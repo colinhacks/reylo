@@ -6,8 +6,8 @@
 // mysql2's `socketPath`) is opened through a bridge, a TCP port on the loopback interface that this
 // thread pipes to the socket. The server sees a connection on its socket, which peer authentication
 // (Postgres's `peer`, MySQL's `auth_socket`) trusts as this process's user, so the bridge admits the
-// engine's own connections alone: each carries the bridge's token, which only the engine is given,
-// and any other is closed before the server reads a byte of it.
+// engine's own connections alone: each carries the bridge's token, which only the engine is given
+// and the server never sees, and any other is closed before the server reads a byte of it.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, connect, type AddressInfo, type Socket } from "node:net";
 import { resolve } from "node:path";
@@ -64,7 +64,9 @@ function postgresSocket(base: string, pairs: string[], env: Record<string, strin
 function mysqlSocket(pairs: string[]): { path: string; params: string[] } | undefined {
   const params = Object.fromEntries(pairs.map(splitPair));
   const path = params.socketPath || params.socket;
-  return path ? { path, params: ["socketPath", "socket"] } : undefined;
+  // Its TLS settings too: the bridge takes TLS out of the server's greeting (`gateMysql`), and a
+  // Unix socket carries none.
+  return path ? { path, params: ["socketPath", "socket", "ssl", "ssl-mode", "sslmode", "ssl_mode", "sslaccept"] } : undefined;
 }
 
 function splitQuery(url: string): [string, string?] {
@@ -97,8 +99,9 @@ function withHost(base: string, host: string): string {
  * A TCP port on the loopback interface piped to the Unix socket at `path`, for the connections that
  * carry `token`: on Postgres the engine sends it before anything else; on MySQL, whose server speaks
  * first, the login carries it as a connection attribute, which the bridge reads in the client's
- * handshake before passing the handshake on, having taken TLS out of the server's greeting so that
- * the handshake is in plain text. None of its sockets keeps the process alive.
+ * handshake and takes out of it before passing the handshake on, having taken TLS out of the
+ * server's greeting so that the handshake is in plain text. None of its sockets keeps the process
+ * alive.
  */
 async function openBridge(path: string, dialect: "postgres" | "mysql", token: string): Promise<{ port: number; close(): void }> {
   const open = new Set<Socket>();
@@ -167,7 +170,8 @@ function gatePostgres(client: Socket, token: string, upstream: () => Socket, pip
 /**
  * A MySQL connection admitted once its login carries the token. The server's greeting reaches the
  * client without TLS among its capabilities, so the login that answers it is in plain text; the
- * login is read whole, and passed on only where its connection attributes hold the token.
+ * login is read whole, and passed on only where its connection attributes hold the token, without
+ * it, so that the token is not among the session's attributes the server shows its accounts.
  */
 function gateMysql(client: Socket, token: string, upstream: Socket, pipe: (upstream: Socket, toServer: Buffer[]) => void): void {
   let fromServer = Buffer.alloc(0);
@@ -186,9 +190,13 @@ function gateMysql(client: Socket, token: string, upstream: Socket, pipe: (upstr
       if (!answer) return;
       client.off("data", login);
       client.pause();
-      if (attribute(answer.payload, MYSQL_ATTRIBUTE) !== token) return void client.destroy();
+      const taken = takeAttribute(answer.payload, MYSQL_ATTRIBUTE);
+      if (taken?.value !== token) return void client.destroy();
+      const header = Buffer.alloc(4);
+      header.writeUIntLE(taken.login.length, 0, 3);
+      header[3] = fromClient[3]!;
       upstream.resume();
-      pipe(upstream, [fromClient]);
+      pipe(upstream, [header, taken.login, fromClient.subarray(4 + answer.payload.length)]);
       client.resume();
     };
     client.on("data", login);
@@ -209,8 +217,21 @@ function withoutTls(greeting: Buffer): void {
   if (greeting[0] === 10 && at + 2 <= greeting.length) greeting.writeUInt16LE(greeting.readUInt16LE(at) & ~0x0800, at);
 }
 
-/** A connection attribute of a login (HandshakeResponse41), or undefined where it carries none. */
-export function attribute(login: Buffer, name: string): string | undefined {
+/** A length-encoded integer, as MySQL's protocol writes one. */
+function lenenc(n: number): Buffer {
+  if (n < 0xfb) return Buffer.from([n]);
+  const size = n < 0x10000 ? 2 : n < 0x1000000 ? 3 : 8;
+  const out = Buffer.alloc(1 + size);
+  out[0] = size === 2 ? 0xfc : size === 3 ? 0xfd : 0xfe;
+  out.writeUIntLE(n, 1, Math.min(size, 6));
+  return out;
+}
+
+/**
+ * A connection attribute of a login (HandshakeResponse41), and the login without it, its
+ * attributes' length written again; undefined where the login carries no such attribute.
+ */
+export function takeAttribute(login: Buffer, name: string): { value: string; login: Buffer } | undefined {
   const CONNECT_WITH_DB = 0x8, SSL = 0x800, SECURE_CONNECTION = 0x8000, PLUGIN_AUTH = 0x80000, CONNECT_ATTRS = 0x100000, LENENC_AUTH = 0x200000;
   if (login.length < 32) return undefined;
   const capabilities = login.readUInt32LE(0);
@@ -244,12 +265,17 @@ export function attribute(login: Buffer, name: string): string | undefined {
     else cstring();
     if (capabilities & CONNECT_WITH_DB) cstring();
     if (capabilities & PLUGIN_AUTH) cstring();
+    const lengthAt = at;
     const length = int();
-    const end = at + length;
+    const start = at;
+    const end = start + length;
     while (at < end) {
+      const pairAt = at;
       const key = bytes(int()).toString("utf8");
       const value = bytes(int()).toString("utf8");
-      if (key === name) return value;
+      if (key !== name) continue;
+      const rest = Buffer.concat([login.subarray(start, pairAt), login.subarray(at, end)]);
+      return { value, login: Buffer.concat([login.subarray(0, lengthAt), lenenc(rest.length), rest, login.subarray(end)]) };
     }
   } catch {}
   return undefined;
