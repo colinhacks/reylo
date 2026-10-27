@@ -12,6 +12,7 @@
     { "src": "^/play/api/(analyze|schema)$", "dest": "/api/play/$1" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "q" }], "dest": "/api/play-og/image" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "example" }], "dest": "/api/play-og/image" },
+    { "src": "^/play$", "has": [{ "type": "header", "key": "accept", "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$" }], "dest": "/play/api.md", "headers": { "Content-Type": "text/markdown; charset=utf-8", "Vary": "Accept" } },
     {
       "src": "^/play$",
       "has": [{ "type": "query", "key": "q" }, { "type": "header", "key": "accept", "value": "^(?!.*text/html).*application/json.*$" }],

@@ -40,6 +40,8 @@ export type PlayData = {
   start?: string;
   query?: string;
   catalog: Catalog;
+  /** The API's answer for its example (lib/live/api-docs.ts), as the build analyzed it: what /play/api.md shows. */
+  apiAnswer?: string;
 };
 
 /** What analyzes the statements: the docs' worker, or `reylo play`'s server, behind a worker's interface. */

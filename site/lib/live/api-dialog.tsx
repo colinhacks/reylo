@@ -4,19 +4,10 @@
 // addresses.
 import { useEffect, useRef, useState } from 'react';
 import { CodeCopyButton } from '../../docs-kit/src/components/code-copy.tsx';
+import { answerJson, apiMarkdown, apiSections, type ApiDocs } from './api-docs.ts';
 
-export type ApiDocs = {
-  /** The analyze endpoint's address. */
-  analyze: string;
-  /** The schema endpoint's address. */
-  schema: string;
-  /** The page's own address, where it answers `?q=` with JSON when asked for JSON. */
-  page?: string;
-  /** What a query is analyzed against: "the page's sample schema". */
-  against: string;
-  /** The query of the examples. */
-  example: string;
-};
+export type { ApiDocs };
+
 
 /** A code block with docs-kit's copy icon, as every code block of the docs has; it copies the block's `<pre>`. */
 function CodeBlock({ text, copy, wrap = true }: { text: string; copy?: boolean; wrap?: boolean }) {
@@ -47,7 +38,6 @@ function CopyAll({ text }: { text: () => string }) {
   );
 }
 
-const shell = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean; onClose(): void }) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -66,29 +56,13 @@ export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean;
     if (!open || answer !== undefined) return;
     fetch(`${api.analyze}?q=${encodeURIComponent(api.example)}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
-      .then(({ sql: _sql, ms: _ms, ...rest }) => setAnswer(JSON.stringify(rest, null, 2)))
+      .then((result) => setAnswer(answerJson(result)))
       .catch(() => setAnswer(''));
   }, [open, answer, api]);
 
-  const path = (url: string) => new URL(url).pathname;
-  // Encoded as a browser writes a form, a space as `+`, which reads more easily than `%20`.
-  const q = `?${new URLSearchParams({ q: api.example })}`;
-
-  // The endpoints, drawn below and copied whole as Markdown by the head's button.
-  const sections: { title: string; text: string; request: string; answer?: string }[] = [
-    ...(api.page ? [{ title: `GET ${path(api.page)}?q=<sql>`, text: "The playground's own link, asked for JSON, answers with the query's types, so a link you share works for an agent too.", request: `curl -H 'accept: application/json' ${shell(api.page + q)}` }] : []),
-    {
-      title: `GET ${path(api.analyze)}?q=<sql>`,
-      text: `A query's params, return type, row type, cardinality and errors, analyzed against ${api.against} and never run.`,
-      request: `curl ${shell(api.analyze + q)}`,
-      ...(answer !== '' ? { answer: answer ?? '…' } : {}),
-    },
-    { title: `GET ${path(api.schema)}`, text: 'The tables with their columns and types, and the functions and type names the editor completes.', request: `curl ${shell(api.schema)}` },
-  ];
-  const markdown = () =>
-    `# ${new URL(api.analyze).origin.replace(/^https?:\/\//, '')} playground API\n\n` +
-    sections.map((x) => [`## ${x.title}`, x.text, '```sh\n' + x.request + '\n```', ...(x.answer && x.answer !== '…' ? ['```json\n' + x.answer + '\n```'] : [])].join('\n\n')).join('\n\n') +
-    '\n';
+  // The endpoints, drawn below and copied whole as Markdown by the head's button (lib/live/api-docs.ts).
+  const sections = apiSections(api, answer === '' ? undefined : (answer ?? '…'));
+  const markdown = () => apiMarkdown(api, answer || undefined);
 
   return (
     <dialog

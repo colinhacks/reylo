@@ -10,6 +10,7 @@ import { AnswerCache } from '../../../src/engine-core.ts';
 import { pageFiles } from '../page-files.ts';
 import { collectFiles, moduleTypes, pagePostgresSchema, readModules } from '../remark-mapper.ts';
 import { formatType, resultType } from '../../../src/type-format.ts';
+import { answerJson, REYLO_API } from './api-docs.ts';
 import { analyzeStatement, type LiveResult } from './analyze.ts';
 import { catalog, CATALOG_QUERIES, type Catalog } from '../../../src/play-catalog.ts';
 import { instantiateEngine } from './engine.ts';
@@ -60,7 +61,8 @@ export async function playData(): Promise<PlayData> {
     // The schema's comments follow their code by two spaces, where the docs line them up in a
     // column: the playground's pane is narrower than that column.
     const schema = pagePostgresSchema().replace(/(\S)[ \t]{2,}--/g, '$1  --');
-    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: await readCatalog(io) };
+    const apiAnswer = answerJson(await analyzeStatement(engine, io, new AnswerCache(), REYLO_API.example));
+    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: await readCatalog(io), apiAnswer };
   } finally {
     await pg.close();
   }
