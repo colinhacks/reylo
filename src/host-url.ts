@@ -156,8 +156,12 @@ async function openBridge(path: string, dialect: "postgres" | "mysql", token: st
 function openUpstream(path: string, client: Socket, track: (socket: Socket) => void, failed: (e: Error) => void): Socket {
   const upstream = connect(path);
   track(upstream);
+  // Only a socket that never opened is the bridge's failure: an error after it opened (a reset once
+  // the server refused the login) leaves the engine's own answer, which names the refusal.
+  let opened = false;
+  upstream.once("connect", () => (opened = true));
   upstream.on("error", (e) => {
-    failed(e);
+    if (!opened) failed(e);
     upstream.destroy();
     client.destroy();
   });
