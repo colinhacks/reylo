@@ -478,6 +478,33 @@ function statement(query: QueryModule, params: ParamsInput) {
   return bound;
 }
 
+/**
+ * The statement and its values in the database's raw form, which a Standard Query's `encode`
+ * returns (src/standard-query.ts), bound as `.run()` binds them, its checks included: on Postgres
+ * each value's text, which a driver binds with no declared type, so the server reads it as the
+ * parameter's type; on MySQL and SQLite each value as a driver binds it.
+ */
+export function rawStatement(query: QueryModule, params: unknown): { text: string; values: unknown[] } {
+  checkParams(query, params);
+  const { text, values, names } = statement(query, params);
+  if (query.dialect !== "postgres") return { text, values };
+  return { text, values: values.map((v, i) => postgresText(query, names[i]!, v)) };
+}
+
+/** A bound value as the text Postgres's input function reads, as `.run()` sends it through pg. */
+function postgresText(query: QueryModule, name: string, v: unknown): string | null {
+  if (v == null) return null;
+  const t = query.inputs?.[name]?.type;
+  if (Array.isArray(v) && t?.kind === "array") return arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, t.delimiter);
+  if (isJsonValue(query, name, v)) return JSON.stringify(v);
+  if (Array.isArray(v)) return arrayLiteral(v);
+  if (v instanceof Uint8Array) return asByteaHex(v) as string;
+  if (typeof v === "boolean") return v ? "t" : "f";
+  if (v instanceof Date) return dateText(v);
+  if (typeof v === "object") return JSON.stringify(v);
+  return String(v);
+}
+
 /** The checks a parameter needs (src/checks.ts): every build step passes them where its statement has such a parameter. */
 function checksFor(query: QueryModule, name: string): Checks {
   if (query.checks) return query.checks;
