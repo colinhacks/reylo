@@ -79,23 +79,36 @@ jobs:
           for ($i = 0; $i -lt 60; $i++) { & "$bin\mysqladmin.exe" --user=root --host=127.0.0.1 --port=53306 ping 2>$null; if ($LASTEXITCODE -eq 0) { break }; Start-Sleep 1 }
           & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
       - run: nub run typecheck
-      # The loader's tests, one file at a time so that a hang names its file: those without a database
-      # everywhere, and Postgres's and MySQL's on the runner's servers.
+      # The loader's tests: those without a database everywhere, and Postgres's and MySQL's on the
+      # runner's servers.
       - name: Run the tests
         env:
           REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
           REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
         run: |
-          failed=()
-          for f in tests/*.test.ts; do
-            echo "::group::$f"
-            status=0
-            timeout 600 nub --test --test-timeout=180000 "$f" || status=$?
-            echo "::endgroup::"
-            [ "$status" = 0 ] || { echo "::error::$f exited $status"; failed+=("$f"); }
-          done
-          echo "failed: ${failed[*]:-none}"
+          nub run test
         continue-on-error: true
+      - name: Debug the D1 proxy
+        continue-on-error: true
+        run: |
+          d="$RUNNER_TEMP/d1" && mkdir -p "$d"
+          echo '{"name":"reylo-test","main":"worker.js","compatibility_date":"2026-10-01","d1_databases":[{"binding":"DB","database_name":"reylo-test","database_id":"00000000-0000-0000-0000-000000000000"}]}' > "$d/wrangler.jsonc"
+          echo "export default { fetch() { return new Response(''); } };" > "$d/worker.js"
+          cat > "$RUNNER_TEMP/d1.cjs" <<'EOF'
+          const { fork } = require("child_process");
+          const [proxy, entry, dir] = process.argv.slice(2);
+          console.log({ proxy, entry, dir });
+          const c = fork(proxy, [entry, dir], { stdio: ["ignore", "inherit", "inherit", "ipc"] });
+          c.on("message", (m) => {
+            console.log("message", JSON.stringify(m));
+            if (m.kind === "ready") { c.send({ kind: "schema", ddl: ["create table t (x)"] }); c.send({ kind: "explain", id: 1, sql: "select json_pretty(x) from t", params: 0 }); }
+            else c.send({ kind: "close" });
+          });
+          c.on("exit", (code, signal) => console.log("exit", code, signal));
+          setTimeout(() => { console.log("timed out"); c.kill(); }, 60000).unref();
+          EOF
+          entry=$(node -e "console.log(require.resolve('wrangler', { paths: [process.argv[1]] }))" "$PWD/lab/drivers")
+          node "$RUNNER_TEMP/d1.cjs" "$PWD/src/d1-proxy.ts" "$entry" "$d"
       - run: nub run build
       - name: Type-check a project through the built packages, on SQLite and Postgres
         env:

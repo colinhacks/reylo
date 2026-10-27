@@ -72,7 +72,7 @@ function sqliteDb(path: string, wal = false): DatabaseSync {
 
 /** One way to name the database: `reylo generate` must type the query, and for SQLite `tsc` must too. */
 function check(name: string, url: string, { env = {}, tsc = true, observe = false }: { env?: Record<string, string>; tsc?: boolean; observe?: boolean } = {}) {
-  writeFileSync(join(project, ".reylo.yaml"), `url: ${JSON.stringify(url)}\n`);
+  writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
   rmSync(join(project, ".reylo"), { recursive: true, force: true });
   const generate = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "generate"], project, false, env);
   const typed = generate.status === 0 && generate.out.includes("✓");
@@ -99,7 +99,7 @@ const other = join(tmpdir(), "reylo db é");
 sqliteDb(join(other, "app.db"));
 console.log(`\nproject on ${project.slice(0, 2)}, temporary directory ${tmpdir()}`);
 check("another directory, a space and an accent in its name", `file:${join(other, "app.db")}`);
-const subst = run("subst", ["R:", other], project, true);
+const subst = run("subst", ["R:", other], project);
 if (subst.status === 0) check("a subst drive", "file:R:\\app.db");
 else failures.push(`subst: ${subst.out}`);
 const unc = `\\\\localhost\\${other.slice(0, 1)}$${other.slice(2)}\\app.db`;
@@ -131,6 +131,6 @@ if (pg && certs) {
   check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent("\\\\.\\pipe\\reylo-mysql")}`, { tsc: false, observe: true });
 }
 
-if (subst.status === 0) run("subst", ["R:", "/D"], project, true);
+if (subst.status === 0) run("subst", ["R:", "/D"], project);
 console.log(failures.length ? `\n${failures.length} failed:\n${failures.map((f) => `- ${f}`).join("\n")}` : "\nevery case passed");
 process.exit(failures.length ? 1 : 0);
