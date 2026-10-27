@@ -1,0 +1,93 @@
+# .github/workflows/windows.yml
+
+name: windows
+
+on:
+  push:
+    branches:
+      - ci/windows-component
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: ${{ !github.event.repository.private }}
+    name: The type check on Windows
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      PG_PORT: "55432"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+      - name: Show the runner
+        run: |
+          node -e "console.log(process.versions.node, require('os').tmpdir(), process.cwd(), process.env.RUNNER_TEMP)"
+          wmic logicaldisk get name 2>/dev/null || powershell -c "Get-PSDrive -PSProvider FileSystem"
+          echo "PGBIN=$PGBIN"; ls "$PGBIN" | head -5 || true
+          powershell -c "Get-Service *mysql*, *postgres* | Format-Table -AutoSize" || true
+          ls 'C:/Program Files/MySQL' 'C:/tools' 2>/dev/null || true
+      - run: nub install --frozen-lockfile
+      - run: nub install --frozen-lockfile
+        working-directory: site
+      - run: nub install --frozen-lockfile
+        working-directory: lab/drivers
+      # A throwaway cluster of the runner's own PostgreSQL, with TLS: a root certificate, the server's,
+      # and a client's for `certuser`, whose logins over TLS are by certificate alone.
+      - name: Start Postgres with TLS
+        run: |
+          set -euo pipefail
+          pg="$RUNNER_TEMP/pg" certs="$RUNNER_TEMP/certs"
+          mkdir -p "$certs" && cd "$certs"
+          export MSYS_NO_PATHCONV=1
+          openssl req -x509 -newkey rsa:2048 -nodes -days 2 -keyout root.key -out root.crt -subj "/CN=reylo test root"
+          openssl req -newkey rsa:2048 -nodes -keyout server.key -out server.csr -subj "/CN=localhost"
+          printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' > san.ext
+          openssl x509 -req -in server.csr -CA root.crt -CAkey root.key -CAcreateserial -days 2 -out server.crt -extfile san.ext
+          openssl req -newkey rsa:2048 -nodes -keyout client.key -out client.csr -subj "/CN=certuser"
+          openssl x509 -req -in client.csr -CA root.crt -CAkey root.key -CAcreateserial -days 2 -out client.crt
+          "$PGBIN/initdb" -D "$pg" -U postgres --auth=trust -E UTF8 --locale=C > /dev/null
+          cp server.crt server.key root.crt "$pg/"
+          { echo "ssl = on"; echo "ssl_cert_file = 'server.crt'"; echo "ssl_key_file = 'server.key'"; echo "ssl_ca_file = 'root.crt'"; } >> "$pg/postgresql.conf"
+          { echo "hostssl all certuser 127.0.0.1/32 cert"; cat "$pg/pg_hba.conf"; } > hba && mv hba "$pg/pg_hba.conf"
+          "$PGBIN/pg_ctl" -D "$pg" -o "-p $PG_PORT -c listen_addresses=127.0.0.1" -l "$RUNNER_TEMP/postgres.log" -w start
+          "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -v ON_ERROR_STOP=1 -c "create user certuser" -c "create database reylo_windows owner certuser"
+          "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U certuser -d reylo_windows -v ON_ERROR_STOP=1 -c "create table users (id integer primary key, name text not null)"
+          "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -At -c "select version()"
+      - run: nub run typecheck
+      # The loader's tests: those without a database everywhere, and Postgres's on the runner's server.
+      - name: Run the tests
+        env:
+          REYLO_TEST_PG: postgres://postgres@127.0.0.1:55432/postgres
+        run: nub run test
+        continue-on-error: true
+      - run: nub run build
+      - name: Type-check a project through the built packages, on SQLite and Postgres
+        env:
+          REYLO_WINDOWS_PG: postgres://certuser@127.0.0.1:55432/reylo_windows
+          REYLO_WINDOWS_CERTS: ${{ runner.temp }}\certs
+        run: node .github/scripts/windows-check.ts
+        continue-on-error: true
+      - name: The Node example on Postgres
+        working-directory: examples/node
+        env:
+          DATABASE_URL: postgres://postgres@127.0.0.1:55432/reylo_example
+        run: |
+          set -euo pipefail
+          "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -c "create database reylo_example"
+          nub install
+          nub run setup
+          nub run typecheck
+          nub run test
+      - if: always()
+        run: cat "$RUNNER_TEMP/postgres.log" || true
