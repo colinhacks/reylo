@@ -101,6 +101,10 @@ export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean;
           <dd>
             What <code>.run()</code> resolves to.
           </dd>
+          <dt>element</dt>
+          <dd>
+            One row's type: what <code>returns</code> holds one or many of, by <code>cardinality</code>.
+          </dd>
           <dt>cardinality</dt>
           <dd>
             How many rows it returns: <code>many</code>, <code>one</code>, <code>maybeOne</code> or <code>none</code>.
