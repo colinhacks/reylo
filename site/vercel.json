@@ -3,7 +3,17 @@
   "framework": null,
   "buildCommand": "pnpm run build",
   "outputDirectory": "build/client",
+  "functions": {
+    "api/play/*.mjs": { "memory": 1024, "maxDuration": 30, "includeFiles": ".live/{engine.wasm,postgres.tar,pglite.wasm,pglite-data.tar}" }
+  },
   "routes": [
+    { "src": "^/play/api/(analyze|schema)$", "dest": "/api/play/$1" },
+    {
+      "src": "^/play$",
+      "has": [{ "type": "query", "key": "q" }, { "type": "header", "key": "accept", "value": "^(?!.*text/html).*application/json.*$" }],
+      "dest": "/api/play/analyze",
+      "headers": { "Vary": "Accept" }
+    },
     {
       "src": "^/$",
       "has": [{ "type": "header", "key": "accept", "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$" }],
@@ -26,7 +36,7 @@
   ],
   "headers": [
     {
-      "source": "/:page(|postgres|mysql|sqlite)",
+      "source": "/:page(|postgres|mysql|sqlite|play)",
       "headers": [{ "key": "Vary", "value": "Accept" }]
     },
     {
