@@ -4,16 +4,20 @@ compared_as_number.sql: maybeOne () -> { email: text }
 cross_join.sql: many (id: integer) -> { id: integer }
 distinct.sql: maybeOne (a: integer) -> { author_id: integer }
 distinct_expression.sql: many (a: integer) -> { author_id: integer, t: text }
+except_left_keys.sql: maybeOne (id: integer) -> { id: integer, title: text }
 expression.sql: many (id: integer) -> { id: integer, title: text }
 filtered_inside.sql: maybeOne (a: integer, id: integer) -> { id: integer, title: text }
 group_by.sql: maybeOne (a: integer) -> { author_id: integer, n: integer }
 group_by_ordinal.sql: maybeOne (a: integer) -> { author_id: integer, n: integer }
 group_by_two.sql: many (a: integer) -> { author_id: integer, title: text, n: integer }
 group_key_hidden.sql: many (n: integer) -> { author_id: integer, n: integer }
+intersect_left_keys.sql: maybeOne (id: integer) -> { id: integer, title: text }
 join_many.sql: many (id: integer) -> { id: integer, tag: text }
 join_pinned.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text }
 joined_on_key.sql: maybeOne (id: integer) -> { title: text, name: text }
 key_dropped.sql: many (t: text) -> { title: text }
+key_fixed_inside.sql: maybeOne (p: integer, t: text) -> { tag: text }
+key_not_fixed_inside.sql: many (p: integer, t: text) -> { tag: text }
 left_join_many.sql: many (id: integer) -> { id: integer }
 left_join_pinned.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text? }
 left_join_subquery.sql: maybeOne (p: integer, id: integer) -> { name: text, title: text? }
@@ -34,8 +38,9 @@ subquery.sql: maybeOne (id: integer) -> { id: integer, title: text }
 table_function.sql: many (ids: text, id: integer) -> { id: integer, value: unknown? }
 two_subqueries.sql: maybeOne (id: integer) -> { title: text, name: text }
 two_withs.sql: maybeOne (id: integer) -> { id: integer, title: text }
-union.sql: many (id: integer) -> { id: integer }
+union.sql: maybeOne (id: integer) -> { id: integer }
 union_all.sql: many (id: integer) -> { id: integer }
+union_mixed_affinity.sql: many (id: unknown) -> { id: unknown }
 values_list.sql: many (id: integer) -> { column1: integer }
 view.sql: maybeOne (id: integer) -> { id: integer, title: text }
 view_column_list.sql: maybeOne (id: integer) -> { post_id: integer, headline: text }
@@ -44,6 +49,8 @@ view_join.sql: maybeOne (id: integer) -> { id: integer, title: text, name: text 
 view_join_many.sql: many (id: integer) -> { id: integer, tag: text }
 view_of_view.sql: maybeOne (id: integer) -> { id: integer, title: text }
 window_inside.sql: maybeOne (id: integer) -> { id: integer, rn: integer }
+with_column_list.sql: maybeOne (id: integer) -> { pid: integer, t: text }
+with_column_list_shifted.sql: many (t: text) -> { id: text, x: integer }
 with_joined.sql: maybeOne (u: integer, id: integer) -> { title: text, name: text }
 with_materialized.sql: maybeOne (id: integer) -> { id: integer, title: text }
 with_query.sql: maybeOne (id: integer) -> { id: integer, title: text }
