@@ -127,7 +127,8 @@ if (pg && certs) {
   check("Postgres, NODE_EXTRA_CA_CERTS", `${pg}?sslrootcert=system${client(join(project, "certs"))}`, { tsc: false, env: { NODE_EXTRA_CA_CERTS: join(elsewhere, "root.crt") } });
   // A Unix socket's directory and a named pipe: neither is a TCP port.
   check("Postgres, a socket directory", `postgres://postgres@/reylo_windows?host=/tmp`, { tsc: false, observe: true });
-  check("MySQL, a named pipe", `mysql://root@localhost/x?socketPath=${encodeURIComponent("\\\\.\\pipe\\MySQL")}`, { tsc: false, observe: true });
+  check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
+  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent("\\\\.\\pipe\\reylo-mysql")}`, { tsc: false, observe: true });
 }
 
 if (subst.status === 0) run("subst", ["R:", "/D"], project, true);
