@@ -60,6 +60,9 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
+      '@bytecodealliance/preview2-shim':
+        specifier: 0.30.0
+        version: 0.30.0
       '@cloudflare/workers-types':
         specifier: 5.20260929.1
         version: 5.20260929.1
@@ -256,6 +259,65 @@ packages:
     peerDependenciesMeta:
       '@types/react':
         optional: true
+
+  '@bytecodealliance/jco-node-fs-darwin-arm64@0.3.2':
+    resolution: {integrity: sha512-WXQq1tRVUWhbK+ImH0G8Kni2AR0sdokLf/KyXRw5P6n4A9ZbgMHOuPfN/PEsYgw4eosuTAonutK0xILk/hA81A==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@bytecodealliance/jco-node-fs-darwin-x64@0.3.2':
+    resolution: {integrity: sha512-Fy/OjHnto7hNE5ksewVkmAMXG/uXyj+RAKFZWQFTzFkp73UyT5vuPjKq3nvx9KolUGWBG37BudEMb4ZAoD9TbQ==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@bytecodealliance/jco-node-fs-linux-arm64-gnu@0.3.2':
+    resolution: {integrity: sha512-OafRtRu3tfOFQARfkia/LDEqSo2R3yAL1xPwzf4RcRW6JqkOY7qKWsUS5+LPVo/aFaSkMX7F7bdFGpFPmcoZJg==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@bytecodealliance/jco-node-fs-linux-arm64-musl@0.3.2':
+    resolution: {integrity: sha512-JblDiwD7+Y+w0d/tjaNDX4QdGvh5lyuDc+S/jDeT7sYA1caA9yiwIjLa8PC/lm2xudqSxD+Cuy4AosXvl+qI0g==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@bytecodealliance/jco-node-fs-linux-x64-gnu@0.3.2':
+    resolution: {integrity: sha512-6FzmHoLOsa6b4X9AuFLsvlpNF66Dt4sRRftZHaT1I1pYzCWrJkkpgNJhRXxf67ZPmOwBZJT4dan/g752Rx4xRw==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@bytecodealliance/jco-node-fs-linux-x64-musl@0.3.2':
+    resolution: {integrity: sha512-SbAJG2PDV8YAHBESHU9sVSckOitJyvlezdF4CGP5/mOp01JnijVkLVXzGK62yVSfa5TpAybbSd1rk+v36NAW/Q==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@bytecodealliance/jco-node-fs-win32-arm64-msvc@0.3.2':
+    resolution: {integrity: sha512-nUWYdFysRQJGsIOCk0KAYN2smkNYiHG7rZ7m+0ZXqP+5wqWxKEjkDsORwXiBjdaWFLVww0anZ3SBxrju6P7hXQ==}
+    engines: {node: '>=20'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@bytecodealliance/jco-node-fs-win32-x64-msvc@0.3.2':
+    resolution: {integrity: sha512-RsPj2t8TvltsMWK7/Z7JcVC/IWPMi07/AJkNLiNTCuGTdT/sseqTThJJwhuz3sjFw7dJdxA+bSGT+23y/KT0fw==}
+    engines: {node: '>=20'}
+    cpu: [x64]
+    os: [win32]
+
+  '@bytecodealliance/jco-node-fs@0.3.2':
+    resolution: {integrity: sha512-yxvqQreNcOQdMsEKZomkSqThtkxrAz3f1Cmy8BsV0UHi9saa2/D1KDB14IAXPYwDq/maS6lCzS+MuMQx6QkUgA==}
+    engines: {node: '>=20'}
+
+  '@bytecodealliance/preview2-shim@0.30.0':
+    resolution: {integrity: sha512-Op+uxOJPCnW4jp5Jg3kJvFpB5GZGJGxBMX5PvMffksyonpTciILDDSSJQr1ficHAhm1H6X5+Qwx3q21p7Hjr1Q==}
 
   '@cloudflare/workers-types@5.20260929.1':
     resolution: {integrity: sha512-VlkFyzSqv2LeMK92eyyfnNvSTW4Nu37cR8T8OM4FF2xcNCsGy8/BxcNk9Jr4ZV0PlmKsCKvS49CfRZTVKBseUw==}
@@ -3877,6 +3939,45 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
       reselect: 5.3.0
       use-sync-external-store: 1.7.0(react@19.2.8)
+
+  '@bytecodealliance/jco-node-fs-darwin-arm64@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-darwin-x64@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-linux-arm64-gnu@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-linux-arm64-musl@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-linux-x64-gnu@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-linux-x64-musl@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-win32-arm64-msvc@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs-win32-x64-msvc@0.3.2':
+    optional: true
+
+  '@bytecodealliance/jco-node-fs@0.3.2':
+    optionalDependencies:
+      '@bytecodealliance/jco-node-fs-darwin-arm64': 0.3.2
+      '@bytecodealliance/jco-node-fs-darwin-x64': 0.3.2
+      '@bytecodealliance/jco-node-fs-linux-arm64-gnu': 0.3.2
+      '@bytecodealliance/jco-node-fs-linux-arm64-musl': 0.3.2
+      '@bytecodealliance/jco-node-fs-linux-x64-gnu': 0.3.2
+      '@bytecodealliance/jco-node-fs-linux-x64-musl': 0.3.2
+      '@bytecodealliance/jco-node-fs-win32-arm64-msvc': 0.3.2
+      '@bytecodealliance/jco-node-fs-win32-x64-msvc': 0.3.2
+
+  '@bytecodealliance/preview2-shim@0.30.0':
+    dependencies:
+      '@bytecodealliance/jco-node-fs': 0.3.2
 
   '@cloudflare/workers-types@5.20260929.1': {}
 

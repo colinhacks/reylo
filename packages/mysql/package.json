@@ -13,19 +13,16 @@
   },
   "bugs": "https://github.com/colinhacks/reylo/issues",
   "type": "module",
-  "devDependencies": {
-    "mysql2": "3.24.4"
-  },
   "exports": {
-    "./engine.wasm": "./engine.wasm",
+    "./engine/*": "./engine/*",
     "./tooling": "./tooling.ts",
-    "./describe": "./describe.ts",
     "./package.json": "./package.json"
   },
   "files": [
-    "engine.wasm",
+    "engine",
     "tooling.js",
-    "describe.js",
+    "engine-worker.js",
+    "worker-thread.bundle.js",
     "d1-proxy.js"
   ]
 }

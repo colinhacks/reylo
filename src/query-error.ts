@@ -33,7 +33,7 @@ export type MysqlCode = (typeof MYSQL_CODES)[number][1][number];
 export type SqliteCode = keyof typeof SQLITE_CODES;
 
 /** What an error Postgres raised holds beside its code. */
-interface PostgresErrorFields extends Error {
+export interface PostgresErrorFields extends Error {
   readonly name: "QueryError";
   /** `ERROR`, `FATAL` (the session ended) or `PANIC` (the server stopped), in the server's language with pg. */
   readonly severity: string;
@@ -87,7 +87,7 @@ export type PostgresQueryError<N extends PostgresNarrowing | undefined = undefin
     };
 
 /** What an error MySQL raised holds beside its code. */
-interface MysqlErrorFields extends Error {
+export interface MysqlErrorFields extends Error {
   readonly name: "QueryError";
   /** The error's number, as `1062`. */
   readonly errno: number;
@@ -126,7 +126,7 @@ export type MysqlQueryError<N extends MysqlNarrowing | undefined = undefined> = 
   : MysqlMember<MysqlCode | undefined, {}>;
 
 /** What an error SQLite raised holds beside its code. */
-interface SqliteErrorFields extends Error {
+export interface SqliteErrorFields extends Error {
   readonly name: "QueryError";
   /** The result code's number, as `2067`. */
   readonly errcode: number | undefined;

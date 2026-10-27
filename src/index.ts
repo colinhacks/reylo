@@ -14,7 +14,7 @@ export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteCli
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
-export type { MysqlCode, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
+export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
 export type Cardinality = "many" | "one" | "maybeOne" | "none";

@@ -38,6 +38,9 @@ impl AsyncAnswerer<Describe> for Answers<'_> {
                     serde_json::from_value(json!({ "params": params, "columns": columns })).map(Ok).map_err(|e| HostError(e.to_string()))
                 }
                 Err(e) => match e.as_db_error() {
+                    // The session's end rather than the statement's answer: the replay ends as on a
+                    // lost connection, and nothing is kept as the statement's error.
+                    Some(_) if ended(&e) => Err(HostError(format!("{ENDED}: {}", pg_message(&e)))),
                     Some(d) => {
                         let position = match d.position() {
                             Some(::tokio_postgres::error::ErrorPosition::Original(p)) => Some(*p as usize),
@@ -55,13 +58,14 @@ impl AsyncAnswerer<Describe> for Answers<'_> {
     fn query(&mut self, sql: &str, params: &[Value]) -> impl Future<Output = Result<Result<Vec<Vec<Value>>, DbError>, HostError>> + Send {
         let client = self.0;
         async move {
-            let stmt = client.prepare(sql).await.map_err(|e| HostError(format!("catalog query failed to prepare: {}\n    {sql}", pg_message(&e))))?;
+            let failed = |what: &str, e: ::tokio_postgres::Error| HostError(if ended(&e) { format!("{ENDED}: {}", pg_message(&e)) } else { format!("catalog query {what}: {}\n    {sql}", pg_message(&e)) });
+            let stmt = client.prepare(sql).await.map_err(|e| failed("failed to prepare", e))?;
             let mut values: Vec<Box<dyn ToSql + Sync + Send>> = Vec::new();
             for (ty, value) in stmt.params().iter().zip(params) {
                 values.push(bind(ty, value).ok_or_else(|| HostError(format!("cannot bind {value} as {ty} for the catalog query\n    {sql}")))?);
             }
             let refs: Vec<&(dyn ToSql + Sync)> = values.iter().map(|v| v.as_ref() as &(dyn ToSql + Sync)).collect();
-            let rows = client.query(&stmt, &refs).await.map_err(|e| HostError(format!("catalog query failed: {}\n    {sql}", pg_message(&e))))?;
+            let rows = client.query(&stmt, &refs).await.map_err(|e| failed("failed", e))?;
             Ok(Ok(rows.iter().map(|row| (0..row.len()).map(|i| cell(row, i)).collect()).collect()))
         }
     }
@@ -107,6 +111,16 @@ fn cell(row: &::tokio_postgres::Row, i: usize) -> Value {
         ref other => panic!("a catalog query answered a column of type {other}, which no host binds"),
     };
     value.unwrap_or(Value::Null)
+}
+
+/// How a host error that is the session's end opens: the server sent a FATAL or PANIC error, or one
+/// of the connection-exception class 08, and closes the connection (a restart, an administrator's
+/// `pg_terminate_backend`, a database dropped).
+pub const ENDED: &str = "the server ended the session";
+
+/// Whether `e` is the server ending the session, rather than its answer to what it was asked.
+pub fn ended(e: &::tokio_postgres::Error) -> bool {
+    e.as_db_error().is_some_and(|d| matches!(d.severity(), "FATAL" | "PANIC") || d.code().code().starts_with("08"))
 }
 
 fn pg_message(e: &::tokio_postgres::Error) -> String {

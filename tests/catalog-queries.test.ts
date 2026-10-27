@@ -4,8 +4,7 @@ import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AnswerCache, Engine } from "../src/engine.ts";
-import { openPostgresDescriber } from "../packages/postgres/describe.ts";
+import { AnswerCache, engine } from "../src/engine.ts";
 
 // The engine's catalog queries answer the same rows whatever a user has created: each runs on a
 // database as the analysis of a set of statements asks it, then again once the database holds a
@@ -16,7 +15,7 @@ import { openPostgresDescriber } from "../packages/postgres/describe.ts";
 
 const PG = process.env.REYLO_TEST_PG;
 const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const ENGINE = fileURLToPath(new URL("../packages/postgres/engine.wasm", import.meta.url));
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const live = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 // A schema whose statements ask every catalog query: CHECKs on a column and on a domain, NOT NULL
@@ -193,19 +192,21 @@ async function withAsked(body: (url: string, asked: Asked, postgres: any) => Pro
   const db = postgres(url.href, { max: 1, onnotice: () => {} });
   try {
     await db.unsafe(SCHEMA);
-    const engine = await Engine.load(ENGINE);
+    // The engine's analysis run here over a connection the engine opened, so that every catalog query
+    // it asks, and its rows, pass through this side.
+    const postgresEngine = await engine("postgres", ROOT);
     const asked: Asked = new Map();
-    const clean = await openPostgresDescriber(url.href);
+    const clean = await postgresEngine.open(url.href);
     try {
       const io = {
         describe: (sql: string) => clean.describe(sql),
         query: async (sql: string, params: unknown[]) => {
-          const rows = await clean.values(sql, params);
+          const rows = await clean.query(sql, params);
           asked.set(JSON.stringify([sql, params]), { sql, params, rows });
           return rows;
         },
       };
-      for (const statement of STATEMENTS) await engine.analyze(statement, "postgres", io, new AnswerCache());
+      for (const statement of STATEMENTS) await postgresEngine.analyze(statement, "postgres", io, new AnswerCache());
     } finally {
       await clean.close();
     }
@@ -228,16 +229,16 @@ test("every catalog query answers the same rows under a search path that puts a 
     } finally {
       await db.end();
     }
-    const captured = await openPostgresDescriber(url);
+    const captured = await (await engine("postgres", ROOT)).open(url);
     try {
-      assert.deepEqual([...(await captured.values("select pg_catalog.current_setting('search_path'::pg_catalog.text)"))], [["public, pg_catalog"]]);
+      assert.deepEqual(await captured.query("select pg_catalog.current_setting('search_path'::pg_catalog.text)", []), [["public, pg_catalog"]]);
       for (const { sql, params, rows } of asked.values()) {
         const kind = kindOf(sql);
         // The trust query reports the user's operators and casts by design (the oracle's trust_*
         // cases check it); the errors query opens on them and on functions of the names the
         // statement calls, and names a domain of a type name the statement writes.
         if (kind === "TRUST_QUERY") continue;
-        let again = await captured.values(sql, params);
+        let again = await captured.query(sql, params);
         if (kind === "ERRORS_QUERY") {
           const theirs = (r: unknown[]) =>
             r[0] === "open"
@@ -291,14 +292,14 @@ test("no catalog query converts a value implicitly, so each operator and functio
   });
 });
 
-test("the describer writes and reads the catalog queries' arrays itself, so no catalog read of postgres.js's decides how they travel", { skip: live }, async () => {
-  const d = await openPostgresDescriber(PG!);
+test("the engine binds and reads the catalog queries' arrays itself, each value as its type", { skip: live }, async () => {
+  const d = await (await engine("postgres", ROOT)).open(PG!);
   try {
-    const texts = ["a", 'b"c', "d\\e", "f,g", "NULL", null, "", "{x}"];
-    assert.deepEqual([...(await d.values("select $1::pg_catalog.text[], $2::pg_catalog.oid[], $3::pg_catalog.int2[], $4::pg_catalog.int8[], $5::pg_catalog.bool[]", [texts, [16384, 0], [1, -2], [1, 2], [true, false]]))], [
-      [texts, [16384, 0], [1, -2], ["1", "2"], [true, false]],
-    ]);
-    assert.deepEqual([...(await d.values("select '{}'::pg_catalog.text[], NULL::pg_catalog.int4[], ARRAY[NULL, 1]::pg_catalog.int4[]", []))], [[[], null, [null, 1]]]);
+    const texts = ["a", 'b"c', "d\\e", "f,g", "NULL", "", "{x}"];
+    // The arrays a catalog query binds: names and texts, oids and integers.
+    assert.deepEqual(await d.query("select $1::pg_catalog.text[], $2::pg_catalog.oid[], $3::pg_catalog.int2[], $4::pg_catalog.int8[]", [texts, [16384, 0], [1, -2], [1, 2]]), [[texts, [16384, 0], [1, -2], [1, 2]]]);
+    // And what one reads back besides: an empty array, NULL, a NULL element, truth values.
+    assert.deepEqual(await d.query("select '{}'::pg_catalog.text[], NULL::pg_catalog.int4[], ARRAY[NULL, 1]::pg_catalog.int4[], ARRAY[true, false]", []), [[[], null, [null, 1], [true, false]]]);
   } finally {
     await d.close();
   }

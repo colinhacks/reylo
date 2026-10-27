@@ -1,0 +1,47 @@
+[package]
+name = "reylo-engine-native"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Reylo's engine as a native program per database: JSON requests on standard input, one answer per line on standard output. It answers what the WebAssembly engine answers, and opens its own connection to the database to analyze a statement to its end."
+
+[features]
+default = ["postgres", "mysql", "sqlite"]
+postgres = ["reylo-engine/tokio-postgres", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
+mysql = ["reylo-engine/mysql_async", "dep:mysql_async"]
+sqlite = ["reylo-engine/rusqlite", "dep:rusqlite"]
+
+[[bin]]
+name = "reylo-postgres"
+path = "src/bin/reylo-postgres.rs"
+required-features = ["postgres"]
+
+[[bin]]
+name = "reylo-mysql"
+path = "src/bin/reylo-mysql.rs"
+required-features = ["mysql"]
+
+[[bin]]
+name = "reylo-sqlite"
+path = "src/bin/reylo-sqlite.rs"
+required-features = ["sqlite"]
+
+[dependencies]
+reylo-engine = { path = "../facade" }
+reylo-engine-core = { path = "../core" }
+serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
+tokio = { version = "1", features = ["rt", "io-std", "io-util", "net", "time"] }
+tokio-postgres = { version = "0.7", optional = true }
+tokio-postgres-rustls = { version = "0.13", optional = true }
+# TLS over rustls and ring, as the Postgres program's.
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"], optional = true }
+rusqlite = { version = "0.39", features = ["bundled"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+rustls-platform-verifier = "0.6"
+
+# The WebAssembly component (engine/wasip2) has no operating system's certificate store.
+[target.'cfg(target_family = "wasm")'.dependencies]
+webpki-roots = "1"

@@ -32,5 +32,7 @@ export default defineConfig({
   optimizeDeps: { exclude: ['@electric-sql/pglite'] },
   // @vercel/og (the link preview, app/routes/opengraph-image.tsx) loads its WebAssembly with a
   // `require` Vite's module runner cannot run, so Node loads it.
-  ssr: { external: ['@vercel/og'] },
+  // jco's preview2-shim, which the playground's build-time data runs the engine over, starts its I/O worker from a
+  // file beside its own module: it runs from node_modules, where that file is, rather than bundled.
+  ssr: { external: ['@vercel/og', '@bytecodealliance/preview2-shim'] },
 });

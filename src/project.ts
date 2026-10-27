@@ -15,6 +15,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql";
@@ -99,8 +100,7 @@ export function findProjectFile(from: string, env: Record<string, string | undef
 /** Whether the project itself installed `dialect`'s engine, as against reylo's own install. */
 function installedIn(root: string, dialect: Dialect): boolean {
   try {
-    createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/engine.wasm`);
-    return true;
+    return existsSync(join(dirname(createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/package.json`)), "engine", "engine.js"));
   } catch {
     return false;
   }
@@ -363,3 +363,9 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
+/** `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, relative ones resolved against baseDir. */
+export function sqlitePath(url: string, baseDir: string): string {
+  if (url === ":memory:" || url === "file::memory:") return ":memory:";
+  const raw = url.startsWith("file://") ? fileURLToPath(url) : url.replace(/^(file|sqlite):(\/\/)?/, "");
+  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
+}

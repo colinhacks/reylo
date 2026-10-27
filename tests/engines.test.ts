@@ -25,7 +25,7 @@ function project(installed: Record<string, string | { from: string; version: str
     if (typeof source === "string") symlinkSync(source, at);
     else {
       cpSync(source.from, at, { recursive: true });
-      writeFileSync(join(at, "package.json"), JSON.stringify({ name: `@reylosql/${name}`, version: source.version, type: "module", exports: { "./engine.wasm": "./engine.wasm", "./package.json": "./package.json" } }));
+      writeFileSync(join(at, "package.json"), JSON.stringify({ name: `@reylosql/${name}`, version: source.version, type: "module", exports: { "./engine/*": "./engine/*", "./package.json": "./package.json" } }));
     }
   }
   return root;
@@ -72,7 +72,7 @@ test("a package whose artifact reads another database's statements is refused by
 
 test("the project's own engine comes before reylo's, and each database's artifact names its database", async () => {
   const root = project({ postgres: join(PACKAGES, "postgres"), mysql: join(PACKAGES, "mysql") });
-  assert.equal(enginePath("postgres", root, nowhere), join(PACKAGES, "postgres", "engine.wasm"));
+  assert.equal(enginePath("postgres", root, nowhere), join(PACKAGES, "postgres", "engine"));
   for (const dialect of ["postgres", "mysql"] as const) {
     const e = await engine(dialect, root, nowhere);
     const ping = e.call({ op: "ping" }) as { database?: string; fingerprint: string };

@@ -1,7 +1,7 @@
-// The engine's half that needs no host: a call into the WASI reactor's exports, the lexer, and the
-// replay loop that hands each round's needs to an `EngineIo` until the analysis is done. It imports
-// nothing from Node, so a browser runs it beside the same `engine.wasm` that src/engine.ts loads
-// with `node:wasi`.
+// The engine's half that needs no host: a request to the engine, the lexer, and the replay loop
+// that hands each round's needs to an `EngineIo` until the analysis is done, for a host that answers
+// them over a connection of its own. It imports nothing from Node, so a browser runs it beside the
+// same component src/engine.ts loads.
 import { Unreachable } from "./connection.ts";
 import type { EngineType } from "./engine-type.ts";
 
@@ -75,35 +75,38 @@ export type Response =
   | { status: "configError"; error: { message: string; start: number; end: number } }
   | { status: "error"; message: string };
 
-/** A WebAssembly memory and an instance's exports, typed here rather than through the DOM lib. */
-export type Memory = { buffer: ArrayBuffer };
-export type Instance = { exports: Record<string, unknown> };
+/** An engine's request function: one JSON request in, its answer out (the component's `call` export). */
+export type EngineCall = (request: string) => string;
 
-/** An instantiated engine: `instance` is `engine.wasm` with its WASI imports, initialized as a reactor. */
+/** A compiled core module of an engine component, opaque here: the WebAssembly namespace is not typed through the DOM lib. */
+export type CoreModule = unknown;
+
+/** The two exports of an engine component (engine/wasip2/src/lib.rs). */
+export interface ComponentExports {
+  /** The core's answer to a request that needs no database: `ping`, `lex`, `config`, and `analyze` with the host's answers. */
+  call(request: string): string;
+  /** The answer to a request on a connection the engine opens itself: `open`, `run`, `query`, `describe`, `forget`, `close`. */
+  serve(request: string): string;
+}
+
+/** The transpiled component's `instantiate`, as `jco transpile --instantiation sync` writes it. */
+export type Instantiate = (getCoreModule: (name: string) => CoreModule, imports: object) => ComponentExports;
+
+/**
+ * An engine's core: its requests that need no database, and the analysis of a statement whose
+ * needs a host answers itself (`analyze` with an `EngineIo`), as a host that holds its own
+ * connection does (the docs site's playground, on PGlite). A Node host lets the engine connect
+ * itself instead (src/engine.ts).
+ */
 export class EngineCore {
-  #memory: Memory;
-  #alloc: (len: number) => number;
-  #free: (ptr: number, len: number) => void;
-  #call: (ptr: number, len: number) => number;
+  #call: EngineCall;
 
-  constructor(instance: Instance) {
-    const e = instance.exports as Record<string, any>;
-    this.#memory = e.memory;
-    this.#alloc = e.reylo_alloc;
-    this.#free = e.reylo_free;
-    this.#call = e.reylo_call;
+  constructor(call: EngineCall) {
+    this.#call = call;
   }
 
   call(request: object): Response {
-    const bytes = new TextEncoder().encode(JSON.stringify(request));
-    const ptr = this.#alloc(bytes.length);
-    new Uint8Array(this.#memory.buffer, ptr, bytes.length).set(bytes);
-    const out = this.#call(ptr, bytes.length);
-    this.#free(ptr, bytes.length);
-    const len = new DataView(this.#memory.buffer).getUint32(out, true);
-    const text = new TextDecoder().decode(new Uint8Array(this.#memory.buffer, out + 4, len));
-    this.#free(out, len + 4);
-    return JSON.parse(text);
+    return JSON.parse(this.#call(JSON.stringify(request)));
   }
 
   lex(sql: string, dialect: Dialect): Lexed {

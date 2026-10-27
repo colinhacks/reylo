@@ -5,11 +5,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Engine } from "../src/engine.ts";
 
-// Each committed engine.wasm must be the build of the engine sources beside it. An artifact reports
-// its fingerprint on ping: core's source hash combined with its database crate's
-// (engine/core/src/fingerprint.rs), each the hash a crate's build script takes of its own sources
-// (engine/build-support/src/lib.rs). This takes both hashes again, the same way, and compares, so a
-// change to an engine's sources whose artifact was not rebuilt fails here, with no Rust toolchain.
+// Each committed engine component must be the build of the sources beside it. A component reports two
+// hashes on ping: its engine's fingerprint, core's source hash combined with its database crate's
+// (engine/core/src/fingerprint.rs), and `host`, the hash of the code that connects it to its database
+// (engine/wasip2/build.rs), each the hash a crate's build script takes of its sources
+// (engine/build-support/src/lib.rs). This takes them again, the same way, and compares, so a change
+// to an engine's sources whose component was not rebuilt fails here, with no Rust toolchain.
 
 const ENGINE = fileURLToPath(new URL("../engine", import.meta.url));
 const PACKAGES = fileURLToPath(new URL("../packages", import.meta.url));
@@ -83,9 +84,11 @@ function fingerprint(database: string): string {
 }
 
 for (const database of ["postgres", "sqlite", "mysql"]) {
-  test(`packages/${database}/engine.wasm is the build of the engine's sources`, async () => {
-    const engine = await Engine.load(join(PACKAGES, database, "engine.wasm"));
-    const ping = engine.call({ op: "ping" }) as { fingerprint: string };
-    assert.equal(ping.fingerprint, fingerprint(database), `packages/${database}/engine.wasm was built from other sources than engine/core and engine/${database}: rebuild it with engine/build.sh ${database} and commit it`);
+  test(`packages/${database}/engine is the build of the engine's sources`, async () => {
+    const engine = await Engine.load(join(PACKAGES, database, "engine"));
+    const ping = engine.call({ op: "ping" }) as { fingerprint: string; host?: string };
+    assert.equal(ping.fingerprint, fingerprint(database), `packages/${database}/engine was built from other sources than engine/core and engine/${database}: rebuild it with engine/build.sh ${database} and commit it`);
+    const host = sourceHash(join(ENGINE, "wasip2")).toString(16).padStart(16, "0");
+    assert.equal(ping.host, host, `packages/${database}/engine was built from other sources than engine/wasip2, engine/native and engine/facade: rebuild it with engine/build.sh ${database} and commit it`);
   });
 }

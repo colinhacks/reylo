@@ -8,7 +8,7 @@
 // vite.api.config.ts bundles this file into .live/api/play-api.mjs, one plain module that the
 // functions in api/play/ import, since a function's own compiler leaves this code's `.ts` imports
 // unresolved. The caller names the directory of the live plugin's files (lib/live/plugin.ts).
-import { readFile } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import type { PGlite } from '@electric-sql/pglite';
 import { AnswerCache, type EngineCore, type EngineIo } from '../../../src/engine-core.ts';
 import { catalog, CATALOG_QUERIES, type Catalog } from '../../../src/play-catalog.ts';
@@ -45,7 +45,9 @@ export function playApi(live: URL) {
   const load = (): Promise<Loaded> => {
     loading ??= (async () => {
       const { PGlite } = await import('@electric-sql/pglite');
-      const [engineBytes, pgliteWasm, fsBundle, snapshot] = await Promise.all(['engine.wasm', 'pglite.wasm', 'pglite-data.tar', 'postgres.tar'].map((name) => readFile(new URL(name, live))));
+      const [pgliteWasm, fsBundle, snapshot] = await Promise.all(['pglite.wasm', 'pglite-data.tar', 'postgres.tar'].map((name) => readFile(new URL(name, live))));
+      const engine = new URL('engine/', live);
+      const cores = Object.fromEntries(await Promise.all((await readdir(engine)).filter((name) => name.endsWith('.wasm')).map(async (name) => [name, await WebAssembly.compile(await readFile(new URL(name, engine)))] as const)));
       const pg: PGlite = await PGlite.create({
         pgliteWasmModule: await WebAssembly.compile(pgliteWasm!),
         fsBundle: new Blob([fsBundle!]),
@@ -58,7 +60,7 @@ export function playApi(live: URL) {
       const version = (await pg.query<{ v: string }>("select current_setting('server_version') as v")).rows[0]!.v;
       const q = CATALOG_QUERIES.postgres;
       const tables = catalog('postgres', await io.query(q.tables, []), await io.query(q.functions!, []), await io.query(q.types!, []));
-      return { engine: await instantiateEngine(await WebAssembly.compile(engineBytes!)), io, label: `Postgres ${version.split('.')[0]} via PGlite`, catalog: tables };
+      return { engine: instantiateEngine(cores), io, label: `Postgres ${version.split('.')[0]} via PGlite`, catalog: tables };
     })();
     // A load that failed is tried again by the next request, rather than failing every one after it.
     loading.catch(() => (loading = undefined));

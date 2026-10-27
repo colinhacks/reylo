@@ -5,7 +5,6 @@
 // waiting, so the latest text wins and typing never queues work.
 import type { PGlite } from '@electric-sql/pglite';
 import { AnswerCache, type EngineCore, type EngineIo } from '../../../src/engine-core.ts';
-import engineUrl from '../../../packages/postgres/engine.wasm?url';
 import pgliteWasmUrl from '../../.live/pglite.wasm?url';
 import pgliteDataUrl from '../../.live/pglite-data.tar?url';
 import snapshotUrl from '../../.live/postgres.tar?url';
@@ -21,13 +20,17 @@ export type FromWorker = FromChannel;
 const EMPTY_MODULE = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
 
 type Loaded = { engine: EngineCore; io: EngineIo; cache: AnswerCache; pg: PGlite };
+
+// The engine component's core modules, by their file names, which jco's output asks for by name.
+const coreUrls = Object.fromEntries(Object.entries(import.meta.glob<string>('../../../packages/postgres/engine/*.wasm', { query: '?url', import: 'default', eager: true })).map(([path, url]) => [path.slice(path.lastIndexOf('/') + 1), url]));
 let loading: Promise<Loaded> | undefined;
 
 function load(): Promise<Loaded> {
   return (loading ??= (async () => {
     const { PGlite } = await import('@electric-sql/pglite');
-    const [engineModule, pgliteWasmModule, fsBundle, loadDataDir, initdbWasmModule] = await Promise.all([
-      WebAssembly.compileStreaming(fetch(engineUrl)),
+    const [engineModules, pgliteWasmModule, fsBundle, loadDataDir, initdbWasmModule] = await Promise.all([
+      // Compiled from their bytes: the smallest are inlined as data URLs, which compileStreaming refuses for their type.
+      Promise.all(Object.entries(coreUrls).map(async ([name, url]) => [name, await WebAssembly.compile(await (await fetch(url)).arrayBuffer())] as const)).then(Object.fromEntries),
       WebAssembly.compileStreaming(fetch(pgliteWasmUrl)),
       fetch(pgliteDataUrl).then((r) => r.blob()),
       fetch(snapshotUrl).then((r) => r.blob()),
@@ -36,7 +39,7 @@ function load(): Promise<Loaded> {
     // 16 MB of shared buffers, where the default 128 MB grows PGlite's memory to 189 MB; the
     // schema's catalog fits in far less.
     const pg = await PGlite.create({ pgliteWasmModule, fsBundle, loadDataDir, initdbWasmModule, postgresqlconf: ['shared_buffers = 16MB'] } as never);
-    return { engine: await instantiateEngine(engineModule), io: pgliteIo(pg), cache: new AnswerCache(), pg };
+    return { engine: instantiateEngine(engineModules), io: pgliteIo(pg), cache: new AnswerCache(), pg };
   })());
 }
 

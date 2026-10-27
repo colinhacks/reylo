@@ -2,7 +2,7 @@
 
 This guide is for coding agents and contributors working in this repository: what is where, how to set up, how to make the usual changes, and what the checks expect. Read it whole before a change.
 
-Reylo types SQL from the database itself. A project imports a `.sql` file, and TypeScript 7.1's content mapper gives back its parameters, columns, nullability, nested JSON shapes and cardinality, read from the server's own analysis; nothing is declared by hand. The analysis is a Rust engine, built to one WebAssembly artifact per database, which the npm package `reylo` hosts.
+Reylo types SQL from the database itself. A project imports a `.sql` file, and TypeScript 7.1's content mapper gives back its parameters, columns, nullability, nested JSON shapes and cardinality, read from the server's own analysis; nothing is declared by hand. The analysis is a Rust engine, built to one WebAssembly component per database, which connects to the database itself and which the npm package `reylo` hosts.
 
 A maintainer may keep local notes beside this file, which are never committed; when they are present, read them too, and where the two differ they win: @AGENTS.local.md
 
@@ -11,8 +11,8 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | Path | What it is |
 | --- | --- |
 | `src/` | The npm package `reylo`, TypeScript: the content mapper, the run time (`.run()`, `.runSync()`, `.with()`), the bundler adapters, the preload `reylo/register` and the CLI `reylo generate` |
-| `packages/<database>/` | The engine packages `@reylosql/postgres`, `@reylosql/mysql` and `@reylosql/sqlite`: a `package.json`, a README, the committed `engine.wasm`, and `tooling.ts`, from which the build bundles the build-time half of `src/` into the package; Postgres's and MySQL's also hold their describer, `describe.ts`, with its driver as a dev dependency. Optional peers of `reylo` at its exact version |
-| `engine/` | The analysis engine, Rust: `core/`, shared by every database, and one crate per database, none depending on another, each implementing core's `Database` trait ([engine/README.md](./engine/README.md)). Built to wasm for the loader, and linked natively by the oracle |
+| `packages/<database>/` | The engine packages `@reylosql/postgres`, `@reylosql/mysql` and `@reylosql/sqlite`: a `package.json`, a README, the committed engine component in `engine/` (jco's transpile of the component `engine/build.sh` builds), and `tooling.ts`, from which the build bundles the build-time half of `src/` into the package. Optional peers of `reylo` at its exact version |
+| `engine/` | The analysis engine, Rust: `core/`, shared by every database, and one crate per database, none depending on another, each implementing core's `Database` trait ([engine/README.md](./engine/README.md)). Built for the loader, with the program that connects it to its database (`native/`), to one WebAssembly component per database (`wasip2/`), and linked natively by the oracle |
 | `oracle/` | The soundness oracle (`reylo-oracle`) and `oracle/cases/`, the regression suite for everything the engine infers |
 | `tests/` | The loader's node tests |
 | `site/` | The docs site, reylo.dev: Vite, React Router and MDX; its design is docs-kit, copied into `site/docs-kit/` |
@@ -26,9 +26,10 @@ A maintainer may keep local notes beside this file, which are never committed; w
 
 | To change | Edit | Prove it with |
 | --- | --- | --- |
-| A type, nullability, JSON shape or cardinality Reylo infers | The engine crate of that database (map below) | An oracle case, the engine's tests, the rebuilt `engine.wasm` ([recipe](#an-inference-fix-in-the-engine)) |
+| A type, nullability, JSON shape or cardinality Reylo infers | The engine crate of that database (map below) | An oracle case, the engine's tests, the rebuilt components ([recipe](#an-inference-fix-in-the-engine)) |
 | What the type check shows: the declaration, the hover, a diagnostic | `src/mapper-server.ts`, `src/module-types.ts`, `src/render.ts`, `src/doc-comment.ts` | `tests/compiled.test.ts`, `definition`, `doc-comment`, `render` |
-| One analysis path and the `.reylo/` cache | `src/analyze.ts`; the engine's host is `src/engine.ts` (its Node-free half, the calls and the replay loop, is `src/engine-core.ts`), which answers it through `packages/postgres/describe.ts`, `packages/mysql/describe.ts` and `src/sqlite-describe.ts` | `tests/analyze.test.ts`, `engines`, `fingerprint` |
+| One analysis path and the `.reylo/` cache | `src/analyze.ts`; the engine's host is `src/engine.ts`, which runs each database's component (`src/component.ts`) and its connections in a worker (`src/engine-worker.ts`); the replay loop for a host that answers the engine itself, as the docs site's playground does, is `src/engine-core.ts` | `tests/analyze.test.ts`, `engines`, `fingerprint` |
+| How the engine connects to a database: the URL's settings, TLS, a refused login, a lost server | `engine/native/src/` (`postgres.rs`, `mysql.rs`, `sqlite.rs`, `tls.rs`), over the clients of `engine/facade/` | The crate's tests, `tests/connect.test.ts`, `catalog-queries`, and `analyze`'s MySQL stand-in (`tests/mysql-stand-in.ts`) |
 | How `.run()` binds parameters and decodes values | `src/execute.ts`, `src/values.ts` (one representation per SQL type), `src/decode.ts`, `src/decode-mysql.ts`, `src/decode-sqlite.ts`, `src/rows.ts` (structured parameters) | `tests/execute.test.ts`, `decode`, `values`, `representation`, `structured`, `rows`, `casts`, then `lab/driver-matrix` |
 | Typed JSON parameters, and a query's input and output JSON Schema | `src/json-schema.ts` (the run time's validator), `src/schema.ts`; the types are `engine/core/src/schema_type.rs` and `schema.rs` | `tests/json-schema.test.ts`, then `lab/json-schema-suite` |
 | The check of a SQLite statement on the app's own SQLite | `src/sqlite-drivers.ts` | `tests/sqlite-drivers.test.ts` |
@@ -48,7 +49,7 @@ The engine, crate by crate:
 - **SQLite**, `engine/sqlite/`: `src/sqlite.rs` (the analysis over SQLite's resolved tree, and its function tables), `src/sqlite_tree.rs` (the tree as `csrc/reylo_sqlite.c` serializes it), and `csrc/patch-sqlite.py` (the hooks the prepare step applies to the amalgamation).
 - **Core**, `engine/core/src/`: `database.rs` (the `Database` trait each database implements), `types.rs` (the type model), `shape.rs` (the nested-JSON vocabulary every database plans with), `lex.rs`, `config.rs`, `structured.rs` (`row(…)` and `rows(…)` parameters), `schema_type.rs` (a JSON Schema CHECK to a type), `schema.rs` (a type to JSON Schema), `api.rs` (the request protocol), `host.rs` (the answers a host gave and the needs the engine records), `fresh.rs`, `fingerprint.rs`.
 
-The engine never opens a connection: it replays an analysis, names the statements to describe and the catalog queries to run, and its host answers them. Postgres is the reference dialect; the docs' page for each dialect (`site/content/docs/<database>.mdx`) states what it can and cannot type.
+The engine's core never opens a connection: it replays an analysis, names the statements to describe and the catalog queries to run, and its host answers them. The host the engine packages carry is Rust too: each component holds its database's program (`engine/native/`), which opens the connection itself, through tokio-postgres, mysql_async or rusqlite, and answers the core's needs, while a host that holds a connection of its own drives the core's replay itself (`src/engine-core.ts`). Postgres is the reference dialect; the docs' page for each dialect (`site/content/docs/<database>.mdx`) states what it can and cannot type.
 
 ## Setup
 
@@ -56,36 +57,35 @@ The engine never opens a connection: it replays an analysis, names the statement
 
 Prefer nub over `node`, `bun`, npm, npx, pnpm and yarn: `nub install`, `nub add`, `nub run <script>`, `nub <file>` to run a file, `nubx <tool>` for a local CLI, and `nub --node <file>` for strict, unaugmented Node. It keeps the existing lockfiles. CI uses nub 0.9.6 on Node 24.
 
-- `nub install` at the root, in `packages/postgres` and in `packages/mysql` (the drivers the engines describe through, which the build bundles into them), then `nub run typecheck` (`tsc --noEmit --runExternalCode`, about a second) and `nub run test` (`node --test 'tests/**/*.test.ts'`, about 15 seconds) are the loader's checks.
+- `nub install` at the root, then `nub run typecheck` (`tsc --noEmit --runExternalCode`, about a second) and `nub run test` (`node --test 'tests/**/*.test.ts'`, about 15 seconds) are the loader's checks.
 - CI fails on any skipped test: a run must end with `ℹ skipped 0`, and `nub run test 2>&1 | grep -E '^﹣|ℹ skipped'` lists each skip with its reason. `REYLO_TEST_PG` and `REYLO_TEST_MYSQL` name the test databases ([Test databases](#test-databases)); the Postgres tests of structured parameters, freshness and the schema fingerprint also need `lab/drivers` installed; and the Jest, Vitest and SQLite-driver tests need `lab/drivers` and `lab/jest` installed. The full setup, as CI makes it, from the repository's root:
 
   ```sh
-  (cd packages/postgres && nub install) && (cd packages/mysql && nub install)
   (cd lab/drivers && nub install) && (cd lab/jest && nub install)
   mkdir -p lab/jest/node_modules/@reylosql
   ln -sfn ../../.. lab/jest/node_modules/reylo && ln -sfn ../../../../packages/sqlite lab/jest/node_modules/@reylosql/sqlite
   ```
 
   Every lab reaches the package through a link, `node_modules/reylo`, to the repository root, and its engine through `node_modules/@reylosql/<database>` into `packages/`. `nub install` in a lab removes the links, so make them again after one.
-- `nub run build` writes `dist/reylo` (the run time and the entry points, no engine) and `dist/postgres`, `dist/sqlite` and `dist/mysql` (the engine, `tooling.js` and, for Postgres and MySQL, `describe.js` with the driver inside), and refuses versions that disagree. The examples link `dist/` with `link:`, not the sources, so run it before `nub install` in an example and again after any change to `src/`. Never turn those links into `file:` dependencies: nub 0.9.6 never refreshes a `file:` directory it has installed once, so the example would run a stale build.
+- `nub run build` writes `dist/reylo` (the run time and the entry points, no engine) and `dist/postgres`, `dist/sqlite` and `dist/mysql` (the engine component, `tooling.js`, `engine-worker.js` and the I/O worker of jco's preview2-shim, which both bundle: nothing platform-specific, and no dependency), and refuses versions that disagree. The examples link `dist/` with `link:`, not the sources, so run it before `nub install` in an example and again after any change to `src/`. Never turn those links into `file:` dependencies: nub 0.9.6 never refreshes a `file:` directory it has installed once, so the example would run a stale build.
 - `reylo` finds a project's engine from the project first, then from its own install (`src/engine.ts`, `src/engine-package.ts`), and refuses one of another version. The root's own tests reach the three engines through its `devDependencies` (`link:packages/<database>`).
 - `site/` has its own install: `nub install` there before building or serving it.
 
 ### Rust
 
-One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, `engine/facade` (`reylo-engine`, which a Rust host links: each database's engine behind a feature, and the answers to its needs over `tokio-postgres`, `rusqlite` or `mysql_async`), the entry crates in `engine/wasm/`, and `oracle/`: one `Cargo.lock` and one `target/`. It needs a rustup toolchain with the `wasm32-wasip1` target (`rustup target add wasm32-wasip1`; a distribution's `rustc` without it fails with "can't find crate for `std`") and wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`.
+One Cargo workspace at the root covers `engine/core`, `engine/postgres`, `engine/sqlite`, `engine/mysql`, `engine/build-support`, `engine/facade` (`reylo-engine`, which a Rust host links: each database's engine behind a feature, and the answers to its needs over `tokio-postgres`, `rusqlite` or `mysql_async`), `engine/native` (`reylo-engine-native`, the program each component holds: the connection, TLS and the engine's requests), and `oracle/`: one `Cargo.lock` and one `target/`. The component crate, `engine/wasip2`, is a workspace of its own, so that the tokio-postgres patch it builds with reaches no native build. Building the components needs a rustup toolchain with the `wasm32-wasip2` target (`rustup target add wasm32-wasip2`; a distribution's `rustc` without it fails with "can't find crate for `std`"), wasi-sdk 34, named by `WASI_SDK_PATH` or unpacked under `engine/.wasi-sdk/`, and jco from the root's install.
 
 ```sh
 engine/build.sh --prepare     # once per checkout, before any cargo command: cargo cannot resolve the workspace without it
-cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle
-engine/build.sh               # rebuilds all three packages/<database>/engine.wasm
+cargo test -p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-oracle
+engine/build.sh               # rebuilds all three packages/<database>/engine/
 ```
 
-- The prepare step fetches `pg_query` and libpg_query at pinned commits, checks their SHA-256 and applies the patch in `engine/postgres/vendor/` into `engine/postgres/.patched/`, which the workspace's `[patch]` points at; and it fetches the SQLite amalgamation into `engine/sqlite/.sqlite/` and applies the engine's hooks.
+- The prepare step fetches `pg_query` and libpg_query at pinned commits, checks their SHA-256 and applies the patch in `engine/postgres/vendor/` into `engine/postgres/.patched/`, which the workspace's `[patch]` points at; it fetches the SQLite amalgamation into `engine/sqlite/.sqlite/` and applies the engine's hooks; and it fetches tokio-postgres from crates.io into `engine/wasip2/.patched/` and applies the patch beside it, which builds its runtime for wasip2.
 - On macOS, bindgen needs the SDK: `export SDKROOT="$(xcrun --show-sdk-path)"`, then in a second `export`, `BINDGEN_EXTRA_CLANG_ARGS="-isysroot $SDKROOT"` (on one line the shell expands `$SDKROOT` before it is set, and bindgen fails with an opaque `libclang error`).
-- **An engine change carries its rebuilt artifact.** `packages/<database>/engine.wasm` is committed, so a checkout works without a Rust toolchain, and each artifact's fingerprint hashes core's sources and its own database's (`engine/core/src/fingerprint.rs`): the loader's tests fail when a committed artifact does not match its sources, and any edit under `engine/core/` changes all three.
-- `engine/build.sh postgres` rebuilds one artifact. Its bytes differ from those of a build of all three, since cargo unifies the features of the crates they share, though its fingerprint, which is what the checks compare, does not: build all three in one run for the bytes any checkout reproduces, and always after a change under `engine/core/`.
-- The artifacts are built without LTO: the depth a statement may nest was measured on that code, and LTO's larger frames overflow Node's stack at the bound.
+- **An engine change carries its rebuilt components.** `packages/<database>/engine/` is committed, so a checkout works without a Rust toolchain, and each component reports two hashes on ping: its engine's fingerprint, core's sources and its own database's (`engine/core/src/fingerprint.rs`), and `host`, the sources of the code that connects it (`engine/wasip2`, `engine/native`, `engine/facade`): the loader's tests fail when a committed component does not match its sources, and any edit under `engine/core/`, `engine/native/`, `engine/facade/` or `engine/wasip2/` changes all three.
+- `engine/build.sh postgres` rebuilds one component. Each is built on its own, in a target directory of its own, so its bytes are those any build of it gives; the build writes no path of the machine that built it into the component.
+- The components are built without LTO: the depth a statement may nest was measured on that code, and LTO's larger frames spend more of the JavaScript engine's stack at the bound.
 
 ### Test databases
 
@@ -136,8 +136,8 @@ The docs are `site/content/docs/`: the main page `index.mdx`, which continues in
 
 `.github/workflows/test.yml` runs every check on each push to `main` and on each release, and on a pull request the checks its change reaches, its run for an older commit cancelled:
 
-- **test**, on every pull request: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `packages/postgres`, `packages/mysql`, `lab/drivers` and `lab/jest`, the Jest lab's links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
-- **engine**, on a pull request that changes `engine/`, `oracle/`, Cargo's files, `src/error-codes-*`, the JSON Schema validators' measurements the engine's tests read, or `.github/` (a renamed file at both its paths): `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test` of the crates the change reaches (every one, `-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-oracle`, where it changes core, `engine/facade/`, the oracle's code, the build or CI; else the engine of each database it changes).
+- **test**, on every pull request: on Node 24 with throwaway Postgres 18 and MySQL 8.4, `nub install` at the root, in `lab/drivers` and in `lab/jest`, the Jest lab's links, `nub run typecheck`, `nub run test` with none skipped, and `nub run build`.
+- **engine**, on a pull request that changes `engine/`, `oracle/`, Cargo's files, `src/error-codes-*`, the JSON Schema validators' measurements the engine's tests read, or `.github/` (a renamed file at both its paths): `engine/build.sh --prepare`, `cargo build --workspace --all-targets` with no warning, and `cargo test` of the crates the change reaches (every one, `-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-oracle`, where it changes core, `engine/facade/`, `engine/native/`, `engine/wasip2/`, the oracle's code, the build or CI; else the engine of each database it changes).
 - **oracle**, on the same pull requests: `cargo run -q -p reylo-oracle -- --url <pg> --mysql-url <mysql> --strict-coverage <cases>`, in shards side by side (Postgres's cases, SQLite's, MySQL's in two, and `mysql_types`, the slowest, alone), each database's only where the change reaches it (`engine/<database>/` or one of its cases; everything for the files that run every engine check). Postgres 18 has pgvector, PostGIS and the five JSON Schema validators, which `.github/scripts/json-schema-validators.sh` builds and a cache keeps, with the packages of Postgres itself; MySQL is 8.4. A failure in the step that builds the validators is not the engine's.
 
 Run what CI runs before you push. A failing check's log: `gh pr checks <number> -R colinhacks/reylo` names the run, and `gh run view <run id> -R colinhacks/reylo --log-failed` prints what failed. Pullfrog and Copilot review every pull request, and Vercel deploys a preview of the docs site.
@@ -145,7 +145,7 @@ Run what CI runs before you push. A failing check's log: `gh pr checks <number> 
 ## Pull requests and commits
 
 - **One change per pull request**, never several unrelated ones batched together. A pull request is squash-merged, so it lands as one commit whose subject is its title.
-- **A pull request that changes the engine carries its rebuilt `engine.wasm`.** When another such pull request lands first, rebase on `origin/main`, rebuild the artifacts and force-push the branch.
+- **A pull request that changes the engine carries its rebuilt components** (`packages/<database>/engine/`). When another such pull request lands first, rebase on `origin/main`, rebuild them and force-push the branch.
 - **Commit messages and pull request titles are Conventional Commits**: `type(scope): subject`, at most 72 characters, the subject imperative and lowercase with no trailing period, as `fix(mysql): type left-joined columns as nullable`. The type is `feat`, `fix`, `docs`, `refactor`, `perf`, `test`, `build`, `ci` or `chore` (`chore(release): 0.2.0` for a release); the optional scope is `engine`, `postgres`, `mysql`, `sqlite`, `mapper`, `cli`, `site`, `docs-kit`, `examples`, `oracle`, `readme` or `release`. A breaking change takes `!` after the scope. Only when the subject alone hides something, a blank line and a few short lines say why.
 - **Committed text states rules, not people.** A code comment, a test's name, an error message, a README, a docs page, a commit message or a pull request never names or quotes a person, or gives a reason as someone's word: it states the rule and its reason itself.
 - **Commit each finished, verified step** on the branch, rather than one commit for a session's work.

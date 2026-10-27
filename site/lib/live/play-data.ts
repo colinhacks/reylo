@@ -4,7 +4,7 @@
 // engine and the same PGlite snapshot the reader's tab loads (lib/live/plugin.ts writes it before
 // the build reads it), through the same function (lib/live/analyze.ts), so the page is complete,
 // for every example, before anything loads.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { AnswerCache } from '../../../src/engine-core.ts';
 import { pageFiles } from '../page-files.ts';
@@ -20,12 +20,21 @@ import { pgliteIo } from './pg-io.ts';
 
 export type { Example, PlayData } from './app.tsx';
 
-export async function playData(): Promise<PlayData> {
+let computed: Promise<PlayData> | undefined;
+
+/** The playground's data, computed once per build: the prerender asks for it twice, for the page and for its data. */
+export function playData(): Promise<PlayData> {
+  return (computed ??= compute());
+}
+
+async function compute(): Promise<PlayData> {
   const site = process.cwd();
   const { PGlite } = await import('@electric-sql/pglite');
   const pg = await PGlite.create({ loadDataDir: new Blob([readFileSync(path.join(site, '.live', 'postgres.tar'))]) });
   try {
-    const engine = await instantiateEngine(await WebAssembly.compile(readFileSync(path.join(site, '..', 'packages', 'postgres', 'engine.wasm'))));
+    const dir = path.join(site, '..', 'packages', 'postgres', 'engine');
+    const cores = Object.fromEntries(await Promise.all(readdirSync(dir).filter((n) => n.endsWith('.wasm')).map(async (n) => [n, await WebAssembly.compile(readFileSync(path.join(dir, n)))] as const)));
+    const engine = instantiateEngine(cores);
     const io = pgliteIo(pg);
     const h = await loadHighlighter();
     const examples: Example[] = [];
