@@ -4,16 +4,22 @@
   "buildCommand": "pnpm run build",
   "outputDirectory": "build/client",
   "functions": {
-    "api/play/*.mjs": { "memory": 1024, "maxDuration": 30, "includeFiles": ".live/{engine.wasm,postgres.tar,pglite.wasm,pglite-data.tar}" }
+    "api/play/*.mjs": { "memory": 1024, "maxDuration": 30, "includeFiles": ".live/{engine.wasm,postgres.tar,pglite.wasm,pglite-data.tar}" },
+    "api/play-og/image.mjs": { "memory": 1024, "maxDuration": 15, "includeFiles": "assets/fonts/{Geist-600,GeistMono-400}.ttf" },
+    "api/play-og/page.mjs": { "maxDuration": 10 }
   },
   "routes": [
     { "src": "^/play/api/(analyze|schema)$", "dest": "/api/play/$1" },
+    { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "q" }], "dest": "/api/play-og/image" },
+    { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "example" }], "dest": "/api/play-og/image" },
     {
       "src": "^/play$",
       "has": [{ "type": "query", "key": "q" }, { "type": "header", "key": "accept", "value": "^(?!.*text/html).*application/json.*$" }],
       "dest": "/api/play/analyze",
       "headers": { "Vary": "Accept" }
     },
+    { "src": "^/play$", "has": [{ "type": "query", "key": "q" }], "dest": "/api/play-og/page", "headers": { "Vary": "Accept" } },
+    { "src": "^/play$", "has": [{ "type": "query", "key": "example" }], "dest": "/api/play-og/page", "headers": { "Vary": "Accept" } },
     {
       "src": "^/$",
       "has": [{ "type": "header", "key": "accept", "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$" }],

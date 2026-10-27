@@ -14,6 +14,8 @@ export default [
   route('404', 'routes/not-found.tsx'),
   // The playground, full screen (components/play.tsx).
   route('play', 'routes/play.tsx'),
+  // Its link preview, the card of the query it opens with (a shared query's card is drawn on request).
+  route('play/og.png', 'routes/play-og.tsx'),
   // The local playground (app/routes/playground.tsx), on the dev server only: it needs scratch databases.
   ...(process.env.NODE_ENV === 'production' ? [] : [route('playground', 'routes/playground.tsx')]),
   route('llms.txt', 'routes/llms.ts'),

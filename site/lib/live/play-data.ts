@@ -15,31 +15,10 @@ import { catalog, CATALOG_QUERIES, type Catalog } from '../../../src/play-catalo
 import { instantiateEngine } from './engine.ts';
 import type { Example, PlayData } from './app.tsx';
 import { loadHighlighter, tokens } from './highlight.ts';
+import { inferenceStatements, START } from './inference.ts';
 import { pgliteIo } from './pg-io.ts';
 
 export type { Example, PlayData } from './app.tsx';
-
-/** The example the page opens with: nested JSON, a nullable object and a cardinality. */
-const START = 'nested-fetching';
-
-/**
- * The Inference section's subsections, each by its heading and its first Postgres statement (one
- * written for every dialect, or for Postgres).
- */
-function inferenceStatements(site: string): { title: string; slug: string; sql: string }[] {
-  const source = readFileSync(path.join(site, 'content', 'sections', '03-inference.mdx'), 'utf8');
-  const out: { title: string; slug: string; sql: string }[] = [];
-  for (const part of source.split(/\n### /).slice(1)) {
-    const heading = part.slice(0, part.indexOf('\n'));
-    const title = heading.replace(/\s*\[#[^\]]*\]\s*$/, '').replace(/`/g, '').trim();
-    const anchor = /\[#([^\]]+)\]/.exec(heading)?.[1];
-    const slug = anchor ?? title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    const blocks = [...part.matchAll(/```sql ([^\n]*)\n([\s\S]*?)```/g)];
-    const block = blocks.find(([, meta]) => /file="/.test(meta!) && /dialect="(?:postgres|all)"/.test(meta!));
-    if (block) out.push({ title, slug, sql: block[2]!.replace(/\n$/, '') });
-  }
-  return out;
-}
 
 export async function playData(): Promise<PlayData> {
   const site = process.cwd();
@@ -52,7 +31,7 @@ export async function playData(): Promise<PlayData> {
     const examples: Example[] = [];
     const cards = collectFiles(pageFiles(site), site).filter((b) => b.inferred && b.dialect === 'postgres');
     const modules = readModules(site);
-    for (const { title, slug, sql } of inferenceStatements(site)) {
+    for (const { title, slug, sql } of inferenceStatements(readFileSync(path.join(site, 'content', 'sections', '03-inference.mdx'), 'utf8'))) {
       const result = await analyzeStatement(engine, io, new AnswerCache(), sql);
       if (result.diagnostics.length) {
         console.warn(`lib/live/play-data.ts: the Inference example "${title}" is left out: against the main page's Postgres schema, ${result.diagnostics[0]!.message}`);
