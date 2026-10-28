@@ -108,6 +108,8 @@ fn cell(row: &::tokio_postgres::Row, i: usize) -> Value {
         Type::INT8_ARRAY => array(row.get::<_, Option<Vec<Option<i64>>>>(i)),
         Type::OID_ARRAY => array(row.get::<_, Option<Vec<Option<u32>>>>(i)),
         Type::BOOL_ARRAY => array(row.get::<_, Option<Vec<Option<bool>>>>(i)),
+        // What the server-side extension answers with: its version, a whole analysis and a round's needs.
+        Type::JSON | Type::JSONB => row.get::<_, Option<Value>>(i),
         ref other => panic!("a catalog query answered a column of type {other}, which no host binds"),
     };
     value.unwrap_or(Value::Null)
