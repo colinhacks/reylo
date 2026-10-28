@@ -30,8 +30,9 @@ function CopyButton({ className, label, icon, text }: { className: string; label
 }
 
 /**
- * A section heading. A link icon sits in the margin to its left, always shown in a light gray:
- * clicking it copies the section's URL and puts its anchor in the address bar. An h2 and an h3
+ * A section heading. A link icon sits in the margin to its left, in a light gray, shown while the
+ * heading is hovered or the icon has keyboard focus, and always on a device without hover (a
+ * phone): clicking it copies the section's URL and puts its anchor in the address bar. An h2 and an h3
  * also carry, at the right end of the line, a button that copies the section as Markdown
  * (`remarkSections` in ../mdx/remark-sections.ts), to paste into an agent. The heading text is
  * plain text, not a link, so it carries none of the link underline.
