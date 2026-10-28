@@ -3,7 +3,7 @@ name = "reylo-engine-postgres"
 version = "0.0.0"
 edition = "2021"
 publish = false
-description = "Reylo's analysis engine for Postgres: libpg_query's parse tree, the type registry, the expression rules, the row-count proof, the nested JSON shapes and the pgreylo handshake, over the core's protocol."
+description = "Reylo's analysis engine for Postgres: libpg_query's parse tree, the type registry, the expression rules, the row-count proof, the nested JSON shapes and the handshake with the reylo Postgres extension, over the core's protocol."
 
 [lib]
 name = "reylo_engine_postgres"

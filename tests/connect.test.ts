@@ -109,6 +109,16 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
   }
 });
 
+test("a json or jsonb column of a Postgres query reads as its value, as the server-side extension's answers do", { skip: noPg }, async () => {
+  const c = await (await engine("postgres", ROOT)).open(PG!);
+  try {
+    const rows = await c.query(`select '{"a": [1, null]}'::pg_catalog.jsonb as b, '[true]'::pg_catalog.json as j, null::pg_catalog.jsonb as n`, []);
+    assert.deepEqual(rows, [[{ a: [1, null] }, [true], null]]);
+  } finally {
+    await c.close();
+  }
+});
+
 test("a connection the server closed while it sat idle is opened again for the next request, on Postgres and on MySQL", { skip: noPg || noMysql }, async () => {
   for (const [dialect, url, id, kill] of [
     ["postgres", PG!, "select pg_backend_pid()", (n: unknown) => `select pg_terminate_backend(${n})`],

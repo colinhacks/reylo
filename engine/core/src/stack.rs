@@ -24,7 +24,7 @@ use std::cell::Cell;
 /// scalar subqueries; a flat list (`a or b or …`, a `CASE` with many `WHEN`s, an `IN` list) does
 /// not nest at all. The bound is set in the patch to libpg_query (`engine/postgres/vendor/`), the
 /// same for every host, so a statement parses on all of them or on none, and a client engine and
-/// `pgreylo` give the same answer. It is what the WebAssembly engine can afford: there the
+/// the `reylo` Postgres extension give the same answer. It is what the WebAssembly engine can afford: there the
 /// recursion runs on the JavaScript engine's own stack, about 1 MB in Node and shared with the
 /// host's frames, and the deepest statement of each shape leaves the host 45% of it
 /// (`tests/depth.test.ts`). The

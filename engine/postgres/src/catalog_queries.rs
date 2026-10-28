@@ -126,7 +126,7 @@ fn violations(sql: &str) -> Vec<String> {
                 let name = parts(m.get("funcname"));
                 match name.as_slice() {
                     ["pg_catalog", function] if FUNCTIONS.contains(function) => {}
-                    ["pgreylo", _] => {}
+                    ["reylo", _] => {}
                     _ => out.push(format!("the function `{}`, not one of pg_catalog's the queries may call", name.join("."))),
                 }
                 if m.get("args").and_then(Value::as_array).is_some_and(|args| args.iter().any(|a| untyped(Some(a)))) {

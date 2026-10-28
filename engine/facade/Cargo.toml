@@ -20,6 +20,8 @@ reylo-engine-postgres = { path = "../postgres", optional = true }
 reylo-engine-sqlite = { path = "../sqlite", optional = true }
 reylo-engine-mysql = { path = "../mysql", optional = true }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
-tokio-postgres = { version = "0.7", optional = true }
+# `with-serde_json-1`: a `json` or `jsonb` column reads as its value, as the answers of the server-side
+# extension come back.
+tokio-postgres = { version = "0.7", optional = true, features = ["with-serde_json-1"] }
 rusqlite = { version = "0.39", features = ["bundled"], optional = true }
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"], optional = true }

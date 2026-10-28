@@ -413,7 +413,7 @@ pub const ARBITERS_QUERY: &str = concat!(
 
 /// The analysis of a Postgres statement as its author wrote it: lexed, its structured parameters
 /// expanded, and replayed through `host`. The direct entry for a host that links this crate
-/// (`pgreylo`, which calls it from inside the server, so it never probes for the extension).
+/// (the `reylo` Postgres extension, which calls it from inside the server, so it never probes for the extension).
 pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     host.on_engine_stack(|host| analyze_here(sql, host))
 }

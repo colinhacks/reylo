@@ -1,6 +1,6 @@
 //! The fingerprint of a database's build: a hash of the sources its answers come from, core's and
 //! the database crate's own. Two engines with the same fingerprint give the same answer, which is
-//! how a client decides whether the engine inside a server's `pgreylo` extension may answer for it,
+//! how a client decides whether the engine inside a server's `reylo` extension may answer for it,
 //! and how Reylo keys its cache of analyses. Each crate's build script hashes only its own
 //! directory (`reylo-engine-build`); the database crate combines the two here, at compile time, so
 //! a change in core changes every database's fingerprint and a change in one database no other's.
