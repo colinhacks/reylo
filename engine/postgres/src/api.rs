@@ -1,5 +1,5 @@
 //! The Postgres side of the request protocol ([`reylo_engine_core::api`]): what a describe is
-//! answered with, and [`Postgres`], whose round settles what the server's `pgreylo` extension
+//! answered with, and [`Postgres`], whose round settles what the server's `reylo` extension
 //! offers before the statement asks for anything ([`crate::extension`]).
 
 use crate::extension::{self, Server};
@@ -43,7 +43,7 @@ impl Database for Postgres {
     const FINGERPRINT: &'static str = crate::FINGERPRINT;
     type Describe = RawDescribe;
 
-    /// Never probes for `pgreylo`: the extension itself calls this, and an engine in the server
+    /// Never probes for the `reylo` extension: the extension itself calls this, and an engine in the server
     /// that asked the server's engine would not end.
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         crate::postgres::analyze(sql, host)
@@ -60,7 +60,7 @@ impl Database for Postgres {
         crate::errors::errors(analysis, host)
     }
 
-    /// One round of the replay, through the server's `pgreylo` extension where there is one: the
+    /// One round of the replay, through the server's `reylo` extension where there is one: the
     /// whole analysis from a server with this engine inside, a round's needs in one query from a
     /// server with another build, and the needs as they are otherwise.
     fn round(sql: &str, answers: &Answers) -> Response {

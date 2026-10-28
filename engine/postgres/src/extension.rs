@@ -1,17 +1,17 @@
-//! The `pgreylo` Postgres extension, seen from a client.
+//! The `reylo` Postgres extension, seen from a client.
 //!
 //! The extension (`pg-extension/`) hosts this same engine inside the server, where a need is a
 //! function call and not a round trip. A client that finds it has two ways to use it:
 //!
 //! - The server's engine was built from the same sources as this one ([`crate::FINGERPRINT`]):
 //!   the two give the same answer, so the client asks for the whole analysis,
-//!   `SELECT pgreylo.analyze($1)`, in one query.
+//!   `SELECT reylo.analyze($1)`, in one query.
 //! - It is another build: the rules stay the client's, and each round's statement-scoped needs
-//!   travel as one query, `SELECT pgreylo.answer($1)`, which answers every one of them in the
+//!   travel as one query, `SELECT reylo.answer($1)`, which answers every one of them in the
 //!   server. Session-scoped needs stay as they are, so the host goes on caching them.
 //!
 //! Without the extension nothing changes. Finding out costs the first statement of a session one
-//! round for a session-scoped catalog read, and a second for `pgreylo.version()` where the
+//! round for a session-scoped catalog read, and a second for `reylo.version()` where the
 //! extension exists; the host keeps both answers. The statement's own needs wait for that
 //! answer: asked in the same round, a statement that settles in one round would be done before
 //! the answer came, and the extension would never be used.
@@ -31,14 +31,14 @@ use std::collections::HashMap;
 /// Reads nothing but the catalog, so it cannot fail where the extension is absent; an error
 /// here would be asked again for every statement, since a host does not keep a failure. Each
 /// operator and type is `pg_catalog`'s, as in the catalog queries of [`crate::postgres`].
-pub const PROBE_QUERY: &str = "SELECT e.extversion FROM pg_catalog.pg_extension e WHERE e.extname OPERATOR(pg_catalog.=) 'pgreylo'::pg_catalog.name";
-pub const VERSION_QUERY: &str = "SELECT pgreylo.version()";
-pub const ANALYZE_QUERY: &str = "SELECT pgreylo.analyze($1::pg_catalog.text)";
+pub const PROBE_QUERY: &str = "SELECT e.extversion FROM pg_catalog.pg_extension e WHERE e.extname OPERATOR(pg_catalog.=) 'reylo'::pg_catalog.name";
+pub const VERSION_QUERY: &str = "SELECT reylo.version()";
+pub const ANALYZE_QUERY: &str = "SELECT reylo.analyze($1::pg_catalog.text)";
 /// The needs travel as text that the server parses: a parameter described as `jsonb` makes a
 /// driver JSON-encode the string it is handed, and a JSON string is not the array. The text is
 /// read by `jsonb`'s input function, since a conversion from `text` to `jsonb` goes through no
 /// built-in cast and so may be a user's.
-pub const ANSWER_QUERY: &str = "SELECT pgreylo.answer(pg_catalog.jsonb_in(pg_catalog.textout($1::pg_catalog.text)))";
+pub const ANSWER_QUERY: &str = "SELECT reylo.answer(pg_catalog.jsonb_in(pg_catalog.textout($1::pg_catalog.text)))";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Server {
