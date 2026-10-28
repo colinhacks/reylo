@@ -1,9 +1,9 @@
 {
   "from": "/Users/colin/Documents/docs-kit",
-  "commit": "b76dd4c",
+  "commit": "de6a815",
   "files": {
     "package.json": "e906ab744cb9136ad818ce4000c6e883721b888a494da990b7125ecdbe8fbc56",
-    "README.md": "0e3d8f90d8532d45f28f0f3881b9242ac6e06ffb41fab60254563c7680614632",
+    "README.md": "a48ddecb24be6db25255e21a6c529d340219bee08e79388f8fe8926e9ae00a09",
     "src/components/accordion.tsx": "65898714e28a656eac74f629de9973720b5f081a3ac5046d1abe2efee5f5ff3d",
     "src/components/agent-prompt.tsx": "e6d448b2ff5a2bdac09e345542ae97b15ac1a10359d2e73f220a8c115997ef01",
     "src/components/callout.tsx": "223e2aef8009dce27ea2aa33e925b81c5dae4f4297c0edc73e56701ea2f95624",
@@ -15,7 +15,7 @@
     "src/components/details.tsx": "873a6e2c4eb6919060a168591adba3bedbb5c91cf0ee1f9ec3fba602e9faef2c",
     "src/components/document.tsx": "5690b0d241419124fe08a1b83641976770874f8f5cafbac787971815be72c50a",
     "src/components/head-scripts.ts": "bda3e254024a5a557715a98fe1e1cd4ff4d79f92d6ca94f2d33c0f73c1fe460c",
-    "src/components/heading.tsx": "0833910394302ad9e651206f1ec7aed4724b070da30dbdfe50b78d027bfff75a",
+    "src/components/heading.tsx": "ccd541b32182163df78c482565ac91cb57d9baedbe4e1a8f78db1bc7f5065340",
     "src/components/index.ts": "18ee4ab4742a1e5dd10f0e5f13eacbc0aa0e293aca710abcf313eac87f0a092c",
     "src/components/mdx.tsx": "b81a8a128bc3f4ece8a65f376998ca745617c906b99e43a082e55649790baffa",
     "src/components/prepaint.tsx": "0fbcf25ed06d8dbca719872a1cb88827679d7cb4d4b7f7e934622948043c7855",
@@ -28,7 +28,7 @@
     "src/mdx/recma-shared-popups.ts": "b12d67312b9875a469adba9ed4ca77b788f8f7958c0119451a9b4e16638ae427",
     "src/mdx/remark-sections.ts": "a81d91c95da4212fd24b15acc245206dcebf7fc0a2dfa04852d14eb4bddec0e1",
     "src/mdx/twoslash.ts": "845c73de8f06b79245ca7558b704f756919b19376bb4faaf63b1a78bbde21faa",
-    "src/style.css": "17bb1e5b068605c38daa1b140731e997d5eda8cfa7997f741fc45be543a85885",
+    "src/style.css": "6e469a401e1dc8d9e6a3534eee80bb048cf97c584ad63c87d772115f2cfdbeaa",
     "src/sync.mjs": "2a1cf5fe7ac181004dcb2859b46003dc55808054cc2711567ee3928304812626",
     "src/vite.ts": "e8f8a6a49951ec991b24872d664efdd46cbb2121802d14279e0ea917f3f6763e"
   }

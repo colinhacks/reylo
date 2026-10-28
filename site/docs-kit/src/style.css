@@ -174,8 +174,9 @@ html .prose {
     font-weight: 600;
   }
 
-  /* The link icon sits in the margin to the left of the heading, always visible; the button that
-     copies the section as Markdown sits at the right end of its line, as on Motherload's docs. */
+  /* The link icon sits in the margin to the left of the heading, shown while the heading is
+     hovered (below); the button that copies the section as Markdown sits at the right end of its
+     line, always visible, as on Motherload's docs. */
   .dk-heading {
     position: relative;
     display: flex;
@@ -218,15 +219,33 @@ html .prose {
     padding: 0.25rem;
     border-radius: 0.25rem;
     color: color-mix(in oklab, var(--color-fd-muted-foreground) 55%, transparent);
-    transition: color 120ms;
+    opacity: 0;
+    transition: color 120ms, opacity 150ms;
   }
 
   .dk-anchor:hover {
     color: var(--color-fd-muted-foreground);
   }
 
+  /* The icon is hidden until the reader hovers anywhere on the heading's row (the icon itself
+     included), and shown while the button has keyboard focus, so Tab still reaches it. Opacity
+     alone hides it: the button keeps its place and stays focusable, and nothing moves when it
+     fades in. A device without hover (a phone) shows it always, since nothing there could reveal
+     it. */
+  .dk-heading:hover .dk-anchor,
+  .dk-anchor:focus-visible {
+    opacity: 1;
+  }
+
+  @media (hover: none) {
+    .dk-anchor {
+      opacity: 1;
+    }
+  }
+
   /* Below md the page's margin is narrower than the icon, which would be cut off at the window's
-     edge: the icon joins the copy button at the right end of the line, still always visible. */
+     edge: the icon joins the copy button at the right end of the line, still shown on hover and
+     focus, and always on a device without hover. */
   @media (width < 48rem) {
     .dk-anchor {
       position: static;
@@ -1138,7 +1157,8 @@ code {
 
 /* An accordion is a list of questions on the page itself: no box, no rules between them, each
    question a row of its own with the chevron at its right end and its link icon in the margin to
-   its left, as a heading has it, and an open item's answer in a lighter rounded panel under it. */
+   its left, shown on hover as a heading's is, and an open item's answer in a lighter rounded panel
+   under it. */
 #nd-page .dk-accordions {
   border: 0;
   border-radius: 0;
@@ -1166,6 +1186,19 @@ code {
   top: 50%;
   translate: 0 -50%;
   color: color-mix(in oklab, var(--color-fd-muted-foreground) 55%, transparent);
+  opacity: 0;
+  transition: color 120ms, opacity 150ms;
+}
+/* As a heading's: shown while the question's row is hovered or the button has keyboard focus, and
+   always on a device without hover. */
+#nd-page .dk-accordions > [data-state] > h3:hover > button:not([aria-expanded]),
+#nd-page .dk-accordions > [data-state] > h3 > button:not([aria-expanded]):focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  #nd-page .dk-accordions > [data-state] > h3 > button:not([aria-expanded]) {
+    opacity: 1;
+  }
 }
 #nd-page .dk-accordions [data-dk-accordion-panel] > div {
   margin: 0 0 1rem;
