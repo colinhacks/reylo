@@ -85,6 +85,12 @@ Load Reylo's preload with `--import`:
 node --env-file=.env --import reylo/register main.ts
 ```
 
+<Callout title="In production">
+
+The preload builds each query's module as it loads, so your app needs the engine at run time: install it with `npm install @reylosql/postgres` (or mysql, sqlite), without `-D`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
+
+</Callout>
+
 </Tab>
 <Tab value="Bun" id="setup-bun">
 
