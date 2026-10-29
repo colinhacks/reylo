@@ -4,3 +4,5 @@ left_join.sql: many () -> { id: int4, status: 'active' | 'banned'? }
 not_valid.sql: many () -> { legacy: text? }
 padded.sql: many () -> { c: bpchar? }
 union.sql: many () -> { status: text }
+write_cast_params.sql: one (id: int4, status: text, tier: varchar) -> { id: int4 }
+write_params.sql: one (id: int4, status: 'active' | 'banned', tier: 'free' | 'pro'?, m: 'ok' | 'sad'?, legacy: text?, new_status: 'active' | 'banned') -> { status: 'active' | 'banned' }

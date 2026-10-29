@@ -630,6 +630,9 @@ struct Engine<'a> {
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
+    /// The strings the CHECKs of each column a parameter is written to keep it to
+    /// ([`check_values`]).
+    written_values: RefCell<HashMap<(u32, i32), Vec<String>>>,
     /// The comment of each result column of the main statement and of each column it writes a
     /// parameter to ([`Engine::comments`]).
     comments: RefCell<Comments>,
@@ -652,7 +655,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -840,11 +843,25 @@ impl<'a> Engine<'a> {
                 let sources = self.written.borrow();
                 let schemas: Vec<(String, Validators)> = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).flat_map(|(_, rel, att)| sources.get(&(*rel, *att)).cloned().unwrap_or_default()).collect();
                 let document = if schemas.is_empty() { None } else { crate::schema_type::checked_type(&schemas) };
+                // A bare parameter written whole to a string column a CHECK keeps to a list of
+                // strings takes those strings alone, as its read does: the CHECK refuses every
+                // other value the write could give the column. A cast one is its cast's type,
+                // which may change the value on the way (`varchar(3)` cuts it short).
+                let kept = self.written_values.borrow();
+                let bare = parsed.as_ref().is_some_and(|p| p.bare.iter().any(|(n, _, _)| *n == i as i32 + 1));
+                let values = written
+                    .iter()
+                    .filter(|(n, _, _)| bare && *n == i as i32 + 1)
+                    .filter_map(|(_, rel, att)| kept.get(&(*rel, *att)))
+                    .fold(None, |known: Option<Vec<String>>, values| Some(match known {
+                        Some(known) => known.into_iter().filter(|v| values.contains(v)).collect(),
+                        None => values.clone(),
+                    }));
                 // A parameter written to columns that share one comment carries it.
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
+                Param { name: name.clone(), ty: with_document(with_values(registry.render(o), values.as_deref()), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
             })
             .collect();
 
@@ -1400,6 +1417,7 @@ impl<'a> Engine<'a> {
             }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
+        *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         Some(Ok((raw, described)))

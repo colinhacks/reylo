@@ -469,7 +469,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`). A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
@@ -732,6 +732,7 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `bytea` | `Uint8Array` |
 | An array | an array of its element's parameter type, without `null` |
 | An enum | the union of its labels |
+| `text`, `varchar` a `CHECK` limits to a list | the union of the list, written into the column with no cast |
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | an object whose values are strings or `null` |
 
