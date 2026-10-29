@@ -186,7 +186,7 @@ test("DuckDB: a project without @duckdb/node-api is told to install it, and a mi
   }
 });
 
-test("DuckDB: a database file another process holds for writing is typed from a copy of it", { skip }, async () => {
+test("DuckDB: a database file another process holds for writing is typed from a copy of it, which Windows refuses", { skip }, async () => {
   const root = await project();
   // A second process opens the file read-write, as a running app does, writes a table it has not
   // checkpointed, and holds the file until its stdin closes.
@@ -204,7 +204,19 @@ test("DuckDB: a database file another process holds for writing is typed from a 
       child.stdout.once("data", () => resolve());
       child.once("exit", (code) => reject(new Error(`the holder exited with ${code}`)));
     });
-    assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+    if (process.platform !== "win32") {
+      assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+    } else {
+      // On Windows, DuckDB shares no file it writes, so there is no copy to read: the refusal names the holder.
+      const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });
+      try {
+        const outcome = await session.analyze("select id, note from later", { store: false });
+        assert.ok(!outcome.ok);
+        assert.match(outcome.message, /\(PID \d+\) holds it for writing, and on Windows no other process can read it meanwhile, not even to copy it: type-check while that process is stopped/);
+      } finally {
+        await session.close();
+      }
+    }
   } finally {
     child.stdin.end();
     await new Promise((resolve) => child.once("exit", resolve));

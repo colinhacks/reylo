@@ -131,6 +131,12 @@ function opened(e: unknown): never {
 /** DuckDB's refusal of a file another process holds. */
 const LOCKED = /Could not set lock on file/;
 
+/**
+ * DuckDB's refusal on Windows of a file another process holds, and that process. There DuckDB opens
+ * a file it writes with no sharing at all, so no other process can read it, not even to copy it.
+ */
+const HELD_ON_WINDOWS = /File is already open in\s+(.*?\(PID \d+\))/;
+
 /** The copy of each database file the type check reads while another process holds it, by the file's path. */
 const copies = new Map<string, { key: string; dir: string; file: string }>();
 let cleanup = false;
@@ -187,7 +193,13 @@ export function duckdbDatabase(path: string, root: string): { run<T>(work: (io: 
     async run(work) {
       const options: Record<string, string> = { file_search_path: root };
       if (path !== ":memory:") options.access_mode = "READ_ONLY";
-      const instance = await api.DuckDBInstance.create(path, options).catch((e: unknown) => (LOCKED.test(e instanceof Error ? e.message : String(e)) ? openCopy(api, path, options) : opened(e)));
+      const instance = await api.DuckDBInstance.create(path, options).catch((e: unknown) => {
+        const message = e instanceof Error ? e.message : String(e);
+        if (LOCKED.test(message)) return openCopy(api, path, options);
+        const holder = HELD_ON_WINDOWS.exec(message)?.[1];
+        if (holder) opened(new Error(`${holder} holds it for writing, and on Windows no other process can read it meanwhile, not even to copy it: type-check while that process is stopped`));
+        return opened(e);
+      });
       try {
         const c = await instance.connect().catch(opened);
         try {

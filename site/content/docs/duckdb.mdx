@@ -12,7 +12,7 @@ description: How Reylo types SQL queries on DuckDB. The TypeScript type of each 
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
 | Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
-| Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it |
+| Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
 <Details summary="View the schema behind the examples" id="schema">
 
