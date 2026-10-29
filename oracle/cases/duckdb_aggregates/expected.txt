@@ -1,3 +1,4 @@
+count_if.sql: one () -> { positive: hugeint?, n: bigint, pairs: uinteger }
 filtered_aggregate.sql: many () -> { customer: varchar, big: decimal? }
 group_all.sql: many () -> { customer: varchar, revenue: decimal }
 group_all_constant.sql: one () -> { scope: varchar, n: bigint, revenue: decimal? }

@@ -5,6 +5,8 @@ by_part.sql: many (region: varchar) -> { id: integer }
 by_unique.sql: maybeOne (handle: varchar) -> { id: integer }
 either_key.sql: many (id: integer) -> { id: integer }
 joined.sql: many (id: integer) -> { handle: varchar, kind: varchar }
+limit_fraction.sql: maybeOne () -> { n: bigint }
+limit_param.sql: maybeOne (n: bigint) -> { n: bigint }
 limited.sql: maybeOne () -> { kind: varchar }
 no_from.sql: one (x: integer) -> { next: integer }
 no_from_filtered.sql: maybeOne (flag: boolean) -> { one: integer }

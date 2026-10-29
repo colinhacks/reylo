@@ -89,6 +89,15 @@ impl Scope {
                 found
             }
             [.., rel, column] => {
+                // `a.b.c` is a schema's table's column only where `a` names no relation and no
+                // column here: else DuckDB reads it as a struct's field, `c` of the struct `b`.
+                if parts.len() > 2 {
+                    let first = &parts[0];
+                    let named = self.rels.iter().any(|r| r.name.as_deref().is_some_and(|n| same(n, first)) || r.columns.as_ref().is_none_or(|cs| cs.iter().any(|c| c.name.as_deref().is_some_and(|n| same(n, first)))));
+                    if named {
+                        return None;
+                    }
+                }
                 let mut hits = self.rels.iter().enumerate().filter(|(_, r)| r.name.as_deref().is_some_and(|n| same(n, rel)));
                 let (i, r) = hits.next()?;
                 if hits.next().is_some() {
@@ -604,11 +613,11 @@ pub const AGGREGATES: &[&str] = &[
 ];
 
 /// The aggregates whose value is never NULL, over any rows.
-const COUNTS: &[&str] = &["count", "count_star", "count_if", "countif", "approx_count_distinct", "regr_count"];
+const COUNTS: &[&str] = &["count", "count_star", "approx_count_distinct", "regr_count"];
 
 /// The aggregates that are NULL only where their input is (or there is none): over a NOT NULL
 /// argument in a group, never.
-const OVER_VALUES: &[&str] = &["sum", "fsum", "sumkahan", "kahan_sum", "avg", "mean", "favg", "min", "max", "first", "last", "any_value", "arbitrary", "list", "array_agg", "string_agg", "group_concat", "listagg", "bool_and", "bool_or", "product", "median", "mode", "histogram"];
+const OVER_VALUES: &[&str] = &["count_if", "countif", "sum", "fsum", "sumkahan", "kahan_sum", "avg", "mean", "favg", "min", "max", "first", "last", "any_value", "arbitrary", "list", "array_agg", "string_agg", "group_concat", "listagg", "bool_and", "bool_or", "product", "median", "mode", "histogram"];
 
 /// The window functions that number rows, never NULL. Not `ntile`, which is NULL for a NULL
 /// number of buckets.
@@ -625,7 +634,7 @@ const STRICT: &[&str] = &[
     "character_length", "octet_length", "bit_length", "trim", "ltrim", "rtrim", "lpad", "rpad", "left", "right", "substr", "substring", "replace", "reverse", "repeat", "concat_ws", "md5", "sha1", "sha256", "hash",
     "contains", "starts_with", "ends_with", "prefix", "suffix", "strpos", "instr", "position", "date_trunc", "datetrunc", "strftime", "to_timestamp", "make_date", "make_time",
     "make_timestamp", "date_add", "map", "to_json", "json_quote", "list_contains", "array_contains", "list_has", "len", "array_length", "cardinality", "list_sort", "list_reverse_sort", "list_distinct", "list_concat", "array_concat",
-    "string_split", "str_split", "regexp_replace", "regexp_matches", "array_to_string", "to_hex", "hex", "bin", "ascii", "chr", "unicode", "format", "printf", "greatest", "least", "isnan", "isinf", "isfinite",
+    "string_split", "str_split", "regexp_replace", "regexp_matches", "to_hex", "hex", "bin", "ascii", "chr", "unicode", "format", "printf", "greatest", "least", "isnan", "isinf", "isfinite",
 ];
 
 /// Whether an expression is never NULL in `scope`.
@@ -797,8 +806,10 @@ fn cardinality_in(q: &Query, ctx: &Ctx, ctes: &[String]) -> (&'static str, Optio
         card = "maybeOne";
         reason = None;
     }
-    // An offset may skip the one row; a limit of 0 returns none.
-    if card == "one" && (offset.is_some() || matches!(limit, Some(Some(0))) || matches!(fetch, Some(Some(0)))) {
+    // An offset may skip the one row, and a limit of 0 returns none: so may a limit that is no
+    // integer literal (a parameter, an expression, `0.4`, which DuckDB rounds to 0).
+    let may_be_zero = |l: Option<Option<u64>>| matches!(l, Some(None | Some(0)));
+    if card == "one" && (offset.is_some() || may_be_zero(limit) || may_be_zero(fetch)) {
         card = "maybeOne";
         reason = Some("its OFFSET or LIMIT may leave out the one row".into());
     }
@@ -969,6 +980,10 @@ mod tests {
         assert_eq!(proven("select u.name, t.title from users u left join teams t on t.id = u.team_id"), "name title?");
         assert_eq!(proven("select u.name, t.title from users u left join teams t on t.id = u.team_id where t.id > 0"), "name title");
         assert_eq!(proven("select u.name, t.title from users u full join teams t on t.id = u.team_id"), "name? title?");
+        // Three parts name a schema's table's column, unless the first names a relation or a
+        // column here, when they are a struct's field.
+        assert_eq!(proven("select main.users.name, app.main.users.id from users"), "name id");
+        assert_eq!(proven("select teams.users.id as x from users, teams"), "x?");
         // A right join pads the left, whatever an earlier ON showed of it.
         assert_eq!(proven("select u.team_id from users u join teams t on t.id = u.team_id right join teams x on x.id = t.id"), "team_id?");
         assert_eq!(proven("select email from users where email is not null and name like 'a%'"), "email");
@@ -1047,6 +1062,11 @@ mod tests {
         assert_eq!(rows("select unnest([1, 2])"), "many");
         // Each grouping set is a row of its own, even with no FROM.
         assert_eq!(rows("select count(*) group by grouping sets ((), ())"), "many");
+        // A limit that is no integer literal may be 0.
+        assert_eq!(rows("select count(*) from users limit $1"), "maybeOne");
+        assert_eq!(rows("select count(*) from users limit 0.4"), "maybeOne");
+        assert_eq!(rows("select count(*) from users fetch first $1 rows only"), "maybeOne");
+        assert_eq!(rows("select count(*) from users limit 1"), "one");
         // A macro that unnests makes rows as unnest does, by the names the catalog gives.
         let mut catalog = catalog();
         catalog.row_makers.insert("generate_subscripts".into());

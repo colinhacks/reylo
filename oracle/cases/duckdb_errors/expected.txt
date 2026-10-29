@@ -3,3 +3,4 @@ pivot.sql: many () -> {  } !! reylo10: DuckDB does not describe the columns of t
 pivot_named.sql: many () -> { id: integer?, msg: varchar?, info: bigint?, warn: bigint? }
 unknown_column.sql: many () -> {  } !! reylo6: Binder Error: Referenced column "nope" not found in FROM clause!
 Candidate bindings: "level"
+untyped_param.sql: many (n: unknown) -> {  } !! reylo6: DuckDB cannot tell the type of :n from where it stands, and describes none of the statement's columns until it can: cast it, as in :n::integer
