@@ -582,6 +582,31 @@ db.transaction((tx) => getUser.runSync(tx, { id: 1 }));
 
 D1 has no transaction a query can join: its `batch()` takes D1's own prepared statements.
 
+#### DuckDB [#duckdb-drivers]
+
+```ts tab="@duckdb/node-api"
+import { DuckDBInstance } from "@duckdb/node-api";
+import getUser from "./get_user.sql";
+
+const instance = await DuckDBInstance.create("app.duckdb");
+const db = await instance.connect();
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+Transactions are also supported, on the connection itself:
+
+```ts tab="@duckdb/node-api"
+await db.run("begin");
+try {
+  await getUser.run(db, { id: 1 });
+  await db.run("commit");
+} catch (error) {
+  await db.run("rollback");
+  throw error;
+}
+```
+
 ### `.runSync()`
 
 For databases that support synchronous operations, you can use `.runSync()`.

@@ -12,15 +12,16 @@ To install Reylo, you'll need:
   - **Postgres** 14 to 18, including Neon and PGlite
   - **MySQL** 8.0.22 or later, including PlanetScale
   - **SQLite**, including Cloudflare D1 and Durable Objects, Turso and libSQL
+  - **DuckDB** 2.0, through `@duckdb/node-api`
 
 <AgentPrompt>
 
 ```text
-Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
+Set up Reylo in this project. Reylo lets TypeScript import .sql files, with types inferred from the live database. Its docs are https://reylo.dev, with a reference page for each database (https://reylo.dev/postgres, https://reylo.dev/mysql, https://reylo.dev/sqlite, https://reylo.dev/duckdb), all served as Markdown at https://reylo.dev/llms.txt. Each step below links its section.
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
 
-1. Check the requirements and install Reylo, the engine of the project's database (@reylosql/postgres, @reylosql/mysql or @reylosql/sqlite) and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
+1. Check the requirements and install Reylo, the engine of the project's database (@reylosql/postgres, @reylosql/mysql, @reylosql/sqlite or @reylosql/duckdb) and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
 2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
 3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/#plugins
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
@@ -45,7 +46,7 @@ Install Reylo, the engine for your database and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres  # or mysql, sqlite
+npm install -D @reylosql/postgres  # or mysql, sqlite, duckdb
 npm install -D typescript@beta
 ```
 
@@ -87,7 +88,7 @@ node --env-file=.env --import reylo/register main.ts
 
 <Callout title="In production">
 
-The preload builds each query's module as it loads, so your app needs the engine at run time: install it with `npm install @reylosql/postgres` (or mysql, sqlite), without `-D`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
+The preload builds each query's module as it loads, so your app needs the engine at run time: install it with `npm install @reylosql/postgres` (or mysql, sqlite, duckdb), without `-D`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
 
 </Callout>
 
@@ -293,6 +294,11 @@ DATABASE_URL=mysql://root@localhost:3306/app
 ```sh title=".env" tab="SQLite" tab-group="dialect"
 # or sqlite:; the path starts at package.json
 DATABASE_URL=file:./app.db
+```
+
+```sh title=".env" tab="DuckDB" tab-group="dialect"
+# the path starts at package.json; read with your @duckdb/node-api
+DATABASE_URL=duckdb:./app.duckdb
 ```
 
 To override this, create a `.reylo.yaml` file in your project root and set the `direct_url` field:

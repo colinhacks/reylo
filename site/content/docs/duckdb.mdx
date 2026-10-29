@@ -1,0 +1,315 @@
+---
+title: DuckDB
+description: How Reylo types SQL queries on DuckDB. The TypeScript type of each column, null values, row counts, parameters, files, drivers and limits.
+---
+
+<p className="dk-subheader">How Reylo types queries on DuckDB</p>
+
+[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on DuckDB: column types, null values, row counts, parameters, files and drivers.
+
+| | |
+| --- | --- |
+| DuckDB versions | 2.0, through `@duckdb/node-api` |
+| Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
+| Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
+| Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="duckdb"
+create type mood as enum ('happy', 'sad');
+
+create table teams (
+  id integer primary key,
+  name varchar not null
+);
+
+create table users (
+  id integer primary key,
+  name varchar not null,
+  email varchar unique,
+  team_id integer references teams (id),
+  github_id bigint,
+  mood mood,
+  created_at timestamptz not null default now()
+);
+```
+
+```sql file="schema.sql" dialect="duckdb"
+create table events (
+  id bigint primary key,
+  user_id integer not null references users (id),
+  kind varchar not null,
+  tags varchar[],
+  meta struct(host varchar, pid integer),
+  total decimal(12, 2),
+  at_day date
+);
+```
+
+</Details>
+
+## Data types
+
+DuckDB's prepared statement reports the exact type of every parameter and column, and `.run()` returns one value for each type:
+
+| DuckDB type | TypeScript | The value `.run()` returns |
+| --- | --- | --- |
+| `BOOLEAN` | `boolean` | `true` |
+| `TINYINT`, `SMALLINT`, `INTEGER`, `UTINYINT`, `USMALLINT`, `UINTEGER` | `number` | `42` |
+| `BIGINT`, `UBIGINT`, `HUGEINT`, `UHUGEINT`, `BIGNUM` | `bigint` | `9007199254740993n` |
+| `FLOAT`, `DOUBLE` | `number` | `1.5` |
+| `DECIMAL(p, s)` | `string` | `"12345678901234567.89"` |
+| `VARCHAR`, `UUID`, `TIME`, `TIMETZ`, `BIT` | `string` | `"Ada"` |
+| `ENUM` | its labels | `"happy"` |
+| `BLOB` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
+| `DATE` | `string` | `"2026-10-20"` |
+| `TIMESTAMP`, `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP_NS` | `string` | `"2026-10-20T10:00:00.5"` |
+| `TIMESTAMPTZ` | `string` | `"2026-10-20T08:00:00Z"` |
+| `INTERVAL` | `string` | `"P1Y2M3DT4H5M6.789S"` |
+| `JSON` | `unknown` | `{ a: [1, "x"] }` |
+| `T[]` (a `LIST`) and `T[n]` (an `ARRAY`) | `(T \| null)[]` | `["a", "b"]` |
+| `STRUCT(a T, …)` | `{ a: T \| null; … }` | `{ host: "h", pid: 7 }` |
+| `MAP(K, V)` | `{ key: K; value: V \| null }[]` | `[{ key: "k", value: 1 }]` |
+| `UNION(a T, …)` | `{ tag: "a"; value: T \| null } \| …` | `{ tag: "str", value: "s" }` |
+
+<Rules>
+
+**Integers**
+
+A `BIGINT` or wider integer is a `bigint`, so no value is ever rounded. A parameter of one takes a `number`, a `bigint` or a string of digits.
+
+<Inferred>
+
+```sql file="duck_types_integers.sql" dialect="duckdb"
+select id, github_id, count(*) over () as n
+from users
+```
+
+</Inferred>
+
+**Decimals**
+
+A `DECIMAL` is its exact text, as DuckDB stores it with its scale, and a parameter of one takes that text.
+
+**Dates and times**
+
+A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, and a `TIMESTAMPTZ` its instant in UTC, as `Temporal.Instant.from` reads it. A year past 9999 is written as ISO 8601 extends it, `+010000-01-01`, and an infinite date or timestamp as `"infinity"` or `"-infinity"`. An `INTERVAL` is an ISO 8601 duration, which its parameter takes back.
+
+**Nested types**
+
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`.
+
+<Inferred>
+
+```sql file="duck_types_nested.sql" dialect="duckdb"
+select tags, meta, meta.host as host
+from events
+```
+
+</Inferred>
+
+**JSON**
+
+A `JSON` column is the parsed value, typed `unknown`. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), is any JSON value or the values its schema admits.
+
+</Rules>
+
+### Files
+
+A query can read Parquet, CSV and JSON files with `read_parquet`, `read_csv` and `read_json`. DuckDB reads a file's columns when it prepares the query, so the files, or a sample with the same columns, must exist wherever the type check runs, at the same paths. A relative path starts at your `package.json`.
+
+```sql
+select level, count(*) as n
+from read_parquet('logs/*.parquet')
+group by all
+```
+
+Reylo keeps each query's analysis in [`.reylo/`](/#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+
+## Nullability
+
+Every column is typed `| null` unless Reylo can tell it never is null. DuckDB's own description of a query doesn't say which columns hold `NULL` reliably, so Reylo reads your schema and the query:
+
+<Rules>
+
+**`NOT NULL` columns**
+
+A table's column is non-null if it's declared `NOT NULL`, or is part of its primary key.
+
+<Inferred>
+
+```sql file="duck_null_columns.sql" dialect="duckdb"
+select id, name, email
+from users
+```
+
+</Inferred>
+
+**Outer joins**
+
+An outer join makes the joined table's columns nullable, and a test in the `where` that fails on `NULL` shows the row exists.
+
+<Inferred>
+
+```sql file="duck_null_left_join.sql" dialect="duckdb"
+select u.name, t.name as team
+from users u
+left join teams t on t.id = u.team_id
+```
+
+</Inferred>
+
+<Inferred>
+
+```sql file="duck_null_where.sql" dialect="duckdb"
+select u.name, t.name as team
+from users u
+left join teams t on t.id = u.team_id
+where t.id is not null
+```
+
+</Inferred>
+
+**Expressions**
+
+Arithmetic, comparisons, `||`, `coalesce` and `case` are non-null over non-null values, and so are DuckDB's functions of one value such as `lower` and `length`. A division is nullable, since `SET error_on_division_by_zero = false` makes dividing by zero return `NULL`, and so is a part of a date, such as `year(…)`, which is `NULL` for an infinite date.
+
+<Inferred>
+
+```sql file="duck_null_expressions.sql" dialect="duckdb"
+select upper(email) as shout,
+  coalesce(email, name) as contact,
+  length(name) as n,
+  id / 2 as half
+from users
+```
+
+</Inferred>
+
+**Aggregates**
+
+A `count` is never null. Any other aggregate is null over no rows, and over a group's rows only where its argument is.
+
+<Inferred>
+
+```sql file="duck_null_aggregates.sql" dialect="duckdb"
+select team_id, count(*) as members, max(name) as last
+from users
+group by team_id
+```
+
+</Inferred>
+
+</Rules>
+
+## Cardinality
+
+Reylo infers how many rows a query returns, and types `.run()`'s result to match:
+
+| `.run()` returns | `cardinality` | When the query |
+| --- | --- | --- |
+| `Row` | `one` | is an aggregate without a `group by`, has no `from`, is `values` of one row, or inserts one row and has `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or a `unique` constraint of its one table with `=`; has `limit 1`; inserts one row `on conflict do nothing` with `returning`; or is an `update` or `delete` by key with `returning` |
+| `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
+| `Row[]` | `many` | is anything else |
+
+## Parameters
+
+### Placeholders
+
+Write parameters as `:name`, and pass `.run()` an object with those names, without the colon. You can use DuckDB's `$1`, `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`. DuckDB's own named form, `$name`, is an error that says to write `:name`.
+
+### What a parameter takes
+
+A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query. A `BIGINT` or wider integer also takes a `number` or a string of digits, and a `STRUCT` an object of its fields.
+
+A fraction for an integer, such as `1.5` for an `INTEGER`, makes `.run()` throw before the query runs, where DuckDB would round it to 2.
+
+### Parameters without a type
+
+DuckDB types a parameter from where it stands: compared with a column, written to one, or cast. Anywhere else, such as a bare `select :x`, cast it:
+
+<Inferred>
+
+```sql file="duck_param_cast.sql" dialect="duckdb"
+select :limit::integer + 1 as next
+```
+
+</Inferred>
+
+### Parameters that may be null
+
+A parameter accepts `null` where the query lets it be `NULL`. Such a parameter is optional in `.run()`, and leaving it out passes `null`.
+
+<Rules>
+
+**Cast to `nullable(…)`**
+
+A cast to `nullable(type)` makes the parameter that type or `null`.
+
+<Inferred>
+
+```sql file="duck_param_nullable.sql" dialect="duckdb"
+select id, name
+from users
+where name = coalesce(:name::nullable(varchar), name)
+```
+
+</Inferred>
+
+**Tested for `NULL`, or written to a nullable column**
+
+A parameter that the query tests for `NULL` or passes to `coalesce`, or writes directly into a column that accepts `NULL`, takes `null`.
+
+<Inferred>
+
+```sql file="duck_param_insert.sql" dialect="duckdb"
+insert into users (id, name, email)
+values (:id, :name, :email)
+```
+
+</Inferred>
+
+</Rules>
+
+## Database errors
+
+With [`.try()`](/#try), an error DuckDB raised comes back as `{ error }`:
+
+| Field | What it holds |
+| --- | --- |
+| `code` | The kind of error, as `"CONSTRAINT"` for `Constraint Error: Duplicate key …` |
+| `message` | DuckDB's message |
+
+## Drivers
+
+Reylo decodes its query results itself, so settings on your connection don't affect Reylo's queries.
+
+### `@duckdb/node-api`
+
+Pass a connection. A transaction is the connection's own, around the queries you run on it:
+
+```ts
+import { DuckDBInstance } from "@duckdb/node-api";
+import getUser from "./get_user.sql";
+
+const instance = await DuckDBInstance.create("app.duckdb");
+const db = await instance.connect();
+
+const user = await getUser.run(db, { id: 1 });
+```
+
+## Limits
+
+What Reylo can't type on DuckDB, and what to do instead:
+
+| Limit | Instead |
+| --- | --- |
+| A `PIVOT` without its values, whose columns are the values it reads | Name the values: `pivot logs on level in ('info', 'warn') using count(*)` |
+| A query in syntax Reylo's parser doesn't read, such as `PIVOT` or `SUMMARIZE`: its columns are typed, but each may be `NULL` and the query returns `Row[]` | None needed: the types hold, if loosely |
+| An app that opens the database file for writing at the moment the type check reads it, which DuckDB refuses | Start the app again |
+| `.runSync()`, since `@duckdb/node-api` answers through a promise | Use `.run()` |
+| DuckDB in the browser, through `@duckdb/duckdb-wasm`, which `.run()` doesn't take yet | Run queries through `@duckdb/node-api` |
+| `rows(…)` and `row(…)` parameters | Pass each value as a parameter of its own |
+| A file of several statements, such as a migration | Put each statement in a file of its own |

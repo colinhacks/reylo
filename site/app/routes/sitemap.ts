@@ -1,8 +1,8 @@
 import { siteUrl } from '@/lib/layout.shared';
 import { source } from '@/lib/source';
 
-// The site's pages (the main page at /, and each dialect's reference at /postgres, /mysql and
-// /sqlite), dated by the build, which runs on every push that changes the site. Written to
+// The site's pages (the main page at /, and each dialect's reference at /postgres, /mysql,
+// /sqlite and /duckdb), dated by the build, which runs on every push that changes the site. Written to
 // build/client/sitemap.xml.
 export function loader() {
   const lastmod = new Date().toISOString();

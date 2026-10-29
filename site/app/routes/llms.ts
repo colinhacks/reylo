@@ -5,7 +5,7 @@ import { markdownOf } from '@/lib/markdown';
 // page, then each dialect's reference, in the order a reader takes them, each as its own Markdown
 // file holds it (lib/markdown.ts), then the playground's API (/play/api.md). Written to
 // build/client/llms.txt at build time.
-const PAGES = ['', 'postgres', 'mysql', 'sqlite'];
+const PAGES = ['', 'postgres', 'mysql', 'sqlite', 'duckdb'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');

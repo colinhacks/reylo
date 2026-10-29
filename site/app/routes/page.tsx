@@ -17,7 +17,7 @@ import { source } from '@/lib/source';
  * on one screen (a window 900px tall, at Fumadocs' spacing); the headings stay on the page,
  * with their anchors. On the main page, every h3 shows: the query's members
  * under Usage and the keys of `.reylo.yaml`. On each dialect page (content/docs/<dialect>.mdx, one skeleton
- * for all three): the h3s of Parameters and of Drivers, one per driver, which leaves Data types'
+ * for all four): the h3s of Parameters and of Drivers, one per driver, which leaves Data types'
  * h3s, the reason a reader lands there, in the table.
  */
 const FOLD: Record<string, readonly string[]> = {
@@ -25,6 +25,7 @@ const FOLD: Record<string, readonly string[]> = {
   postgres: ['#parameters', '#drivers'],
   mysql: ['#parameters', '#drivers'],
   sqlite: ['#parameters', '#drivers'],
+  duckdb: ['#parameters', '#drivers'],
 };
 
 /**

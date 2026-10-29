@@ -20,9 +20,11 @@ import { ident, renderParamType, renderType } from '../../src/render.ts';
 import { schemaType } from '../scripts/schema-type.ts';
 import { mdxOptions } from './mdx-options.ts';
 import { pageFiles } from './page-files.ts';
-import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect } from './remark-mapper.ts';
+import { collectFiles, DIALECT_NAME, INFERRED_LAYOUT, SCHEMA_FILE, type Dialect as PageDialect } from './remark-mapper.ts';
 import { formatType, resultType } from '../../src/type-format.ts';
 
+/** The dialects the playground tries a statement on: the main page's, each against its own schema. */
+type Dialect = Exclude<PageDialect, 'duckdb'>;
 const site = path.resolve(import.meta.dirname, '..');
 const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
 const SERVERS: Record<Exclude<Dialect, 'sqlite'>, string> = {
