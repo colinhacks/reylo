@@ -37,6 +37,7 @@ type DuckType = {
 
 /** The slice of @duckdb/node-api that builds a nested or binary value with its type. */
 type Api = {
+  DuckDBConnection: unknown;
   listValue(items: unknown[]): unknown;
   structValue(entries: Record<string, unknown>): unknown;
   mapValue(entries: { key: unknown; value: unknown }[]): unknown;
@@ -56,11 +57,54 @@ type Api = {
 // Named in a variable, so that a bundler leaves the import to the run time: only a DuckDB app has
 // the package, and it imports it itself.
 const NODE_API = "@duckdb/node-api";
-let api: Promise<Api> | undefined;
-const nodeApi = () => (api ??= (import(/* @vite-ignore */ NODE_API) as Promise<Api>).catch((e) => {
-  api = undefined;
-  throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, and it cannot be loaded from reylo's install: ${(e as Error).message}`);
-}));
+/** The module path of node-api's entry, as Node's CommonJS cache keys it. */
+const NODE_API_ENTRY = /[\\/]@duckdb[\\/]node-api[\\/]lib[\\/]index\.js$/;
+const apis = new WeakMap<object, Promise<Api>>();
+
+type ModuleCache = Record<string, { exports?: unknown } | undefined>;
+type NodeProcess = { cwd(): string; getBuiltinModule?(id: string): { createRequire(from: string): { cache?: ModuleCache } } | undefined };
+
+/**
+ * The @duckdb/node-api the connection `c` came from. node-api takes a nested or binary value only
+ * as an instance of its own classes, built over its own native binding, so a second copy of the
+ * package (another version, or the same one installed twice, as a workspace or a linked package
+ * can have it) builds values the connection refuses. node-api is CommonJS, so the copy that made
+ * `c` is in Node's module cache however the app imported it, and is the one whose
+ * DuckDBConnection is `c`'s class; where no cache is reachable, the copy reylo's install imports,
+ * refused when it is not the connection's.
+ */
+function nodeApiOf(c: DuckdbClient): Promise<Api> {
+  const own = Object.getPrototypeOf(c)?.constructor as object | undefined;
+  if (own === undefined) return Promise.reject(new TypeError("A DuckDB connection is @duckdb/node-api's DuckDBConnection."));
+  let found = apis.get(own);
+  if (found === undefined) {
+    found = loadNodeApi(own);
+    apis.set(own, found);
+    found.catch(() => apis.delete(own));
+  }
+  return found;
+}
+
+async function loadNodeApi(own: object): Promise<Api> {
+  const proc = (globalThis as { process?: NodeProcess }).process;
+  let cache: ModuleCache | undefined;
+  try {
+    cache = proc?.getBuiltinModule?.("node:module")?.createRequire(`${proc.cwd()}/`).cache;
+  } catch {}
+  for (const [path, m] of Object.entries(cache ?? {})) {
+    if (!NODE_API_ENTRY.test(path)) continue;
+    const exports = m?.exports as Api | undefined;
+    if (exports?.DuckDBConnection === own) return exports;
+  }
+  let imported: Api;
+  try {
+    imported = (await import(/* @vite-ignore */ NODE_API)) as Api;
+  } catch (e) {
+    throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, and the copy the connection came from cannot be found, nor one loaded from reylo's install: ${(e as Error).message}`);
+  }
+  if (imported.DuckDBConnection !== own) throw new TypeError("A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, which must come from the copy of the package the connection came from, and the one reylo's install loads is another copy: install a single @duckdb/node-api.");
+  return imported;
+}
 
 /** Whether a client is @duckdb/node-api's DuckDBConnection. */
 export function isDuckdb(c: { [key: string]: unknown } | null | undefined): boolean {
@@ -83,7 +127,7 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
   let bound = values;
   let bindTypes: unknown[] | undefined;
   if (values.some((v) => v !== null && typeof v === "object")) {
-    const a = await nodeApi();
+    const a = await nodeApiOf(c);
     bindTypes = values.map((v, i) => (v !== null && typeof v === "object" ? bindType(a, types[i], v) : undefined));
     bound = values.map((v, i) => (v !== null && typeof v === "object" ? bindValue(a, types[i], v) : v));
   }
