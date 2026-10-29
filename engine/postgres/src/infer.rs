@@ -88,8 +88,8 @@ pub const FUNCTIONS: &[&str] = &["count", "sum", "avg", "min", "max", "json_agg"
 /// aggregate is here: an aggregate over no rows is NULL.
 ///
 /// The list is by name, so a name stays here only when no overload of it answers NULL for valid
-/// arguments. The ones that do are by overload in [`POSTGRES_TOTAL_FOR`] or nowhere: `date_part`
-/// and `extract` answer NULL for `'infinity'` whatever the field. The overloads were checked
+/// arguments. The ones that do are by overload in [`POSTGRES_TOTAL_FOR`], by field in
+/// [`POSTGRES_DATE_PARTS`], by the type of their bounds (`substring`), or nowhere. The overloads were checked
 /// against the routines that the PostgreSQL 18 sources let return NULL for non-null input
 /// (typedpg derives that list from them, `builtin_nullability.rs`).
 pub const POSTGRES_TOTAL: &[&str] = &[
@@ -98,13 +98,54 @@ pub const POSTGRES_TOTAL: &[&str] = &[
     "regexp_replace", "quote_ident", "quote_literal", "encode", "decode", "to_hex", "to_timestamp", "to_date", "uuidv7",
     "abs", "round", "floor", "ceil", "ceiling", "trunc", "sign", "sqrt", "cbrt", "exp", "ln", "log", "power", "mod",
     "date_trunc", "age", "make_date", "make_timestamp", "make_timestamptz", "nextval",
+    // `make_interval` and `make_time` raise for a value out of range; `x AT TIME ZONE z` and `x AT
+    // LOCAL` call `timezone`, which keeps an infinite timestamp infinite and raises for an unknown
+    // zone. `position(a IN b)` is `strpos`, and every overload of `substr` takes integer bounds.
+    "make_interval", "make_time", "timezone", "position", "substr",
+    // A range's or a multirange's tests of itself: an empty one is no bound's, never NULL.
+    "isempty", "lower_inc", "upper_inc", "lower_inf", "upper_inf",
+    // The advisory locks, which wait or answer whether they took or let go of the lock.
+    "pg_advisory_lock", "pg_advisory_lock_shared", "pg_advisory_unlock", "pg_advisory_unlock_shared",
+    "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared",
+    "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared",
     "cardinality", "array_to_string", "array_append", "array_prepend", "array_cat", "array_remove",
     "to_json", "to_jsonb", "row_to_json", "json_typeof", "jsonb_typeof", "jsonb_strip_nulls", "jsonb_pretty",
     // What `x SIMILAR TO p` and `x LIKE p ESCAPE e` call on their pattern.
     "similar_to_escape", "like_escape",
-    // A set-returning function whose rows each hold a value: there may be none, never a NULL.
-    "generate_series", "generate_subscripts",
 ];
+/// Postgres built-ins of no argument that never answer NULL: the server's version, the session's
+/// process and database, and the transaction's id, which a call assigns where there is none yet.
+/// `current_schema()` is not one: it is NULL where no schema of the search path exists.
+pub const POSTGRES_NO_ARGUMENT_NEVER_NULL: &[&str] = &["version", "pg_backend_pid", "current_database", "txid_current", "pg_current_xact_id", "pg_advisory_unlock_all"];
+/// Postgres built-ins that are [`POSTGRES_TOTAL`] in their form of one argument only:
+/// `current_setting(name)` raises for a setting that does not exist, where `current_setting(name,
+/// missing_ok)` answers NULL for it.
+pub const POSTGRES_TOTAL_ONE_ARGUMENT: &[&str] = &["current_setting"];
+/// The set-returning functions whose every row holds a value, which a NULL argument leaves with no
+/// row rather than a NULL one: a strict function that returns a set returns none for a NULL
+/// argument. Their forms of one argument are none of theirs ([`Reader::projection`]).
+pub const POSTGRES_SERIES: &[&str] = &["generate_series", "generate_subscripts"];
+/// `extract(field FROM x)` and `date_part(field, x)`: NULL for an infinite timestamp, date or
+/// interval, unless the field grows with time, for which they answer an infinity. Those fields,
+/// by the names the server takes for them, are total on every source; any other is total where the
+/// source is a time of day, which has no infinity.
+pub const POSTGRES_DATE_PARTS: &[&str] = &["extract", "date_part"];
+const MONOTONIC_FIELDS: &[&str] = &["year", "years", "decade", "decades", "century", "centuries", "millennium", "millennia", "epoch"];
+/// `time` and `timetz`, the sources of `extract` that have no infinity.
+const TIMES_OF_DAY: &[u32] = &[oid::TIME, TIMETZ];
+const TIMETZ: u32 = 1266;
+/// The integer types, whose bounds `substring(x FROM n FOR m)` takes; its other overloads take a
+/// pattern and are NULL where it does not match.
+const INTEGER_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
+/// The ordered-set aggregates that are NULL only over no row or no non-null value to order, or for
+/// a NULL fraction: under a plain `GROUP BY`, where no group is empty, they follow their arguments.
+pub const POSTGRES_ORDERED_SET: &[&str] = &["percentile_cont", "percentile_disc", "mode"];
+/// The window functions that read their argument at a row of the frame: non-null where the frame
+/// always holds a row and the argument is non-null. `nth_value` reads a row the frame may lack.
+pub const POSTGRES_FRAME_VALUES: &[&str] = &["first_value", "last_value"];
+/// `enum_range`, which answers an array of an enum's labels in order, never NULL nor holding one,
+/// whatever its arguments (which only say the type, and the bounds where they are not NULL).
+pub const POSTGRES_ENUM_RANGE: &str = "enum_range";
 /// The set-returning functions among the ones the rules read, every name of the lists above with
 /// a built-in overload that is `proretset` on PostgreSQL 18, and `unnest`: a target that calls one
 /// may be no row or several ([`one_value`]).
@@ -144,8 +185,9 @@ pub const POSTGRES_NEVER_NULL: &[&str] = &[
     "json_build_object", "json_build_array", "jsonb_build_object", "jsonb_build_array",
 ];
 /// Postgres built-ins that answer NULL only when their first argument is NULL: `concat_ws` skips
-/// a NULL value but not a NULL separator.
-pub const POSTGRES_FIRST_ARG: &[&str] = &["concat_ws"];
+/// a NULL value but not a NULL separator, and `format` writes a NULL value as nothing (`%s`), as
+/// `NULL` (`%L`) or raises (`%I`), but answers NULL for a NULL format.
+pub const POSTGRES_FIRST_ARG: &[&str] = &["concat_ws", "format"];
 /// Built-in operators that answer NULL for a NULL operand: the comparisons, arithmetic, JSON
 /// access and pattern matching. `||` is not one: `NULL::int[] || ARRAY[1]` is `{1}`.
 pub const POSTGRES_STRICT_OPERATORS: &[&str] = &[
@@ -170,9 +212,9 @@ const POSTGRES_ROW_TAKERS: &[&str] = &[
     "quote_nullable", "quote_literal", "json_build_object", "json_build_array", "jsonb_build_object", "jsonb_build_array",
 ];
 /// The functions the rules read with a built-in that may return a row: `min` and `max` of a
-/// `record` (PostgreSQL 16 on), and `lag` and `lead` of an `anyelement`. What they return proves
-/// nothing of its type.
-const POSTGRES_ROW_RESULTS: &[&str] = &["min", "max", "lag", "lead"];
+/// `record` (PostgreSQL 16 on), and `lag`, `lead`, `first_value`, `last_value`, `any_value`,
+/// `percentile_disc` and `mode` of an `anyelement`. What they return proves nothing of its type.
+const POSTGRES_ROW_RESULTS: &[&str] = &["min", "max", "lag", "lead", "first_value", "last_value", "any_value", "percentile_disc", "mode"];
 /// The never-null functions the rules read that take no argument but two (`random(min, max)`):
 /// a call of one is no call of theirs.
 const POSTGRES_NO_ARGUMENT: &[&str] = &["now", "clock_timestamp", "statement_timestamp", "transaction_timestamp", "gen_random_uuid", "uuidv4", "random"];
@@ -180,7 +222,7 @@ const POSTGRES_NO_ARGUMENT: &[&str] = &["now", "clock_timestamp", "statement_tim
 pub const POSTGRES_WINDOW: &[&str] = &["row_number", "rank", "dense_rank", "percent_rank", "cume_dist", "ntile", "lag", "lead"];
 /// Postgres aggregates that answer NULL only over no rows or over nothing but NULLs. Under a
 /// plain `GROUP BY` a group is never empty, so there they are non-null on a non-null argument.
-pub const POSTGRES_GROUPED: &[&str] = &["sum", "avg", "min", "max", "bit_and", "bit_or", "bool_and", "bool_or", "every", "string_agg"];
+pub const POSTGRES_GROUPED: &[&str] = &["sum", "avg", "min", "max", "bit_and", "bit_or", "bool_and", "bool_or", "every", "string_agg", "any_value"];
 /// Postgres aggregates that answer NULL only over no rows: a group's `array_agg` is an array,
 /// NULL elements and all.
 pub const POSTGRES_GROUPED_NEVER_NULL: &[&str] = &["array_agg"];
@@ -195,10 +237,15 @@ pub const POSTGRES_GROUPED_JSON: &[&str] = &["json_agg", "jsonb_agg", "json_obje
 pub fn postgres_function_names() -> Vec<&'static str> {
     let mut names: Vec<&'static str> = Vec::new();
     let typed = POSTGRES_TOTAL_FOR.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-    for list in [FUNCTIONS, POSTGRES_TOTAL, &typed, POSTGRES_NEVER_NULL, POSTGRES_FIRST_ARG, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON, POSTGRES_STRICT, POSTGRES_WINDOW, POSTGRES_SET_RETURNING, crate::jsonshape::POSTGRES_FUNCTIONS] {
-        for name in list {
+    let lists: &[&[&'static str]] = &[
+        FUNCTIONS, POSTGRES_TOTAL, &typed, POSTGRES_NEVER_NULL, POSTGRES_NO_ARGUMENT_NEVER_NULL, POSTGRES_TOTAL_ONE_ARGUMENT, POSTGRES_FIRST_ARG,
+        POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON, POSTGRES_ORDERED_SET, POSTGRES_STRICT, POSTGRES_WINDOW,
+        POSTGRES_FRAME_VALUES, POSTGRES_SET_RETURNING, POSTGRES_SERIES, POSTGRES_DATE_PARTS, &["substring", POSTGRES_ENUM_RANGE], crate::jsonshape::POSTGRES_FUNCTIONS,
+    ];
+    for list in lists {
+        for name in list.iter() {
             if !names.contains(name) {
-                names.push(name);
+                names.push(*name);
             }
         }
     }
@@ -614,7 +661,7 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
     let fields = row_fields(&serde_json::to_value(&parsed.protobuf).unwrap_or_default());
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields) };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields), lockstep: targets_lockstep(&targets, dialect, trust) };
     let scope = match top {
         NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, &mut reader)),
         _ => None,
@@ -1038,6 +1085,67 @@ pub fn one_value(target: &Node, dialect: Dialect, trust: &Trust) -> bool {
     dialect != Dialect::Postgres || serde_json::to_value(target).is_ok_and(|v| walk(&v, trust))
 }
 
+/// Whether the field `extract` or `date_part` reads is a literal one that grows with time
+/// ([`MONOTONIC_FIELDS`]), as the server reads its name, in any case.
+fn monotonic_field(node: &Node) -> bool {
+    string_literal(node).is_some_and(|field| MONOTONIC_FIELDS.contains(&field.to_ascii_lowercase().as_str()))
+}
+
+/// Whether a select list may call more than one set-returning function outside its subqueries
+/// ([`set_calls`]): Postgres runs them in step, as `ROWS FROM (…)` does, and a shorter one is NULL
+/// in the rows a longer one goes on for (`SELECT generate_series(1, 3), generate_series(1, 2)`).
+fn targets_lockstep(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
+    dialect == Dialect::Postgres && targets.iter().map(|t| set_calls(t, trust)).sum::<usize>() > 1
+}
+
+/// How many calls in a target may return a set, as [`one_value`] reads them: every call of a
+/// function the rules do not read for a built-in that returns no set, and every operator but the
+/// built-in ones the rules read. A subquery is a value of its own, and an aggregate's arguments
+/// hold no set-returning call.
+fn set_calls(target: &Node, trust: &Trust) -> usize {
+    use serde_json::Value;
+    fn name(names: Option<&Value>) -> Option<&str> {
+        let parts: Vec<&str> = names?.as_array()?.iter().map(|n| n.pointer("/node/String/sval").and_then(Value::as_str)).collect::<Option<_>>()?;
+        match parts.as_slice() {
+            [name] | ["pg_catalog", name] => Some(name),
+            _ => None,
+        }
+    }
+    fn walk(v: &Value, trust: &Trust) -> usize {
+        match v {
+            Value::Object(map) => {
+                if map.contains_key("SubLink") {
+                    return 0;
+                }
+                let mut own = 0;
+                if let Some(f) = map.get("FuncCall") {
+                    let arity = f.get("args").and_then(Value::as_array).map_or(0, Vec::len);
+                    match name(f.get("funcname")) {
+                        Some(n) if [FUNCTIONS, POSTGRES_GROUPED, POSTGRES_GROUPED_NEVER_NULL, POSTGRES_GROUPED_JSON].iter().any(|list| list.contains(&n)) && trust.aggregates(n, arity) => return 0,
+                        Some(n) if trust.returns_no_set(Kind::Function, n) && !POSTGRES_SET_RETURNING.contains(&n) && postgres_function_names().contains(&n) => {}
+                        _ => own = 1,
+                    }
+                }
+                if let Some(a) = map.get("AExpr") {
+                    let between = [protobuf::AExprKind::AexprBetween, protobuf::AExprKind::AexprNotBetween, protobuf::AExprKind::AexprBetweenSym, protobuf::AExprKind::AexprNotBetweenSym];
+                    let built_in = if a.get("kind").and_then(Value::as_i64).is_some_and(|k| between.iter().any(|b| *b as i64 == k)) {
+                        ["<", ">", "<=", ">="].iter().all(|o| trust.operator_returns_no_set(o))
+                    } else {
+                        name(a.get("name")).is_some_and(|o| (POSTGRES_OPERATORS.contains(&o) || POSTGRES_STRICT_OPERATORS.contains(&o)) && trust.operator_returns_no_set(o))
+                    };
+                    if !built_in {
+                        own = 1;
+                    }
+                }
+                own + map.values().map(|v| walk(v, trust)).sum::<usize>()
+            }
+            Value::Array(items) => items.iter().map(|v| walk(v, trust)).sum(),
+            _ => 0,
+        }
+    }
+    serde_json::to_value(target).map_or(2, |v| walk(&v, trust))
+}
+
 /// An array cast to a number or a boolean array, whose elements a JSON null among them makes
 /// NULL: every element the array is built from, read as one that is non-null only where it holds
 /// no `jsonb` value for certain ([`Expr::NotJsonb`]). The array itself is as it was.
@@ -1104,7 +1212,7 @@ fn array_elements(node: &Node) -> Option<Vec<&Node>> {
 /// rows may have ([`row_fields`]), `None` where the caller does not see the whole statement, and
 /// `arg_type` gives the type of a column an argument reads where the caller knows it.
 pub fn aggregates(expr: &Node, dialect: Dialect, trust: &Trust, level: Option<&Level>, fields: Option<&HashSet<String>>, arg_type: &dyn Fn(&Node) -> Option<u32>) -> bool {
-    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields }.aggregates(expr, true, level, arg_type)
+    Reader { dialect, trust, columns: &Columns::default(), withs: Withs::default(), rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields, lockstep: false }.aggregates(expr, true, level, arg_type)
 }
 
 /// The aggregates the rules read that no built-in of takes a row on every server Reylo supports
@@ -1286,6 +1394,10 @@ struct Reader<'a> {
     /// The columns the statement's own rows may have ([`row_fields`]); `None` where the reader
     /// does not see the whole statement.
     fields: Option<&'a HashSet<String>>,
+    /// Whether the select list may call more than one set-returning function outside its
+    /// subqueries ([`set_calls`]): the server runs them in step, and a shorter one's value is NULL
+    /// in the rows a longer one goes on for.
+    lockstep: bool,
 }
 
 /// A column, as written, that a test is strict in, where every check holds: one per call of a
@@ -1415,6 +1527,15 @@ impl Reader<'_> {
                     let operands = vec![self.read(left), self.read(right)];
                     return self.shadowed_call(Kind::Infix, "=", &[left, right], operands, Claim::NonNull(Some(oid::BOOL)));
                 }
+                if self.dialect == Dialect::Postgres {
+                    use protobuf::AExprKind as K;
+                    match K::try_from(a.kind) {
+                        Ok(K::AexprIn) => return self.in_list(a),
+                        Ok(K::AexprBetween | K::AexprNotBetween | K::AexprBetweenSym | K::AexprNotBetweenSym) => return self.between(a),
+                        Ok(K::AexprOpAny | K::AexprOpAll) => return self.any_array(a),
+                        _ => {}
+                    }
+                }
                 // `LIKE`, `ILIKE` and `SIMILAR TO` are operators the parse marks apart, under the
                 // operator's own name.
                 let matching = [protobuf::AExprKind::AexprLike as i32, protobuf::AExprKind::AexprIlike as i32, protobuf::AExprKind::AexprSimilar as i32];
@@ -1440,6 +1561,20 @@ impl Reader<'_> {
                 if !accepted {
                     return Expr::Unknown;
                 }
+                // Two row constructors compare field by field (`make_row_comparison_op`), NULL where
+                // a pair of fields compares NULL and none decides it: `ROW(NULL, 1) = ROW(2, 1)` is
+                // NULL. A row compared with any other row value is one value, compared whole.
+                if let (Dialect::Postgres, Some(l)) = (self.dialect, left) {
+                    let row = |n: &Node| matches!(n.node, Some(NodeEnum::RowExpr(_)));
+                    if row(l) && row(right) {
+                        if self.trust.checked(&op) {
+                            return Expr::Unknown;
+                        }
+                        let mut operands = self.compared(l);
+                        operands.extend(self.compared(right));
+                        return Expr::Every(operands, bool_ty);
+                    }
+                }
                 let ty = match op.as_str() {
                     "||" if self.dialect != Dialect::Postgres => Ty::Is(oid::TEXT),
                     "||" => Ty::Concat,
@@ -1462,6 +1597,20 @@ impl Reader<'_> {
             }
             Some(NodeEnum::BoolExpr(b)) if !b.args.is_empty() => Expr::Every(b.args.iter().map(|a| self.read(a)).collect(), bool_ty),
             Some(NodeEnum::NullTest(_)) | Some(NodeEnum::BooleanTest(_)) => Expr::NonNull(Some(oid::BOOL)),
+            // `x IS JSON` is NULL for a NULL `x` alone: any other value is JSON or is not.
+            Some(NodeEnum::JsonIsPredicate(p)) if self.dialect == Dialect::Postgres => match p.expr.as_deref() {
+                Some(e) => Expr::Every(vec![self.read(e)], bool_ty),
+                None => Expr::Unknown,
+            },
+            // `GROUPING(…)` is a bit mask of the grouping columns a row's grouping set leaves out.
+            Some(NodeEnum::GroupingFunc(_)) if self.dialect == Dialect::Postgres => Expr::NonNull(Some(oid::INT4)),
+            // `JSON_OBJECT(…)` and `JSON_ARRAY(…)` build a value whatever their arguments hold.
+            Some(NodeEnum::JsonObjectConstructor(_) | NodeEnum::JsonArrayConstructor(_)) if self.dialect == Dialect::Postgres => Expr::NonNull(None),
+            // A named argument, `make_interval(secs => 5)`, is its value.
+            Some(NodeEnum::NamedArgExpr(n)) if self.dialect == Dialect::Postgres => match n.arg.as_deref() {
+                Some(arg) => self.read(arg),
+                None => Expr::Unknown,
+            },
             // `ARRAY[...]` always builds an array, whatever its elements hold; the describe already
             // names the element type, and its elements are the expressions listed.
             Some(NodeEnum::AArrayExpr(a)) => Expr::Array { non_null: true, items: a.elements.iter().map(|e| self.read(e)).collect() },
@@ -1514,8 +1663,19 @@ impl Reader<'_> {
                 self.narrowed.truncate(outer);
                 read
             }
-            Some(NodeEnum::FuncCall(f)) => self.call(f),
+            Some(NodeEnum::FuncCall(f)) => {
+                let read = self.call(f);
+                // Beside another set-returning call a set-returning one may run out first, and is
+                // NULL in the rows the other goes on for.
+                if self.lockstep && builtin_name(&f.funcname).is_some_and(|n| POSTGRES_SET_RETURNING.contains(&n.as_str())) {
+                    Expr::Nullable(Box::new(read))
+                } else {
+                    read
+                }
+            }
             Some(NodeEnum::SubLink(s)) => self.sublink(s),
+            // `CURRENT_SCHEMA` is NULL where no schema of the search path exists.
+            Some(NodeEnum::SqlvalueFunction(v)) if v.op == protobuf::SqlValueFunctionOp::SvfopCurrentSchema as i32 => Expr::Unknown,
             // `current_timestamp`, `current_user` and the rest of the SQL value functions.
             Some(NodeEnum::SqlvalueFunction(_)) => Expr::NonNull(None),
             // `merge_action()` names the action that produced the row a MERGE returns.
@@ -1549,8 +1709,11 @@ impl Reader<'_> {
 
     fn call_unfiltered(&mut self, f: &protobuf::FuncCall) -> Expr {
         let Some(name) = builtin_name(&f.funcname) else { return Expr::Unknown };
-        if f.agg_within_group || f.func_variadic {
+        if f.func_variadic {
             return Expr::Unknown;
+        }
+        if f.agg_within_group {
+            return self.ordered_set(f, &name);
         }
         // A call of one argument no function matches is a column of it where the argument is a
         // row: a function of none (`now(t)`) is then that column alone.
@@ -1562,11 +1725,18 @@ impl Reader<'_> {
         // types resolve the call to it. `unnest` reads its argument's elements, of no type the
         // build can name, and so proves nothing then.
         if self.dialect == Dialect::Postgres && self.trust.checked(&name) {
+            // A named argument picks the overload by its name, which the resolution of a user's
+            // overloads does not model.
+            if f.args.iter().any(|a| matches!(a.node, Some(NodeEnum::NamedArgExpr(_)))) {
+                return Expr::Unknown;
+            }
             let Some((claim, guard)) = self.builtin_claim(f, &name) else { return Expr::Unknown };
             let nodes: Vec<&Node> = f.args.iter().collect();
             let mut args: Vec<Expr> = self.args(f, projection);
-            if let (Some(types), Some(first)) = (guard, args.first_mut()) {
-                *first = Expr::Guarded(Box::new(first.clone()), types);
+            if let Some((at, types)) = guard {
+                if let Some(arg) = args.get_mut(at) {
+                    *arg = Expr::Guarded(Box::new(arg.clone()), types);
+                }
             }
             return self.shadowed_call(Kind::Function, &name, &nodes, args, claim);
         }
@@ -1612,8 +1782,29 @@ impl Reader<'_> {
             // them is. Any other array may hold NULL elements whatever its column says.
             (Dialect::Postgres, "unnest", 1) if self.trust.builtin("unnest") => match array_elements(&f.args[0]) {
                 Some(elements) => Expr::Every(elements.into_iter().map(|e| Expr::Guarded(Box::new(self.read(e)), POSTGRES_SCALARS)).collect(), Ty::Unknown),
+                // An enum's labels, each a value.
+                None if self.enum_range(&f.args[0]) => Expr::NonNull(None),
                 None => Expr::Unknown,
             },
+            (Dialect::Postgres, POSTGRES_ENUM_RANGE, 1 | 2) if self.trust.builtin(POSTGRES_ENUM_RANGE) => Expr::Array { non_null: true, items: Vec::new() },
+            (Dialect::Postgres, n, 0) if POSTGRES_NO_ARGUMENT_NEVER_NULL.contains(&n) && self.trust.builtin(n) => Expr::NonNull(None),
+            (Dialect::Postgres, n, 1) if POSTGRES_TOTAL_ONE_ARGUMENT.contains(&n) && self.trust.builtin(n) => Expr::Every(self.args(f, projection), Ty::Is(oid::TEXT)),
+            (Dialect::Postgres, n, 2..) if POSTGRES_SERIES.contains(&n) && self.trust.builtin(n) => Expr::NonNull(None),
+            (Dialect::Postgres, n, 2) if POSTGRES_DATE_PARTS.contains(&n) && self.trust.builtin(n) => {
+                let monotonic = monotonic_field(&f.args[0]);
+                let mut operands: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+                if !monotonic {
+                    operands[1] = Expr::Guarded(Box::new(operands[1].clone()), TIMES_OF_DAY);
+                }
+                Expr::Every(operands, Ty::Unknown)
+            }
+            (Dialect::Postgres, "substring", 2 | 3) if self.trust.builtin("substring") => {
+                let mut operands: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+                operands[1] = Expr::Guarded(Box::new(operands[1].clone()), INTEGER_TYPES);
+                Expr::Every(operands, Ty::Unknown)
+            }
+            // The value at the first or the last row of a frame that always holds the current one.
+            (Dialect::Postgres, n, 1) if POSTGRES_FRAME_VALUES.contains(&n) && f.over.is_some() && self.has_a_row(f) && self.trust.builtin(n) => Expr::Every(f.args.iter().map(|a| self.read(a)).collect(), Ty::Unknown),
             (Dialect::Postgres, "uuidv7", 0) if self.trust.builtin("uuidv7") => Expr::NonNull(Some(oid::UUID)),
             (Dialect::Postgres, n, 1..) if POSTGRES_FIRST_ARG.contains(&n) && self.trust.builtin(n) => Expr::Every(self.args(f, projection).into_iter().take(1).collect(), Ty::Is(oid::TEXT)),
             (Dialect::Postgres, n, 1..) if self.trust.builtin(n) && POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => {
@@ -1688,7 +1879,7 @@ impl Reader<'_> {
     /// What the rule of a Postgres built-in says of a call of `name`, as [`Reader::call_unfiltered`]
     /// reads it, in terms of its arguments, with the types of its first argument for which it
     /// holds; `None` where no rule reads the call.
-    fn builtin_claim(&self, f: &protobuf::FuncCall, name: &str) -> Option<(Claim, Option<&'static [u32]>)> {
+    fn builtin_claim(&self, f: &protobuf::FuncCall, name: &str) -> Option<(Claim, Option<(usize, &'static [u32])>)> {
         let window = f.over.is_some();
         Some(match (name, f.args.len()) {
             ("count", 0 | 1) => (Claim::NonNull(Some(oid::INT8)), None),
@@ -1708,11 +1899,96 @@ impl Reader<'_> {
             ("array_agg", 1) => (Claim::Array(false), None),
             (n, _) if POSTGRES_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
             ("uuidv7", 0) => (Claim::NonNull(Some(oid::UUID)), None),
+            (n, 0) if POSTGRES_NO_ARGUMENT_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
+            (n, 1) if POSTGRES_TOTAL_ONE_ARGUMENT.contains(&n) => (Claim::Every(None, Ty::Is(oid::TEXT)), None),
+            (n, 2..) if POSTGRES_SERIES.contains(&n) => (Claim::NonNull(None), None),
+            (n, 2) if POSTGRES_DATE_PARTS.contains(&n) => (Claim::Every(None, Ty::Unknown), (!monotonic_field(&f.args[0])).then_some((1, TIMES_OF_DAY))),
+            ("substring", 2 | 3) => (Claim::Every(None, Ty::Unknown), Some((1, INTEGER_TYPES))),
+            (n, 1) if POSTGRES_FRAME_VALUES.contains(&n) && f.over.as_deref().is_some_and(|over| frame_holds_current_row(over, self.windows)) => (Claim::Every(None, Ty::Unknown), None),
             (n, 1..) if POSTGRES_FIRST_ARG.contains(&n) => (Claim::Every(Some(1), Ty::Is(oid::TEXT)), None),
-            (n, 1..) if POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => (Claim::Every(None, Ty::Unknown), POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| *t)),
+            (n, 1..) if POSTGRES_TOTAL_FOR.iter().any(|(name, _)| *name == n) => (Claim::Every(None, Ty::Unknown), POSTGRES_TOTAL_FOR.iter().find(|(name, _)| *name == n).map(|(_, t)| (0, *t))),
             (n, _) if POSTGRES_TOTAL.contains(&n) => (Claim::Every(None, if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown }), None),
             _ => return None,
         })
+    }
+
+    /// An ordered-set aggregate under a plain `GROUP BY`, where no group is empty: non-null where
+    /// its direct arguments and the value it orders by are ([`POSTGRES_ORDERED_SET`]).
+    fn ordered_set(&mut self, f: &protobuf::FuncCall, name: &str) -> Expr {
+        let direct = match name {
+            "percentile_cont" | "percentile_disc" => 1,
+            "mode" => 0,
+            _ => return Expr::Unknown,
+        };
+        if self.dialect != Dialect::Postgres || !self.grouped || f.over.is_some() || f.agg_filter.is_some() || f.args.len() != direct || f.agg_order.len() != 1 || self.trust.checked(name) {
+            return Expr::Unknown;
+        }
+        let mut operands: Vec<Expr> = f.args.iter().map(|a| self.read(a)).collect();
+        for sort in &f.agg_order {
+            let Some(NodeEnum::SortBy(by)) = sort.node.as_ref() else { return Expr::Unknown };
+            let Some(value) = by.node.as_deref() else { return Expr::Unknown };
+            operands.push(self.read(value));
+        }
+        Expr::Every(operands, Ty::Unknown)
+    }
+
+    /// Whether a value is a call of the built-in `enum_range`, an array of an enum's labels.
+    fn enum_range(&self, node: &Node) -> bool {
+        matches!(node.node.as_ref(), Some(NodeEnum::FuncCall(f)) if builtin_name(&f.funcname).as_deref() == Some(POSTGRES_ENUM_RANGE)
+            && matches!(f.args.len(), 1 | 2) && !f.func_variadic && !f.agg_star && !f.agg_distinct && !f.agg_within_group && f.over.is_none() && f.agg_filter.is_none() && f.agg_order.is_empty()
+            && !self.trust.checked(POSTGRES_ENUM_RANGE))
+    }
+
+    /// One side of a comparison, as the operands the comparison's NULL turns on: a row
+    /// constructor's fields, each in turn, and any other value whole.
+    fn compared(&mut self, node: &Node) -> Vec<Expr> {
+        match node.node.as_ref() {
+            Some(NodeEnum::RowExpr(r)) => r.args.iter().flat_map(|field| self.compared(field)).collect(),
+            _ => vec![self.read(node)],
+        }
+    }
+
+    /// `x IN (a, b)` is `x = a OR x = b`, and `x NOT IN (a, b)` is `x <> a AND x <> b`: NULL only
+    /// where a comparison is and none decides it, so non-null where `x` and every item are.
+    fn in_list(&mut self, a: &protobuf::AExpr) -> Expr {
+        let (Some(op), Some(left), Some(NodeEnum::List(list))) = (builtin_name(&a.name), a.lexpr.as_deref(), a.rexpr.as_deref().and_then(|r| r.node.as_ref())) else { return Expr::Unknown };
+        if list.items.is_empty() || !matches!(op.as_str(), "=" | "<>") || self.trust.checked(&op) {
+            return Expr::Unknown;
+        }
+        let mut operands = self.compared(left);
+        for item in &list.items {
+            operands.extend(self.compared(item));
+        }
+        Expr::Every(operands, Ty::Is(oid::BOOL))
+    }
+
+    /// `x BETWEEN a AND b` is `x >= a AND x <= b`, its `NOT` form `x < a OR x > b`, and the
+    /// `SYMMETRIC` forms the same both ways round: non-null where all three are.
+    fn between(&mut self, a: &protobuf::AExpr) -> Expr {
+        let (Some(left), Some(NodeEnum::List(list))) = (a.lexpr.as_deref(), a.rexpr.as_deref().and_then(|r| r.node.as_ref())) else { return Expr::Unknown };
+        if list.items.len() != 2 || ["<", ">", "<=", ">="].iter().any(|o| self.trust.checked(o)) {
+            return Expr::Unknown;
+        }
+        let mut operands = self.compared(left);
+        for item in &list.items {
+            operands.extend(self.compared(item));
+        }
+        Expr::Every(operands, Ty::Is(oid::BOOL))
+    }
+
+    /// `x op ANY (array)` and `x op ALL (array)`: NULL where `x` or the array is, or where an
+    /// element compares NULL and none decides it. Non-null where `x` is and the array is `ARRAY[…]`
+    /// of elements that are, each a value of a scalar type (a nested `ARRAY[…]` is a row of
+    /// elements of its own), compared by a built-in operator that answers for every pair.
+    fn any_array(&mut self, a: &protobuf::AExpr) -> Expr {
+        let (Some(op), Some(left), Some(right)) = (builtin_name(&a.name), a.lexpr.as_deref(), a.rexpr.as_deref()) else { return Expr::Unknown };
+        if !POSTGRES_OPERATORS.contains(&op.as_str()) || self.trust.checked(&op) {
+            return Expr::Unknown;
+        }
+        let Some(elements) = array_elements(right) else { return Expr::Unknown };
+        let mut operands = vec![self.read(left)];
+        operands.extend(elements.into_iter().map(|e| Expr::Guarded(Box::new(self.read(e)), POSTGRES_SCALARS)));
+        Expr::Every(operands, Ty::Is(oid::BOOL))
     }
 
     fn sublink(&mut self, s: &protobuf::SubLink) -> Expr {
@@ -1737,7 +2013,7 @@ impl Reader<'_> {
             Some(outside) => level.within(outside.clone()),
             None => level,
         };
-        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields };
+        let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields, lockstep: false };
         let value = inner_reader.read(inner);
         if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level), &|n| level.column_type(n, self.columns))) {
             value
@@ -2529,7 +2805,7 @@ fn holds_current_row(options: i32) -> bool {
 /// A bare `VALUES (…), (…)` arm: a column is non-null when it is in every row.
 fn values_plan(s: &SelectStmt, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let withs = Withs::default().with(s.with_clause.as_ref(), columns);
-    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None, lockstep: false };
     let mut rows: Vec<Vec<Expr>> = Vec::new();
     for row in &s.values_lists {
         let Some(NodeEnum::List(list)) = row.node.as_ref() else { return Plan::default() };
@@ -3028,7 +3304,11 @@ mod tests {
         assert!(!one("SELECT lag(a) OVER () FROM t"));
         assert!(!one("SELECT lead(a, 1) OVER () FROM t"));
         assert!(one("SELECT ntile(4) OVER () FROM t"));
-        assert!(!one("SELECT first_value(a) OVER () FROM t"));
+        // The value at the first or the last row of a frame that always holds the current one.
+        assert!(one("SELECT first_value(a) OVER () FROM t"));
+        assert!(one("SELECT last_value(a) OVER (ORDER BY a) FROM t"));
+        assert!(!one("SELECT first_value(a) OVER (ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM t"));
+        assert!(!one("SELECT nth_value(a, 1) OVER () FROM t"));
     }
 
     #[test]
@@ -3758,6 +4038,69 @@ mod tests {
         for claim in &p.head {
             assert!(resolve(claim.as_ref().unwrap(), None).non_null);
         }
+    }
+
+    #[test]
+    fn built_ins_follow_their_arguments_where_no_valid_input_is_null() {
+        // Each column the statement reads is a leaf, in order: non-null `int4` unless named here.
+        let one = |sql: &str, leaves: &[DescribedColumn]| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(leaves)).non_null;
+        let int = col(false, oid::INT4);
+        let stamp = col(false, oid::TIMESTAMPTZ);
+        let clock = col(false, oid::TIME);
+        // An infinite timestamp has an infinite year and no month.
+        assert!(one("SELECT extract(year FROM at) FROM t", &[stamp.clone()]));
+        assert!(one("SELECT date_part('EPOCH', at) FROM t", &[stamp.clone()]));
+        assert!(!one("SELECT extract(month FROM at) FROM t", &[stamp.clone()]));
+        assert!(one("SELECT extract(month FROM at) FROM t", &[clock.clone()]));
+        assert!(!one("SELECT date_part(field, at) FROM t", &[col(false, oid::TEXT), stamp.clone()]));
+        // `substring` by bounds, never by a pattern, which may not match.
+        assert!(one("SELECT substring(a FROM 1 FOR 3) FROM t", &[col(false, oid::TEXT)]));
+        assert!(!one("SELECT substring(a FROM 'x+') FROM t", &[col(false, oid::TEXT)]));
+        assert!(one("SELECT make_interval(days => a) FROM t", &[int.clone()]));
+        assert!(one("SELECT format('%s', a) FROM t", &[col(true, oid::TEXT)]));
+        assert!(!one("SELECT format(a, 1) FROM t", &[col(true, oid::TEXT)]));
+        assert!(one("SELECT version()", &[]));
+        assert!(!one("SELECT version(a) FROM t", &[int.clone()]));
+        assert!(one("SELECT current_setting('TimeZone')", &[]));
+        assert!(!one("SELECT current_setting('x', true)", &[]));
+        assert!(!one("SELECT current_schema", &[]));
+        assert!(one("SELECT GROUPING(a) FROM t GROUP BY ROLLUP (a)", &[]));
+        assert!(one("SELECT generate_series(1, NULL::int)", &[]));
+        assert!(one("SELECT unnest(enum_range(NULL::mood))", &[]));
+    }
+
+    #[test]
+    fn comparisons_of_lists_ranges_and_rows_follow_every_operand() {
+        let one = |sql: &str, leaves: &[DescribedColumn]| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(leaves)).non_null;
+        let int = col(false, oid::INT4);
+        let null = col(true, oid::INT4);
+        assert!(one("SELECT a IN (1, 2) FROM t", &[int.clone()]));
+        assert!(one("SELECT a NOT IN (1, 2) FROM t", &[int.clone()]));
+        assert!(!one("SELECT a IN (1, NULL) FROM t", &[int.clone()]));
+        assert!(!one("SELECT a IN (1, 2) FROM t", &[null.clone()]));
+        assert!(one("SELECT a BETWEEN 1 AND 2 FROM t", &[int.clone()]));
+        assert!(one("SELECT a NOT BETWEEN SYMMETRIC 2 AND 1 FROM t", &[int.clone()]));
+        assert!(one("SELECT a = ANY (ARRAY[1, 2]) FROM t", &[int.clone()]));
+        assert!(!one("SELECT a = ANY (ARRAY[1, NULL]) FROM t", &[int.clone()]));
+        assert!(!one("SELECT a = ANY (b) FROM t", &[int.clone(), col(false, 1007)]));
+        // Two row constructors compare field by field, NULL where a pair of fields is.
+        assert!(one("SELECT ROW(a, 1) = ROW(2, 1) FROM t", &[int.clone()]));
+        assert!(!one("SELECT ROW(a, 1) = ROW(2, 1) FROM t", &[null.clone()]));
+        assert!(!one("SELECT (a, 1) < (2, 1) FROM t", &[null.clone()]));
+        assert!(!one("SELECT (a, 1) IN ((2, 1)) FROM t", &[null.clone()]));
+        assert!(one("SELECT a IS JSON FROM t", &[col(false, oid::TEXT)]));
+        assert!(!one("SELECT a IS JSON FROM t", &[col(true, oid::TEXT)]));
+    }
+
+    #[test]
+    fn set_returning_calls_in_step_may_run_out() {
+        let claims = |sql: &str| pg(sql).head.iter().map(|c| resolve(c.as_ref().expect("a claim"), None).non_null).collect::<Vec<_>>();
+        assert_eq!(claims("SELECT generate_series(1, 3)"), [true]);
+        assert_eq!(claims("SELECT generate_series(1, 3), now()"), [true, true]);
+        assert_eq!(claims("SELECT generate_series(1, 3), generate_series(1, 2)"), [false, false]);
+        assert_eq!(claims("SELECT generate_series(1, 3), unnest(ARRAY[1])"), [false, false]);
+        assert_eq!(claims("SELECT generate_series(1, 3), coalesce(f(), 1)"), [false, true]);
+        assert_eq!(claims("SELECT generate_series(1, 3), (SELECT generate_series(1, 2) LIMIT 1)"), [true, false]);
     }
 
     #[test]

@@ -529,7 +529,7 @@ where o.paid
 
 **Expressions**
 
-Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is.
+Literals, `count`, `exists` and `is null` are never null. Operators, casts, built-in functions, `in`, `between` and `case` are non-null when their inputs are, and `coalesce`, `greatest` and `least` are non-null when one of their arguments is. A function that returns `NULL` for some valid input stays nullable: `nullif`, `substring` with a pattern, and `to_char`, or `extract` of a field such as `month`, over an infinite timestamp (fields that grow with time, such as `year` and `epoch`, are infinite there instead). Two set-returning functions in one select list run in step and pad the shorter with `NULL`, so both are nullable.
 
 <Inferred>
 
@@ -545,7 +545,7 @@ from users
 
 **Aggregates**
 
-Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max` and `sum` are non-null when their argument is, and a `filter` keeps an aggregate nullable.
+Without a `group by`, an aggregate other than `count` returns `NULL` over no rows. With one, every group has rows: `array_agg` and `jsonb_agg` are non-null, `max`, `sum`, `any_value`, `percentile_cont` and `mode` are non-null when their arguments are, and a `filter` keeps an aggregate nullable.
 
 <Inferred>
 
@@ -575,7 +575,7 @@ select (select count(*) from orders) as orders,
 
 **Window functions**
 
-A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
+A window function is typed like any other function: `lag` is nullable, since the first row has no previous row. An aggregate over a window, and `first_value` or `last_value`, follows its argument, unless a `filter` or a frame that can leave out the current row keeps it nullable.
 
 <Inferred>
 

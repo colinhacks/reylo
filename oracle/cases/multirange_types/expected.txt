@@ -1,6 +1,6 @@
 aggregated.sql: many () -> { all_seats: int4multirange?, common: int4multirange? }
 by_seats.sql: many (seats: int4multirange) -> { id: int4 }
-functions.sql: many (n: int4multirange) -> { id: int4, first: int4?, last: int4?, empty: bool?, merged: int4range?, holds: bool }
+functions.sql: many (n: int4multirange) -> { id: int4, first: int4?, last: int4?, empty: bool, merged: int4range?, holds: bool }
 json_object.sql: many () -> { doc: { nights: datemultirange?, seats: int4multirange, spans: int8multirange[]? } }
 plain.sql: many () -> { id: int4, nights: datemultirange?, seats: int4multirange, prices: nummultirange?, spans: int8multirange[]? }
 unnested.sql: many () -> { id: int4, r: int4range? }

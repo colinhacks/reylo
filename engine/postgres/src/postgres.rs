@@ -1710,6 +1710,10 @@ impl<'a> Engine<'a> {
                     // A row the scan read is a row, whatever its columns hold: NULL only where an
                     // outer join nulls the relation, which the statement names, so its name says.
                     nulled_rels.contains(&col.table)
+                } else if col.table != 0 && col.attnum < 0 && !degraded && known.contains_key(&col.table) {
+                    // A system column (`ctid`, `xmin`, `tableoid`) is the scanned row's own, never
+                    // NULL in a row that is there.
+                    reading.map_or(nulled_rels.contains(&col.table), |(_, nulled)| *nulled)
                 } else {
                     true
                 };

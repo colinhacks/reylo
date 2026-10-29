@@ -1,0 +1,1 @@
+select first_value(id) over (order by at) as first, last_value(id) over (order by at) as last, first_value(note) over (order by at) as first_note, nth_value(id, 2) over (order by at) as second, first_value(id) over (order by at rows between 1 following and 2 following) as next, last_value(id) over w as last_named from events window w as (partition by kind)

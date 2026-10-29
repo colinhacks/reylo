@@ -1,0 +1,1 @@
+select version() as version, pg_backend_pid() as pid, current_database() as db, txid_current() as xid, pg_current_xact_id() as xact, current_setting('TimeZone') as zone, current_setting('no.such_setting', true) as missing, pg_advisory_xact_lock(1) as locked, pg_try_advisory_lock(2) as took, pg_advisory_unlock(2) as released, current_user as who, current_schema as schema
