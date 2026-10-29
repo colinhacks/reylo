@@ -111,6 +111,13 @@ test("DuckDB: how many rows a statement returns", { skip }, async () => {
   assert.equal(await card("update logs set msg = :msg where id = :id returning msg"), "maybeOne");
   assert.equal(await card("update logs set msg = :msg where level = :level"), "none");
   assert.equal(await card("delete from logs where level = :level returning id"), "many");
+  // A LIMIT that may be 0 bounds the rows to at most one, not exactly one.
+  assert.equal(await card("select count(*) as n from logs limit :n"), "maybeOne");
+  // A write WITH queries feed is that write.
+  const fed = await analyze(root, "with x as (select 9 as id, 'x' as name) insert into teams select * from x");
+  assert.deepEqual([fed.kind, fed.cardinality, fed.columns, fed.fresh?.inserts], ["insert", "none", [], ["teams"]]);
+  const returned = await analyze(root, "with x as (select 9 as id, 'x' as name) insert into teams select * from x returning id, name");
+  assert.deepEqual([returned.kind, returned.cardinality, columns(returned)], ["insert", "many", ["id: INTEGER", "name: VARCHAR"]]);
   const create = await analyze(root, "create table other (a integer)");
   assert.deepEqual([create.kind, create.cardinality, create.columns], ["create", "none", []]);
   // What a write's RETURNING returns is the row it wrote.
@@ -136,8 +143,15 @@ test("DuckDB: each parameter is typed where it stands, and may be NULL where the
   assert.deepEqual(params(await analyze(root, "select id from logs where level = ? and id > ?")), ["1: VARCHAR", "2: INTEGER"]);
   assert.equal((await analyze(root, "select id from logs where id = $1")).rewritten.sql, "select id from logs where id = $1");
   assert.deepEqual((await analyze(root, "select id from logs where id = $id")).diagnostics.map((d) => d.message), ["DuckDB reads $id as a parameter that Reylo does not bind; write :id"]);
-  // A parameter DuckDB cannot type is unknown.
-  assert.deepEqual((await analyze(root, "select :x as x")).params.map((p) => p.type), [{ kind: "unknown" }]);
+  const gap = "select id from logs where id = $1 or team_id = $3";
+  assert.deepEqual((await analyze(root, gap)).diagnostics.map((d) => [d.message, gap.slice(d.start, d.start + d.length)]), [["DuckDB numbers parameters from 1 without a gap, and this statement has no $2: number them in order", "$3"]]);
+  // A parameter DuckDB cannot type leaves it describing none of the statement's columns, which is
+  // an error at that parameter, saying to cast it.
+  for (const sql of ["select :x as x", "select id, msg || :s as m from logs where id = :id", "select id + :n::integer + :m as x from logs"]) {
+    const untyped = await analyze(root, sql);
+    const named = sql.includes(":s") ? ":s" : sql.includes(":m") ? ":m" : ":x";
+    assert.deepEqual(untyped.diagnostics.map((d) => [d.message, sql.slice(d.start, d.start + d.length)]), [[`DuckDB cannot tell the type of ${named} from where it stands, and describes none of the statement's columns until it can: cast it, as in ${named}::integer`, named]]);
+  }
   // A rows(…) parameter is Postgres's, SQLite's and MySQL's for now.
   assert.match((await analyze(root, "insert into teams :rows::rows(id integer not null, name varchar not null)")).diagnostics[0]!.message, /DuckDB statements take no rows\(…\) or row\(…\) parameter yet/);
 });
@@ -169,6 +183,31 @@ test("DuckDB: a project without @duckdb/node-api is told to install it, and a mi
     assert.match(outcome.message, /^Cannot open the database .*nowhere\.duckdb \(DATABASE_URL in the environment\): IO Error: Cannot open database .* database does not exist/);
   } finally {
     await missing.close();
+  }
+});
+
+test("DuckDB: a database file another process holds for writing is typed from a copy of it", { skip }, async () => {
+  const root = await project();
+  // A second process opens the file read-write, as a running app does, writes a table it has not
+  // checkpointed, and holds the file until its stdin closes.
+  const holder = `const { DuckDBInstance } = require(${JSON.stringify(join(DRIVERS, "@duckdb", "node-api"))});
+(async () => {
+  const c = await (await DuckDBInstance.create(${JSON.stringify(join(root, "app.duckdb"))})).connect();
+  await c.run("create table later (id integer primary key, note varchar not null)");
+  process.stdout.write("held\\n");
+  process.stdin.resume();
+  process.stdin.on("end", () => process.exit(0));
+})();`;
+  const child = spawn(process.execPath, ["-e", holder], { stdio: ["pipe", "pipe", "inherit"] });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.stdout.once("data", () => resolve());
+      child.once("exit", (code) => reject(new Error(`the holder exited with ${code}`)));
+    });
+    assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+  } finally {
+    child.stdin.end();
+    await new Promise((resolve) => child.once("exit", resolve));
   }
 });
 
@@ -233,9 +272,50 @@ test("DuckDB: .run() returns each type's one representation, and a row goes back
     const back = await insert.run(c, { ...(await get.run(c, { id: 1 })), id: 2 });
     assert.deepEqual({ ...back, b: [...back.b] }, { ...row, id: 2, b: [1, 2, 255] });
     assert.equal(await get.run(c, { id: 3 }), null);
+    // A UNION takes a tag of one of its members, and a value for it.
+    await assert.rejects(insert.run(c, { ...row, id: 4, u: { tag: "nope", value: 5 } }), /Parameter "u" is a UNION, so it takes \{ tag, value \} with the tag one of "num", "str"; got \{"tag":"nope","value":5\}/);
+    await assert.rejects(insert.run(c, { ...row, id: 4, u: { tag: "num", value: null } }), /Parameter "u" is a UNION, and @duckdb\/node-api cannot bind one whose "num" member is null/);
     // A year past 9999, a time zone's offset and an infinite date read as ISO 8601 writes them.
     const edges = await defineQuery({ dialect: "duckdb", sql: "select '10000-01-01'::date as far, '2026-10-20 10:00:00+02'::timestamptz as zoned, 'infinity'::date as forever, interval '-1 day' as back, 1.5::decimal(10, 3) as d", params: [], cardinality: "one" }).run(c as never);
     assert.deepEqual({ ...(edges as object) }, { far: "+010000-01-01", zoned: "2026-10-20T08:00:00Z", forever: "infinity", back: "-P1D", d: "1.500" });
+    // A VARIANT is the value it holds, in the form of that value's own type.
+    const variant = await defineQuery({ dialect: "duckdb", sql: "select 42::variant as n, 'hi'::variant as s, {'x': 1, 'y': [true, null]}::variant as o, 9007199254740993::bigint::variant as big, '2026-10-20'::date::variant as day, null::variant as none", params: [], cardinality: "one" }).run(c as never);
+    assert.deepEqual({ ...(variant as object) }, { n: 42, s: "hi", o: { x: 1, y: [true, null] }, big: 9007199254740993n, day: "2026-10-20", none: null });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: every type's least, greatest and NULL value round-trips through .run() exactly", { skip }, async () => {
+  // DuckDB's own test_all_types(): each type's extremes, which .run() decodes and a parameter
+  // writes back, each column into a table of its own; DuckDB then compares each with the original.
+  // An array that holds NULL is not written: an array parameter takes no NULL element.
+  const root = await project("create table t as select row_number() over () as k, * exclude (geometry) from test_all_types()");
+  const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c0 = await db0.connect();
+  const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);
+  const q = (n: string) => `"${n}"`;
+  for (const n of names) await c0.run(`create table ${q(`w_${n}`)} as select k, ${q(n)} from t limit 0`);
+  c0.closeSync();
+  db0.closeSync();
+  const read = await built(root, "read", "select * from t order by k");
+  const writes = await Promise.all(names.map((n, i) => built(root, `write_${i}`, `insert into ${q(`w_${n}`)} (k, ${q(n)}) values (:k, :v)`)));
+  await closeAll();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    const rows = (await read.run(c)) as Record<string, unknown>[];
+    assert.equal(rows.length, 3);
+    const nullElement = (v: unknown): boolean => Array.isArray(v) && v.some((e) => e === null || nullElement(e));
+    for (const [i, n] of names.entries()) {
+      for (const row of rows) {
+        if (nullElement(row[n])) continue;
+        await writes[i]!.run(c, { k: row.k, v: row[n] });
+      }
+      const differ = ((await c.runAndReadAll(`select t.k from t join ${q(`w_${n}`)} w using (k) where t.${q(n)} is distinct from w.${q(n)}`)) as { getRowsJson(): unknown[][] }).getRowsJson();
+      assert.deepEqual(differ, [], `${n} differs after a round trip`);
+    }
   } finally {
     c.closeSync();
     db.closeSync();

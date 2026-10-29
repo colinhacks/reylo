@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// An open DuckDB database and one connection to it.
-struct Db {
+pub(crate) struct Db {
     db: ffi::duckdb_database,
     conn: ffi::duckdb_connection,
 }
@@ -36,7 +36,7 @@ unsafe impl Send for Interrupt {}
 unsafe impl Sync for Interrupt {}
 
 /// A query's outcome: its rows, the time it ran out of, or DuckDB's error.
-enum Ran<T> {
+pub(crate) enum Ran<T> {
     Done(T),
     TimedOut,
     Failed(String),
@@ -60,7 +60,7 @@ fn owned(p: *mut std::os::raw::c_char) -> String {
 }
 
 impl Db {
-    fn open(path: &Path) -> Result<Db, String> {
+    pub(crate) fn open(path: &Path) -> Result<Db, String> {
         let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         let mut conn: ffi::duckdb_connection = std::ptr::null_mut();
@@ -88,7 +88,7 @@ impl Db {
         }
     }
 
-    fn exec(&self, sql: &str) -> Result<(), String> {
+    pub(crate) fn exec(&self, sql: &str) -> Result<(), String> {
         self.query(sql, |_| ())
     }
 
@@ -130,7 +130,7 @@ impl Db {
 
     /// Runs `sql` with `params` bound as text (NULL where `None`), stopped at `timeout_ms`: how many
     /// rows it returned, and which columns held a NULL.
-    fn run(&self, sql: &str, params: &[Option<String>], timeout_ms: u64) -> Ran<(usize, Vec<bool>)> {
+    pub(crate) fn run(&self, sql: &str, params: &[Option<String>], timeout_ms: u64) -> Ran<(usize, Vec<bool>)> {
         let Ok(c) = CString::new(sql) else { return Ran::Failed("a NUL in the statement".into()) };
         unsafe {
             let mut stmt: ffi::duckdb_prepared_statement = std::ptr::null_mut();
@@ -327,7 +327,7 @@ unsafe fn logical(t: ffi::duckdb_logical_type) -> Value {
 }
 
 /// The engine's host: the prepared statement's describe, and each catalog query's rows as text.
-struct Host<'a>(&'a Db);
+pub(crate) struct Host<'a>(pub(crate) &'a Db);
 
 impl reylo_engine::Answerer<reylo_engine::duckdb::api::DuckdbDescribe> for Host<'_> {
     type Error = String;
@@ -440,8 +440,23 @@ fn pool(ty: &str, scenario: Scenario) -> Vec<String> {
     if t.ends_with("[]") {
         return cast(vec!["[]".into(), "[NULL]".into()]);
     }
-    if t.starts_with("STRUCT") || t.starts_with("MAP") || t.starts_with("UNION") || t.ends_with(']') {
-        return Vec::new();
+    // A nested type: a fixed-size array of NULLs and of its element's first value (checked first,
+    // since `STRUCT(…)[2]` is an array of structs), a STRUCT with every field NULL and with each
+    // field's first value, an empty MAP, and a UNION of each member.
+    if let Some((element, size)) = ty.strip_suffix(']').and_then(|t| t.rsplit_once('[')).and_then(|(e, n)| Some((e, n.parse::<usize>().ok()?))) {
+        let first = pool(element, Scenario::Plain).into_iter().next();
+        return cast([Some("NULL".to_string()), first].into_iter().flatten().map(|v| format!("[{}]", vec![v; size].join(", "))).collect());
+    }
+    if let Some(inner) = t.strip_prefix("STRUCT(").map(|_| &ty[7..ty.len() - 1]) {
+        let fields = members(inner);
+        let filled = |first: bool| fields.iter().map(|(name, ft)| format!("{}: {}", literal(name.trim_matches('"')), if first { pool(ft, Scenario::Plain).into_iter().next().unwrap_or_else(|| "NULL".into()) } else { "NULL".into() })).collect::<Vec<_>>().join(", ");
+        return cast(vec![format!("{{{}}}", filled(false)), format!("{{{}}}", filled(true))]);
+    }
+    if t.starts_with("MAP(") {
+        return cast(vec!["MAP {}".into()]);
+    }
+    if let Some(inner) = t.strip_prefix("UNION(").map(|_| &ty[6..ty.len() - 1]) {
+        return cast(members(inner).iter().map(|(name, mt)| format!("union_value({name} := NULL::{mt})")).collect());
     }
     match t.split('(').next().unwrap_or(&t) {
         "BOOLEAN" => values.extend(["true", "false"]),
@@ -487,6 +502,33 @@ fn pool(ty: &str, scenario: Scenario) -> Vec<String> {
         _ => {}
     }
     cast(values.into_iter().map(String::from).collect())
+}
+
+/// The fields of a STRUCT's or the members of a UNION's type text, `name TYPE, …`: each name as
+/// written (quoted or not) and its type, split at the commas outside parentheses and quotes.
+fn members(inner: &str) -> Vec<(String, String)> {
+    let (mut out, mut depth, mut quoted, mut start) = (Vec::new(), 0usize, false, 0usize);
+    let mut push = |part: &str| {
+        let part = part.trim();
+        let end = if part.starts_with('"') { part[1..].find('"').map_or(part.len(), |i| i + 2) } else { part.find(' ').unwrap_or(part.len()) };
+        out.push((part[..end].to_string(), part[end..].trim().to_string()));
+    };
+    for (i, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '(' if !quoted => depth += 1,
+            ')' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if !inner[start..].trim().is_empty() {
+        push(&inner[start..]);
+    }
+    out
 }
 
 /// A value of the type no other row of the column holds, for a key column: the `n`th.
@@ -607,9 +649,12 @@ fn check(file: &Path, statements: &[(String, String, Value)], timeout_ms: u64, f
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     let mut problems = Vec::new();
     let mut notes = Vec::new();
-    for scenario in SCENARIOS {
+    // Every table empty too, where an aggregate's value over no rows and a LIMIT of 0 show.
+    for scenario in SCENARIOS.into_iter().chain([Scenario::Empty]) {
         let db = fresh(file)?;
-        notes.extend(seed(&db, scenario)?);
+        if scenario != Scenario::Empty {
+            notes.extend(seed(&db, scenario)?);
+        }
         for ((file_name, _, analysis), tally) in statements.iter().zip(tallies.iter_mut()) {
             let sql = analysis["rewritten"]["sql"].as_str().unwrap_or_default();
             let params = analysis["params"].as_array().cloned().unwrap_or_default();

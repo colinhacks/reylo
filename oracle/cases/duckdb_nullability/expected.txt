@@ -1,3 +1,4 @@
+array_to_string.sql: many () -> { joined: varchar?, n: bigint }
 columns.sql: many () -> { id: integer, name: varchar, email: varchar?, born: date? }
 expressions.sql: many () -> { next: integer, twice: integer, negative: integer, loud: varchar, contact: varchar, lowered: varchar, no_email: boolean, early: boolean, id_text: varchar, label: varchar }
 filtered.sql: many () -> { email: varchar, born: date }
@@ -15,6 +16,7 @@ not_not_is_null.sql: many () -> { born: date? }
 right_join.sql: many () -> { name: varchar?, title: varchar }
 star.sql: many () -> { id: integer, name: varchar, email: varchar?, team_id: integer?, born: date? }
 subquery.sql: many () -> { id: integer, n: varchar, e: varchar? }
+three_part.sql: many () -> { handle: varchar?, name: varchar }
 union.sql: many () -> { id: integer, name: varchar }
 union_null.sql: many () -> { id: integer, email: varchar? }
 with_query.sql: many () -> { a: integer, b: varchar? }

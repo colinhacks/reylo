@@ -20,6 +20,8 @@ export type EngineType =
   | { kind: "map"; key: EngineType; value: EngineType }
   /** A DuckDB `UNION`: one member, `{ tag, value }`, its value may be null. */
   | { kind: "union"; members: { name: string; type: EngineType; nullable: boolean }[] }
+  /** A DuckDB `TUPLE`, a struct whose fields have no names (`row(1, 'a')`): its values in order, each may be null. */
+  | { kind: "tuple"; items: EngineType[] }
   | { kind: "unknown" };
 
 /**

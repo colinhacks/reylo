@@ -12,7 +12,7 @@ description: How Reylo types SQL queries on DuckDB. The TypeScript type of each 
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
 | Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
-| Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after |
+| Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it |
 
 <Details summary="View the schema behind the examples" id="schema">
 
@@ -70,8 +70,10 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `JSON` | `unknown` | `{ a: [1, "x"] }` |
 | `T[]` (a `LIST`) and `T[n]` (an `ARRAY`) | `(T \| null)[]` | `["a", "b"]` |
 | `STRUCT(a T, …)` | `{ a: T \| null; … }` | `{ host: "h", pid: 7 }` |
+| A `STRUCT` without field names, as `(1, 'a')` or `row(…)` makes | `[T \| null, …]` | `[1, "a"]` |
 | `MAP(K, V)` | `{ key: K; value: V \| null }[]` | `[{ key: "k", value: 1 }]` |
 | `UNION(a T, …)` | `{ tag: "a"; value: T \| null } \| …` | `{ tag: "str", value: "s" }` |
+| `VARIANT` | `unknown` | the value it holds, in its own type's form: `42` |
 
 <Rules>
 
@@ -98,7 +100,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too, and a `STRUCT` whose fields have no names is a tuple of its values in order. DuckDB lets any field and any element be `NULL`, so each is typed `| null`.
 
 <Inferred>
 
@@ -117,7 +119,7 @@ A `JSON` column is the parsed value, typed `unknown`. A parameter cast to `json`
 
 ### Files
 
-A query can read Parquet, CSV and JSON files with `read_parquet`, `read_csv` and `read_json`. DuckDB reads a file's columns when it prepares the query, so the files, or a sample with the same columns, must exist wherever the type check runs, at the same paths. A relative path starts at your `package.json`.
+A query can read Parquet, CSV and JSON files with `read_parquet`, `read_csv` and `read_json`. DuckDB reads a file's columns when it prepares the query, so the files, or a sample with the same columns, must exist wherever the type check runs, at the same paths. A relative path starts at your `package.json` in the type check, and at your app's working directory when it runs.
 
 ```sql
 select level, count(*) as n
@@ -189,7 +191,7 @@ from users
 
 **Aggregates**
 
-A `count` is never null. Any other aggregate is null over no rows, and over a group's rows only where its argument is.
+A `count` is never null, but `count_if` is null over no rows. Any other aggregate is null over no rows, and over a group's rows only where its argument is.
 
 <Inferred>
 
@@ -222,13 +224,13 @@ Write parameters as `:name`, and pass `.run()` an object with those names, witho
 
 ### What a parameter takes
 
-A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query. A `BIGINT` or wider integer also takes a `number` or a string of digits, and a `STRUCT` an object of its fields.
+A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query. A `BIGINT` or wider integer also takes a `number` or a string of digits, and a `STRUCT` an object of its fields. A list takes no `null` element, so remove one before passing a list back in, and a `UNION` takes a member's value, not `null`.
 
 A fraction for an integer, such as `1.5` for an `INTEGER`, makes `.run()` throw before the query runs, where DuckDB would round it to 2.
 
 ### Parameters without a type
 
-DuckDB types a parameter from where it stands: compared with a column, written to one, or cast. Anywhere else, such as a bare `select :x`, cast it:
+DuckDB types a parameter from where it stands: compared with a column, written to one, or cast. Anywhere else, such as a bare `select :x` or `id + :n`, DuckDB can't type the query at all, and Reylo shows an error at the parameter. Cast it:
 
 <Inferred>
 

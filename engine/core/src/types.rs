@@ -59,6 +59,9 @@ pub enum Type {
     Map { key: Box<Type>, value: Box<Type> },
     /// A DuckDB `UNION`: one of its members, by tag, whose value may be NULL.
     Union { members: Vec<Field> },
+    /// A DuckDB `TUPLE`, a struct whose fields have no names (`row(1, 'a')`, `(1, 'a')`): its
+    /// values in order, each may be NULL.
+    Tuple { items: Vec<Type> },
     /// Nothing the engine derived.
     Unknown,
 }

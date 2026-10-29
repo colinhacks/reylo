@@ -112,6 +112,8 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": key.json_schema(opts), "value": nullable(value.json_schema(opts))}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
+            // A DuckDB tuple as its values in order.
+            Type::Tuple { items } => json!({"type": "array", "prefixItems": items.iter().map(|t| nullable(t.json_schema(opts))).collect::<Vec<_>>(), "items": false, "minItems": items.len()}),
             // A DuckDB union as its tag and its value.
             Type::Union { members } => json!({"anyOf": members.iter().map(|m| json!({"type": "object", "properties": {"tag": {"const": m.name}, "value": nullable(m.ty.json_schema(opts))}, "required": ["tag", "value"]})).collect::<Vec<_>>()}),
             // The values a CHECK's JSON Schema admits, as the engine reduced it; else any JSON,
