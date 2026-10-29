@@ -46,6 +46,8 @@
   "devDependencies": {
     "@bytecodealliance/jco": "1.39.0",
     "@bytecodealliance/preview2-shim": "0.30.0",
+    "@duckdb/node-api": "2.0.0-r.1",
+    "@reylosql/duckdb": "link:packages/duckdb",
     "@reylosql/mysql": "link:packages/mysql",
     "@reylosql/postgres": "link:packages/postgres",
     "@reylosql/sqlite": "link:packages/sqlite",
@@ -55,12 +57,14 @@
     "typescript": "^7.1.0-dev.20260918.1"
   },
   "peerDependencies": {
+    "@reylosql/duckdb": "0.6.0",
     "@reylosql/mysql": "0.6.0",
     "@reylosql/postgres": "0.6.0",
     "@reylosql/sqlite": "0.6.0",
     "slonik": ">=49.12.0"
   },
   "peerDependenciesMeta": {
+    "@reylosql/duckdb": { "optional": true },
     "@reylosql/mysql": { "optional": true },
     "@reylosql/postgres": { "optional": true },
     "@reylosql/sqlite": { "optional": true },

@@ -8,6 +8,7 @@
 import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
+import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
 import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
@@ -17,7 +18,7 @@ import type { Checks } from "./checks.ts";
 import type { Structured } from "./rows.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
 
-export type Dialect = "postgres" | "mysql" | "sqlite";
+export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
 /**
  * pg's Pool, Client and PoolClient; PGlite and its transactions; Neon's Pool and Client;
@@ -139,9 +140,11 @@ export type MysqlClient = MysqlExecuteClient | Mysql2CallbackClient | MariadbCli
 /** Every SQLite client `run` takes, or a transaction taken from one. */
 export type SqliteClient = SyncSqliteClient | DurableObjectSql | D1Client | LibsqlClient | TursoClient | Sqlite3Client | SqlitePromiseClient | BunSqlClient | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage | D1Client | LibsqlClient | BunSqlClient> | DrizzleSqliteTransaction;
 
+export type { DuckdbClient } from "./decode-duckdb.ts";
+
 // Each dialect's clients are one named union, so a hover over `run` reads
 // `run(client: PostgresClient, …)` rather than listing every client's shape.
-export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : SqliteClient;
+export type ClientFor<D extends Dialect> = D extends "postgres" ? PostgresClient : D extends "mysql" ? MysqlClient : D extends "duckdb" ? DuckdbClient : SqliteClient;
 
 /** The clients `runSync` takes: the synchronous SQLite drivers, and none for Postgres or MySQL. */
 export type SyncClientFor<D extends Dialect> = D extends "sqlite" ? SyncSqliteClient | DurableObjectSql | DrizzleDatabase<SyncSqliteClient | DurableObjectStorage> | DrizzleSyncSqliteTransaction : never;
@@ -265,11 +268,13 @@ function durableObjectValues(query: QueryModule, names: readonly string[], value
 // A SQLite client with prepare() whose statements answer at once. D1 (batch()), sqlite3 and
 // sqlite (all() on the database), libSQL (execute()), Bun.sql (unsafe()) and Turso's promise API
 // are asynchronous. Turso's compat Database has batch() as D1 does, and answers at once; its
-// maxWriteReplicationIndex(), which every Database of Turso's has, tells it from D1's.
+// maxWriteReplicationIndex(), which every Database of Turso's has, tells it from D1's. A DuckDB
+// connection has prepare() too, answering through a promise, and runAndReadAll() beside it.
 function isSyncSqlite(c: AnyClient | null | undefined): boolean {
   return (
     c != null &&
     typeof c.prepare === "function" &&
+    typeof c.runAndReadAll !== "function" &&
     (typeof c.batch !== "function" || typeof c.maxWriteReplicationIndex === "function") &&
     typeof c.all !== "function" &&
     typeof c.execute !== "function" &&
@@ -306,6 +311,8 @@ function slonikParam(v: unknown): unknown {
 
 async function executeAsync(c: AnyClient | null | undefined, query: QueryModule, params: ParamsInput): Promise<unknown[]> {
   if (c == null || (typeof c !== "object" && typeof c !== "function")) throw unsupported(c, query.dialect);
+  // A DuckDB connection has prepare() as SQLite's drivers do, and runs no other database's statement.
+  if (query.dialect !== "duckdb" && isDuckdb(c)) throw unsupported(c, query.dialect);
   checkParams(query, params);
   // The catalog facts the statement relied on, read again through the same client.
   if (query.fresh && due(query)) {
@@ -375,6 +382,11 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         // mysql2 has query() beside execute(); PlanetScale's Connection, Client and transaction do not.
         return typeof m.query === "function" ? await mysql2(m, text, values, query.columns) : await planetscale(m, text, values, query.columns);
       }
+      break;
+    }
+    case "duckdb": {
+      // @duckdb/node-api's DuckDBConnection: each value given its kind by the result's own types (decode-duckdb.ts).
+      if (isDuckdb(c)) return await runDuckdb(c as unknown as DuckdbClient, text, values, names.map((_, i) => type(i)), query.columns);
       break;
     }
     case "sqlite": {
@@ -633,6 +645,7 @@ function checkBinary(type: EngineType | undefined, name: string, v: unknown): vo
 // of those texts.
 function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name: string): unknown {
   if (type === undefined || v == null) return v;
+  if (dialect === "duckdb") return encodeDuckdb(type, v, name);
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
   if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
   if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !isVector(type.of) ? type : type.of, e, dialect, name)) : v;
@@ -724,17 +737,18 @@ function dateText(d: Date): string {
 export function compile(query: QueryModule): { text: string; order: readonly string[] } {
   if (query.text && query.order) return { text: query.text, order: query.order };
   const { placeholders } = lexPlaceholders(query.sql, query.dialect);
-  const postgres = query.dialect === "postgres";
+  // Postgres and DuckDB number each distinct parameter once.
+  const numbered = query.dialect === "postgres" || query.dialect === "duckdb";
   let text = "";
   let last = 0;
   const order: string[] = [];
   for (const p of placeholders) {
     const index = indexOf(query, p);
-    text += query.sql.slice(last, p.start) + (postgres ? `$${index + 1}` : "?");
+    text += query.sql.slice(last, p.start) + (numbered ? `$${index + 1}` : "?");
     order.push(p.name);
     last = p.end;
   }
-  return { text: text + query.sql.slice(last), order: postgres ? query.params : order };
+  return { text: text + query.sql.slice(last), order: numbered ? query.params : order };
 }
 
 function indexOf(query: QueryModule, p: { name: string; start: number; end: number }) {
@@ -748,6 +762,7 @@ const accepted: Record<Dialect, string> = {
   postgres: "query(text, values) as on pg, PGlite, Neon and pg-promise; unsafe(text, values) as on postgres.js and Bun.sql; Neon's neon() function; a Slonik pool, connection or transaction; or a Drizzle database over one of them",
   mysql: "execute(text, values) as on mysql2 and PlanetScale; query(text, values) as on mariadb's pool or connection, from its promise or callback API; unsafe(text, values) as on Bun.sql; a mysql2 callback pool or connection; or a Drizzle database over one of them",
   sqlite: "prepare(sql) as on better-sqlite3, node:sqlite, bun:sqlite, Turso's @tursodatabase/database and Cloudflare D1; exec(sql, ...values) as on a Durable Object's ctx.storage.sql; execute({ sql, args }) as on @libsql/client; all(sql, params) as on sqlite3 and sqlite; unsafe(text, values) as on Bun.sql; or a Drizzle database over one of them",
+  duckdb: "runAndReadAll(sql, values) as on @duckdb/node-api's DuckDBConnection",
 };
 
 function unsupported(c: unknown, dialect: Dialect): TypeError {
@@ -769,7 +784,9 @@ function unsupported(c: unknown, dialect: Dialect): TypeError {
   const o = c as { db?: { prepare?: unknown }; selectFrom?: unknown; executeQuery?: unknown; isTransaction?: unknown; $queryRawUnsafe?: unknown; $transaction?: unknown } | null;
   const inTx = " and does not hand out its transaction's connection: take the transaction from the driver's client instead.";
   const hint =
-    typeof o?.db?.prepare === "function"
+    dialect !== "duckdb" && isDuckdb(c as AnyClient)
+      ? ` It is a DuckDB connection, and the statement is typed for ${dialect}: set the project's URL to the DuckDB database (duckdb:./app.duckdb).`
+      : typeof o?.db?.prepare === "function"
       ? " A tag store is not a client: pass its database, store.db."
       : typeof o?.selectFrom === "function" && typeof o.executeQuery === "function"
         ? ` Kysely decodes the values of its queries itself${o.isTransaction === true ? inTx : ": pass the pool or database its dialect was made with."}`

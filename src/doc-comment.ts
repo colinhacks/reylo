@@ -40,7 +40,7 @@ export function leadingComment(sql: string, dialect?: Dialect): Leading {
       let j = at + 2;
       while (j < sql.length && depth > 0) {
         if (sql.startsWith("*/", j)) { depth--; j += 2; }
-        else if (dialect === "postgres" && sql.startsWith("/*", j)) { depth++; j += 2; }
+        else if ((dialect === "postgres" || dialect === "duckdb") && sql.startsWith("/*", j)) { depth++; j += 2; }
         else j++;
       }
       const text = sql.slice(at + 2, depth === 0 ? j - 2 : sql.length);

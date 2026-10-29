@@ -22,7 +22,7 @@
 # cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
 set -euo pipefail
 cd "$(dirname "$0")"
-DATABASES=(postgres sqlite mysql)
+DATABASES=(postgres sqlite mysql duckdb)
 
 SQLITE_ZIP="sqlite-amalgamation-3530400.zip"
 SQLITE_URL="https://sqlite.org/2026/$SQLITE_ZIP"

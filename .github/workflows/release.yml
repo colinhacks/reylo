@@ -6,7 +6,7 @@ on:
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
-  # One run, two release jobs. `stage` puts the four versions in npm's staged queue: the three engines, then reylo, which names them as peers at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
+  # One run, two release jobs. `stage` puts the five versions in npm's staged queue: the four engines, then reylo, which names them as peers at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
@@ -95,7 +95,7 @@ jobs:
       # The docs site's toolchain, which builds reylo play's page into the reylo package.
       - run: nub install --frozen-lockfile
         working-directory: site
-      # dist/reylo, dist/postgres, dist/sqlite and dist/mysql; the build refuses an engine whose version is not reylo's
+      # dist/reylo, dist/postgres, dist/sqlite, dist/mysql and dist/duckdb; the build refuses an engine whose version is not reylo's
       - run: nub run build
 
       - name: Resolve the version
@@ -107,7 +107,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for dir in dist/postgres dist/sqlite dist/mysql dist/reylo; do
+          for dir in dist/postgres dist/sqlite dist/mysql dist/duckdb dist/reylo; do
             bash .github/scripts/npm-stage-publish.sh "$dir" --provenance --access public
           done
 
@@ -117,7 +117,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           served=true
-          for name in reylo @reylosql%2fpostgres @reylosql%2fsqlite @reylosql%2fmysql; do
+          for name in reylo @reylosql%2fpostgres @reylosql%2fsqlite @reylosql%2fmysql @reylosql%2fduckdb; do
             curl -sf "https://registry.npmjs.org/$name/$VERSION" > /dev/null || served=false
           done
           echo "served=$served" >> "$GITHUB_OUTPUT"
@@ -134,16 +134,16 @@ jobs:
           {
             echo "## Staged on npm, waiting for approval"
             echo
-            for name in @reylosql/postgres @reylosql/sqlite @reylosql/mysql reylo; do echo "- \`$name@$VERSION\`"; done
+            for name in @reylosql/postgres @reylosql/sqlite @reylosql/mysql @reylosql/duckdb reylo; do echo "- \`$name@$VERSION\`"; done
             echo
             echo 'No version is installable until a maintainer approves it with 2FA. This run is now held on the `release-approval` environment, with no runner, for up to 30 days. It resumes when that deployment is approved, and `finish` then waits for npm to serve every version before it tags and releases.'
             echo
             echo '```'
-            echo "stager   # in your own terminal: a, Enter, then ONE authenticator code approves the four versions and resumes this run"
+            echo "stager   # in your own terminal: a, Enter, then ONE authenticator code approves the five versions and resumes this run"
             echo "stager reject 'reylo@$VERSION' '@reylosql/*@$VERSION'    # drop the staged versions and fail this run"
             echo '```'
             echo
-            echo "Without stager: read the stage ids with \`npm stage list reylo\` and \`npm stage list @reylosql/postgres\` (and sqlite, mysql), then approve each with \`npm stage approve <id>\`, engines first; \`pnpm stage approve\` takes them in one interactive picker under a single one-time password, as does the Staged Packages tab on npmjs.com. Then approve the pending \`release-approval\` deployment on $RUN_URL."
+            echo "Without stager: read the stage ids with \`npm stage list reylo\` and \`npm stage list @reylosql/postgres\` (and sqlite, mysql, duckdb), then approve each with \`npm stage approve <id>\`, engines first; \`pnpm stage approve\` takes them in one interactive picker under a single one-time password, as does the Staged Packages tab on npmjs.com. Then approve the pending \`release-approval\` deployment on $RUN_URL."
             echo
             echo "## Release notes"
             echo
@@ -183,6 +183,7 @@ jobs:
           wait_for "@reylosql/postgres@$VERSION" "https://registry.npmjs.org/@reylosql%2fpostgres/$VERSION"
           wait_for "@reylosql/sqlite@$VERSION" "https://registry.npmjs.org/@reylosql%2fsqlite/$VERSION"
           wait_for "@reylosql/mysql@$VERSION" "https://registry.npmjs.org/@reylosql%2fmysql/$VERSION"
+          wait_for "@reylosql/duckdb@$VERSION" "https://registry.npmjs.org/@reylosql%2fduckdb/$VERSION"
           wait_for "reylo@$VERSION" "https://registry.npmjs.org/reylo/$VERSION"
 
       # the public repository answers `git ls-remote` without a credential, so none is kept on disk

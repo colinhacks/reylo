@@ -9,6 +9,11 @@ description = "Runs the engine against live databases: each case's statements ar
 name = "reylo-oracle"
 path = "src/main.rs"
 
+# `duckdb` runs the DuckDB cases, on DuckDB built from its sources (a few minutes), so no other
+# build of the workspace compiles it: `cargo run -p reylo-oracle --features duckdb`.
+[features]
+duckdb = ["dep:libduckdb-sys", "reylo-engine/duckdb"]
+
 [dependencies]
 reylo-engine-core = { path = "../engine/core" }
 reylo-engine = { path = "../engine/facade", features = ["tokio-postgres", "rusqlite", "mysql_async"] }
@@ -20,3 +25,4 @@ rusqlite = { version = "0.39", features = ["bundled", "column_decltype", "column
 # Pure Rust (`minimal-rust`: no TLS, flate2's Rust backend): its `Statement` carries the prepare's
 # column and parameter definitions whole, type code, flags and character set, as mysql2 reports them.
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust"] }
+libduckdb-sys = { version = "=1.20000.1", default-features = false, features = ["bundled", "capi-v1"], optional = true }

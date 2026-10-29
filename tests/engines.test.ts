@@ -36,11 +36,12 @@ test("a project with no engine installed is told which package its database need
   assert.equal(enginePath("postgres", root, nowhere), undefined);
   await assert.rejects(engine("postgres", root, nowhere), { name: "MissingEngine", message: "postgres statements need @reylosql/postgres: npm install -D @reylosql/postgres" });
   await assert.rejects(engine("mysql", root, nowhere), { message: "mysql statements need @reylosql/mysql: npm install -D @reylosql/mysql" });
+  await assert.rejects(engine("duckdb", root, nowhere), { message: "duckdb statements need @reylosql/duckdb: npm install -D @reylosql/duckdb" });
   // Not even the project file can be read without one.
   const file = project({}, { ".reylo.yaml": "direct_url: postgres://localhost/app\n" });
   const reader = await anyEngine(file, nowhere);
   assert.ok(reader instanceof MissingEngine);
-  assert.match(resolveProject(reader, file, {}).error!, /^\.reylo\.yaml: reylo reads the project file with a database's engine, and none is installed: npm install -D @reylosql\/postgres, @reylosql\/mysql or @reylosql\/sqlite/);
+  assert.match(resolveProject(reader, file, {}).error!, /^\.reylo\.yaml: reylo reads the project file with a database's engine, and none is installed: npm install -D @reylosql\/postgres, @reylosql\/mysql, @reylosql\/sqlite or @reylosql\/duckdb/);
 });
 
 test("with only SQLite's engine installed, a Postgres URL needs Postgres's, and SQLite's reads the project file", async () => {

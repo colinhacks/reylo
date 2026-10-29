@@ -12,7 +12,7 @@ import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, z
 
 export { describe, zoned } from "./values.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 export type RowsType = Extract<EngineType, { kind: "rows" }>;
 export type RowField = RowsType["fields"][number];
 

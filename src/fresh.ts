@@ -67,7 +67,7 @@ const COLUMNS = ["fresh_table", "fresh_column", "fresh_type", "fresh_not_null", 
  * engine gives them as declared, so a build on one and a run on the other saw the same schema. A
  * Postgres or MySQL type is compared exactly: a quoted Postgres type name keeps its case.
  */
-export function differences(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite"): string[] | undefined {
+export function differences(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "duckdb"): string[] | undefined {
   const now = new Map<string, string[]>();
   const width = fresh.rows[0]?.length === 6 ? 6 : 5;
   const columns = COLUMNS.slice(0, width);

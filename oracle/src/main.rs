@@ -11,7 +11,8 @@
 //! answers the engine and how its runs are isolated is in `mysql.rs`. A case with a `min_version`
 //! file (a `server_version_num`, such as `180000`, or for MySQL the version as one number, such
 //! as `80400`) is skipped on an older server. A MySQL case's `sql_mode` file sets its sessions'
-//! `sql_mode`.
+//! `sql_mode`. A case whose `dialect` file says `duckdb` runs in a fresh DuckDB file, in an
+//! oracle built with the `duckdb` feature (`duckdb.rs`).
 //!
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:55432/postgres oracle/cases
 //!   cargo run -p reylo-oracle -- --mysql-url mysql://root@127.0.0.1:33411/mysql oracle/cases/mysql_types
@@ -47,6 +48,8 @@
 //! narrowing lists. A case's `errors.txt`, where it has one, holds each statement's narrowing, and
 //! is compared and blessed like `expected.txt`.
 
+#[cfg(feature = "duckdb")]
+mod duckdb;
 mod errors;
 mod mysql;
 mod seed;
@@ -116,6 +119,12 @@ async fn main() -> ExitCode {
         let min = fs::read_to_string(case.join("min_version")).ok().and_then(|s| s.trim().parse::<i32>().ok()).unwrap_or(0);
         let outcome = if dialect == "sqlite" {
             run_sqlite(case, timeout_ms, &given, &mut dumped)
+        } else if dialect == "duckdb" {
+            #[cfg(feature = "duckdb")]
+            let outcome = duckdb::run(case, timeout_ms, &given, &mut dumped, statements(case));
+            #[cfg(not(feature = "duckdb"))]
+            let outcome: Result<(Vec<String>, Vec<String>), String> = Err("a DuckDB case runs in an oracle built with DuckDB: cargo run -p reylo-oracle --features duckdb".into());
+            outcome
         } else if dialect == "mysql" {
             if mysql_server.is_none() {
                 let Some(url) = mysql_url.as_deref() else {
@@ -463,6 +472,10 @@ fn render(ty: &Value) -> String {
             Some(schema) => format!("json {schema}"),
             None => "json".into(),
         },
+        // DuckDB's: a struct's fields each may be NULL, a map's key and value, a union's members.
+        Some("struct") => format!("struct{}", fields(&ty["fields"])),
+        Some("map") => format!("map({}, {})", render(&ty["key"]), render(&ty["value"])),
+        Some("union") => format!("union{}", fields(&ty["members"])),
         Some("unknown") => "unknown".into(),
         _ => ty.to_string(),
     }

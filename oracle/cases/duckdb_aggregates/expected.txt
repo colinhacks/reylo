@@ -1,0 +1,10 @@
+filtered_aggregate.sql: many () -> { customer: varchar, big: decimal? }
+group_all.sql: many () -> { customer: varchar, revenue: decimal }
+group_all_constant.sql: one () -> { scope: varchar, n: bigint, revenue: decimal? }
+group_all_totals.sql: one () -> { revenue: decimal?, last_customer: varchar? }
+grouped.sql: many () -> { region: varchar?, n: bigint, revenue: decimal, last_note: varchar?, first_customer: varchar, customers: varchar[] }
+having.sql: maybeOne () -> { n: bigint }
+qualify.sql: many () -> { customer: varchar, total: decimal }
+rollup.sql: many () -> { customer: varchar?, region: varchar?, revenue: decimal? }
+totals.sql: one () -> { n: bigint, noted: bigint, revenue: decimal?, last_customer: varchar?, mean: double? }
+windows.sql: many () -> { id: integer, position: bigint, rank_in_region: bigint, previous_two: decimal?, previous_customer: varchar? }

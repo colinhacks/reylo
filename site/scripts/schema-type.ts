@@ -10,7 +10,7 @@
 // error: database types belong to the statement's column list and to `row` and `rows` descriptors
 // (wiki/structured-params.md).
 
-export type Dialect = 'postgres' | 'mysql' | 'sqlite';
+export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'duckdb';
 type Schema = string | boolean | { [key: string]: unknown };
 
 const LEAVES: Record<string, string> = { string: 'string', number: 'number', integer: 'number', boolean: 'boolean', null: 'null' };

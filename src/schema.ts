@@ -10,7 +10,7 @@
 import type { EngineType, JsonSchema } from "./engine-type.ts";
 import { scalarKind, type ScalarKind } from "./values.ts";
 
-type Dialect = "postgres" | "mysql" | "sqlite";
+type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 type Schema = { [key: string]: unknown };
 type Analysis = {
   params: readonly { name: string; type: EngineType; nullable: boolean; schema?: JsonSchema }[];
@@ -77,6 +77,12 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
       // pgvector has no cast to JSON, so a vector inside a document is its text.
       case "vector": case "halfvec": return { type: "string" };
     }
+  } else if (input && dialect === "duckdb") {
+    // What DuckDB binds: a 64-bit or wider integer as a number, a BigInt or its digits; a decimal as its digits.
+    const kind = scalarKind(name, dialect);
+    if (kind === "int8") return { type: ["integer", "string"], format: "int64" };
+    if (kind === "decimal") return { type: "string", format: "decimal" };
+    if (kind === "timestamp") return { type: "string", format: "date-time" };
   } else if (input) {
     // What every driver binds: a 64-bit integer as a number, a BigInt or its digits; a decimal as its digits.
     switch (name) {
@@ -94,7 +100,7 @@ function scalar(name: string, dialect: Dialect, inJson: boolean, input: boolean)
     case "uuid": return { type: "string", format: "uuid" };
     case "time": return { type: "string", format: "time" };
     case "unknown": return {};
-    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : "pg"} type ${name}` };
+    default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "duckdb" ? "DuckDB" : "pg"} type ${name}` };
   }
 }
 
@@ -103,8 +109,8 @@ function kindSchema(kind: ScalarKind, name: string, dialect: Dialect): Schema {
   switch (kind) {
     case "bool": return { type: "boolean" };
     // A SQLite INTEGER is 64 bits wide, and so is an oid's range past int4's.
-    case "int": return name === "oid" || dialect === "sqlite" ? { type: "integer", format: "int64" } : { type: "integer", format: "int32" };
-    case "float": return name === "float4" ? { type: "number", format: "float" } : { type: "number", format: "double" };
+    case "int": return name === "oid" || dialect === "sqlite" || name === "uinteger" ? { type: "integer", format: "int64" } : { type: "integer", format: "int32" };
+    case "float": return name === "float4" || (dialect === "duckdb" && name === "float") ? { type: "number", format: "float" } : { type: "number", format: "double" };
     // A BigInt, as the JSON integer it is.
     case "int8": return { type: "integer", format: "int64" };
     case "decimal": return { type: "string", format: "decimal" };
@@ -161,6 +167,10 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       const row = object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(t.fields[i]!.schema ?? typeSchema(t.fields[i]!.type, dialect, true, false, true)), (i) => t.fields[i]!.optional, true);
       return t.one ? row : { type: "array", items: row };
     }
+    // A DuckDB struct's fields, map's entries and union's value stand as a row's values do, each may be null.
+    case "struct": return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input)));
+    case "map": return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value, dialect, input)))) };
+    case "union": return { anyOf: t.members.map((m) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: m.name } : nullable(typeSchema(m.type, dialect, input))))) };
     case "unknown": return {};
   }
 }

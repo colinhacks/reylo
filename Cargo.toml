@@ -1,5 +1,6 @@
 # One Cargo workspace over the engine (`engine/`: `reylo-engine-core`, what every database shares;
-# `reylo-engine-postgres`, `reylo-engine-sqlite` and `reylo-engine-mysql`, one per database;
+# `reylo-engine-postgres`, `reylo-engine-sqlite`, `reylo-engine-mysql` and `reylo-engine-duckdb`,
+# one per database;
 # `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, the facade a Rust host links;
 # and `reylo-engine-native`, the program each database's WebAssembly component is built from) and the
 # soundness oracle (`oracle/`). One lockfile, one `target/`. The component crate, `engine/wasip2`, is
@@ -21,6 +22,7 @@ members = [
   "engine/postgres",
   "engine/sqlite",
   "engine/mysql",
+  "engine/duckdb",
   "oracle",
 ]
 

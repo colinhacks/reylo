@@ -18,6 +18,8 @@ type Program = reylo_engine_native::postgres::Postgres;
 type Program = reylo_engine_native::mysql::Mysql;
 #[cfg(all(feature = "sqlite", not(feature = "postgres"), not(feature = "mysql")))]
 type Program = reylo_engine_native::sqlite::Sqlite;
+#[cfg(all(feature = "duckdb", not(feature = "postgres"), not(feature = "mysql"), not(feature = "sqlite")))]
+type Program = reylo_engine_native::duckdb::Duckdb;
 
 wit_bindgen::generate!({
     inline: r#"

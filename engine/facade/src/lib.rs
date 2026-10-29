@@ -5,7 +5,7 @@
 //! opens a connection. It replays an analysis, naming the statements it needs described and the
 //! catalog queries it needs run, and a host answers them ([`replay`]).
 //!
-//! Each database's engine is behind a feature (`postgres`, `sqlite`, `mysql`). A client feature
+//! Each database's engine is behind a feature (`postgres`, `sqlite`, `mysql`, `duckdb`). A client feature
 //! (`tokio-postgres`, `rusqlite`, `mysql_async`) adds the answers over that client and an
 //! `analyze` that runs a statement's whole replay on it ([`clients`]). A host that answers the
 //! engine its own way implements [`Answerer`] or [`AsyncAnswerer`] and calls [`replay::run`] or
@@ -34,6 +34,10 @@ pub use reylo_engine_sqlite as sqlite;
 /// The MySQL engine: the server's prepare metadata, read with a parse of the statement.
 #[cfg(feature = "mysql")]
 pub use reylo_engine_mysql as mysql;
+/// The DuckDB engine: the types DuckDB's prepared statement reports, read with a parse of the
+/// statement. Its host is the app's own DuckDB, so it comes with no client here.
+#[cfg(feature = "duckdb")]
+pub use reylo_engine_duckdb as duckdb;
 
 #[cfg(any(feature = "tokio-postgres", feature = "rusqlite", feature = "mysql_async"))]
 pub mod clients;

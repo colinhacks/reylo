@@ -1,0 +1,28 @@
+{
+  "name": "@reylosql/duckdb",
+  "version": "0.6.0",
+  "private": true,
+  "description": "Reylo's analysis engine for DuckDB: the WebAssembly artifact and the build steps reylo loads to type .sql files against a DuckDB database, through the app's own @duckdb/node-api. Install it beside reylo, at reylo's version.",
+  "license": "MIT",
+  "author": "Colin McDonnell",
+  "homepage": "https://reylo.dev/duckdb",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/colinhacks/reylo.git",
+    "directory": "packages/duckdb"
+  },
+  "bugs": "https://github.com/colinhacks/reylo/issues",
+  "type": "module",
+  "exports": {
+    "./engine/*": "./engine/*",
+    "./tooling": "./tooling.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "engine",
+    "tooling.js",
+    "engine-worker.js",
+    "worker-thread.bundle.js",
+    "d1-proxy.js"
+  ]
+}

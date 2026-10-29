@@ -1,0 +1,20 @@
+columns.sql: many () -> { id: integer, name: varchar, email: varchar?, born: date? }
+expressions.sql: many () -> { next: integer, twice: integer, negative: integer, loud: varchar, contact: varchar, lowered: varchar, no_email: boolean, early: boolean, id_text: varchar, label: varchar }
+filtered.sql: many () -> { email: varchar, born: date }
+from_first.sql: many () -> { name: varchar, email: varchar? }
+full_join.sql: many () -> { user_id: integer?, team_id: integer? }
+functions.sql: many () -> { days: bigint?, bucket: bigint?, half: bigint, names: map(integer, varchar) }
+left_join.sql: many () -> { name: varchar, title: varchar?, budget: decimal? }
+left_join_matched.sql: many () -> { name: varchar, title: varchar }
+literals.sql: one () -> { one: integer, letter: varchar, list: integer[], record: struct{ k: integer? }, nothing: unknown?, at: timestamptz, today: date }
+maybe_null.sql: many () -> { half: double?, whole: integer?, odd: integer?, numeric_name: integer?, birth_year: bigint?, late_name: varchar?, shouting: varchar?, top_team: integer? }
+not_between.sql: many () -> { budget: decimal? }
+not_bounds.sql: many () -> { budget: decimal? }
+not_is_not_null.sql: many () -> { email: varchar? }
+not_not_is_null.sql: many () -> { born: date? }
+right_join.sql: many () -> { name: varchar?, title: varchar }
+star.sql: many () -> { id: integer, name: varchar, email: varchar?, team_id: integer?, born: date? }
+subquery.sql: many () -> { id: integer, n: varchar, e: varchar? }
+union.sql: many () -> { id: integer, name: varchar }
+union_null.sql: many () -> { id: integer, email: varchar? }
+with_query.sql: many () -> { a: integer, b: varchar? }

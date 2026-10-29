@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@bytecodealliance/preview2-shim": "0.30.0",
+    "@duckdb/node-api": "2.0.0-r.1",
     "@cloudflare/workers-types": "5.20260929.1",
     "@electric-sql/pglite": "0.5.11",
     "@libsql/client": "0.18.0",

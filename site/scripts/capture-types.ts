@@ -9,7 +9,7 @@
 // For each page and dialect it builds the page's schema (the `schema.sql` blocks, one per
 // dialect, in the accordion near the top) in a scratch database: Postgres and MySQL
 // `reylo_capture` (REYLO_CAPTURE_POSTGRES and REYLO_CAPTURE_MYSQL name others; the database is
-// dropped and made again, so its name must start with reylo_capture), SQLite a temporary file. It
+// dropped and made again, so its name must start with reylo_capture), SQLite and DuckDB a temporary file. It
 // compiles the syntax the engine does not build yet (typed JSON parameters, `::` on MySQL and
 // SQLite), has the loader's own Session analyze each statement through the dialect's driver, and
 // renders the module exactly as src/mapper.ts does, with each typed JSON parameter's type computed
@@ -38,7 +38,7 @@ import { schemaType } from './schema-type.ts';
 import { openMapper, positionOf } from './mapper-diagnostics.ts';
 
 const site = path.resolve(import.meta.dirname, '..');
-const URLS: Record<Exclude<Dialect, 'sqlite'>, string> = {
+const URLS: Record<Exclude<Dialect, 'sqlite' | 'duckdb'>, string> = {
   postgres: process.env.REYLO_CAPTURE_POSTGRES ?? 'postgres://postgres@localhost:54329/reylo_capture',
   mysql: process.env.REYLO_CAPTURE_MYSQL ?? 'mysql://root@127.0.0.1:54336/reylo_capture',
 };
@@ -49,9 +49,10 @@ const cardUrl = (url: string) => {
   return u.href;
 };
 // The driver each scratch project names, whose defaults the types follow, as for a project with
-// that driver: postgres.js, mysql2, and node:sqlite (no package).
-const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined };
-const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite'];
+// that driver: postgres.js, mysql2, node:sqlite (no package), and @duckdb/node-api, on which DuckDB's
+// statements are typed.
+const DRIVER: Record<Dialect, string | undefined> = { postgres: 'postgres', mysql: 'mysql2', sqlite: undefined, duckdb: '@duckdb/node-api' };
+const ORDER: Dialect[] = ['postgres', 'mysql', 'sqlite', 'duckdb'];
 
 // ---- Arguments ----
 
@@ -64,7 +65,7 @@ for (let i = 0; i < args.length; i++) {
   const schema = /^--schema(?:=(.*))?$/.exec(arg);
   if (schema) {
     const value = schema[1] ?? args[++i];
-    const m = /^(postgres|mysql|sqlite)=(.+)$/.exec(value ?? '');
+    const m = /^(postgres|mysql|sqlite|duckdb)=(.+)$/.exec(value ?? '');
     if (!m) fail(`--schema takes <dialect>=<file>, as in --schema mysql=schema.sql; got ${value ?? 'nothing'}`);
     schemaFiles[m[1] as Dialect] = readFileSync(path.resolve(m[2]!), 'utf8');
   } else if (arg.startsWith('-')) fail(`unknown option ${arg}`);
@@ -220,6 +221,19 @@ async function buildMysql(schema: string, url = URLS.mysql): Promise<string> {
   return url;
 }
 
+async function buildDuckdb(dir: string, schema: string): Promise<string> {
+  const { DuckDBInstance } = await import('@duckdb/node-api');
+  const db = await DuckDBInstance.create(path.join(dir, 'capture.duckdb'));
+  const c = await db.connect();
+  try {
+    await c.run(schema);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+  return 'duckdb:./capture.duckdb';
+}
+
 function buildSqlite(dir: string, schema: string): string {
   const db = new DatabaseSync(path.join(dir, 'capture.db'));
   try {
@@ -322,7 +336,7 @@ try {
       const dir = project(root, dialect);
       let url: string;
       try {
-        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : buildSqlite(dir, schema);
+        url = dialect === 'postgres' ? await buildPostgres(schema) : dialect === 'mysql' ? await buildMysql(schema) : dialect === 'duckdb' ? await buildDuckdb(dir, schema) : buildSqlite(dir, schema);
       } catch (e) {
         errors.push(`${shown}: the ${DIALECT_NAME[dialect]} ${SCHEMA_FILE} fails: ${(e as Error).message}`);
         continue;
@@ -372,7 +386,7 @@ try {
         const own = project(root, dialect, `${dialect}-card-${i}`);
         let cardDb: string;
         try {
-          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : buildSqlite(own, block.schema!);
+          cardDb = dialect === 'postgres' ? await buildPostgres(block.schema!, cardUrl(URLS.postgres)) : dialect === 'mysql' ? await buildMysql(block.schema!, cardUrl(URLS.mysql)) : dialect === 'duckdb' ? await buildDuckdb(own, block.schema!) : buildSqlite(own, block.schema!);
         } catch (e) {
           report(block, `the card's schema fails: ${(e as Error).message}`);
           continue;
@@ -397,7 +411,7 @@ function indent(text: string) {
 /** The module's parameters, row and row count on one line. */
 function summary(module: string): string {
   const m = /^declare const query: Query<(.*)> & \{$/m.exec(module);
-  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite)", QueryError$/, '') : module;
+  return m ? m[1]!.replace(/, "(postgres|mysql|sqlite|duckdb)", QueryError$/, '') : module;
 }
 
 for (const w of warnings) console.warn(`warning: ${w}`);
