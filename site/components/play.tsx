@@ -1,5 +1,5 @@
 import { useTheme } from 'fumadocs-ui/provider/base';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { githubUrl } from '@/lib/layout.shared';
 import { REYLO_API } from '@/lib/live/api-docs';
 import { PlayApp, type Channel, type PlayData } from '@/lib/live/app';
@@ -11,7 +11,9 @@ const labels = { loading: 'Starting Postgres 18…', failed: 'Postgres could not
 
 
 export function Playground({ data }: { data: PlayData }) {
+  // The API's example answer as the build analyzed it: the dialog shows it without asking a function that may be cold.
+  const api = useMemo(() => ({ ...REYLO_API, ...(data.apiAnswer ? { answer: data.apiAnswer } : {}) }), [data]);
   const { resolvedTheme, setTheme } = useTheme();
   const connect = useCallback(() => new Worker(new URL('../lib/live/worker.ts', import.meta.url), { type: 'module' }) as unknown as Channel, []);
-  return <PlayApp data={data} connect={connect} theme={{ resolved: resolvedTheme, set: setTheme }} labels={labels} home="/" github={githubUrl} api={REYLO_API} />;
+  return <PlayApp data={data} connect={connect} theme={{ resolved: resolvedTheme, set: setTheme }} labels={labels} home="/" github={githubUrl} api={api} />;
 }
