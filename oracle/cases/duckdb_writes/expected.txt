@@ -9,3 +9,5 @@ insert_select.sql: many (tag: varchar) -> { id: integer, body: varchar }
 insert_update_where.sql: maybeOne (id: integer, body: varchar) -> { id: integer }
 update.sql: none (tag: varchar?, id: integer) -> {  }
 update_returning.sql: maybeOne (body: varchar, id: integer) -> { id: integer, body: varchar, tag: varchar? }
+with_insert.sql: none () -> {  }
+with_insert_returning.sql: many () -> { id: integer, body: varchar, tag: varchar? }

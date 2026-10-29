@@ -50,6 +50,8 @@
 
 #[cfg(feature = "duckdb")]
 mod duckdb;
+#[cfg(feature = "duckdb")]
+mod sqllogictest;
 mod errors;
 mod mysql;
 mod seed;
@@ -69,6 +71,7 @@ async fn main() -> ExitCode {
     let mut bless = false;
     let mut keep = false;
     let mut strict_coverage = false;
+    let mut sqllogictest = false;
     let mut timeout_ms: u64 = 5000;
     let mut given = Map::new();
     let mut dump: Option<PathBuf> = None;
@@ -81,6 +84,7 @@ async fn main() -> ExitCode {
             "--bless" => bless = true,
             "--keep" => keep = true,
             "--strict-coverage" => strict_coverage = true,
+            "--sqllogictest" => sqllogictest = true,
             "--timeout" => match args.next().and_then(|ms| ms.parse::<u64>().ok()).filter(|ms| *ms > 0) {
                 Some(ms) => timeout_ms = ms,
                 None => {
@@ -100,6 +104,16 @@ async fn main() -> ExitCode {
                 }
             }
             _ => paths.push(PathBuf::from(arg)),
+        }
+    }
+    // DuckDB's own test suite, replayed: `sqllogictest.rs`.
+    if sqllogictest {
+        #[cfg(feature = "duckdb")]
+        return if sqllogictest::run(&paths, timeout_ms) { ExitCode::SUCCESS } else { ExitCode::FAILURE };
+        #[cfg(not(feature = "duckdb"))]
+        {
+            eprintln!("--sqllogictest runs DuckDB's test files, in an oracle built with DuckDB: --features duckdb");
+            return ExitCode::from(2);
         }
     }
     let cases = cases(&paths);
@@ -476,6 +490,7 @@ fn render(ty: &Value) -> String {
         Some("struct") => format!("struct{}", fields(&ty["fields"])),
         Some("map") => format!("map({}, {})", render(&ty["key"]), render(&ty["value"])),
         Some("union") => format!("union{}", fields(&ty["members"])),
+        Some("tuple") => format!("({})", ty["items"].as_array().into_iter().flatten().map(|t| format!("{}?", render(t))).collect::<Vec<_>>().join(", ")),
         Some("unknown") => "unknown".into(),
         _ => ty.to_string(),
     }

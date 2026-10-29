@@ -169,6 +169,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "struct":
     case "map":
     case "union":
+    case "tuple":
     case "unknown":
       return "unknown";
   }

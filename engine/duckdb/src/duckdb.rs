@@ -15,6 +15,7 @@ use reylo_engine_core::types::Type;
 use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 
@@ -42,6 +43,14 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         Ok(statement) => statement,
         Err(message) => return whole(message, 10),
     };
+    // DuckDB numbers its parameters from 1 without a gap, and reads `$1 … $3` as two.
+    if lexed.style == lex::Style::Positional {
+        if let Some(k) = lexed.params.iter().enumerate().position(|(k, name)| name.parse::<usize>() != Ok(k + 1)) {
+            let at = lexed.placeholders.iter().find(|p| p.name == lexed.params[k]).map_or((0, sql.trim_end().len()), |p| (p.start, p.end - p.start));
+            let message = format!("DuckDB numbers parameters from 1 without a gap, and this statement has no ${}: number them in order", k + 1);
+            return Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, vec![Diagnostic { message, start: at.0, length: at.1.max(1), code: 1 }]));
+        }
+    }
     let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
     // Asked in one round: the describe, and the catalog of every table the statement names.
     let raw = host.describe(&rewritten.sql);
@@ -52,6 +61,26 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         Ok(raw) => raw,
         Err(e) => return Some(refused(sql, &lexed, &rewritten, &e, matches!(statement, lex::Statement::Command(_)))),
     };
+    // A parameter DuckDB cannot type from where it stands (`id + :n`, `select :x`) leaves it
+    // unable to type the statement at all: it describes one column, `unknown`, of no type.
+    if raw.columns.len() == 1 && raw.columns[0].ty.id == "INVALID" && raw.params.iter().any(|p| p.ty.is_none()) {
+        let diagnostics = raw
+            .params
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.ty.is_none())
+            .filter_map(|(i, _)| lexed.params.get(i))
+            .filter_map(|name| lexed.placeholders.iter().find(|p| &p.name == name))
+            .map(|p| {
+                let written = &sql[p.start..p.end];
+                let message = format!("DuckDB cannot tell the type of {written} from where it stands, and describes none of the statement's columns until it can: cast it, as in {written}::integer");
+                Diagnostic { message, start: p.start, length: p.end - p.start, code: 6 }
+            })
+            .collect::<Vec<_>>();
+        if !diagnostics.is_empty() {
+            return Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, diagnostics));
+        }
+    }
     // DuckDB runs a PIVOT as several statements, the columns of the last made from the values the
     // first reads, so it describes none before it runs.
     if raw.statement == "MULTI" {
@@ -70,10 +99,11 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         nullable.extend(nullable_params(statement, &catalog));
     }
     let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
-    let rows = returns_rows(&raw, parsed.as_ref());
+    let shaped = parsed.as_ref().map(write_of);
+    let rows = returns_rows(&raw, shaped.as_deref());
     // What the tree proves of each column, where its columns are the describe's: as many, and
     // named alike where the tree names one.
-    let proven = parsed.as_ref().filter(|_| rows).and_then(|s| outputs(s, &ctx)).filter(|out| {
+    let proven = shaped.as_deref().filter(|_| rows).and_then(|s| outputs(s, &ctx)).filter(|out| {
         out.len() == raw.columns.len() && out.iter().zip(&raw.columns).all(|(o, c)| o.name.as_deref().is_none_or(|n| n.eq_ignore_ascii_case(&c.name)))
     });
     let columns: Vec<Column> = if rows {
@@ -102,7 +132,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             Param { name: name.clone(), ty, type_name, nullable: nullable.contains(&n), schema: None, cast: None, comment: None }
         })
         .collect();
-    let kind = match (&parsed, &statement) {
+    let kind = match (shaped.as_deref(), &statement) {
         (Some(Statement::Query(_)), _) => "select".to_string(),
         (Some(Statement::Insert(_)), _) => "insert".to_string(),
         (Some(Statement::Update(_)), _) => "update".to_string(),
@@ -116,7 +146,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let (cardinality, reason) = if !rows {
         ("none", None)
     } else {
-        match &parsed {
+        match shaped.as_deref() {
             Some(statement) => cardinality(statement, &ctx),
             None => ("many", Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
         }
@@ -147,6 +177,29 @@ fn parse(sql: &str) -> Option<Statement> {
         statements.pop()
     } else {
         None
+    }
+}
+
+/// A write that WITH queries feed (`WITH x AS (…) INSERT …`), which the tree reads as a query whose
+/// body is the write, as that write: an INSERT's source takes the WITH queries, which it reads.
+fn write_of(statement: &Statement) -> Cow<'_, Statement> {
+    let Statement::Query(q) = statement else { return Cow::Borrowed(statement) };
+    match q.body.as_ref() {
+        SetExpr::Insert(Statement::Insert(i)) => {
+            let mut i = i.clone();
+            if let (Some(with), Some(source)) = (&q.with, i.source.as_mut()) {
+                match &mut source.with {
+                    Some(inner) => {
+                        inner.cte_tables.splice(0..0, with.cte_tables.iter().cloned());
+                        inner.recursive |= with.recursive;
+                    }
+                    None => source.with = Some(with.clone()),
+                }
+            }
+            Cow::Owned(Statement::Insert(i))
+        }
+        SetExpr::Update(write) | SetExpr::Delete(write) => Cow::Borrowed(write),
+        _ => Cow::Borrowed(statement),
     }
 }
 
@@ -272,7 +325,7 @@ fn tables(statement: &Statement) -> reylo_engine_core::fresh::Tables {
         }
         ControlFlow::<()>::Continue(())
     });
-    let write: Vec<String> = match statement {
+    let write: Vec<String> = match write_of(statement).as_ref() {
         Statement::Insert(i) => match &i.table {
             TableObject::TableName(name) => vec![nulls::parts(name).join(".")],
             _ => Vec::new(),
@@ -341,7 +394,7 @@ fn nullable_params(statement: &Statement, catalog: &Catalog) -> HashSet<String> 
         ControlFlow::<()>::Continue(())
     });
     let may_be_null = |table: &[String], column: &str| catalog.table(table).and_then(|t| t.columns.iter().find(|c| c.name.eq_ignore_ascii_case(column))).is_some_and(|c| !c.not_null);
-    match statement {
+    match write_of(statement).as_ref() {
         Statement::Insert(i) => {
             let TableObject::TableName(name) = &i.table else { return found };
             let table = nulls::parts(name);
@@ -456,4 +509,25 @@ mod tests {
         assert_eq!(&long[at.unwrap()..at.unwrap() + 4], "nope");
     }
 
+    #[test]
+    fn a_write_with_queries_feed_is_read_as_the_write() {
+        use crate::catalog::{Table, TableColumn};
+        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None }], keys: vec![vec!["id".into()]] };
+        let catalog = catalog::of(vec![table]);
+        let nullable = HashSet::new();
+        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let shaped = |sql: &str| write_of(&parse(sql).unwrap()).into_owned();
+        // The WITH queries move onto the INSERT's source, whose rows a key of `teams` does not bound.
+        let insert = shaped("with teams as (select 1 as id union all select 1) insert into teams select * from teams where id = 1 returning id");
+        let Statement::Insert(i) = &insert else { panic!("{insert:?}") };
+        assert!(i.source.as_ref().unwrap().with.is_some());
+        assert_eq!(cardinality(&insert, &ctx).0, "many");
+        assert_eq!(outputs(&insert, &ctx).unwrap().iter().map(|o| o.not_null).collect::<Vec<_>>(), [true]);
+        assert_eq!(tables(&parse("with x as (select 1 as id) insert into teams select id from x").unwrap()).write, ["teams"]);
+        let update = shaped("with x as (select 1 as id) update teams set id = 2 from x where teams.id = 1 returning id");
+        assert!(matches!(update, Statement::Update(_)));
+        assert_eq!(cardinality(&update, &ctx).0, "many");
+        let delete = shaped("with x as (select 1 as id) delete from teams where id = 1 returning id");
+        assert_eq!(cardinality(&delete, &ctx).0, "maybeOne");
+    }
 }
