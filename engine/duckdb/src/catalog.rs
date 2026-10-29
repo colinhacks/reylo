@@ -100,14 +100,15 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
     let mut wanted: Vec<String> = names.iter().filter_map(|n| n.last()).map(|n| n.to_lowercase()).collect();
     wanted.sort();
     wanted.dedup();
-    let row_makers = row_makers(macros?.unwrap_or_default());
     if wanted.is_empty() {
-        return Some(Catalog { row_makers, ..Catalog::default() });
+        return Some(Catalog { row_makers: row_makers(macros?.unwrap_or_default()), ..Catalog::default() });
     }
     let list = wanted.iter().map(|n| format!("'{}'", n.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
     let columns = host.query(&COLUMNS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
     let keys = host.query(&KEYS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
-    let (columns, keys) = (columns?, keys?);
+    // Every need is recorded before any is awaited, so the three are asked in the same round.
+    let (macros, columns, keys) = (macros?, columns?, keys?);
+    let row_makers = row_makers(macros.unwrap_or_default());
     let text = |row: &[Value], k: usize| row.get(k).and_then(as_str).unwrap_or_default().to_string();
     let mut tables: Vec<Table> = Vec::new();
     for row in columns.unwrap_or_default() {
@@ -197,5 +198,13 @@ mod tests {
         let makers = row_makers(macros);
         assert!(makers.contains("unnest") && makers.contains("generate_subscripts") && makers.contains("my_rows"));
         assert!(!makers.contains("plain") && !makers.contains("my_unnest_count"));
+    }
+
+    #[test]
+    fn the_macros_columns_and_keys_are_asked_in_one_round() {
+        let answers = reylo_engine_core::api::Answers::new();
+        let host = Host::new(&answers);
+        assert!(read(&host, &[vec!["t".to_string()]]).is_none());
+        assert_eq!(host.needs().len(), 3);
     }
 }
