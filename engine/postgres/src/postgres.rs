@@ -2772,8 +2772,9 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// The keys, column types and collations of another catalog's relations, and what it knows of
-/// functions, added to `into`: those of the tables a view reads and the functions it calls.
+/// The keys, column types, domains and collations of another catalog's relations, and what it
+/// knows of functions, added to `into`: those of the tables a view reads and the functions it
+/// calls.
 fn merge_keys(into: &mut Catalog, from: Catalog) {
     for (rel, keys) in from.unique_keys {
         into.unique_keys.entry(rel).or_insert(keys);
@@ -2786,6 +2787,15 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     }
     for (rel, columns) in from.nondeterministic {
         into.nondeterministic.entry(rel).or_insert(columns);
+    }
+    // Which columns are of a domain, and each column's declared type, say which `=` a comparison
+    // with a key column of a table the view reads resolves to, as with the statement's own tables.
+    for (rel, columns) in from.domains {
+        into.domains.entry(rel).or_insert(columns);
+    }
+    into.domain_bases.extend(from.domain_bases);
+    for (rel, types) in from.declared_types {
+        into.declared_types.entry(rel).or_insert(types);
     }
     into.single_row.extend(from.single_row);
     into.functions.extend(from.functions);
