@@ -366,8 +366,10 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
 export function duckdbPath(url: string, baseDir: string): string {
-  const raw = url.replace(/^duckdb:(\/\/)?/i, "");
+  let raw = url.replace(/^duckdb:(\/\/)?/i, "");
   if (raw === "" || raw === ":memory:") return ":memory:";
+  // On Windows, `duckdb:///C:/app.duckdb` names the drive, as a file URL does.
+  if (process.platform === "win32") raw = raw.replace(/^\/(?=[A-Za-z]:[\\/])/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 

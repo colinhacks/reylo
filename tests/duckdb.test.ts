@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Session, type Outcome } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
@@ -213,8 +213,11 @@ test("DuckDB: a database file another process holds for writing is typed from a 
 
 test("DuckDB: the URL names the database file, relative to the project", () => {
   assert.equal(dialectOf("duckdb:./app.duckdb"), "duckdb");
-  assert.equal(duckdbPath("duckdb:./app.duckdb", "/srv/app"), "/srv/app/app.duckdb");
-  assert.equal(duckdbPath("duckdb:///data/app.duckdb", "/srv/app"), "/data/app.duckdb");
+  const base = resolve("/srv/app");
+  assert.equal(duckdbPath("duckdb:./app.duckdb", base), join(base, "app.duckdb"));
+  assert.equal(duckdbPath("duckdb:///data/app.duckdb", base), "/data/app.duckdb");
+  // On Windows the URL's path names a drive, as a file URL's does.
+  if (process.platform === "win32") assert.equal(duckdbPath("duckdb:///C:/data/app.duckdb", base), "C:/data/app.duckdb");
   assert.equal(duckdbPath("duckdb::memory:", "/srv/app"), ":memory:");
   assert.equal(duckdbPath("duckdb:", "/srv/app"), ":memory:");
 });
