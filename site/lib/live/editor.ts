@@ -3,19 +3,20 @@
 // the page draws a code block. Shiki colours the text (lib/live/highlight.ts), and a diagnostic is
 // drawn as the page draws every Reylo error, a squiggle under its range and the pinned card under
 // its last line (docs-kit's `.dk-error` and `.dk-error-line`), in space the card opens there, so it
-// never covers the code.
+// never covers the code. The schema card's editor (createSchemaEditor) is the same editor without
+// completions, for the DDL of a schema of the reader's own.
 import { acceptCompletion, autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap, completionStatus, moveCompletionSelection, selectedCompletion } from '@codemirror/autocomplete';
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
 import { PostgreSQL, sql } from '@codemirror/lang-sql';
 import { bracketMatching } from '@codemirror/language';
-import { EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
+import { Compartment, EditorSelection, EditorState, RangeSetBuilder, StateEffect, StateField, type Extension, type Range } from '@codemirror/state';
 import { Decoration, EditorView, keymap, ViewPlugin, WidgetType, type DecorationSet } from '@codemirror/view';
 import type { HighlighterCore } from 'shiki/core';
 import type { Catalog } from '../../../src/play-catalog.ts';
 import { sqlCompletions } from './complete.ts';
 import { tokens } from './highlight.ts';
 
-export type Diagnostic = { message: string; code: number; line: number; column: number; endLine: number; endColumn: number };
+export type Diagnostic = { message: string; code: number; line: number; column: number; endLine: number; endColumn: number; /** What the card names as the error's source, `reylo(<code>)` when none is given. */ source?: string };
 
 /** The card under a line: the message and its source, `reylo(<code>)`, its arrow at the range's column. */
 class ErrorCard extends WidgetType {
@@ -77,7 +78,7 @@ const diagnosticsField = StateField.define<DecorationSet>({
         if (to <= from) to = Math.min(from + 1, doc.line(Math.min(d.endLine, doc.lines)).to);
         if (to > from) ranges.push(Decoration.mark({ class: 'dk-error' }).range(from, to));
         const last = doc.line(Math.min(Math.max(d.endLine, 1), doc.lines));
-        ranges.push(Decoration.widget({ widget: new ErrorCard(d.column - 1, d.message, `reylo(${d.code})`), block: true, side: 1 }).range(last.to));
+        ranges.push(Decoration.widget({ widget: new ErrorCard(d.column - 1, d.message, d.source ?? `reylo(${d.code})`), block: true, side: 1 }).range(last.to));
       }
       next = Decoration.set(ranges, true);
     }
@@ -174,9 +175,12 @@ function takeCompletion(view: EditorView): boolean {
   return acceptCompletion(view);
 }
 
-export type Editor = { view: EditorView; setDiagnostics(diagnostics: Diagnostic[]): void; setText(text: string): void; completing(): boolean };
+export type Editor = { view: EditorView; setDiagnostics(diagnostics: Diagnostic[]): void; setText(text: string): void; completing(): boolean; setCatalog(catalog: Catalog): void };
 
 export function createEditor(parent: HTMLElement, doc: string, highlighter: HighlighterCore, catalog: Catalog, onChange: (text: string) => void): Editor {
+  // The completions, replaced when the reader's own schema replaces the one the page opened with.
+  const completions = new Compartment();
+  const complete = (catalog: Catalog) => autocompletion({ selectOnOpen: false, filterStrict: true, override: [sqlCompletions(catalog)] });
   const view = new EditorView({
     parent,
     state: EditorState.create({
@@ -187,7 +191,7 @@ export function createEditor(parent: HTMLElement, doc: string, highlighter: High
         // Only what fits where the cursor is (lib/live/complete.ts), each with its kind's icon and
         // its type, matched from its start. The list opens with nothing chosen, so Enter is always a new line until the
         // arrows choose an item; Tab takes the first item, or the one chosen.
-        autocompletion({ selectOnOpen: false, filterStrict: true, override: [sqlCompletions(catalog)] }),
+        completions.of(complete(catalog)),
         hangList,
         closeBrackets(),
         bracketMatching(),
@@ -209,5 +213,35 @@ export function createEditor(parent: HTMLElement, doc: string, highlighter: High
     // Another example's text: one change the reader can undo, the cursor at its end.
     completing: () => completionStatus(view.state) !== null,
     setText: (text) => view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, selection: { anchor: text.length }, scrollIntoView: true }),
+    setCatalog: (catalog) => view.dispatch({ effects: completions.reconfigure(complete(catalog)) }),
+  };
+}
+
+export type SchemaEditor = { view: EditorView; text(): string; setDiagnostics(diagnostics: Diagnostic[]): void };
+
+/** The schema card's editor: the DDL, coloured and indented as the query is, with Mod-Enter for `onApply`, and an error drawn at its line as the query's are. */
+export function createSchemaEditor(parent: HTMLElement, doc: string, highlighter: HighlighterCore, onApply: (text: string) => void): SchemaEditor {
+  const view = new EditorView({
+    parent,
+    state: EditorState.create({
+      doc,
+      extensions: [
+        history(),
+        sql({ dialect: PostgreSQL }),
+        closeBrackets(),
+        bracketMatching(),
+        keymap.of([{ key: 'Mod-Enter', run: (v) => (onApply(v.state.doc.toString()), true) }, ...closeBracketsKeymap, { key: 'Enter', run: newlineKeepingIndent }, ...defaultKeymap, ...historyKeymap, indentWithTab]),
+        EditorView.lineWrapping,
+        EditorView.contentAttributes.of({ 'aria-label': 'Schema DDL', spellcheck: 'false', autocapitalize: 'off', autocorrect: 'off' }),
+        shikiColours(highlighter),
+        lineIndents,
+        diagnosticsField,
+      ],
+    }),
+  });
+  return {
+    view,
+    text: () => view.state.doc.toString(),
+    setDiagnostics: (diagnostics) => view.dispatch({ effects: setDiagnostics.of(diagnostics) }),
   };
 }

@@ -5,6 +5,7 @@
 // takes its turn here.
 import type { PGlite } from "@electric-sql/pglite";
 import type { EngineIo } from "../../../src/engine-core.ts";
+import { catalog, CATALOG_QUERIES, type Catalog } from "../../../src/play-catalog.ts";
 
 const enc = new TextEncoder();
 function message(type: string, body: Uint8Array): Uint8Array {
@@ -69,4 +70,10 @@ export function pgliteIo(pg: PGlite): EngineIo {
       });
     },
   };
+}
+
+/** What the editor completes from the playground's Postgres, as `reylo play` reads a database's: at build time for the sample schema (lib/live/play-data.ts), and in the worker for a schema of the reader's own. */
+export async function readCatalog(io: Pick<EngineIo, "query">): Promise<Catalog> {
+  const q = CATALOG_QUERIES.postgres;
+  return catalog("postgres", await io.query(q.tables, []), await io.query(q.functions!, []), await io.query(q.types!, []));
 }

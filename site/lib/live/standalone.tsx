@@ -12,6 +12,11 @@ import { PlayApp, type Channel, type FromChannel, type Theme } from './app.tsx';
 
 type Page = { dialect: string; label: string; schema: string; catalog: Catalog };
 
+// Where `reylo play` analyzes each query: the project's own database, from this machine.
+const about = {
+  runs: "Each query is analyzed against your project's database, the one its type check reads, by reylo play on this machine. Nothing is run.",
+};
+
 const labels = { loading: 'Connecting…', failed: 'The playground stopped answering' };
 
 /** The server behind a worker's interface: one statement at a time, the latest text replacing any still waiting. */
@@ -22,8 +27,10 @@ function serverChannel(label: string): Channel {
   const channel: Channel = {
     onmessage: null,
     onerror: null,
-    postMessage({ sql }) {
-      waiting = sql;
+    // A statement; the schema is the project's own, never replaced from the page.
+    postMessage(message) {
+      if (!('sql' in message)) return;
+      waiting = message.sql;
       void pump();
     },
     terminate() {
@@ -72,7 +79,7 @@ function Play({ page }: { page: Page }) {
     const table = page.catalog.tables[0]?.name;
     return { analyze: `${location.origin}/api/analyze`, schema: `${location.origin}/api/schema`, against: "your project's database", example: table ? `select * from ${table}` : 'select 1' };
   }, [page]);
-  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/colinhacks/reylo" api={api} />;
+  return <PlayApp data={data} connect={connect} theme={theme} labels={labels} home="https://reylo.dev" github="https://github.com/colinhacks/reylo" api={api} about={about} />;
 }
 
 const root = createRoot(document.getElementById('root')!);
