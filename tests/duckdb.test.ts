@@ -275,6 +275,22 @@ test("DuckDB: a DuckDB connection is never taken for better-sqlite3", { skip }, 
   }
 });
 
+test("DuckDB: a list binds through a subclass of DuckDBConnection, and through an object that wraps one", { skip }, async () => {
+  const node = createRequire(join(DRIVERS, "package.json"))("@duckdb/node-api") as Api & { DuckDBConnection: new (...args: never[]) => Connection };
+  const db = await node.DuckDBInstance.create(":memory:");
+  const c = await db.connect();
+  try {
+    class Logged extends node.DuckDBConnection {}
+    Object.setPrototypeOf(c, Logged.prototype);
+    const wrapped = { runAndReadAll: c.runAndReadAll.bind(c), prepare: c.prepare.bind(c), run: c.run.bind(c) };
+    const tags = defineQuery({ dialect: "duckdb", sql: "select :tags::varchar[] as tags", params: ["tags"], text: "select $1::varchar[] as tags", order: ["tags"], cardinality: "one" });
+    for (const client of [c, wrapped]) assert.deepEqual({ ...((await tags.run(client as never, { tags: ["a", "b"] })) as object) }, { tags: ["a", "b"] });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: an ISO 8601 duration is bound as DuckDB's own interval text", () => {
   assert.equal(duckdbInterval("P1Y2M3DT4H5M6.789S"), "1 years 2 months 3 days 4 hours 5 minutes 6.789 seconds");
   assert.equal(duckdbInterval("-P1DT2H"), "-1 days -2 hours");

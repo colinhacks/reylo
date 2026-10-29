@@ -69,40 +69,57 @@ type NodeProcess = { cwd(): string; getBuiltinModule?(id: string): { createRequi
  * as an instance of its own classes, built over its own native binding, so a second copy of the
  * package (another version, or the same one installed twice, as a workspace or a linked package
  * can have it) builds values the connection refuses. node-api is CommonJS, so the copy that made
- * `c` is in Node's module cache however the app imported it, and is the one whose
- * DuckDBConnection is `c`'s class; where no cache is reachable, the copy reylo's install imports,
- * refused when it is not the connection's.
+ * `c` is in Node's module cache however the app imported it: the one whose DuckDBConnection `c`
+ * is an instance of, a subclass's included. For a connection that only wraps one, the copy is
+ * the one loaded where there is one, else the copy reylo's install imports, which is refused only
+ * when `c` is another copy's DuckDBConnection.
  */
 function nodeApiOf(c: DuckdbClient): Promise<Api> {
-  const own = Object.getPrototypeOf(c)?.constructor as object | undefined;
-  if (own === undefined) return Promise.reject(new TypeError("A DuckDB connection is @duckdb/node-api's DuckDBConnection."));
+  // A connection's class decides its copy; an object that only wraps one is its own.
+  const proto = Object.getPrototypeOf(c) as object | null;
+  const own = proto === null || proto === Object.prototype ? c : proto;
   let found = apis.get(own);
   if (found === undefined) {
-    found = loadNodeApi(own);
+    found = loadNodeApi(c);
     apis.set(own, found);
     found.catch(() => apis.delete(own));
   }
   return found;
 }
 
-async function loadNodeApi(own: object): Promise<Api> {
+/** The classes on `c`'s prototype chain. */
+function classesOf(c: object): unknown[] {
+  const out: unknown[] = [];
+  for (let p = Object.getPrototypeOf(c) as { constructor?: unknown } | null; p !== null && p !== Object.prototype; p = Object.getPrototypeOf(p)) out.push(p.constructor);
+  return out;
+}
+
+async function loadNodeApi(c: DuckdbClient): Promise<Api> {
+  const classes = classesOf(c);
   const proc = (globalThis as { process?: NodeProcess }).process;
   let cache: ModuleCache | undefined;
   try {
     cache = proc?.getBuiltinModule?.("node:module")?.createRequire(`${proc.cwd()}/`).cache;
   } catch {}
+  const loaded: Api[] = [];
   for (const [path, m] of Object.entries(cache ?? {})) {
-    if (!NODE_API_ENTRY.test(path)) continue;
-    const exports = m?.exports as Api | undefined;
-    if (exports?.DuckDBConnection === own) return exports;
+    const exports = NODE_API_ENTRY.test(path) ? (m?.exports as Api | undefined) : undefined;
+    if (exports?.DuckDBConnection === undefined) continue;
+    if (classes.includes(exports.DuckDBConnection)) return exports;
+    loaded.push(exports);
   }
+  if (loaded.length === 1) return loaded[0]!;
   let imported: Api;
   try {
     imported = (await import(/* @vite-ignore */ NODE_API)) as Api;
   } catch (e) {
     throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, and the copy the connection came from cannot be found, nor one loaded from reylo's install: ${(e as Error).message}`);
   }
-  if (imported.DuckDBConnection !== own) throw new TypeError("A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, which must come from the copy of the package the connection came from, and the one reylo's install loads is another copy: install a single @duckdb/node-api.");
+  const another = classes.some((k) => k !== imported.DuckDBConnection && (k as { name?: unknown })?.name === "DuckDBConnection");
+  if (loaded.length > 1 || another) {
+    const why = another ? "the copy reylo's install loads is another" : "the app has loaded several, and the connection is none of their DuckDBConnection";
+    throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, which must come from the copy of the package the connection came from, and ${why}: install a single @duckdb/node-api.`);
+  }
   return imported;
 }
 
