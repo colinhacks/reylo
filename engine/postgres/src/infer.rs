@@ -1094,7 +1094,7 @@ fn monotonic_field(node: &Node) -> bool {
 /// Whether a select list may call more than one set-returning function outside its subqueries
 /// ([`set_calls`]): Postgres runs them in step, as `ROWS FROM (…)` does, and a shorter one is NULL
 /// in the rows a longer one goes on for (`SELECT generate_series(1, 3), generate_series(1, 2)`).
-fn targets_lockstep(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
+pub(crate) fn targets_lockstep(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
     dialect == Dialect::Postgres && targets.iter().map(|t| set_calls(t, trust)).sum::<usize>() > 1
 }
 
@@ -1102,7 +1102,7 @@ fn targets_lockstep(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
 /// function the rules do not read for a built-in that returns no set, and every operator but the
 /// built-in ones the rules read. A subquery is a value of its own, and an aggregate's arguments
 /// hold no set-returning call.
-fn set_calls(target: &Node, trust: &Trust) -> usize {
+pub(crate) fn set_calls(target: &Node, trust: &Trust) -> usize {
     use serde_json::Value;
     fn name(names: Option<&Value>) -> Option<&str> {
         let parts: Vec<&str> = names?.as_array()?.iter().map(|n| n.pointer("/node/String/sval").and_then(Value::as_str)).collect::<Option<_>>()?;

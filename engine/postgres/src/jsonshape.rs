@@ -186,7 +186,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) => s.window_clause.clone(),
         _ => Vec::new(),
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(&targets, dialect, trust) };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -360,6 +360,10 @@ struct Builder<'a> {
     windows: Vec<Node>,
     /// The columns the statement's own rows may have ([`crate::infer::row_fields`]).
     fields: HashSet<String>,
+    /// Whether the top statement's select list may call more than one set-returning function,
+    /// which the server runs in step: a shorter one is NULL in the rows a longer one goes on for,
+    /// which a probe of one of them alone never shows ([`crate::infer::targets_lockstep`]).
+    lockstep: bool,
 }
 
 /// A target of a LATERAL subquery that builds JSON ([`Builder::lateral_target`]).
@@ -848,9 +852,10 @@ impl Builder<'_> {
             },
         };
         let index = self.drafts[probe].items.len();
+        let in_step = self.lockstep && self.stack.len() == 1 && crate::infer::set_calls(&expr, self.trust) > 0;
         self.drafts[probe].items.push(expr);
         let shape = Shape::Column { probe, index };
-        if missing || self.nulled_by_grouping() {
+        if missing || in_step || self.nulled_by_grouping() {
             Shape::Nullable(Box::new(shape))
         } else {
             shape
@@ -2041,6 +2046,17 @@ mod tests {
         assert!(matches!(&shapes("SELECT array_to_json(ARRAY(SELECT p.title FROM posts p)) AS t").columns[0].1, Shape::Array { non_null: true, .. }));
         assert!(matches!(&shapes("SELECT array_to_json(array_agg(p.title)) AS t FROM posts p").columns[0].1, Shape::Array { non_null: false, .. }));
         assert!(matches!(&shapes("SELECT p.user_id, array_to_json(array_agg(p.title)) AS t FROM posts p GROUP BY p.user_id").columns[0].1, Shape::Array { non_null: true, .. }));
+    }
+
+    #[test]
+    fn a_set_returning_value_beside_another_one_may_run_out() {
+        let field = |sql: &str| match shapes(sql).columns.into_iter().next().map(|(_, s)| s) {
+            Some(Shape::Object { mut fields, .. }) => fields.remove(0).1,
+            other => panic!("{other:?}"),
+        };
+        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o"), Shape::Column { .. }));
+        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o, generate_series(1, 3) AS m"), Shape::Nullable(_)));
+        assert!(matches!(field("SELECT json_build_object('n', 1) AS o, generate_series(1, 3) AS m, unnest(ARRAY[1]) AS u"), Shape::Column { .. }));
     }
 
     #[test]
