@@ -50,8 +50,8 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine -p reylo-engine-native -p reylo-oracle'
-            echo 'shards=["postgres","sqlite","mysql-1","mysql-2","mysql-slow"]'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo-oracle'
+            echo 'shards=["postgres","sqlite","duckdb","mysql-1","mysql-2","mysql-slow"]'
           }
           if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
           if ! git rev-parse -q --verify HEAD^2 > /dev/null; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -64,18 +64,20 @@ jobs:
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          postgres=false mysql=false sqlite=false
+          postgres=false mysql=false sqlite=false duckdb=false
           while read -r file; do
             case "$file" in
               engine/postgres/*) postgres=true ;;
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
+              engine/duckdb/* | oracle/cases/duckdb_*) duckdb=true ;;
               oracle/cases/*) postgres=true ;;
             esac
           done <<<"$files"
           tests='' shards=''
           $postgres && { tests="$tests -p reylo-engine-postgres"; shards="$shards,\"postgres\""; }
           $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
+          $duckdb && { tests="$tests -p reylo-engine-duckdb"; shards="$shards,\"duckdb\""; }
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
           if [ -z "$shards" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
@@ -186,8 +188,9 @@ jobs:
 
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count
-  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, and MySQL's in three, one of
-  # them mysql_types alone, which takes as long as half the others together. Postgres 18 runs on the
+  # fails the case. The cases run in shards side by side: Postgres's, SQLite's, DuckDB's, and MySQL's in three, one of
+  # them mysql_types alone, which takes as long as half the others together. DuckDB's shard builds the oracle
+  # with DuckDB compiled from its sources (`--features duckdb`), which no other build of the workspace does. Postgres 18 runs on the
   # runner rather than in a container, because the json_schema_* cases call five validator extensions built
   # into it; its packages are cached, since Ubuntu's mirror has taken half an hour to send them.
   oracle:
@@ -292,14 +295,14 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
         run: |
-          # A case's database is its name's prefix (`mysql_`, `sqlite_`, Postgres's none), as its `dialect` file says.
+          # A case's database is its name's prefix (`mysql_`, `sqlite_`, `duckdb_`, Postgres's none), as its `dialect` file says.
           cases='' n=0
           for dir in oracle/cases/*/; do
             name=${dir%/}
             name=${name##*/}
-            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; *) dialect=postgres ;; esac
+            case "$name" in mysql_*) dialect=mysql ;; sqlite_*) dialect=sqlite ;; duckdb_*) dialect=duckdb ;; *) dialect=postgres ;; esac
             case "$SHARD" in
-              postgres | sqlite) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
+              postgres | sqlite | duckdb) [ "$dialect" != "$SHARD" ] || cases="$cases ${dir%/}" ;;
               mysql-slow) [ "$name" != mysql_types ] || cases="$cases ${dir%/}" ;;
               mysql-1 | mysql-2)
                 if [ "$dialect" = mysql ] && [ "$name" != mysql_types ]; then
@@ -309,12 +312,14 @@ jobs:
                 ;;
             esac
           done
+          features=''
           case "$SHARD" in
             postgres) servers="--url postgres://postgres@localhost:55432/postgres" ;;
             sqlite) servers='' ;;
+            duckdb) servers='' features='--features duckdb' ;;
             *) servers="--mysql-url mysql://root@127.0.0.1:53306" ;;
           esac
           # shellcheck disable=SC2086
-          cargo run -q -p reylo-oracle -- $servers --strict-coverage $cases
+          cargo run -q -p reylo-oracle $features -- $servers --strict-coverage $cases
       - if: always()
         run: sccache --show-stats
