@@ -8,9 +8,13 @@ ranges.sql: many () -> { empty: bool, unbounded_below: bool, unbounded_above: bo
 row_comparisons.sql: many () -> { same: bool, same_note: bool?, before: bool, listed: bool, listed_note: bool?, between: bool }
 session.sql: one () -> { version: text, pid: int4, db: name, xid: int8, xact: xid8, zone: text, missing: text?, locked: void, took: bool, released: bool, who: name, schema: name? }
 set_returning.sql: many () -> { a: int4?, b: int4? }
+set_returning_distinct_on.sql: many () -> { g: int4? }
+set_returning_group_by.sql: many () -> { g: int4? }
 set_returning_mixed.sql: many () -> { a: int4?, b: int4?, c: int4 }
 set_returning_null.sql: many () -> { a: int4 }
 set_returning_one.sql: many () -> { a: int4, b: timestamptz }
+set_returning_order_by.sql: many () -> { g: int4? }
+set_returning_order_by_json.sql: many () -> { o: { g: int4? } }
 strings.sql: many () -> { five: interval, days: interval, head: text, tail: text, rest: text, matched: text?, similar: text?, at_a: int4, formatted: text, with_null: text, null_format: text? }
 system_columns.sql: many () -> { xmin: xid, ctid: tid, tableoid: oid, cmin: cid, xmax: xid, other: tid?, text: text }
 time_zones.sql: many () -> { utc: timestamp, paris: timestamptz, clock_utc: timetz, here: timestamp }

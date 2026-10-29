@@ -661,7 +661,7 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     let rows = Rows::of(top).map(|rows| (rows, Level::of(&from, &withs, columns)));
     let froms = (dialect == Dialect::Postgres).then(|| vec![Level::of(&from, &withs, columns)]);
     let fields = row_fields(&serde_json::to_value(&parsed.protobuf).unwrap_or_default());
-    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields), lockstep: targets_lockstep(&targets, dialect, trust) };
+    let mut reader = Reader { dialect, trust, columns, withs, rows: rows.as_ref(), leaves: (!grouped).then(Vec::new), grouped: plain_group_by, narrowed: Vec::new(), scope: froms, windows, fields: Some(&fields), lockstep: targets_lockstep(top, &targets, dialect, trust) };
     let scope = match top {
         NodeEnum::SelectStmt(s) if dialect == Dialect::Postgres && !grouped => Some(Scope::of(s, &mut reader)),
         _ => None,
@@ -1109,11 +1109,21 @@ fn monotonic_field(node: &Node) -> bool {
     string_literal(node).is_some_and(|field| MONOTONIC_FIELDS.contains(&field.to_ascii_lowercase().as_str()))
 }
 
-/// Whether a select list may call more than one set-returning function outside its subqueries
-/// ([`set_calls`]): Postgres runs them in step, as `ROWS FROM (…)` does, and a shorter one is NULL
-/// in the rows a longer one goes on for (`SELECT generate_series(1, 3), generate_series(1, 2)`).
-pub(crate) fn targets_lockstep(targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
-    dialect == Dialect::Postgres && targets.iter().map(|t| set_calls(t, trust)).sum::<usize>() > 1
+/// Whether a statement may call more than one set-returning function outside its subqueries
+/// where its select list's are run ([`set_calls`]): Postgres runs them in step, as `ROWS FROM (…)`
+/// does, and a shorter one is NULL in the rows a longer one goes on for (`SELECT
+/// generate_series(1, 3), generate_series(1, 2)`). A call in a SELECT's ORDER BY, DISTINCT ON or
+/// GROUP BY is an entry of the same target list, so it counts too (`SELECT generate_series(1, 2)
+/// ORDER BY generate_series(1, 4)` is `NULL, NULL, 2, 1`), and so does one in a window's
+/// definition, which only costs precision. HAVING takes none. A call an ORDER BY repeats from the
+/// select list counts twice, which only costs precision too.
+pub(crate) fn targets_lockstep(top: &NodeEnum, targets: &[Node], dialect: Dialect, trust: &Trust) -> bool {
+    let clauses: &[&[Node]] = match top {
+        NodeEnum::SelectStmt(s) => &[&s.sort_clause, &s.distinct_clause, &s.group_clause, &s.window_clause],
+        _ => &[],
+    };
+    let calls = targets.iter().chain(clauses.iter().flat_map(|c| c.iter())).map(|t| set_calls(t, trust)).sum::<usize>();
+    dialect == Dialect::Postgres && calls > 1
 }
 
 /// How many calls in a target may return a set, as [`one_value`] reads them: every call of a
@@ -4630,6 +4640,11 @@ mod tests {
         assert_eq!(claims("SELECT generate_series(1, 3), unnest(ARRAY[1])"), [false, false]);
         assert_eq!(claims("SELECT generate_series(1, 3), coalesce(f(), 1)"), [false, true]);
         assert_eq!(claims("SELECT generate_series(1, 3), (SELECT generate_series(1, 2) LIMIT 1)"), [true, false]);
+        // A call in ORDER BY, DISTINCT ON or GROUP BY is an entry of the same target list.
+        assert_eq!(claims("SELECT generate_series(1, 2) ORDER BY generate_series(1, 4)"), [false]);
+        assert_eq!(claims("SELECT DISTINCT ON (generate_series(1, 3)) generate_series(1, 2)"), [false]);
+        assert_eq!(claims("SELECT generate_series(1, 2) GROUP BY generate_series(1, 2), generate_series(1, 3)"), [false]);
+        assert_eq!(claims("SELECT generate_series(1, 2) ORDER BY 1"), [true]);
     }
 
     #[test]

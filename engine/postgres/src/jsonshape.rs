@@ -186,7 +186,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
         NodeEnum::SelectStmt(s) => s.window_clause.clone(),
         _ => Vec::new(),
     };
-    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(&targets, dialect, trust) };
+    let mut builder = Builder { stack: vec![(0, from, filter)], dialect, trust, columns, withs, rows: Rows::of(top), ahead, next_ctx: 0, drafts: Vec::new(), overflowed: false, grouped, group, in_aggregate: 0, grouping_sets, under_aggregate: false, laterals: 0, windows, fields, lockstep: crate::infer::targets_lockstep(top, &targets, dialect, trust) };
     let mut columns: Vec<(String, Shape)> = Vec::new();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
@@ -2057,6 +2057,7 @@ mod tests {
         assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o"), Shape::Column { .. }));
         assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o, generate_series(1, 3) AS m"), Shape::Nullable(_)));
         assert!(matches!(field("SELECT json_build_object('n', 1) AS o, generate_series(1, 3) AS m, unnest(ARRAY[1]) AS u"), Shape::Column { .. }));
+        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o ORDER BY generate_series(1, 4)"), Shape::Nullable(_)));
     }
 
     #[test]
