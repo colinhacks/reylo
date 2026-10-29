@@ -9,5 +9,6 @@ limited.sql: maybeOne () -> { kind: varchar }
 no_from.sql: one (x: integer) -> { next: integer }
 no_from_filtered.sql: maybeOne (flag: boolean) -> { one: integer }
 offset.sql: maybeOne () -> { n: bigint }
+shadowed.sql: many (id: integer) -> { handle: varchar }
 unnest.sql: many () -> { n: integer? }
 values.sql: one () -> { col0: integer, col1: varchar }

@@ -12,7 +12,7 @@ use crate::nulls::{self, Ctx, Out};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
 use reylo_engine_core::types::Type;
-use sqlparser::ast::{AssignmentTarget, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::collections::HashSet;
@@ -207,8 +207,9 @@ fn cardinality(statement: &Statement, ctx: &Ctx) -> (&'static str, Option<String
     match statement {
         Statement::Query(q) => nulls::cardinality(q, ctx),
         Statement::Insert(i) => {
-            // A row DuckDB skips on a conflict is not returned.
-            let skips = matches!(i.or, Some(SqliteOnConflict::Ignore)) || matches!(&i.on, Some(OnInsert::OnConflict(c)) if matches!(c.action, OnConflictAction::DoNothing));
+            // A row DuckDB skips on a conflict is not returned, nor one a DO UPDATE's WHERE leaves
+            // as it was.
+            let skips = matches!(i.or, Some(SqliteOnConflict::Ignore)) || matches!(&i.on, Some(OnInsert::OnConflict(c)) if matches!(&c.action, OnConflictAction::DoNothing | OnConflictAction::DoUpdate(DoUpdate { selection: Some(_), .. })));
             let (card, reason) = match i.source.as_deref() {
                 None => ("one", None),
                 Some(Query { body, .. }) if matches!(body.as_ref(), SetExpr::Values(v) if v.rows.len() != 1) => ("many", Some("it inserts several rows".to_string())),

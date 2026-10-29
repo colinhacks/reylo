@@ -209,8 +209,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by`, has no `from`, is `values` of one row, or inserts one row and has `returning` |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or a `unique` constraint of its one table with `=`; has `limit 1`; inserts one row `on conflict do nothing` with `returning`; or is an `update` or `delete` by key with `returning` |
+| `Row` | `one` | is an aggregate without a `group by`, or with a `group by all` whose columns read the tables only inside aggregates; has no `from`; is `values` of one row; or inserts one row and has `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or a `unique` constraint of its one table with `=`; has `limit 1`; inserts one row `on conflict do nothing`, or `do update` with a `where`, and has `returning`; or is an `update` or `delete` by key with `returning` |
 | `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
 | `Row[]` | `many` | is anything else |
 

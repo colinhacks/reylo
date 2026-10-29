@@ -193,9 +193,13 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     if let Some(selection) = &s.selection {
         reject(selection, &mut scope);
     }
-    let (grouped, grouping_sets) = grouping(&s.group_by);
-    scope.grouped = grouped;
-    scope.grouping_sets = grouping_sets;
+    let g = grouping(s, &|e| match e {
+        Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some(),
+        Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some(),
+        _ => false,
+    });
+    scope.grouped = g.keyed;
+    scope.grouping_sets = g.sets;
     // `FROM t` alone selects every column.
     let star = [SelectItem::Wildcard(Default::default())];
     let items = if s.projection.is_empty() { &star[..] } else { &s.projection[..] };
@@ -285,15 +289,95 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
     }
 }
 
-/// Whether the query is grouped by keys, and by grouping sets.
-fn grouping(group_by: &GroupByExpr) -> (bool, bool) {
-    match group_by {
-        GroupByExpr::All(modifiers) => (true, !modifiers.is_empty()),
+/// How a SELECT groups its rows.
+struct Grouping {
+    /// Grouped by keys, so that each group has a row.
+    keyed: bool,
+    /// Grouped by ROLLUP, CUBE or GROUPING SETS.
+    sets: bool,
+    /// Not grouped at all: an aggregate over every row, which returns one row even over none.
+    ungrouped: bool,
+}
+
+/// How `s` groups its rows. `GROUP BY ALL` groups by each select item without an aggregate that
+/// reads a column, so it is keyed where such an item reads one `column` says is (outside a
+/// subquery, with no lambda whose parameter it may be), and not grouped where no item without
+/// an aggregate reads anything: a literal, a parameter or `random()` is no key.
+fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool) -> Grouping {
+    match &s.group_by {
+        GroupByExpr::All(modifiers) => {
+            let (mut keyed, mut ungrouped) = (false, true);
+            for item in &s.projection {
+                match item {
+                    SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => {
+                        if has_aggregate(e) {
+                            continue;
+                        }
+                        let r = reads(e, column);
+                        keyed |= r.column && !r.lambda;
+                        ungrouped &= !r.column && !r.other_name && !r.query && !r.lambda;
+                    }
+                    _ => {
+                        keyed = true;
+                        ungrouped = false;
+                    }
+                }
+            }
+            Grouping { keyed, sets: !modifiers.is_empty(), ungrouped: ungrouped && modifiers.is_empty() }
+        }
         GroupByExpr::Expressions(exprs, modifiers) => {
             let sets = !modifiers.is_empty() || exprs.iter().any(|e| matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_)));
-            (!exprs.is_empty(), sets)
+            // `GROUP BY ()` is the one empty grouping set: no grouping at all.
+            let keys = exprs.iter().any(|e| !matches!(e, Expr::Tuple(t) if t.is_empty()));
+            Grouping { keyed: keys, sets, ungrouped: !keys && !sets }
         }
     }
+}
+
+/// What an expression reads outside any subquery: a name `column` says is a column, a name it
+/// does not, and whether it holds a subquery or a lambda.
+struct Reads {
+    column: bool,
+    other_name: bool,
+    query: bool,
+    lambda: bool,
+}
+
+fn reads(e: &Expr, column: &dyn Fn(&Expr) -> bool) -> Reads {
+    struct Reader<'f> {
+        depth: usize,
+        column: &'f dyn Fn(&Expr) -> bool,
+        reads: Reads,
+    }
+    impl sqlparser::ast::Visitor for Reader<'_> {
+        type Break = ();
+        fn pre_visit_query(&mut self, _: &Query) -> std::ops::ControlFlow<()> {
+            self.depth += 1;
+            self.reads.query = true;
+            std::ops::ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> std::ops::ControlFlow<()> {
+            self.depth -= 1;
+            std::ops::ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> std::ops::ControlFlow<()> {
+            match e {
+                Expr::Identifier(_) | Expr::CompoundIdentifier(_) if self.depth == 0 => {
+                    if (self.column)(e) {
+                        self.reads.column = true;
+                    } else {
+                        self.reads.other_name = true;
+                    }
+                }
+                Expr::Lambda(_) => self.reads.lambda = true,
+                _ => {}
+            }
+            std::ops::ControlFlow::Continue(())
+        }
+    }
+    let mut reader = Reader { depth: 0, column, reads: Reads { column: false, other_name: false, query: false, lambda: false } };
+    let _ = sqlparser::ast::Visit::visit(e, &mut reader);
+    reader.reads
 }
 
 /// The relations of a FROM, joined, with what each ON shows; `None` for a join the engine does
@@ -451,23 +535,44 @@ fn rejected_by<'e>(e: &'e Expr, found: &mut Vec<&'e Expr>) {
             strict_refs(right, found);
         }
         Expr::IsNotNull(inner) | Expr::IsTrue(inner) | Expr::IsFalse(inner) => strict_refs(inner, found),
-        Expr::UnaryOp { op: UnaryOperator::Not, expr } => match expr.as_ref() {
-            Expr::IsNull(inner) => strict_refs(inner, found),
-            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => strict_refs(expr, found),
-            Expr::Nested(inner) if !matches!(inner.as_ref(), Expr::BinaryOp { op: BinaryOperator::And | BinaryOperator::Or, .. }) => rejected_by(inner, found),
-            _ => {}
-        },
+        Expr::UnaryOp { op: UnaryOperator::Not, expr } => rejected_by_not(expr, found),
         Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
             strict_refs(expr, found);
             strict_refs(pattern, found);
         }
         Expr::InList { expr, .. } => strict_refs(expr, found),
-        Expr::Between { expr, low, high, .. } => {
+        Expr::Between { expr, negated, low, high } => {
             strict_refs(expr, found);
-            strict_refs(low, found);
-            strict_refs(high, found);
+            // `x NOT BETWEEN lo AND hi` is `x < lo OR x > hi`, true where one bound is NULL.
+            if !negated {
+                strict_refs(low, found);
+                strict_refs(high, found);
+            }
         }
         Expr::Identifier(_) | Expr::CompoundIdentifier(_) => found.push(e),
+        _ => {}
+    }
+}
+
+/// The column references `NOT e` is NULL for when they are. Negated, a predicate keeps only what
+/// it is NULL for whenever an operand is: a comparison's operands, what a LIKE, an IN list or a
+/// BETWEEN tests, a column; `NOT (x IS NULL)` is `x IS NOT NULL`. A predicate that is true or
+/// false for NULL (`IS NOT NULL`, `IS TRUE`, a BETWEEN's bounds, an AND or OR) is true negated
+/// where it was false, so it shows nothing.
+fn rejected_by_not<'e>(e: &'e Expr, found: &mut Vec<&'e Expr>) {
+    match e {
+        Expr::Nested(inner) => rejected_by_not(inner, found),
+        Expr::IsNull(inner) => strict_refs(inner, found),
+        Expr::Identifier(_) | Expr::CompoundIdentifier(_) => strict_refs(e, found),
+        Expr::BinaryOp { left, op, right } if matches!(op, BinaryOperator::Eq | BinaryOperator::NotEq | BinaryOperator::Lt | BinaryOperator::LtEq | BinaryOperator::Gt | BinaryOperator::GtEq) => {
+            strict_refs(left, found);
+            strict_refs(right, found);
+        }
+        Expr::Like { expr, pattern, .. } | Expr::ILike { expr, pattern, .. } | Expr::SimilarTo { expr, pattern, .. } => {
+            strict_refs(expr, found);
+            strict_refs(pattern, found);
+        }
+        Expr::InList { expr, .. } | Expr::Between { expr, .. } => strict_refs(expr, found),
         _ => {}
     }
 }
@@ -505,20 +610,21 @@ const COUNTS: &[&str] = &["count", "count_star", "count_if", "countif", "approx_
 /// argument in a group, never.
 const OVER_VALUES: &[&str] = &["sum", "fsum", "sumkahan", "kahan_sum", "avg", "mean", "favg", "min", "max", "first", "last", "any_value", "arbitrary", "list", "array_agg", "string_agg", "group_concat", "listagg", "bool_and", "bool_or", "product", "median", "mode", "histogram"];
 
-/// The window functions that number rows, never NULL.
-const RANKS: &[&str] = &["row_number", "rank", "dense_rank", "ntile", "percent_rank", "cume_dist"];
+/// The window functions that number rows, never NULL. Not `ntile`, which is NULL for a NULL
+/// number of buckets.
+const RANKS: &[&str] = &["row_number", "rank", "dense_rank", "percent_rank", "cume_dist"];
 
 /// Functions that are never NULL whatever their arguments.
-const NEVER_NULL: &[&str] = &["current_date", "current_timestamp", "now", "get_current_timestamp", "transaction_timestamp", "random", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "version", "current_database", "current_schema", "list_value", "list_pack", "struct_pack", "row", "map", "grouping", "grouping_id"];
+const NEVER_NULL: &[&str] = &["current_date", "current_timestamp", "now", "get_current_timestamp", "transaction_timestamp", "random", "uuid", "gen_random_uuid", "uuidv4", "uuidv7", "version", "current_database", "current_schema", "list_value", "list_pack", "struct_pack", "row", "grouping", "grouping_id"];
 
 /// Functions that are never NULL where every argument is not: DuckDB's scalar functions of a
-/// value that make NULL only of NULL. Not a part of a date (`year`, `extract`, `epoch`,
-/// `date_diff`, `age`), which is NULL for an infinite one.
+/// value that make NULL only of NULL. Not a part of a date or a distance between two (`year`,
+/// `extract`, `epoch`, `date_diff`, `date_sub`, `age`), which is NULL for an infinite one.
 const STRICT: &[&str] = &[
     "abs", "ceil", "ceiling", "floor", "round", "trunc", "sign", "sqrt", "cbrt", "exp", "ln", "log", "log2", "log10", "pow", "power", "lower", "upper", "lcase", "ucase", "length", "len", "strlen", "char_length",
     "character_length", "octet_length", "bit_length", "trim", "ltrim", "rtrim", "lpad", "rpad", "left", "right", "substr", "substring", "replace", "reverse", "repeat", "concat_ws", "md5", "sha1", "sha256", "hash",
     "contains", "starts_with", "ends_with", "prefix", "suffix", "strpos", "instr", "position", "date_trunc", "datetrunc", "strftime", "to_timestamp", "make_date", "make_time",
-    "make_timestamp", "date_add", "date_sub", "to_json", "json_quote", "list_contains", "array_contains", "list_has", "len", "array_length", "cardinality", "list_sort", "list_reverse_sort", "list_distinct", "list_concat", "array_concat",
+    "make_timestamp", "date_add", "map", "to_json", "json_quote", "list_contains", "array_contains", "list_has", "len", "array_length", "cardinality", "list_sort", "list_reverse_sort", "list_distinct", "list_concat", "array_concat",
     "string_split", "str_split", "regexp_replace", "regexp_matches", "array_to_string", "to_hex", "hex", "bin", "ascii", "chr", "unicode", "format", "printf", "greatest", "least", "isnan", "isinf", "isfinite",
 ];
 
@@ -609,6 +715,7 @@ fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
     let nn = |e: &&Expr| not_null(e, scope, ctx);
     match name {
         "coalesce" | "ifnull" | "nvl" => args.iter().any(nn),
+        "ntile" => f.over.is_some() && !args.is_empty() && args.iter().all(nn),
         _ if AGGREGATES.contains(&name) => {
             // Over the rows of a group, which has one at least; a FILTER or a window frame may
             // leave it none.
@@ -658,7 +765,16 @@ pub fn has_unnest(e: &Expr) -> bool {
 
 /// How many rows a query returns, and why not one where it is not proven so.
 pub fn cardinality(q: &Query, ctx: &Ctx) -> (&'static str, Option<String>) {
-    let (mut card, mut reason) = body_cardinality(&q.body, ctx);
+    cardinality_in(q, ctx, &[])
+}
+
+/// How many rows a query returns where the WITH queries `ctes` (lowercased) are in scope.
+fn cardinality_in(q: &Query, ctx: &Ctx, ctes: &[String]) -> (&'static str, Option<String>) {
+    let mut ctes = ctes.to_vec();
+    if let Some(with) = &q.with {
+        ctes.extend(with.cte_tables.iter().map(|c| c.alias.name.value.to_lowercase()));
+    }
+    let (mut card, mut reason) = body_cardinality(&q.body, ctx, &ctes);
     let literal = |e: &Expr| match e {
         Expr::Value(v) => match &v.value {
             Value::Number(n, _) => n.parse::<u64>().ok(),
@@ -685,17 +801,17 @@ pub fn cardinality(q: &Query, ctx: &Ctx) -> (&'static str, Option<String>) {
     (card, reason)
 }
 
-fn body_cardinality(body: &SetExpr, ctx: &Ctx) -> (&'static str, Option<String>) {
+fn body_cardinality(body: &SetExpr, ctx: &Ctx, ctes: &[String]) -> (&'static str, Option<String>) {
     match body {
-        SetExpr::Query(q) => cardinality(q, ctx),
+        SetExpr::Query(q) => cardinality_in(q, ctx, ctes),
         SetExpr::Values(v) if v.rows.len() == 1 => ("one", None),
-        SetExpr::Select(s) => select_cardinality(s, ctx),
+        SetExpr::Select(s) => select_cardinality(s, ctx, ctes),
         SetExpr::SetOperation { .. } => ("many", Some("a set operation returns the rows of both sides".into())),
         _ => ("many", None),
     }
 }
 
-fn select_cardinality(s: &Select, ctx: &Ctx) -> (&'static str, Option<String>) {
+fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, Option<String>) {
     let items: Vec<&Expr> = s
         .projection
         .iter()
@@ -708,19 +824,23 @@ fn select_cardinality(s: &Select, ctx: &Ctx) -> (&'static str, Option<String>) {
         return ("many", Some("unnest makes a row of each element".into()));
     }
     let filtered = s.selection.is_some() || s.having.is_some() || s.qualify.is_some();
-    let (grouped, _) = grouping(&s.group_by);
+    // Any name may be a column here, so a GROUP BY ALL is taken as no grouping only where no item
+    // without an aggregate reads a name at all.
+    let ungrouped = grouping(s, &|_| true).ungrouped;
     if s.from.is_empty() {
         return if filtered { ("maybeOne", Some("its WHERE, HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
     let aggregate = items.iter().any(|e| has_aggregate(e)) || s.having.as_ref().is_some_and(has_aggregate);
-    if aggregate && !grouped {
+    if aggregate && ungrouped {
         return if s.having.is_some() || s.qualify.is_some() { ("maybeOne", Some("its HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
-    // One table, a key of which the WHERE holds equal to one value each.
+    // One table, a key of which the WHERE holds equal to one value each; not a WITH query that
+    // takes a table's name, which has none of its keys.
     if let ([item], Some(selection)) = (s.from.as_slice(), &s.selection) {
         if item.joins.is_empty() {
             if let TableFactor::Table { name, alias, args: None, .. } = &item.relation {
-                if let Some(table) = ctx.catalog.table(&parts(name)) {
+                let shadowed = matches!(parts(name).as_slice(), [one] if ctes.contains(&one.to_lowercase()));
+                if let Some(table) = ctx.catalog.table(&parts(name)).filter(|_| !shadowed) {
                     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts(name).pop());
                     if key_equal(selection, &table.keys, qualifier.as_deref()) {
                         return ("maybeOne", None);
@@ -847,6 +967,13 @@ mod tests {
         assert_eq!(proven("select * exclude (email) replace (lower(name) as name) from users"), "id name team_id?");
         assert_eq!(proven("from users select id"), "id");
         assert_eq!(proven("from users"), "id name email? team_id?");
+        // Negated, a predicate shows only what it is NULL for whenever it is.
+        assert_eq!(proven("select email from users where not (email is not null)"), "email?");
+        assert_eq!(proven("select email from users where not (not (email is null))"), "email?");
+        assert_eq!(proven("select email from users where not (email is true)"), "email?");
+        assert_eq!(proven("select email, team_id from users where id not between team_id and 10 and not (email like 'a%')"), "email team_id?");
+        assert_eq!(proven("select team_id from users where not (5 between team_id and id)"), "team_id?");
+        assert_eq!(proven("select team_id from users where team_id not between 1 and 2"), "team_id");
     }
 
     #[test]
@@ -862,6 +989,14 @@ mod tests {
         assert_eq!(proven("select team_id, count(*) as a, sum(id) as c, max(email) as d, max(name) filter (where id > 1) as e from users group by team_id"), "team_id? a c d? e?");
         assert_eq!(proven("select team_id, sum(id) as c from users group by grouping sets ((team_id), ())"), "team_id? c?");
         assert_eq!(proven("select row_number() over () as a, sum(id) over () as b, lag(id) over () as c from users"), "a b? c?");
+        assert_eq!(proven("select ntile(2) over () as a, ntile(team_id) over () as b, map([id], [name]) as c, date_sub('day', current_date, current_date) as d from users"), "a b? c d?");
+        // GROUP BY ALL groups by the items without an aggregate that read a column, and by nothing
+        // where none does.
+        assert_eq!(proven("select name, sum(id) as s from users group by all"), "name s");
+        assert_eq!(proven("select sum(id) as s from users group by all"), "s?");
+        assert_eq!(proven("select 1 as k, $1 as p, random() as r, (select 1) as q, sum(id) as s from users group by all"), "k p r q? s?");
+        assert_eq!(proven("select list_transform([1], id -> id + 1) as l, sum(id) as s from users group by all"), "l? s?");
+        assert_eq!(proven("select sum(id) as s from users group by ()"), "s?");
     }
 
     #[test]
@@ -890,6 +1025,15 @@ mod tests {
         assert_eq!(rows("select count(*) from users"), "one");
         assert_eq!(rows("select count(*) from users having count(*) > 1"), "maybeOne");
         assert_eq!(rows("select team_id, count(*) from users group by team_id"), "many");
+        assert_eq!(rows("select count(*) from users group by all"), "one");
+        assert_eq!(rows("select 1 as k, count(*) from users group by all"), "one");
+        assert_eq!(rows("select team_id, count(*) from users group by all"), "many");
+        assert_eq!(rows("select current_date as k, count(*) from users group by all"), "one");
+        assert_eq!(rows("select team_id + 1 as k, count(*) from users group by all"), "many");
+        assert_eq!(rows("select count(*) from users group by ()"), "one");
+        // A WITH query that takes a table's name has none of its keys.
+        assert_eq!(rows("with users as (select * from users union all select * from users) select id from users where id = 1"), "many");
+        assert_eq!(rows("with x as (select 1) select id from users where id = 1"), "maybeOne");
         assert_eq!(rows("select 1"), "one");
         assert_eq!(rows("select unnest([1, 2])"), "many");
         // A subquery's aggregate or unnest is its own rows'.
