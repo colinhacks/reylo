@@ -134,7 +134,7 @@ export function isDuckdb(c: { [key: string]: unknown } | null | undefined): bool
 const T = {
   BOOLEAN: 1, TINYINT: 2, SMALLINT: 3, INTEGER: 4, BIGINT: 5, UTINYINT: 6, USMALLINT: 7, UINTEGER: 8, UBIGINT: 9, FLOAT: 10, DOUBLE: 11, TIMESTAMP: 12, DATE: 13, TIME: 14, INTERVAL: 15,
   HUGEINT: 16, VARCHAR: 17, BLOB: 18, DECIMAL: 19, TIMESTAMP_S: 20, TIMESTAMP_MS: 21, TIMESTAMP_NS: 22, ENUM: 23, LIST: 24, STRUCT: 25, MAP: 26, UUID: 27, UNION: 28, BIT: 29, TIME_TZ: 30,
-  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, TIMESTAMP_TZ_NS: 42,
+  TIMESTAMP_TZ: 31, UHUGEINT: 32, ARRAY: 33, BIGNUM: 35, TIME_NS: 39, VARIANT: 41, TIMESTAMP_TZ_NS: 42,
 } as const;
 
 /**
@@ -227,6 +227,16 @@ export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: str
     const out: Record<string, unknown> = { ...(v as Record<string, unknown>) };
     for (const f of type.fields) out[f.name] = encodeDuckdb(f.type, out[f.name], name);
     return out;
+  }
+  // A UNION takes `{ tag, value }`, its tag one of its members and its value that member's.
+  // node-api cannot build a union whose member is NULL, which DuckDB keeps apart from a NULL union.
+  if (type.kind === "union") {
+    const { tag, value } = (typeof v === "object" ? v : {}) as { tag?: unknown; value?: unknown };
+    const member = type.members.find((m) => m.name === tag);
+    const tags = type.members.map((m) => JSON.stringify(m.name)).join(", ");
+    if (member === undefined) throw new ParameterError(`Parameter "${name}" is a UNION, so it takes { tag, value } with the tag one of ${tags}; got ${JSON.stringify(v)}.`);
+    if (value == null) throw new ParameterError(`Parameter "${name}" is a UNION, and @duckdb/node-api cannot bind one whose ${JSON.stringify(tag)} member is null: pass null for the whole parameter, or a value of the member.`);
+    return { tag, value: encodeDuckdb(member.type, value, name) };
   }
   if (type.kind !== "scalar") return v;
   if (INTEGERS.has(type.name)) {
@@ -378,8 +388,11 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       const at = t.memberTags!.indexOf(o.tag);
       return { tag: o.tag, value: at < 0 ? o.value : decode(o.value, t.memberTypes![at]!, column) };
     }
+    case T.VARIANT:
+      // A VARIANT holds a value of any type, which it carries beside it.
+      return decode(o.value, (o.type ?? { typeId: 0 }) as DuckType, column);
     default:
-      // A type an extension adds (GEOMETRY, VARIANT): its text, where node-api gives a value of its own.
+      // A type an extension adds (GEOMETRY): its text, where node-api gives a value of its own.
       if (v instanceof Uint8Array) return v;
       return typeof v === "object" ? String(v) : v;
   }

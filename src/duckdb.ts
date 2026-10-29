@@ -2,12 +2,15 @@
 // describe, a catalog query) are answered by the project's own DuckDB, `@duckdb/node-api` loaded
 // from the project, as its prepared statement reports a statement's types: the engine component
 // carries no DuckDB (engine/native/src/duckdb.rs). The database file is opened read-only for each
-// analysis and closed after it: DuckDB lets a process that writes the file share it with readers,
-// but refuses to open it for writing while any other process holds it, so a type check that kept
-// it open would stop the app from starting. A relative path in the statement (`read_parquet('logs/*.parquet')`)
-// is read from the project's directory, where the app usually runs.
+// analysis and closed after it: DuckDB lets no other process open a file one process holds for
+// writing, nor open it for writing while another process holds it at all, so a type check that kept
+// it open would stop the app from starting. Where the app holds it, the type check reads a copy.
+// A relative path in the statement (`read_parquet('logs/*.parquet')`) is read from the project's
+// directory, where the app usually runs.
+import { constants, copyFileSync, existsSync, mkdtempSync, rmSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { Unreachable } from "./connection.ts";
 import type { DuckdbDescribed, DuckdbType, EngineIo } from "./engine-core.ts";
 
@@ -125,9 +128,56 @@ function opened(e: unknown): never {
   throw new Unreachable(e instanceof Error ? e : new Error(String(e)));
 }
 
+/** DuckDB's refusal of a file another process holds. */
+const LOCKED = /Could not set lock on file/;
+
+/** The copy of each database file the type check reads while another process holds it, by the file's path. */
+const copies = new Map<string, { key: string; dir: string; file: string }>();
+let cleanup = false;
+
+/**
+ * A copy of the database file at `path` and its write-ahead log, as they stand: a clone where the
+ * file system makes one (APFS, Btrfs, XFS), so that it takes no space until the app writes. It is
+ * made again only when the file or its log has changed, or when `fresh`, and removed at exit.
+ */
+function copyOf(path: string, fresh = false): string {
+  const wal = `${path}.wal`;
+  const stamp = (p: string) => (existsSync(p) ? `${statSync(p).size}:${statSync(p).mtimeMs}` : "-");
+  const key = `${stamp(path)}/${stamp(wal)}`;
+  const held = copies.get(path);
+  if (held && held.key === key && !fresh) return held.file;
+  if (held) rmSync(held.dir, { recursive: true, force: true });
+  const dir = mkdtempSync(join(tmpdir(), "reylo-duckdb-"));
+  const file = join(dir, basename(path));
+  copyFileSync(path, file, constants.COPYFILE_FICLONE);
+  if (existsSync(wal)) copyFileSync(wal, `${file}.wal`, constants.COPYFILE_FICLONE);
+  copies.set(path, { key, dir, file });
+  if (!cleanup) {
+    cleanup = true;
+    process.once("exit", () => {
+      for (const { dir } of copies.values()) rmSync(dir, { recursive: true, force: true });
+    });
+  }
+  return file;
+}
+
+/** The copy of the database at `path`, opened: a copy made while the app writes the file can catch a write half done, so one more is made before the type check gives up. */
+async function openCopy(api: NodeApi, path: string, options: Record<string, string>): Promise<Instance> {
+  try {
+    return await api.DuckDBInstance.create(copyOf(path), options);
+  } catch {
+    try {
+      return await api.DuckDBInstance.create(copyOf(path, true), options);
+    } catch (e) {
+      opened(e);
+    }
+  }
+}
+
 /**
  * The DuckDB database at `path` (`:memory:` for an empty one), for the project at `root`: each
- * call opens it read-only, runs, and closes it. A NoDuckdbDriver where the project has no
+ * call opens it read-only, runs, and closes it, and where another process holds it for writing,
+ * opens a copy of it instead ([`copyOf`]). A NoDuckdbDriver where the project has no
  * `@duckdb/node-api`.
  */
 export function duckdbDatabase(path: string, root: string): { run<T>(work: (io: EngineIo) => Promise<T>): Promise<T> } {
@@ -137,7 +187,7 @@ export function duckdbDatabase(path: string, root: string): { run<T>(work: (io: 
     async run(work) {
       const options: Record<string, string> = { file_search_path: root };
       if (path !== ":memory:") options.access_mode = "READ_ONLY";
-      const instance = await api.DuckDBInstance.create(path, options).catch(opened);
+      const instance = await api.DuckDBInstance.create(path, options).catch((e: unknown) => (LOCKED.test(e instanceof Error ? e.message : String(e)) ? openCopy(api, path, options) : opened(e)));
       try {
         const c = await instance.connect().catch(opened);
         try {
