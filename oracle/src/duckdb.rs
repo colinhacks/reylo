@@ -440,8 +440,13 @@ fn pool(ty: &str, scenario: Scenario) -> Vec<String> {
     if t.ends_with("[]") {
         return cast(vec!["[]".into(), "[NULL]".into()]);
     }
-    // A nested type: a STRUCT with every field NULL and with each field's first value, an empty
-    // MAP, a UNION of each member, and a fixed-size array of NULLs and of its element's first value.
+    // A nested type: a fixed-size array of NULLs and of its element's first value (checked first,
+    // since `STRUCT(…)[2]` is an array of structs), a STRUCT with every field NULL and with each
+    // field's first value, an empty MAP, and a UNION of each member.
+    if let Some((element, size)) = ty.strip_suffix(']').and_then(|t| t.rsplit_once('[')).and_then(|(e, n)| Some((e, n.parse::<usize>().ok()?))) {
+        let first = pool(element, Scenario::Plain).into_iter().next();
+        return cast([Some("NULL".to_string()), first].into_iter().flatten().map(|v| format!("[{}]", vec![v; size].join(", "))).collect());
+    }
     if let Some(inner) = t.strip_prefix("STRUCT(").map(|_| &ty[7..ty.len() - 1]) {
         let fields = members(inner);
         let filled = |first: bool| fields.iter().map(|(name, ft)| format!("{}: {}", literal(name.trim_matches('"')), if first { pool(ft, Scenario::Plain).into_iter().next().unwrap_or_else(|| "NULL".into()) } else { "NULL".into() })).collect::<Vec<_>>().join(", ");
@@ -452,10 +457,6 @@ fn pool(ty: &str, scenario: Scenario) -> Vec<String> {
     }
     if let Some(inner) = t.strip_prefix("UNION(").map(|_| &ty[6..ty.len() - 1]) {
         return cast(members(inner).iter().map(|(name, mt)| format!("union_value({name} := NULL::{mt})")).collect());
-    }
-    if let Some((element, size)) = ty.strip_suffix(']').and_then(|t| t.rsplit_once('[')).and_then(|(e, n)| Some((e, n.parse::<usize>().ok()?))) {
-        let first = pool(element, Scenario::Plain).into_iter().next();
-        return cast([Some("NULL".to_string()), first].into_iter().flatten().map(|v| format!("[{}]", vec![v; size].join(", "))).collect());
     }
     match t.split('(').next().unwrap_or(&t) {
         "BOOLEAN" => values.extend(["true", "false"]),
