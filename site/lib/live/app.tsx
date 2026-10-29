@@ -167,10 +167,10 @@ function ThemeButton({ theme }: { theme: Theme }) {
 
 /** The examples' groups in the menu, by each example's anchor on the main page, then the playground's own (lib/live/hard-examples.ts); an example in none is under More. */
 const GROUPS: [string, string[]][] = [
-  ['Reading', ['column-types', 'left-joins', 'computed-columns', 'unique-keys', 'aggregates', 'subqueries', 'unions']],
+  ['Reading', ['column-types', 'left-joins', 'computed-columns', 'unique-keys', 'aggregates', 'rollups', 'window-functions', 'subqueries', 'lateral-joins', 'unions']],
   ['Parameters', ['naming', 'casts', 'nullable-parameters', 'dynamic-sorting', 'dynamic-filtering', 'filtering-by-a-list']],
   ['JSON', ['json', 'nested-fetching', 'typed-json']],
-  ['Writing', ['returning-inserts', 'bulk-inserts', 'nested-inserts']],
+  ['Writing', ['returning-inserts', 'upserts', 'old-and-new-values', 'bulk-inserts', 'nested-inserts']],
   [ADVANCED, HARD_EXAMPLES.map((e) => e.slug)],
 ];
 

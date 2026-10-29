@@ -521,6 +521,44 @@ where user_id = :user_id::int
 
 </Inferred>
 
+A rollup adds a row for the total, whose grouped column is null:
+
+<Inferred>
+
+```sql file="rollups.sql" dialect="postgres" play="Rollups"
+select user_id, count(*)::int as posts
+from posts
+group by rollup (user_id)
+order by user_id
+```
+
+```sql file="rollups.sql" dialect="mysql"
+select user_id, count(*) as posts
+from posts
+group by user_id with rollup
+order by user_id
+```
+
+</Inferred>
+
+### Window functions
+
+Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
+
+<Inferred>
+
+```sql file="window_functions.sql" dialect="all"
+select id, title,
+  row_number() over (
+    partition by user_id
+    order by published_at
+  ) as n,
+  lag(title) over (order by id) as prev
+from posts
+```
+
+</Inferred>
+
 ### Subqueries
 
 Run unrelated subqueries side by side, in one query and one round trip. With no `from`, the query returns exactly one row, and `.run()` resolves to it:
@@ -574,7 +612,37 @@ select
 
 </Inferred>
 
-### Returning inserts
+A lateral join runs its subquery once per row, here each user's latest post, or null for a user with none:
+
+<Inferred>
+
+```sql file="lateral_joins.sql" dialect="postgres" play="Lateral joins"
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc nulls last
+  limit 1
+) p on true
+```
+
+```sql file="lateral_joins.sql" dialect="mysql"
+select u.name, p.title, p.published_at
+from users u
+left join lateral (
+  select title, published_at
+  from posts
+  where user_id = u.id
+  order by published_at desc
+  limit 1
+) p on true
+```
+
+</Inferred>
+
+### Returning rows [#returning-inserts]
 
 An insert that returns its row resolves to exactly that row:
 
@@ -590,6 +658,41 @@ returning id
 insert into users (name)
 values (:name::text)
 returning id
+```
+
+</Inferred>
+
+So does an upsert, whether it inserts the row or updates it:
+
+<Inferred>
+
+```sql file="upserts.sql" dialect="postgres" play="Upserts"
+insert into users (name, email)
+values (:name, :email::text)
+on conflict (email) do update
+  set name = excluded.name
+returning id, name
+```
+
+```sql file="upserts.sql" dialect="sqlite"
+insert into users (name, email)
+values (:name, :email::text)
+on conflict (email) do update
+  set name = excluded.name
+returning id, name
+```
+
+</Inferred>
+
+On Postgres 18, an update can return its values from before and after, as `old` and `new`:
+
+<Inferred>
+
+```sql file="old_and_new_values.sql" dialect="postgres" play="Old and new values"
+update users
+set name = :name
+where id = :id
+returning old.name as old_name, new.name as new_name
 ```
 
 </Inferred>
