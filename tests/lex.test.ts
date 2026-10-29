@@ -21,6 +21,20 @@ test("the named forms, the dialect's own positional form, and a position is its 
   assert.deepEqual(names("select $2::text, $1::int"), ["1", "2"]);
 });
 
+test("a colon that opens a Postgres subscript is a slice, not a parameter", () => {
+  // No expression starts with a colon inside a subscript, so `tags[:n]` is `tags[1:n]` there,
+  // with whitespace or a comment before the colon, after a name, a quoted name, a parenthesis, a
+  // subscript or a placeholder.
+  assert.deepEqual(names("select arr[:hi], arr[ :hi], arr[/* c */:hi], \"a\"[:hi], (f(x))[:pg_t.tgnargs], m[1][:hi], arr[1:hi], :a[:hi] from t where x = :x"), ["a", "x"]);
+  // A parameter as the subscript is parenthesized; a slice's bound after its colon is a parameter.
+  assert.deepEqual(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t"), ["i", "hi", "b"]);
+  // An array constructor's bracket follows `array` or another bracket, and holds parameters.
+  assert.deepEqual(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t"), ["a", "b", "c", "d", "e"]);
+  // MySQL and SQLite have no slices: a colon after no name character opens a parameter there.
+  assert.deepEqual(names("select arr[:lo] from t", "mysql"), ["lo"]);
+  assert.deepEqual(names("select arr[:lo] from t", "sqlite"), ["lo"]);
+});
+
 test("MySQL text is read as a session in the default sql_mode reads it", () => {
   // A backslash escapes the character after it, in either quote: a placeholder after `\'` is
   // still in the string, and one after `'\\'` is not.
@@ -46,6 +60,7 @@ test("the runtime's lexer agrees with the engine's", async () => {
     ["select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", `n:m`, 'a\\nb' from t where id = :id # :c\n and :d --:e\n -- :f\n /* :g */ :h", "mysql"],
     ["select ?, '?', \"\\\"?\", ? -- ?\n # ?\n", "mysql"],
     ["select 'C:\\', :x, \"q\"\":y\", `:z`, ':w' -- :v\n /* :u */ from t where a = :a.b", "postgres"],
+    ["select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", "postgres"],
     ["select 'C:\\', ?3, `:w`, ? -- :v\n /* :u */", "sqlite"],
     ["select 'C:\\', :x, \"\\\", :y -- :v\n", "sqlite"],
   ];

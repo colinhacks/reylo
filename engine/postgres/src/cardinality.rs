@@ -1953,6 +1953,12 @@ fn not_key_shaped(s: &SelectStmt) -> Option<&'static str> {
 /// The key proof over the whole FROM: every item is determined ([`From`]), so the FROM has one
 /// row at most; or `SELECT DISTINCT` (`DISTINCT ON`) over values that are the same in every row.
 fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Result<(), String> {
+    // With no FROM there is one row before the WHERE, which only removes it: on Postgres, whose
+    // select list the caller has found no set-returning call in, the statement returns one row
+    // at most (`SELECT 1 WHERE $1`).
+    if s.from_clause.is_empty() && dialect == Dialect::Postgres {
+        return Ok(());
+    }
     if s.from_clause.is_empty() {
         return Err("a SELECT with no FROM and a WHERE can return no row or one, and the engine proves that only through a LIMIT".into());
     }
@@ -2207,7 +2213,50 @@ fn value_type(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&proto
                 None => ValueType::Unnamed,
             }
         }
-        _ => ValueType::Unnamed,
+        _ => built_in_result(value, catalog, type_of).map_or(ValueType::Unnamed, ValueType::Is),
+    }
+}
+
+/// The type a call over values the build types is, where the call can only be the built-in one:
+/// `lower` and `upper` of a string are `text` (an untyped argument takes `lower(text)`, the
+/// string category being the one an unknown argument picks), and `+`, `-`, `*`, `/` and `%` over
+/// integers are the wider integer (`int2 + int4` is `int4`, either side `int8` is `int8`), an
+/// untyped side taking the other's type. Only a name the trust check read and no user or
+/// extension defined, and only where no function of theirs converts a built-in type implicitly,
+/// which a built-in's candidate may run on its operand.
+fn built_in_result(value: &protobuf::Node, catalog: &Catalog, type_of: &dyn Fn(&protobuf::Node) -> Option<u32>) -> Option<u32> {
+    const INTEGERS: &[u32] = &[oid::INT2, oid::INT4, oid::INT8];
+    let built_in = |name: &str| !catalog.user_operators.contains(name) && catalog.overloads.as_ref().is_some_and(|o| !o.0.casts_implicitly());
+    match value.node.as_ref()? {
+        NodeEnum::FuncCall(f) => {
+            let name = infer::builtin_name(&f.funcname)?;
+            let plain = f.agg_order.is_empty() && f.agg_filter.is_none() && f.over.is_none() && !f.agg_within_group && !f.agg_star && !f.agg_distinct && !f.func_variadic;
+            let [arg] = f.args.as_slice() else { return None };
+            let string = match value_type(arg, catalog, type_of) {
+                ValueType::Adapts => true,
+                ValueType::Is(t) => [oid::TEXT, oid::VARCHAR].contains(&t),
+                ValueType::Unnamed => false,
+            };
+            let named = matches!(arg.node.as_ref(), Some(NodeEnum::NamedArgExpr(_)));
+            (plain && !named && string && ["lower", "upper"].contains(&name.as_str()) && infer::postgres_function_names().contains(&name.as_str()) && built_in(&name)).then_some(oid::TEXT)
+        }
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprOp as i32 => {
+            let name = infer::builtin_name(&e.name)?;
+            if !["+", "-", "*", "/", "%"].contains(&name.as_str()) || !infer::POSTGRES_OPERATORS.contains(&name.as_str()) || !built_in(&name) {
+                return None;
+            }
+            let side = |n: Option<&protobuf::Node>| match n.map(|n| value_type(n, catalog, type_of)) {
+                Some(ValueType::Is(t)) if INTEGERS.contains(&t) => Some(Some(t)),
+                Some(ValueType::Adapts) => Some(None),
+                _ => None,
+            };
+            match (side(e.lexpr.as_deref())?, side(e.rexpr.as_deref())?) {
+                (Some(l), Some(r)) => INTEGERS.iter().rev().find(|t| **t == l || **t == r).copied(),
+                (Some(t), None) | (None, Some(t)) => Some(t),
+                (None, None) => None,
+            }
+        }
+        _ => None,
     }
 }
 
@@ -2367,7 +2416,14 @@ fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
         return Err("it is not exactly one statement".into());
     }
     match stmts.pop().and_then(|s| s.stmt).and_then(|n| n.node) {
-        Some(NodeEnum::SelectStmt(s)) => Ok(s),
+        Some(NodeEnum::SelectStmt(mut s)) => {
+            // `GROUP BY ()` groups every row into the one empty grouping set, and beside other
+            // grouping items it is the identity of their cross product: dropped, the statement is
+            // the plain aggregate it is (`SELECT count(*) FROM t GROUP BY ()` is one row). Without
+            // an aggregate the statement then reads as ungrouped, which is many rows, never fewer.
+            s.group_clause.retain(|g| !matches!(g.node.as_ref(), Some(NodeEnum::GroupingSet(set)) if set.kind == protobuf::GroupingSetKind::GroupingSetEmpty as i32));
+            Ok(s)
+        }
         _ => Err("only a SELECT is proven".into()),
     }
 }
@@ -3046,6 +3102,24 @@ mod tests {
     fn a_where_with_no_from_can_remove_the_row() {
         refused(pg("SELECT 1 AS authorized WHERE $1 = 1"), "a WHERE with no FROM can remove the row", "pg");
         refused(lite("SELECT 1 AS authorized WHERE ?1 = 1"), "a WHERE with no FROM can remove the row", "sqlite");
+        // It can only remove the one row, so on Postgres it is one row at most, unless a call at
+        // its level returns a set.
+        let most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &stock());
+        assert_eq!(most("SELECT 1 AS authorized WHERE $1 = 1"), Ok(()));
+        refused(most("SELECT generate_series(1, 3) AS g WHERE $1 = 1"), "set-returning function", "generate_series");
+        assert!(at_most_one("SELECT 1 AS authorized WHERE ?1 = 1", Dialect::Sqlite, &Trust::default(), &Catalog::default()).is_err());
+    }
+
+    #[test]
+    fn an_empty_grouping_set_is_one_group() {
+        // `GROUP BY ()` is the aggregate without it: one row, even over no rows, and a HAVING can
+        // remove it. Beside another grouping item it changes nothing.
+        let c = stock();
+        assert_eq!(exactly_one("SELECT count(*) AS n FROM pg_class WHERE false GROUP BY ()", Dialect::Postgres, &Trust::default(), &c), Ok(()));
+        assert!(exactly_one("SELECT count(*) AS n FROM pg_class GROUP BY () HAVING count(*) > 1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("SELECT relkind, count(*) AS n FROM pg_class GROUP BY relkind, ()", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // Without an aggregate it reads as ungrouped: many rows, never fewer than it returns.
+        assert!(at_most_one("SELECT 1 AS x FROM pg_class GROUP BY ()", Dialect::Postgres, &Trust::default(), &c).is_err());
     }
 
     #[test]

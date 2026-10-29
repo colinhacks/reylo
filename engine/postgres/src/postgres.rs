@@ -143,15 +143,22 @@ pub const CHECKS_QUERY: &str = concat!(
 /// null where it tests the column `IS NOT NULL` among its conjuncts ([`refuses_null`]); a NOT VALID
 /// one still checks every row written. A CHECK `NOT ENFORCED` (PostgreSQL 18), which checks
 /// nothing, is the one the server prints with those words last. `$1` is `text[]` of relation
-/// names.
-pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, oid) AS ( \
+/// names as the statement writes them, schema-qualified or resolved through the search path, `$2`
+/// how many; the relation is named as `$1` names it.
+pub const REFUSES_NULL_QUERY: &str = concat!(
+    "WITH RECURSIVE rels(name, oid) AS (SELECT DISTINCT x.name, c.oid FROM ",
+    cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
+    cardinality::relation_named!("x.name"),
+    "), \
+    domains(attrelid, attnum, oid) AS ( \
       SELECT a.attrelid, a.attnum, t.oid FROM pg_catalog.pg_class c \
         JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
         JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
-      WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
+      WHERE c.oid OPERATOR(pg_catalog.=) ANY (SELECT r.oid FROM rels r) \
       UNION SELECT d.attrelid, d.attnum, t.oid FROM domains d JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) d.oid \
         JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) b.typbasetype AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\") \
-    SELECT c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, \
+    SELECT r.name, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, \
       a.attnotnull OR c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.oid \
         WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum AND t.typnotnull), \
       ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, k.conrelid, true) FROM pg_catalog.pg_constraint k \
@@ -160,8 +167,9 @@ pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, o
       ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, '0'::pg_catalog.oid, true) FROM domains d \
         JOIN pg_catalog.pg_constraint k ON k.contypid OPERATOR(pg_catalog.=) d.oid AND k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" \
         WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum) \
-    FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
-    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)";
+    FROM rels r JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) r.oid \
+      JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
+);
 /// The comment of each column that has one (`COMMENT ON COLUMN`): `(relation, attnum, the
 /// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them,
 /// `$3` how many.
@@ -196,17 +204,21 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 );
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
-/// relation names. The fourth column is the `NOT NULL` a write meets, which checks every new row
+/// relation names as the statement writes them, schema-qualified or resolved through the search
+/// path, `$2` how many. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
 /// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
-/// generated column does not.
+/// generated column does not; the ninth, the relation's name as `$1` gives it.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
     CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
-    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\" FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
-    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
+    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name FROM (SELECT DISTINCT n.name FROM ",
+    cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "n"),
+    ") AS x JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
+    cardinality::relation_named!("x.name"),
+    " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
 );
 /// What the catalog says of the names the expression rules read ([`crate::infer::Trust`]): `$1` is
 /// `text[]` of operator names, `$2` the `text[]` of function names. Each row is `(what, a name, an
@@ -588,6 +600,8 @@ struct Engine<'a> {
     /// The parse-named relations' columns that hold what is written to them, by (relation oid,
     /// attnum): no generated column, whose value an UPDATE computes again.
     stored: RefCell<HashSet<(u32, i32)>>,
+    /// Each prefetched relation's oid, by its name as the statement writes it.
+    oids_by_name: RefCell<HashMap<String, u32>>,
     /// The defining SELECT of each of those that is a view or a materialized view. The catalog
     /// holds no NOT NULL for a view's columns, so they are settled from this statement instead.
     views: RefCell<HashMap<u32, String>>,
@@ -620,6 +634,9 @@ struct Engine<'a> {
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
+    /// The strings the CHECKs of each column a parameter is written to keep it to
+    /// ([`check_values`]).
+    written_values: RefCell<HashMap<(u32, i32), Vec<String>>>,
     /// The comment of each result column of the main statement and of each column it writes a
     /// parameter to ([`Engine::comments`]).
     comments: RefCell<Comments>,
@@ -642,7 +659,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -831,11 +848,25 @@ impl<'a> Engine<'a> {
                 let sources = self.written.borrow();
                 let schemas: Vec<(String, Validators)> = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).flat_map(|(_, rel, att)| sources.get(&(*rel, *att)).cloned().unwrap_or_default()).collect();
                 let document = if schemas.is_empty() { None } else { crate::schema_type::checked_type(&schemas) };
+                // A bare parameter written whole to a string column a CHECK keeps to a list of
+                // strings takes those strings alone, as its read does: the CHECK refuses every
+                // other value the write could give the column. A cast one is its cast's type,
+                // which may change the value on the way (`varchar(3)` cuts it short).
+                let kept = self.written_values.borrow();
+                let bare = parsed.as_ref().is_some_and(|p| p.bare.iter().any(|(n, _, _)| *n == i as i32 + 1));
+                let values = written
+                    .iter()
+                    .filter(|(n, _, _)| bare && *n == i as i32 + 1)
+                    .filter_map(|(_, rel, att)| kept.get(&(*rel, *att)))
+                    .fold(None, |known: Option<Vec<String>>, values| Some(match known {
+                        Some(known) => known.into_iter().filter(|v| values.contains(v)).collect(),
+                        None => values.clone(),
+                    }));
                 // A parameter written to columns that share one comment carries it.
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
+                Param { name: name.clone(), ty: with_document(with_values(registry.render(o), values.as_deref()), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
             })
             .collect();
 
@@ -1042,8 +1073,8 @@ impl<'a> Engine<'a> {
         if relations.is_empty() {
             return Some(());
         }
-        let columns = self.host.query(RELATION_COLUMNS_QUERY, vec![json!(relations)], Scope::Statement);
-        let types = self.host.query(RELATION_TYPES_QUERY, vec![json!(relations)], Scope::Statement);
+        let columns = self.host.query(RELATION_COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
+        let types = self.host.query(RELATION_TYPES_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
         let (Some(columns), Some(types)) = (columns, types) else { return None };
         let mut known = self.relations.borrow_mut();
         for row in columns.unwrap_or_default() {
@@ -1055,9 +1086,13 @@ impl<'a> Engine<'a> {
             if row.get(7).and_then(as_bool) == Some(true) {
                 self.stored.borrow_mut().insert((oid, attnum as i32));
             }
+            // The columns by the relation's name as the statement writes it (`public.kv` or
+            // `kv`), which is how the parse names what a parameter is written to.
+            let asked = row.get(8).and_then(as_str).unwrap_or(name);
             if let Some(column) = row.get(5).and_then(as_str) {
-                self.columns_by_name.borrow_mut().entry(name.to_string()).or_default().insert(attnum as i32, (column.to_string(), written));
+                self.columns_by_name.borrow_mut().entry(asked.to_string()).or_default().insert(attnum as i32, (column.to_string(), written));
             }
+            self.oids_by_name.borrow_mut().insert(asked.to_string(), oid);
             if let Some(definition) = row.get(4).and_then(as_str) {
                 self.views.borrow_mut().insert(oid, definition.trim_end().trim_end_matches(';').to_string());
             }
@@ -1086,7 +1121,7 @@ impl<'a> Engine<'a> {
         let mut written: Vec<String> = parsed.bare.iter().chain(checked.iter().copied()).map(|(_, relation, _)| relation.clone()).collect();
         written.sort();
         written.dedup();
-        let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written)], Scope::Statement);
+        let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written), json!(written.len())], Scope::Statement);
         let prefetched = self.prefetch(relations);
         let (refusing, ()) = (refusing?, prefetched?);
         // Per relation, by attribute: whether the column refuses null.
@@ -1129,7 +1164,7 @@ impl<'a> Engine<'a> {
         let Some(parsed) = parsed.filter(|p| !p.filled.is_empty()) else { return Some(Vec::new()) };
         self.prefetch(relations)?;
         let columns = self.columns_by_name.borrow();
-        let oids: HashMap<String, u32> = self.relations.borrow().iter().map(|(oid, (name, _))| (name.clone(), *oid)).collect();
+        let oids = self.oids_by_name.borrow();
         let mut out = Vec::new();
         for (n, relation, column) in &parsed.filled {
             let (Some(known), Some(oid)) = (columns.get(relation), oids.get(relation)) else { continue };
@@ -1423,6 +1458,7 @@ impl<'a> Engine<'a> {
             }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
+        *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         Some(Ok((raw, described)))
@@ -2798,8 +2834,9 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// The keys, column types and collations of another catalog's relations, and what it knows of
-/// functions, added to `into`: those of the tables a view reads and the functions it calls.
+/// The keys, column types, domains and collations of another catalog's relations, and what it
+/// knows of functions, added to `into`: those of the tables a view reads and the functions it
+/// calls.
 fn merge_keys(into: &mut Catalog, from: Catalog) {
     for (rel, keys) in from.unique_keys {
         into.unique_keys.entry(rel).or_insert(keys);
@@ -2812,6 +2849,15 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     }
     for (rel, columns) in from.nondeterministic {
         into.nondeterministic.entry(rel).or_insert(columns);
+    }
+    // Which columns are of a domain, and each column's declared type, say which `=` a comparison
+    // with a key column of a table the view reads resolves to, as with the statement's own tables.
+    for (rel, columns) in from.domains {
+        into.domains.entry(rel).or_insert(columns);
+    }
+    into.domain_bases.extend(from.domain_bases);
+    for (rel, types) in from.declared_types {
+        into.declared_types.entry(rel).or_insert(types);
     }
     into.single_row.extend(from.single_row);
     into.functions.extend(from.functions);

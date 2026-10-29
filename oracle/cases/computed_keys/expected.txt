@@ -1,0 +1,9 @@
+empty_grouping_set.sql: one () -> { n: int8 }
+empty_grouping_set_having.sql: many () -> { n: int8 }
+integer_product_wider_key.sql: maybeOne (c: int2) -> { title: text }
+integer_sum.sql: maybeOne (id: int4) -> { title: text }
+lower_param.sql: maybeOne (sku: text) -> { title: text }
+no_from_where.sql: maybeOne (flag: bool) -> { x: int4 }
+untyped_call.sql: many (id: int4) -> { title: text }
+upper_constant.sql: maybeOne () -> { title: text }
+view_domain_key.sql: maybeOne (email: citext) -> { id: int4 }
