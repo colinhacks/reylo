@@ -18,7 +18,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
 
-export type Dialect = "postgres" | "sqlite" | "mysql";
+export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
 /** What the engine reads out of `.reylo.yaml`: the keys the library looks at. */
 export type ProjectFile = {
@@ -119,6 +119,7 @@ export function dialectOf(url: string): Dialect | undefined {
   if (scheme === "postgres" || scheme === "postgresql") return "postgres";
   if (scheme === "mysql" || scheme === "mariadb") return "mysql";
   if (scheme === "file" || scheme === "sqlite") return "sqlite";
+  if (scheme === "duckdb") return "duckdb";
   return undefined;
 }
 
@@ -353,7 +354,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
     if (hit) urlSource = hit.source;
   }
   let dialect = url ? dialectOf(url) : "postgres";
-  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file: and sqlite: URLs.`;
+  if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
   // No URL names the database: the engine the project installed does, when it installed one, for
@@ -361,6 +362,13 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const installed = url ? [] : installedEngines(root);
   if (installed.length === 1) dialect = installed[0];
   return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+}
+
+/** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
+export function duckdbPath(url: string, baseDir: string): string {
+  const raw = url.replace(/^duckdb:(\/\/)?/i, "");
+  if (raw === "" || raw === ":memory:") return ":memory:";
+  return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
 /** `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, relative ones resolved against baseDir. */

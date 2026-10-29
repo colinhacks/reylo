@@ -1534,6 +1534,7 @@ version = "0.0.0"
 dependencies = [
  "mysql_async",
  "reylo-engine-core",
+ "reylo-engine-duckdb",
  "reylo-engine-mysql",
  "reylo-engine-postgres",
  "reylo-engine-sqlite",
@@ -1558,6 +1559,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "reylo-engine-duckdb"
+version = "0.0.0"
+dependencies = [
+ "reylo-engine-build",
+ "reylo-engine-core",
+ "serde",
+ "serde_json",
+ "sqlparser 0.63.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "reylo-engine-mysql"
 version = "0.0.0"
 dependencies = [
@@ -1565,7 +1577,7 @@ dependencies = [
  "reylo-engine-core",
  "serde",
  "serde_json",
- "sqlparser",
+ "sqlparser 0.63.0",
 ]
 
 [[package]]
@@ -2007,6 +2019,27 @@ name = "sqlparser"
 version = "0.63.0"
 dependencies = [
  "log",
+]
+
+[[package]]
+name = "sqlparser"
+version = "0.63.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3679862809bd1f92e563cf6fd820e28f39135303668001c10331d5027183e8b4"
+dependencies = [
+ "log",
+ "sqlparser_derive",
+]
+
+[[package]]
+name = "sqlparser_derive"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2905ae8e8148d8f7f5748ea95d1e949fa4fc1d7f5161547b758ad118b2e4b0aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.9",
 ]
 
 [[package]]

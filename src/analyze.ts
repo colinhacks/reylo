@@ -7,8 +7,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { anyEngine, engine, reason, MissingEngine, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
-import { packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
+import { anyEngine, AnswerCache, engine, reason, MissingEngine, Unreachable, type Analysis, type Engine, type Lexed } from "./engine.ts";
+import { duckdbPath, packageDir, resolveProject, sqlitePath, type ResolvedProject } from "./project.ts";
+import { duckdbDatabase } from "./duckdb.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
@@ -306,6 +307,7 @@ export class Session {
   cannotConnect(why?: string): string {
     const { dialect, url, root, urlSource } = this.project;
     if (dialect === "sqlite") return `Cannot open the database ${sqlitePath(url ?? "", root)} (${urlSource})${why ? `: ${why}` : ""}`;
+    if (dialect === "duckdb") return `Cannot open the database ${duckdbPath(url ?? "", root)} (${urlSource})${why ? `: ${why}` : ""}`;
     return `Cannot connect to the database at ${this.where()} (${urlSource})${why ? `: ${why}` : ""}`;
   }
 
@@ -319,6 +321,7 @@ export class Session {
     const { dialect, url, root } = this.project;
     if (!url) return "";
     if (dialect === "sqlite") return sqlitePath(url, root);
+    if (dialect === "duckdb") return duckdbPath(url, root);
     try {
       const u = new URL(url);
       return `${u.protocol}//${u.username}@${u.host}${u.pathname}`;
@@ -331,6 +334,7 @@ export class Session {
   where(): string {
     const { dialect, url, root } = this.project;
     if (dialect === "sqlite") return sqlitePath(url ?? "", root);
+    if (dialect === "duckdb") return duckdbPath(url ?? "", root);
     try {
       const u = new URL(url ?? "");
       return `${u.hostname || u.searchParams.get("host") || "localhost"}${u.port ? `:${u.port}` : ""}${u.pathname}`;
@@ -436,6 +440,19 @@ export class Session {
     const { dialect, root } = this.project;
     // The URL names a database whose engine the project lacks: its error, as the import's.
     if (this.#engine instanceof MissingEngine) throw this.#engine;
+    // DuckDB runs inside the app: the engine's needs are answered by the project's own DuckDB
+    // (src/duckdb.ts), which opens the file for each analysis and holds nothing between them.
+    if (dialect === "duckdb") {
+      const engine = this.#engine;
+      const db = duckdbDatabase(duckdbPath(url, root), root);
+      const cache = new AnswerCache();
+      return {
+        analyze: (sql) => db.run((io) => engine.analyze(sql, "duckdb", io, cache)),
+        query: (text, params) => db.run((io) => io.query(text, params)),
+        forget: async () => cache.clear(),
+        close: async () => {},
+      };
+    }
     // The engine opens the database itself: on SQLite the file the project names, and the statement
     // is prepared on the app's own SQLite drivers too, which are the app's, not the engine's.
     const target = dialect === "sqlite" ? sqlitePath(url, root) : url;
@@ -562,4 +579,14 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   ) t`,
   sqlite: `select type, name, tbl_name, coalesce(sql, '') from sqlite_schema
     union all select 'function', name, type, narg from pragma_function_list order by 1, 2, 3, 4`,
+  // The columns, keys, views, types and macros of every attached database, and the version, whose
+  // functions and binder an analysis reads.
+  duckdb: `select md5(coalesce(string_agg(x, chr(10) order by x), '')) from (
+    select concat_ws(' ', 'v', version()) as x
+    union all select concat_ws(' ', 'c', database_name, schema_name, table_name, column_index, column_name, data_type, is_nullable, coalesce(column_default, ''), md5(coalesce(comment, ''))) from duckdb_columns() where not internal
+    union all select concat_ws(' ', 'k', database_name, schema_name, table_name, constraint_type, constraint_text) from duckdb_constraints()
+    union all select concat_ws(' ', 'w', database_name, schema_name, view_name, md5(coalesce(sql, ''))) from duckdb_views() where not internal
+    union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type) from duckdb_types() where not internal
+    union all select concat_ws(' ', 'f', database_name, schema_name, function_name, function_type, md5(coalesce(macro_definition, ''))) from duckdb_functions() where not internal
+  ) t`,
 };

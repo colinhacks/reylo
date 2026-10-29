@@ -105,6 +105,15 @@ impl Type {
                 let items = of.json_schema(opts.inside_json());
                 json!({"type": "array", "items": if *nullable_items { nullable(items) } else { items }})
             }
+            // A DuckDB struct's fields stand where the struct does, and each may be NULL.
+            Type::Struct { fields } => object(fields, |f| nullable(f.ty.json_schema(opts))),
+            // A DuckDB map as its entries, each a key and its value, in order.
+            Type::Map { key, value } => {
+                let entry = json!({"type": "object", "properties": {"key": key.json_schema(opts), "value": nullable(value.json_schema(opts))}, "required": ["key", "value"]});
+                json!({"type": "array", "items": entry})
+            }
+            // A DuckDB union as its tag and its value.
+            Type::Union { members } => json!({"anyOf": members.iter().map(|m| json!({"type": "object", "properties": {"tag": {"const": m.name}, "value": nullable(m.ty.json_schema(opts))}, "required": ["tag", "value"]})).collect::<Vec<_>>()}),
             // The values a CHECK's JSON Schema admits, as the engine reduced it; else any JSON,
             // null included.
             Type::Json { schema: Some(schema) } => schema.clone(),

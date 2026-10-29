@@ -6,7 +6,7 @@
 //   that ships TypeScript fails to load in the mapper, the bundler adapters and at run time. It
 //   carries no engine and no build step: each database's is a package of its own, an optional peer
 //   at reylo's exact version, which the entry points find from the project (src/engine-package.ts).
-// - dist/postgres, dist/sqlite, dist/mysql: `@reylosql/<database>`, at reylo's version, with its
+// - dist/postgres, dist/sqlite, dist/mysql, dist/duckdb: `@reylosql/<database>`, at reylo's version, with its
 //   engine component in `engine/` (built by engine/build.sh and committed), its package.json and
 //   README, reylo's build-time half (src/tooling.ts) bundled into `tooling.js`, the worker the
 //   engine opens its connections in (src/engine-worker.ts) bundled into `engine-worker.js`, and the
@@ -24,7 +24,7 @@ import { build as bundle, transformSync } from "esbuild";
 const root = join(import.meta.dirname, "..");
 const dist = join(root, "dist");
 const js = (path: string) => path.replace(/\.ts$/, ".js");
-const DATABASES = ["postgres", "sqlite", "mysql"] as const;
+const DATABASES = ["postgres", "sqlite", "mysql", "duckdb"] as const;
 
 rmSync(dist, { recursive: true, force: true });
 const reylo = join(dist, "reylo");
@@ -100,8 +100,9 @@ for (const db of DATABASES) {
   // reylo's entry points load it with a `require` (src/engine-package.ts), which refuses an ES
   // module with a top-level await.
   if (typeof (createRequire(import.meta.url)(join(to, "tooling.js")) as { default?: { sqlModule?: unknown } }).default?.sqlModule !== "function") throw new Error(`dist/${db}/tooling.js does not load with a require`);
-  // The engine connects to its database itself: no driver, and nothing native, is bundled.
-  const native = Object.keys(half.metafile.inputs).filter((input) => /node_modules\/(postgres|mysql2|@bytecodealliance\/jco-node-fs)\//.test(input));
+  // The engine connects to its database itself, or DuckDB's through the app's own driver: no
+  // driver, and nothing native, is bundled.
+  const native = Object.keys(half.metafile.inputs).filter((input) => /node_modules\/(postgres|mysql2|@duckdb|@bytecodealliance\/jco-node-fs)\//.test(input));
   if (native.length) throw new Error(`dist/${db}/tooling.js bundles a driver or a native addon: ${native.join(", ")}`);
   await bundle({ ...bundled, entryPoints: [join(root, "src/engine-worker.ts")], outfile: join(to, "engine-worker.js") });
   // A child process src/sqlite-drivers.ts starts beside the module that starts it.

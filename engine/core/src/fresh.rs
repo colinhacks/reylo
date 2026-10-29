@@ -90,6 +90,13 @@ const MYSQL_QUERY: &str = "select c.table_name as fresh_table, c.column_name as 
     from information_schema.columns c where c.table_schema = database() and c.table_name in ({tables}) \
     order by 1, 2";
 
+/// DuckDB: every column of each table of the current schema that `{tables}` names, a name compared
+/// as DuckDB compares one, without case.
+const DUCKDB_QUERY: &str = "select c.table_name as fresh_table, c.column_name as fresh_column, c.data_type as fresh_type, cast(not c.is_nullable as varchar) as fresh_not_null, \
+    cast(c.column_default is not null as varchar) as fresh_default \
+    from duckdb_columns() c where c.database_name = current_database() and c.schema_name = current_schema() and lower(c.table_name) in ({tables}) \
+    order by 1, 2";
+
 /// SQLite: every column of each table `{tables}` (a SELECT of their names) names; an INTEGER
 /// PRIMARY KEY, the rowid, has a default.
 macro_rules! sqlite_query {
@@ -137,6 +144,7 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
     let query = match dialect {
         Dialect::Postgres => (if with_defaults { PG_QUERY_DEFAULTS } else { PG_QUERY }).replace("{tables}", &literals.iter().map(|l| format!("({l}::pg_catalog.text)")).collect::<Vec<_>>().join(", ")),
         Dialect::Mysql => MYSQL_QUERY.replace("{tables}", &literals.join(", ")),
+        Dialect::Duckdb => DUCKDB_QUERY.replace("{tables}", &names.iter().map(|n| literal(&n.to_lowercase())).collect::<Vec<_>>().join(", ")),
         Dialect::Sqlite => (if with_defaults { SQLITE_QUERY_DEFAULTS } else { SQLITE_QUERY }).replace("{tables}", &literals.iter().enumerate().map(|(k, l)| if k == 0 { format!("select {l} as value") } else { format!("select {l}") }).collect::<Vec<_>>().join(" union all ")),
     };
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;

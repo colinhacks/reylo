@@ -3,9 +3,11 @@
 //! One named form works in every dialect, `:name`, which is also the form mysql2's
 //! `namedPlaceholders` and SQLite accept; SQLite's own `@name` and `$name` are named placeholders
 //! there too. Beside them a statement may use its database's own positional form instead, never
-//! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite. A form the database does not
+//! both: `$1` on Postgres, `?` on MySQL, `?` and `?NNN` on SQLite, and `$1`, `?` and `?NNN` on
+//! DuckDB. A form the database does not
 //! have is refused where the database would misread it: SQLite takes `$1` for a parameter named
-//! `$1`, and a Postgres `$name` outside a dollar quote is a syntax error, so each is an error that
+//! `$1`, a Postgres `$name` outside a dollar quote is a syntax error, and DuckDB takes `$name` for a
+//! parameter Reylo does not bind, so each is an error that
 //! says what to write; MySQL's `@name` is a user variable and `$` a character of its identifiers,
 //! so both stay text there, as `@` (an operator) does on Postgres. A parameter's name drops the
 //! prefix: `:id`, `@id` and `$id` are `id`, and `$2` and `?2` are both `2`. SQLite reads `:id` and
@@ -15,12 +17,12 @@
 //! is an error at its place ([`repeated`]); a bare `?` is a parameter of its own. A name may be
 //! dotted (`:auth.user_id`): each `.segment` starts like a name, so `arr[1:2]` and `:t.*` end
 //! where they should. The engine rewrites placeholders to whatever the
-//! database binds by position (`$n` on Postgres, `?` on MySQL, `?n` for the SQLite prepare, where
+//! database binds by position (`$n` on Postgres and DuckDB, `?` on MySQL, `?n` for the SQLite prepare, where
 //! SQLite's own `:name` would end at the first dot) and keeps a map back to the author's text, so
 //! a server error at a rewritten position lands on the right characters of the `.sql` file.
 //!
 //! The pass knows what the parser knows about text: single-quoted literals (with `''`), `E''`
-//! escape strings (with backslashes), dollar quoting, double-quoted identifiers, line comments,
+//! escape strings (with backslashes), dollar quoting (Postgres's and DuckDB's), double-quoted identifiers, line comments,
 //! nested block comments, and `::` casts. MySQL reads text its own way, by the session's
 //! `sql_mode` ([`MysqlText`]): a backslash in a string escapes the character after it, a
 //! double-quoted word is a string, `#` starts a line comment as `-- ` does (`--` followed by
@@ -380,7 +382,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
             }
             b'$' => {
-                if dialect == Dialect::Postgres {
+                if matches!(dialect, Dialect::Postgres | Dialect::Duckdb) {
                     if let Some(tag_end) = dollar_tag_end(b, i) {
                         let tag = &b[i..tag_end];
                         match find_bytes(b, tag, tag_end) {
@@ -401,7 +403,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 match b.get(i + 1) {
                     // `a$1` and `a$b` are identifiers.
                     _ if prev_is_name_char(b, i) => i += 1,
-                    Some(&n) if n.is_ascii_digit() && dialect == Dialect::Postgres => {
+                    Some(&n) if n.is_ascii_digit() && matches!(dialect, Dialect::Postgres | Dialect::Duckdb) => {
                         let end = digits_end(b, i + 1);
                         push(position(&sql[i + 1..end], &mut largest), i, end, &mut params);
                         i = end;
@@ -496,6 +498,7 @@ fn foreign(sql: &str, i: usize, dialect: Dialect) -> LexError {
     let fix = if digits { format!("?{}", &sql[i + 1..end]) } else { format!(":{}", &sql[i + 1..end]) };
     let message = match dialect {
         Dialect::Sqlite => format!("SQLite reads {written} as a parameter that Reylo does not bind; write {fix}"),
+        Dialect::Duckdb => format!("DuckDB reads {written} as a parameter that Reylo does not bind; write {fix}"),
         _ => format!("{written} is not a placeholder here; Reylo's named placeholder is {fix}"),
     };
     LexError { message, offset: i }
@@ -695,6 +698,9 @@ mod tests {
         assert_eq!(names("select $1, $2, $1", Dialect::Postgres), ["1", "2"]);
         assert_eq!(names("select ?, ?", Dialect::Sqlite), ["1", "2"]);
         assert_eq!(names("select ?, ?", Dialect::Mysql), ["1", "2"]);
+        assert_eq!(names("select ?, ?3, ?", Dialect::Duckdb), ["1", "3", "4"]);
+        assert_eq!(names("select $2, $1", Dialect::Duckdb), ["1", "2"]);
+        assert_eq!(names("select :a, :b", Dialect::Duckdb), ["a", "b"]);
         assert_eq!(lex("select :a, $1", Dialect::Postgres).unwrap().style, Style::Mixed);
         assert_eq!(lex("select 1", Dialect::Postgres).unwrap().style, Style::None);
     }
@@ -705,6 +711,8 @@ mod tests {
         assert_eq!(names(sql, Dialect::Postgres), ["id"]);
         assert_eq!(names("select json_extract(j, '$.a') = ? and x = :n", Dialect::Sqlite), ["1", "n"]);
         assert_eq!(names("select `a:b`, 'x' from t where a = :a", Dialect::Mysql), ["a"]);
+        let duck = "select ':x' as a, \":y\" as b, e'\\':z' as c, $$:w ?$$ as d, $t$ $1 $t$ as e, x::int, l[1:2], {'k': 1} -- :c\n /* :d /* :e */ */ from t where id = :id";
+        assert_eq!(names(duck, Dialect::Duckdb), ["id"]);
     }
 
     #[test]
@@ -714,6 +722,7 @@ mod tests {
         assert_eq!(err("select $name", Dialect::Postgres).message, "$name is not a placeholder here; Reylo's named placeholder is :name");
         assert_eq!(err("select 1 where x = $2", Dialect::Sqlite).message, "SQLite reads $2 as a parameter that Reylo does not bind; write ?2");
         assert_eq!(err("select ?2", Dialect::Mysql).message, "MySQL has no numbered placeholder ?2; write ? for each value, or :name");
+        assert_eq!(err("select $name", Dialect::Duckdb).message, "DuckDB reads $name as a parameter that Reylo does not bind; write :name");
         assert_eq!(err("select $name", Dialect::Postgres).offset, 7);
         // Where the dialect reads the form as something else, it is that: MySQL's user variable and
         // `$` identifier, Postgres's `@` operator and `a$1` identifier.

@@ -6,10 +6,11 @@ publish = false
 description = "Reylo's engine as a native program per database: JSON requests on standard input, one answer per line on standard output. It answers what the WebAssembly engine answers, and opens its own connection to the database to analyze a statement to its end."
 
 [features]
-default = ["postgres", "mysql", "sqlite"]
+default = ["postgres", "mysql", "sqlite", "duckdb"]
 postgres = ["reylo-engine/tokio-postgres", "dep:tokio-postgres", "dep:tokio-postgres-rustls"]
 mysql = ["reylo-engine/mysql_async", "dep:mysql_async"]
 sqlite = ["reylo-engine/rusqlite", "dep:rusqlite"]
+duckdb = ["reylo-engine/duckdb"]
 
 [[bin]]
 name = "reylo-postgres"
@@ -25,6 +26,11 @@ required-features = ["mysql"]
 name = "reylo-sqlite"
 path = "src/bin/reylo-sqlite.rs"
 required-features = ["sqlite"]
+
+[[bin]]
+name = "reylo-duckdb"
+path = "src/bin/reylo-duckdb.rs"
+required-features = ["duckdb"]
 
 [dependencies]
 reylo-engine = { path = "../facade" }

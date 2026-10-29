@@ -575,7 +575,7 @@ pub fn plan(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> Pl
 
 fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> Plan {
     let text = match dialect {
-        Dialect::Postgres => sql.to_string(),
+        Dialect::Postgres | Dialect::Duckdb => sql.to_string(),
         Dialect::Sqlite | Dialect::Mysql => dollar_placeholders(sql),
     };
     let Ok(parsed) = crate::stack::parse(&text) else { return Plan::default() };
@@ -1426,7 +1426,7 @@ impl Reader<'_> {
                     return self.json_path(&op, a);
                 }
                 let accepted = match self.dialect {
-                    Dialect::Postgres => POSTGRES_OPERATORS.contains(&op.as_str()),
+                    Dialect::Postgres | Dialect::Duckdb => POSTGRES_OPERATORS.contains(&op.as_str()),
                     Dialect::Sqlite | Dialect::Mysql => SQLITE_OPERATORS.contains(&op.as_str()),
                 };
                 let Some(right) = a.rexpr.as_deref() else { return Expr::Unknown };

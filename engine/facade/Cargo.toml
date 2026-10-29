@@ -9,6 +9,7 @@ description = "Reylo's analysis engine for a Rust host: each database's engine b
 postgres = ["dep:reylo-engine-postgres"]
 sqlite = ["dep:reylo-engine-sqlite"]
 mysql = ["dep:reylo-engine-mysql"]
+duckdb = ["dep:reylo-engine-duckdb"]
 # A client the engine's needs are answered over, which brings its database's engine.
 tokio-postgres = ["postgres", "dep:tokio-postgres"]
 rusqlite = ["sqlite", "dep:rusqlite"]
@@ -19,6 +20,7 @@ reylo-engine-core = { path = "../core" }
 reylo-engine-postgres = { path = "../postgres", optional = true }
 reylo-engine-sqlite = { path = "../sqlite", optional = true }
 reylo-engine-mysql = { path = "../mysql", optional = true }
+reylo-engine-duckdb = { path = "../duckdb", optional = true }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
 # `with-serde_json-1`: a `json` or `jsonb` column reads as its value, as the answers of the server-side
 # extension come back.

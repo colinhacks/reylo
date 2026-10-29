@@ -24,6 +24,7 @@ crate-type = ["cdylib"]
 postgres = ["reylo-engine-native/postgres"]
 mysql = ["reylo-engine-native/mysql"]
 sqlite = ["reylo-engine-native/sqlite"]
+duckdb = ["reylo-engine-native/duckdb"]
 
 [build-dependencies]
 reylo-engine-build = { path = "../build-support" }

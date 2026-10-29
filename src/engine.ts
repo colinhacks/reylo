@@ -1,5 +1,6 @@
 // The analysis engine: one WebAssembly component per database, in the `engine/` directory of the
-// database's npm package (`@reylosql/postgres`, `@reylosql/sqlite`, `@reylosql/mysql`), which a
+// database's npm package (`@reylosql/postgres`, `@reylosql/sqlite`, `@reylosql/mysql`,
+// `@reylosql/duckdb`), which a
 // project installs beside reylo and which is found from the project first, then from reylo's own
 // install; each loads once per process. The engine connects to the database itself: the analysis
 // of a statement is one request on a connection it opened (engine/native, built as a component by
@@ -19,7 +20,7 @@ import { EngineCore, type Analysis, type Described, type Dialect } from "./engin
 
 export type { EngineType } from "./engine-type.ts";
 export { reason, Unreachable } from "./connection.ts";
-export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
+export type { Analysis, Answer, DbError, Described, Diagnostic, Dialect, DuckdbDescribed, DuckdbType, EngineIo, Lexed, MysqlDescribed, Need, Response } from "./engine-core.ts";
 export { AnswerCache, EngineCore } from "./engine-core.ts";
 
 /**
@@ -28,7 +29,7 @@ export { AnswerCache, EngineCore } from "./engine-core.ts";
  * version, so a project installs the ones for its databases. Every one carries the same core, which
  * lexes and reads the project file.
  */
-export const ENGINE_PACKAGES: Record<Dialect, string> = { postgres: "@reylosql/postgres", sqlite: "@reylosql/sqlite", mysql: "@reylosql/mysql" };
+export const ENGINE_PACKAGES: Record<Dialect, string> = { postgres: "@reylosql/postgres", sqlite: "@reylosql/sqlite", mysql: "@reylosql/mysql", duckdb: "@reylosql/duckdb" };
 
 /**
  * The version of reylo, which every engine package it loads must have: that of the package this
@@ -59,7 +60,7 @@ export class MissingEngine extends Error {
 
   /** No engine at all, so not even the project file can be read. */
   static none(): MissingEngine {
-    return new MissingEngine(`reylo reads the project file with a database's engine, and none is installed: npm install -D @reylosql/postgres, @reylosql/mysql or @reylosql/sqlite, the one for your database`);
+    return new MissingEngine(`reylo reads the project file with a database's engine, and none is installed: npm install -D @reylosql/postgres, @reylosql/mysql, @reylosql/sqlite or @reylosql/duckdb, the one for your database`);
   }
 }
 
@@ -121,7 +122,7 @@ export function engine(dialect: Dialect, projectDir: string, from?: string): Pro
  */
 export async function anyEngine(projectDir: string, from?: string): Promise<Engine | MissingEngine> {
   let failed: MissingEngine | undefined;
-  for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
+  for (const dialect of ["postgres", "mysql", "sqlite", "duckdb"] as const) {
     if (!enginePath(dialect, projectDir, from)) continue;
     try {
       return await engine(dialect, projectDir, from);

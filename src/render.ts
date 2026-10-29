@@ -80,6 +80,10 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     case "json": return t.schema === undefined ? "unknown" : schemaType(t.schema);
     // Only a parameter is one; no column is.
     case "rows": return renderParamType(t, dialect);
+    // A DuckDB struct's fields, map's entries and union's value stand as a row's values do.
+    case "struct": return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${renderType(f.type, false, dialect)} | null`).join("; ")} }` : "Record<never, never>";
+    case "map": return `{ key: ${renderType(t.key, false, dialect)}; value: ${renderType(t.value, false, dialect)} | null }[]`;
+    case "union": return t.members.length ? t.members.map((m) => `{ tag: ${JSON.stringify(m.name)}; value: ${renderType(m.type, false, dialect)} | null }`).join(" | ") : "never";
     case "unknown": return "unknown";
   }
 }
@@ -220,6 +224,18 @@ export function declaredType(t: EngineType, declared: unknown): string | undefin
  * back into a row.
  */
 export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false): string {
+  // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
+  // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of
+  // its fields and a map its entries.
+  if (dialect === "duckdb") {
+    if (t.kind === "scalar") {
+      const kind = scalarKind(t.name, dialect);
+      if (kind === "int8") return "number | bigint | string";
+      if (kind === "decimal" || kind === "date" || kind === "timestamp" || kind === "timestamptz" || kind === "interval") return "string";
+    }
+    if (t.kind === "struct") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${renderParamType(f.type, dialect, true)} | null`).join("; ")} }` : "Record<never, never>";
+    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key, dialect, true)}; value: ${renderParamType(t.value, dialect, true)} | null }[]`;
+  }
   if (t.kind === "scalar" && dialect !== "sqlite") {
     if (t.name === "int8") return "number | bigint | string";
     if (t.name.split("|").every((name) => name === "timestamp" || name === "timestamptz" || name === "date")) return "string";

@@ -14,6 +14,12 @@ export type EngineType =
   | { kind: "json"; schema?: JsonSchema }
   /** A structured parameter, `:events::rows(…)` or `:user::row(…)`: one object (`one`) or an array of them, each key typed by its column list. `optional`: the caller may leave the key out. `written`: the type as the column list writes it. */
   | { kind: "rows"; one: boolean; fields: { name: string; type: EngineType; written: string; nullable: boolean; optional: boolean; schema?: JsonSchema }[] }
+  /** A DuckDB `STRUCT`: an object of its fields, each a value as it stands in a row (a BIGINT a BigInt), each may be null. */
+  | { kind: "struct"; fields: { name: string; type: EngineType; nullable: boolean }[] }
+  /** A DuckDB `MAP`: its entries in order, each `{ key, value }`, a value may be null. */
+  | { kind: "map"; key: EngineType; value: EngineType }
+  /** A DuckDB `UNION`: one member, `{ tag, value }`, its value may be null. */
+  | { kind: "union"; members: { name: string; type: EngineType; nullable: boolean }[] }
   | { kind: "unknown" };
 
 /**

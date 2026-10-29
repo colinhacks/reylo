@@ -2355,7 +2355,7 @@ pub fn never_a_row(sql: &str, dialect: Dialect) -> Option<&'static str> {
 /// The one `SELECT` a statement is, parsed as the dialect's statements are read.
 fn one_select(sql: &str, dialect: Dialect) -> Result<Box<SelectStmt>, String> {
     let text = match dialect {
-        Dialect::Postgres => sql.to_string(),
+        Dialect::Postgres | Dialect::Duckdb => sql.to_string(),
         Dialect::Sqlite | Dialect::Mysql => infer::dollar_placeholders(sql),
     };
     let parsed = crate::stack::parse(&text).map_err(|_| match dialect {

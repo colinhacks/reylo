@@ -1,6 +1,6 @@
 //! The type model every database's engine answers with. A scalar's name is in its database's
-//! vocabulary: Postgres's catalog names, which MySQL maps its protocol types into, and SQLite's
-//! storage classes.
+//! vocabulary: Postgres's catalog names, which MySQL maps its protocol types into, SQLite's
+//! storage classes, and DuckDB's type names, lowercased (`integer`, `hugeint`, `timestamptz`).
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +50,15 @@ pub enum Type {
     /// A structured parameter, `:events::rows(…)` or `:user::row(…)`: one object (`one`) or an
     /// array of objects, whose keys the parameter's column list names ([`crate::structured`]).
     Rows { one: bool, fields: Vec<RowField> },
+    /// A DuckDB `STRUCT`: an object of its fields, each a value as it stands in a result row
+    /// (unlike an `Object`'s, which JSON encodes), and each may be NULL, since DuckDB has no NOT
+    /// NULL inside a struct.
+    Struct { fields: Vec<Field> },
+    /// A DuckDB `MAP`: its entries in order, each key of the key type and each value of the
+    /// value type, which may be NULL.
+    Map { key: Box<Type>, value: Box<Type> },
+    /// A DuckDB `UNION`: one of its members, by tag, whose value may be NULL.
+    Union { members: Vec<Field> },
     /// Nothing the engine derived.
     Unknown,
 }

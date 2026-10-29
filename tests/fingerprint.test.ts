@@ -83,7 +83,7 @@ function fingerprint(database: string): string {
   return fnv(0xcbf29ce484222325n, parts, false).toString(16).padStart(16, "0");
 }
 
-for (const database of ["postgres", "sqlite", "mysql"]) {
+for (const database of ["postgres", "sqlite", "mysql", "duckdb"]) {
   test(`packages/${database}/engine is the build of the engine's sources`, async () => {
     const engine = await Engine.load(join(PACKAGES, database, "engine"));
     const ping = engine.call({ op: "ping" }) as { fingerprint: string; host?: string };
