@@ -689,21 +689,6 @@ export function PlayApp({ data, connect, theme, labels, home, github, api, about
               <span className="play-label">Returns</span>
               {returns ? <Code lines={returns} /> : <p className="play-none">…</p>}
             </div>
-            {!failing && shown.returns !== undefined && (
-              <p className="play-report">
-                {/* The issue's text is written as the link is followed, from the query, schema and types shown then. */}
-                <a
-                  href={`${github}/issues/new`}
-                  target="_blank"
-                  rel="noopener"
-                  onPointerDown={(e) => (e.currentTarget.href = report())}
-                  onFocus={(e) => (e.currentTarget.href = report())}
-                >
-                  Wrong type? Report it
-                  <Icon d={OUT} size={13} />
-                </a>
-              </p>
-            )}
             {failing && (
               <p className="play-types-error">
                 <span className="play-dot" aria-hidden="true" />
@@ -711,6 +696,22 @@ export function PlayApp({ data, connect, theme, labels, home, github, api, about
               </p>
             )}
           </div>
+          {/* At the pane's bottom left, under the scrolling types. */}
+          {!failing && shown.returns !== undefined && (
+            <p className="play-report">
+              {/* The issue's text is written as the link is followed, from the query, schema and types shown then. */}
+              <a
+                href={`${github}/issues/new`}
+                target="_blank"
+                rel="noopener"
+                onPointerDown={(e) => (e.currentTarget.href = report())}
+                onFocus={(e) => (e.currentTarget.href = report())}
+              >
+                Wrong type? Report it
+                <Icon d={OUT} size={12} />
+              </a>
+            </p>
+          )}
           {/* The schema: a card that slides in over the whole pane, closed by its × or Escape. */}
           <section id="play-schema" className="play-schema" data-open={schemaOpen || undefined} aria-label="Schema" inert={!schemaOpen}>
             <div className="play-schema-head">

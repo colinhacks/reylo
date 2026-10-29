@@ -1015,17 +1015,19 @@ html[data-play-schema] #nd-page.play .play-types[data-built] .play-row::after {
   }
 }
 
-/* "Wrong type? Report it", muted under the Returns type until hovered. */
+/* "Wrong type? Report it", small and dim at the types pane's bottom left, until hovered. */
 #nd-page.play .play-report {
-  margin: 20px 0 0;
-  font-size: var(--play-ui);
+  flex: none;
+  margin: 0;
+  padding: 12px var(--play-pad) 16px;
+  font-size: 12px;
 }
 
 #nd-page.play .play-report a {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  color: var(--color-fd-muted-foreground);
+  color: color-mix(in srgb, var(--color-fd-muted-foreground) 70%, transparent);
   transition: color 120ms;
 }
 
