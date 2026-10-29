@@ -109,7 +109,7 @@ pub const POSTGRES_TOTAL: &[&str] = &[
     "pg_advisory_xact_lock", "pg_advisory_xact_lock_shared", "pg_try_advisory_lock", "pg_try_advisory_lock_shared",
     "pg_try_advisory_xact_lock", "pg_try_advisory_xact_lock_shared",
     "cardinality", "array_to_string", "array_append", "array_prepend", "array_cat", "array_remove",
-    "to_json", "to_jsonb", "row_to_json", "json_typeof", "jsonb_typeof", "jsonb_strip_nulls", "jsonb_pretty",
+    "to_json", "to_jsonb", "row_to_json", "array_to_json", "json_typeof", "jsonb_typeof", "jsonb_strip_nulls", "jsonb_pretty",
     // What `x SIMILAR TO p` and `x LIKE p ESCAPE e` call on their pattern.
     "similar_to_escape", "like_escape",
 ];

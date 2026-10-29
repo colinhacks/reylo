@@ -41,9 +41,13 @@ const AGG_FNS: &[&str] = &["json_agg", "jsonb_agg", "json_group_array"];
 const TOTAL_AGG_FNS: &[&str] = &["json_group_array"];
 /// A whole row, so the shape is the relation's own columns.
 const ROW_FNS: &[&str] = &["to_json", "to_jsonb", "row_to_json"];
+/// `json_build_array(a, b, …)` and its jsonb twin: an array of exactly those values, in order.
+const TUPLE_FNS: &[&str] = &["json_build_array", "jsonb_build_array"];
+/// `array_to_json(a)`: the JSON array of a Postgres array's elements, NULL for a NULL array.
+const ARRAY_TO_JSON: &str = "array_to_json";
 /// Every function name the shapes read on Postgres, for the trust check ([`Trust::shadowed`]): a
 /// name a user has also defined may resolve to that function, which builds what it likes.
-pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object", "json_agg", "jsonb_agg", "json_group_array", "to_json", "to_jsonb", "row_to_json"];
+pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object", "json_agg", "jsonb_agg", "json_group_array", "to_json", "to_jsonb", "row_to_json", "json_build_array", "jsonb_build_array", "array_to_json", "array_agg"];
 
 /// How many synthesized statements one statement may cost. A nested fetch needs one; a shape
 /// with an aggregate under an object needs two. The cap keeps a pathological statement from
@@ -248,6 +252,7 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
     match shape {
         Shape::Object { fields, .. } => fields.iter().for_each(|(_, s)| oids(s, probes, param_oids, out)),
         Shape::Array { items, .. } => oids(items, probes, param_oids, out),
+        Shape::Tuple { items, .. } => items.iter().for_each(|s| oids(s, probes, param_oids, out)),
         Shape::Nullable(inner) => oids(inner, probes, param_oids, out),
         Shape::Column { probe, index } => {
             if let Some(col) = probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
@@ -446,6 +451,14 @@ impl Builder<'_> {
                     let shape = self.aggregate(f, non_null);
                     self.under_aggregate = outer;
                     shape
+                } else if self.dialect == Dialect::Postgres && TUPLE_FNS.contains(&name.as_str()) {
+                    // `VARIADIC` passes the items as one array, which the build does not read.
+                    if f.func_variadic {
+                        return Shape::Unknown;
+                    }
+                    Shape::Tuple { items: f.args.iter().map(|a| self.walk(a)).collect(), non_null: true, skips_nulls: false }
+                } else if self.dialect == Dialect::Postgres && name == ARRAY_TO_JSON {
+                    self.array_to_json(f)
                 } else if ROW_FNS.contains(&name.as_str()) {
                     // A bare name is a column before it is a FROM item, of the innermost query
                     // that has one of that name: it is the item's whole row only when no FROM in
@@ -462,6 +475,34 @@ impl Builder<'_> {
                     self.leaf(expr)
                 }
             }
+            // `JSON_OBJECT(k: v, …)` builds an object of its literal keys, a NULL value written as a
+            // JSON `null`. `ABSENT ON NULL` leaves a NULL value's key out, which no field type
+            // says, and a value `FORMAT JSON` is parsed as JSON, of no shape the build reads.
+            Some(NodeEnum::JsonObjectConstructor(c)) if self.dialect == Dialect::Postgres => {
+                if c.absent_on_null || !returns_json(c.output.as_ref()) {
+                    return if returns_json(c.output.as_ref()) { Shape::Unknown } else { self.leaf(expr) };
+                }
+                let mut fields = Vec::with_capacity(c.exprs.len());
+                for pair in &c.exprs {
+                    let Some(NodeEnum::JsonKeyValue(kv)) = pair.node.as_ref() else { return Shape::Unknown };
+                    let (Some(key), Some(value)) = (kv.key.as_deref().and_then(string_const), kv.value.as_deref()) else { return Shape::Unknown };
+                    fields.push((key, self.json_value(value)));
+                }
+                Shape::Object { fields, non_null: true }
+            }
+            // `JSON_ARRAY(a, b, …)` builds an array of its values, leaving a NULL one out unless
+            // `NULL ON NULL` writes it as a JSON `null`.
+            Some(NodeEnum::JsonArrayConstructor(c)) if self.dialect == Dialect::Postgres => {
+                if !returns_json(c.output.as_ref()) {
+                    return self.leaf(expr);
+                }
+                let mut items = Vec::with_capacity(c.exprs.len());
+                for item in &c.exprs {
+                    let Some(NodeEnum::JsonValueExpr(value)) = item.node.as_ref() else { return Shape::Unknown };
+                    items.push(self.json_value(value));
+                }
+                Shape::Tuple { items, non_null: true, skips_nulls: c.absent_on_null }
+            }
             // `coalesce(x, …)` is `x` where `x` stands alone or is never NULL, and an array under
             // `'[]'` is that array or an empty one, so never NULL. Under any other default it may be
             // that default, of any shape, so it is one value the build reads as it is.
@@ -471,7 +512,7 @@ impl Builder<'_> {
                 let drafted = self.drafts.clone();
                 match (self.walk(first), &c.args[1..]) {
                     (shape, []) => shape,
-                    (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. }), _) => shape,
+                    (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. } | Shape::Tuple { non_null: true, .. }), _) => shape,
                     (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) => Shape::Array { items, non_null: true },
                     // A placeholder is the whole's type under a default that cannot widen it, and it
                     // resolves nullable. Under any other one the whole is no probe's to read, since a
@@ -558,6 +599,59 @@ impl Builder<'_> {
                 }
             }
             _ => self.leaf(expr),
+        }
+    }
+
+    /// One value of `JSON_OBJECT` or `JSON_ARRAY`: its expression's shape, or nothing for one
+    /// `FORMAT JSON` parses as JSON.
+    fn json_value(&mut self, value: &protobuf::JsonValueExpr) -> Shape {
+        let parsed = value.format.as_ref().is_some_and(|f| f.format_type != protobuf::JsonFormatType::JsFormatDefault as i32 && f.format_type != protobuf::JsonFormatType::Undefined as i32);
+        match value.raw_expr.as_deref() {
+            Some(raw) if !parsed => self.walk(raw),
+            _ => Shape::Unknown,
+        }
+    }
+
+    /// `array_to_json(ARRAY(SELECT x …))`, an array of the values of `x`, never NULL, and
+    /// `array_to_json(array_agg(x))`, as `json_agg(x)` is. `array_to_json` of any other array, and
+    /// its form with `pretty`, which is NULL for a NULL `pretty`, are values the build reads as
+    /// they are.
+    fn array_to_json(&mut self, f: &protobuf::FuncCall) -> Shape {
+        let [arg] = f.args.as_slice() else { return Shape::Unknown };
+        match arg.node.as_ref() {
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                if select.with_clause.is_some() || has_grouping_sets(select) || !select.values_lists.is_empty() || select.op != protobuf::SetOperation::SetopNone as i32 {
+                    return Shape::Unknown;
+                }
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
+                let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
+                self.next_ctx += 1;
+                self.stack.push((self.next_ctx, select.from_clause.clone(), None));
+                self.withs.push(withs);
+                let rows = self.rows.take();
+                self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                let items = self.walk(&inner);
+                self.rows = rows;
+                self.withs.pop();
+                self.stack.pop();
+                Shape::Array { items: Box::new(items), non_null: true }
+            }
+            Some(NodeEnum::FuncCall(inner)) if crate::infer::builtin_name(&inner.funcname).is_some_and(|n| n == "array_agg" && self.trust.builtin(&n)) && inner.args.len() == 1 && !inner.func_variadic && !inner.agg_star => {
+                // An aggregate of the top statement's own under a plain GROUP BY, or over a frame
+                // that holds the current row, has a row; anywhere else it may be NULL.
+                let has_a_row = match inner.over.as_deref() {
+                    Some(over) => crate::infer::frame_holds_current_row(over, &self.windows),
+                    None => self.grouped,
+                };
+                let non_null = has_a_row && self.stack.len() == 1 && inner.agg_filter.is_none();
+                let outer = self.under_aggregate;
+                self.under_aggregate |= inner.over.is_none() && self.stack.len() == 1;
+                let shape = self.aggregate(inner, non_null);
+                self.under_aggregate = outer;
+                shape
+            }
+            _ => self.leaf(&Node { node: Some(NodeEnum::FuncCall(Box::new(f.clone()))) }),
         }
     }
 
@@ -913,8 +1007,9 @@ fn is_constructor(expr: &Node) -> bool {
     match expr.node.as_ref() {
         Some(NodeEnum::FuncCall(f)) => {
             let name = func_name(f).unwrap_or_default();
-            OBJECT_FNS.contains(&name.as_str()) || AGG_FNS.contains(&name.as_str()) || ROW_FNS.contains(&name.as_str())
+            OBJECT_FNS.contains(&name.as_str()) || AGG_FNS.contains(&name.as_str()) || ROW_FNS.contains(&name.as_str()) || TUPLE_FNS.contains(&name.as_str()) || name == ARRAY_TO_JSON
         }
+        Some(NodeEnum::JsonObjectConstructor(_) | NodeEnum::JsonArrayConstructor(_)) => true,
         Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(is_constructor),
         Some(NodeEnum::TypeCast(t)) => casts_to_json(t) && t.arg.as_deref().is_some_and(is_constructor),
         Some(NodeEnum::CaseExpr(c)) => case_branch(c).is_some(),
@@ -1121,6 +1216,7 @@ fn force_nullable(shape: Shape) -> Shape {
     match shape {
         Shape::Object { fields, .. } => Shape::Object { fields, non_null: false },
         Shape::Array { items, .. } => Shape::Array { items, non_null: false },
+        Shape::Tuple { items, skips_nulls, .. } => Shape::Tuple { items, non_null: false, skips_nulls },
         Shape::Unknown | Shape::Nullable(_) => shape,
         // A column, a whole row or a parameter says nothing of the row it is read from.
         other => Shape::Nullable(Box::new(other)),
@@ -1299,6 +1395,31 @@ impl ResolveCtx<'_> {
             Shape::Array { items, non_null } => {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
                 (Type::List { of: Box::new(of), nullable_items: !items_non_null }, *non_null)
+            }
+            // A tuple is the JSON Schema of an array of exactly its items, each as the database
+            // writes it inside a document. Where NULL items are left out and one may be NULL,
+            // the places shift: an array of any of the items, as many at most.
+            Shape::Tuple { items, non_null, skips_nulls } => {
+                use reylo_engine_core::schema::{nullable, SchemaOptions};
+                let items: Vec<(Type, bool)> = items.iter().map(|item| self.node(item, &join(path, "[]"), unresolved)).collect();
+                let schema = if *skips_nulls && items.iter().any(|(_, non_null)| !non_null) {
+                    let mut members: Vec<Value> = Vec::new();
+                    for (ty, _) in &items {
+                        let member = ty.json_schema(SchemaOptions::IN_JSON);
+                        if !members.contains(&member) {
+                            members.push(member);
+                        }
+                    }
+                    let one = if members.len() == 1 { members.remove(0) } else { serde_json::json!({ "anyOf": members }) };
+                    serde_json::json!({ "type": "array", "items": one, "maxItems": items.len() })
+                } else {
+                    let prefix: Vec<Value> = items.iter().map(|(ty, non_null)| {
+                        let schema = ty.json_schema(SchemaOptions::IN_JSON);
+                        if *non_null { schema } else { nullable(schema) }
+                    }).collect();
+                    serde_json::json!({ "type": "array", "prefixItems": prefix, "items": false, "minItems": items.len() })
+                };
+                (Type::Json { schema: Some(schema) }, *non_null)
             }
             Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| Some((o.columns.get(*index)?, o.built.get(*index).and_then(Option::as_ref)))) {
                 // JSON a WITH query or a derived table builds, NULL where the item's row has it so
@@ -1540,6 +1661,11 @@ fn string_const(node: &Node) -> Option<String> {
 fn keeps_param_type(node: &Node) -> bool {
     use protobuf::a_const::Val;
     matches!(node.node.as_ref(), Some(NodeEnum::AConst(c)) if c.isnull || matches!(c.val, Some(Val::Sval(_) | Val::Ival(_) | Val::Boolval(_))))
+}
+
+/// Whether `JSON_OBJECT` or `JSON_ARRAY` returns JSON: by default, or `RETURNING json` or `jsonb`.
+fn returns_json(output: Option<&protobuf::JsonOutput>) -> bool {
+    output.and_then(|o| o.type_name.as_ref()).is_none_or(|t| t.array_bounds.is_empty() && crate::infer::builtin_name(&t.names).is_some_and(|n| n == "json" || n == "jsonb"))
 }
 
 fn casts_to_json(t: &protobuf::TypeCast) -> bool {
@@ -1891,6 +2017,30 @@ mod tests {
         let p = plan("SELECT json_build_object('n', (SELECT count(*) FROM posts)) AS o FROM users u", Dialect::Postgres, &trust, &Columns::default());
         let Shape::Object { fields, .. } = &p.columns[0].1 else { panic!() };
         assert!(matches!(fields[0].1, Shape::Nullable(_)));
+    }
+
+    #[test]
+    fn an_array_built_of_values_is_a_tuple_of_them() {
+        let tuple = |sql: &str| match shapes(sql).columns.into_iter().next().map(|(_, s)| s) {
+            Some(Shape::Tuple { items, non_null, skips_nulls }) => Some((items.len(), non_null, skips_nulls)),
+            _ => None,
+        };
+        assert_eq!(tuple("SELECT json_build_array(1, u.name) AS a FROM users u"), Some((2, true, false)));
+        assert_eq!(tuple("SELECT jsonb_build_array() AS a"), Some((0, true, false)));
+        assert_eq!(tuple("SELECT json_build_array(VARIADIC ARRAY[1, 2]) AS a"), None);
+        // JSON_ARRAY leaves a NULL value out unless NULL ON NULL writes it.
+        assert_eq!(tuple("SELECT JSON_ARRAY(1, u.name) AS a FROM users u"), Some((2, true, true)));
+        assert_eq!(tuple("SELECT JSON_ARRAY(1, u.name NULL ON NULL) AS a FROM users u"), Some((2, true, false)));
+        assert_eq!(tuple("SELECT JSON_ARRAY(1 RETURNING text) AS a"), None);
+        // JSON_OBJECT of literal keys is an object, unless a NULL value's key may be left out.
+        assert!(matches!(&shapes("SELECT JSON_OBJECT('n': u.name, 'id': u.id) AS o FROM users u").columns[0].1, Shape::Object { fields, non_null: true } if fields.len() == 2));
+        assert!(shapes("SELECT JSON_OBJECT('n': u.name ABSENT ON NULL) AS o FROM users u").columns.is_empty());
+        assert!(matches!(&shapes("SELECT JSON_OBJECT('n': u.name FORMAT JSON) AS o FROM users u").columns[0].1, Shape::Object { fields, .. } if fields[0].1 == Shape::Unknown));
+        // array_to_json of ARRAY(SELECT …) is an array of the subquery's values, never NULL; of
+        // array_agg, as json_agg is.
+        assert!(matches!(&shapes("SELECT array_to_json(ARRAY(SELECT p.title FROM posts p)) AS t").columns[0].1, Shape::Array { non_null: true, .. }));
+        assert!(matches!(&shapes("SELECT array_to_json(array_agg(p.title)) AS t FROM posts p").columns[0].1, Shape::Array { non_null: false, .. }));
+        assert!(matches!(&shapes("SELECT p.user_id, array_to_json(array_agg(p.title)) AS t FROM posts p GROUP BY p.user_id").columns[0].1, Shape::Array { non_null: true, .. }));
     }
 
     #[test]

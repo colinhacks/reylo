@@ -226,7 +226,7 @@ const rows = await events.run(db);
 select kind, payload from events
 ```
 
-JSON your query builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg`, or `to_jsonb` of a whole row, is typed from what you put in it:
+JSON your query builds with `jsonb_build_object`, `json_build_object`, `jsonb_agg`, `json_agg`, or `to_jsonb` of a whole row, is typed from what you put in it. So is an array built with `jsonb_build_array` or `json_array`, item by item, an object built with `json_object('key': value)`, and `array_to_json` of `array(select …)` or `array_agg`:
 
 ```ts twoslash tab="main.ts"
 import orderSummaries from "./pg_order_summaries.sql";
