@@ -1,0 +1,5 @@
+dollar_name.sql: many () -> {  } !! reylo1: DuckDB reads $id as a parameter that Reylo does not bind; write :id
+pivot.sql: many () -> {  } !! reylo10: DuckDB does not describe the columns of this statement before it runs, since they are made from the values it reads: name them, as in PIVOT … ON level IN ('info', 'warn')
+pivot_named.sql: many () -> { id: integer?, msg: varchar?, info: bigint?, warn: bigint? }
+unknown_column.sql: many () -> {  } !! reylo6: Binder Error: Referenced column "nope" not found in FROM clause!
+Candidate bindings: "level"

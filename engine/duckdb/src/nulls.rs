@@ -619,34 +619,41 @@ fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
     }
 }
 
-/// Whether an expression calls an aggregate (not as a window function), outside any subquery.
-pub fn has_aggregate(e: &Expr) -> bool {
-    let mut found = false;
-    let _ = sqlparser::ast::visit_expressions(e, |inner: &Expr| {
-        if let Expr::Function(f) = inner {
-            if f.over.is_none() && builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())) {
-                found = true;
-                return std::ops::ControlFlow::Break(());
+/// Whether an expression calls a function `is` picks, outside any subquery: a subquery's calls are
+/// its own rows'.
+fn calls(e: &Expr, is: &dyn Fn(&Function) -> bool) -> bool {
+    struct Finder<'f> {
+        depth: usize,
+        is: &'f dyn Fn(&Function) -> bool,
+    }
+    impl sqlparser::ast::Visitor for Finder<'_> {
+        type Break = ();
+        fn pre_visit_query(&mut self, _: &Query) -> std::ops::ControlFlow<()> {
+            self.depth += 1;
+            std::ops::ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> std::ops::ControlFlow<()> {
+            self.depth -= 1;
+            std::ops::ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> std::ops::ControlFlow<()> {
+            match e {
+                Expr::Function(f) if self.depth == 0 && (self.is)(f) => std::ops::ControlFlow::Break(()),
+                _ => std::ops::ControlFlow::Continue(()),
             }
         }
-        std::ops::ControlFlow::Continue(())
-    });
-    found
+    }
+    sqlparser::ast::Visit::visit(e, &mut Finder { depth: 0, is }).is_break()
 }
 
-/// Whether an expression calls `unnest`, which makes a row of each element.
+/// Whether an expression calls an aggregate (not as a window function), outside any subquery.
+pub fn has_aggregate(e: &Expr) -> bool {
+    calls(e, &|f| f.over.is_none() && builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
+}
+
+/// Whether an expression calls `unnest`, which makes a row of each element, outside any subquery.
 pub fn has_unnest(e: &Expr) -> bool {
-    let mut found = false;
-    let _ = sqlparser::ast::visit_expressions(e, |inner: &Expr| {
-        if let Expr::Function(f) = inner {
-            if builtin(f).is_some_and(|n| n == "unnest") {
-                found = true;
-                return std::ops::ControlFlow::Break(());
-            }
-        }
-        std::ops::ControlFlow::Continue(())
-    });
-    found
+    calls(e, &|f| builtin(f).is_some_and(|n| n == "unnest"))
 }
 
 /// How many rows a query returns, and why not one where it is not proven so.
@@ -885,6 +892,9 @@ mod tests {
         assert_eq!(rows("select team_id, count(*) from users group by team_id"), "many");
         assert_eq!(rows("select 1"), "one");
         assert_eq!(rows("select unnest([1, 2])"), "many");
+        // A subquery's aggregate or unnest is its own rows'.
+        assert_eq!(rows("select id, (select max(id) from teams) as top from users"), "many");
+        assert_eq!(rows("select 1 as one, (select count(*) from (select unnest([1, 2]))) as n"), "one");
         assert_eq!(rows("select * from users limit 1"), "maybeOne");
         assert_eq!(rows("select count(*) from users offset 1"), "maybeOne");
         assert_eq!(rows("select * from users fetch first 1 rows only"), "maybeOne");

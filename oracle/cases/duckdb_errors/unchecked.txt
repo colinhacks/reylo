@@ -1,0 +1,2 @@
+dollar_name.sql: Invalid Input Error: Values were not provided for the following parameters: id
+unknown_column.sql: Binder Error: Referenced column "nope" not found in FROM clause! Candidate bindings: "level" LINE 2: nope from logs ^^^^

@@ -1,0 +1,10 @@
+coalesced.sql: many (tag: varchar?, body: varchar?) -> { id: integer }
+delete_returning.sql: many (tag: varchar) -> { id: integer, body: varchar }
+insert.sql: none (body: varchar, tag: varchar?) -> {  }
+insert_ignore.sql: maybeOne (id: integer, body: varchar) -> { id: integer }
+insert_many.sql: many () -> { id: integer }
+insert_or_replace.sql: one (id: integer, body: varchar) -> { id: integer, body: varchar, tag: varchar?, created: timestamp }
+insert_returning.sql: one (body: varchar, tag: varchar?) -> { id: integer, body: varchar, tag: varchar?, created: timestamp }
+insert_select.sql: many (tag: varchar) -> { id: integer, body: varchar }
+update.sql: none (tag: varchar?, id: integer) -> {  }
+update_returning.sql: maybeOne (body: varchar, id: integer) -> { id: integer, body: varchar, tag: varchar? }

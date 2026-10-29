@@ -14,8 +14,9 @@ const COLUMNS_QUERY: &str = "select database_name, schema_name, table_name, colu
     database_name = current_database() and schema_name = current_schema() as current, database_name = current_database() as current_database \
     from duckdb_columns() where lower(table_name) in ({names}) order by database_name, schema_name, table_name, column_index";
 
-/// One row per primary key and UNIQUE constraint of every table whose name is one of `{names}`.
-const KEYS_QUERY: &str = "select database_name, schema_name, table_name, constraint_column_names \
+/// One row per primary key and UNIQUE constraint of every table whose name is one of `{names}`,
+/// its columns as JSON text, which every host reads alike.
+const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json(constraint_column_names)::varchar \
     from duckdb_constraints() where constraint_type in ('PRIMARY KEY', 'UNIQUE') and lower(table_name) in ({names}) \
     order by database_name, schema_name, table_name, constraint_index";
 
@@ -112,8 +113,12 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
     for row in keys.unwrap_or_default() {
         let (database, schema, name) = (text(&row, 0), text(&row, 1), text(&row, 2));
         let Some(table) = tables.iter_mut().find(|t| t.database == database && t.schema == schema && t.name == name) else { continue };
-        let Some(Value::Array(columns)) = row.get(3) else { continue };
-        let key: Vec<String> = columns.iter().filter_map(as_str).map(str::to_lowercase).collect();
+        let columns = match row.get(3) {
+            Some(Value::String(json)) => serde_json::from_str::<Vec<String>>(json).unwrap_or_default(),
+            Some(Value::Array(columns)) => columns.iter().filter_map(as_str).map(String::from).collect(),
+            _ => continue,
+        };
+        let key: Vec<String> = columns.iter().map(|c| c.to_lowercase()).collect();
         if !key.is_empty() {
             table.keys.push(key);
         }

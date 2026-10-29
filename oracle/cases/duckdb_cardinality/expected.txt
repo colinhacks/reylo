@@ -1,0 +1,13 @@
+aggregate.sql: one (id: integer) -> { n: bigint, latest: timestamp? }
+by_composite.sql: maybeOne (region: varchar, tier: varchar) -> { id: integer }
+by_key.sql: maybeOne (id: integer) -> { handle: varchar }
+by_part.sql: many (region: varchar) -> { id: integer }
+by_unique.sql: maybeOne (handle: varchar) -> { id: integer }
+either_key.sql: many (id: integer) -> { id: integer }
+joined.sql: many (id: integer) -> { handle: varchar, kind: varchar }
+limited.sql: maybeOne () -> { kind: varchar }
+no_from.sql: one (x: integer) -> { next: integer }
+no_from_filtered.sql: maybeOne (flag: boolean) -> { one: integer }
+offset.sql: maybeOne () -> { n: bigint }
+unnest.sql: many () -> { n: integer? }
+values.sql: one () -> { col0: integer, col1: varchar }
