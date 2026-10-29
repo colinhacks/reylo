@@ -43,8 +43,12 @@ export function shareTags(params: URLSearchParams, examples: ReadonlyMap<string,
   if (version) image.set('v', version);
   const imageUrl = `${origin}/play/og.png?${image}`;
   const alt = cardAlt(shared.sql);
+  // The address keeps a schema of the reader's own (`schema`, lib/live/schema-link.ts), which the card does not show.
+  const address = new URLSearchParams({ [shared.param]: shared.param === 'q' ? shared.sql : shared.value });
+  const schema = params.get('schema');
+  if (schema) address.set('schema', schema);
   return {
-    'og:url': `${origin}/play?${new URLSearchParams({ [shared.param]: shared.param === 'q' ? shared.sql : shared.value })}`,
+    'og:url': `${origin}/play?${address}`,
     'og:image': imageUrl,
     'og:image:alt': alt,
     'twitter:image': imageUrl,

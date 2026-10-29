@@ -472,6 +472,97 @@ html:not(.dark) #nd-page.play .play-theme-dark {
   padding-top: 0;
 }
 
+/* The schema's controls: Edit with its hairline, then Cancel and Apply while editing, Reset to sample
+   once the schema is the reader's own; the quiet ones show their hairline on hover only. */
+#nd-page.play .play-schema-head .play-button {
+  white-space: nowrap;
+}
+
+#nd-page.play .play-button-plain {
+  padding: 0 10px;
+  border-color: transparent;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page.play .play-button-primary {
+  padding: 0 12px;
+  border-color: var(--play-hover-border);
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+  background: transparent;
+}
+
+#nd-page.play .play-button-plain:disabled {
+  border-color: transparent;
+}
+
+#nd-page.play .play-schema-tag {
+  font-size: var(--play-ui);
+  line-height: 20px;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page.play .play-schema-tag::before {
+  content: '·';
+  margin-right: 8px;
+}
+
+/* What Postgres said of the DDL, over it, the previous schema still loaded. */
+#nd-page.play .play-schema-error {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+  padding: 0 var(--play-pad) 12px;
+  font-size: var(--play-ui);
+  line-height: 20px;
+  color: var(--color-fd-error);
+  flex-shrink: 0;
+}
+
+#nd-page.play .play-schema-error .play-dot {
+  flex-shrink: 0;
+  position: relative;
+  top: -1px;
+  background: var(--color-fd-error);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-fd-error) 22%, transparent);
+}
+
+/* On a phone, Reset to sample says the schema is the reader's own. */
+@media (width < 30rem) {
+  #nd-page.play .play-schema-tag {
+    display: none;
+  }
+}
+
+#nd-page.play .play-schema-kept {
+  display: block;
+  color: var(--color-fd-muted-foreground);
+}
+
+/* The schema's editor at the schema's size: 12px on 20px lines. */
+#nd-page.play .play-schema-editor {
+  --play-code-lh: 20px;
+}
+
+/* A link with a schema of its own, before the page hydrates: the build's types are the sample's, so
+   none show, only the `…` of a statement waiting for its types. */
+html[data-play-schema] #nd-page.play .play-types[data-built] .play-row > figure {
+  display: none;
+}
+
+html[data-play-schema] #nd-page.play .play-types[data-built] .play-row::after {
+  content: '…';
+  display: block;
+  padding-top: 10px;
+  font: var(--dk-code-size) / var(--play-code-lh) var(--font-code);
+  color: var(--color-fd-muted-foreground);
+}
+
 /* The editor: CodeMirror in the place of the block's <pre>, the same font, size, padding and hanging indent. */
 #nd-page.play .play-editor-host,
 #nd-page.play .play-editor figure.shiki,
@@ -868,4 +959,80 @@ html:not(.dark) #nd-page.play .play-theme-dark {
 
 #nd-page.play :is(.play-api-code > .dk-code-copy, .play-api-copy-all):hover {
   color: var(--color-fd-headings);
+}
+
+/* The About dialog (lib/live/about-dialog.tsx): the API dialog's box, its headings words rather than addresses. */
+#nd-page.play .play-about .play-api-body h3 {
+  font-family: var(--font-text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+#nd-page.play .play-about .play-api-body a {
+  color: var(--color-fd-headings);
+  text-decoration: underline;
+  text-decoration-color: var(--dk-accent);
+  text-underline-offset: 3px;
+}
+
+/* The pitch (the docs' playground): centred on the bar, over the space between the status and the
+   links, and dropped where the bar is too narrow to keep it clear of both. */
+#nd-page.play .play-bar {
+  position: relative;
+}
+
+#nd-page.play .play-pitch {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  margin: 0;
+  transform: translateX(-50%);
+  font-size: var(--play-ui);
+  font-weight: 500;
+  color: var(--color-fd-headings);
+  white-space: nowrap;
+}
+
+#nd-page.play .play-pitch a {
+  color: var(--color-fd-foreground);
+  text-decoration: underline;
+  text-decoration-color: var(--dk-accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+#nd-page.play .play-pitch a:hover {
+  color: var(--color-fd-headings);
+}
+
+@media (width < 75rem) {
+  #nd-page.play .play-pitch {
+    display: none;
+  }
+}
+
+/* "Wrong type? Report it", muted under the Returns type until hovered. */
+#nd-page.play .play-report {
+  margin: 20px 0 0;
+  font-size: var(--play-ui);
+}
+
+#nd-page.play .play-report a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--color-fd-muted-foreground);
+  transition: color 120ms;
+}
+
+#nd-page.play .play-report a:hover {
+  color: var(--color-fd-headings);
+}
+
+#nd-page.play .play-report svg {
+  opacity: 0.8;
 }
