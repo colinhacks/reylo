@@ -70,8 +70,10 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `JSON` | `unknown` | `{ a: [1, "x"] }` |
 | `T[]` (a `LIST`) and `T[n]` (an `ARRAY`) | `(T \| null)[]` | `["a", "b"]` |
 | `STRUCT(a T, …)` | `{ a: T \| null; … }` | `{ host: "h", pid: 7 }` |
+| A `STRUCT` without field names, as `(1, 'a')` or `row(…)` makes | `[T \| null, …]` | `[1, "a"]` |
 | `MAP(K, V)` | `{ key: K; value: V \| null }[]` | `[{ key: "k", value: 1 }]` |
 | `UNION(a T, …)` | `{ tag: "a"; value: T \| null } \| …` | `{ tag: "str", value: "s" }` |
+| `VARIANT` | `unknown` | the value it holds, in its own type's form: `42` |
 
 <Rules>
 
@@ -98,7 +100,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too, and a `STRUCT` whose fields have no names is a tuple of its values in order. DuckDB lets any field and any element be `NULL`, so each is typed `| null`.
 
 <Inferred>
 
