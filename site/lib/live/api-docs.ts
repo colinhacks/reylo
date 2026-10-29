@@ -12,6 +12,8 @@ export type ApiDocs = {
   against: string;
   /** The query of the examples. */
   example: string;
+  /** The example's answer where the page already has it (the docs' build analyzes it, lib/live/play-data.ts), so the dialog shows it at once; else the dialog asks the API. */
+  answer?: string;
 };
 
 /** reylo.dev's API (lib/live/api.ts), which the docs' /play describes, and a local copy of the site too, which does not serve it. */

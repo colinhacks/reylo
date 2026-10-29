@@ -1,5 +1,5 @@
 // The playground's API, explained in a dialog the bar's "API" link opens (lib/live/app.tsx): each
-// endpoint, a request to copy, and the answer to that request, fetched from the API when the dialog
+// endpoint, a request to copy, and the answer to that request, from the page's build where it has it, else fetched from the API when the dialog
 // opens, so what it shows is what the API answers. The docs' /play and `reylo play` pass their own
 // addresses.
 import { useEffect, useRef, useState } from 'react';
@@ -41,7 +41,7 @@ function CopyAll({ text }: { text: () => string }) {
 
 export function ApiDialog({ api, open, onClose }: { api: ApiDocs; open: boolean; onClose(): void }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [answer, setAnswer] = useState<string>();
+  const [answer, setAnswer] = useState<string | undefined>(api.answer);
   const pressedOutside = useRef(false);
 
   useEffect(() => {
