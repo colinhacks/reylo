@@ -343,6 +343,36 @@ impl Level {
         self.items.iter().all(|i| i.name.is_some()).then_some(false)
     }
 
+    /// The columns `*` (no qualifier) or `name.*` shows, in order, each as the name of the item it
+    /// is a column of and its own, where every one is known for certain: every item of a `*` goes by
+    /// a name and shows its columns' names exactly, and no USING or NATURAL join merges any, which
+    /// would put the merged ones first; one item goes by the name of a `name.*`.
+    pub fn star(&self, qualifier: Option<&str>) -> Option<Vec<(String, String)>> {
+        let items: Vec<&Item> = match qualifier {
+            None if self.merged => return None,
+            None => self.items.iter().collect(),
+            Some(name) => {
+                let mut named = self.items.iter().filter(|i| i.name.as_deref() == Some(name));
+                let item = named.next()?;
+                if named.next().is_some() {
+                    return None;
+                }
+                vec![item]
+            }
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let name = item.name.as_ref()?;
+            if !item.shown.exact {
+                return None;
+            }
+            for column in &item.shown.names {
+                out.push((name.clone(), column.clone()?));
+            }
+        }
+        Some(out)
+    }
+
     /// Every column of the FROM, as `*` shows them.
     fn all(&self) -> Shown {
         Shown { names: self.items.iter().flat_map(|i| i.shown.names.iter().cloned()).collect(), exact: !self.merged && self.items.iter().all(|i| i.shown.exact) }

@@ -514,7 +514,7 @@ left join orders o on o.user_id = u.id
 
 **Tests that rule out `NULL`**
 
-A test that fails on `NULL`, in the `where` or a later inner join's `on`, makes its column non-null. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again.
+A test that fails on `NULL`, in the `where` or in an inner join's `on`, makes its column non-null, whether the query selects it by name or with `*`. On a joined table, it also shows the row exists, so the table's `NOT NULL` columns are non-null again.
 
 <Inferred>
 

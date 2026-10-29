@@ -625,13 +625,31 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     if let Some(scope) = &scope {
         reader.narrowed.extend(scope.strict.iter().filter(|n| !n.checks.is_empty()).cloned());
     }
+    // A `*` whose columns the FROM shows for certain is those columns, each read as the qualified
+    // reference to it, which is what the WHERE's tests narrow.
+    let level = scope.as_ref().map(|_| Level::of(&from, &reader.withs, columns));
     let mut plan = Plan::default();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
         if is_star(val) {
-            plan.star = true;
-            plan.tail.clear();
+            let expanded = match (scope.as_ref(), level.as_ref(), val.node.as_ref()) {
+                (Some(scope), Some(level), Some(NodeEnum::ColumnRef(c))) => star_columns(c, level).map(|columns| {
+                    columns.iter().map(|column| {
+                        let node = Node { node: Some(NodeEnum::ColumnRef(column.clone())) };
+                        scope.column(column, &node, &mut reader)
+                    }).collect::<Vec<_>>()
+                }),
+                _ => None,
+            };
+            match expanded {
+                Some(claims) if plan.star => plan.tail.extend(claims),
+                Some(claims) => plan.head.extend(claims),
+                None => {
+                    plan.star = true;
+                    plan.tail.clear();
+                }
+            }
             continue;
         }
         // A plain column reference is the describe tier's to answer, but for what the SELECT
@@ -2162,7 +2180,16 @@ impl Scope {
         if outer_join {
             tables.clear();
         }
-        let strict = s.where_clause.as_deref().map(|w| reader.narrowings(w)).unwrap_or_default();
+        let mut strict = s.where_clause.as_deref().map(|w| reader.narrowings(w)).unwrap_or_default();
+        // A row the result keeps passed the ON of every inner join no outer join can null, so what
+        // that ON is strict in holds of it as a WHERE's would.
+        let mut quals = Vec::new();
+        for item in &s.from_clause {
+            inner_quals(item, &mut quals);
+        }
+        for qual in quals {
+            strict.extend(reader.narrowings(qual));
+        }
         Scope { tables, names, using, natural, strict }
     }
 
@@ -2207,6 +2234,26 @@ impl Scope {
             _ => return false,
         };
         bare[0] == qualified[1] && self.names.contains(&qualified[0])
+    }
+}
+
+/// The ON clauses of the inner joins of a FROM item that no outer join nulls a side of: those of
+/// the item itself and of the preserved side of each outer join in it. A row of an inner join
+/// passed its ON; a nulled side's row did not have to, since an outer join adds one of NULLs.
+fn inner_quals<'n>(item: &'n Node, out: &mut Vec<&'n Node>) {
+    let Some(NodeEnum::JoinExpr(j)) = item.node.as_ref() else { return };
+    let (left, right) = (j.larg.as_deref(), j.rarg.as_deref());
+    let sides = match protobuf::JoinType::try_from(j.jointype) {
+        Ok(protobuf::JoinType::JoinInner) => {
+            out.extend(j.quals.as_deref());
+            [left, right]
+        }
+        Ok(protobuf::JoinType::JoinLeft) => [left, None],
+        Ok(protobuf::JoinType::JoinRight) => [None, right],
+        _ => [None, None],
+    };
+    for side in sides.into_iter().flatten() {
+        inner_quals(side, out);
     }
 }
 
@@ -2585,6 +2632,32 @@ pub(crate) fn builtin_name(names: &[Node]) -> Option<String> {
         2 if last_string(&names[..1]).as_deref() == Some("pg_catalog") => Some(name),
         _ => None,
     }
+}
+
+/// Whether the top SELECT has a `*` in its target list that a test of its WHERE or of an inner
+/// join's ON may narrow a column of, which needs the columns of its relations ([`Level::star`]).
+pub fn narrows_star(sql: &str) -> bool {
+    let Ok(parsed) = crate::stack::parse(sql) else { return false };
+    let Some(NodeEnum::SelectStmt(s)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return false };
+    let star = s.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star)));
+    let mut quals = Vec::new();
+    for item in &s.from_clause {
+        inner_quals(item, &mut quals);
+    }
+    star && (s.where_clause.is_some() || !quals.is_empty())
+}
+
+/// The columns a `*` or `name.*` of a SELECT's target list reads, as qualified references, where
+/// its FROM shows them for certain ([`Level::star`]).
+fn star_columns(c: &protobuf::ColumnRef, level: &Level) -> Option<Vec<protobuf::ColumnRef>> {
+    let qualifier = match c.fields.as_slice() {
+        [_] => None,
+        [name, _] => Some(last_string(std::slice::from_ref(name))?),
+        _ => return None,
+    };
+    let string = |s: &str| Node { node: Some(NodeEnum::String(protobuf::String { sval: s.to_string() })) };
+    let columns = level.star(qualifier.as_deref())?;
+    Some(columns.into_iter().map(|(item, column)| protobuf::ColumnRef { fields: vec![string(&item), string(&column)], location: -1 }).collect())
 }
 
 fn is_star(node: &Node) -> bool {
@@ -2980,6 +3053,44 @@ mod tests {
         let shadowed = Trust { shadowed: ["lower".to_string()].into_iter().collect(), ..Trust::default() };
         let p = plan("SELECT nickname FROM users WHERE lower(nickname) = $1", Dialect::Postgres, &shadowed);
         assert!(!p.head[0].as_ref().is_some_and(|e| resolve(e, None).non_null));
+    }
+
+    #[test]
+    fn an_inner_joins_own_on_narrows_what_it_tests_and_an_outer_joins_does_not() {
+        let narrowed = |sql: &str| pg(sql).head.iter().map(|e| e.as_ref().is_some_and(|e| resolve(e, None).non_null)).collect::<Vec<_>>();
+        assert_eq!(narrowed("SELECT t.owner_id, o.name FROM todos t JOIN owners o ON o.id = t.owner_id"), [true, false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM todos t JOIN owners o ON t.owner_id > o.id"), [true]);
+        // A side an outer join nulls passed no ON of its own joins where it is NULL, and the
+        // preserved side need not pass the outer join's.
+        assert_eq!(narrowed("SELECT t.owner_id FROM todos t LEFT JOIN owners o ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT o.id FROM todos t LEFT JOIN owners o ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners o RIGHT JOIN todos t ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners o FULL JOIN todos t ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners x LEFT JOIN (todos t JOIN owners o ON o.id = t.owner_id) ON true"), [false]);
+        // An inner join on the preserved side of an outer join, or above one, holds of every row.
+        assert_eq!(narrowed("SELECT t.owner_id FROM (todos t JOIN owners o ON o.id = t.owner_id) LEFT JOIN owners x ON true"), [true]);
+        assert_eq!(narrowed("SELECT x.name FROM todos t LEFT JOIN owners x ON x.id = t.owner_id JOIN owners o ON o.name = x.name"), [true]);
+    }
+
+    #[test]
+    fn a_star_is_the_columns_its_from_shows_each_narrowed_as_its_reference_is() {
+        let narrowed = |sql: &str| {
+            let p = pg(sql);
+            assert!(!p.star, "{sql}");
+            p.head.iter().map(|e| e.as_ref().is_some_and(|e| resolve(e, None).non_null)).collect::<Vec<_>>()
+        };
+        assert_eq!(narrowed("SELECT * FROM todos WHERE title = $1"), [false, false, true, false]);
+        assert_eq!(narrowed("SELECT t.*, 1 FROM todos t WHERE t.n > 0"), [false, false, false, true, true]);
+        assert_eq!(narrowed("SELECT * FROM todos t JOIN owners o ON o.id = t.owner_id WHERE name LIKE 'a%'"), [false, true, false, false, true, true]);
+        assert_eq!(narrowed("SELECT o.* FROM todos t JOIN owners o ON o.id = t.owner_id"), [true, false]);
+        // A star whose columns the FROM does not show for certain stays a `*`: a table the catalog
+        // did not answer for, and a join that merges columns with USING.
+        assert!(pg("SELECT * FROM tags WHERE name = $1").star);
+        assert!(pg("SELECT * FROM todos JOIN owners USING (id) WHERE title = $1").star);
+        assert!(narrows_star("SELECT * FROM todos WHERE title = $1"));
+        assert!(narrows_star("SELECT t.* FROM todos t JOIN owners o ON o.id = t.owner_id"));
+        assert!(!narrows_star("SELECT * FROM todos"));
+        assert!(!narrows_star("SELECT title FROM todos WHERE title = $1"));
     }
 
     #[test]
@@ -3522,7 +3633,7 @@ mod tests {
 
     #[test]
     fn a_star_splits_the_claims_around_it() {
-        let p = pg("SELECT 'a' AS x, t.*, count(*) OVER () AS total FROM todos t");
+        let p = pg("SELECT 'a' AS x, t.*, count(*) OVER () AS total FROM tags t");
         assert!(p.star);
         let claims = p.claims(5);
         assert!(claims[0].is_some() && claims[1].is_none() && claims[3].is_none() && claims[4].is_some());
@@ -3623,7 +3734,7 @@ mod tests {
 
     #[test]
     fn a_strict_where_proves_the_column_it_tests() {
-        let p = pg("SELECT id, email, p.title, body FROM users u JOIN posts p ON p.user_id = u.id WHERE email IS NOT NULL AND title > $1 AND (body IS NOT NULL OR id = 1)");
+        let p = pg("SELECT id, email, p.title, body FROM users u JOIN posts p ON p.user_id = u.uid WHERE email IS NOT NULL AND title > $1 AND (body IS NOT NULL OR id = 1)");
         assert_eq!(p.head[0], None);
         assert_eq!(p.head[1], Some(Expr::NonNull(None)));
         // `title` in the WHERE and `p.title` in the list are one column: `p` is a FROM item here.

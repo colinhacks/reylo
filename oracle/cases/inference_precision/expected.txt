@@ -23,13 +23,13 @@ whole_row_beside_with.sql: many (id: int4) -> { u: users{ id: int4, name: text, 
 whole_row_json_derived.sql: many () -> { id: int4, post: { id: int4, title: text, published_at: timestamptz?, late: text? }? }
 whole_row_json_full_joined.sql: many () -> { author: { id: int4, name: text, email: text? }?, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }? }
 whole_row_json_function.sql: many () -> { id: int4, step: json? }
-whole_row_json_left_joined.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }?, plain: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }?, row: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }?, star: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }? }
-whole_row_json_left_joined_agg.sql: many () -> { id: int4, posts: [{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?] }
-whole_row_json_nested_join.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz? }?, author: { id: int4, name: text, email: text? }? }
+whole_row_json_left_joined.sql: many () -> { id: int4, post: { id: int4, user_id: int4, title: text, published_at: timestamptz? }?, plain: { id: int4, user_id: int4, title: text, published_at: timestamptz? }?, row: { id: int4, user_id: int4, title: text, published_at: timestamptz? }?, star: { id: int4, user_id: int4, title: text, published_at: timestamptz? }? }
+whole_row_json_left_joined_agg.sql: many () -> { id: int4, posts: [{ id: int4, user_id: int4, title: text, published_at: timestamptz? }?] }
+whole_row_json_nested_join.sql: many () -> { id: int4, post: { id: int4, user_id: int4, title: text, published_at: timestamptz? }?, author: { id: int4, name: text, email: text? }? }
 whole_row_json_right_joined.sql: many () -> { id: int4, author: { id: int4, name: text, email: text? }? }
 whole_row_json_self_full_join.sql: many () -> { earlier: { id: int4, name: text, email: text? }?, later: { id: int4, name: text, email: text? }? }
 whole_row_json_self_join.sql: many () -> { id: int4, earlier: { id: int4, name: text, email: text? }, later: { id: int4, name: text, email: text? }? }
-whole_row_json_view.sql: many () -> { id: int4, post: { id: int4, user_id: int4?, title: text, published_at: timestamptz?, shout: text }? }
+whole_row_json_view.sql: many () -> { id: int4, post: { id: int4, user_id: int4, title: text, published_at: timestamptz?, shout: text }? }
 whole_row_json_with.sql: many () -> { id: int4, post: { user_id: int4?, title: text, published_at: timestamptz?, loud: text }? }
 whole_row_outer_joined.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?], rows: (posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }?)[] }
 whole_row_outer_reduced.sql: many () -> { id: int4, posts: [posts{ id: int4, user_id: int4?, title: text, published_at: timestamptz? }] }

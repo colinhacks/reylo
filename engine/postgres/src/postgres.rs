@@ -507,7 +507,7 @@ pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<
 /// is in the server's `$n` form. For the main statement this is the question the row-count proof
 /// asks of the same relations, so it costs no query of its own.
 fn level_columns(sql: &str, host: &Host) -> Lazy<Columns> {
-    columns_where(crate::levels::needed(sql), sql, host)
+    columns_where(crate::levels::needed(sql) || infer::narrows_star(sql), sql, host)
 }
 
 /// The columns [`jsonshape::plan`] reads for `sql`, for a host that plans the shapes itself: none,
