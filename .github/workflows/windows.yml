@@ -1,11 +1,13 @@
 # .github/workflows/windows.yml
+#
+# The type check on Windows, where the engine reaches files through guest paths such as
+# `/C:/app/dev.db` and sockets through Node's named pipes. test.yml runs it on each push to main and
+# within each release, never on a pull request, which does not wait on it; it can also be run by hand.
 
 name: windows
 
 on:
-  push:
-    branches:
-      - ci/windows-component
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -30,13 +32,6 @@ jobs:
         with:
           nub-version: "0.9.6"
           node-version: "24"
-      - name: Show the runner
-        run: |
-          node -e "console.log(process.versions.node, require('os').tmpdir(), process.cwd(), process.env.RUNNER_TEMP)"
-          wmic logicaldisk get name 2>/dev/null || powershell -c "Get-PSDrive -PSProvider FileSystem"
-          echo "PGBIN=$PGBIN"; ls "$PGBIN" | head -5 || true
-          powershell -c "Get-Service *mysql*, *postgres* | Format-Table -AutoSize" || true
-          ls 'C:/Program Files/MySQL' 'C:/tools' 2>/dev/null || true
       - run: nub install --frozen-lockfile
       - run: nub install --frozen-lockfile
         working-directory: site

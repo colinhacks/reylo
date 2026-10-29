@@ -155,6 +155,12 @@ jobs:
           grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/test.log" || { echo "::error::a test was skipped"; exit 1; }
       - run: nub run build
 
+  # The type check on Windows (windows.yml): on each push to main and within each release, never on a
+  # pull request, which does not wait on it.
+  windows:
+    if: ${{ !github.event.repository.private && github.event_name != 'pull_request' }}
+    uses: ./.github/workflows/windows.yml
+
   # The engine's sources, which the job above only meets as the committed packages/<database>/engine/
   # components (tests/fingerprint.test.ts checks each is their build): built natively, with no warning, and the tests
   # of the crates the change reaches run. sccache keeps each crate's and each C file's object between runs,
