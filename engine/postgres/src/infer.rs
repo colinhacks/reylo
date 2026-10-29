@@ -1853,7 +1853,8 @@ pub struct ItemQuery {
     /// The WITH query's name, for one: whether an outer join nulls it is the caller's reading, by
     /// that name, which a strict WHERE can reduce.
     pub with: Option<String>,
-    /// For any other item, whether it sits on the nullable side of an outer join.
+    /// For any other item, whether it sits on the nullable side of an outer join; for a WITH
+    /// query, whether this reading of it does.
     pub nulled: bool,
 }
 
@@ -3785,6 +3786,9 @@ mod tests {
         assert_eq!(reads, vec![column(0, "n")]);
         assert_eq!(queries[0].columns, vec!["n"]);
         assert!(queries[0].sql.starts_with("WITH RECURSIVE t(n) AS ("));
+        // A reading of a WITH query is nulled by its own place, whatever another reading's is.
+        let (_, queries) = item_reads("WITH c AS (SELECT 1 AS n) SELECT a.n FROM c a LEFT JOIN c b ON b.n = a.n").unwrap();
+        assert_eq!(queries.iter().map(|q| q.nulled).collect::<Vec<_>>(), [false, true]);
         // A bare name among several FROM items could be any item's; a table is not a WITH query.
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT x FROM a, users"), None);
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT id FROM users"), None);

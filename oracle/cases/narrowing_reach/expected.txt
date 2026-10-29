@@ -19,6 +19,6 @@ star_using.sql: many (n: text) -> { id: int8, note: text?, total: numeric?, user
 star_where.sql: many (n: text) -> { id: int8, note: text, total: numeric?, user_id: int8? }
 update_from.sql: many () -> { author_id: int8? }
 update_where.sql: many (n: text) -> { note: text?, total: numeric? }
-with_twice_left.sql: many () -> { id: int8?, total: numeric? }
+with_twice_left.sql: many () -> { id: int8, total: numeric? }
 with_twice_nulled.sql: many () -> { id: int8? }
-with_twice_sub.sql: many () -> { id: int8? }
+with_twice_sub.sql: many () -> { id: int8 }

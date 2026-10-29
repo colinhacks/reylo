@@ -1733,7 +1733,10 @@ impl<'a> Engine<'a> {
             .into_iter()
             .enumerate()
             .map(|(i, col)| match item_columns.get(i) {
-                // An outer join nulls a WITH query by its name, and any other item by its place.
+                // An outer join nulls any other item by its place, and a reading of a WITH query
+                // it nulls by place stays nulled while the query's name does: a strict WHERE
+                // reduces the join by the name, where the query is read once. A reading no outer
+                // join nulls is the query's own result, however another reading of it is joined.
                 // What the item settled of its column's values holds here too.
                 Some(Some((with, item))) => DescribedColumn {
                     nullable: item.nullable || with.as_ref().is_some_and(|query| nullable_tables.iter().any(|t| t == query)),
@@ -1749,9 +1752,9 @@ impl<'a> Engine<'a> {
 
     /// Per result column of `sql` that is a bare reference to a column of one of its FROM items
     /// with a statement of its own ([`infer::ItemQuery`]: a WITH query, a derived table, a
-    /// function): the WITH query's name for one, and whether the item's own settled result has
-    /// the column nullable, or an outer join nulls an item that is no WITH query. A `*` over such
-    /// an item is its columns in order.
+    /// function): the WITH query's name for a reading of one an outer join nulls by its place,
+    /// and whether the item's own settled result has the column nullable, or an outer join nulls
+    /// an item that is no WITH query. A `*` over such an item is its columns in order.
     ///
     /// A recursive WITH query reads itself, so its columns' nullability is a fixed point, and
     /// the greatest one is sound. Every column starts as non-null for the reads the query makes
@@ -1817,7 +1820,7 @@ impl<'a> Engine<'a> {
         if pending {
             return None;
         }
-        let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone(), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
+        let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone().filter(|_| queries[item].nulled), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
