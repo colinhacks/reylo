@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 /// An open DuckDB database and one connection to it.
-struct Db {
+pub(crate) struct Db {
     db: ffi::duckdb_database,
     conn: ffi::duckdb_connection,
 }
@@ -36,7 +36,7 @@ unsafe impl Send for Interrupt {}
 unsafe impl Sync for Interrupt {}
 
 /// A query's outcome: its rows, the time it ran out of, or DuckDB's error.
-enum Ran<T> {
+pub(crate) enum Ran<T> {
     Done(T),
     TimedOut,
     Failed(String),
@@ -60,7 +60,7 @@ fn owned(p: *mut std::os::raw::c_char) -> String {
 }
 
 impl Db {
-    fn open(path: &Path) -> Result<Db, String> {
+    pub(crate) fn open(path: &Path) -> Result<Db, String> {
         let c = CString::new(path.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
         let mut db: ffi::duckdb_database = std::ptr::null_mut();
         let mut conn: ffi::duckdb_connection = std::ptr::null_mut();
@@ -88,7 +88,7 @@ impl Db {
         }
     }
 
-    fn exec(&self, sql: &str) -> Result<(), String> {
+    pub(crate) fn exec(&self, sql: &str) -> Result<(), String> {
         self.query(sql, |_| ())
     }
 
@@ -130,7 +130,7 @@ impl Db {
 
     /// Runs `sql` with `params` bound as text (NULL where `None`), stopped at `timeout_ms`: how many
     /// rows it returned, and which columns held a NULL.
-    fn run(&self, sql: &str, params: &[Option<String>], timeout_ms: u64) -> Ran<(usize, Vec<bool>)> {
+    pub(crate) fn run(&self, sql: &str, params: &[Option<String>], timeout_ms: u64) -> Ran<(usize, Vec<bool>)> {
         let Ok(c) = CString::new(sql) else { return Ran::Failed("a NUL in the statement".into()) };
         unsafe {
             let mut stmt: ffi::duckdb_prepared_statement = std::ptr::null_mut();
@@ -327,7 +327,7 @@ unsafe fn logical(t: ffi::duckdb_logical_type) -> Value {
 }
 
 /// The engine's host: the prepared statement's describe, and each catalog query's rows as text.
-struct Host<'a>(&'a Db);
+pub(crate) struct Host<'a>(pub(crate) &'a Db);
 
 impl reylo_engine::Answerer<reylo_engine::duckdb::api::DuckdbDescribe> for Host<'_> {
     type Error = String;
