@@ -1,0 +1,33 @@
+delete_old_new.sql: many (n: text) -> { before: text, after: text? }
+delete_trigger_table.sql: many () -> { v: text }
+delete_using.sql: many () -> { author_id: int8, parent_id: int8? }
+delete_where.sql: many () -> { id: int8, note: text, total: numeric?, user_id: int8 }
+inner_on.sql: many () -> { author_id: int8, name: text }
+inner_on_nickname.sql: many () -> { nickname: text, id: int8 }
+inner_on_range.sql: many () -> { author_id: int8 }
+inner_on_star.sql: many () -> { id: int8, parent_id: int8, author_id: int8?, body: text }
+inner_under_left.sql: many () -> { id: int8, author_id: int8? }
+left_on.sql: many () -> { author_id: int8?, nickname: text? }
+recursive_cycle.sql: many () -> { id: int8, manager_id: int8?, name: text?, is_cycle: bool?, path: record[]? }
+recursive_search.sql: many () -> { id: int8, manager_id: int8? }
+recursive_search_star.sql: many () -> { id: int8, manager_id: int8?, ordercol: record[]? }
+recursive_star.sql: many (id: int8) -> { id: int8, parent_id: int8?, author_id: int8?, body: text }
+recursive_star_named.sql: many () -> { id: int8, name: text? }
+right_on.sql: many () -> { author_id: int8?, uid: int8 }
+star_bare_where.sql: many (n: text) -> { id: int8, note: text?, total: numeric?, user_id: int8 }
+star_joined_where.sql: many (p: text) -> { id: int8, note: text, total: numeric?, user_id: int8?, id: int8, name: text, nickname: text } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+star_qualified_where.sql: many (n: text) -> { id: int8, note: text, total: numeric, user_id: int8? }
+star_using.sql: many (n: text) -> { id: int8, note: text?, total: numeric?, user_id: int8?, name: text, nickname: text? }
+star_where.sql: many (n: text) -> { id: int8, note: text, total: numeric?, user_id: int8? }
+update_assigned.sql: many (n: text) -> { note: text? }
+update_from.sql: many () -> { author_id: int8 }
+update_generated.sql: many () -> { g: int8?, a: int8? }
+update_moves_partition.sql: many () -> { v: text? }
+update_old.sql: many (n: text) -> { before: text?, after: text? }
+update_rule.sql: many () -> { v: text? }
+update_star.sql: many () -> { id: int8, note: text, total: numeric?, user_id: int8, id: int8, name: text, nickname: text } !! reylo14: Columns 1 and 5 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+update_trigger.sql: many () -> { v: text? }
+update_where.sql: many (n: text) -> { note: text, total: numeric? }
+with_twice_left.sql: many () -> { id: int8, total: numeric? }
+with_twice_nulled.sql: many () -> { id: int8? }
+with_twice_sub.sql: many () -> { id: int8 }

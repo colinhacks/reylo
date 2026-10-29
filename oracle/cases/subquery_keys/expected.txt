@@ -6,7 +6,7 @@ distinct_expression.sql: many (a: int8) -> { author_id: int8, t: text }
 distinct_on.sql: maybeOne (a: int8) -> { author_id: int8, id: int8 }
 expression.sql: many (id: int8) -> { id: int8, title: text }
 filtered_inside.sql: maybeOne (a: int8, id: int8) -> { id: int8, title: text }
-full_join.sql: many (id: int8) -> { id: int8? }
+full_join.sql: many (id: int8) -> { id: int8 }
 group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
 group_by_ordinal.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
 group_by_two.sql: many (a: int8) -> { author_id: int8, title: text, n: int8 }
@@ -23,12 +23,12 @@ left_join_subquery.sql: maybeOne (p: int8, id: int8) -> { name: text, title: tex
 limit_inside.sql: maybeOne (id: int8) -> { id: int8, title: text }
 nested.sql: maybeOne (id: int8) -> { id: int8, title: text }
 not_a_key.sql: many (e: text) -> { id: int8, author_id: int8, id: int8, email: text, name: text, deleted_at: timestamptz? } !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
-null_extended_side.sql: many (id: int8) -> { id: int8?, name: text }
+null_extended_side.sql: many (id: int8) -> { id: int8, name: text }
 partial_key_restricted.sql: maybeOne (n: text) -> { id: int8, name: text }
 partial_key_unrestricted.sql: many (n: text) -> { id: int8, name: text }
 recursive.sql: many (id: int8) -> { id: int8 }
 renamed.sql: maybeOne (id: int8) -> { post_id: int8, title: text }
-rollup.sql: many (a: int8) -> { author_id: int8?, n: int8? }
+rollup.sql: many (a: int8) -> { author_id: int8, n: int8? }
 second_key.sql: maybeOne (e: text) -> { id: int8, email: text }
 self_join_key.sql: maybeOne (id: int8) -> { id: int8, title: text }
 self_join_nonkey.sql: many (id: int8) -> { id: int8 }

@@ -10,6 +10,6 @@ with_union_filtered.sql: many (user_id: int8) -> { kind: text, id: int8, text: t
 with_union_null_literal.sql: many () -> { at: timestamptz? }
 with_union_nullable_arm.sql: many () -> { t: text? }
 with_union_same_table.sql: many () -> { title: text, t: text? }
-with_union_star.sql: many () -> { id: int8?, name: text?, email: text? }
+with_union_star.sql: many () -> { id: int8, name: text, email: text? }
 with_union_two_stars.sql: many () -> { t: text?, t2: text?, name: text? }
 with_union_unread.sql: many () -> { name: text, email: text? }

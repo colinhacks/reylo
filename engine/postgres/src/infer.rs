@@ -625,13 +625,31 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     if let Some(scope) = &scope {
         reader.narrowed.extend(scope.strict.iter().filter(|n| !n.checks.is_empty()).cloned());
     }
+    // A `*` whose columns the FROM shows for certain is those columns, each read as the qualified
+    // reference to it, which is what the WHERE's tests narrow.
+    let level = scope.as_ref().map(|_| Level::of(&from, &reader.withs, columns));
     let mut plan = Plan::default();
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
         if is_star(val) {
-            plan.star = true;
-            plan.tail.clear();
+            let expanded = match (scope.as_ref(), level.as_ref(), val.node.as_ref()) {
+                (Some(scope), Some(level), Some(NodeEnum::ColumnRef(c))) => star_columns(c, level).map(|columns| {
+                    columns.iter().map(|column| {
+                        let node = Node { node: Some(NodeEnum::ColumnRef(column.clone())) };
+                        scope.column(column, &node, &mut reader)
+                    }).collect::<Vec<_>>()
+                }),
+                _ => None,
+            };
+            match expanded {
+                Some(claims) if plan.star => plan.tail.extend(claims),
+                Some(claims) => plan.head.extend(claims),
+                None => {
+                    plan.star = true;
+                    plan.tail.clear();
+                }
+            }
             continue;
         }
         // A plain column reference is the describe tier's to answer, but for what the SELECT
@@ -1819,6 +1837,9 @@ pub enum ItemRead {
     Defaulted { item: usize, column: String },
     /// `*` or `item.*`: every column of item `item` in order, or of something else (`None`).
     Star { item: Option<usize> },
+    /// `*` or `item.*` over tables alone: every column a table of the statement's own FROM
+    /// shows, whose provenance is that column, as [`ItemRead::Table`]'s is.
+    TableStar,
 }
 
 /// A FROM item as a statement of its own: a WITH query read by name or a derived table, the
@@ -1835,8 +1856,12 @@ pub struct ItemQuery {
     /// The WITH query's name, for one: whether an outer join nulls it is the caller's reading, by
     /// that name, which a strict WHERE can reduce.
     pub with: Option<String>,
-    /// For any other item, whether it sits on the nullable side of an outer join.
+    /// For any other item, whether it sits on the nullable side of an outer join; for a WITH
+    /// query, whether this reading of it does.
     pub nulled: bool,
+    /// How many columns the item shows after the statement's: those a WITH query's SEARCH and
+    /// CYCLE clauses add.
+    pub extra: usize,
 }
 
 thread_local! {
@@ -1898,7 +1923,9 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
             Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_)))) => return None,
             Some(NodeEnum::ColumnRef(c)) => match c.fields.split_last() {
                 Some((last, qualifier)) if matches!(last.node, Some(NodeEnum::AStar(_))) => match strings(qualifier)?.as_slice() {
+                    [] if items.tables() => ItemRead::TableStar,
                     [] => ItemRead::Star { item: items.only() },
+                    [name] if matches!(items.find(|n| n == Some(name.as_str())), Some(Item::Table)) => ItemRead::TableStar,
                     [name] => ItemRead::Star { item: items.named(name) },
                     _ => ItemRead::Star { item: None },
                 },
@@ -2009,7 +2036,9 @@ impl Items<'_> {
                         _ => None,
                     }).collect();
                     names.extend(own.into_iter().skip(names.len()));
-                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled })
+                    // SEARCH adds its sequence column, CYCLE its mark and its path.
+                    let extra = usize::from(cte.search_clause.is_some()) + 2 * usize::from(cte.cycle_clause.is_some());
+                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, extra })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
@@ -2020,7 +2049,7 @@ impl Items<'_> {
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let query = r.subquery.as_deref().and_then(as_select).filter(|_| !r.lateral).and_then(|body| {
-                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled })
+                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled, extra: 0 })
                 });
                 (alias(r.alias.as_ref()), query)
             }
@@ -2037,7 +2066,7 @@ impl Items<'_> {
                 let name = alias(f.alias.as_ref()).or_else(|| function_item_name(f));
                 let query = call.zip(name.clone()).and_then(|(call, name)| {
                     let column = columns(f.alias.as_ref()).into_iter().next().unwrap_or(name);
-                    Some(ItemQuery { sql: value_text(self.version, call, self.with)?, columns: vec![column], with: None, nulled })
+                    Some(ItemQuery { sql: value_text(self.version, call, self.with)?, columns: vec![column], with: None, nulled, extra: 0 })
                 });
                 (name, query)
             }
@@ -2067,6 +2096,11 @@ impl Items<'_> {
             (Some((_, item)), None) => Some(*item),
             _ => None,
         }
+    }
+
+    /// Whether the FROM has items and every one is a table.
+    fn tables(&self) -> bool {
+        !self.names.is_empty() && self.names.iter().all(|(_, item)| matches!(item, Item::Table))
     }
 
     /// The statement of the one item of the FROM, when it has one item and that one has one.
@@ -2152,17 +2186,32 @@ struct Scope {
 
 impl Scope {
     fn of(s: &SelectStmt, reader: &mut Reader) -> Scope {
+        Scope::over(&s.from_clause, s.where_clause.as_deref(), reader)
+    }
+
+    /// The scope of a FROM and the WHERE that filters it: a SELECT's, or the relations a write
+    /// reads, its target first, and its WHERE.
+    fn over(from: &[Node], filter: Option<&Node>, reader: &mut Reader) -> Scope {
         let mut tables = HashMap::new();
         let mut names = Vec::new();
         let mut outer_join = false;
         let (mut using, mut natural) = (Vec::new(), false);
-        for item in &s.from_clause {
+        for item in from {
             from_names(item, &mut tables, &mut names, &mut outer_join, &mut using, &mut natural);
         }
         if outer_join {
             tables.clear();
         }
-        let strict = s.where_clause.as_deref().map(|w| reader.narrowings(w)).unwrap_or_default();
+        let mut strict = filter.map(|w| reader.narrowings(w)).unwrap_or_default();
+        // A row the result keeps passed the ON of every inner join no outer join can null, so what
+        // that ON is strict in holds of it as a WHERE's would.
+        let mut quals = Vec::new();
+        for item in from {
+            inner_quals(item, &mut quals);
+        }
+        for qual in quals {
+            strict.extend(reader.narrowings(qual));
+        }
         Scope { tables, names, using, natural, strict }
     }
 
@@ -2207,6 +2256,26 @@ impl Scope {
             _ => return false,
         };
         bare[0] == qualified[1] && self.names.contains(&qualified[0])
+    }
+}
+
+/// The ON clauses of the inner joins of a FROM item that no outer join nulls a side of: those of
+/// the item itself and of the preserved side of each outer join in it. A row of an inner join
+/// passed its ON; a nulled side's row did not have to, since an outer join adds one of NULLs.
+fn inner_quals<'n>(item: &'n Node, out: &mut Vec<&'n Node>) {
+    let Some(NodeEnum::JoinExpr(j)) = item.node.as_ref() else { return };
+    let (left, right) = (j.larg.as_deref(), j.rarg.as_deref());
+    let sides = match protobuf::JoinType::try_from(j.jointype) {
+        Ok(protobuf::JoinType::JoinInner) => {
+            out.extend(j.quals.as_deref());
+            [left, right]
+        }
+        Ok(protobuf::JoinType::JoinLeft) => [left, None],
+        Ok(protobuf::JoinType::JoinRight) => [None, right],
+        _ => [None, None],
+    };
+    for side in sides.into_iter().flatten() {
+        inner_quals(side, out);
     }
 }
 
@@ -2585,6 +2654,137 @@ pub(crate) fn builtin_name(names: &[Node]) -> Option<String> {
         2 if last_string(&names[..1]).as_deref() == Some("pg_catalog") => Some(name),
         _ => None,
     }
+}
+
+/// A column of an UPDATE's or a DELETE's RETURNING list that its WHERE, or the ON of an inner join
+/// it reads, is strict in ([`write_narrowing`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriteRead {
+    /// The target relation's column of this name, as the row the statement returns holds it: an
+    /// UPDATE's new row, or the row a DELETE removed.
+    Target(String),
+    /// A column of a relation the statement joins in (`FROM`, `USING`), as the join read it.
+    Joined,
+}
+
+/// What the WHERE of an UPDATE or a DELETE says of the columns its RETURNING list reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteNarrowing {
+    /// The target relation, as the statement names it (`users`, `app.users`).
+    pub target: String,
+    /// Whether the statement is an UPDATE, whose new row holds what its SET writes.
+    pub update: bool,
+    /// The target's columns an UPDATE's SET writes, whole or in part.
+    pub assigned: HashSet<String>,
+    /// Per result column, the name the result gives it and what holds it non-null, where the
+    /// WHERE is strict in it; `None` for every other.
+    pub columns: Vec<Option<(String, WriteRead)>>,
+}
+
+/// Per result column of an UPDATE's or a DELETE's RETURNING list that is a column reference (or
+/// a column a `*` shows), whether the statement's WHERE, or the ON of an inner join of its FROM
+/// or USING, is strict in it. A returned row is one the WHERE held for, so a column of a joined
+/// relation is not NULL in it, and neither is the target's column in the row a DELETE removed. An
+/// UPDATE's new row holds what its SET writes, and a row trigger or a generation expression may
+/// change any column: the caller keeps the target's columns only where none of that happens.
+/// A reference to the old row (PostgreSQL 18) is read as one to the target, and one to a row the
+/// statement may not have (a DELETE's new row) is none. `None` for any other statement.
+pub fn write_narrowing(sql: &str, trust: &Trust, columns: &Columns) -> Option<WriteNarrowing> {
+    crate::stack::run(|| write_narrowing_here(sql, trust, columns))
+}
+
+fn write_narrowing_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<WriteNarrowing> {
+    let parsed = crate::stack::parse(sql).ok()?;
+    let top = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref())?;
+    let (relation, filter, update, assigned) = match top {
+        NodeEnum::UpdateStmt(u) => {
+            let assigned = u.target_list.iter().filter_map(|t| match t.node.as_ref() {
+                Some(NodeEnum::ResTarget(rt)) => Some(rt.name.clone()),
+                _ => None,
+            }).collect();
+            (u.relation.as_ref()?, u.where_clause.as_deref(), true, assigned)
+        }
+        NodeEnum::DeleteStmt(d) => (d.relation.as_ref()?, d.where_clause.as_deref(), false, HashSet::new()),
+        _ => return None,
+    };
+    let (targets, from, with) = top_context(top)?;
+    if targets.is_empty() || target_named_by_with(top, with.as_ref()) {
+        return None;
+    }
+    let rows = Rows::of(top)?;
+    let withs = Withs::default().with(with.as_ref(), columns);
+    let level = Level::of(&from, &withs, columns);
+    let target = relation.alias.as_ref().map_or_else(|| relation.relname.clone(), |a| a.aliasname.clone());
+    let mut reader = Reader { dialect: Dialect::Postgres, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None };
+    let scope = Scope::over(&from, filter, &mut reader);
+    // The reference's claim, and whose column it reads.
+    let mut narrowed = |c: &protobuf::ColumnRef| -> Option<WriteRead> {
+        let node = Node { node: Some(NodeEnum::ColumnRef(c.clone())) };
+        let claim = scope.column(c, &node, &mut reader)?;
+        if !resolve(&claim, None).non_null {
+            return None;
+        }
+        let fields: Vec<String> = c.fields.iter().map(|f| last_string(std::slice::from_ref(f))).collect::<Option<_>>()?;
+        let item = match fields.as_slice() {
+            [item, _] => item.clone(),
+            [column] => level.reader_of(column)?,
+            _ => return None,
+        };
+        Some(if item == target { WriteRead::Target(fields.last()?.clone()) } else { WriteRead::Joined })
+    };
+    let mut out = Vec::new();
+    for t in &targets {
+        let Some(NodeEnum::ResTarget(rt)) = t.node.as_ref() else { return None };
+        let val = rt.val.as_deref()?;
+        let Some(NodeEnum::ColumnRef(c)) = val.node.as_ref() else {
+            // `(row).*` is as many columns as the row's type has.
+            if matches!(val.node.as_ref(), Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_))))) {
+                return None;
+            }
+            out.push(None);
+            continue;
+        };
+        // `old.x` and `new.x` read the target's row before or after the change.
+        let (c, missing) = rows.read(c, &|_| false).unwrap_or((c.clone(), false));
+        if is_star(val) {
+            let columns = star_columns(&c, &level)?;
+            for column in columns {
+                let name = column.fields.last().and_then(|f| last_string(std::slice::from_ref(f)))?;
+                out.push(narrowed(&column).filter(|_| !missing).map(|read| (name, read)));
+            }
+            continue;
+        }
+        let name = if rt.name.is_empty() { c.fields.last().and_then(|f| last_string(std::slice::from_ref(f)))? } else { rt.name.clone() };
+        out.push(narrowed(&c).filter(|_| !missing).map(|read| (name, read)));
+    }
+    let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
+    Some(WriteNarrowing { target, update, assigned, columns: out })
+}
+
+/// Whether the top SELECT has a `*` in its target list that a test of its WHERE or of an inner
+/// join's ON may narrow a column of, which needs the columns of its relations ([`Level::star`]).
+pub fn narrows_star(sql: &str) -> bool {
+    let Ok(parsed) = crate::stack::parse(sql) else { return false };
+    let Some(NodeEnum::SelectStmt(s)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return false };
+    let star = s.target_list.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star)));
+    let mut quals = Vec::new();
+    for item in &s.from_clause {
+        inner_quals(item, &mut quals);
+    }
+    star && (s.where_clause.is_some() || !quals.is_empty())
+}
+
+/// The columns a `*` or `name.*` of a SELECT's target list reads, as qualified references, where
+/// its FROM shows them for certain ([`Level::star`]).
+fn star_columns(c: &protobuf::ColumnRef, level: &Level) -> Option<Vec<protobuf::ColumnRef>> {
+    let qualifier = match c.fields.as_slice() {
+        [_] => None,
+        [name, _] => Some(last_string(std::slice::from_ref(name))?),
+        _ => return None,
+    };
+    let string = |s: &str| Node { node: Some(NodeEnum::String(protobuf::String { sval: s.to_string() })) };
+    let columns = level.star(qualifier.as_deref())?;
+    Some(columns.into_iter().map(|(item, column)| protobuf::ColumnRef { fields: vec![string(&item), string(&column)], location: -1 }).collect())
 }
 
 fn is_star(node: &Node) -> bool {
@@ -2980,6 +3180,68 @@ mod tests {
         let shadowed = Trust { shadowed: ["lower".to_string()].into_iter().collect(), ..Trust::default() };
         let p = plan("SELECT nickname FROM users WHERE lower(nickname) = $1", Dialect::Postgres, &shadowed);
         assert!(!p.head[0].as_ref().is_some_and(|e| resolve(e, None).non_null));
+    }
+
+    #[test]
+    fn an_inner_joins_own_on_narrows_what_it_tests_and_an_outer_joins_does_not() {
+        let narrowed = |sql: &str| pg(sql).head.iter().map(|e| e.as_ref().is_some_and(|e| resolve(e, None).non_null)).collect::<Vec<_>>();
+        assert_eq!(narrowed("SELECT t.owner_id, o.name FROM todos t JOIN owners o ON o.id = t.owner_id"), [true, false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM todos t JOIN owners o ON t.owner_id > o.id"), [true]);
+        // A side an outer join nulls passed no ON of its own joins where it is NULL, and the
+        // preserved side need not pass the outer join's.
+        assert_eq!(narrowed("SELECT t.owner_id FROM todos t LEFT JOIN owners o ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT o.id FROM todos t LEFT JOIN owners o ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners o RIGHT JOIN todos t ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners o FULL JOIN todos t ON o.id = t.owner_id"), [false]);
+        assert_eq!(narrowed("SELECT t.owner_id FROM owners x LEFT JOIN (todos t JOIN owners o ON o.id = t.owner_id) ON true"), [false]);
+        // An inner join on the preserved side of an outer join, or above one, holds of every row.
+        assert_eq!(narrowed("SELECT t.owner_id FROM (todos t JOIN owners o ON o.id = t.owner_id) LEFT JOIN owners x ON true"), [true]);
+        assert_eq!(narrowed("SELECT x.name FROM todos t LEFT JOIN owners x ON x.id = t.owner_id JOIN owners o ON o.name = x.name"), [true]);
+    }
+
+    #[test]
+    fn a_star_is_the_columns_its_from_shows_each_narrowed_as_its_reference_is() {
+        let narrowed = |sql: &str| {
+            let p = pg(sql);
+            assert!(!p.star, "{sql}");
+            p.head.iter().map(|e| e.as_ref().is_some_and(|e| resolve(e, None).non_null)).collect::<Vec<_>>()
+        };
+        assert_eq!(narrowed("SELECT * FROM todos WHERE title = $1"), [false, false, true, false]);
+        assert_eq!(narrowed("SELECT t.*, 1 FROM todos t WHERE t.n > 0"), [false, false, false, true, true]);
+        assert_eq!(narrowed("SELECT * FROM todos t JOIN owners o ON o.id = t.owner_id WHERE name LIKE 'a%'"), [false, true, false, false, true, true]);
+        assert_eq!(narrowed("SELECT o.* FROM todos t JOIN owners o ON o.id = t.owner_id"), [true, false]);
+        // A star whose columns the FROM does not show for certain stays a `*`: a table the catalog
+        // did not answer for, and a join that merges columns with USING.
+        assert!(pg("SELECT * FROM tags WHERE name = $1").star);
+        assert!(pg("SELECT * FROM todos JOIN owners USING (id) WHERE title = $1").star);
+        assert!(narrows_star("SELECT * FROM todos WHERE title = $1"));
+        assert!(narrows_star("SELECT t.* FROM todos t JOIN owners o ON o.id = t.owner_id"));
+        assert!(!narrows_star("SELECT * FROM todos"));
+        assert!(!narrows_star("SELECT title FROM todos WHERE title = $1"));
+    }
+
+    #[test]
+    fn a_writes_where_narrows_what_its_returning_reads() {
+        let columns: Columns = [("todos", vec!["id", "owner_id", "title", "n"]), ("owners", vec!["id", "name"])].into_iter().collect();
+        let found = |sql: &str| write_narrowing(sql, &Trust::default(), &columns).unwrap();
+        let target = |c: &str| Some((c.to_string(), WriteRead::Target(c.to_string())));
+        let joined = |c: &str| Some((c.to_string(), WriteRead::Joined));
+        let w = found("DELETE FROM todos t USING owners o WHERE t.owner_id = o.id AND o.name LIKE 'a%' RETURNING t.owner_id, o.name, t.title, title AS heading");
+        assert_eq!(w.columns, [target("owner_id"), joined("name"), None, None]);
+        assert!(!w.update);
+        assert_eq!(w.target, "todos");
+        // A `*` is the target's columns, then those of what the statement joins in.
+        let w = found("UPDATE todos SET n = 1 FROM owners o WHERE todos.title IS NOT NULL AND o.id = todos.owner_id RETURNING *");
+        assert_eq!(w.columns, [None, target("owner_id"), target("title"), None, joined("id"), None]);
+        assert_eq!(w.assigned, ["n".to_string()].into_iter().collect());
+        // The old row is the target's; a DELETE has no new one.
+        let w = found("DELETE FROM todos WHERE title = $1 RETURNING old.title AS before, new.title AS after");
+        assert_eq!(w.columns, [Some(("before".to_string(), WriteRead::Target("title".to_string()))), None]);
+        // A bare name is the one item's that shows it, and nothing where another may.
+        assert_eq!(found("DELETE FROM todos USING owners WHERE name = 'a' RETURNING name").columns, [joined("name")]);
+        assert_eq!(found("DELETE FROM todos USING tags WHERE name = 'a' RETURNING name").columns, [None]);
+        assert!(write_narrowing("SELECT 1", &Trust::default(), &columns).is_none());
+        assert!(write_narrowing("INSERT INTO todos (title) VALUES ('a') RETURNING title", &Trust::default(), &columns).is_none());
     }
 
     #[test]
@@ -3522,7 +3784,7 @@ mod tests {
 
     #[test]
     fn a_star_splits_the_claims_around_it() {
-        let p = pg("SELECT 'a' AS x, t.*, count(*) OVER () AS total FROM todos t");
+        let p = pg("SELECT 'a' AS x, t.*, count(*) OVER () AS total FROM tags t");
         assert!(p.star);
         let claims = p.claims(5);
         assert!(claims[0].is_some() && claims[1].is_none() && claims[3].is_none() && claims[4].is_some());
@@ -3623,7 +3885,7 @@ mod tests {
 
     #[test]
     fn a_strict_where_proves_the_column_it_tests() {
-        let p = pg("SELECT id, email, p.title, body FROM users u JOIN posts p ON p.user_id = u.id WHERE email IS NOT NULL AND title > $1 AND (body IS NOT NULL OR id = 1)");
+        let p = pg("SELECT id, email, p.title, body FROM users u JOIN posts p ON p.user_id = u.uid WHERE email IS NOT NULL AND title > $1 AND (body IS NOT NULL OR id = 1)");
         assert_eq!(p.head[0], None);
         assert_eq!(p.head[1], Some(Expr::NonNull(None)));
         // `title` in the WHERE and `p.title` in the list are one column: `p` is a FROM item here.
@@ -3674,6 +3936,13 @@ mod tests {
         assert_eq!(reads, vec![column(0, "n")]);
         assert_eq!(queries[0].columns, vec!["n"]);
         assert!(queries[0].sql.starts_with("WITH RECURSIVE t(n) AS ("));
+        // SEARCH adds a column after the query's own, and CYCLE two.
+        let extra = |sql: &str| item_reads(sql).unwrap().1[0].extra;
+        assert_eq!(extra("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 5) SEARCH DEPTH FIRST BY n SET o SELECT * FROM t"), 1);
+        assert_eq!(extra("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 5) CYCLE n SET c USING p SELECT * FROM t"), 2);
+        // A reading of a WITH query is nulled by its own place, whatever another reading's is.
+        let (_, queries) = item_reads("WITH c AS (SELECT 1 AS n) SELECT a.n FROM c a LEFT JOIN c b ON b.n = a.n").unwrap();
+        assert_eq!(queries.iter().map(|q| q.nulled).collect::<Vec<_>>(), [false, true]);
         // A bare name among several FROM items could be any item's; a table is not a WITH query.
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT x FROM a, users"), None);
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT id FROM users"), None);
@@ -3683,7 +3952,7 @@ mod tests {
         let (reads, _) = item_reads("WITH a AS (SELECT 1 AS x) SELECT *, x FROM a").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }, column(0, "x")]);
         let (reads, _) = item_reads("WITH a AS (SELECT 1 AS x) SELECT u.*, a.*, a.x FROM users u, a").unwrap();
-        assert_eq!(reads, vec![ItemRead::Star { item: None }, ItemRead::Star { item: Some(0) }, column(0, "x")]);
+        assert_eq!(reads, vec![ItemRead::TableStar, ItemRead::Star { item: Some(0) }, column(0, "x")]);
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT * FROM a, users"), None);
         assert_eq!(item_reads("WITH a AS (SELECT ROW(1, 2)::pair AS p) SELECT (p).*, p FROM a"), None);
     }
@@ -3701,7 +3970,9 @@ mod tests {
         // and a `*` read no one column.
         assert_eq!(reads("WITH users AS (SELECT 1 AS id UNION SELECT 2) SELECT users.id FROM users"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
         assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
-        assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::Star { item: None }]);
+        assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::TableStar]);
+        assert_eq!(reads("SELECT * FROM users u JOIN posts p ON p.user_id = u.id"), vec![ItemRead::TableStar]);
+        assert_eq!(reads("WITH a AS (SELECT 1 AS x) SELECT * FROM a, users"), vec![ItemRead::Star { item: None }]);
         assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Other]);
         // A set operation at the top hides which arm a column is.
         assert_eq!(target_reads("SELECT id FROM users UNION SELECT id FROM posts"), None);
@@ -3724,7 +3995,7 @@ mod tests {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH c AS (SELECT 1 AS one) SELECT s.n, u.id FROM users u LEFT JOIN (SELECT count(*) AS n FROM c) s (total) ON true").unwrap();
         assert_eq!(reads, vec![column(0, "n"), ItemRead::Table]);
-        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true, extra: 0 }]);
         // The preserved side of an outer join is not nulled; a FULL JOIN nulls both.
         let nulled = |sql: &str| item_reads(sql).unwrap().1.iter().map(|q| q.nulled).collect::<Vec<_>>();
         assert_eq!(nulled("SELECT a.x, b.y FROM (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON true"), vec![false, true]);
@@ -3735,7 +4006,7 @@ mod tests {
         // item's one column goes by.
         let (reads, queries) = item_reads("SELECT * FROM lower($1)").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }]);
-        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false, extra: 0 }]);
         assert_eq!(item_reads("SELECT t FROM now() AS t").unwrap().1[0].columns, vec!["t"]);
         assert_eq!(item_reads("SELECT v FROM now() AS t (v)").unwrap().1[0].columns, vec!["v"]);
         assert_eq!(item_reads("SELECT * FROM CURRENT_DATE AS d").unwrap().1[0].sql, "SELECT current_date AS value");
