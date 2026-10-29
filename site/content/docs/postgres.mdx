@@ -713,6 +713,8 @@ returning id
 
 Write parameters as `:name`, and pass `.run()` an object with those names. You can use Postgres's `$1` instead, but not both in one query; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
 
+A colon right after a subscript's `[` starts a slice, as Postgres reads it, so in `tags[:n]` the name `n` is a column and `tags[:n]` holds the first `n` elements. To subscript with a parameter, wrap it in parentheses: `tags[(:i)]`.
+
 ### What a parameter takes
 
 A parameter accepts the same values `.run()` returns for its type, so you can pass a row straight into the next query:

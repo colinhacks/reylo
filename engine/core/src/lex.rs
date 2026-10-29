@@ -159,6 +159,17 @@ fn dotted_name_end(b: &[u8], start: usize) -> usize {
     j
 }
 
+/// What the walk read last, for the one place it matters: a Postgres subscript's `[` (after an
+/// operand) against an array constructor's (after `array`, or nested in one).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Last {
+    Other,
+    /// A name other than `array`, a number, a quoted identifier, a placeholder, `)` or `]`.
+    Operand,
+    /// The `[` of a subscript, with nothing but whitespace and comments read since.
+    Subscript,
+}
+
 fn digits_end(b: &[u8], start: usize) -> usize {
     let mut j = start;
     while j < b.len() && b[j].is_ascii_digit() {
@@ -264,6 +275,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
     let mysql = dialect == Dialect::Mysql;
     let b = sql.as_bytes();
     let mut i = 0usize;
+    let mut last = Last::Other;
     let mut params: Vec<String> = Vec::new();
     let mut placeholders: Vec<Placeholder> = Vec::new();
     let mut opaque: Vec<(usize, usize)> = Vec::new();
@@ -293,6 +305,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 };
                 opaque.push((i, end));
                 i = end;
+                last = Last::Other;
             }
             b'E' | b'e' if b.get(i + 1) == Some(&b'\'') && !prev_is_name_char(b, i) && !mysql => {
                 let start = i;
@@ -310,6 +323,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     }
                 }
                 opaque.push((start, i));
+                last = Last::Other;
             }
             b'"' | b'`' => {
                 let Some(end) = quoted_end(b, i, false) else {
@@ -317,6 +331,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 };
                 opaque.push((i, end));
                 i = end;
+                last = Last::Operand;
             }
             // MySQL's `--` starts a comment only before a space or a control character, or at the
             // end of the text: `:a --:b` is `:a - (-:b)`.
@@ -369,16 +384,30 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     if i < b.len() && is_name_start(b[i]) {
                         i = name_end(b, i);
                     }
+                    last = Last::Operand;
                     continue;
                 }
                 match b.get(i + 1) {
+                    // A colon that opens a Postgres subscript is a slice with no lower bound
+                    // (`tags[:n]` is `tags[1:n]`), since no expression starts with a colon there,
+                    // so the name after it is a column's; a parameter as the subscript is written
+                    // `tags[(:n)]`. An array constructor's `[` (`array[:a, :b]`) follows `array`
+                    // or another `[`, not an operand.
+                    _ if last == Last::Subscript && dialect == Dialect::Postgres => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                     Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) => {
                         let end = dotted_name_end(b, i + 1);
                         one_prefix(sql, &mut first_named, i, end)?;
                         push(sql[i + 1..end].to_string(), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
-                    _ => i += 1,
+                    _ => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                 }
             }
             b'$' => {
@@ -389,6 +418,7 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                             Some(close) => {
                                 opaque.push((i, close + tag.len()));
                                 i = close + tag.len();
+                                last = Last::Other;
                                 continue;
                             }
                             None => {
@@ -402,22 +432,30 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                 }
                 match b.get(i + 1) {
                     // `a$1` and `a$b` are identifiers.
-                    _ if prev_is_name_char(b, i) => i += 1,
+                    _ if prev_is_name_char(b, i) => {
+                        i += 1;
+                        last = Last::Operand;
+                    }
                     Some(&n) if n.is_ascii_digit() && matches!(dialect, Dialect::Postgres | Dialect::Duckdb) => {
                         let end = digits_end(b, i + 1);
                         push(position(&sql[i + 1..end], &mut largest), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
                     Some(&n) if is_name_start(n) && sqlite_named => {
                         let end = dotted_name_end(b, i + 1);
                         one_prefix(sql, &mut first_named, i, end)?;
                         push(sql[i + 1..end].to_string(), i, end, &mut params);
                         i = end;
+                        last = Last::Operand;
                     }
                     Some(&n) if (is_name_start(n) || n.is_ascii_digit()) && dialect != Dialect::Mysql => {
                         return Err(foreign(sql, i, dialect));
                     }
-                    _ => i += 1,
+                    _ => {
+                        i += 1;
+                        last = Last::Other;
+                    }
                 }
             }
             b'@' => match b.get(i + 1) {
@@ -426,11 +464,15 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     one_prefix(sql, &mut first_named, i, end)?;
                     push(sql[i + 1..end].to_string(), i, end, &mut params);
                     i = end;
+                    last = Last::Operand;
                 }
                 Some(&n) if is_name_start(n) && !prev_is_name_char(b, i) && dialect == Dialect::Sqlite => {
                     return Err(foreign(sql, i, dialect));
                 }
-                _ => i += 1,
+                _ => {
+                    i += 1;
+                    last = Last::Other;
+                }
             },
             b'?' if dialect != Dialect::Postgres => {
                 if b.get(i + 1).is_some_and(u8::is_ascii_digit) && dialect == Dialect::Mysql {
@@ -447,8 +489,28 @@ fn lex_text(sql: &str, dialect: Dialect, named: Named, text: MysqlText) -> Resul
                     push(largest.to_string(), i, i + 1, &mut params);
                     i += 1;
                 }
+                last = Last::Operand;
             }
-            _ => i += 1,
+            // Whitespace leaves what was read last as it was, as a comment does.
+            _ if c.is_ascii_whitespace() => i += 1,
+            // A name or a number, whole: `array` opens a constructor, anything else is an operand.
+            _ if is_name_char(c) => {
+                let end = name_end(b, i);
+                last = if sql[i..end].eq_ignore_ascii_case("array") { Last::Other } else { Last::Operand };
+                i = end;
+            }
+            b')' | b']' => {
+                i += 1;
+                last = Last::Operand;
+            }
+            b'[' => {
+                i += 1;
+                last = if last == Last::Operand { Last::Subscript } else { Last::Other };
+            }
+            _ => {
+                i += 1;
+                last = Last::Other;
+            }
         }
     }
     let positional = params.iter().filter(|p| is_positional(p)).count();
@@ -867,8 +929,27 @@ mod tests {
         for d in [Dialect::Postgres, Dialect::Sqlite, Dialect::Mysql] {
             assert!(lex("select arr[1:2], arr[2:], arr[:3], arr[1:2].x, arr[lo:hi], arr[1:n] from t", d).unwrap().params.is_empty());
         }
-        // A colon after no name character still opens a name: `arr[:lo]` reads a parameter.
-        assert_eq!(names("select arr[:lo] from t", Dialect::Postgres), ["lo"]);
+        // On Postgres a colon that opens a subscript is a slice with no lower bound, whatever
+        // follows it: no expression starts with a colon there. Whitespace and comments may stand
+        // between, and the subscript may follow a quoted name, a parenthesis, another subscript or
+        // a placeholder.
+        let slices = "select arr[:hi], arr[ :hi], arr[/* c */:hi], arr[:t.n], \"a\"[:hi], (f(x))[:pg_t.tgnargs], m[1][:hi], arr[1:hi], arr[:hi][:lo] from t where x = :x and y = $1";
+        let l = lex(slices, Dialect::Postgres).unwrap();
+        assert_eq!(l.params, ["x", "1"]);
+        assert_eq!(l.style, Style::Mixed);
+        assert_eq!(names("select :a[:hi], arr[:hi] from t", Dialect::Postgres), ["a"]);
+        // A parameter is the subscript, or a slice's bound after its colon, as written.
+        assert_eq!(names("select arr[(:i)], arr[ : :hi], arr[1 : :b], arr[:i + 0] from t", Dialect::Postgres), ["i", "hi", "b"]);
+        // An array constructor's bracket follows `array` or another bracket, and holds parameters.
+        assert_eq!(names("select array[:a, :b], ARRAY[[:c], [:d]], x = any(array[:e]) from t", Dialect::Postgres), ["a", "b", "c", "d", "e"]);
+        // The statement the runtime's lexer is checked against reads the same here.
+        let l = lex("select tags[:n], tags[ :m], (f(x))[:pg_t.tgnargs], \"q\"[:k], array[:a, :b], tags[(:c)], tags[1::int:d] from t where y = :y", Dialect::Postgres).unwrap();
+        assert_eq!(l.params, ["a", "b", "c", "y"]);
+        assert_eq!(l.placeholders.iter().map(|p| (p.start, p.end)).collect::<Vec<_>>(), [(66, 68), (70, 72), (81, 83), (119, 121)]);
+        // MySQL, SQLite and DuckDB keep reading a colon after no name character as a parameter.
+        for d in [Dialect::Sqlite, Dialect::Mysql, Dialect::Duckdb] {
+            assert_eq!(names("select arr[:lo] from t", d), ["lo"]);
+        }
     }
 
     #[test]

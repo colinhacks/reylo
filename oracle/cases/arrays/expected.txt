@@ -3,4 +3,5 @@ agg_left.sql: many () -> { id: int4, emails: (text?)[] }
 any_param.sql: many (emails: text[]) -> { id: int4 }
 columns.sql: maybeOne (id: int4) -> { tags: text[], scores: int4[]? }
 constructors.sql: maybeOne (id: int4) -> { nicks: (text?)[], emails: (text!)[], nums: (int4!)[] }
+slices.sql: maybeOne (i: int4, id: int4) -> { head: text[]?, head2: text[]?, one: text? }
 subqueries.sql: one () -> { emails: text[], nicks: text[] }
