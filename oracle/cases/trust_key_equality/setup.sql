@@ -12,3 +12,8 @@ create table c (h citext primary key, n text not null);
 create table b (id bigint primary key, n text not null);
 create type mood as enum ('calm', 'busy');
 create table e (m mood primary key, n text not null);
+-- A key compared with an integer sum, the wider integer, beside a user's `=`; a call of a string
+-- beside a text key proves nothing here, since a domain of text has a `=` of its own. A view
+-- passes a table's key through, under the same equality as the table's own, a domain's included.
+create view cv as select h, n from c;
+create view uv as select d, n from u;

@@ -14,5 +14,5 @@ lateral_left.sql: many () -> { id: int4, teams: [{ id: int4, name: text }]? }
 lateral_nested.sql: many () -> { o: { t: { n: text } } }
 lateral_object_inner.sql: many () -> { snapshot: { name: text } }
 lateral_object_left.sql: many () -> { snapshot: { name: text }? }
-lateral_own_with.sql: many () -> { o: json? }
+lateral_own_with.sql: many () -> { o: json }
 lateral_rollup.sql: many () -> { o: { n: text }? }

@@ -1,0 +1,1 @@
+with recursive t as (select id, manager_id from staff where manager_id is null union all select s.id, s.manager_id from staff s join t on s.manager_id = t.id) search depth first by id set ordercol select * from t

@@ -1,4 +1,8 @@
 insert_cast.sql: one (id: int4, name: text, email: text, score: numeric, n: int4) -> { id: int4 }
+other_schema.sql: none (id: int4, body: text?, title: text, slug: text) -> {  }
+qualified_insert.sql: none (id: int4, name: text, email: text?, score: numeric?) -> {  }
+qualified_update.sql: none (email: text?, name: text, id: int4) -> {  }
 row_value.sql: maybeOne (name: text, email: text?, id: int4) -> { name: text, email: text? }
 row_value_cast.sql: maybeOne (name: text, email: text, n: int4, id: int4) -> { name: text, email: text?, n: int4? }
+same_name.sql: none (other_name: text?, name: text) -> {  }
 upsert_row_value.sql: one (id: int4, email: text, score: numeric) -> { email: text?, score: numeric? }

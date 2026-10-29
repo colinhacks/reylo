@@ -147,11 +147,14 @@ pub const TYPE_QUERY: &str = concat!("SELECT ", type_columns!(), " FROM pg_catal
 
 /// The same rows for every column type of the named relations, with the element and base types
 /// those name, so a statement over plain columns has its types before it is described. `$1` is
-/// `text[]` of relation names.
+/// `text[]` of relation names as the statement writes them, `$2` how many.
 pub const RELATION_TYPES_QUERY: &str = concat!(
-    "WITH cols AS (SELECT a.atttypid AS oid FROM pg_catalog.pg_attribute a JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) a.attrelid \
-      WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
-        AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped), \
+    "WITH cols AS (SELECT a.atttypid AS oid FROM ",
+    crate::cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) ",
+    crate::cardinality::relation_named!("x.name"),
+    " \
+      WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped), \
     wanted AS (SELECT cols.oid FROM cols \
       UNION SELECT t.typelem FROM pg_catalog.pg_type t JOIN cols ON cols.oid OPERATOR(pg_catalog.=) t.oid WHERE t.typelem OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid \
       UNION SELECT t.typbasetype FROM pg_catalog.pg_type t JOIN cols ON cols.oid OPERATOR(pg_catalog.=) t.oid WHERE t.typbasetype OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid) \

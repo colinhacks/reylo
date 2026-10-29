@@ -1,7 +1,11 @@
 builtin_key.sql: maybeOne (id: int8) -> { n: text }
 citext_key.sql: maybeOne () -> { n: text }
 citext_key_param.sql: maybeOne (h: citext) -> { n: text }
+computed_domain_key.sql: many (d: text) -> { n: text }
+computed_key_sum.sql: maybeOne (id: int4) -> { n: text }
 domain_key.sql: many () -> { n: text }
 domain_key_param.sql: many (d: text) -> { n: text }
 enum_key.sql: maybeOne () -> { n: text }
 enum_key_param.sql: maybeOne (m: 'calm' | 'busy') -> { n: text }
+view_citext_key.sql: maybeOne (h: citext) -> { n: text }
+view_domain_key.sql: many () -> { n: text }

@@ -1,0 +1,8 @@
+array_aggregate.sql: many () -> { id: int8, titles: [text] }
+array_aggregate_ungrouped.sql: one () -> { titles: [text]? }
+array_column.sql: many () -> { tags: json }
+array_subquery.sql: many () -> { id: int8, titles: [text], posts: [{ title: text, body: text? }] }
+build_array.sql: many () -> { pair: json {"type":"array","prefixItems":[{"type":"integer","format":"int32"},{"type":"integer","format":"int32"}],"items":false,"minItems":2}, names: json {"type":"array","prefixItems":[{"type":"string"},{"type":"string"}],"items":false,"minItems":2}, empty: json {"type":"array","prefixItems":[],"items":false,"minItems":0}, mixed: json {"type":"array","prefixItems":[{"type":"integer","format":"int64"},{"type":["string","null"]},{"type":"string","format":"date-time"}],"items":false,"minItems":3}, nested: json {"type":"array","prefixItems":[{"type":"object","properties":{"n":{"type":"string"}},"required":["n"]}],"items":false,"minItems":1} }
+set_returning_in_step.sql: many () -> { o: { n: int4? }, m: int4? }
+sql_array.sql: many () -> { pair: json {"type":"array","prefixItems":[{"type":"integer","format":"int32"},{"type":"integer","format":"int32"}],"items":false,"minItems":2}, skipped: json {"type":"array","items":{"anyOf":[{"type":"integer","format":"int64"},{"type":"string"}]},"maxItems":2}, kept: json {"type":"array","prefixItems":[{"type":"integer","format":"int64"},{"type":["string","null"]}],"items":false,"minItems":2}, empty: json {"type":"array","prefixItems":[],"items":false,"minItems":0} }
+sql_object.sql: many () -> { o: { id: int8, name: text, bio: text? }, absent: json, text: text, binary: { name: text } }

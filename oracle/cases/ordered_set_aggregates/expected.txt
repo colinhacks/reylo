@@ -1,6 +1,6 @@
 derived.sql: one () -> { m: text? }
 filter.sql: one () -> { mode: text? }
-grouped.sql: many () -> { mode: text? }
+grouped.sql: many () -> { mode: text }
 having.sql: many () -> { mode: text? }
 in_expression.sql: one () -> { top: text }
 in_subquery.sql: one () -> { m: text? }

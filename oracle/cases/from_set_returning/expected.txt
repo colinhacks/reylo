@@ -1,0 +1,20 @@
+calendar.sql: many (start: date, stop: date) -> { day: date, visits: int8 }
+calendar_bare.sql: many () -> { d: timestamptz }
+each.sql: many () -> { key: text, value: json }
+each_text.sql: many () -> { key: text, value: text? }
+elements.sql: many () -> { value: json, k: text }
+elements_text.sql: many () -> { value: text? }
+enum_labels.sql: many () -> { m: 'sad' | 'ok' | 'happy' }
+json_table.sql: many () -> { n: int4, v: int4?, m: int4? }
+lateral_column.sql: many () -> { id: int8, note: text?, at: timestamptz }
+lateral_count.sql: many () -> { id: int8, n: int8, latest: timestamptz? }
+lateral_left.sql: many () -> { id: int8, n: int8? }
+ordinality.sql: many () -> { tag: text?, n: int8 }
+ordinality_default.sql: many () -> { tag: text?, ordinality: int8? }
+ordinality_row.sql: one () -> { a: int4?, b: text? }
+ordinality_series.sql: many () -> { g: int4, n: int8 }
+series_lateral.sql: many () -> { name: text, g: int4 }
+series_nulled.sql: many () -> { id: int8, g: int4? }
+series_params.sql: many (a: int4, b: int4) -> { s: int4 }
+split.sql: many () -> { part: text }
+star.sql: many () -> { id: int8, name: text, tags: text[], prefs: json, list: json, csv: text, n: int4, key: text?, value: json?, ordinality: int8? }

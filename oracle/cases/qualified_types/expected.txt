@@ -1,4 +1,4 @@
-add.sql: one (id: int4, status: 'open' | 'closed', code: text) -> { id: int4, status: 'open' | 'closed', code: text? }
+add.sql: one (id: int4, status: 'open' | 'closed', code: text?) -> { id: int4, status: 'open' | 'closed', code: text? }
 by_code.sql: many (code: text) -> { id: int4 }
 by_status.sql: many (status: 'open' | 'closed') -> { id: int4, title: text? }
 by_statuses.sql: many (statuses: 'open' | 'closed'[]) -> { id: int4, status: 'open' | 'closed' }

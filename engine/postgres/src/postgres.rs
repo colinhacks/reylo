@@ -143,15 +143,22 @@ pub const CHECKS_QUERY: &str = concat!(
 /// null where it tests the column `IS NOT NULL` among its conjuncts ([`refuses_null`]); a NOT VALID
 /// one still checks every row written. A CHECK `NOT ENFORCED` (PostgreSQL 18), which checks
 /// nothing, is the one the server prints with those words last. `$1` is `text[]` of relation
-/// names.
-pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, oid) AS ( \
+/// names as the statement writes them, schema-qualified or resolved through the search path, `$2`
+/// how many; the relation is named as `$1` names it.
+pub const REFUSES_NULL_QUERY: &str = concat!(
+    "WITH RECURSIVE rels(name, oid) AS (SELECT DISTINCT x.name, c.oid FROM ",
+    cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
+    " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
+    cardinality::relation_named!("x.name"),
+    "), \
+    domains(attrelid, attnum, oid) AS ( \
       SELECT a.attrelid, a.attnum, t.oid FROM pg_catalog.pg_class c \
         JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
         JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\" \
-      WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid) \
+      WHERE c.oid OPERATOR(pg_catalog.=) ANY (SELECT r.oid FROM rels r) \
       UNION SELECT d.attrelid, d.attnum, t.oid FROM domains d JOIN pg_catalog.pg_type b ON b.oid OPERATOR(pg_catalog.=) d.oid \
         JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) b.typbasetype AND t.typtype OPERATOR(pg_catalog.=) 'd'::pg_catalog.\"char\") \
-    SELECT c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, \
+    SELECT r.name, a.attnum::pg_catalog.int4, a.attname::pg_catalog.text, \
       a.attnotnull OR c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) OR EXISTS (SELECT 1 FROM domains d JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) d.oid \
         WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum AND t.typnotnull), \
       ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, k.conrelid, true) FROM pg_catalog.pg_constraint k \
@@ -160,8 +167,9 @@ pub const REFUSES_NULL_QUERY: &str = "WITH RECURSIVE domains(attrelid, attnum, o
       ARRAY(SELECT pg_catalog.pg_get_expr(k.conbin, '0'::pg_catalog.oid, true) FROM domains d \
         JOIN pg_catalog.pg_constraint k ON k.contypid OPERATOR(pg_catalog.=) d.oid AND k.contype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" \
         WHERE d.attrelid OPERATOR(pg_catalog.=) a.attrelid AND d.attnum OPERATOR(pg_catalog.=) a.attnum) \
-    FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
-    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)";
+    FROM rels r JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) r.oid \
+      JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
+);
 /// The comment of each column that has one (`COMMENT ON COLUMN`): `(relation, attnum, the
 /// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them,
 /// `$3` how many.
@@ -196,16 +204,21 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 );
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
-/// relation names. The fourth column is the `NOT NULL` a write meets, which checks every new row
+/// relation names as the statement writes them, schema-qualified or resolved through the search
+/// path, `$2` how many. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
-/// `not_null_rows`).
+/// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
+/// generated column does not; the ninth, the relation's name as `$1` gives it.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
     CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
-    " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
-    WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
+    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name FROM (SELECT DISTINCT n.name FROM ",
+    cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "n"),
+    ") AS x JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
+    cardinality::relation_named!("x.name"),
+    " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
 );
 /// What the catalog says of the names the expression rules read ([`crate::infer::Trust`]): `$1` is
 /// `text[]` of operator names, `$2` the `text[]` of function names. Each row is `(what, a name, an
@@ -507,7 +520,7 @@ pub fn catalog(host: &Host, functions: &[String], relations: &[String]) -> Lazy<
 /// is in the server's `$n` form. For the main statement this is the question the row-count proof
 /// asks of the same relations, so it costs no query of its own.
 fn level_columns(sql: &str, host: &Host) -> Lazy<Columns> {
-    columns_where(crate::levels::needed(sql), sql, host)
+    columns_where(crate::levels::needed(sql) || infer::narrows_star(sql), sql, host)
 }
 
 /// The columns [`jsonshape::plan`] reads for `sql`, for a host that plans the shapes itself: none,
@@ -584,6 +597,11 @@ struct Engine<'a> {
     /// The same columns by relation name, in attnum order: column name → NOT NULL. An INSERT
     /// or an UPDATE names the columns it writes, or their positions.
     columns_by_name: RefCell<HashMap<String, BTreeMap<i32, (String, bool)>>>,
+    /// The parse-named relations' columns that hold what is written to them, by (relation oid,
+    /// attnum): no generated column, whose value an UPDATE computes again.
+    stored: RefCell<HashSet<(u32, i32)>>,
+    /// Each prefetched relation's oid, by its name as the statement writes it.
+    oids_by_name: RefCell<HashMap<String, u32>>,
     /// The defining SELECT of each of those that is a view or a materialized view. The catalog
     /// holds no NOT NULL for a view's columns, so they are settled from this statement instead.
     views: RefCell<HashMap<u32, String>>,
@@ -616,6 +634,9 @@ struct Engine<'a> {
     /// The JSON Schemas the CHECKs of each column a parameter is written to hold it to, with the
     /// validators that read them ([`Engine::checks`]).
     written: RefCell<HashMap<(u32, i32), Vec<(String, Validators)>>>,
+    /// The strings the CHECKs of each column a parameter is written to keep it to
+    /// ([`check_values`]).
+    written_values: RefCell<HashMap<(u32, i32), Vec<String>>>,
     /// The comment of each result column of the main statement and of each column it writes a
     /// parameter to ([`Engine::comments`]).
     comments: RefCell<Comments>,
@@ -638,7 +659,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -730,7 +751,7 @@ impl<'a> Engine<'a> {
             None => Some(Ok(Vec::new())),
         };
         let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows), Some((view_definitions, _, _))) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows, viewed) else { return None };
-        let (raw, described) = match described {
+        let (raw, mut described) = match described {
             Ok(d) => d,
             Err(e) => {
                 diagnostics.push(db_diagnostic(sql, &rewritten, &e));
@@ -754,6 +775,7 @@ impl<'a> Engine<'a> {
                 diagnostics.push(diag(message, start, length, 13));
             }
         }
+        self.write_narrowed(&rewritten.sql, &trust, &catalog, &raw, &mut described);
         // A JSON object of an odd count of arguments, which Postgres prepares and refuses when it
         // runs; only the built-in constructors, which a user's function of the name may shadow.
         let constructors: Vec<&str> = ["json_build_object", "jsonb_build_object"].into_iter().filter(|n| trust.builtin(n)).collect();
@@ -826,11 +848,25 @@ impl<'a> Engine<'a> {
                 let sources = self.written.borrow();
                 let schemas: Vec<(String, Validators)> = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).flat_map(|(_, rel, att)| sources.get(&(*rel, *att)).cloned().unwrap_or_default()).collect();
                 let document = if schemas.is_empty() { None } else { crate::schema_type::checked_type(&schemas) };
+                // A bare parameter written whole to a string column a CHECK keeps to a list of
+                // strings takes those strings alone, as its read does: the CHECK refuses every
+                // other value the write could give the column. A cast one is its cast's type,
+                // which may change the value on the way (`varchar(3)` cuts it short).
+                let kept = self.written_values.borrow();
+                let bare = parsed.as_ref().is_some_and(|p| p.bare.iter().any(|(n, _, _)| *n == i as i32 + 1));
+                let values = written
+                    .iter()
+                    .filter(|(n, _, _)| bare && *n == i as i32 + 1)
+                    .filter_map(|(_, rel, att)| kept.get(&(*rel, *att)))
+                    .fold(None, |known: Option<Vec<String>>, values| Some(match known {
+                        Some(known) => known.into_iter().filter(|v| values.contains(v)).collect(),
+                        None => values.clone(),
+                    }));
                 // A parameter written to columns that share one comment carries it.
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { name: name.clone(), ty: with_document(registry.render(o), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
+                Param { name: name.clone(), ty: with_document(with_values(registry.render(o), values.as_deref()), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
             })
             .collect();
 
@@ -855,6 +891,39 @@ impl<'a> Engine<'a> {
         };
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
+    }
+
+    /// The columns of an UPDATE's or a DELETE's RETURNING list its WHERE is strict in, non-null
+    /// ([`infer::write_narrowing`]), where nothing changes the row between the WHERE and the
+    /// RETURNING: no rewrite rule, and no view, takes the write over; and for the target's own
+    /// columns, no row trigger runs before the change or in its place (on an UPDATE, a delete's
+    /// and an insert's too, which a row moved to another partition runs), and an UPDATE neither
+    /// writes the column nor computes it again as a generated one.
+    fn write_narrowed(&self, sql: &str, trust: &Trust, catalog: &Catalog, raw: &RawDescribe, described: &mut DescribedStatement) {
+        let Some(found) = infer::write_narrowing(sql, trust, &catalog.columns) else { return };
+        if found.columns.len() != described.columns.len() || found.columns.len() != raw.columns.len() {
+            return;
+        }
+        let event = if found.update { cardinality::TRIGGER_ROW_UPDATE } else { cardinality::TRIGGER_ROW_DELETE };
+        if catalog.rewritten.get(&found.target).is_some_and(|events| events & event != 0) {
+            return;
+        }
+        let events = if found.update { cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE | cardinality::TRIGGER_ROW_DELETE } else { cardinality::TRIGGER_ROW_DELETE };
+        let triggered = catalog.skipping_triggers.get(&found.target).is_some_and(|mask| mask & events != 0);
+        let stored = self.stored.borrow();
+        for ((read, col), raw) in found.columns.iter().zip(described.columns.iter_mut()).zip(&raw.columns) {
+            let Some((name, read)) = read else { continue };
+            if *name != col.name {
+                continue;
+            }
+            let holds = match read {
+                infer::WriteRead::Joined => true,
+                infer::WriteRead::Target(column) => !triggered && !found.assigned.contains(column) && (!found.update || stored.contains(&(raw.table, raw.attnum))),
+            };
+            if holds {
+                col.nullable = false;
+            }
+        }
     }
 
     /// A statement of a kind the analysis does not read (DDL, a session setting, a transaction's
@@ -1004,8 +1073,8 @@ impl<'a> Engine<'a> {
         if relations.is_empty() {
             return Some(());
         }
-        let columns = self.host.query(RELATION_COLUMNS_QUERY, vec![json!(relations)], Scope::Statement);
-        let types = self.host.query(RELATION_TYPES_QUERY, vec![json!(relations)], Scope::Statement);
+        let columns = self.host.query(RELATION_COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
+        let types = self.host.query(RELATION_TYPES_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
         let (Some(columns), Some(types)) = (columns, types) else { return None };
         let mut known = self.relations.borrow_mut();
         for row in columns.unwrap_or_default() {
@@ -1014,9 +1083,16 @@ impl<'a> Engine<'a> {
             // write meets the constraint as it stands, valid or not.
             let read = row.get(6).and_then(as_bool).unwrap_or(false);
             known.entry(oid).or_insert_with(|| (name.to_string(), HashMap::new())).1.insert(attnum as i32, read);
-            if let Some(column) = row.get(5).and_then(as_str) {
-                self.columns_by_name.borrow_mut().entry(name.to_string()).or_default().insert(attnum as i32, (column.to_string(), written));
+            if row.get(7).and_then(as_bool) == Some(true) {
+                self.stored.borrow_mut().insert((oid, attnum as i32));
             }
+            // The columns by the relation's name as the statement writes it (`public.kv` or
+            // `kv`), which is how the parse names what a parameter is written to.
+            let asked = row.get(8).and_then(as_str).unwrap_or(name);
+            if let Some(column) = row.get(5).and_then(as_str) {
+                self.columns_by_name.borrow_mut().entry(asked.to_string()).or_default().insert(attnum as i32, (column.to_string(), written));
+            }
+            self.oids_by_name.borrow_mut().insert(asked.to_string(), oid);
             if let Some(definition) = row.get(4).and_then(as_str) {
                 self.views.borrow_mut().insert(oid, definition.trim_end().trim_end_matches(';').to_string());
             }
@@ -1045,7 +1121,7 @@ impl<'a> Engine<'a> {
         let mut written: Vec<String> = parsed.bare.iter().chain(checked.iter().copied()).map(|(_, relation, _)| relation.clone()).collect();
         written.sort();
         written.dedup();
-        let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written)], Scope::Statement);
+        let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written), json!(written.len())], Scope::Statement);
         let prefetched = self.prefetch(relations);
         let (refusing, ()) = (refusing?, prefetched?);
         // Per relation, by attribute: whether the column refuses null.
@@ -1088,7 +1164,7 @@ impl<'a> Engine<'a> {
         let Some(parsed) = parsed.filter(|p| !p.filled.is_empty()) else { return Some(Vec::new()) };
         self.prefetch(relations)?;
         let columns = self.columns_by_name.borrow();
-        let oids: HashMap<String, u32> = self.relations.borrow().iter().map(|(oid, (name, _))| (name.clone(), *oid)).collect();
+        let oids = self.oids_by_name.borrow();
         let mut out = Vec::new();
         for (n, relation, column) in &parsed.filled {
             let (Some(known), Some(oid)) = (columns.get(relation), oids.get(relation)) else { continue };
@@ -1205,6 +1281,9 @@ impl<'a> Engine<'a> {
 
     /// The JSON one item's column `column` holds ([`Engine::built`]).
     fn item_built(&self, query: &infer::ItemQuery, column: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Option<jsonshape::Built>> {
+        if query.sql.is_empty() || query.known.is_some() {
+            return Some(None);
+        }
         let Some(described) = self.probe(&query.sql, trust)? else { return Some(None) };
         let named = |i: usize, c: &DescribedColumn| query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone());
         let mut at = described.columns.iter().enumerate().filter(|(i, c)| named(*i, c) == column).map(|(i, _)| i);
@@ -1285,7 +1364,7 @@ impl<'a> Engine<'a> {
     /// JSON shapes' together ([`Engine::prewarmed`]).
     fn prewarm_tree(&self, sql: &str, trust: &Trust) {
         if let Some((_, queries)) = infer::item_reads(sql) {
-            for query in &queries {
+            for query in queries.iter().filter(|q| !q.sql.is_empty()) {
                 self.prewarm_probe(&query.sql, trust);
             }
         }
@@ -1324,7 +1403,7 @@ impl<'a> Engine<'a> {
         let raw = self.host.describe(sql);
         let prefetched = self.prefetch(relations);
         if let Some((_, queries)) = infer::item_reads(sql) {
-            for query in &queries {
+            for query in queries.iter().filter(|q| !q.sql.is_empty()) {
                 self.prewarm(&query.sql);
             }
         }
@@ -1382,6 +1461,7 @@ impl<'a> Engine<'a> {
             }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
+        *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         Some(Ok((raw, described)))
@@ -1710,6 +1790,10 @@ impl<'a> Engine<'a> {
                     // A row the scan read is a row, whatever its columns hold: NULL only where an
                     // outer join nulls the relation, which the statement names, so its name says.
                     nulled_rels.contains(&col.table)
+                } else if col.table != 0 && col.attnum < 0 && !degraded && known.contains_key(&col.table) {
+                    // A system column (`ctid`, `xmin`, `tableoid`) is the scanned row's own, never
+                    // NULL in a row that is there.
+                    reading.map_or(nulled_rels.contains(&col.table), |(_, nulled)| *nulled)
                 } else {
                     true
                 };
@@ -1733,7 +1817,10 @@ impl<'a> Engine<'a> {
             .into_iter()
             .enumerate()
             .map(|(i, col)| match item_columns.get(i) {
-                // An outer join nulls a WITH query by its name, and any other item by its place.
+                // An outer join nulls any other item by its place, and a reading of a WITH query
+                // it nulls by place stays nulled while the query's name does: a strict WHERE
+                // reduces the join by the name, where the query is read once. A reading no outer
+                // join nulls is the query's own result, however another reading of it is joined.
                 // What the item settled of its column's values holds here too.
                 Some(Some((with, item))) => DescribedColumn {
                     nullable: item.nullable || with.as_ref().is_some_and(|query| nullable_tables.iter().any(|t| t == query)),
@@ -1749,9 +1836,9 @@ impl<'a> Engine<'a> {
 
     /// Per result column of `sql` that is a bare reference to a column of one of its FROM items
     /// with a statement of its own ([`infer::ItemQuery`]: a WITH query, a derived table, a
-    /// function): the WITH query's name for one, and whether the item's own settled result has
-    /// the column nullable, or an outer join nulls an item that is no WITH query. A `*` over such
-    /// an item is its columns in order.
+    /// function): the WITH query's name for a reading of one an outer join nulls by its place,
+    /// and whether the item's own settled result has the column nullable, or an outer join nulls
+    /// an item that is no WITH query. A `*` over such an item is its columns in order.
     ///
     /// A recursive WITH query reads itself, so its columns' nullability is a fixed point, and
     /// the greatest one is sound. Every column starts as non-null for the reads the query makes
@@ -1764,12 +1851,21 @@ impl<'a> Engine<'a> {
         use infer::ItemRead;
         let Some((reads, queries)) = infer::item_reads(sql) else { return Some(Vec::new()) };
         // One `*` at most: its width is what the other targets leave of the result's columns.
-        let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. })).count();
+        let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. } | ItemRead::TableStar)).count();
         let Some(width) = (count + stars).checked_sub(reads.len()).filter(|w| stars == 1 || (stars == 0 && *w == 0)) else { return Some(Vec::new()) };
-        let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
+        let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Bare { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
         let mut settled: HashMap<usize, Vec<ItemColumn>> = HashMap::new();
         let mut pending = false;
         for (i, query) in queries.iter().enumerate().filter(|(i, _)| read(*i)) {
+            // An item whose every column the SQL settles: a built-in set-returning function that no
+            // user's function of the name may stand in for, or `JSON_TABLE`.
+            if let Some(known) = query.known.as_ref().filter(|k| k.builtin.is_none_or(|name| !trust.checked(name))) {
+                settled.insert(i, known.columns.iter().map(|c| ItemColumn { name: c.name.clone(), nullable: c.nullable, document: None, values: None }).collect());
+                continue;
+            }
+            if query.sql.is_empty() {
+                continue;
+            }
             // The query reading itself: the answer is the assumption it is being settled under,
             // for the columns it reads by name. A `*` there finds no column list of its width. A
             // probe binds nothing, so the statement read from may be one with NULL in place of the
@@ -1787,12 +1883,24 @@ impl<'a> Engine<'a> {
                 continue;
             }
             let mut assumed: HashSet<String> = HashSet::new();
+            // The type of the one value a function's probe describes.
+            let mut value_type = None;
             loop {
                 self.with_stack.borrow_mut().push((query.sql.clone(), assumed.clone(), false));
                 let outcome = self.probe(&query.sql, trust);
                 let (_, _, read_itself) = self.with_stack.borrow_mut().pop().expect("the entry pushed above");
                 let described = match outcome {
                     Some(Some(described)) => described,
+                    // A LATERAL subquery that reads the items before it is read by the rules alone,
+                    // its columns' leaves proving nothing: a column they prove non-null is so, and
+                    // any other is left to its provenance, as it was.
+                    Some(None) if query.lateral => {
+                        if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
+                            let columns = columns.into_iter().enumerate().filter(|(_, (_, non_null))| *non_null);
+                            settled.insert(i, columns.map(|(at, (name, _))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or(name), nullable: false, document: None, values: None }).collect());
+                        }
+                        break;
+                    }
                     // An item the server will not describe alone proves nothing.
                     Some(None) => break,
                     None => {
@@ -1800,6 +1908,9 @@ impl<'a> Engine<'a> {
                         break;
                     }
                 };
+                if let [value] = described.columns.as_slice() {
+                    value_type = Some(value.type_oid);
+                }
                 let columns: Vec<ItemColumn> = described
                     .columns
                     .iter()
@@ -1813,11 +1924,20 @@ impl<'a> Engine<'a> {
                 }
                 assumed.extend(refuted);
             }
+            // WITH ORDINALITY's ordinal, after the function's value: second where that value is
+            // no row, a base type, an enum or an array, which a domain or a composite may hide.
+            if let Some((name, after_value)) = &query.ordinality {
+                use crate::pgtypes::TypeKind;
+                let scalar = value_type.is_some_and(|o| self.registry.borrow().get(o).is_some_and(|t| matches!(t.kind, TypeKind::Base | TypeKind::Enum | TypeKind::Array)));
+                if !after_value || scalar {
+                    settled.entry(i).or_default().push(ItemColumn { name: name.clone(), nullable: false, document: None, values: None });
+                }
+            }
         }
         if pending {
             return None;
         }
-        let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone(), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
+        let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone().filter(|_| queries[item].nulled), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
@@ -1829,10 +1949,27 @@ impl<'a> Engine<'a> {
                         _ => None,
                     });
                 }
-                ItemRead::Star { item } => match item.and_then(|item| Some((item, settled.get(&item).filter(|columns| columns.len() == width)?))) {
-                    Some((item, columns)) => out.extend(columns.iter().map(|c| Some(answer(item, c)))),
-                    None => out.extend(std::iter::repeat(None).take(width)),
+                // A bare name is the item's where no table beside it has a column of the name,
+                // as the catalog says, and the functions beside it are the built-ins.
+                ItemRead::Bare { item, column, tables, builtins } => {
+                    let by_name = self.columns_by_name.borrow();
+                    let lacking = |t: &String| by_name.get(t).is_some_and(|columns| columns.values().all(|(name, _)| *name != column));
+                    let resolved = tables.iter().all(lacking) && builtins.iter().all(|b| !trust.checked(b));
+                    let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
+                    out.push(match (resolved, named.next(), named.next()) {
+                        (true, Some(found), None) => Some(answer(item, found)),
+                        _ => None,
+                    });
+                }
+                // A WITH query's SEARCH and CYCLE columns follow its statement's, and say nothing.
+                ItemRead::Star { item } => match item.and_then(|item| Some((item, settled.get(&item).filter(|columns| columns.len() + queries[item].extra == width)?))) {
+                    Some((item, columns)) => {
+                        out.extend(columns.iter().map(|c| Some(answer(item, c))));
+                        out.extend(std::iter::repeat_n(None, queries[item].extra));
+                    }
+                    None => out.extend(std::iter::repeat_n(None, width)),
                 },
+                ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
             }
         }
         Some(out)
@@ -2284,15 +2421,28 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
         None => return vec![false; count],
         Some(_) => {}
     }
-    // The reads line up with the columns only where every target is one column: a `*` among
-    // targets as many as the columns is one wide when it is the only one, but two of them may be
-    // two columns and none (a WITH query `(select)` has no columns), as [`Engine::item_columns`]
-    // refuses too.
-    let aligned = |reads: &Vec<infer::ItemRead>| reads.len() == count && reads.iter().filter(|r| matches!(r, infer::ItemRead::Star { .. })).count() <= 1;
-    match infer::target_reads(sql).filter(aligned) {
-        Some(reads) => reads.iter().map(|r| matches!(r, infer::ItemRead::Table)).collect(),
-        None => vec![false; count],
-    }
+    // The reads line up with the columns where every target but one `*` is one column: the `*`
+    // is the columns the others leave. Two of them may be two columns and none (a WITH query
+    // `(select)` has no columns), as [`Engine::item_columns`] refuses too.
+    let star = |r: &infer::ItemRead| matches!(r, infer::ItemRead::Star { .. } | infer::ItemRead::TableStar);
+    let Some(reads) = infer::target_reads(sql) else { return vec![false; count] };
+    let stars = reads.iter().filter(|r| star(r)).count();
+    let width = match stars {
+        0 if reads.len() == count => 0,
+        1 => match (count + 1).checked_sub(reads.len()) {
+            Some(width) => width,
+            None => return vec![false; count],
+        },
+        _ => return vec![false; count],
+    };
+    reads
+        .iter()
+        .flat_map(|r| match r {
+            infer::ItemRead::TableStar => vec![true; width],
+            r if star(r) => vec![false; width],
+            r => vec![matches!(r, infer::ItemRead::Table)],
+        })
+        .collect()
 }
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
@@ -2736,8 +2886,9 @@ fn sorted(mut names: Vec<String>) -> Vec<String> {
     names
 }
 
-/// The keys, column types and collations of another catalog's relations, and what it knows of
-/// functions, added to `into`: those of the tables a view reads and the functions it calls.
+/// The keys, column types, domains and collations of another catalog's relations, and what it
+/// knows of functions, added to `into`: those of the tables a view reads and the functions it
+/// calls.
 fn merge_keys(into: &mut Catalog, from: Catalog) {
     for (rel, keys) in from.unique_keys {
         into.unique_keys.entry(rel).or_insert(keys);
@@ -2750,6 +2901,15 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     }
     for (rel, columns) in from.nondeterministic {
         into.nondeterministic.entry(rel).or_insert(columns);
+    }
+    // Which columns are of a domain, and each column's declared type, say which `=` a comparison
+    // with a key column of a table the view reads resolves to, as with the statement's own tables.
+    for (rel, columns) in from.domains {
+        into.domains.entry(rel).or_insert(columns);
+    }
+    into.domain_bases.extend(from.domain_bases);
+    for (rel, types) in from.declared_types {
+        into.declared_types.entry(rel).or_insert(types);
     }
     into.single_row.extend(from.single_row);
     into.functions.extend(from.functions);
@@ -4054,9 +4214,12 @@ mod tests {
         let with = "WITH a AS (SELECT p.title AS t, p.title AS t2 FROM posts p UNION ALL SELECT u.email, u.email FROM users u), e AS (SELECT)";
         // A bare column of a table of the statement's own FROM is its own beside a set operation.
         assert_eq!(own(&format!("{with} SELECT a.t, u.name FROM a, users u"), 2), vec![false, true]);
-        // One `*` among as many targets as columns is one column wide, and among more it is none.
+        // One `*` is the columns the other targets leave: one among as many targets as columns,
+        // none among more. A `*` of tables alone is their columns, its own as theirs are.
         assert_eq!(own(&format!("{with}, b AS (SELECT 1 AS n) SELECT b.*, u.name FROM b, users u"), 2), vec![false, true]);
-        assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![false]);
+        assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![true]);
+        assert_eq!(own(&format!("{with} SELECT u.*, a.t FROM a, users u"), 4), vec![true, true, true, false]);
+        assert_eq!(own(&format!("{with} SELECT * FROM users u JOIN posts p ON p.user_id = u.id"), 5), vec![true; 5]);
         // Two may be two columns and none, so no position says which column a target is.
         assert_eq!(own(&format!("{with} SELECT a.*, u.name, e.* FROM a, users u, e"), 3), vec![false; 3]);
     }

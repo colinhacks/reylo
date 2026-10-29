@@ -1,4 +1,4 @@
-distinct_ctid.sql: many () -> { c: text? }
+distinct_ctid.sql: many () -> { c: text }
 distinct_on_whole_row_field.sql: many () -> { title: text? }
 distinct_pinned.sql: maybeOne () -> { author_id: int8 }
 distinct_row_number.sql: many () -> { n: int8 }
