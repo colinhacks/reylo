@@ -562,7 +562,7 @@ group by user_id
 
 **Subqueries**
 
-A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query.
+A scalar subquery is non-null only when it always returns one non-null value: an aggregate without a `group by`, or a `select` without a `from`. A column of a `with` query or a subquery in `from` is as nullable as it is in that query, and one of a `lateral` subquery too. A set-returning function in `from` returns no row for a `NULL` argument, so the values of `generate_series`, the keys of `jsonb_each` and a `with ordinality` number are never null.
 
 <Inferred>
 

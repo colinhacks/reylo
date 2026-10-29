@@ -1452,7 +1452,7 @@ pub(crate) fn single_target(select: &SelectStmt) -> Option<&ResTarget> {
 }
 
 /// The name the result column carries: its alias, else the name Postgres derives.
-fn target_name(rt: &ResTarget) -> Option<String> {
+pub(crate) fn target_name(rt: &ResTarget) -> Option<String> {
     if !rt.name.is_empty() {
         return Some(rt.name.clone());
     }

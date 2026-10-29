@@ -2095,6 +2095,11 @@ pub enum ItemRead {
     Defaulted { item: usize, column: String },
     /// `*` or `item.*`: every column of item `item` in order, or of something else (`None`).
     Star { item: Option<usize> },
+    /// One result column: a bare name of a column of item `item` among several items, which is
+    /// that item's where none of the tables `tables` (by the names the catalog gives them) has a
+    /// column of the name, and no user's function of the names `builtins` is the one called: the
+    /// item's columns and those of the other functions beside it are those built-ins' own.
+    Bare { item: usize, column: String, tables: Vec<String>, builtins: Vec<&'static str> },
 }
 
 /// A FROM item as a statement of its own: a WITH query read by name or a derived table, the
@@ -2113,7 +2118,57 @@ pub struct ItemQuery {
     pub with: Option<String>,
     /// For any other item, whether it sits on the nullable side of an outer join.
     pub nulled: bool,
+    /// Every column of the item, in order, as the SQL alone settles them: a built-in
+    /// set-returning function's ([`FROM_FUNCTIONS`]), where no user's function of the name
+    /// (`builtin`) is the one called, and `JSON_TABLE`'s. The item needs no probe then.
+    pub known: Option<Known>,
+    /// The ordinal `WITH ORDINALITY` adds after the columns the probe settles, by its name: a
+    /// count of the function's rows, never NULL. Where the alias's list names it second, it is
+    /// the ordinal only where the function's one value is no row, which the probe says (`true`):
+    /// a function that returns a row has a column per field.
+    pub ordinality: Option<(String, bool)>,
+    /// Whether the item is a LATERAL subquery, which may read the items before it: where its
+    /// statement cannot be described alone, its select list is read by the rules alone
+    /// ([`lateral_columns`]).
+    pub lateral: bool,
 }
+
+/// The columns of a FROM item the SQL settles ([`ItemQuery::known`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Known {
+    pub builtin: Option<&'static str>,
+    pub columns: Vec<KnownColumn>,
+}
+
+/// One column of a FROM item the SQL settles, by name, and whether it may be NULL in a row the
+/// item has.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnownColumn {
+    pub name: String,
+    pub nullable: bool,
+}
+
+/// The built-in set-returning functions whose columns a FROM item of one call of them has, by the
+/// counts of arguments they take: each column's name where the function names it (an `OUT`
+/// parameter's, which the item's alias does not replace) or `None` for the item's own name, and
+/// whether it may be NULL. Each is strict, so a NULL argument leaves it no row rather than a NULL
+/// one; a JSON value of `json_each` and `json_array_elements` is a JSON `null` where the document
+/// holds one, and NULL only as the text of their `_text` forms.
+pub const FROM_FUNCTIONS: &[(&str, usize, usize, &[(Option<&str>, bool)])] = &[
+    ("generate_series", 2, 4, &[(None, false)]),
+    ("generate_subscripts", 2, 3, &[(None, false)]),
+    ("json_each", 1, 1, &[(Some("key"), false), (Some("value"), false)]),
+    ("jsonb_each", 1, 1, &[(Some("key"), false), (Some("value"), false)]),
+    ("json_each_text", 1, 1, &[(Some("key"), false), (Some("value"), true)]),
+    ("jsonb_each_text", 1, 1, &[(Some("key"), false), (Some("value"), true)]),
+    ("json_object_keys", 1, 1, &[(None, false)]),
+    ("jsonb_object_keys", 1, 1, &[(None, false)]),
+    ("json_array_elements", 1, 1, &[(Some("value"), false)]),
+    ("jsonb_array_elements", 1, 1, &[(Some("value"), false)]),
+    ("json_array_elements_text", 1, 1, &[(Some("value"), true)]),
+    ("jsonb_array_elements_text", 1, 1, &[(Some("value"), true)]),
+    ("regexp_split_to_table", 2, 3, &[(None, false)]),
+];
 
 thread_local! {
     static READS: std::cell::RefCell<Vec<(String, Option<(Vec<ItemRead>, Vec<ItemQuery>)>)>> = const { std::cell::RefCell::new(Vec::new()) };
@@ -2124,7 +2179,7 @@ thread_local! {
 /// a `(row).*` hides how many columns a target is.
 pub fn item_reads(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     let (reads, queries) = crate::stack::kept(&READS, sql, || crate::stack::run(|| reads_here(sql)))?;
-    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Defaulted { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
+    let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Bare { item, .. } | ItemRead::Defaulted { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
     (0..queries.len()).any(read).then_some((reads, queries))
 }
 
@@ -2142,8 +2197,9 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     if set_kind(select).is_some() || !select.values_lists.is_empty() {
         return None;
     }
-    let mut items = Items { version, with: select.with_clause.as_ref(), names: Vec::new(), queries: Vec::new() };
-    for item in &select.from_clause {
+    let mut items = Items { version, with: select.with_clause.as_ref(), names: Vec::new(), shows: Vec::new(), merged: false, before: None, queries: Vec::new() };
+    for (at, item) in select.from_clause.iter().enumerate() {
+        items.before = Some(select.from_clause[..at].to_vec());
         items.read(item, false)?;
     }
     let strings = |fields: &[Node]| -> Option<Vec<String>> {
@@ -2188,6 +2244,10 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
                     match item {
                         Some((Item::Query(item), column)) => ItemRead::Column { item, column },
                         Some((Item::Table, _)) => ItemRead::Table,
+                        None => match strings(&c.fields).as_deref() {
+                            Some([column]) => items.bare(column).unwrap_or(ItemRead::Other),
+                            _ => ItemRead::Other,
+                        },
                         _ => ItemRead::Other,
                     }
                 }
@@ -2218,7 +2278,28 @@ struct Items<'a> {
     with: Option<&'a protobuf::WithClause>,
     /// The name each item goes by, and what it is.
     names: Vec<(Option<String>, Item)>,
+    /// The columns each item shows, in the order of `names`.
+    shows: Vec<Shows>,
+    /// Whether a join merges columns, with USING or NATURAL: a bare name of a merged column is
+    /// both sides' at once.
+    merged: bool,
+    /// The items of the FROM before the one being read, where it is one of the FROM's own and not
+    /// inside a join: what a function there may read.
+    before: Option<Vec<Node>>,
     queries: Vec<ItemQuery>,
+}
+
+/// The columns one FROM item shows, as far as a bare name goes.
+#[derive(Debug, Clone)]
+enum Shows {
+    /// A table, view or other relation read by an unqualified name, without an alias's column
+    /// list: the catalog's columns of that relation.
+    Table(String),
+    /// Every column of item `query`'s statement, for certain where no user's function of the name
+    /// `builtin` is the one called.
+    Names { query: usize, names: Vec<String>, builtin: Option<&'static str> },
+    /// Columns the reader does not know.
+    Unknown,
 }
 
 /// What one FROM item is to the reader.
@@ -2233,6 +2314,34 @@ enum Item {
 }
 
 impl Items<'_> {
+    /// The item a bare name `column` reads among several, where one item shows a column of the name
+    /// for certain and every other one is a table whose columns the caller checks
+    /// ([`ItemRead::Bare`]) or shows its columns for certain and none of the name. A system column
+    /// is every table's.
+    fn bare(&self, column: &str) -> Option<ItemRead> {
+        const SYSTEM_COLUMNS: &[&str] = &["ctid", "xmin", "xmax", "cmin", "cmax", "tableoid", "oid"];
+        if self.merged || SYSTEM_COLUMNS.contains(&column) {
+            return None;
+        }
+        let (mut owner, mut tables, mut builtins) = (None, Vec::new(), Vec::new());
+        for shows in &self.shows {
+            match shows {
+                Shows::Table(relation) => tables.push(relation.clone()),
+                Shows::Names { query, names, builtin } => {
+                    builtins.extend(*builtin);
+                    if names.iter().any(|n| n == column) {
+                        if owner.is_some() {
+                            return None;
+                        }
+                        owner = Some(*query);
+                    }
+                }
+                Shows::Unknown => return None,
+            }
+        }
+        Some(ItemRead::Bare { item: owner?, column: column.to_string(), tables, builtins })
+    }
+
     /// `None` for a FROM whose names the reader does not follow: a join with an alias of its own.
     fn read(&mut self, node: &Node, nulled: bool) -> Option<()> {
         let alias = |a: Option<&protobuf::Alias>| a.map(|a| a.aliasname.clone());
@@ -2247,6 +2356,8 @@ impl Items<'_> {
                 if j.alias.is_some() {
                     return None;
                 }
+                self.merged |= j.is_natural || !j.using_clause.is_empty();
+                self.before = None;
                 use protobuf::JoinType;
                 let (left, right) = match j.jointype {
                     t if t == JoinType::JoinInner as i32 => (nulled, nulled),
@@ -2285,46 +2396,92 @@ impl Items<'_> {
                         _ => None,
                     }).collect();
                     names.extend(own.into_iter().skip(names.len()));
-                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled })
+                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, known: None, ordinality: None, lateral: false })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
+                    let plain = rv.schemaname.is_empty() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty());
+                    self.shows.push(if plain { Shows::Table(rv.relname.clone()) } else { Shows::Unknown });
                     self.names.push((name, Item::Table));
                     return Some(());
                 }
                 (name, query)
             }
             Some(NodeEnum::RangeSubselect(r)) => {
-                let query = r.subquery.as_deref().and_then(as_select).filter(|_| !r.lateral).and_then(|body| {
-                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled })
+                let query = r.subquery.as_deref().and_then(as_select).and_then(|body| {
+                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled, known: None, ordinality: None, lateral: r.lateral })
                 });
                 (alias(r.alias.as_ref()), query)
             }
             Some(NodeEnum::RangeFunction(f)) => {
                 // One function, as a value: `ROWS FROM (…)` has a column per function at least,
-                // and a column definition list or WITH ORDINALITY more than the one.
+                // and a column definition list more than the one. WITH ORDINALITY adds one after
+                // the function's own.
                 let call = match f.functions.as_slice() {
-                    [only] if !f.ordinality && !f.is_rowsfrom && f.coldeflist.is_empty() => match only.node.as_ref() {
+                    [only] if !f.is_rowsfrom && f.coldeflist.is_empty() => match only.node.as_ref() {
                         Some(NodeEnum::List(l)) if l.items.get(1).is_none_or(|defs| defs.node.is_none()) => l.items.first(),
                         _ => None,
                     },
                     _ => None,
                 };
                 let name = alias(f.alias.as_ref()).or_else(|| function_item_name(f));
+                let given = columns(f.alias.as_ref());
                 let query = call.zip(name.clone()).and_then(|(call, name)| {
-                    let column = columns(f.alias.as_ref()).into_iter().next().unwrap_or(name);
-                    Some(ItemQuery { sql: value_text(self.version, call, self.with)?, columns: vec![column], with: None, nulled })
+                    // A built-in whose columns the SQL names: their names, the alias's list first,
+                    // then the ordinal's, which the list may name too.
+                    let known = from_function(call).map(|(builtin, shown)| {
+                        let mut columns: Vec<KnownColumn> = shown
+                            .iter()
+                            .enumerate()
+                            .map(|(i, (own, nullable))| KnownColumn { name: given.get(i).cloned().unwrap_or_else(|| own.map_or_else(|| name.clone(), str::to_string)), nullable: *nullable })
+                            .collect();
+                        if f.ordinality {
+                            columns.push(KnownColumn { name: given.get(shown.len()).cloned().unwrap_or_else(|| "ordinality".to_string()), nullable: false });
+                        }
+                        Known { builtin: Some(builtin), columns }
+                    });
+                    // Any other function: its one value as the probe settles it, and the ordinal.
+                    let ordinality = match given.len() {
+                        _ if !f.ordinality => None,
+                        0 | 1 => Some(("ordinality".to_string(), false)),
+                        2 => Some((given[1].clone(), true)),
+                        _ => None,
+                    };
+                    let column = given.first().cloned().unwrap_or(name);
+                    // A call that reads a column reads one of the items before it: the probe reads
+                    // it over them, as the statement does.
+                    let before = if reads_a_column(call) { self.before.as_deref().unwrap_or(&[]) } else { &[] };
+                    Some(ItemQuery { sql: value_text(self.version, call, before, self.with)?, columns: vec![column], with: None, nulled, known, ordinality, lateral: false })
                 });
-                (name, query)
+                self.shows.push(match &query {
+                    Some(ItemQuery { known: Some(known), .. }) => Shows::Names { query: self.queries.len(), names: known.columns.iter().map(|c| c.name.clone()).collect(), builtin: known.builtin },
+                    _ => Shows::Unknown,
+                });
+                self.names.push((name, query.map_or(Item::Other, |q| {
+                    self.queries.push(q);
+                    Item::Query(self.queries.len() - 1)
+                })));
+                return Some(());
             }
             Some(NodeEnum::RangeTableSample(t)) => match t.relation.as_deref().and_then(|r| r.node.as_ref()) {
                 Some(NodeEnum::RangeVar(rv)) => (Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone())), None),
                 _ => (None, None),
             },
             Some(NodeEnum::RangeTableFunc(f)) => (alias(f.alias.as_ref()), None),
-            Some(NodeEnum::JsonTable(t)) => (alias(t.alias.as_ref()), None),
+            // `JSON_TABLE`'s columns are the ones it defines, in order, a NESTED PATH's in its
+            // place: an ordinal of its own rows is never NULL, and every other column may be
+            // (a path that finds nothing, a nested path's columns in its sibling's rows).
+            Some(NodeEnum::JsonTable(t)) => {
+                let columns = json_table_columns(&t.columns, true);
+                let query = columns.map(|columns| ItemQuery { sql: String::new(), columns: Vec::new(), with: None, nulled, known: Some(Known { builtin: None, columns }), ordinality: None, lateral: false });
+                (alias(t.alias.as_ref()), query)
+            }
             _ => (None, None),
         };
+        self.shows.push(match &query {
+            Some(ItemQuery { known: Some(known), .. }) => Shows::Names { query: self.queries.len(), names: known.columns.iter().map(|c| c.name.clone()).collect(), builtin: known.builtin },
+            _ => Shows::Unknown,
+        });
         let item = match query {
             Some(q) => {
                 self.queries.push(q);
@@ -2362,6 +2519,58 @@ impl Items<'_> {
     }
 }
 
+/// The built-in of [`FROM_FUNCTIONS`] a call in FROM is, with the columns it shows: a plain call
+/// of an unqualified name or one in `pg_catalog`, by a count of arguments it takes, none named.
+fn from_function(call: &Node) -> Option<(&'static str, &'static [(Option<&'static str>, bool)])> {
+    let Some(NodeEnum::FuncCall(f)) = call.node.as_ref() else { return None };
+    if f.func_variadic || f.agg_star || f.agg_distinct || f.agg_within_group || f.over.is_some() || f.agg_filter.is_some() || !f.agg_order.is_empty() {
+        return None;
+    }
+    if f.args.iter().any(|a| matches!(a.node, Some(NodeEnum::NamedArgExpr(_)))) {
+        return None;
+    }
+    let name = builtin_name(&f.funcname)?;
+    FROM_FUNCTIONS.iter().find(|(n, min, max, _)| *n == name && (*min..=*max).contains(&f.args.len())).map(|(n, _, _, shown)| (*n, *shown))
+}
+
+/// The columns `JSON_TABLE` defines, in order: its own ordinals never NULL where `top`, and every
+/// other column nullable. `None` for a column the reader does not know.
+fn json_table_columns(columns: &[Node], top: bool) -> Option<Vec<KnownColumn>> {
+    let mut out = Vec::new();
+    for column in columns {
+        let Some(NodeEnum::JsonTableColumn(c)) = column.node.as_ref() else { return None };
+        match protobuf::JsonTableColumnType::try_from(c.coltype).ok()? {
+            protobuf::JsonTableColumnType::JtcForOrdinality => out.push(KnownColumn { name: c.name.clone(), nullable: !top }),
+            protobuf::JsonTableColumnType::JtcNested => out.extend(json_table_columns(&c.columns, false)?),
+            protobuf::JsonTableColumnType::JtcRegular | protobuf::JsonTableColumnType::JtcExists | protobuf::JsonTableColumnType::JtcFormatted => out.push(KnownColumn { name: c.name.clone(), nullable: true }),
+            _ => return None,
+        }
+    }
+    Some(out)
+}
+
+/// The columns of a LATERAL subquery's select list as the rules read them without a probe, which a
+/// subquery that reads the items before it cannot have: each target's name, as the server gives
+/// it, and whether it is non-null whatever the columns it reads hold (`count(*)`, a literal, a
+/// column its WHERE tests). `None` where the select list is not one the rules read.
+pub fn lateral_columns(sql: &str, trust: &Trust) -> Option<Vec<(String, bool)>> {
+    let parsed = crate::stack::parse(sql).ok()?;
+    let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return None };
+    let names: Vec<String> = select
+        .target_list
+        .iter()
+        .map(|t| match t.node.as_ref() {
+            Some(NodeEnum::ResTarget(rt)) => crate::jsonshape::target_name(rt),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let plan = plan(sql, Dialect::Postgres, trust, &Columns::default());
+    if plan.star || plan.set_op.is_some() || plan.head.len() != names.len() {
+        return None;
+    }
+    Some(names.into_iter().zip(&plan.head).map(|(name, claim)| (name, claim.as_ref().is_some_and(|c| resolve(c, None).non_null))).collect())
+}
+
 /// The name a function item with no alias goes by, as the server picks it: the name of the first
 /// function it calls, or the keyword of `CURRENT_DATE` and its kin. Any other expression has none
 /// the proof reads.
@@ -2391,11 +2600,24 @@ pub(crate) fn function_item_name(f: &protobuf::RangeFunction) -> Option<String> 
     }
 }
 
-/// `SELECT <value>` as a statement of its own, the statement's `WITH` in front of it.
-fn value_text(version: i32, value: &Node, with: Option<&protobuf::WithClause>) -> Option<String> {
+/// Whether an expression reads a column anywhere in it.
+fn reads_a_column(node: &Node) -> bool {
+    fn walk(v: &serde_json::Value) -> bool {
+        match v {
+            serde_json::Value::Object(map) => map.contains_key("ColumnRef") || map.values().any(walk),
+            serde_json::Value::Array(items) => items.iter().any(walk),
+            _ => false,
+        }
+    }
+    serde_json::to_value(node).is_ok_and(|v| walk(&v))
+}
+
+/// `SELECT <value> FROM <from>` as a statement of its own, the statement's `WITH` in front of it.
+fn value_text(version: i32, value: &Node, from: &[Node], with: Option<&protobuf::WithClause>) -> Option<String> {
     let target = Node { node: Some(NodeEnum::ResTarget(Box::new(protobuf::ResTarget { name: "value".into(), indirection: Vec::new(), val: Some(Box::new(value.clone())), location: -1 }))) };
     let select = SelectStmt {
         target_list: vec![target],
+        from_clause: from.to_vec(),
         with_clause: with.cloned(),
         op: protobuf::SetOperation::SetopNone as i32,
         limit_option: protobuf::LimitOption::Default as i32,
@@ -3982,7 +4204,7 @@ mod tests {
         assert_eq!(reads("WITH users AS (SELECT 1 AS id UNION SELECT 2) SELECT users.id FROM users"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
         assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
         assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::Star { item: None }]);
-        assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Other]);
+        assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
         // A set operation at the top hides which arm a column is.
         assert_eq!(target_reads("SELECT id FROM users UNION SELECT id FROM posts"), None);
     }
@@ -4004,7 +4226,7 @@ mod tests {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH c AS (SELECT 1 AS one) SELECT s.n, u.id FROM users u LEFT JOIN (SELECT count(*) AS n FROM c) s (total) ON true").unwrap();
         assert_eq!(reads, vec![column(0, "n"), ItemRead::Table]);
-        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true, known: None, ordinality: None, lateral: false }]);
         // The preserved side of an outer join is not nulled; a FULL JOIN nulls both.
         let nulled = |sql: &str| item_reads(sql).unwrap().1.iter().map(|q| q.nulled).collect::<Vec<_>>();
         assert_eq!(nulled("SELECT a.x, b.y FROM (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON true"), vec![false, true]);
@@ -4015,21 +4237,57 @@ mod tests {
         // item's one column goes by.
         let (reads, queries) = item_reads("SELECT * FROM lower($1)").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }]);
-        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false, known: None, ordinality: None, lateral: false }]);
         assert_eq!(item_reads("SELECT t FROM now() AS t").unwrap().1[0].columns, vec!["t"]);
         assert_eq!(item_reads("SELECT v FROM now() AS t (v)").unwrap().1[0].columns, vec!["v"]);
         assert_eq!(item_reads("SELECT * FROM CURRENT_DATE AS d").unwrap().1[0].sql, "SELECT current_date AS value");
-        // No statement of its own: LATERAL, several functions, more columns than the value, a
-        // join that renames what it joins.
+        // A LATERAL subquery is one, read by the rules alone where it reads the items before it.
+        let (_, queries) = item_reads("SELECT s.n FROM users u, LATERAL (SELECT count(*) AS n FROM posts p WHERE p.author_id = u.id) s").unwrap();
+        assert!(queries[0].lateral);
+        assert_eq!(lateral_columns(&queries[0].sql, &Trust::default()), Some(vec![("n".to_string(), true)]));
+        // WITH ORDINALITY adds an ordinal after the value; a call that reads the items before it
+        // is probed over them.
+        let (_, queries) = item_reads("SELECT * FROM lower('A') WITH ORDINALITY").unwrap();
+        assert_eq!(queries[0].ordinality, Some(("ordinality".to_string(), false)));
+        let (_, queries) = item_reads("SELECT t.n FROM users u, f(u.id) WITH ORDINALITY AS t (v, n)").unwrap();
+        assert_eq!(queries[0].ordinality, Some(("n".to_string(), true)));
+        assert_eq!(queries[0].sql, "SELECT f(u.id) AS value FROM users u");
+        // No statement of its own: several functions, more columns than the value, a join that
+        // renames what it joins.
         for sql in [
-            "SELECT s.n FROM users u, LATERAL (SELECT count(*) AS n FROM posts p WHERE p.author_id = u.id) s",
             "SELECT * FROM ROWS FROM (now(), lower('A'))",
-            "SELECT * FROM lower('A') WITH ORDINALITY",
             "SELECT * FROM json_to_record('{}') AS r (a int)",
             "SELECT j.n FROM ((SELECT 1 AS n) a CROSS JOIN users u) AS j",
         ] {
             assert_eq!(item_reads(sql), None, "{sql}");
         }
+    }
+
+    #[test]
+    fn a_built_in_set_returning_function_in_from_shows_its_own_columns() {
+        let known = |sql: &str| item_reads(sql).unwrap().1[0].known.clone().map(|k| (k.builtin, k.columns.iter().map(|c| (c.name.clone(), c.nullable)).collect::<Vec<_>>()));
+        let col = |name: &str, nullable: bool| (name.to_string(), nullable);
+        assert_eq!(known("SELECT g FROM generate_series(1, $1) g"), Some((Some("generate_series"), vec![col("g", false)])));
+        assert_eq!(known("SELECT * FROM generate_series(1, 3)"), Some((Some("generate_series"), vec![col("generate_series", false)])));
+        // An OUT parameter's name is the column's, which only the alias's list replaces.
+        assert_eq!(known("SELECT * FROM jsonb_each('{}') WITH ORDINALITY AS e"), Some((Some("jsonb_each"), vec![col("key", false), col("value", false), col("ordinality", false)])));
+        assert_eq!(known("SELECT * FROM jsonb_each_text('{}') AS e (k)"), Some((Some("jsonb_each_text"), vec![col("k", false), col("value", true)])));
+        assert_eq!(known("SELECT * FROM jsonb_array_elements('[]') AS e"), Some((Some("jsonb_array_elements"), vec![col("value", false)])));
+        // A form the table does not list proves nothing.
+        assert_eq!(known("SELECT * FROM generate_series(1)"), None);
+        assert_eq!(known("SELECT * FROM generate_series(VARIADIC ARRAY[1, 2])"), None);
+        assert_eq!(known("SELECT * FROM public.generate_series(1, 2)"), None);
+        // JSON_TABLE's ordinals of its own rows, not a nested path's.
+        assert_eq!(
+            item_reads("SELECT jt.* FROM JSON_TABLE('[]', '$[*]' COLUMNS (n FOR ORDINALITY, v int PATH '$', NESTED PATH '$[*]' COLUMNS (m FOR ORDINALITY))) jt").unwrap().1[0].known.as_ref().map(|k| k.columns.iter().map(|c| (c.name.clone(), c.nullable)).collect::<Vec<_>>()),
+            Some(vec![col("n", false), col("v", true), col("m", true)])
+        );
+        // A bare name among several items is the function's where the tables lack it.
+        let (reads, _) = item_reads("SELECT d FROM generate_series(1, 2) d LEFT JOIN orders o ON o.id = d").unwrap();
+        assert_eq!(reads, vec![ItemRead::Bare { item: 0, column: "d".into(), tables: vec!["orders".into()], builtins: vec!["generate_series"] }]);
+        assert_eq!(item_reads("SELECT d FROM generate_series(1, 2) d JOIN orders o USING (d)"), None);
+        assert_eq!(item_reads("SELECT d FROM generate_series(1, 2) d, public.orders o"), None);
+        assert_eq!(item_reads("SELECT xmin FROM generate_series(1, 2) xmin, orders o"), None);
     }
 
     #[test]
