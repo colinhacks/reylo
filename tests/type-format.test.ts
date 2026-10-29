@@ -14,6 +14,8 @@ test("formatType keeps a column's doc comment on the lines before its field", ()
 
 test("formatType puts doc comments on one line where the type has no width", () => {
   assert.equal(formatType(commented, Infinity), "{ id: number; /** the name, as typed *\\/ */ name: string; /** line one line two */ email: string | null }");
+  // A blank line between paragraphs, which the comment writes as a bare ` *`, is one space too.
+  assert.equal(formatType("{\n  /**\n   * para one\n   *\n   * para two\n   */\n  x: string;\n}", Infinity), "{ /** para one para two */ x: string }");
 });
 
 test("formatType leaves a type with no comment on one line where it fits", () => {

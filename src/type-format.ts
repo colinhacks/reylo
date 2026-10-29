@@ -77,7 +77,7 @@ export function parseType(text: string): Node {
 }
 
 /** A doc comment on one line: `/** line one line two *\/`. */
-const oneLineDoc = (doc: string) => doc.replace(/\n\s*\*\/$/, " */").replace(/\n\s*\*\s?/g, " ").replace(/^\/\*\*\s*/, "/** ");
+const oneLineDoc = (doc: string) => doc.replace(/\n\s*\*\/$/, " */").replace(/(?:\n[ \t]*\*[ \t]*)+/g, " ").replace(/^\/\*\*\s*/, "/** ");
 
 /** Whether an object in the type has a field with a doc comment. */
 const hasDoc = (node: Node): boolean =>
