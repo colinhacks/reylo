@@ -203,7 +203,14 @@ fn analyze_here(sql: &str) -> Result<Analysis, AnalyzeError> {
             if node.get("returning_clause").and_then(|c| c.get("exprs")).and_then(|l| l.as_array()).is_some_and(|l| !l.is_empty()) {
                 has_returning = true;
             }
-            let Some(relation) = node.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) else { return };
+            let Some(relname) = node.get("relation").and_then(|r| r.get("relname")).and_then(|r| r.as_str()) else { return };
+            // The relation as the statement writes it, schema and all, as `read_set` and
+            // `write_set` name it: `kv` and `public.kv` are each looked up as written.
+            let relation = match node.get("relation").and_then(|r| r.get("schemaname")).and_then(|r| r.as_str()).filter(|s| !s.is_empty()) {
+                Some(schema) => format!("{schema}.{relname}"),
+                None => relname.to_string(),
+            };
+            let relation = relation.as_str();
             let mut set = |targets: Option<&Value>| {
                 for target in targets.and_then(|t| t.as_array()).into_iter().flatten() {
                     let Some(rt) = target.get("node").and_then(|n| n.get("ResTarget")) else { continue };
@@ -721,6 +728,10 @@ mod tests {
         assert_eq!(analyze("INSERT INTO notes SELECT $1, $2").unwrap().bare, vec![(1, "notes".into(), Position(0)), (2, "notes".into(), Position(1))]);
         assert!(analyze("INSERT INTO notes (a) SELECT $1 UNION ALL SELECT $2").unwrap().bare.is_empty());
         assert_eq!(analyze("UPDATE notes SET a = $1, b = $2::text WHERE id = $3").unwrap().bare, vec![named(1, "a")]);
+        // A relation named with its schema keeps it, as the write set names it.
+        let a = analyze("UPDATE app.notes SET a = $1 WHERE id = $2").unwrap();
+        assert_eq!(a.bare, vec![(1, "app.notes".to_string(), Name("a".into()))]);
+        assert_eq!(a.write_set, ["app.notes"]);
     }
 
     #[test]
