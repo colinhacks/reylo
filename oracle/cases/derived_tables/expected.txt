@@ -7,7 +7,7 @@ full_join_nulled.sql: many () -> { n: int8?, m: int8? }
 grouped_inside.sql: many () -> { n: int8 }
 inner_left_join.sql: many () -> { label: text? }
 key_inside.sql: maybeOne (id: int8) -> { id: int8 }
-lateral.sql: maybeOne (id: int8) -> { id: int8, n: int8? }
+lateral.sql: maybeOne (id: int8) -> { id: int8, n: int8 }
 left_join_nulled.sql: maybeOne (id: int8) -> { id: int8, n: int8? }
 nested.sql: one () -> { n: int8 }
 nested_join_nulled.sql: maybeOne (id: int8) -> { id: int8, n: int8?, m: int8? }

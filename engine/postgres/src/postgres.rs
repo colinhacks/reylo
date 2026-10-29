@@ -1281,6 +1281,9 @@ impl<'a> Engine<'a> {
 
     /// The JSON one item's column `column` holds ([`Engine::built`]).
     fn item_built(&self, query: &infer::ItemQuery, column: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Option<jsonshape::Built>> {
+        if query.sql.is_empty() || query.known.is_some() {
+            return Some(None);
+        }
         let Some(described) = self.probe(&query.sql, trust)? else { return Some(None) };
         let named = |i: usize, c: &DescribedColumn| query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone());
         let mut at = described.columns.iter().enumerate().filter(|(i, c)| named(*i, c) == column).map(|(i, _)| i);
@@ -1361,7 +1364,7 @@ impl<'a> Engine<'a> {
     /// JSON shapes' together ([`Engine::prewarmed`]).
     fn prewarm_tree(&self, sql: &str, trust: &Trust) {
         if let Some((_, queries)) = infer::item_reads(sql) {
-            for query in &queries {
+            for query in queries.iter().filter(|q| !q.sql.is_empty()) {
                 self.prewarm_probe(&query.sql, trust);
             }
         }
@@ -1400,7 +1403,7 @@ impl<'a> Engine<'a> {
         let raw = self.host.describe(sql);
         let prefetched = self.prefetch(relations);
         if let Some((_, queries)) = infer::item_reads(sql) {
-            for query in &queries {
+            for query in queries.iter().filter(|q| !q.sql.is_empty()) {
                 self.prewarm(&query.sql);
             }
         }
@@ -1787,6 +1790,10 @@ impl<'a> Engine<'a> {
                     // A row the scan read is a row, whatever its columns hold: NULL only where an
                     // outer join nulls the relation, which the statement names, so its name says.
                     nulled_rels.contains(&col.table)
+                } else if col.table != 0 && col.attnum < 0 && !degraded && known.contains_key(&col.table) {
+                    // A system column (`ctid`, `xmin`, `tableoid`) is the scanned row's own, never
+                    // NULL in a row that is there.
+                    reading.map_or(nulled_rels.contains(&col.table), |(_, nulled)| *nulled)
                 } else {
                     true
                 };
@@ -1846,10 +1853,19 @@ impl<'a> Engine<'a> {
         // One `*` at most: its width is what the other targets leave of the result's columns.
         let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. } | ItemRead::TableStar)).count();
         let Some(width) = (count + stars).checked_sub(reads.len()).filter(|w| stars == 1 || (stars == 0 && *w == 0)) else { return Some(Vec::new()) };
-        let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
+        let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Bare { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
         let mut settled: HashMap<usize, Vec<ItemColumn>> = HashMap::new();
         let mut pending = false;
         for (i, query) in queries.iter().enumerate().filter(|(i, _)| read(*i)) {
+            // An item whose every column the SQL settles: a built-in set-returning function that no
+            // user's function of the name may stand in for, or `JSON_TABLE`.
+            if let Some(known) = query.known.as_ref().filter(|k| k.builtin.is_none_or(|name| !trust.checked(name))) {
+                settled.insert(i, known.columns.iter().map(|c| ItemColumn { name: c.name.clone(), nullable: c.nullable, document: None, values: None }).collect());
+                continue;
+            }
+            if query.sql.is_empty() {
+                continue;
+            }
             // The query reading itself: the answer is the assumption it is being settled under,
             // for the columns it reads by name. A `*` there finds no column list of its width. A
             // probe binds nothing, so the statement read from may be one with NULL in place of the
@@ -1867,12 +1883,24 @@ impl<'a> Engine<'a> {
                 continue;
             }
             let mut assumed: HashSet<String> = HashSet::new();
+            // The type of the one value a function's probe describes.
+            let mut value_type = None;
             loop {
                 self.with_stack.borrow_mut().push((query.sql.clone(), assumed.clone(), false));
                 let outcome = self.probe(&query.sql, trust);
                 let (_, _, read_itself) = self.with_stack.borrow_mut().pop().expect("the entry pushed above");
                 let described = match outcome {
                     Some(Some(described)) => described,
+                    // A LATERAL subquery that reads the items before it is read by the rules alone,
+                    // its columns' leaves proving nothing: a column they prove non-null is so, and
+                    // any other is left to its provenance, as it was.
+                    Some(None) if query.lateral => {
+                        if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
+                            let columns = columns.into_iter().enumerate().filter(|(_, (_, non_null))| *non_null);
+                            settled.insert(i, columns.map(|(at, (name, _))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or(name), nullable: false, document: None, values: None }).collect());
+                        }
+                        break;
+                    }
                     // An item the server will not describe alone proves nothing.
                     Some(None) => break,
                     None => {
@@ -1880,6 +1908,9 @@ impl<'a> Engine<'a> {
                         break;
                     }
                 };
+                if let [value] = described.columns.as_slice() {
+                    value_type = Some(value.type_oid);
+                }
                 let columns: Vec<ItemColumn> = described
                     .columns
                     .iter()
@@ -1892,6 +1923,15 @@ impl<'a> Engine<'a> {
                     break;
                 }
                 assumed.extend(refuted);
+            }
+            // WITH ORDINALITY's ordinal, after the function's value: second where that value is
+            // no row, a base type, an enum or an array, which a domain or a composite may hide.
+            if let Some((name, after_value)) = &query.ordinality {
+                use crate::pgtypes::TypeKind;
+                let scalar = value_type.is_some_and(|o| self.registry.borrow().get(o).is_some_and(|t| matches!(t.kind, TypeKind::Base | TypeKind::Enum | TypeKind::Array)));
+                if !after_value || scalar {
+                    settled.entry(i).or_default().push(ItemColumn { name: name.clone(), nullable: false, document: None, values: None });
+                }
             }
         }
         if pending {
@@ -1906,6 +1946,18 @@ impl<'a> Engine<'a> {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (named.next(), named.next()) {
                         (Some(found), None) => Some(answer(item, found)),
+                        _ => None,
+                    });
+                }
+                // A bare name is the item's where no table beside it has a column of the name,
+                // as the catalog says, and the functions beside it are the built-ins.
+                ItemRead::Bare { item, column, tables, builtins } => {
+                    let by_name = self.columns_by_name.borrow();
+                    let lacking = |t: &String| by_name.get(t).is_some_and(|columns| columns.values().all(|(name, _)| *name != column));
+                    let resolved = tables.iter().all(lacking) && builtins.iter().all(|b| !trust.checked(b));
+                    let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
+                    out.push(match (resolved, named.next(), named.next()) {
+                        (true, Some(found), None) => Some(answer(item, found)),
                         _ => None,
                     });
                 }

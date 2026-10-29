@@ -17,6 +17,6 @@ series.sql: many () -> { g: int4 }
 series_target.sql: many () -> { g: int4 }
 similar.sql: many () -> { s: bool, e: bool, r: bool, n: bool }
 unnest_array_element.sql: many () -> { c: int4? }
-unnest_built.sql: many () -> { u: int4, n: int4? }
+unnest_built.sql: many () -> { u: int4?, n: int4? }
 unnest_column_element.sql: many () -> { t: text? }
 unnest_from.sql: many () -> { v: text }

@@ -7,7 +7,7 @@ full_join_true.sql: many () -> { n: int8?, m: int8? }
 insert_beside.sql: one (id: int8, name: text?) -> { id: int8, n: int8 }
 insert_do_nothing.sql: maybeOne (id: int8, name: text?) -> { id: int8, n: int8 }
 insert_left_join.sql: one (id: int8, name: text?) -> { id: int8, user_id: int8? }
-lateral.sql: one () -> { n: int8, m: int8? }
+lateral.sql: one () -> { n: int8, m: int8 }
 left_join.sql: one (id: int8) -> { n: int8, email: text? }
 left_join_table_first.sql: maybeOne (id: int8) -> { n: int8?, email: text? }
 left_join_unpinned.sql: many () -> { n: int8, email: text? }

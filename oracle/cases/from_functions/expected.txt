@@ -16,7 +16,7 @@ null_composite.sql: one () -> { a: int4? }
 null_or_raise.sql: one (p: int4) -> { null_or_raise: int4? }
 null_scalar.sql: one () -> { lower: text? }
 one_text.sql: one (p: text) -> { one_text: text? }
-ordinality.sql: one (p: text) -> { v: text?, n: int8? }
+ordinality.sql: one (p: text) -> { v: text?, n: int8 }
 out_params.sql: one (p: int4) -> { a: int4?, b: text? }
 overloaded.sql: many (p: int4) -> { either: int4? }
 pins_nothing.sql: many (p: text) -> { id: int8 }
@@ -25,7 +25,7 @@ returns_table.sql: many (p: int4) -> { a: int4?, b: text? }
 right_join_nulled.sql: many (s: text) -> { t: text?, id: int8 }
 rows_from.sql: one (p: text) -> { at: timestamptz?, t: text? }
 rows_from_set.sql: many () -> { at: timestamptz?, n: int4? }
-set_ordinality.sql: many () -> { v: int4?, n: int8? }
+set_ordinality.sql: many () -> { v: int4, n: int8 }
 setof.sql: many (p: text) -> { many_text: text? }
 strict_null.sql: one () -> { a: int4?, b: text? }
 two.sql: one (p: text) -> { a: timestamptz, b: text? }
