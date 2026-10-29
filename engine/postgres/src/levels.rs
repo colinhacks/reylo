@@ -373,6 +373,18 @@ impl Level {
         Some(out)
     }
 
+    /// The name of the one item a bare column name reads, for certain: the one that shows a
+    /// column of the name where every other one's columns are known and none is it.
+    pub fn reader_of(&self, column: &str) -> Option<String> {
+        let mut showing = self.items.iter().enumerate().filter(|(_, i)| i.shown.has(column));
+        let (at, item) = showing.next()?;
+        let alone = self.items.iter().enumerate().all(|(i, other)| i == at || other.shown.names.iter().all(|n| n.as_deref().is_some_and(|n| n != column)));
+        if showing.next().is_some() || !alone {
+            return None;
+        }
+        item.name.clone()
+    }
+
     /// Every column of the FROM, as `*` shows them.
     fn all(&self) -> Shown {
         Shown { names: self.items.iter().flat_map(|i| i.shown.names.iter().cloned()).collect(), exact: !self.merged && self.items.iter().all(|i| i.shown.exact) }

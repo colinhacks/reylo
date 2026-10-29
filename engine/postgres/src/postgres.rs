@@ -198,13 +198,14 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
 /// relation names. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
-/// `not_null_rows`).
+/// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
+/// generated column does not.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
     CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
-    " FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
+    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\" FROM pg_catalog.pg_class c JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
     WHERE c.relname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) AND pg_catalog.pg_table_is_visible(c.oid)"
 );
 /// What the catalog says of the names the expression rules read ([`crate::infer::Trust`]): `$1` is
@@ -584,6 +585,9 @@ struct Engine<'a> {
     /// The same columns by relation name, in attnum order: column name → NOT NULL. An INSERT
     /// or an UPDATE names the columns it writes, or their positions.
     columns_by_name: RefCell<HashMap<String, BTreeMap<i32, (String, bool)>>>,
+    /// The parse-named relations' columns that hold what is written to them, by (relation oid,
+    /// attnum): no generated column, whose value an UPDATE computes again.
+    stored: RefCell<HashSet<(u32, i32)>>,
     /// The defining SELECT of each of those that is a view or a materialized view. The catalog
     /// holds no NOT NULL for a view's columns, so they are settled from this statement instead.
     views: RefCell<HashMap<u32, String>>,
@@ -638,7 +642,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -730,7 +734,7 @@ impl<'a> Engine<'a> {
             None => Some(Ok(Vec::new())),
         };
         let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows), Some((view_definitions, _, _))) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows, viewed) else { return None };
-        let (raw, described) = match described {
+        let (raw, mut described) = match described {
             Ok(d) => d,
             Err(e) => {
                 diagnostics.push(db_diagnostic(sql, &rewritten, &e));
@@ -754,6 +758,7 @@ impl<'a> Engine<'a> {
                 diagnostics.push(diag(message, start, length, 13));
             }
         }
+        self.write_narrowed(&rewritten.sql, &trust, &catalog, &raw, &mut described);
         // A JSON object of an odd count of arguments, which Postgres prepares and refuses when it
         // runs; only the built-in constructors, which a user's function of the name may shadow.
         let constructors: Vec<&str> = ["json_build_object", "jsonb_build_object"].into_iter().filter(|n| trust.builtin(n)).collect();
@@ -855,6 +860,39 @@ impl<'a> Engine<'a> {
         };
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
+    }
+
+    /// The columns of an UPDATE's or a DELETE's RETURNING list its WHERE is strict in, non-null
+    /// ([`infer::write_narrowing`]), where nothing changes the row between the WHERE and the
+    /// RETURNING: no rewrite rule, and no view, takes the write over; and for the target's own
+    /// columns, no row trigger runs before the change or in its place (on an UPDATE, a delete's
+    /// and an insert's too, which a row moved to another partition runs), and an UPDATE neither
+    /// writes the column nor computes it again as a generated one.
+    fn write_narrowed(&self, sql: &str, trust: &Trust, catalog: &Catalog, raw: &RawDescribe, described: &mut DescribedStatement) {
+        let Some(found) = infer::write_narrowing(sql, trust, &catalog.columns) else { return };
+        if found.columns.len() != described.columns.len() || found.columns.len() != raw.columns.len() {
+            return;
+        }
+        let event = if found.update { cardinality::TRIGGER_ROW_UPDATE } else { cardinality::TRIGGER_ROW_DELETE };
+        if catalog.rewritten.get(&found.target).is_some_and(|events| events & event != 0) {
+            return;
+        }
+        let events = if found.update { cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE | cardinality::TRIGGER_ROW_DELETE } else { cardinality::TRIGGER_ROW_DELETE };
+        let triggered = catalog.skipping_triggers.get(&found.target).is_some_and(|mask| mask & events != 0);
+        let stored = self.stored.borrow();
+        for ((read, col), raw) in found.columns.iter().zip(described.columns.iter_mut()).zip(&raw.columns) {
+            let Some((name, read)) = read else { continue };
+            if *name != col.name {
+                continue;
+            }
+            let holds = match read {
+                infer::WriteRead::Joined => true,
+                infer::WriteRead::Target(column) => !triggered && !found.assigned.contains(column) && (!found.update || stored.contains(&(raw.table, raw.attnum))),
+            };
+            if holds {
+                col.nullable = false;
+            }
+        }
     }
 
     /// A statement of a kind the analysis does not read (DDL, a session setting, a transaction's
@@ -1014,6 +1052,9 @@ impl<'a> Engine<'a> {
             // write meets the constraint as it stands, valid or not.
             let read = row.get(6).and_then(as_bool).unwrap_or(false);
             known.entry(oid).or_insert_with(|| (name.to_string(), HashMap::new())).1.insert(attnum as i32, read);
+            if row.get(7).and_then(as_bool) == Some(true) {
+                self.stored.borrow_mut().insert((oid, attnum as i32));
+            }
             if let Some(column) = row.get(5).and_then(as_str) {
                 self.columns_by_name.borrow_mut().entry(name.to_string()).or_default().insert(attnum as i32, (column.to_string(), written));
             }

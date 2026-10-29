@@ -2186,21 +2186,27 @@ struct Scope {
 
 impl Scope {
     fn of(s: &SelectStmt, reader: &mut Reader) -> Scope {
+        Scope::over(&s.from_clause, s.where_clause.as_deref(), reader)
+    }
+
+    /// The scope of a FROM and the WHERE that filters it: a SELECT's, or the relations a write
+    /// reads, its target first, and its WHERE.
+    fn over(from: &[Node], filter: Option<&Node>, reader: &mut Reader) -> Scope {
         let mut tables = HashMap::new();
         let mut names = Vec::new();
         let mut outer_join = false;
         let (mut using, mut natural) = (Vec::new(), false);
-        for item in &s.from_clause {
+        for item in from {
             from_names(item, &mut tables, &mut names, &mut outer_join, &mut using, &mut natural);
         }
         if outer_join {
             tables.clear();
         }
-        let mut strict = s.where_clause.as_deref().map(|w| reader.narrowings(w)).unwrap_or_default();
+        let mut strict = filter.map(|w| reader.narrowings(w)).unwrap_or_default();
         // A row the result keeps passed the ON of every inner join no outer join can null, so what
         // that ON is strict in holds of it as a WHERE's would.
         let mut quals = Vec::new();
-        for item in &s.from_clause {
+        for item in from {
             inner_quals(item, &mut quals);
         }
         for qual in quals {
@@ -2648,6 +2654,111 @@ pub(crate) fn builtin_name(names: &[Node]) -> Option<String> {
         2 if last_string(&names[..1]).as_deref() == Some("pg_catalog") => Some(name),
         _ => None,
     }
+}
+
+/// A column of an UPDATE's or a DELETE's RETURNING list that its WHERE, or the ON of an inner join
+/// it reads, is strict in ([`write_narrowing`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum WriteRead {
+    /// The target relation's column of this name, as the row the statement returns holds it: an
+    /// UPDATE's new row, or the row a DELETE removed.
+    Target(String),
+    /// A column of a relation the statement joins in (`FROM`, `USING`), as the join read it.
+    Joined,
+}
+
+/// What the WHERE of an UPDATE or a DELETE says of the columns its RETURNING list reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WriteNarrowing {
+    /// The target relation, as the statement names it (`users`, `app.users`).
+    pub target: String,
+    /// Whether the statement is an UPDATE, whose new row holds what its SET writes.
+    pub update: bool,
+    /// The target's columns an UPDATE's SET writes, whole or in part.
+    pub assigned: HashSet<String>,
+    /// Per result column, the name the result gives it and what holds it non-null, where the
+    /// WHERE is strict in it; `None` for every other.
+    pub columns: Vec<Option<(String, WriteRead)>>,
+}
+
+/// Per result column of an UPDATE's or a DELETE's RETURNING list that is a column reference (or
+/// a column a `*` shows), whether the statement's WHERE, or the ON of an inner join of its FROM
+/// or USING, is strict in it. A returned row is one the WHERE held for, so a column of a joined
+/// relation is not NULL in it, and neither is the target's column in the row a DELETE removed. An
+/// UPDATE's new row holds what its SET writes, and a row trigger or a generation expression may
+/// change any column: the caller keeps the target's columns only where none of that happens.
+/// A reference to the old row (PostgreSQL 18) is read as one to the target, and one to a row the
+/// statement may not have (a DELETE's new row) is none. `None` for any other statement.
+pub fn write_narrowing(sql: &str, trust: &Trust, columns: &Columns) -> Option<WriteNarrowing> {
+    crate::stack::run(|| write_narrowing_here(sql, trust, columns))
+}
+
+fn write_narrowing_here(sql: &str, trust: &Trust, columns: &Columns) -> Option<WriteNarrowing> {
+    let parsed = crate::stack::parse(sql).ok()?;
+    let top = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref())?;
+    let (relation, filter, update, assigned) = match top {
+        NodeEnum::UpdateStmt(u) => {
+            let assigned = u.target_list.iter().filter_map(|t| match t.node.as_ref() {
+                Some(NodeEnum::ResTarget(rt)) => Some(rt.name.clone()),
+                _ => None,
+            }).collect();
+            (u.relation.as_ref()?, u.where_clause.as_deref(), true, assigned)
+        }
+        NodeEnum::DeleteStmt(d) => (d.relation.as_ref()?, d.where_clause.as_deref(), false, HashSet::new()),
+        _ => return None,
+    };
+    let (targets, from, with) = top_context(top)?;
+    if targets.is_empty() || target_named_by_with(top, with.as_ref()) {
+        return None;
+    }
+    let rows = Rows::of(top)?;
+    let withs = Withs::default().with(with.as_ref(), columns);
+    let level = Level::of(&from, &withs, columns);
+    let target = relation.alias.as_ref().map_or_else(|| relation.relname.clone(), |a| a.aliasname.clone());
+    let mut reader = Reader { dialect: Dialect::Postgres, trust, columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope: None, windows: &[], fields: None };
+    let scope = Scope::over(&from, filter, &mut reader);
+    // The reference's claim, and whose column it reads.
+    let mut narrowed = |c: &protobuf::ColumnRef| -> Option<WriteRead> {
+        let node = Node { node: Some(NodeEnum::ColumnRef(c.clone())) };
+        let claim = scope.column(c, &node, &mut reader)?;
+        if !resolve(&claim, None).non_null {
+            return None;
+        }
+        let fields: Vec<String> = c.fields.iter().map(|f| last_string(std::slice::from_ref(f))).collect::<Option<_>>()?;
+        let item = match fields.as_slice() {
+            [item, _] => item.clone(),
+            [column] => level.reader_of(column)?,
+            _ => return None,
+        };
+        Some(if item == target { WriteRead::Target(fields.last()?.clone()) } else { WriteRead::Joined })
+    };
+    let mut out = Vec::new();
+    for t in &targets {
+        let Some(NodeEnum::ResTarget(rt)) = t.node.as_ref() else { return None };
+        let val = rt.val.as_deref()?;
+        let Some(NodeEnum::ColumnRef(c)) = val.node.as_ref() else {
+            // `(row).*` is as many columns as the row's type has.
+            if matches!(val.node.as_ref(), Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_))))) {
+                return None;
+            }
+            out.push(None);
+            continue;
+        };
+        // `old.x` and `new.x` read the target's row before or after the change.
+        let (c, missing) = rows.read(c, &|_| false).unwrap_or((c.clone(), false));
+        if is_star(val) {
+            let columns = star_columns(&c, &level)?;
+            for column in columns {
+                let name = column.fields.last().and_then(|f| last_string(std::slice::from_ref(f)))?;
+                out.push(narrowed(&column).filter(|_| !missing).map(|read| (name, read)));
+            }
+            continue;
+        }
+        let name = if rt.name.is_empty() { c.fields.last().and_then(|f| last_string(std::slice::from_ref(f)))? } else { rt.name.clone() };
+        out.push(narrowed(&c).filter(|_| !missing).map(|read| (name, read)));
+    }
+    let target = if relation.schemaname.is_empty() { relation.relname.clone() } else { format!("{}.{}", relation.schemaname, relation.relname) };
+    Some(WriteNarrowing { target, update, assigned, columns: out })
 }
 
 /// Whether the top SELECT has a `*` in its target list that a test of its WHERE or of an inner
@@ -3107,6 +3218,30 @@ mod tests {
         assert!(narrows_star("SELECT t.* FROM todos t JOIN owners o ON o.id = t.owner_id"));
         assert!(!narrows_star("SELECT * FROM todos"));
         assert!(!narrows_star("SELECT title FROM todos WHERE title = $1"));
+    }
+
+    #[test]
+    fn a_writes_where_narrows_what_its_returning_reads() {
+        let columns: Columns = [("todos", vec!["id", "owner_id", "title", "n"]), ("owners", vec!["id", "name"])].into_iter().collect();
+        let found = |sql: &str| write_narrowing(sql, &Trust::default(), &columns).unwrap();
+        let target = |c: &str| Some((c.to_string(), WriteRead::Target(c.to_string())));
+        let joined = |c: &str| Some((c.to_string(), WriteRead::Joined));
+        let w = found("DELETE FROM todos t USING owners o WHERE t.owner_id = o.id AND o.name LIKE 'a%' RETURNING t.owner_id, o.name, t.title, title AS heading");
+        assert_eq!(w.columns, [target("owner_id"), joined("name"), None, None]);
+        assert!(!w.update);
+        assert_eq!(w.target, "todos");
+        // A `*` is the target's columns, then those of what the statement joins in.
+        let w = found("UPDATE todos SET n = 1 FROM owners o WHERE todos.title IS NOT NULL AND o.id = todos.owner_id RETURNING *");
+        assert_eq!(w.columns, [None, target("owner_id"), target("title"), None, joined("id"), None]);
+        assert_eq!(w.assigned, ["n".to_string()].into_iter().collect());
+        // The old row is the target's; a DELETE has no new one.
+        let w = found("DELETE FROM todos WHERE title = $1 RETURNING old.title AS before, new.title AS after");
+        assert_eq!(w.columns, [Some(("before".to_string(), WriteRead::Target("title".to_string()))), None]);
+        // A bare name is the one item's that shows it, and nothing where another may.
+        assert_eq!(found("DELETE FROM todos USING owners WHERE name = 'a' RETURNING name").columns, [joined("name")]);
+        assert_eq!(found("DELETE FROM todos USING tags WHERE name = 'a' RETURNING name").columns, [None]);
+        assert!(write_narrowing("SELECT 1", &Trust::default(), &columns).is_none());
+        assert!(write_narrowing("INSERT INTO todos (title) VALUES ('a') RETURNING title", &Trust::default(), &columns).is_none());
     }
 
     #[test]
