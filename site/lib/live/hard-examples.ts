@@ -6,18 +6,6 @@ export const ADVANCED = 'Advanced';
 
 export const HARD_EXAMPLES: InferenceStatement[] = [
   {
-    title: 'Window functions',
-    slug: 'window-functions',
-    sql: `-- lag() is null on the first row
-select id, title,
-  row_number() over (
-    partition by user_id
-    order by published_at
-  ) as n,
-  lag(title) over (order by id) as prev
-from posts`,
-  },
-  {
     title: 'Recursive queries',
     slug: 'recursive-queries',
     sql: `-- the numbers 1 to 10
@@ -27,20 +15,6 @@ with recursive n(i) as (
   select i + 1 from n where i < 10
 )
 select i from n`,
-  },
-  {
-    title: 'Lateral joins',
-    slug: 'lateral-joins',
-    sql: `-- each user's latest post, or null for none
-select u.name, p.title, p.published_at
-from users u
-left join lateral (
-  select title, published_at
-  from posts
-  where user_id = u.id
-  order by published_at desc nulls last
-  limit 1
-) p on true`,
   },
   {
     title: 'DISTINCT ON',
@@ -61,15 +35,6 @@ select
   -- null when there are no posts
   max(published_at) as latest
 from posts`,
-  },
-  {
-    title: 'Rollups',
-    slug: 'rollups',
-    sql: `-- the grand total's row has a null user_id
-select user_id, count(*)::int as posts
-from posts
-group by rollup (user_id)
-order by user_id`,
   },
   {
     title: 'CASE expressions',
@@ -139,26 +104,6 @@ select u.name,
     where p.user_id = u.id
   ) as posts
 from users u`,
-  },
-  {
-    title: 'Upserts',
-    slug: 'upserts',
-    sql: `-- on conflict do update: always one row
-insert into users (name, email)
-values (:name, :email::text)
-on conflict (email) do update
-  set name = excluded.name
-returning id, name`,
-  },
-  {
-    title: 'Old and new values',
-    slug: 'old-and-new-values',
-    sql: `-- the row before and after the update (Postgres 18);
--- a primary key: at most one row
-update users
-set name = :name
-where id = :id
-returning old.name as old_name, new.name as new_name`,
   },
   {
     title: 'Writable CTEs',

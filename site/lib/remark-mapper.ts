@@ -560,7 +560,7 @@ export function remarkMapper() {
     } catch (e) {
       throw new Error((e as Error).message.startsWith(page) ? (e as Error).message : `${page}: ${(e as Error).message}`);
     }
-    // The dialect and the file name are read; Shiki and Twoslash do not know the attributes.
-    for (const { node } of blocks) if (node.meta) node.meta = node.meta.replace(/(?:^|\s)(?:dialect|file|strict)=(?:"[^"]*"|'[^']*'|\S+)/g, '').trim();
+    // The dialect and the file name are read (and `play`, by lib/live/inference.ts); Shiki and Twoslash do not know the attributes.
+    for (const { node } of blocks) if (node.meta) node.meta = node.meta.replace(/(?:^|\s)(?:dialect|file|strict|play)=(?:"[^"]*"|'[^']*'|\S+)/g, '').trim();
   };
 }
