@@ -83,6 +83,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     // A DuckDB struct's fields, map's entries and union's value stand as a row's values do.
     case "struct": return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${renderType(f.type, false, dialect)} | null`).join("; ")} }` : "Record<never, never>";
     case "map": return `{ key: ${renderType(t.key, false, dialect)}; value: ${renderType(t.value, false, dialect)} | null }[]`;
+    case "tuple": return `[${t.items.map((item) => `${renderType(item, false, dialect)} | null`).join(", ")}]`;
     case "union": return t.members.length ? t.members.map((m) => `{ tag: ${JSON.stringify(m.name)}; value: ${renderType(m.type, false, dialect)} | null }`).join(" | ") : "never";
     case "unknown": return "unknown";
   }
@@ -235,6 +236,7 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
     }
     if (t.kind === "struct") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${renderParamType(f.type, dialect, true)} | null`).join("; ")} }` : "Record<never, never>";
     if (t.kind === "map") return `readonly { key: ${renderParamType(t.key, dialect, true)}; value: ${renderParamType(t.value, dialect, true)} | null }[]`;
+    if (t.kind === "tuple") return `readonly [${t.items.map((item) => `${renderParamType(item, dialect, true)} | null`).join(", ")}]`;
   }
   if (t.kind === "scalar" && dialect !== "sqlite") {
     if (t.name === "int8") return "number | bigint | string";

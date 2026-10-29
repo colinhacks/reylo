@@ -6,6 +6,7 @@
 use crate::host::{as_bool, as_str, Host, Lazy};
 use reylo_engine_core::api::Scope;
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// One row per column of every table and view whose name is one of `{names}`, in each one's
 /// order: where it is, whether it may be NULL, its comment, whether it is in the database and
@@ -19,6 +20,10 @@ const COLUMNS_QUERY: &str = "select database_name, schema_name, table_name, colu
 const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json(constraint_column_names)::varchar \
     from duckdb_constraints() where constraint_type in ('PRIMARY KEY', 'UNIQUE') and lower(table_name) in ({names}) \
     order by database_name, schema_name, table_name, constraint_index";
+
+/// Every macro and its definition: a macro may call `unnest`, itself or through another macro,
+/// and so make a row of each element (`generate_subscripts`, `regexp_split_to_table`).
+const MACROS_QUERY: &str = "select lower(function_name), macro_definition from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
 
 /// A table or view as the catalog has it.
 #[derive(Debug, Clone, Default)]
@@ -42,10 +47,19 @@ pub struct TableColumn {
     pub comment: Option<String>,
 }
 
-/// The catalog's answers for the tables a statement names.
-#[derive(Debug, Clone, Default)]
+/// The catalog's answers for the tables a statement names, and the functions that make rows.
+#[derive(Debug, Clone)]
 pub struct Catalog {
     tables: Vec<Table>,
+    /// `unnest` and every macro that calls it, by lowercased name: a call of one in a select list
+    /// makes a row of each element.
+    pub row_makers: HashSet<String>,
+}
+
+impl Default for Catalog {
+    fn default() -> Self {
+        Catalog { tables: Vec::new(), row_makers: HashSet::from(["unnest".to_string()]) }
+    }
 }
 
 impl Catalog {
@@ -82,11 +96,13 @@ impl Catalog {
 /// The catalog for the tables `names` (as written, each a list of parts), asked in one round; an
 /// empty catalog where the statement names none or DuckDB refuses the queries.
 pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
+    let macros = host.query(MACROS_QUERY, Vec::new(), Scope::Session);
     let mut wanted: Vec<String> = names.iter().filter_map(|n| n.last()).map(|n| n.to_lowercase()).collect();
     wanted.sort();
     wanted.dedup();
+    let row_makers = row_makers(macros?.unwrap_or_default());
     if wanted.is_empty() {
-        return Some(Catalog::default());
+        return Some(Catalog { row_makers, ..Catalog::default() });
     }
     let list = wanted.iter().map(|n| format!("'{}'", n.replace('\'', "''"))).collect::<Vec<_>>().join(", ");
     let columns = host.query(&COLUMNS_QUERY.replace("{names}", &list), Vec::new(), Scope::Statement);
@@ -123,10 +139,63 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
             table.keys.push(key);
         }
     }
-    Some(Catalog { tables })
+    Some(Catalog { tables, row_makers })
+}
+
+/// `unnest` and every macro whose definition calls it or another such macro, by name.
+fn row_makers(macros: Vec<Vec<Value>>) -> HashSet<String> {
+    let definitions: Vec<(String, String)> = macros.iter().filter_map(|r| Some((as_str(r.first()?)?.to_string(), as_str(r.get(1)?)?.to_lowercase()))).collect();
+    let mut makers: HashSet<String> = HashSet::from(["unnest".to_string()]);
+    loop {
+        let before = makers.len();
+        for (name, definition) in &definitions {
+            if !makers.contains(name) && makers.iter().any(|m| calls_name(definition, m)) {
+                makers.insert(name.clone());
+            }
+        }
+        if makers.len() == before {
+            return makers;
+        }
+    }
+}
+
+/// Whether `text` calls the function `name`: the name as a word, then an opening parenthesis.
+fn calls_name(text: &str, name: &str) -> bool {
+    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let bytes = text.as_bytes();
+    let mut from = 0;
+    while let Some(at) = text[from..].find(name).map(|i| i + from) {
+        let end = at + name.len();
+        let before = at == 0 || !word(bytes[at - 1]);
+        let after = text[end..].trim_start().starts_with('(');
+        if before && after {
+            return true;
+        }
+        from = end;
+    }
+    false
 }
 
 #[cfg(test)]
 pub fn of(tables: Vec<Table>) -> Catalog {
-    Catalog { tables }
+    Catalog { tables, ..Catalog::default() }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn a_macro_that_reaches_unnest_makes_rows() {
+        let macros = vec![
+            vec![json!("generate_subscripts"), json!("unnest(generate_series(1, array_length(arr, dim)))")],
+            vec![json!("my_rows"), json!("generate_subscripts(x, 1) + 0")],
+            vec![json!("my_unnest_count"), json!("list_count(unnest_like(x))")],
+            vec![json!("plain"), json!("lower(x)")],
+        ];
+        let makers = row_makers(macros);
+        assert!(makers.contains("unnest") && makers.contains("generate_subscripts") && makers.contains("my_rows"));
+        assert!(!makers.contains("plain") && !makers.contains("my_unnest_count"));
+    }
 }

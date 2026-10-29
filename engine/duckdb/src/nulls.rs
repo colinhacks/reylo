@@ -669,7 +669,7 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         Expr::Like { expr, pattern, escape_char, .. } | Expr::ILike { expr, pattern, escape_char, .. } | Expr::SimilarTo { expr, pattern, escape_char, .. } => escape_char.is_none() && nn(expr) && nn(pattern),
         Expr::Case { conditions, else_result, .. } => else_result.as_deref().is_some_and(nn) && conditions.iter().all(|w| nn(&w.result)),
         Expr::Exists { .. } => true,
-        Expr::Array(_) | Expr::Struct { .. } | Expr::Dictionary(_) | Expr::Map(_) => true,
+        Expr::Array(_) | Expr::Struct { .. } | Expr::Dictionary(_) | Expr::Map(_) | Expr::Tuple(_) => true,
         Expr::Ceil { expr, .. } | Expr::Floor { expr, .. } => nn(expr),
         Expr::Trim { expr, trim_what, trim_characters, .. } => nn(expr) && trim_what.as_deref().is_none_or(nn) && trim_characters.as_ref().is_none_or(|cs| cs.iter().all(nn)),
         Expr::Position { expr, r#in } => nn(expr) && nn(r#in),
@@ -708,14 +708,17 @@ pub fn builtin(f: &Function) -> Option<String> {
 fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
     let Some(name) = builtin(f) else { return false };
     let name = name.as_str();
-    if COUNTS.contains(&name) || (f.over.is_some() && RANKS.contains(&name)) || NEVER_NULL.contains(&name) {
+    // A ranking function given an ORDER BY of its own, as in `ntile(2 ORDER BY id) OVER (…)`, ranks
+    // within the window's frame, and is NULL where the frame is empty.
+    let framed = matches!(&f.args, FunctionArguments::List(list) if !list.clauses.is_empty());
+    if COUNTS.contains(&name) || (f.over.is_some() && !framed && RANKS.contains(&name)) || NEVER_NULL.contains(&name) {
         return true;
     }
     let Some(args) = args(f) else { return false };
     let nn = |e: &&Expr| not_null(e, scope, ctx);
     match name {
         "coalesce" | "ifnull" | "nvl" => args.iter().any(nn),
-        "ntile" => f.over.is_some() && !args.is_empty() && args.iter().all(nn),
+        "ntile" => f.over.is_some() && !framed && !args.is_empty() && args.iter().all(nn),
         _ if AGGREGATES.contains(&name) => {
             // Over the rows of a group, which has one at least; a FILTER or a window frame may
             // leave it none.
@@ -758,9 +761,10 @@ pub fn has_aggregate(e: &Expr) -> bool {
     calls(e, &|f| f.over.is_none() && builtin(f).is_some_and(|n| AGGREGATES.contains(&n.as_str())))
 }
 
-/// Whether an expression calls `unnest`, which makes a row of each element, outside any subquery.
-pub fn has_unnest(e: &Expr) -> bool {
-    calls(e, &|f| builtin(f).is_some_and(|n| n == "unnest"))
+/// Whether an expression calls `unnest`, or a macro that does, which makes a row of each element,
+/// outside any subquery. A qualified call is a user's macro's, by its last part.
+pub fn has_unnest(e: &Expr, makers: &HashSet<String>) -> bool {
+    calls(e, &|f| parts(&f.name).last().is_some_and(|n| makers.contains(&n.to_lowercase())))
 }
 
 /// How many rows a query returns, and why not one where it is not proven so.
@@ -820,13 +824,18 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
             _ => None,
         })
         .collect();
-    if items.iter().any(|e| has_unnest(e)) {
+    if items.iter().any(|e| has_unnest(e, &ctx.catalog.row_makers)) {
         return ("many", Some("unnest makes a row of each element".into()));
     }
     let filtered = s.selection.is_some() || s.having.is_some() || s.qualify.is_some();
     // Any name may be a column here, so a GROUP BY ALL is taken as no grouping only where no item
     // without an aggregate reads a name at all.
-    let ungrouped = grouping(s, &|_| true).ungrouped;
+    let grouped = grouping(s, &|_| true);
+    let ungrouped = grouped.ungrouped;
+    // Grouping sets make a row of each set, even over one row: `grouping sets ((), ())` is two.
+    if grouped.sets {
+        return ("many", Some("grouping sets make a row of each set".into()));
+    }
     if s.from.is_empty() {
         return if filtered { ("maybeOne", Some("its WHERE, HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
@@ -1036,6 +1045,18 @@ mod tests {
         assert_eq!(rows("with x as (select 1) select id from users where id = 1"), "maybeOne");
         assert_eq!(rows("select 1"), "one");
         assert_eq!(rows("select unnest([1, 2])"), "many");
+        // Each grouping set is a row of its own, even with no FROM.
+        assert_eq!(rows("select count(*) group by grouping sets ((), ())"), "many");
+        // A macro that unnests makes rows as unnest does, by the names the catalog gives.
+        let mut catalog = catalog();
+        catalog.row_makers.insert("generate_subscripts".into());
+        let nullable = HashSet::new();
+        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        assert_eq!(super::cardinality(&query("select generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
+        assert_eq!(super::cardinality(&query("select main.generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
+        // A ranking function given its own ORDER BY ranks within the frame, which may be empty.
+        assert_eq!(proven("select ntile(2 order by id) over (order by id rows between 3 following and 1 following) as a, row_number() over () as c from users"), "a? c");
+        assert_eq!(rows("select count(*) from users group by rollup (name)"), "many");
         // A subquery's aggregate or unnest is its own rows'.
         assert_eq!(rows("select id, (select max(id) from teams) as top from users"), "many");
         assert_eq!(rows("select 1 as one, (select count(*) from (select unnest([1, 2]))) as n"), "one");

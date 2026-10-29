@@ -242,6 +242,41 @@ test("DuckDB: .run() returns each type's one representation, and a row goes back
   }
 });
 
+test("DuckDB: every type's least, greatest and NULL value round-trips through .run() exactly", { skip }, async () => {
+  // DuckDB's own test_all_types(): each type's extremes, which .run() decodes and a parameter
+  // writes back, each column into a table of its own; DuckDB then compares each with the original.
+  // An array that holds NULL is not written: an array parameter takes no NULL element.
+  const root = await project("create table t as select row_number() over () as k, * exclude (geometry) from test_all_types()");
+  const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c0 = await db0.connect();
+  const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);
+  const q = (n: string) => `"${n}"`;
+  for (const n of names) await c0.run(`create table ${q(`w_${n}`)} as select k, ${q(n)} from t limit 0`);
+  c0.closeSync();
+  db0.closeSync();
+  const read = await built(root, "read", "select * from t order by k");
+  const writes = await Promise.all(names.map((n, i) => built(root, `write_${i}`, `insert into ${q(`w_${n}`)} (k, ${q(n)}) values (:k, :v)`)));
+  await closeAll();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    const rows = (await read.run(c)) as Record<string, unknown>[];
+    assert.equal(rows.length, 3);
+    const nullElement = (v: unknown): boolean => Array.isArray(v) && v.some((e) => e === null || nullElement(e));
+    for (const [i, n] of names.entries()) {
+      for (const row of rows) {
+        if (nullElement(row[n])) continue;
+        await writes[i]!.run(c, { k: row.k, v: row[n] });
+      }
+      const differ = ((await c.runAndReadAll(`select t.k from t join ${q(`w_${n}`)} w using (k) where t.${q(n)} is distinct from w.${q(n)}`)) as { getRowsJson(): unknown[][] }).getRowsJson();
+      assert.deepEqual(differ, [], `${n} differs after a round trip`);
+    }
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: .run() refuses a fraction for an integer, and .try() reads DuckDB's error", { skip }, async () => {
   const root = await project();
   const get = await built(root, "get", "select id, msg from logs where id = :id");

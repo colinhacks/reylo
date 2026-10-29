@@ -49,6 +49,8 @@ pub fn of(t: &LogicalType) -> Type {
             Some(child) => Type::Array { of: Box::new(of(child)), nullable_items: None, delimiter: None },
             None => Type::Unknown,
         },
+        // A struct whose fields have no names is a tuple.
+        "STRUCT" if !t.fields.is_empty() && t.fields.iter().all(|f| f.name.is_empty()) => Type::Tuple { items: t.fields.iter().map(|f| of(&f.ty)).collect() },
         "STRUCT" => Type::Struct { fields: t.fields.iter().map(|f| Field { name: f.name.clone(), ty: of(&f.ty), nullable: true }).collect() },
         "MAP" => match (&t.key, &t.value) {
             (Some(key), Some(value)) => Type::Map { key: Box::new(of(key)), value: Box::new(of(value)) },
@@ -88,5 +90,6 @@ mod tests {
         assert!(matches!(&s, Type::Struct { fields } if fields.len() == 2 && fields.iter().all(|f| f.nullable)));
         assert_eq!(of(&t(r#"{"id":"ENUM","text":"ENUM('a', 'b')","values":["a","b"]}"#)), Type::Enum { name: "ENUM('a', 'b')".into(), labels: vec!["a".into(), "b".into()] });
         assert_eq!(of(&t(r#"{"id":"GEOMETRY"}"#)), Type::Unknown);
+        assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#)), Type::Tuple { items: vec![Type::Scalar { name: "integer".into() }, Type::Scalar { name: "varchar".into() }] });
     }
 }

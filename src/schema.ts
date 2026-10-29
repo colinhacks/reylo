@@ -170,6 +170,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
     // A DuckDB struct's fields, map's entries and union's value stand as a row's values do, each may be null.
     case "struct": return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input)));
     case "map": return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value, dialect, input)))) };
+    case "tuple": return { type: "array", prefixItems: t.items.map((item) => nullable(typeSchema(item, dialect, input))), items: false, minItems: t.items.length };
     case "union": return { anyOf: t.members.map((m) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: m.name } : nullable(typeSchema(m.type, dialect, input))))) };
     case "unknown": return {};
   }
