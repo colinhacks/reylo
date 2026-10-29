@@ -1837,6 +1837,9 @@ pub enum ItemRead {
     Defaulted { item: usize, column: String },
     /// `*` or `item.*`: every column of item `item` in order, or of something else (`None`).
     Star { item: Option<usize> },
+    /// `*` or `item.*` over tables alone: every column a table of the statement's own FROM
+    /// shows, whose provenance is that column, as [`ItemRead::Table`]'s is.
+    TableStar,
 }
 
 /// A FROM item as a statement of its own: a WITH query read by name or a derived table, the
@@ -1856,6 +1859,9 @@ pub struct ItemQuery {
     /// For any other item, whether it sits on the nullable side of an outer join; for a WITH
     /// query, whether this reading of it does.
     pub nulled: bool,
+    /// How many columns the item shows after the statement's: those a WITH query's SEARCH and
+    /// CYCLE clauses add.
+    pub extra: usize,
 }
 
 thread_local! {
@@ -1917,7 +1923,9 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
             Some(NodeEnum::AIndirection(i)) if i.indirection.iter().any(|n| matches!(n.node, Some(NodeEnum::AStar(_)))) => return None,
             Some(NodeEnum::ColumnRef(c)) => match c.fields.split_last() {
                 Some((last, qualifier)) if matches!(last.node, Some(NodeEnum::AStar(_))) => match strings(qualifier)?.as_slice() {
+                    [] if items.tables() => ItemRead::TableStar,
                     [] => ItemRead::Star { item: items.only() },
+                    [name] if matches!(items.find(|n| n == Some(name.as_str())), Some(Item::Table)) => ItemRead::TableStar,
                     [name] => ItemRead::Star { item: items.named(name) },
                     _ => ItemRead::Star { item: None },
                 },
@@ -2028,7 +2036,9 @@ impl Items<'_> {
                         _ => None,
                     }).collect();
                     names.extend(own.into_iter().skip(names.len()));
-                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled })
+                    // SEARCH adds its sequence column, CYCLE its mark and its path.
+                    let extra = usize::from(cte.search_clause.is_some()) + 2 * usize::from(cte.cycle_clause.is_some());
+                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, extra })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
@@ -2039,7 +2049,7 @@ impl Items<'_> {
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let query = r.subquery.as_deref().and_then(as_select).filter(|_| !r.lateral).and_then(|body| {
-                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled })
+                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled, extra: 0 })
                 });
                 (alias(r.alias.as_ref()), query)
             }
@@ -2056,7 +2066,7 @@ impl Items<'_> {
                 let name = alias(f.alias.as_ref()).or_else(|| function_item_name(f));
                 let query = call.zip(name.clone()).and_then(|(call, name)| {
                     let column = columns(f.alias.as_ref()).into_iter().next().unwrap_or(name);
-                    Some(ItemQuery { sql: value_text(self.version, call, self.with)?, columns: vec![column], with: None, nulled })
+                    Some(ItemQuery { sql: value_text(self.version, call, self.with)?, columns: vec![column], with: None, nulled, extra: 0 })
                 });
                 (name, query)
             }
@@ -2086,6 +2096,11 @@ impl Items<'_> {
             (Some((_, item)), None) => Some(*item),
             _ => None,
         }
+    }
+
+    /// Whether the FROM has items and every one is a table.
+    fn tables(&self) -> bool {
+        !self.names.is_empty() && self.names.iter().all(|(_, item)| matches!(item, Item::Table))
     }
 
     /// The statement of the one item of the FROM, when it has one item and that one has one.
@@ -3786,6 +3801,10 @@ mod tests {
         assert_eq!(reads, vec![column(0, "n")]);
         assert_eq!(queries[0].columns, vec!["n"]);
         assert!(queries[0].sql.starts_with("WITH RECURSIVE t(n) AS ("));
+        // SEARCH adds a column after the query's own, and CYCLE two.
+        let extra = |sql: &str| item_reads(sql).unwrap().1[0].extra;
+        assert_eq!(extra("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 5) SEARCH DEPTH FIRST BY n SET o SELECT * FROM t"), 1);
+        assert_eq!(extra("WITH RECURSIVE t(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM t WHERE n < 5) CYCLE n SET c USING p SELECT * FROM t"), 2);
         // A reading of a WITH query is nulled by its own place, whatever another reading's is.
         let (_, queries) = item_reads("WITH c AS (SELECT 1 AS n) SELECT a.n FROM c a LEFT JOIN c b ON b.n = a.n").unwrap();
         assert_eq!(queries.iter().map(|q| q.nulled).collect::<Vec<_>>(), [false, true]);
@@ -3798,7 +3817,7 @@ mod tests {
         let (reads, _) = item_reads("WITH a AS (SELECT 1 AS x) SELECT *, x FROM a").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }, column(0, "x")]);
         let (reads, _) = item_reads("WITH a AS (SELECT 1 AS x) SELECT u.*, a.*, a.x FROM users u, a").unwrap();
-        assert_eq!(reads, vec![ItemRead::Star { item: None }, ItemRead::Star { item: Some(0) }, column(0, "x")]);
+        assert_eq!(reads, vec![ItemRead::TableStar, ItemRead::Star { item: Some(0) }, column(0, "x")]);
         assert_eq!(item_reads("WITH a AS (SELECT 1 AS x) SELECT * FROM a, users"), None);
         assert_eq!(item_reads("WITH a AS (SELECT ROW(1, 2)::pair AS p) SELECT (p).*, p FROM a"), None);
     }
@@ -3816,7 +3835,9 @@ mod tests {
         // and a `*` read no one column.
         assert_eq!(reads("WITH users AS (SELECT 1 AS id UNION SELECT 2) SELECT users.id FROM users"), vec![ItemRead::Column { item: 0, column: "id".into() }]);
         assert_eq!(reads("WITH w AS (INSERT INTO t DEFAULT VALUES RETURNING id) SELECT w.id FROM w"), vec![ItemRead::Other]);
-        assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::Star { item: None }]);
+        assert_eq!(reads("SELECT u.id + 1, u.* FROM users u"), vec![ItemRead::Other, ItemRead::TableStar]);
+        assert_eq!(reads("SELECT * FROM users u JOIN posts p ON p.user_id = u.id"), vec![ItemRead::TableStar]);
+        assert_eq!(reads("WITH a AS (SELECT 1 AS x) SELECT * FROM a, users"), vec![ItemRead::Star { item: None }]);
         assert_eq!(reads("SELECT s.id FROM users u, LATERAL (SELECT u.id) s"), vec![ItemRead::Other]);
         // A set operation at the top hides which arm a column is.
         assert_eq!(target_reads("SELECT id FROM users UNION SELECT id FROM posts"), None);
@@ -3839,7 +3860,7 @@ mod tests {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH c AS (SELECT 1 AS one) SELECT s.n, u.id FROM users u LEFT JOIN (SELECT count(*) AS n FROM c) s (total) ON true").unwrap();
         assert_eq!(reads, vec![column(0, "n"), ItemRead::Table]);
-        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true, extra: 0 }]);
         // The preserved side of an outer join is not nulled; a FULL JOIN nulls both.
         let nulled = |sql: &str| item_reads(sql).unwrap().1.iter().map(|q| q.nulled).collect::<Vec<_>>();
         assert_eq!(nulled("SELECT a.x, b.y FROM (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON true"), vec![false, true]);
@@ -3850,7 +3871,7 @@ mod tests {
         // item's one column goes by.
         let (reads, queries) = item_reads("SELECT * FROM lower($1)").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }]);
-        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false, extra: 0 }]);
         assert_eq!(item_reads("SELECT t FROM now() AS t").unwrap().1[0].columns, vec!["t"]);
         assert_eq!(item_reads("SELECT v FROM now() AS t (v)").unwrap().1[0].columns, vec!["v"]);
         assert_eq!(item_reads("SELECT * FROM CURRENT_DATE AS d").unwrap().1[0].sql, "SELECT current_date AS value");

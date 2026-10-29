@@ -1767,7 +1767,7 @@ impl<'a> Engine<'a> {
         use infer::ItemRead;
         let Some((reads, queries)) = infer::item_reads(sql) else { return Some(Vec::new()) };
         // One `*` at most: its width is what the other targets leave of the result's columns.
-        let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. })).count();
+        let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. } | ItemRead::TableStar)).count();
         let Some(width) = (count + stars).checked_sub(reads.len()).filter(|w| stars == 1 || (stars == 0 && *w == 0)) else { return Some(Vec::new()) };
         let read = |i: usize| reads.iter().any(|r| matches!(r, ItemRead::Column { item, .. } | ItemRead::Star { item: Some(item) } if *item == i));
         let mut settled: HashMap<usize, Vec<ItemColumn>> = HashMap::new();
@@ -1832,10 +1832,15 @@ impl<'a> Engine<'a> {
                         _ => None,
                     });
                 }
-                ItemRead::Star { item } => match item.and_then(|item| Some((item, settled.get(&item).filter(|columns| columns.len() == width)?))) {
-                    Some((item, columns)) => out.extend(columns.iter().map(|c| Some(answer(item, c)))),
-                    None => out.extend(std::iter::repeat(None).take(width)),
+                // A WITH query's SEARCH and CYCLE columns follow its statement's, and say nothing.
+                ItemRead::Star { item } => match item.and_then(|item| Some((item, settled.get(&item).filter(|columns| columns.len() + queries[item].extra == width)?))) {
+                    Some((item, columns)) => {
+                        out.extend(columns.iter().map(|c| Some(answer(item, c))));
+                        out.extend(std::iter::repeat_n(None, queries[item].extra));
+                    }
+                    None => out.extend(std::iter::repeat_n(None, width)),
                 },
+                ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
             }
         }
         Some(out)
@@ -2287,15 +2292,28 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
         None => return vec![false; count],
         Some(_) => {}
     }
-    // The reads line up with the columns only where every target is one column: a `*` among
-    // targets as many as the columns is one wide when it is the only one, but two of them may be
-    // two columns and none (a WITH query `(select)` has no columns), as [`Engine::item_columns`]
-    // refuses too.
-    let aligned = |reads: &Vec<infer::ItemRead>| reads.len() == count && reads.iter().filter(|r| matches!(r, infer::ItemRead::Star { .. })).count() <= 1;
-    match infer::target_reads(sql).filter(aligned) {
-        Some(reads) => reads.iter().map(|r| matches!(r, infer::ItemRead::Table)).collect(),
-        None => vec![false; count],
-    }
+    // The reads line up with the columns where every target but one `*` is one column: the `*`
+    // is the columns the others leave. Two of them may be two columns and none (a WITH query
+    // `(select)` has no columns), as [`Engine::item_columns`] refuses too.
+    let star = |r: &infer::ItemRead| matches!(r, infer::ItemRead::Star { .. } | infer::ItemRead::TableStar);
+    let Some(reads) = infer::target_reads(sql) else { return vec![false; count] };
+    let stars = reads.iter().filter(|r| star(r)).count();
+    let width = match stars {
+        0 if reads.len() == count => 0,
+        1 => match (count + 1).checked_sub(reads.len()) {
+            Some(width) => width,
+            None => return vec![false; count],
+        },
+        _ => return vec![false; count],
+    };
+    reads
+        .iter()
+        .flat_map(|r| match r {
+            infer::ItemRead::TableStar => vec![true; width],
+            r if star(r) => vec![false; width],
+            r => vec![matches!(r, infer::ItemRead::Table)],
+        })
+        .collect()
 }
 
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
@@ -4057,9 +4075,12 @@ mod tests {
         let with = "WITH a AS (SELECT p.title AS t, p.title AS t2 FROM posts p UNION ALL SELECT u.email, u.email FROM users u), e AS (SELECT)";
         // A bare column of a table of the statement's own FROM is its own beside a set operation.
         assert_eq!(own(&format!("{with} SELECT a.t, u.name FROM a, users u"), 2), vec![false, true]);
-        // One `*` among as many targets as columns is one column wide, and among more it is none.
+        // One `*` is the columns the other targets leave: one among as many targets as columns,
+        // none among more. A `*` of tables alone is their columns, its own as theirs are.
         assert_eq!(own(&format!("{with}, b AS (SELECT 1 AS n) SELECT b.*, u.name FROM b, users u"), 2), vec![false, true]);
-        assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![false]);
+        assert_eq!(own(&format!("{with} SELECT e.*, u.name FROM e, users u"), 1), vec![true]);
+        assert_eq!(own(&format!("{with} SELECT u.*, a.t FROM a, users u"), 4), vec![true, true, true, false]);
+        assert_eq!(own(&format!("{with} SELECT * FROM users u JOIN posts p ON p.user_id = u.id"), 5), vec![true; 5]);
         // Two may be two columns and none, so no position says which column a target is.
         assert_eq!(own(&format!("{with} SELECT a.*, u.name, e.* FROM a, users u, e"), 3), vec![false; 3]);
     }
