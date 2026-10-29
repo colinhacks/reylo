@@ -1,16 +1,18 @@
 // A TypeScript type as the docs' Inference cards (site/lib/remark-mapper.ts) and `reylo play` show
 // it: the one-line type a statement's module declares (src/render.ts's form: object literals,
-// unions, arrays, string literals and names), broken over lines where it is wider than the column.
+// unions, arrays, string literals and names, and a column's comment as the doc comment before its
+// field, src/module-types.ts), broken over lines where it is wider than the column.
 
 type Node =
   | { kind: "name"; text: string }
-  | { kind: "object"; members: { key: string; type: Node }[] }
+  | { kind: "object"; members: { key: string; type: Node; doc?: string }[] }
   | { kind: "union"; of: Node[] }
   | { kind: "array"; of: Node };
 
 /** The type's text as a tree. Throws on text outside the forms src/render.ts writes. */
 export function parseType(text: string): Node {
-  const tokens = text.match(/"(?:[^"\\]|\\.)*"|[A-Za-z_$][\w$]*(?:<[^<>]*>)?|\[\]|[{}()[\]|;:?,]/g) ?? [];
+  // A doc comment is one token, the field's that follows it.
+  const tokens = text.match(/\/\*\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|[A-Za-z_$][\w$]*(?:<[^<>]*>)?|\[\]|[{}()[\]|;:?,]/g) ?? [];
   let at = 0;
   const peek = () => tokens[at];
   const take = (expected?: string) => {
@@ -49,6 +51,8 @@ export function parseType(text: string): Node {
     take("{");
     const members: { key: string; type: Node }[] = [];
     while (peek() !== "}") {
+      // Its text, one line per line of the comment, without the comment's own indentation.
+      const doc = peek()?.startsWith("/**") ? take().split("\n").map((line, i) => (i ? ` ${line.trim()}` : line.trim())).join("\n") : undefined;
       let key: string;
       if (peek() === "[") {
         // An index signature, `[key: string]: unknown`.
@@ -61,7 +65,7 @@ export function parseType(text: string): Node {
       } else key = take();
       if (peek() === "?") key += take("?");
       take(":");
-      members.push({ key, type: union() });
+      members.push({ key, type: union(), ...(doc ? { doc } : {}) });
       if (peek() === ";") take(";");
     }
     take("}");
@@ -72,12 +76,19 @@ export function parseType(text: string): Node {
   return node;
 }
 
+/** A doc comment on one line: `/** line one line two *\/`. */
+const oneLineDoc = (doc: string) => doc.replace(/\n\s*\*\/$/, " */").replace(/(?:\n[ \t]*\*[ \t]*)+/g, " ").replace(/^\/\*\*\s*/, "/** ");
+
+/** Whether an object in the type has a field with a doc comment. */
+const hasDoc = (node: Node): boolean =>
+  node.kind === "object" ? node.members.some((m) => m.doc || hasDoc(m.type)) : node.kind === "union" ? node.of.some(hasDoc) : node.kind === "array" ? hasDoc(node.of) : false;
+
 const flat = (node: Node): string => {
   switch (node.kind) {
     case "name":
       return node.text;
     case "object":
-      return node.members.length ? `{ ${node.members.map((m) => `${m.key}: ${flat(m.type)}`).join("; ")} }` : "{}";
+      return node.members.length ? `{ ${node.members.map((m) => `${m.doc ? `${oneLineDoc(m.doc)} ` : ""}${m.key}: ${flat(m.type)}`).join("; ")} }` : "{}";
     case "union":
       return node.of.map(flat).join(" | ");
     case "array":
@@ -92,13 +103,15 @@ const flat = (node: Node): string => {
  */
 function print(node: Node, indent: number, lead: number, width: number, reserve = 0): string {
   const one = flat(node);
-  if (lead + one.length + reserve <= width) return one;
+  // A type with a doc comment is broken over lines at any finite width, each comment on the lines before its field, as TypeScript reads one.
+  if (lead + one.length + reserve <= width && (width === Infinity || !hasDoc(node))) return one;
   switch (node.kind) {
     case "name":
       return one;
     case "object": {
       const inner = " ".repeat(indent + 2);
-      return `{\n${node.members.map((m) => `${inner}${m.key}: ${print(m.type, indent + 2, indent + 2 + m.key.length + 2, width, 1)};`).join("\n")}\n${" ".repeat(indent)}}`;
+      const doc = (text: string | undefined) => (text ? `${text.split("\n").map((line) => inner + line).join("\n")}\n` : "");
+      return `{\n${node.members.map((m) => `${doc(m.doc)}${inner}${m.key}: ${print(m.type, indent + 2, indent + 2 + m.key.length + 2, width, 1)};`).join("\n")}\n${" ".repeat(indent)}}`;
     }
     case "union": {
       let line = lead;
