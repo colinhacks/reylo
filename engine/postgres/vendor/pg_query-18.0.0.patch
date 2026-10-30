@@ -64,7 +64,34 @@ diff -ruN a/extern_block.rs b/extern_block.rs
 diff -ruN a/libpg_query/src/pg_query.c b/libpg_query/src/pg_query.c
 --- a/libpg_query/src/pg_query.c
 +++ b/libpg_query/src/pg_query.c
-@@ -242,9 +242,14 @@
+@@ -35,6 +35,17 @@
+ #ifdef HAVE_PTHREAD
+ static pthread_key_t pg_query_thread_exit_key;
+ static void pg_query_thread_exit(void *key);
++/*
++ * Reylo: one key for the process, made once. Made in every thread that
++ * initializes, as upstream does, the keys run out after PTHREAD_KEYS_MAX
++ * threads (512 on macOS): no later thread's memory context is freed when it
++ * exits, and no other library in the process can make a key.
++ */
++static pthread_once_t pg_query_thread_exit_once = PTHREAD_ONCE_INIT;
++static void pg_query_make_thread_exit_key(void)
++{
++	pthread_key_create(&pg_query_thread_exit_key, pg_query_thread_exit);
++}
+ #endif
+ 
+ static __thread char *pg_query_lowest_stackaddr = NULL;
+@@ -52,7 +63,7 @@
+ 	SetDatabaseEncoding(PG_UTF8);
+ 
+ #ifdef HAVE_PTHREAD
+-	pthread_key_create(&pg_query_thread_exit_key, pg_query_thread_exit);
++	pthread_once(&pg_query_thread_exit_once, pg_query_make_thread_exit_key);
+ 	pthread_setspecific(pg_query_thread_exit_key, TopMemoryContext);
+ #endif
+ }
+@@ -242,9 +253,14 @@
  	if (new_limit <= 100)
  		return;
  
