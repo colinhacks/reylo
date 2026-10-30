@@ -2430,7 +2430,10 @@ impl Analyzer<'_> {
     ///
     /// None for a set operation or a VALUES list, which may repeat a row.
     fn output_keys(&self, sel: &Sel) -> Vec<Vec<i64>> {
-        if sel.prior.is_some() || sel.values {
+        if let Some(prior) = &sel.prior {
+            return self.compound_keys(sel, prior);
+        }
+        if sel.values {
             return Vec::new();
         }
         let index: HashMap<i64, usize> = sel.from.iter().enumerate().map(|(i, f)| (f.cursor, i)).collect();
@@ -2466,9 +2469,58 @@ impl Analyzer<'_> {
                     keys.extend(key.iter().map(|p| position(&|e: &Node| e.cursor == f.cursor && e.index == *p)).collect::<Option<Vec<i64>>>());
                 }
             } else if let Some(info) = f.table.as_deref().and_then(|t| self.tree.tables.get(t)) {
+                // A key column the select list leaves out still counts where the WHERE pins it to
+                // one value.
+                let fixed = |c: &str| {
+                    let none = vec![false; n];
+                    conjuncts(sel.where_.as_ref()).iter().filter(|t| !t.outer_on).any(|t| self.pinned_column(t, f.cursor, &none, &index).and_then(|col| col.column.as_deref()).is_some_and(|name| name.eq_ignore_ascii_case(c)))
+                };
                 for key in info.unique_keys.iter().filter(|k| !k.is_empty()) {
-                    keys.extend(key.iter().map(|c| position(&|e: &Node| e.cursor == f.cursor && e.column.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(c)))).collect::<Option<Vec<i64>>>());
+                    keys.extend(
+                        key.iter()
+                            .filter_map(|c| match position(&|e: &Node| e.cursor == f.cursor && e.column.as_deref().is_some_and(|name| name.eq_ignore_ascii_case(c))) {
+                                Some(p) => Some(Some(p)),
+                                None if fixed(c) => None,
+                                None => Some(None),
+                            })
+                            .collect::<Option<Vec<i64>>>(),
+                    );
                 }
+            }
+        }
+        keys
+    }
+
+    /// The keys of a compound SELECT's rows, `sel` its last arm and `prior` the arms before it.
+    /// INTERSECT and EXCEPT return only rows of their left side, so they keep its keys. Any operator
+    /// but UNION ALL returns distinct rows, so the whole row is a key, where each column is a
+    /// column on every arm, of one affinity and one collation, which the comparison that told the
+    /// rows apart and the one that reads them agree on.
+    fn compound_keys(&self, sel: &Sel, prior: &Sel) -> Vec<Vec<i64>> {
+        let op = sel.op.as_deref().unwrap_or("");
+        let mut keys = Vec::new();
+        if op == "intersect" || op == "except" {
+            keys.extend(self.output_keys(prior));
+        }
+        if op != "union all" {
+            let mut arms = vec![sel];
+            let mut at = Some(prior);
+            while let Some(arm) = at {
+                arms.push(arm);
+                at = arm.prior.as_deref();
+            }
+            let width = sel.columns.len();
+            let alike = width > 0
+                && arms.iter().all(|arm| !arm.values && arm.columns.len() == width)
+                && (0..width).all(|i| {
+                    let first = &sel.columns[i].expr;
+                    first.op == "column" && arms.iter().all(|arm| {
+                        let e = &arm.columns[i].expr;
+                        e.op == "column" && e.aff == first.aff && e.coll.as_deref().unwrap_or("BINARY").eq_ignore_ascii_case(first.coll.as_deref().unwrap_or("BINARY"))
+                    })
+                });
+            if alike {
+                keys.push((0..width as i64).collect());
             }
         }
         keys

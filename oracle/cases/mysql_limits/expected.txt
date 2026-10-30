@@ -23,6 +23,6 @@ scan_limit_5.sql: many (name: text) -> { id: int8, name: text }
 scan_limit_param.sql: many (n: int4) -> { id: int8, name: text? }
 subquery_limit.sql: one () -> { first: text?, n: int8 }
 union_limit_1.sql: maybeOne () -> { id: int8 }
-union_limit_5.sql: many (id: int4, other: int4) -> { id: int8 }
+union_limit_5.sql: many (id: int8, other: int8) -> { id: int8 }
 values_limit.sql: one () -> { column_0: int8|int4, column_1: text }
 with_limit.sql: maybeOne () -> { n: int8 }
