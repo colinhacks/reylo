@@ -22,6 +22,7 @@ export default function reylo() {
     enforce: "pre" as const,
     resolveId: {
       order: "pre" as const,
+      filter: { id: /\.sql$/ },
       handler(source: string, importer: string | undefined): string | null {
         if (!source.endsWith(".sql") || importer === undefined) return null;
         if (!source.startsWith("./") && !source.startsWith("../")) return null;
@@ -32,13 +33,16 @@ export default function reylo() {
         return existsSync(path) ? path : null;
       },
     },
-    async load(this: { addWatchFile(id: string): void }, id: string) {
-      if (!id.endsWith(".sql")) return null;
-      const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
-      // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
-      // and so does a change to the project file or a `.env` file, which the module's text reads.
-      for (const file of [entry, ...watched]) this.addWatchFile(file);
-      return { code, map: null };
+    load: {
+      filter: { id: /\.sql$/ },
+      async handler(this: { addWatchFile(id: string): void }, id: string) {
+        if (!id.endsWith(".sql")) return null;
+        const { code, entry, watched } = await (await tooling(dirname(id))).sqlModule(id, readFileSync(id, "utf8"));
+        // A new analysis of the statement (the type check's, after a migration) rebuilds the module,
+        // and so does a change to the project file or a `.env` file, which the module's text reads.
+        for (const file of [entry, ...watched]) this.addWatchFile(file);
+        return { code, map: null };
+      },
     },
     // Vitest keeps a transformed module across runs (`fsModuleCache`, on by default from Vitest
     // 5.0.5), keyed by its file's text, and in watch mode keeps its key until that file changes. A
