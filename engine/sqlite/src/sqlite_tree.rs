@@ -136,6 +136,8 @@ pub struct From {
     pub cross: bool,
     /// Joined by a RIGHT or FULL JOIN, which keeps the rows of the side before it that match nothing.
     pub right: bool,
+    /// Before a RIGHT or FULL JOIN, which null-extends it.
+    pub left_of_right: bool,
     pub tab_func: bool,
     /// A table-valued function's arguments (`json_each(:ids)`).
     pub args: Vec<Node>,
@@ -196,6 +198,8 @@ pub struct Node {
     /// it restricts the join's right side (the cursor `join`) and removes no row.
     pub outer_on: bool,
     pub join: i64,
+    /// A WHERE term that came from an inner join's ON clause.
+    pub inner_on: bool,
     // column
     pub cursor: i64,
     pub index: i64,

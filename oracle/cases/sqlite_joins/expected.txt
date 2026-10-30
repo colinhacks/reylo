@@ -5,4 +5,5 @@ intersect.sql: maybeOne (id: integer) -> { id: integer }
 left_join.sql: maybeOne (id: integer) -> { title: text, name: text? }
 many_posts.sql: many (id: integer) -> { title: text }
 outer_on_group.sql: many (id: integer) -> { name: text?, n: integer }
+right_after_inner.sql: many () -> { email: text?, title: text? }
 volatile.sql: many () -> { name: text }
