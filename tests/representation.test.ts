@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { renderType } from "../src/render.ts";
+import { defineQuery } from "../src/index.ts";
 
 // Reylo's one representation per SQL type (src/values.ts), on the real drivers, each set up by the
 // app against it: the module a build step writes, run on each, must give the same rows, and each
@@ -108,6 +109,9 @@ test("Postgres: one row on every driver, however the app set its driver up; the 
     const control = (await client.query("select created_by, tstz from t where id = 1")).rows[0];
     assert.equal(control.created_by, "9007199254740993", "the control: the app's own query, an int8 its text");
     assert.ok(control.tstz instanceof Date, "the control: pg's own timestamptz, a Date");
+    // A query defined by hand carries no columns, so its types are read from the catalog as it runs.
+    const byHand = defineQuery({ dialect: "postgres", sql: PG_SELECT, params: [], cardinality: "many" });
+    assert.deepEqual(plain(await byHand.run(client)), PG_ROWS, "pg Client, a query defined by hand");
     await client.end();
     const pool = new pg.Pool({ connectionString: url.href, max: 2, types: { getTypeParser: (oid: number, f?: string) => (oid === 1184 ? (x: string) => `app:${x}` : pg.types.getTypeParser(oid, f)) } });
     pool.on("connect", (c: any) => c.setTypeParser(1082, (x: string) => `connect:${x}`));
