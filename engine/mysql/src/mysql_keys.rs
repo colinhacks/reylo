@@ -617,10 +617,7 @@ fn output_keys(q: &Query, outer: &[(String, Option<&Query>, usize)], keys: &Keys
     let part = |g: &Expr| -> Option<Part> {
         let placed = match g {
             Expr::Value(v) => match &v.value {
-                ast::Value::Number(n, _) => match s.projection.get(n.parse::<usize>().ok()?.checked_sub(1)?)? {
-                    SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => from.place_expr(e)?,
-                    _ => return None,
-                },
+                ast::Value::Number(..) => from.place_expr(grouped_by(s, g)?)?,
                 _ => return None,
             },
             // A bare name is a column of the FROM first, and else an alias of the select list.
@@ -716,7 +713,7 @@ fn at_most_one_in(q: &Query, outer: &[(String, Option<&Query>, usize)], keys: &K
             return Ok(());
         }
         let constant = from.determined(vec![false; n], &all, true);
-        if group.iter().all(|g| from.pinned(g, &constant)) {
+        if group.iter().all(|g| grouped_by(s, g).is_some_and(|e| from.pinned(e, &constant))) {
             return Ok(());
         }
         return Err("GROUP BY returns one row per group; the engine proves one group only when every GROUP BY expression is pinned to one value: a column of a table whose unique key the WHERE pins, or a column the WHERE equates to a value".into());
@@ -742,6 +739,17 @@ fn at_most_one_in(q: &Query, outer: &[(String, Option<&Query>, usize)], keys: &K
         }
     }
     Err(from.why_not(&determined))
+}
+
+/// What a GROUP BY expression groups by: MySQL reads a whole number as the select list's item at
+/// that position, never as the constant. None for a position past the list or at a wildcard.
+fn grouped_by<'a>(s: &'a Select, g: &'a Expr) -> Option<&'a Expr> {
+    let Expr::Value(v) = g else { return Some(g) };
+    let ast::Value::Number(n, _) = &v.value else { return Some(g) };
+    match s.projection.get(n.parse::<usize>().ok()?.checked_sub(1)?)? {
+        SelectItem::UnnamedExpr(e) | SelectItem::ExprWithAlias { expr: e, .. } => Some(e),
+        _ => None,
+    }
 }
 
 /// Every table a query reads anywhere in its FROM trees, as written, a WITH query's name never.

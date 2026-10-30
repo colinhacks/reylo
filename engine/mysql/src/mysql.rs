@@ -407,7 +407,10 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         }
         _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
-    let never_null = proven.never_null(&raw.columns);
+    let mut never_null = proven.never_null(&raw.columns);
+    for position in flagged_wrongly(parsed.as_ref(), never_null.len()) {
+        never_null[position] = (false, None);
+    }
     // A column of a view may be an expression, which the prepare does not tell from a table's.
     let views: Option<HashSet<String>> = match raw.columns.iter().any(|c| (other_width(c).is_some() || flag_width(c)) && c.org_table.as_ref().is_some_and(|t| !t.is_empty())) {
         true => host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()),
@@ -2015,6 +2018,44 @@ fn cardinality(q: &Query, keys: &Keys) -> (String, Option<String>) {
             Err(why) => ("many".into(), Some(why)),
         },
     }
+}
+
+/// The functions the server flags NOT NULL over NOT NULL arguments that return NULL all the same:
+/// `FROM_DAYS` of a day past 9999-12-31 (warning 1441, "from_days field overflow").
+const FLAGGED_WRONGLY: &[&str] = &["from_days"];
+
+/// Whether `text` calls one of [`FLAGGED_WRONGLY`].
+fn calls_flagged_wrongly(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    FLAGGED_WRONGLY.iter().any(|name| {
+        lower.match_indices(name).any(|(at, _)| {
+            let before = lower[..at].chars().next_back().is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '`'));
+            before && lower[at + name.len()..].trim_start().starts_with('(')
+        })
+    })
+}
+
+/// The positions of the result columns whose NOT NULL the server's flags, and every proof read
+/// from them, cannot show, since a call of [`FLAGGED_WRONGLY`] may make them: a select list item
+/// that makes one, or every column where one stands elsewhere (a derived table, a WITH query, a
+/// subquery, a set operation) or the list has a wildcard.
+fn flagged_wrongly(parsed: Option<&Statement>, columns: usize) -> Vec<usize> {
+    let Some(Statement::Query(q)) = parsed else { return Vec::new() };
+    if !calls_flagged_wrongly(&q.to_string()) {
+        return Vec::new();
+    }
+    let items = match select_of(q) {
+        Ok(s) if s.projection.len() == columns && s.projection.iter().all(|i| matches!(i, SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. })) => &s.projection,
+        _ => return (0..columns).collect(),
+    };
+    let mut rest = q.clone();
+    if let SetExpr::Select(s) = rest.body.as_mut() {
+        s.projection.clear();
+    }
+    if calls_flagged_wrongly(&rest.to_string()) {
+        return (0..columns).collect();
+    }
+    items.iter().enumerate().filter(|(_, item)| calls_flagged_wrongly(&item.to_string())).map(|(i, _)| i).collect()
 }
 
 pub(crate) fn select_of(q: &Query) -> Result<&Select, String> {

@@ -25,6 +25,7 @@ count_nested.sql: one () -> { n: int8 }
 count_parenthesized.sql: many () -> { n: int8 }
 count_star.sql: one () -> { n: int8 }
 count_where.sql: one (pattern: text) -> { n: int8, oldest: int4|int8? }
+group_by_position.sql: many () -> { name: text, n: int8 }
 json_table.sql: many () -> { a: int4? }
 key_alias_is_other_table.sql: maybeOne (id: int4) -> { id: int4 }
 key_bare_in_join_group.sql: maybeOne (email: text) -> { email: text, n: int8 }

@@ -7,7 +7,7 @@ casts.sql: many () -> { a: text?, b: int8, c: int8, d: numeric, e: float8, f: in
 columns.sql: many () -> { id: int4, n: int4, big: int8, u: int8, small: int2, price: numeric, ratio: float8, name: text, body: text, raw: bytea, day: date, at: timestamp, ts: timestamp, tm: time, y: int2, kind: text, tags: text, doc: json, bits: bytea, flag: bool, maybe_n: int4?, maybe_name: text?, maybe_day: date?, maybe_doc: json? }
 conditionals.sql: many () -> { a: text, b: text, c: int8, d: text?, e: text?, f: text?, g: text, h: text, i: text, j: text?, k: text, l: int4|int8?, m: int4|int8?, o: int8, p: int4|int8?, q: text, r: int4|int8, s: text, u: text?, v: int8?, w: int8, x: int8?, z: text?, aa: date, ab: json, ac: int8|int4, ad: unknown?, ae: timestamp, af: int8|int4?, ag: text, ah: int4|int8? }
 cross_join.sql: many () -> { id: int4, label: text }
-date_functions.sql: many () -> { a: date?, b: time?, c: int2?, d: int8|int4?, e: int8|int4?, f: int8|int4?, g: int8|int4?, h: int8|int4?, i: int8|int4?, j: int8|int4?, k: int8|int4?, l: int8|int4?, m: int8|int4?, o: text?, p: text?, q: date?, r: int8|int4?, s: date, u: int8, v: int8, w: timestamp?, x: date?, z: timestamp?, aa: timestamp?, ab: int8|int4?, ac: time?, ad: int8?, ae: text?, af: text?, ag: date?, ah: date?, ai: time?, aj: time?, ak: int8?, al: time?, am: timestamp?, an: int8|int4?, ao: int8?, ap: int8|int4?, aq: int8?, at2: timestamp?, au: timestamp?, av: timestamp?, aw: date?, ax: int8|int4, ay: int8|int4?, az: int8, ba: int8, bb: int8|int4, bc: int8, bd: bool, be: bool }
+date_functions.sql: many () -> { a: date?, b: time?, c: int2?, d: int8|int4?, e: int8|int4?, f: int8|int4?, g: int8|int4?, h: int8|int4?, i: int8|int4?, j: int8|int4?, k: int8|int4?, l: int8|int4?, m: int8|int4?, o: text?, p: text?, q: date?, r: int8|int4?, s: date?, u: int8, v: int8, w: timestamp?, x: date?, z: timestamp?, aa: timestamp?, ab: int8|int4?, ac: time?, ad: int8?, ae: text?, af: text?, ag: date?, ah: date?, ai: time?, aj: time?, ak: int8?, al: time?, am: timestamp?, an: int8|int4?, ao: int8?, ap: int8|int4?, aq: int8?, at2: timestamp?, au: timestamp?, av: timestamp?, aw: date?, ax: int8|int4, ay: int8|int4?, az: int8, ba: int8, bb: int8|int4, bc: int8, bd: bool, be: bool }
 decimal_and_float.sql: many () -> { a: numeric, b: numeric, c: numeric, d: numeric, e: int8, f: int8, g: numeric, h: float8, i: float8, j: float8, k: float8, l: numeric, m: numeric, o: float8, p: numeric, q: int8, r: text? }
 derived_aggregate.sql: maybeOne () -> { total: numeric?, top: int4|int8? }
 derived_table.sql: many () -> { name: text, maybe_name: text?, up: text?, c: text }
@@ -16,6 +16,8 @@ division.sql: many () -> { a: numeric?, b: numeric?, c: int8?, d: int8?, e: int8
 except.sql: many () -> { a: int4|int8 }
 float_overflow.sql: many () -> { a: float8, b: float8, c: float8, d: float8?, e: float8? }
 for_update.sql: maybeOne (id: int4) -> { id: int4, name: text }
+from_days.sql: many () -> { id: int4, d: date?, far: date? }
+from_days_derived.sql: many () -> { id: int4?, d: date? }
 generated_always.sql: many () -> { id: int4, n: int8, name: text, shout: text?, maybe_name: text? }
 group_by_expression.sql: many () -> { shout: text?, c: int8 }
 having.sql: many () -> { n: int4, c: int8 }
