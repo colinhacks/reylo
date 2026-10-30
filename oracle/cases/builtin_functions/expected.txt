@@ -3,6 +3,7 @@ enum_labels.sql: many () -> { moods: ('sad' | 'ok' | 'happy'!)[], each: 'sad' | 
 enum_labels_from.sql: many () -> { label: 'sad' | 'ok' | 'happy' }
 grouped.sql: many () -> { kind: text, some_n: int4, some_note: text?, median: float8, middle: timestamptz, usual: 'sad' | 'ok' | 'happy', filtered: float8? }
 grouping_key_by_name.sql: many () -> { one: int4?, label: text, n: int8 }
+grouping_key_by_position.sql: many () -> { kind: text?, n: int8, tagged: text }
 grouping_key_set_returning.sql: many () -> { g: int4?, n: int8 }
 grouping_sets.sql: many () -> { kind: text?, rolled: int4, n: int8 }
 predicates.sql: many () -> { listed: bool, unlisted: bool, with_null: bool?, of_null: bool?, between: bool, outside: bool, any_listed: bool, all_listed: bool, any_null: bool?, any_column: bool?, json: bool, note_json: bool? }

@@ -762,8 +762,11 @@ impl GroupingKeys {
                 }
                 return;
             }
+            // A bare integer in a grouping set is a position in the select list, never a constant
+            // the other columns could hold.
             if let Some(k) = v.pointer("/node/AConst/val/Ival/ival").and_then(|k| k.as_u64()) {
                 keys.positions.push(k as usize);
+                return;
             }
             if let Some(fields) = v.pointer("/node/ColumnRef/fields").and_then(|f| f.as_array()) {
                 if let [only] = fields.as_slice() {
