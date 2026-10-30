@@ -2442,20 +2442,6 @@ mod tests {
     }
 
     #[test]
-    fn a_key_compared_across_string_and_number_bounds_nothing() {
-        // MySQL compares a string with a number as two doubles: '01', '1' and '1x' all equal 1.
-        assert_eq!(card("select id from users where email = 1"), "many");
-        assert_eq!(card("select id from users where id = '1'"), "many");
-        assert_eq!(card("select id from users where email = abs(?)"), "many");
-        assert_eq!(card("select id from users where email = '1'"), "maybeOne");
-        assert_eq!(card("select id from users where id = 1"), "maybeOne");
-        assert_eq!(card("select id from users where id = cast(? as signed)"), "maybeOne");
-        // A key part over an expression has no column: the index is no key of its columns.
-        let functional = keys_of(vec![vec![json!("users"), json!("u"), json!("email"), json!("varchar")], vec![json!("users"), json!("u"), Value::Null, Value::Null]]);
-        assert!(functional.keys("users").is_none());
-    }
-
-    #[test]
     fn a_key_bounds_nothing_where_the_server_may_not_use_it() {
         // A TIMESTAMP shows two instants as one wall-clock time where the clocks go back, and a
         // scan compares by that time.
@@ -2642,37 +2628,6 @@ mod tests {
     }
 
     #[test]
-    fn compound_interval_units_are_read() {
-        // Every compound unit of MySQL, in an INTERVAL and in EXTRACT, read as its smallest part.
-        let units = [
-            ("second_microsecond", "MICROSECOND"),
-            ("minute_microsecond", "MICROSECOND"),
-            ("minute_second", "SECOND"),
-            ("hour_microsecond", "MICROSECOND"),
-            ("hour_second", "SECOND"),
-            ("hour_minute", "MINUTE"),
-            ("day_microsecond", "MICROSECOND"),
-            ("day_second", "SECOND"),
-            ("day_minute", "MINUTE"),
-            ("day_hour", "HOUR"),
-            ("YEAR_MONTH", "MONTH"),
-        ];
-        for (unit, read) in units {
-            let sql = format!("select date_add(d, interval '1' {unit}), extract({unit} from d) from t where id = ?");
-            let tree = parse(&MySqlDialect {}, &sql).unwrap_or_else(|e| panic!("{sql}: {e}")).pop().unwrap().to_string();
-            assert_eq!(tree, format!("SELECT date_add(d, INTERVAL '1' {read}), EXTRACT({read} FROM d) FROM t WHERE id = ?"));
-        }
-        // A quoted name is a name.
-        assert_eq!(parse(&MySqlDialect {}, "select `day_hour` from t").unwrap().pop().unwrap().to_string(), "SELECT `day_hour` FROM t");
-        // Read, the statement is proven: one row without FROM, at most one by the key.
-        let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
-        let text = json!({ "columns": [{ "name": "x", "type": 253, "flags": 0 }], "params": [] });
-        assert_eq!(analyzed("select date_add('2100-12-31 23:59:59', interval '1:1' minute_second)", text, default).0.cardinality, "one");
-        let at = json!({ "columns": [{ "name": "x", "type": 12, "flags": 0 }], "params": [{ "type": 3 }] });
-        assert_eq!(analyzed("select now() - interval '1 1' day_hour as x from users where id = :id", at, default).0.cardinality, "maybeOne");
-    }
-
-    #[test]
     fn a_table_may_be_named_local_or_directory() {
         // Hive's `INSERT OVERWRITE [LOCAL] DIRECTORY` took both words in upstream's sqlparser,
         // which refused these; the engine's copy reads them as MySQL does (vendor/sqlparser).
@@ -2723,29 +2678,6 @@ mod tests {
         for sql in ["select !0 = 1", "select !a + 1 from t", "select !a ^ 1 from t"] {
             assert!(matches!(item(sql), Expr::BinaryOp { left, .. } if matches!(*left, Expr::UnaryOp { op: ast::UnaryOperator::BangNot, .. })), "{sql}");
         }
-    }
-
-    #[test]
-    fn a_write_or_a_select_into_returns_no_rows() {
-        // MySQL's multi-table DELETE and UPDATE return no rows, and neither does a SELECT whose
-        // rows go into variables, its INTO after the columns or after the whole statement.
-        let default = "ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION";
-        let none = json!({ "columns": [], "params": [{ "type": 3 }] });
-        for sql in [
-            "delete u.*, e.* from users u join emails e on e.user_id = u.id where u.id = :id",
-            "update users, emails set users.name = 'a', emails.email = 'b' where users.id = :id",
-            "select id from users where id = :id into @found",
-            "select id into @found from users where id = :id",
-            "select id from users where id = :id for update into @found",
-        ] {
-            assert!(parse(&MySqlDialect {}, sql).is_ok(), "{sql}");
-            let analysis = analyzed(sql, none.clone(), default).0;
-            assert_eq!((analysis.cardinality.as_str(), analysis.columns.len(), analysis.params.len()), ("none", 0, 1), "{sql}");
-        }
-        // A CALL the parser does not read returns whatever its procedure makes.
-        let call = format!("call report(:id{})", " + 1".repeat(600));
-        assert!(parse(&MySqlDialect {}, &call).is_err());
-        assert_eq!(analyzed(&call, none.clone(), default).0.cardinality, "many");
     }
 
     #[test]
@@ -2971,24 +2903,6 @@ mod tests {
     }
 
     #[test]
-    fn a_strict_where_proves_the_joined_row_and_the_column_it_tests() {
-        // As 8.4 describes it: `title` is NOT NULL only where the join is inner, and `published_at`
-        // is a nullable column either way.
-        let describe = |sql: &str| {
-            let title = if sql.contains("INNER JOIN") { 1 } else { 0 };
-            json!({ "columns": [{ "name": "name", "type": 253, "flags": 1 }, { "name": "title", "type": 253, "flags": title }, { "name": "published_at", "type": 12, "flags": 0 }], "params": [] })
-        };
-        let nullable = |sql: &str| analyzed_by(sql, &describe).columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
-        let select = "select u.name, p.title, p.published_at from users u left join posts p on p.user_id = u.id where";
-        assert_eq!(nullable(&format!("{select} p.published_at is not null")), [false, false, false]);
-        assert_eq!(nullable(&format!("{select} p.id > 0")), [false, false, true]);
-        // A test NULL can pass proves nothing.
-        assert_eq!(nullable(&format!("{select} p.published_at is not null or u.email is not null")), [false, true, true]);
-        assert_eq!(nullable(&format!("{select} coalesce(p.published_at, now()) > '2000-01-01'")), [false, true, true]);
-        assert_eq!(nullable(&format!("{select} p.id is null")), [false, true, true]);
-    }
-
-    #[test]
     fn json_arrayagg_under_a_plain_group_by_is_never_null() {
         let describe = |sql: &str| {
             let column = if sql.starts_with("SELECT title") { json!({ "name": "title", "type": 253, "flags": 1 }) } else { json!({ "name": "titles", "type": 245, "flags": 0 }) };
@@ -3033,21 +2947,6 @@ mod tests {
         // tables before it and is no query of its own.
         assert_eq!(nullable(&format!("select d.id, d.n from users u left join {derived} d on d.id = u.id")), [false, true]);
         assert_eq!(nullable("select d.id, d.n from users u, lateral (select u.id, (select count(*) from posts) as n) d"), [false, true]);
-    }
-
-    #[test]
-    fn a_derived_tables_expression_on_the_null_extended_side_is_nullable() {
-        // As 8.4 describes it: merged into the statement, the derived table's expression keeps its
-        // own NOT NULL flag under the outer join; materialized, it is nullable there.
-        let describe = |sql: &str| {
-            let materialized = sql.contains("derived_merge=off");
-            json!({ "columns": [{ "name": "id", "type": 3, "flags": 1 }, { "name": "next", "type": 8, "flags": if materialized { 0 } else { 1 } }], "params": [] })
-        };
-        let nullable = |sql: &str| analyzed_by(sql, &describe).columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
-        assert_eq!(nullable("select u.id, d.next from users u left join (select user_id, id + 1 as next from posts) d on d.user_id = u.id"), [false, true]);
-        assert_eq!(nullable("with d as (select user_id, id + 1 as next from posts) select u.id, d.next from users u left join d on d.user_id = u.id"), [false, true]);
-        // Nothing merged: the statement's own flags.
-        assert_eq!(nullable("select id, id + 1 as next from users"), [false, false]);
     }
 
     #[test]

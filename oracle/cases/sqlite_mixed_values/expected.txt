@@ -1,12 +1,21 @@
 case_json.sql: many () -> { v: unknown? }
+case_no_else.sql: many () -> { v: integer? }
+coalesce_json.sql: many () -> { v: unknown? }
+coalesce_text.sql: many () -> { v: text }
 coalesce_untyped.sql: many () -> { v: unknown? }
 compound_integers.sql: many () -> { v: integer }
 compound_json.sql: many () -> { v: unknown? }
+compound_null.sql: many () -> { v: integer? }
+compound_parameter.sql: many (p: integer) -> { v: integer }
 compound_text.sql: many () -> { v: unknown }
+compound_text_first.sql: many () -> { v: unknown }
 compound_untyped.sql: many () -> { v: unknown? }
+iif_json.sql: many () -> { v: unknown? }
 iif_untyped.sql: many () -> { v: unknown? }
 lag_blob_default.sql: many () -> { v: unknown? }
 lag_integer_default.sql: many () -> { v: integer? }
+lag_no_default.sql: many () -> { v: integer? }
+lag_null_default.sql: many () -> { v: integer? }
 lag_parameter_default.sql: many (p: integer) -> { v: integer? }
 lag_parameter_value.sql: many (p: integer) -> { v: integer? }
 lead_text_default.sql: many () -> { v: unknown? }

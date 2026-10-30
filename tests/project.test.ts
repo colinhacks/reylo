@@ -3,13 +3,12 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { engine } from "../src/engine.ts";
 import { findProjectFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
+import { ROOT } from "./helpers.ts";
 
 // Any engine reads the project file; the repository's own install has every one.
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 // A project tree: `files` maps a path under a fresh directory to its text.
 function tree(files: Record<string, string>): string {

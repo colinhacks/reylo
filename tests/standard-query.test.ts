@@ -1,24 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { defineQuery } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { ParameterError } from "../src/values.ts";
+import { DRIVERS, PG, pgLive, INDEX } from "./helpers.ts";
 
 // Every import is a Standard Query: `~standard.query` holds the statement, its database, and the
 // two mappings a driver calls, `encode` (the input to the values it binds, each in the database's
 // raw form) and `decode` (the rows it read raw to the output), with `.run()`'s input and output.
 
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "pg")) ? "lab/drivers is not installed" : false;
 
 const users = defineQuery<{ id: number; tags: number[]; doc: unknown; bytes: Uint8Array; flag: boolean }, { id: number; at: string; big: bigint }, "many", "postgres">({
   dialect: "postgres",

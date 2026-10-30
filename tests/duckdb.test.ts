@@ -5,19 +5,17 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { Session, type Outcome } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { defineQuery } from "../src/index.ts";
 import { duckdbInterval } from "../src/decode-duckdb.ts";
 import { dialectOf, duckdbPath } from "../src/project.ts";
+import { declarations, DRIVERS, INDEX, closeSessions } from "./helpers.ts";
 
 // DuckDB runs inside the app, so a project's statements are typed on its own @duckdb/node-api,
 // the labs' (lab/drivers), linked into each project as an install would put it.
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
 const skip = existsSync(join(DRIVERS, "@duckdb", "node-api")) ? false : "lab/drivers is not installed (no @duckdb/node-api)";
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
-const MAPPER = fileURLToPath(new URL("../src/mapper.ts", import.meta.url));
 
 type Api = {
   DuckDBInstance: { create(path: string): Promise<{ connect(): Promise<Connection>; closeSync(): void }> };
@@ -244,17 +242,13 @@ async function built(root: string, name: string, raw: string) {
   return (await import(pathToFileURL(out).href)).default as { run(client: unknown, params?: unknown): Promise<any>; try(client: unknown, params?: unknown): Promise<any> };
 }
 
-const closeAll = async () => {
-  for (const session of Session.opened()) await session.close();
-};
-
 const VALUES = `create table vals (id integer primary key, tags varchar[], meta struct(host varchar, pid integer), h hugeint, d decimal(38,2), ts timestamptz, t timestamp, dt date, i interval, b blob, j json, m map(varchar, integer), u union(num integer, str varchar), big bigint, f double, ok boolean, uid uuid, tm time, arr float[3], m2 mood);`;
 
 test("DuckDB: .run() returns each type's one representation, and a row goes back in as it came out", { skip }, async () => {
   const root = await project(`${SCHEMA}\n${VALUES}`);
   const insert = await built(root, "insert", "insert into vals values (:id, :tags, :meta, :h, :d, :ts, :t, :dt, :i, :b, :j, :m, :u, :big, :f, :ok, :uid, :tm, :arr, :m2) returning *");
   const get = await built(root, "get", "select * from vals where id = :id");
-  await closeAll();
+  await closeSessions();
   const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c = await db.connect();
   try {
@@ -316,7 +310,7 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   db0.closeSync();
   const read = await built(root, "read", "select * from t order by k");
   const writes = await Promise.all(names.map((n, i) => built(root, `write_${i}`, `insert into ${q(`w_${n}`)} (k, ${q(n)}) values (:k, :v)`)));
-  await closeAll();
+  await closeSessions();
   const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c = await db.connect();
   try {
@@ -341,7 +335,7 @@ test("DuckDB: .run() refuses a fraction for an integer, and .try() reads DuckDB'
   const root = await project();
   const get = await built(root, "get", "select id, msg from logs where id = :id");
   const insert = await built(root, "insert", "insert into teams (id, name) values (:id, :name)");
-  await closeAll();
+  await closeSessions();
   const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c = await db.connect();
   try {
@@ -400,45 +394,3 @@ test("DuckDB: the module declares the types .run() returns", { skip }, async () 
   const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
   assert.match(line, /^declare const query: Query<\{ id: number \}, \{ id: number; tags: \(string \| null\)\[\] \| null; meta: \{ host: string \| null; pid: number \| null \} \| null; h: bigint \| null; d: string \| null; ts: string \| null; b: Uint8Array \| null; j: unknown \| null; m: \{ key: string; value: number \| null \}\[\] \| null; u: \{ tag: "num"; value: number \| null \} \| \{ tag: "str"; value: string \| null \} \| null; m2: "happy" \| "sad" \| null \}, "maybeOne", "duckdb", QueryError> & /, line);
 });
-
-/** The declaration the content mapper writes for each file, through its own JSON-RPC process, as the type check runs it. */
-async function declarations(root: string, files: Record<string, string>): Promise<Record<string, string>> {
-  const child = spawn(process.execPath, [MAPPER], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
-  const pending = new Map<number, (result: unknown) => void>();
-  let buffer = Buffer.alloc(0);
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      pending.get(message.id)?.(message.error ? Promise.reject(new Error(message.error.message)) : message.result);
-    }
-  });
-  let id = 0;
-  const call = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }), "utf8");
-      child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-      child.stdin.write(body);
-    });
-  try {
-    await call("initialize", { protocolVersion: 1 });
-    await call("openProject", { projectHandle: "p", configFileName: join(root, "tsconfig.json"), options: {} });
-    const out: Record<string, string> = {};
-    for (const [name, content] of Object.entries(files)) {
-      const result = await call("transform", { fileName: join(root, name), content, projectHandle: "p" });
-      assert.deepEqual(result.diagnostics, [], `${name}: ${JSON.stringify(result.diagnostics)}`);
-      out[name] = result.text;
-    }
-    await call("closeProject", { projectHandle: "p" });
-    return out;
-  } finally {
-    child.stdin.end();
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
-}

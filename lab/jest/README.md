@@ -16,22 +16,9 @@ Watchman is broken on the machine the lab was written on, and Jest then exits 0 
 
 ## The preload under Jest
 
-The preload reaches every Jest process, and Jest never asks Node's loader for a test's modules. The tests in `probe/` load `query.sql` twice: once through Jest's `require`, and once through Node's own loader (`require("node:module")._load`, which Jest's wrapper copies from Node). Each run appends one line per test file to `probe.jsonl`.
+The preload reaches every Jest process, and Jest never asks Node's loader for a test's modules, so no preload types a test's `.sql` import (`tests/jest.test.ts` checks it).
 
-```sh
-NODE_OPTIONS="--import reylo/register" node node_modules/jest/bin/jest.js --no-watchman probe   # two workers
-node --import reylo/register node_modules/jest/bin/jest.js --no-watchman --runInBand probe     # the Jest process itself
-node node_modules/jest/bin/jest.js --no-watchman probe                                        # control: no preload
-```
-
-| Run | Process | Node's loader | Jest's `require` |
-| --- | --- | --- | --- |
-| `NODE_OPTIONS` preload | worker 1 and worker 2 (`processChild.js`) | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| `node --import` preload, `--runInBand` | `jest.js` | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| `node --import` preload, workers | workers inherit `execArgv` | loads, `run` is a function | `SyntaxError: Unexpected identifier 'id'` |
-| no preload (control) | workers | `SyntaxError` | `SyntaxError` |
-
-The same SyntaxError ends `query.test.cjs` and `query.test.mjs` under every preload form: `NODE_OPTIONS`, `node --import`, `nubx jest`, workers, `--runInBand`, `--experimental-vm-modules`, and `extensionsToTreatAsEsm: [".sql"]`. The cause is in `jest-runtime/build/index.js` (30.5.2):
+A `SyntaxError: Unexpected identifier 'id'` ends `query.test.cjs` and `query.test.mjs` under every preload form: `NODE_OPTIONS`, `node --import`, `nubx jest`, workers, `--runInBand`, `--experimental-vm-modules`, and `extensionsToTreatAsEsm: [".sql"]`. The cause is in `jest-runtime/build/index.js` (30.5.2):
 
 - A CommonJS module is read with `fs.readFileSync` (`FileCache.readFile`), passed through the `transform` entries, and compiled with `vm.compileFunction` in the test's context (`ModuleExecutor.exec` and `compile`). Node's `require` is never called.
 - An ES module is built as `new vm.SourceTextModule(code, { context })` from the same transform output (`EsmLoader`). Node's ESM loader is never called either.

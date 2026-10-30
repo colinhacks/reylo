@@ -1,25 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { transform, DRIVERS, PG, MYSQL, pgLive, mysqlLive } from "./helpers.ts";
 
 // A parameter nothing in the statement types is error reylo12 in the type check unless the project
 // file says `strict_params: false`. The content
 // mapper runs as the type check runs it, through its own JSON-RPC process. Postgres and MySQL run
 // on throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each in a database of its own.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const MAPPER = fileURLToPath(new URL("../src/mapper.ts", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
-
-type Diagnostic = { messageText: string; start: number; length: number; code: number };
 
 function project(url: string, reylo: string | undefined, driver?: string, name = ".reylo.yaml"): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-strict-"));
@@ -31,47 +22,6 @@ function project(url: string, reylo: string | undefined, driver?: string, name =
     symlinkSync(join(DRIVERS, driver), join(root, "node_modules", driver));
   }
   return root;
-}
-
-/** What the content mapper answers for each file: its declaration and its diagnostics. */
-async function transform(root: string, files: Record<string, string>): Promise<Record<string, { text: string; diagnostics: Diagnostic[] }>> {
-  const child = spawn(process.execPath, [MAPPER], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
-  const pending = new Map<number, (result: unknown) => void>();
-  let buffer = Buffer.alloc(0);
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      pending.get(message.id)?.(message.error ? Promise.reject(new Error(message.error.message)) : message.result);
-    }
-  });
-  let id = 0;
-  const call = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }), "utf8");
-      child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-      child.stdin.write(body);
-    });
-  try {
-    await call("initialize", { protocolVersion: 1 });
-    await call("openProject", { projectHandle: "p", configFileName: join(root, "tsconfig.json"), options: {} });
-    const out: Record<string, { text: string; diagnostics: Diagnostic[] }> = {};
-    for (const [name, content] of Object.entries(files)) {
-      const result = await call("transform", { fileName: join(root, name), content, projectHandle: "p" });
-      out[name] = { text: result.text, diagnostics: result.diagnostics };
-    }
-    await call("closeProject", { projectHandle: "p" });
-    return out;
-  } finally {
-    child.stdin.end();
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
 }
 
 const message = (written: string, file = ".reylo.yaml") => `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${file}.`;

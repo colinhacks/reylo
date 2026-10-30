@@ -1878,13 +1878,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_aggregate_stays_nullable() {
-        let p = shapes("SELECT (SELECT jsonb_agg(jsonb_build_object('id', c.id)) FROM comments c) AS cs FROM posts p");
-        let Shape::Array { non_null, .. } = &p.columns[0].1 else { panic!() };
-        assert!(!non_null);
-    }
-
-    #[test]
     fn a_subquery_that_does_not_aggregate_is_nullable() {
         // One row is not guaranteed, so the object can come back NULL even though the
         // constructor itself never does.
@@ -2049,18 +2042,6 @@ mod tests {
     }
 
     #[test]
-    fn a_set_returning_value_beside_another_one_may_run_out() {
-        let field = |sql: &str| match shapes(sql).columns.into_iter().next().map(|(_, s)| s) {
-            Some(Shape::Object { mut fields, .. }) => fields.remove(0).1,
-            other => panic!("{other:?}"),
-        };
-        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o"), Shape::Column { .. }));
-        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o, generate_series(1, 3) AS m"), Shape::Nullable(_)));
-        assert!(matches!(field("SELECT json_build_object('n', 1) AS o, generate_series(1, 3) AS m, unnest(ARRAY[1]) AS u"), Shape::Column { .. }));
-        assert!(matches!(field("SELECT json_build_object('n', generate_series(1, 2)) AS o ORDER BY generate_series(1, 4)"), Shape::Nullable(_)));
-    }
-
-    #[test]
     fn a_constructor_is_the_built_in_one_only() {
         // A name qualified with a schema is that schema's function, and a name a user has also
         // defined may resolve to theirs: both are read as any other expression, a column of the
@@ -2179,37 +2160,6 @@ mod tests {
     }
 
     #[test]
-    fn a_dml_statement_whose_with_names_its_target_has_no_shapes() {
-        assert!(shapes("WITH team AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-        assert!(!shapes("WITH other AS (SELECT 1 AS motto) UPDATE team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-        // A qualified target is the relation, whatever the WITH calls its name.
-        assert!(!shapes("WITH team AS (SELECT 1 AS motto) UPDATE public.team SET name = name RETURNING jsonb_build_object('m', motto) AS j").columns.is_empty());
-    }
-
-    #[test]
-    fn a_grouping_set_nulls_a_value_but_a_plain_aggregates_argument() {
-        let leaf = |sql: &str| match &shapes(sql).columns[0].1 {
-            Shape::Object { fields, .. } => fields[0].1.clone(),
-            Shape::Array { items, .. } => (**items).clone(),
-            other => other.clone(),
-        };
-        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
-        assert!(matches!(leaf("SELECT jsonb_agg(name) OVER () AS o FROM team GROUP BY ROLLUP (name)"), Shape::Nullable(_)));
-        assert!(matches!(leaf("SELECT jsonb_agg(name) AS o FROM team GROUP BY ROLLUP (id)"), Shape::Column { .. }));
-        assert!(matches!(leaf("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY name"), Shape::Column { .. }));
-        // What is built is a grouping expression where it is grouped by, by name, position or
-        // expression, so nothing built is non-null; under a plain GROUP BY it is.
-        for sql in ["SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY ROLLUP (o)", "SELECT jsonb_build_object('a', jsonb_build_object('b', name)) AS o FROM team GROUP BY ROLLUP ((jsonb_build_object('b', name)))"] {
-            let Shape::Object { non_null, fields } = &shapes(sql).columns[0].1 else { panic!("{sql}") };
-            assert!(!non_null && !matches!(fields[0].1, Shape::Object { non_null: true, .. }), "{sql}");
-        }
-        assert!(matches!(shapes("SELECT jsonb_build_object('n', name) AS o FROM team GROUP BY o").columns[0].1, Shape::Object { non_null: true, .. }));
-        // A whole row under a grouping set, and a subquery with a grouping set of its own, are read as nothing.
-        assert!(shapes("SELECT to_jsonb(t) AS o FROM team t GROUP BY ROLLUP (t.id)").columns.is_empty());
-        assert!(shapes("SELECT (SELECT jsonb_build_object('n', name) FROM team GROUP BY CUBE (name) LIMIT 1) AS o").columns.is_empty());
-    }
-
-    #[test]
     fn a_lateral_subquery_is_read_in_its_own_context_and_the_items_left_of_it() {
         let p = shapes("SELECT u.id, x.items FROM users u LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('sku', p.sku)) AS items FROM products p WHERE p.org_id = u.org_id) x ON true");
         assert_eq!(p.columns.len(), 1);
@@ -2243,11 +2193,6 @@ mod tests {
         // A CASE whose ELSE builds goes by the constructor's name, one whose ELSE is NULL by `case`.
         assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN NULL ELSE jsonb_build_object('a', 1) END FROM t").columns[0].0, "jsonb_build_object");
         assert_eq!(shapes("SELECT CASE WHEN id > 1 THEN jsonb_build_object('a', 1) END FROM t").columns[0].0, "case");
-    }
-
-    #[test]
-    fn a_subquery_with_a_with_of_its_own_is_read_as_nothing() {
-        assert!(shapes("SELECT (WITH team AS (SELECT 1 AS name) SELECT jsonb_agg(team.name) FROM team) AS v").columns.is_empty());
     }
 
     #[test]

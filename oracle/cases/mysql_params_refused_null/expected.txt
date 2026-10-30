@@ -1,5 +1,8 @@
 coalesced.sql: none (nickname: text?, email: text?, id: int4) -> {  }
 insert_select.sql: none (id: int4, email: text, nickname: text, note: text?) -> {  }
 insert_values.sql: none (id: int4, email: text, nickname: text) -> {  }
+nullable_cast_select.sql: none (id: int4, email: text?) -> {  } !! reylo20: The parameter :email is cast to nullable(…), but it is written to accounts.email, which refuses null: cast it to its type alone.
+nullable_cast_update.sql: none (nick: text?, note: text?) -> {  } !! reylo20: The parameter :nick is cast to nullable(…), but it is written to accounts.nickname, which refuses null: cast it to its type alone.
+nullable_cast_values.sql: none (id: int4, email: text?) -> {  } !! reylo20: The parameter :email is cast to nullable(…), but it is written to accounts.email, which refuses null: cast it to its type alone.
 update_set.sql: none (email: text, nickname: text, id: int4) -> {  }
 upsert.sql: none (id: int4, email: text, nickname: text, note: text?) -> {  }

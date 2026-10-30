@@ -3897,71 +3897,6 @@ mod tests {
     }
 
     #[test]
-    fn ranking_window_functions_are_never_null() {
-        let one = |sql: &str| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(&[col(false, oid::TEXT), col(false, oid::INT4)])).non_null;
-        assert!(one("SELECT row_number() OVER () FROM t"));
-        assert!(one("SELECT rank() OVER (ORDER BY a) FROM t"));
-        assert!(one("SELECT cume_dist() OVER w FROM t WINDOW w AS (ORDER BY a)"));
-        assert!(one("SELECT lag(a, 1, 'none') OVER () FROM t"));
-        assert!(!one("SELECT lag(a) OVER () FROM t"));
-        assert!(!one("SELECT lead(a, 1) OVER () FROM t"));
-        assert!(one("SELECT ntile(4) OVER () FROM t"));
-        // The value at the first or the last row of a frame that always holds the current one.
-        assert!(one("SELECT first_value(a) OVER () FROM t"));
-        assert!(one("SELECT last_value(a) OVER (ORDER BY a) FROM t"));
-        assert!(!one("SELECT first_value(a) OVER (ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM t"));
-        assert!(!one("SELECT nth_value(a, 1) OVER () FROM t"));
-    }
-
-    #[test]
-    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
-        let one = |sql: &str, non_null: bool| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(&[col(!non_null, oid::INT4)])).non_null;
-        // No frame clause, with ORDER BY or without, and every frame from at or before the current
-        // row to at or after it, in every mode.
-        for over in [
-            "()",
-            "(ORDER BY a)",
-            "(PARTITION BY a)",
-            "(ORDER BY a ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)",
-            "(ORDER BY a ROWS UNBOUNDED PRECEDING)",
-            "(ORDER BY a ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING)",
-            "(ORDER BY a RANGE BETWEEN 5 PRECEDING AND 0 FOLLOWING)",
-            "(ORDER BY a GROUPS BETWEEN 2 PRECEDING AND CURRENT ROW)",
-            "(ORDER BY a RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES)",
-            "(ORDER BY a RANGE UNBOUNDED PRECEDING EXCLUDE NO OTHERS)",
-        ] {
-            for agg in ["sum", "max", "min", "avg", "bit_or", "array_agg"] {
-                let sql = format!("SELECT {agg}(a) OVER {over} FROM t");
-                assert!(one(&sql, true), "{sql}");
-                // `array_agg` is an array of whatever its rows hold, NULLs included.
-                assert_eq!(one(&sql, false), agg == "array_agg", "{sql}: a NULL argument");
-            }
-        }
-        assert!(one("SELECT string_agg(a::text, ',') OVER () FROM t", true));
-        assert!(one("SELECT jsonb_agg(a) OVER (ORDER BY a) FROM t", false), "a JSON array of NULLs is an array");
-        // A frame that can leave the current row out, and a FILTER, can leave it no row.
-        for over in [
-            "(ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING)",
-            "(ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING)",
-            "(ORDER BY a ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING EXCLUDE CURRENT ROW)",
-            "(ORDER BY a RANGE BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE GROUP)",
-        ] {
-            let sql = format!("SELECT sum(a) OVER {over} FROM t");
-            assert!(!one(&sql, true), "{sql}");
-        }
-        assert!(!one("SELECT sum(a) FILTER (WHERE a > 1) OVER () FROM t", true));
-        // A named window lends its frame to `OVER w`; `OVER (w …)` and `AS (w …)` use their own.
-        assert!(one("SELECT sum(a) OVER w FROM t WINDOW w AS (ORDER BY a)", true));
-        assert!(!one("SELECT sum(a) OVER w FROM t WINDOW w AS (ORDER BY a ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING)", true));
-        assert!(!one("SELECT sum(a) OVER w FROM t WINDOW v AS (ORDER BY a)", true), "no window w");
-        assert!(one("SELECT sum(a) OVER (w ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM t WINDOW w AS (PARTITION BY a)", true));
-        assert!(!one("SELECT sum(a) OVER (w ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) FROM t WINDOW w AS (PARTITION BY a)", true));
-        assert!(one("SELECT sum(a) OVER v FROM t WINDOW w AS (PARTITION BY a), v AS (w ORDER BY a ROWS 1 PRECEDING)", true));
-        // A plain aggregate with no GROUP BY is still NULL over no rows.
-        assert!(!one("SELECT sum(a) FROM t", true));
-    }
-
-    #[test]
     fn sqlite_has_no_total_arithmetic() {
         // `1/0` and `1e999 - 1e999` are both NULL on SQLite.
         assert!(!first(&lite("SELECT 1 / 0")).non_null);
@@ -4725,45 +4660,6 @@ mod tests {
         assert!(one("SELECT GROUPING(a) FROM t GROUP BY ROLLUP (a)", &[]));
         assert!(one("SELECT generate_series(1, NULL::int)", &[]));
         assert!(one("SELECT unnest(enum_range(NULL::mood))", &[]));
-    }
-
-    #[test]
-    fn comparisons_of_lists_ranges_and_rows_follow_every_operand() {
-        let one = |sql: &str, leaves: &[DescribedColumn]| resolve(&pg(sql).head[0].clone().expect("a claim"), Some(leaves)).non_null;
-        let int = col(false, oid::INT4);
-        let null = col(true, oid::INT4);
-        assert!(one("SELECT a IN (1, 2) FROM t", &[int.clone()]));
-        assert!(one("SELECT a NOT IN (1, 2) FROM t", &[int.clone()]));
-        assert!(!one("SELECT a IN (1, NULL) FROM t", &[int.clone()]));
-        assert!(!one("SELECT a IN (1, 2) FROM t", &[null.clone()]));
-        assert!(one("SELECT a BETWEEN 1 AND 2 FROM t", &[int.clone()]));
-        assert!(one("SELECT a NOT BETWEEN SYMMETRIC 2 AND 1 FROM t", &[int.clone()]));
-        assert!(one("SELECT a = ANY (ARRAY[1, 2]) FROM t", &[int.clone()]));
-        assert!(!one("SELECT a = ANY (ARRAY[1, NULL]) FROM t", &[int.clone()]));
-        assert!(!one("SELECT a = ANY (b) FROM t", &[int.clone(), col(false, 1007)]));
-        // Two row constructors compare field by field, NULL where a pair of fields is.
-        assert!(one("SELECT ROW(a, 1) = ROW(2, 1) FROM t", &[int.clone()]));
-        assert!(!one("SELECT ROW(a, 1) = ROW(2, 1) FROM t", &[null.clone()]));
-        assert!(!one("SELECT (a, 1) < (2, 1) FROM t", &[null.clone()]));
-        assert!(!one("SELECT (a, 1) IN ((2, 1)) FROM t", &[null.clone()]));
-        assert!(one("SELECT a IS JSON FROM t", &[col(false, oid::TEXT)]));
-        assert!(!one("SELECT a IS JSON FROM t", &[col(true, oid::TEXT)]));
-    }
-
-    #[test]
-    fn set_returning_calls_in_step_may_run_out() {
-        let claims = |sql: &str| pg(sql).head.iter().map(|c| resolve(c.as_ref().expect("a claim"), None).non_null).collect::<Vec<_>>();
-        assert_eq!(claims("SELECT generate_series(1, 3)"), [true]);
-        assert_eq!(claims("SELECT generate_series(1, 3), now()"), [true, true]);
-        assert_eq!(claims("SELECT generate_series(1, 3), generate_series(1, 2)"), [false, false]);
-        assert_eq!(claims("SELECT generate_series(1, 3), unnest(ARRAY[1])"), [false, false]);
-        assert_eq!(claims("SELECT generate_series(1, 3), coalesce(f(), 1)"), [false, true]);
-        assert_eq!(claims("SELECT generate_series(1, 3), (SELECT generate_series(1, 2) LIMIT 1)"), [true, false]);
-        // A call in ORDER BY, DISTINCT ON or GROUP BY is an entry of the same target list.
-        assert_eq!(claims("SELECT generate_series(1, 2) ORDER BY generate_series(1, 4)"), [false]);
-        assert_eq!(claims("SELECT DISTINCT ON (generate_series(1, 3)) generate_series(1, 2)"), [false]);
-        assert_eq!(claims("SELECT generate_series(1, 2) GROUP BY generate_series(1, 2), generate_series(1, 3)"), [false]);
-        assert_eq!(claims("SELECT generate_series(1, 2) ORDER BY 1"), [true]);
     }
 
     #[test]

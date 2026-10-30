@@ -1,3 +1,8 @@
+collate_binary_integer.sql: many (v: integer) -> { id: integer }
+collate_in_list.sql: many (v: text) -> { id: integer }
+collate_on_column.sql: many (v: text) -> { id: integer }
+collate_on_parameter.sql: many (v: text) -> { id: integer }
+collate_on_parameter_left.sql: many (v: text) -> { id: integer }
 column_side.sql: many (v: text) -> { id: integer }
 in_list.sql: many (v: text) -> { id: integer }
 key_binary.sql: maybeOne (v: text) -> { id: integer }

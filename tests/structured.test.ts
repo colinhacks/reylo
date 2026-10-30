@@ -1,13 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
+import { DRIVERS, PG, MYSQL, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, plain, mysqlDatabase, driver } from "./helpers.ts";
 
 // Structured parameters (wiki/structured-params.md): a parameter cast to `rows(…)` or `row(…)` is
 // typed by its column list and written for its position; the run time checks each value, and a key
@@ -15,12 +16,6 @@ import { sqlModule } from "../src/loader.ts";
 // default, copied from the catalog, and on MySQL the run time writes the insert's column lists for
 // the keys a call carries. Postgres and MySQL run on throwaway servers, never one anyone uses: each test
 // makes a database of its own there and drops it after.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
 function project(driver?: string): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-structured-"));
@@ -55,11 +50,6 @@ async function analysis(root: string, url: string, sql: string) {
 }
 
 // The rows as plain objects: drivers return them with their own prototypes and extra properties.
-const plain = (rows: readonly object[]) => [...rows].map((r) => ({ ...r }));
-
-const closeAll = async () => {
-  for (const session of Session.opened()) await session.close();
-};
 
 test("SQLite: an insert's rows are checked and written in their order, a key left out takes its default, and the column list types the parameter", async () => {
   const root = project();
@@ -91,7 +81,7 @@ test("SQLite: an insert's rows are checked and written in their order, a key lef
     assert.deepEqual(plain(await upsert.run(db, { events: [{ id: 3, ts: "2026-10-22" }] })), [{ id: 3, ts: "2026-10-22" }]);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -129,7 +119,7 @@ test("SQLite: rows that leave out different keys go in one insert, each such row
     assert.deepEqual(plain(await one.run(db, { a: { name: "Ken", role: "owner" } })), [{ role: "owner" }]);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -151,7 +141,7 @@ test("SQLite: elsewhere a rows parameter is a table named by its alias or by the
     const unaliased = await analysis(root, url, "select events.id from :events::rows(id integer not null)");
     assert.deepEqual(unaliased.columns.map((c) => [c.name, c.nullable]), [["id", false]]);
   } finally {
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -178,7 +168,7 @@ test("a column list that does not read is the type check's error at its place, a
       await assert.rejects(sqlModule(file, sql), message);
     }
   } finally {
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -211,20 +201,14 @@ test("SQLite: the column list is checked against the table its insert writes, an
     // The rowid is filled when it is left out, so an INTEGER PRIMARY KEY needs no `?`.
     assert.deepEqual((await analysis(root, url, "insert into events :e::rows(ts text not null)")).diagnostics, []);
   } finally {
-    await closeAll();
+    await closeSessions();
   }
 });
 
 test("Postgres: a rows insert keeps the array's order and exact 64-bit ids, a key left out takes its default, and every driver binds the rows", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_structured_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const sql = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_structured");
+  const url = new URL(own.url);
+  const sql = own.sql;
   const root = project("postgres");
   try {
     await sql.unsafe(`create table events (id int8 primary key, ts timestamptz not null, status text not null default 'new', amount numeric(12,2), meta jsonb);
@@ -238,7 +222,7 @@ test("Postgres: a rows insert keeps the array's order and exact 64-bit ids, a ke
     const q = await built(root, url.href, "insert_events", insert);
     // postgres.js serializes a JSON parameter itself; pg takes its text.
     assert.deepEqual(plain(await q.run(sql, { events: [{ id: 9007199254740993n, ts: "2026-10-20T10:00:00Z", status: "done", amount: "1.50", meta: { a: 1 } }] })), [{ id: 9007199254740993n, status: "done", amount: "1.50" }]);
-    const pg = require("pg");
+    const pg = driver("pg");
     const client = new pg.Client(url.href);
     await client.connect();
     try {
@@ -292,10 +276,8 @@ returning email, name`);
     // Aliases of one type are the type: bigint is int8, timestamp with time zone is timestamptz.
     assert.deepEqual((await analysis(root, url.href, "insert into events :e::rows(id bigint not null, ts timestamp with time zone not null, amount numeric(12, 2))")).diagnostics, []);
   } finally {
-    await closeAll();
-    await sql.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await closeSessions();
+    await own.drop();
   }
 });
 
@@ -374,7 +356,7 @@ test("Postgres: rows that leave out different keys go in one insert, each such r
     const found = (await analysis(root, url.href, view)).diagnostics.filter((x) => x.code === 21);
     assert.deepEqual(found.map((x) => [x.message, view.slice(x.start, x.start + x.length)]), [["accounts_v.email is a column of a view with no default of its own, so a row that leaves `email` out would take the default of the view's table, which Reylo does not copy into the insert: give the view's column a default (ALTER VIEW accounts_v ALTER COLUMN email SET DEFAULT …), or write the member without `?` and with `not null`.", "email"]]);
   } finally {
-    await closeAll();
+    await closeSessions();
     await sql.end();
     await admin.unsafe(`drop database if exists ${name}`);
     await admin.end();
@@ -420,7 +402,7 @@ test("MySQL: a rows insert reads each column with ERROR ON ERROR, keeps a 64-bit
       { id: "9223372036854775807", status: "new", amount: "1.50", meta: { a: 1 } },
     ]);
   } finally {
-    await closeAll();
+    await closeSessions();
     await db.end();
     await admin.query(`drop database if exists ${name}`);
     await admin.end();
@@ -459,7 +441,7 @@ test("an imported query carries its input's and its output's JSON Schema, a stru
     // Standard Schema's converter gives the same.
     assert.deepEqual(q["~standard"].jsonSchema.input({ target: "draft-2020-12" }), q.inputSchema);
   } finally {
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -504,7 +486,7 @@ select value ->> '$.title', value ->> '$.done' from json_each(:todos::json('{
     assert.equal(bad.slice(d.start, d.start + d.length), `'{ "$ref": "#/$defs/x" }'`);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -518,7 +500,7 @@ test("SQLite: a JSON member of a column list is checked against its schema, its 
     await assert.rejects(q.run(db, { events: [{ id: 3, meta: { n: -1 } }] }), /row 1: "meta" at \/n must be at least 0/);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
@@ -538,21 +520,13 @@ test("binary data in a column list travels as hexadecimal text, which each reade
     await assert.rejects(insert.run(db, { files: [{ id: 2, data: "00ff" }] }), /"data" is blob, binary data, a Uint8Array; got "00ff"/);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
   // MySQL decodes it with UNHEX().
   if (mysqlLive) return;
-  const require = createRequire(join(DRIVERS, "mysql2", "package.json"));
-  const mysql = require("mysql2/promise");
-  const server = new URL(MYSQL!);
-  const connect = (database?: string) => mysql.createConnection({ host: server.hostname, port: Number(server.port), user: decodeURIComponent(server.username) || "root", password: decodeURIComponent(server.password), database });
-  const admin = await connect();
-  const name = `reylo_binary_${process.pid}`;
-  await admin.query(`drop database if exists ${name}`);
-  await admin.query(`create database ${name}`);
-  const url = new URL(MYSQL!);
-  url.pathname = `/${name}`;
-  const my = await connect(name);
+  const own = await mysqlDatabase("reylo_binary");
+  const url = new URL(own.url);
+  const my = own.db;
   const mroot = project("mysql2");
   try {
     await my.query("create table files (id bigint primary key, data varbinary(16) not null)");
@@ -563,41 +537,12 @@ test("binary data in a column list travels as hexadecimal text, which each reade
     const read = await built(mroot, url.href, "read_files", "select f.data from :files::rows(data varbinary(16) not null) as f");
     same((await read.run(my, { files: [{ data: bytes }] }))[0].data);
   } finally {
-    await closeAll();
-    await my.end();
-    await admin.query(`drop database if exists ${name}`);
-    await admin.end();
+    await closeSessions();
+    await own.drop();
   }
 });
-
-// A database of its own on a throwaway MySQL-family server, and a mysql2 connection to it as the
-// driver connects by default (collation utf8mb4_unicode_ci).
-async function mysqlDatabase(server: string, prefix: string) {
-  const require = createRequire(join(DRIVERS, "mysql2", "package.json"));
-  const mysql = require("mysql2/promise");
-  const u = new URL(server);
-  const connect = (database?: string) => mysql.createConnection({ host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database });
-  const admin = await connect();
-  const name = `${prefix}_${process.pid}`;
-  await admin.query(`drop database if exists ${name}`);
-  await admin.query(`create database ${name}`);
-  const url = new URL(server);
-  url.pathname = `/${name}`;
-  const db = await connect(name);
-  return {
-    url: url.href,
-    db,
-    rows: async (sql: string) => plain((await db.query(sql))[0]),
-    drop: async () => {
-      await db.end();
-      await admin.query(`drop database if exists ${name}`);
-      await admin.end();
-    },
-  };
-}
-
 test("MySQL: a rows table's text compares with a column of any collation, a literal and a parameter, and FOR UPDATE and LATERAL take it", { skip: mysqlLive }, async () => {
-  const my = await mysqlDatabase(MYSQL!, "reylo_positions");
+  const my = await mysqlDatabase("reylo_positions");
   const root = project("mysql2");
   try {
     // t has the database's collation, u another one; mysql2 connects with utf8mb4_unicode_ci,
@@ -625,13 +570,13 @@ test("MySQL: a rows table's text compares with a column of any collation, a lite
       assert.deepEqual(plain(await q.run(my.db, params)), want, sql);
     }
   } finally {
-    await closeAll();
+    await closeSessions();
     await my.drop();
   }
 });
 
 test("MySQL: an insert's rows take the row alias written after the column list, which ON DUPLICATE KEY UPDATE reads", { skip: mysqlLive }, async () => {
-  const my = await mysqlDatabase(MYSQL!, "reylo_row_alias");
+  const my = await mysqlDatabase("reylo_row_alias");
   const root = project("mysql2");
   try {
     await my.db.query("create table events (id bigint primary key, x varchar(32) not null, n int)");
@@ -642,40 +587,7 @@ test("MySQL: an insert's rows take the row alias written after the column list, 
     await one.run(my.db, { e: { id: 1, x: "A" } });
     assert.deepEqual(await my.rows("select id, x, n from events order by id"), [{ id: 1, x: "A", n: 10 }, { id: 2, x: "B", n: 20 }, { id: 4, x: "d", n: null }]);
   } finally {
-    await closeAll();
-    await my.drop();
-  }
-});
-
-// MariaDB runs on a throwaway server named by REYLO_TEST_MARIADB; without one the test passes
-// having checked nothing, as the binary test does for MySQL. The type check refuses it: its prepare
-// types every parameter NULL and a JSON column LONGTEXT (wiki/dialects.md).
-const MARIADB = process.env.REYLO_TEST_MARIADB;
-
-test("MariaDB: the type check and every build step refuse the server, naming it and its version, and say to point the URL at MySQL", async () => {
-  if (!MARIADB || mysqlLive === "lab/drivers is not installed") return;
-  const my = await mysqlDatabase(MARIADB, "reylo_mariadb");
-  const root = project("mysql2");
-  try {
-    await my.db.query("create table docs (id bigint primary key, meta json)");
-    const [[{ v }]] = await my.db.query("select version() as v");
-    const version = /^\d+(\.\d+)*/.exec(v)![0];
-    const refused = new RegExp(`Cannot type-check against the database at [^ ]+ \\([^)]*\\): it is MariaDB ${version.replaceAll(".", "\\.")}, and Reylo type-checks MySQL statements against MySQL\\. Point the type check's URL at a MySQL server, 8\\.4 or later, with the same schema\\.$`);
-    for (const [name, sql] of [
-      ["plain", "select id from docs where id = ?"],
-      ["insert_docs", `insert into docs :docs::rows(id bigint not null, meta json('{"type": "object"}'))`],
-    ]) await assert.rejects(built(root, my.url, name!, sql!), refused);
-    const session = await Session.open(root, { DATABASE_URL: my.url });
-    try {
-      const outcome = await session.analyze("select id from docs");
-      assert.ok(!outcome.ok);
-      assert.equal(outcome.code, 5);
-      assert.match(outcome.message, refused);
-    } finally {
-      await session.close();
-    }
-  } finally {
-    await closeAll();
+    await closeSessions();
     await my.drop();
   }
 });
@@ -698,29 +610,21 @@ test("an insert takes the table's alias before its rows, and refuses a column li
     await assert.rejects(sqlModule(join(root, "own.sql"), own), /writes the insert's column list itself/);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
 test("Postgres: an insert takes the table's alias before its rows", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_insert_alias_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const sql = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_insert_alias");
+  const url = new URL(own.url);
+  const sql = own.sql;
   const root = project("postgres");
   try {
     await sql.unsafe("create table t (id int8 primary key, x text not null); insert into t values (1, 'a'), (2, 'b')");
     const upsert = await built(root, url.href, "aliased", "insert into t as tt :p::rows(id int8 not null, x text not null) on conflict (id) do update set x = excluded.x where tt.x <> excluded.x returning id, x");
     assert.deepEqual(plain(await upsert.run(sql, { p: [{ id: 2, x: "B" }, { id: 3, x: "c" }] })), [{ id: 2n, x: "B" }, { id: 3n, x: "c" }]);
   } finally {
-    await closeAll();
-    await sql.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await closeSessions();
+    await own.drop();
   }
 });

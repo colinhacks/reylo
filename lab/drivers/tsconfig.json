@@ -1,1 +1,0 @@
-{ "compilerOptions": { "target": "esnext", "module": "nodenext", "lib": ["esnext"], "types": ["node", "bun"], "strict": true, "noEmit": true, "skipLibCheck": true, "allowImportingTsExtensions": true }, "files": ["typecheck.ts"] }

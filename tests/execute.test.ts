@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
+import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
 // driver behaviour each one copies was checked against the real package (lab/driver-matrix).
@@ -378,19 +377,12 @@ test("postgres: Neon's neon() before 1.0 is called with (text, values)", async (
 });
 
 // postgres.js on a throwaway server (REYLO_TEST_PG), in a database of its own; the driver is lab/drivers'.
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 test("postgres.js: a statement with parameters is prepared on its connection and run again from there, unless the client was made with prepare: false", { skip: pgLive }, async () => {
   const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_execute_prepare_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const prepared = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_execute_prepare");
+  const url = new URL(own.url);
+  const prepared = own.sql;
   const unprepared = postgres(url.href, { max: 1, prepare: false, onnotice: () => {} });
   const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select id, name from users where id = :id::int", params: ["id"] };
   const text = "select id, name from users where id = $1::int";
@@ -412,10 +404,8 @@ test("postgres.js: a statement with parameters is prepared on its connection and
     // A transaction runs on one connection of the client, prepared too.
     assert.deepEqual(await prepared.begin(async (tx: never) => (await execute(tx, q, { id: 1 }), statements(tx))), [{ statement: text, runs: "3" }]);
   } finally {
-    await prepared.end();
     await unprepared.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 

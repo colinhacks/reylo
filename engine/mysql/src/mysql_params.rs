@@ -1060,32 +1060,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_parameter_written_whole_to_a_nullable_column_may_be_null() {
-        assert_eq!(nullable("insert into users (name, email) values (:name, :email)"), (vec![("name".into(), false), ("email".into(), true)], true));
-        assert_eq!(may_be_null("update users set email = :email, name = :name where id = :id"), ["email"]);
-        assert_eq!(may_be_null("update users u set u.bio = :bio where u.id = :id"), ["bio"]);
-        // Every row of a VALUES list; a REPLACE as an INSERT; parentheses leave it bare.
-        assert_eq!(may_be_null("insert into users (name, email) values (:n1, :e1), (:n2, :e2)"), ["e1", "e2"]);
-        assert_eq!(may_be_null("replace into users (name, email, bio) values (:name, :email, (:bio))"), ["email", "bio"]);
-        // Without a column list, by position, past the INVISIBLE column, which takes no value.
-        assert_eq!(may_be_null("insert into users values (:id, :name, :email, :bio)"), ["email", "bio"]);
-        // The SET form, ON DUPLICATE KEY UPDATE, and the SELECT that feeds an INSERT.
-        assert_eq!(may_be_null("insert into users set name = :name, email = :email"), ["email"]);
-        assert_eq!(may_be_null("insert into users (name, email) values (:name, :email) on duplicate key update bio = :bio, name = :again"), ["email", "bio"]);
-        assert_eq!(may_be_null("insert into users (name, email) select :name, :email"), ["email"]);
-        assert_eq!(may_be_null("insert into users (name, email, bio) select name, :email, :bio from users"), ["email", "bio"]);
-        // A table of a join, by the name the statement gives it.
-        assert_eq!(may_be_null("update users u join posts p on p.user_id = u.id set u.email = :email, p.title = :title, p.tag = :tag where p.id = :id"), ["email", "tag"]);
-        // A column a CHECK refuses null in: a conjunct tests it IS NOT NULL. One a null passes is nullable.
-        assert_eq!(may_be_null("insert into accounts (id, email, nick, note) values (:id, :email, :nick, :note)"), ["note"]);
-        assert_eq!(may_be_null("update accounts set email = :email, nick = :nick, note = :note where id = :id"), ["note"]);
-        // Not the whole value: the expression it is part of decides what is written.
-        assert_eq!(nullable("update users set email = lower(:email) where id = :id"), (vec![("email".into(), false), ("id".into(), false)], false));
-        // A read asks for no columns.
-        assert_eq!(nullable("select id from users where email = :email"), (vec![("email".into(), false)], false));
-    }
-
-    #[test]
     fn a_cast_parameter_is_its_casts_type_and_takes_no_null() {
         // What a `:name::type` cast compiles to: `CAST(? AS SIGNED)`, `CAST(? AS DECIMAL(…))`,
         // `CAST(? AS JSON)`, and on MariaDB `JSON_COMPACT(?)` for `::json`: written whole to a
@@ -1125,14 +1099,4 @@ mod tests {
         assert_eq!(may_be_null("update users set email = :e::nullable(text), bio = :b::nullable(json('{\"type\": \"object\"}')) where id = :id"), ["e", "b"]);
     }
 
-    #[test]
-    fn a_parameter_cast_to_nullable_and_written_to_a_column_that_refuses_null_is_an_error() {
-        let messages = |sql: &str| analyzed(sql).0.diagnostics.into_iter().map(|d| d.message).collect::<Vec<_>>();
-        assert_eq!(messages("insert into users (name, email) values (:name::nullable(text), :email::nullable(text))"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
-        // Written whole by the one SELECT that feeds the INSERT, as a VALUES item is.
-        assert_eq!(messages("insert into users (name, email) select :name::nullable(text), :email::nullable(text)"), ["The parameter :name is cast to nullable(…), but it is written to users.name, which refuses null: cast it to its type alone."]);
-        // A CHECK that tests the column IS NOT NULL refuses it as NOT NULL does; one that tests
-        // anything else lets NULL pass.
-        assert_eq!(messages("update accounts set nick = :nick::nullable(text), note = :note::nullable(text) where id = 1"), ["The parameter :nick is cast to nullable(…), but it is written to accounts.nick, which refuses null: cast it to its type alone."]);
-    }
 }

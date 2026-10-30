@@ -1,10 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { AnswerCache, engine } from "../src/engine.ts";
+import { DRIVERS, PG, ROOT, postgresDatabase, driver } from "./helpers.ts";
 
 // The engine's catalog queries answer the same rows whatever a user has created: each runs on a
 // database as the analysis of a set of statements asks it, then again once the database holds a
@@ -13,9 +12,6 @@ import { AnswerCache, engine } from "../src/engine.ts";
 // a narrower overload would be the closer match. The structural half of the rule, that each query
 // names only pg_catalog's objects, is engine/postgres/src/catalog_queries.rs.
 
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const live = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 // A schema whose statements ask every catalog query: CHECKs on a column and on a domain, NOT NULL
@@ -186,14 +182,10 @@ type Asked = Map<string, { sql: string; params: unknown[]; rows: unknown[][] }>;
  * dropped after.
  */
 async function withAsked(body: (url: string, asked: Asked, postgres: any) => Promise<void>): Promise<void> {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_catalog_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name} with (force)`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const db = postgres(url.href, { max: 1, onnotice: () => {} });
+  const postgres = driver("postgres");
+  const own = await postgresDatabase("reylo_catalog");
+  const url = new URL(own.url);
+  const db = own.sql;
   try {
     await db.unsafe(SCHEMA);
     // The engine's analysis run here over a connection the engine opened, so that every catalog query
@@ -218,9 +210,7 @@ async function withAsked(body: (url: string, asked: Asked, postgres: any) => Pro
     assert.deepEqual([...kinds].sort(), KINDS.map(([k]) => k).sort());
     await body(url.href, asked, postgres);
   } finally {
-    await db.end();
-    await admin.unsafe(`drop database if exists ${name} with (force)`);
-    await admin.end();
+    await own.drop();
   }
 }
 

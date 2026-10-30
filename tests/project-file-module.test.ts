@@ -5,12 +5,12 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ROOT } from "./helpers.ts";
 
 // The setup lists `.reylo.yaml` and `.reylo.yml` among the content mapper's extensions beside `.sql`,
 // so the project file is the mapper's to type rather than a YAML loader's. Its module declares
 // nothing, and neither an import of it nor a `<name>.reylo.yaml` that `include` takes in is read as a
 // query. The type check runs as a project runs it, over SQLite, so no server is needed.
-const ROOT = join(import.meta.dirname, "..");
 // TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
 const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 

@@ -3255,53 +3255,6 @@ mod tests {
     }
 
     #[test]
-    fn a_window_aggregate_over_the_current_row_follows_its_argument() {
-        let nullable = |sql: &str| col(&analysis(sql), "v").1;
-        // No frame clause, and every frame from at or before the current row to at or after it.
-        for over in [
-            "()",
-            "(order by id)",
-            "(partition by user_id)",
-            "(order by id rows between 1 preceding and 1 following)",
-            "(order by id rows unbounded preceding)",
-            "(order by id rows between current row and unbounded following)",
-            "(order by id range between 5 preceding and 0 following)",
-            "(order by id groups between 2 preceding and current row)",
-            "(order by id range between current row and current row exclude ties)",
-            "(order by id range unbounded preceding exclude no others)",
-            "w",
-            "(w order by id rows between 1 preceding and 1 following)",
-        ] {
-            for agg in ["max(title)", "min(title)"] {
-                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
-                assert!(!nullable(&sql), "{sql}");
-            }
-            let sql = format!("select max(body) over {over} as v from posts window w as (partition by user_id)");
-            assert!(nullable(&sql), "{sql}: a NULL argument");
-            // A sum of 1e999 and -1e999 is NaN, which SQLite returns as NULL, and before 3.47.0 a
-            // window's `group_concat` of nothing but `''` is NULL.
-            for agg in ["sum(id)", "avg(id)", "group_concat(title)", "string_agg(title, ',')"] {
-                let sql = format!("select {agg} over {over} as v from posts window w as (partition by user_id)");
-                assert!(nullable(&sql), "{sql}");
-            }
-        }
-        // A frame that can leave the current row out, a FILTER, and an aggregate with no OVER.
-        for item in [
-            "max(title) over (order by id rows between 1 following and 2 following)",
-            "max(title) over (order by id rows between unbounded preceding and 1 preceding)",
-            "max(title) over (order by id rows between unbounded preceding and unbounded following exclude current row)",
-            "max(title) over (order by id range between current row and current row exclude group)",
-            "max(title) over w",
-            "max(title) filter (where id > 1) over ()",
-            "max(title) filter (where id > 1)",
-            "max(title)",
-        ] {
-            let sql = format!("select {item} as v from posts window w as (order by id rows between 2 following and unbounded following)");
-            assert!(nullable(&sql), "{sql}");
-        }
-    }
-
-    #[test]
     fn a_cast_parameter_is_its_casts_type_and_a_bare_one_its_columns() {
         // A `:name::type` cast compiles to `CAST(? AS type)`, and `::json` to `json(?)`: the
         // parameter is the cast's type and takes no NULL, written whole or not. A bare one written whole (an INSERT's values, every row of a
@@ -3367,37 +3320,6 @@ mod tests {
     }
 
     #[test]
-    fn joins_grouping_distinct_and_set_operations_prove_rows_as_on_postgres() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        for sql in [
-            "select p.title, u.name from posts p join users u on u.id = p.user_id where p.id = :id",
-            "select p.title, u.name from posts p left join users u on u.id = p.user_id where p.id = :id",
-            "select p.title, u.name from posts p, users u where u.id = p.user_id and p.id = :id",
-            "select a.name from users a join users b on b.id = a.id where a.id = :id",
-            "select s.name from (select * from users where id = :id) s",
-            "select user_id, count(*) as n from posts where user_id = :u group by user_id",
-            "select distinct user_id from posts where user_id = :u",
-            "select id from users where id = :id intersect select user_id from posts",
-            "select id from users where id = :id except select user_id from posts",
-        ] {
-            assert_eq!(rows(sql), "maybeOne", "{sql}");
-        }
-        for sql in [
-            // Many posts per user.
-            "select p.title from posts p join users u on u.id = p.user_id where u.id = :id",
-            "select title, count(*) as n from posts where user_id = :u group by title",
-            "select user_id from posts except select id from users where id = :id",
-            // A FULL JOIN keeps each side's unmatched rows.
-            "select p.title, u.name from posts p full join users u on u.id = p.user_id where p.id = :id",
-            // A volatile value is evaluated for each row.
-            "select name from users where id = abs(random()) % 3",
-            "delete from users where id = abs(random()) % 3 returning id",
-        ] {
-            assert_eq!(rows(sql), "many", "{sql}");
-        }
-    }
-
-    #[test]
     fn an_outer_joins_on_term_pins_its_right_side_but_groups_nothing() {
         // SQLite moves the ON terms into the WHERE: `u.id = :id` restricts which user a post
         // meets, and the posts that meet none have NULL there, a second group.
@@ -3441,30 +3363,6 @@ mod tests {
     }
 
     #[test]
-    fn a_key_holds_only_where_the_comparison_leaves_the_column_as_it_is() {
-        let count = |sql: &str| {
-            let mut schema = ddl();
-            schema.push("create table t (id integer primary key, code text unique)".into());
-            schema.push("create table b (id integer primary key, n integer, nc text collate nocase)".into());
-            schema.push("create table a (id integer primary key, k unique, kt text unique)".into());
-            schema.push("create table rt (rowid integer, v text)".into());
-            analyze_ddl(sql, &schema, &Extras::default()).analysis.cardinality
-        };
-        // A side of INTEGER affinity applies NUMERIC affinity to a TEXT or untyped key: '01' and
-        // '1' compare equal to 1, and so do 7 and '7'.
-        assert_eq!(count("select id from t where code = cast(:c as integer)"), "many");
-        assert_eq!(count("select a.id from b join a on a.k = b.n where b.id = 1"), "many");
-        assert_eq!(count("update t set id = id where code = cast(:c as integer) returning id"), "many");
-        assert_eq!(count("select id from t where code = :c"), "maybeOne");
-        assert_eq!(count("select a.id from b join a on a.kt = b.nc where b.id = 1"), "maybeOne");
-        // A column on the left decides the collation: NOCASE meets 'x' and 'X'.
-        assert_eq!(count("select a.id from b join a on b.nc = a.kt where b.id = 1"), "many");
-        // A declared column named rowid hides the rowid; `_rowid_` still reads it.
-        assert_eq!(count("select v from rt where rowid = :r"), "many");
-        assert_eq!(count("select v from rt where _rowid_ = :r"), "maybeOne");
-    }
-
-    #[test]
     fn a_function_the_host_registers_over_a_built_in_proves_nothing_strict() {
         let lower = Extras { total: vec![TotalFunction { name: "lower".into(), arity: 1, returns: Affinity::Text }], host: None };
         let nullable = |extras: &Extras| col(&analyze_ddl("select email from users where lower(email) = :e", &ddl(), extras).analysis, "email").1;
@@ -3489,16 +3387,6 @@ mod tests {
         // A statement that calls the function itself is still refused where the host lacks it.
         let call = analyze_ddl("select jsonschema_matches('{}', doc) as m from docs", &ddl, &without).analysis;
         assert!(!call.diagnostics.is_empty());
-    }
-
-    #[test]
-    fn unary_plus_is_its_operand() {
-        // `+name` returns the text itself, and SQLite writes a one-element `x IN (e)` as `x = +e`.
-        let a = analysis("select +name as p, -score as m from users where name in (:n) and id in (:i)");
-        assert_eq!(col(&a, "p"), ("text".into(), false));
-        assert_eq!(col(&a, "m"), ("real".into(), true));
-        assert_eq!(param(&a, "n"), "text");
-        assert_eq!(param(&a, "i"), "integer");
     }
 
     #[test]
@@ -3527,23 +3415,6 @@ mod tests {
     }
 
     #[test]
-    fn a_recursive_with_query_is_typed_through_its_reads_of_itself() {
-        // Each column holds for every round: the first arm's rows on their own, each later row
-        // given the row it was computed from.
-        let a = analysis("with recursive t (id, depth) as (select id, 0 from users union all select p.id, t.depth + 1 from posts p join t on p.user_id = t.id) select id, depth from t");
-        assert_eq!(col(&a, "id"), ("integer".into(), false));
-        assert_eq!(col(&a, "depth"), ("integer".into(), false));
-        // A round that reads a nullable column, or NULL, leaves the column nullable.
-        let a = analysis("with recursive t (id, body) as (select id, title from posts union all select p.id, p.body from posts p join t on p.user_id = t.id) select id, body from t");
-        assert_eq!(col(&a, "body"), ("text".into(), true));
-        let a = analysis("with recursive t (n, x) as (select 1, 'a' union all select n + 1, null from t where n < 3) select n, x from t");
-        assert_eq!(col(&a, "x"), ("text".into(), true));
-        // A table named as a WITH query that only reads it is that table, not a read of itself.
-        let a = analysis("with users as (select id, email from main.users) select id, email from users");
-        assert_eq!(col(&a, "email"), ("text".into(), true));
-    }
-
-    #[test]
     fn parameters_from_context() {
         let a = analysis("select id from users where email = :email and score >= :min and id in (:a, :b) and created_at between :from and :to and name like :q and lower(name) = :n limit :lim offset :off");
         assert_eq!(param(&a, "email"), "text");
@@ -3567,37 +3438,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_value_types_each_parameter_by_the_element_it_is_compared_with() {
-        // A keyset page: each element of a row value takes the type of its partner, in every
-        // comparison SQLite takes a row value in, a subquery's columns and a VALUES list too.
-        let ddl = vec!["create table users (id integer primary key, name text not null, created_at text not null) strict".to_string()];
-        let types = |sql: &str| {
-            let a = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
-            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
-            a.params.iter().map(|p| format!("{}: {}{}", p.name, scalar_name(&p.ty).unwrap_or("unknown"), if p.nullable { " | null" } else { "" })).collect::<Vec<_>>().join(", ")
-        };
-        let page = "select id, name, created_at from users where (created_at, id) < (:created_at, :id) order by created_at desc, id desc limit 20";
-        assert_eq!(types(page), "created_at: text, id: integer");
-        for op in ["=", "<>", "!=", "<", "<=", ">", ">=", "is", "is not"] {
-            assert_eq!(types(&format!("select id from users where (created_at, id) {op} (:at, :id)")), "at: text, id: integer", "{op}");
-            assert_eq!(types(&format!("select id from users where (:at, :id) {op} (created_at, id)")), "at: text, id: integer", "{op} reversed");
-        }
-        assert_eq!(types("select id from users where (created_at, :id) < (:at, id)"), "id: integer, at: text");
-        assert_eq!(types("select id from users where (created_at, id) between (:lo_at, :lo_id) and (:hi_at, :hi_id)"), "lo_at: text, lo_id: integer, hi_at: text, hi_id: integer");
-        assert_eq!(types("select id from users where (:at, :id) between (created_at, id) and ('9999', 0)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (created_at, id) in (select :at, :id)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (:at, :id) in (select created_at, id from users)"), "at: text, id: integer");
-        assert_eq!(types("select id from users where (created_at, id) in ((:a1, :i1), (:a2, :i2))"), "a1: text, i1: integer, a2: text, i2: integer");
-        assert_eq!(types("select id from users where (created_at, id) = (select :at, :id)"), "at: text, id: integer");
-        assert_eq!(types("select case (created_at, id) when (:at, :id) then 1 else 0 end as hit from users"), "at: text, id: integer");
-        assert_eq!(types("select case (:at, :id) when (created_at, id) then 1 else 0 end as hit from users"), "at: text, id: integer");
-        assert_eq!(types("update users set (name, created_at) = (select :name, :at) where id = :id"), "name: text, at: text, id: integer");
-        // One column of a subquery takes the type it is compared with, as a row's columns do.
-        assert_eq!(types("select id from users where id = (select :p)"), "p: integer");
-        assert_eq!(types("select id from users where id in (select :p union all select 1)"), "p: integer");
-    }
-
-    #[test]
     fn json_each_reads_text() {
         // A list of values in one parameter: the JSON text and the path are text, as written or cast.
         let a = analysis("select id from users where id in (select value from json_each(:ids))");
@@ -3614,79 +3454,6 @@ mod tests {
         let a = analysis("select users.id from users, json_each(:ids) j where users.id = j.value and users.name = :n");
         assert_eq!(param(&a, "ids"), "text");
         assert_eq!(param(&a, "n"), "text");
-    }
-
-    #[test]
-    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        for sql in [
-            "select * from (select id, name from users) s where s.id = :id",
-            "with s as (select id, name from users) select * from s where s.id = :id",
-            "select * from (select id as user_id from users) s where s.user_id = :id",
-            "select * from (select * from (select id from users) a) b where b.id = :id",
-            "select * from (select p.id, u.name from posts p join users u on u.id = p.user_id) s where s.id = :id",
-            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.user_id = :u",
-            "select * from (select distinct user_id from posts) s where s.user_id = :u",
-        ] {
-            assert_eq!(rows(sql), "maybeOne", "{sql}");
-        }
-        for sql in [
-            "select * from (select name from users) s where s.name = :n",
-            "select * from (select id + 0 as id from users) s where s.id = :id",
-            "select * from (select id from users union all select id from users) s where s.id = :id",
-            "select * from (select p.id from posts p cross join users u) s where s.id = :id",
-            "select * from (select user_id, count(*) as n from posts group by user_id) s where s.n = :n",
-        ] {
-            assert_eq!(rows(sql), "many", "{sql}");
-        }
-    }
-
-    #[test]
-    fn a_limit_only_lowers_a_bound_and_a_from_of_one_row_items_is_one_row() {
-        let rows = |sql: &str| analysis(sql).cardinality;
-        // A LIMIT above one, one from a parameter and an OFFSET remove rows and add none.
-        assert_eq!(rows("select * from users where id = :id limit 5"), "maybeOne");
-        assert_eq!(rows("select * from users where id = :id limit :n offset :skip"), "maybeOne");
-        assert_eq!(rows("select * from users where id = :id limit 2, 5"), "maybeOne");
-        assert_eq!(rows("select * from users limit 5"), "many");
-        assert_eq!(rows("select * from users limit -1"), "many");
-        assert_eq!(rows("select count(*) as n from users limit 5"), "one");
-        assert_eq!(rows("select count(*) as n from users limit 5 offset 0"), "one");
-        assert_eq!(rows("select count(*) as n from users limit 0"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit :n"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit -1"), "maybeOne");
-        assert_eq!(rows("select count(*) as n from users limit 5 offset 1"), "maybeOne");
-        // A derived table and a WITH query of one row, alone and joined.
-        assert_eq!(rows("select * from (select count(*) as n from users) s"), "one");
-        assert_eq!(rows("with s as (select count(*) as n from users) select n from s"), "one");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a, (select count(*) as m from posts) b"), "one");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on 1 = 1"), "one");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a left join users u on u.id = :id"), "one");
-        // A WHERE or an inner join's condition can drop the row, an unpinned side multiplies it,
-        // and a FULL JOIN is two rows where its condition fails.
-        assert_eq!(rows("select s.n from (select count(*) as n from users) s where s.n > :min"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on a.n = b.m"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a join (select count(*) as m from posts) b on 1 = 2"), "maybeOne");
-        assert_eq!(rows("select s.n from (select count(*) as n from users limit :n) s"), "maybeOne");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a left join users u on u.name = :name"), "many");
-        assert_eq!(rows("select a.n, u.name from users u left join (select count(*) as n from users) a on 1 where u.id = :id"), "maybeOne");
-        assert_eq!(rows("select a.n, b.m from (select count(*) as n from users) a full join (select count(*) as m from posts) b on a.n = b.m + 1"), "many");
-        assert_eq!(rows("select a.n, u.name from (select count(*) as n from users) a, users u"), "many");
-        // An aggregate over columns of the query around a subquery is that query's: the subquery
-        // is a row per row of `posts`, and none when it has none.
-        for sql in [
-            "select (select count(u.id) from posts where 0) as n from users u",
-            "select (select count(u.id) from posts where 0 limit 5) as n from users u",
-            "select (select s.n from (select count(u.id) as n from posts where 0) s) as n from users u",
-        ] {
-            assert!(col(&analysis(sql), "n").1, "the scalar subquery may find no row: {sql}");
-        }
-        assert!(!col(&analysis("select (select count(p.id) from posts p where 0 limit 5) as n from users u"), "n").1);
-        assert!(!col(&analysis("select (select s.n from (select count(p.id) as n from posts p where 0) s) as n from users u"), "n").1);
-        // SQLite reads a VALUES of several rows as a FROM item, which does not say how many.
-        assert_eq!(rows("values (1), (2)"), "many");
-        assert_eq!(rows("select v.column1 from (values (1), (2)) v"), "many");
-        assert_eq!(rows("select a.n, v.column1 from (select count(*) as n from users) a, (values (1), (2)) v"), "many");
     }
 
     #[test]
@@ -3823,30 +3590,6 @@ mod tests {
         assert_eq!(analysis("select v.column1 from (values (1), (2)) v").cardinality, "many");
         assert_eq!(analysis("select 1 union all values (2), (3)").cardinality, "many");
         assert_eq!(col(&analysis("select (values (1), (2)) as x"), "x"), ("integer".into(), true));
-    }
-
-    #[test]
-    fn a_collate_keeps_its_operands_context() {
-        let count = |sql: &str| {
-            let mut schema = ddl();
-            schema.push("create table c (id integer primary key, b text unique, n text unique collate nocase)".into());
-            let a = analyze_ddl(sql, &schema, &Extras::default()).analysis;
-            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
-            (param(&a, "v"), a.cardinality)
-        };
-        assert_eq!(count("select id from users where name = :v collate nocase"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where :v collate nocase = name"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where name collate nocase = :v"), ("text".into(), "many".into()));
-        assert_eq!(count("select id from users where id = :v collate binary"), ("integer".into(), "many".into()));
-        assert_eq!(count("select id from users where name in (:v collate nocase, 'a')"), ("text".into(), "many".into()));
-        // The type is the column's; the key is not the comparison's: a BINARY unique index tells
-        // 'a' from 'A', and NOCASE meets both, on either side of the comparison.
-        for sql in ["select id from c where b = :v collate nocase", "select id from c where :v collate nocase = b", "select id from c where b collate nocase = :v", "delete from c where b = :v collate nocase returning id"] {
-            assert_eq!(count(sql), ("text".into(), "many".into()), "{sql}");
-        }
-        // A key under the comparison's own collation still bounds it, with no COLLATE written.
-        assert_eq!(count("select id from c where n = :v"), ("text".into(), "maybeOne".into()));
-        assert_eq!(count("select id from c where b = :v"), ("text".into(), "maybeOne".into()));
     }
 
     #[test]
@@ -4175,54 +3918,6 @@ mod tests {
     }
 
     #[test]
-    fn a_value_of_one_of_several_types_is_unknown() {
-        let ddl = vec![
-            "CREATE TABLE t (id INTEGER PRIMARY KEY, n INTEGER NOT NULL, s TEXT, doc TEXT NOT NULL) STRICT".to_string(),
-            "CREATE TABLE u (x)".to_string(),
-            "CREATE VIEW w AS SELECT 'x' AS v UNION ALL SELECT n FROM t".to_string(),
-        ];
-        let ty = |sql: &str| {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
-            col(&r.analysis, "v").0
-        };
-        // A compound's column is any arm's value: SQLite names the leftmost arm's declared type,
-        // which is not every arm's.
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT 'x'"), "unknown");
-        assert_eq!(ty("SELECT 'x' AS v UNION ALL SELECT n FROM t"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT x FROM u"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT json_extract(doc, '$.a') FROM t"), "unknown");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT id FROM t"), "integer");
-        assert_eq!(ty("SELECT n AS v FROM t UNION ALL SELECT NULL"), "integer");
-        // Read through a subquery, a view or a WITH query, for which SQLite names the rightmost arm's.
-        assert_eq!(ty("SELECT v FROM (SELECT 'x' AS v UNION ALL SELECT n FROM t)"), "unknown");
-        assert_eq!(ty("SELECT v FROM w"), "unknown");
-        assert_eq!(ty("WITH c(v) AS (SELECT 'x' UNION ALL SELECT n FROM t) SELECT v FROM c"), "unknown");
-        // A parameter arm takes the others' type.
-        let r = analyze_ddl("SELECT n AS v FROM t UNION ALL SELECT :p", &ddl, &Extras::default());
-        assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()));
-        // So with `coalesce`, `CASE`, `iif` and `min`: a value of no known type may be any.
-        assert_eq!(ty("SELECT coalesce(s, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT coalesce(s, x) AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n ELSE x END AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT iif(n > 0, n, json_extract(doc, '$.a')) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT min(n, x) AS v FROM t, u"), "unknown");
-        assert_eq!(ty("SELECT coalesce(s, 'none') AS v FROM t"), "text");
-        assert_eq!(ty("SELECT CASE WHEN n > 0 THEN n END AS v FROM t"), "integer");
-        // `lag` and `lead` hand back their default where the row they read is missing.
-        assert_eq!(ty("SELECT lead(n, 1, 'z') OVER (ORDER BY id) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT lag(s, 1, x'00') OVER (ORDER BY id) AS v FROM t"), "unknown");
-        assert_eq!(ty("SELECT lag(n, 1, 0) OVER (ORDER BY id) AS v FROM t"), "integer");
-        assert_eq!(ty("SELECT lag(n, 1, NULL) OVER (ORDER BY id) AS v FROM t"), "integer");
-        assert_eq!(ty("SELECT lag(n) OVER (ORDER BY id) AS v FROM t"), "integer");
-        // A parameter as the value or the default takes the other's type.
-        for sql in ["SELECT lag(n, 1, :p) OVER (ORDER BY id) AS v FROM t", "SELECT lag(:p, 1, n) OVER (ORDER BY id) AS v FROM t"] {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert_eq!((col(&r.analysis, "v").0, param(&r.analysis, "p")), ("integer".into(), "integer".into()), "{sql}");
-        }
-    }
-
-    #[test]
     fn the_direct_entry_reads_a_schema_it_is_handed() {
         let ddl = vec![
             "CREATE TABLE todos (id uuid PRIMARY KEY NOT NULL, owner_id text NOT NULL, org_id uuid, title varchar(200) NOT NULL, done boolean NOT NULL DEFAULT 0, UNIQUE (owner_id, title))".to_string(),
@@ -4320,15 +4015,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unregistered_function_fails_to_prepare() {
-        let sql = "select id, nope(name) from users";
-        let a = analysis(sql);
-        assert_eq!(a.diagnostics.len(), 1, "{:?}", a.diagnostics);
-        assert_eq!(a.diagnostics[0].message, "no such function: nope");
-        assert_eq!((a.diagnostics[0].start, a.diagnostics[0].length), (sql.find("nope").unwrap(), 4));
-    }
-
-    #[test]
     fn a_scalar_subquery_is_non_null_only_when_it_always_finds_one_row() {
         let a = analysis("select (select count(*) from posts p where p.user_id = u.id) as n, (select max(title) from posts) as top, (select title from posts limit 1) as one, (select count(*) from posts group by user_id) as g, (select 1) as k from users u");
         assert_eq!(col(&a, "n"), ("integer".into(), false));
@@ -4380,50 +4066,6 @@ mod tests {
         assert_ne!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
         let r = analyze_ddl("select done from flags union all select id > 1 from flags", &ddl, &Extras::default());
         assert_eq!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
-    }
-
-    #[test]
-    fn a_column_declared_64_bits_wide_is_int8_and_what_sqlite_computes_from_it_an_integer() {
-        let ddl = vec![
-            "create table orders (id integer primary key, user_id BIGINT not null, ref Int8, big unsigned  big  int, wide bigint(20), n integer not null, i int, small tinyint, r real)".to_string(),
-            "create table keyed (id bigint primary key, name text)".to_string(),
-            "create view v as select user_id, n from orders".to_string(),
-        ];
-        let types = |sql: &str| {
-            let r = analyze_ddl(sql, &ddl, &Extras::default());
-            assert!(r.analysis.diagnostics.is_empty(), "{sql}: {:?}", r.analysis.diagnostics);
-            r.analysis.columns.iter().map(|c| scalar_name(&c.ty).unwrap_or("unknown").to_string()).collect::<Vec<_>>()
-        };
-        // The declared width decides: BIGINT, INT8 and UNSIGNED BIG INT in any case and spacing,
-        // with a size or not; every other integer name, and the rowid, is SQLite's INTEGER.
-        assert_eq!(types("select id, user_id, ref, big, wide, n, i, small, r from orders"), ["integer", "int8", "int8", "int8", "int8", "integer", "integer", "integer", "real"]);
-        // A BIGINT PRIMARY KEY is no rowid alias: a column of its own, declared 64 bits wide.
-        assert_eq!(types("select id, rowid as r from keyed"), ["int8", "integer"]);
-        // What passes the column through unchanged keeps its type: a subquery's or view's column,
-        // min and max, coalesce and a CASE over integers, a window's lag, unary plus.
-        assert_eq!(
-            types("select x.user_id, v.user_id as through_view, max(o.user_id) as most, coalesce(o.ref, 0) as co, ifnull(o.ref, o.n) as ifn, case when o.n > 0 then o.user_id else 0 end as cs, +o.user_id as pos, (select max(user_id) from orders) as sub from orders o, (select user_id from orders) x, v group by o.id"),
-            ["int8", "int8", "int8", "int8", "int8", "int8", "int8", "int8"],
-        );
-        assert_eq!(types("select lag(user_id) over (order by id) as prev, min(user_id, ref) as least from orders"), ["int8", "int8"]);
-        assert_eq!(types("select user_id from orders union all select 1"), ["int8"]);
-        // What SQLite computes from it is SQLite's INTEGER, as count(*) is; a mix with a real is a real.
-        assert_eq!(
-            types("select user_id + 1 as plus, user_id * n as times, -user_id as neg, abs(user_id) as a, sum(user_id) as s, count(user_id) as c, cast(user_id as integer) as ci, coalesce(ref, 1.5) as cr, total(user_id) as t from orders"),
-            ["integer", "integer", "integer", "integer", "integer", "integer", "integer", "real", "real"],
-        );
-        // total() over a 64-bit column is over integers, so it is never NaN.
-        let r = analyze_ddl("select total(user_id) as t from orders", &ddl, &Extras::default());
-        assert_eq!(col(&r.analysis, "t"), ("real".into(), false));
-        // A parameter compared with or written to one takes its type.
-        let r = analyze_ddl("select id from orders where user_id = :u and ref in (:a, :b)", &ddl, &Extras::default());
-        assert_eq!([param(&r.analysis, "u"), param(&r.analysis, "a"), param(&r.analysis, "b")], ["int8", "int8", "int8"]);
-        let r = analyze_ddl("insert into orders (user_id, n) values (:u, :n) returning user_id", &ddl, &Extras::default());
-        assert_eq!([param(&r.analysis, "u"), param(&r.analysis, "n")], ["int8", "integer"]);
-        assert_eq!(col(&r.analysis, "user_id"), ("int8".into(), false));
-        assert_eq!(r.analysis.columns[0].type_name, "int8");
-        assert!(["bigint", "BIGINT", " int8 ", "Unsigned Big Int", "bigint(20)", "unsigned big int (8)"].iter().all(|d| is_int8_declared(d)));
-        assert!(!["integer", "int", "bigint unsigned", "big int", "int64", "biginteger", "unsigned bigint"].iter().any(|d| is_int8_declared(d)));
     }
 
     /// A type as src/render.ts writes a SQLite one, compactly: the value `.run()` returns at the

@@ -1,5 +1,6 @@
 in_one_integer.sql: maybeOne (ids: integer) -> { id: integer }
 in_one_text.sql: many (n: text) -> { id: integer }
 in_two.sql: many (n: text, m: text) -> { id: integer }
+plus_and_minus.sql: maybeOne (n: text, i: integer) -> { p: text, m: integer? }
 plus_column.sql: many () -> { p: text }
 signs.sql: many () -> { minus: integer?, plus: integer? }

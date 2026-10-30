@@ -1,0 +1,3 @@
+nullable_cast_select.sql: the engine refused it: reylo20: The parameter :email is cast to nullable(…), but it is written to accounts.email, which refuses null: cast it to its type alone.
+nullable_cast_update.sql: the engine refused it: reylo20: The parameter :nick is cast to nullable(…), but it is written to accounts.nickname, which refuses null: cast it to its type alone.
+nullable_cast_values.sql: the engine refused it: reylo20: The parameter :email is cast to nullable(…), but it is written to accounts.email, which refuses null: cast it to its type alone.

@@ -1620,6 +1620,8 @@ dependencies = [
 name = "reylo-oracle"
 version = "0.0.0"
 dependencies = [
+ "bytes",
+ "futures-util",
  "libduckdb-sys",
  "mysql_async",
  "reylo-engine",

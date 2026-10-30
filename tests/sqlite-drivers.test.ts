@@ -4,14 +4,13 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { placeRefusal, projectDrivers } from "../src/sqlite-drivers.ts";
+import { DRIVERS } from "./helpers.ts";
 
 // The drivers are the labs' (lab/drivers), linked into each project as an install would put them.
 // libSQL carries SQLite 3.45.1, better-sqlite3 3.53 and sqlite3 3.52: `json_pretty` came in 3.46
 // and `iif` with two arguments in 3.48.
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
 const missing = ["better-sqlite3", "@libsql/client", "sqlite3"].find((d) => !existsSync(join(DRIVERS, d)));
 const skip = missing ? `lab/drivers is not installed (no ${missing})` : false;
 
