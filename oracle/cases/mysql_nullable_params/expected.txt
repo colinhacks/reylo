@@ -1,4 +1,5 @@
 coalesce_direct.sql: many (email: text?, bio: text?) -> { id: int4, name: text }
+compared_not_written.sql: maybeOne (email: text) -> { id: int4 }
 guard_derived.sql: many (tag: text) -> { id: int4, tag: text? }
 guard_nullable.sql: many (q: text?) -> { id: int4 }
 guard_other_column.sql: many (name: text) -> { id: int4 }
@@ -6,12 +7,19 @@ guard_with.sql: many (name: text) -> { id: int4, name: text? }
 guard_with_alias.sql: many (min: int4) -> { id: int4 }
 guard_with_columns.sql: many (q: text) -> { id: int4 }
 insert_positions.sql: none (id: int4, name: text, email: text?, bio: text?) -> {  }
+insert_rows.sql: none (n1: text, e1: text?, n2: text, e2: text?) -> {  }
+insert_select_mixed.sql: none (email: text?, bio: text?) -> {  }
+insert_select_params.sql: none (name: text, email: text?) -> {  }
 insert_set.sql: none (name: text, email: text?) -> {  }
 insert_upsert.sql: none (name: text, email: text?, bio: text?) -> {  }
 insert_values.sql: none (name: text, email: text?) -> {  }
 isnull_call.sql: many (p: text) -> { id: int4, missing: int8|int4 }
 null_safe.sql: many (email: text) -> { id: int4 }
+replace_parenthesized.sql: none (name: text, email: text?, bio: text?) -> {  }
 replace_values.sql: none (id: int4, name: text, bio: text) -> {  }
+update_aliased.sql: none (bio: text?, id: int4) -> {  }
 update_expression.sql: none (email: text, id: int4) -> {  }
 update_join.sql: none (bio: text?, title: text, tag: text?, id: int4) -> {  }
+update_join_tag.sql: none (email: text?, title: text, tag: text?, id: int4) -> {  }
 update_set.sql: none (email: text?, name: text, id: int4) -> {  }
+upsert_update_list.sql: none (name: text, email: text?, bio: text?, again: text) -> {  }

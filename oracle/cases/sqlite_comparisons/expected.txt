@@ -4,5 +4,10 @@ affinity_parameter.sql: maybeOne (1: text) -> { id: integer }
 affinity_update.sql: many (1: integer) -> { id: integer }
 collation_left.sql: many () -> { id: integer }
 collation_right.sql: maybeOne () -> { id: integer }
+declared_rowid.sql: many (r: integer) -> { v: text? }
+real_rowid.sql: maybeOne (r: integer) -> { v: text? }
 rowid_shadow.sql: many (1: integer) -> { v: text? }
 rowid_shadow_literal.sql: many () -> { v: text? }
+text_key_integer_cast.sql: many (c: integer) -> { id: integer }
+text_key_text.sql: maybeOne (c: text) -> { id: integer }
+update_text_key_integer_cast.sql: many (c: integer) -> { id: integer }

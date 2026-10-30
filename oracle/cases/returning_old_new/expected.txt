@@ -1,7 +1,10 @@
 delete.sql: maybeOne (id: int4) -> { old_name: text, new_name: text? }
+delete_named.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text?, name: text }
 delete_new_star.sql: maybeOne (id: int4) -> { id: int4?, name: text? }
 insert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text }
+insert_named.sql: one (name: text, id: int4) -> { old_name: text?, new_name: text }
 merge.sql: many (id: int4) -> { old_name: text?, new_name: text }
 plain.sql: one (id: int4, name: text) -> { name: text }
 update.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
+update_named.sql: maybeOne (name: text, id: int4) -> { old_name: text, new_name: text }
 upsert.sql: one (id: int4, name: text) -> { old_name: text?, new_name: text }

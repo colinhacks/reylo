@@ -13,6 +13,7 @@ derived_named.sql: one () -> { n: integer }
 derived_nullable.sql: one () -> { top: text?, n: integer }
 derived_where.sql: maybeOne (min: integer) -> { n: integer }
 full_join.sql: many () -> { n: integer?, m: integer? }
+inner_join_never.sql: maybeOne () -> { n: integer, m: integer }
 intersect_limit.sql: maybeOne (id: integer) -> { id: integer }
 join_on_condition.sql: maybeOne () -> { n: integer, m: integer }
 join_on_equal.sql: one () -> { n: integer, m: integer }
@@ -23,6 +24,7 @@ key_limit_comma.sql: maybeOne (id: integer) -> { id: integer, name: text, email:
 key_limit_offset.sql: maybeOne (id: integer, n: integer, skip: integer) -> { id: integer, name: text, email: text? }
 key_limit_param.sql: maybeOne (id: integer, n: integer) -> { id: integer, name: text, email: text? }
 left_join.sql: one (id: integer) -> { n: integer, name: text? }
+left_join_one_row.sql: maybeOne (id: integer) -> { n: integer?, name: text }
 left_join_table_first.sql: maybeOne (id: integer) -> { n: integer?, name: text }
 left_join_unpinned.sql: many (name: text) -> { n: integer, name: text? }
 many_side.sql: many () -> { n: integer, name: text }
@@ -31,8 +33,11 @@ outer_aggregate_limit.sql: many () -> { n: integer? }
 outer_aggregate_scalar.sql: many () -> { n: integer? }
 own_aggregate_derived.sql: many () -> { id: integer, n: integer }
 own_aggregate_limit.sql: many () -> { id: integer, n: integer }
+own_aggregate_limited.sql: many () -> { n: integer }
 scan_limit_1.sql: maybeOne () -> { id: integer, name: text, email: text? }
 scan_limit_5.sql: many () -> { id: integer, name: text, email: text? }
 scan_limit_negative.sql: many () -> { id: integer, name: text, email: text? }
 values.sql: many () -> { column1: integer }
+values_joined.sql: many () -> { n: integer, column1: integer }
+values_rows.sql: many () -> { column1: integer }
 with_count.sql: one () -> { n: integer }

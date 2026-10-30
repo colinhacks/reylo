@@ -3861,24 +3861,6 @@ mod tests {
     }
 
     #[test]
-    fn returning_with_names_for_the_old_and_the_new_row_is_typed_as_old_and_new_are() {
-        let nullable = |a: &Analysis| a.columns.iter().map(|c| c.nullable).collect::<Vec<_>>();
-        // PostgreSQL 18's clause parses, so the write by key is at most one row, and both rows of
-        // an UPDATE hold the table's NOT NULL.
-        let update = replay_users("UPDATE users SET name = :name WHERE id = :id RETURNING WITH (OLD AS o, NEW AS n) o.name AS old_name, n.name AS new_name", &["old_name", "new_name"]);
-        assert_eq!((update.kind.as_str(), update.cardinality.as_str(), update.cardinality_reason.as_deref()), ("update", "maybeOne", None));
-        assert!(update.diagnostics.is_empty(), "{:?}", update.diagnostics);
-        assert_eq!(nullable(&update), [false, false]);
-        assert_eq!(update.params.iter().map(|p| (p.name.as_str(), p.type_name.as_str())).collect::<Vec<_>>(), [("name", "text"), ("id", "int4")]);
-        assert_eq!(nullable(&replay_users("UPDATE users SET name = :name WHERE id = :id RETURNING old.name AS old_name, new.name AS new_name", &["old_name", "new_name"])), [false, false]);
-        // An INSERT has no old row and a DELETE no new one, by the clause's names as by the default ones.
-        let insert = replay_users("INSERT INTO users (name, id) VALUES (:name, :id) RETURNING WITH (OLD AS o, NEW AS n) o.name AS old_name, n.name AS new_name", &["old_name", "new_name"]);
-        assert_eq!((insert.cardinality.as_str(), nullable(&insert)), ("one", vec![true, false]));
-        let delete = replay_users("DELETE FROM users WHERE name = :name AND id = :id RETURNING WITH (NEW AS after) old.name AS old_name, after.name AS new_name, name", &["old_name", "new_name", "name"]);
-        assert_eq!((delete.cardinality.as_str(), nullable(&delete)), ("maybeOne", vec![false, true, false]));
-    }
-
-    #[test]
     fn a_statement_at_the_depth_bound_is_analyzed_whole_and_one_past_it_falls_back_to_the_describe() {
         // From a thread with a small stack, as a tokio worker or a Postgres backend may call: the
         // parse, the walks of the expression rules, the row-count proof and the JSON shapes all run

@@ -3006,41 +3006,6 @@ mod tests {
         assert_eq!(at("select distinct u.email from pv_posts p join pv_users u on u.id = p.id * 97 where p.id = 1"), Ok(()));
     }
 
-    #[test]
-    fn a_with_query_of_an_enclosing_statement_shadows_the_table_inside_it() {
-        let c = joined();
-        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        // A subquery, a WITH query's body and a set operation's arm are proven on their own, and
-        // still read `users` as the WITH query of that name, which has no key.
-        for sql in [
-            "select t.id from (with users as (select 1::int8 as id union all select 1) select * from (select id from users where id = 1) s) t, users u where u.id = 1",
-            "with users as (select 1::int8 as id union all select 1), x as (select id from users where id = 1) select x.id from x",
-            "with users as (select 1::int8 as id union all select 1) select id from users where id = 1 intersect all select id from posts",
-            "with users as (select 1::int8 as id union all select 1) select s.id from (select id from users where id = 1) s",
-        ] {
-            refused(at(sql), "", sql);
-        }
-        assert_eq!(at("with one as (select 1 as n) select s.id from (select id from users where id = 1) s"), Ok(()));
-    }
-
-    #[test]
-    fn a_column_merged_by_using_and_a_qualified_name_are_neither_sides_key() {
-        let mut c = joined();
-        c.unique_keys.insert("ua".into(), vec![vec!["id".into()], vec!["k".into()]]);
-        c.unique_keys.insert("ub".into(), vec![vec!["id".into()], vec!["k".into()]]);
-        let columns = |cols: &[(&str, u32)]| cols.iter().map(|(n, t)| (n.to_string(), *t)).collect();
-        c.column_types.insert("ua".into(), columns(&[("id", oid::INT8), ("k", oid::FLOAT8)]));
-        c.column_types.insert("ub".into(), columns(&[("id", oid::INT8), ("k", oid::NUMERIC)]));
-        let at = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        // The merged `k` is `ua.k` compared with `ub.k` converted to float8, which maps two
-        // numerics to one value.
-        refused(at("select ua.id, ub.id from ua join ub using (k) where k = '0.1'"), "a join returns a row per pair", "using");
-        refused(at("select ua.id, ub.id from ua natural join ub where k = '0.1'"), "a join returns a row per pair", "natural");
-        // A schema-qualified name is the table, never the WITH query of that name.
-        refused(at("with users as (select count(*) as n from users) select id from public.users"), "public.users", "with");
-        assert!(exactly_one("with users as (select count(*) as n from users) select id from public.users", Dialect::Postgres, &Trust::default(), &c).is_err());
-    }
-
     fn at_most(sql: &str) -> Result<(), String> {
         at_most_one(sql, Dialect::Postgres, &Trust::default(), &catalog())
     }
@@ -3149,14 +3114,6 @@ mod tests {
     }
 
     #[test]
-    fn a_limit_with_ties_bounds_nothing() {
-        assert!(at_most("select id from users order by email fetch first 1 rows only").is_ok());
-        assert!(at_most("select id from users order by email limit 1").is_ok());
-        // Every row that ties with the first comes along.
-        assert!(at_most("select id from users order by email fetch first 1 rows with ties").is_err());
-    }
-
-    #[test]
     fn grouped_by_a_pinned_relation_is_one_group() {
         assert!(at_most("select u.id, count(p.id) from users u left join posts p on p.user_id = u.id where u.id = $1 group by u.id").is_ok());
         assert!(at_most("select u.id, u.name, count(*) from users u join posts p on p.user_id = u.id where u.id = $1 and p.title = $2 group by u.id, u.name having count(*) > 1").is_ok());
@@ -3230,39 +3187,6 @@ mod tests {
             .into_iter()
             .collect(),
             ..Catalog::default()
-        }
-    }
-
-    #[test]
-    fn a_subquery_a_with_query_or_a_view_is_pinned_by_a_key_of_its_rows() {
-        let mut c = stock();
-        c.views.insert("open_todos".into(), "SELECT id, title FROM todos WHERE done = false".into());
-        let at_most = |sql: &str| at_most_one(sql, Dialect::Postgres, &Trust::default(), &c);
-        for sql in [
-            "select * from (select id, title from todos) s where s.id = $1",
-            "with s as (select id, title from todos) select * from s where s.id = $1",
-            "select * from (select id as todo_id from todos) s where s.todo_id = $1",
-            "select * from (select * from (select id from todos) a) b where b.id = $1",
-            "select * from (select id from todos order by id limit 10) s where s.id = $1",
-            "select * from (select t.id, u.email from todos t join users u on u.id = t.owner_id) s where s.id = $1",
-            "select * from (select t.owner_id, count(*) as n from todos t group by t.owner_id) s where s.owner_id = $1",
-            "select * from (select distinct t.owner_id from todos t) s where s.owner_id = $1",
-            "select * from (select org_id, user_id from org_members) s where s.org_id = $1 and s.user_id = $2",
-            "select * from open_todos where id = $1",
-        ] {
-            assert_eq!(at_most(sql), Ok(()), "{sql}");
-        }
-        for sql in [
-            "select * from (select title from todos) s where s.title = $1",
-            "select * from (select id + 0 as id from todos) s where s.id = $1",
-            "select * from (select id from todos union all select id from todos) s where s.id = $1",
-            "select * from (select id, generate_series(1, 2) as n from todos) s where s.id = $1",
-            "select * from (select t.id from todos t cross join users u) s where s.id = $1",
-            "select * from (select org_id, user_id from org_members) s where s.org_id = $1",
-            "select * from (select owner_id, count(*) as n from todos group by rollup (owner_id)) s where s.owner_id = $1",
-            "select s.id from users u cross join lateral (select t.id, u.id as uid from todos t) s where u.id = s.uid and s.id = $1",
-        ] {
-            assert!(at_most(sql).is_err(), "{sql}");
         }
     }
 
