@@ -13,7 +13,8 @@ import { withinFile } from "../src/module-types.ts";
 // invalid transform response"), which made the import `any`. The type check runs as a project runs
 // it, `tsc` with runExternalCode: over SQLite, and over Postgres where REYLO_TEST_PG names a server.
 const ROOT = join(import.meta.dirname, "..");
-const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 const PG = process.env.REYLO_TEST_PG;
 const DRIVERS = join(ROOT, "lab", "drivers", "node_modules");
 const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
@@ -37,7 +38,7 @@ function check(url: string, engine: "sqlite" | "postgres", setup: (root: string)
   for (const [name, text] of Object.entries(FILES)) writeFileSync(join(root, name), text);
   // Each module is typed: an import that became `any` would leave its expected error unused.
   writeFileSync(join(root, "main.ts"), Object.keys(FILES).map((name, i) => `import q${i} from "./${name}";\n// @ts-expect-error a typed query has no such property\nq${i}.nope;\n`).join(""));
-  const r = spawnSync(TSC, ["-p", "tsconfig.json", "--runExternalCode", "--pretty", "false"], { cwd: root, encoding: "utf8", env: { ...process.env, DATABASE_URL: url } });
+  const r = spawnSync(process.execPath, [TSC, "-p", "tsconfig.json", "--runExternalCode", "--pretty", "false"], { cwd: root, encoding: "utf8", env: { ...process.env, DATABASE_URL: url } });
   return (r.stdout + r.stderr).trim();
 }
 

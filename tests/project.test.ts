@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { engine } from "../src/engine.ts";
 import { findProjectFile, resolveProject } from "../src/project.ts";
@@ -20,6 +20,9 @@ function tree(files: Record<string, string>): string {
   }
   return root;
 }
+
+// A project file's command runs in the system's shell, cmd.exe on Windows, and these tests write theirs for a POSIX shell.
+const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
 
 test("without a project file, DATABASE_URL comes from the environment, then .env.local, then .env", async () => {
   const e = await engine("postgres", ROOT);
@@ -115,7 +118,7 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   assert.match(resolveProject(e, odd, {}).error!, /^Cannot tell the database from the URL \("direct_url" in \.reylo\.yaml\)/);
 });
 
-test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", async () => {
+test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", { skip: posixShell }, async () => {
   const e = await engine("postgres", ROOT);
   // The command counts its runs in a file beside it, and prints a password a URL cannot hold as it is.
   const root = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo run >> runs.txt; printf 'p@ss/w?rd&x')@db.internal:5432/app\n" });
@@ -140,7 +143,7 @@ test("a $(command) in direct_url is replaced by what it prints, once per process
   assert.deepEqual([resolveProject(e, whole, {}).url, resolveProject(e, whole, {}).dialect], ["mysql://root:p@ss@127.0.0.1:3306/app", "mysql"]);
 });
 
-test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", async () => {
+test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", { skip: posixShell }, async () => {
   const e = await engine("postgres", ROOT);
   const root = tree({
     "package.json": "{}",
@@ -156,7 +159,7 @@ test("a command's variables are its shell's, from the environment and the env fi
   assert.equal(existsSync(join(text, "pwned")), false);
 });
 
-test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", async () => {
+test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", { skip: posixShell }, async () => {
   const e = await engine("postgres", ROOT);
   const failing = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo 'no item matches' >&2; exit 3)@h/app\n" });
   const r = resolveProject(e, failing, {});
@@ -204,7 +207,7 @@ test(".reylo/ names an entry by its statement, then its server: never by url or 
   const entry = async (yaml: string, env: Record<string, string>) => {
     const session = await Session.open(tree({ "package.json": "{}", ".reylo.yaml": yaml }), env);
     await session.close();
-    return session.entryFile("select 1").split("/").pop()!.replace(/\.json$/, "").split("-");
+    return basename(session.entryFile("select 1")).replace(/\.json$/, "").split("-");
   };
   const [statement, dev] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://dev/app" });
   // url alone names it like no url at all, and like a direct_url that names the same database;

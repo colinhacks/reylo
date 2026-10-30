@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Session, type Outcome } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
@@ -186,7 +186,7 @@ test("DuckDB: a project without @duckdb/node-api is told to install it, and a mi
   }
 });
 
-test("DuckDB: a database file another process holds for writing is typed from a copy of it", { skip }, async () => {
+test("DuckDB: a database file another process holds for writing is typed from a copy of it, which Windows refuses", { skip }, async () => {
   const root = await project();
   // A second process opens the file read-write, as a running app does, writes a table it has not
   // checkpointed, and holds the file until its stdin closes.
@@ -204,7 +204,19 @@ test("DuckDB: a database file another process holds for writing is typed from a 
       child.stdout.once("data", () => resolve());
       child.once("exit", (code) => reject(new Error(`the holder exited with ${code}`)));
     });
-    assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+    if (process.platform !== "win32") {
+      assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+    } else {
+      // On Windows, DuckDB shares no file it writes, so there is no copy to read: the refusal names the holder.
+      const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });
+      try {
+        const outcome = await session.analyze("select id, note from later", { store: false });
+        assert.ok(!outcome.ok);
+        assert.match(outcome.message, /\(PID \d+\) holds it for writing, and on Windows no other process can read it meanwhile, not even to copy it: type-check while that process is stopped/);
+      } finally {
+        await session.close();
+      }
+    }
   } finally {
     child.stdin.end();
     await new Promise((resolve) => child.once("exit", resolve));
@@ -213,8 +225,11 @@ test("DuckDB: a database file another process holds for writing is typed from a 
 
 test("DuckDB: the URL names the database file, relative to the project", () => {
   assert.equal(dialectOf("duckdb:./app.duckdb"), "duckdb");
-  assert.equal(duckdbPath("duckdb:./app.duckdb", "/srv/app"), "/srv/app/app.duckdb");
-  assert.equal(duckdbPath("duckdb:///data/app.duckdb", "/srv/app"), "/data/app.duckdb");
+  const base = resolve("/srv/app");
+  assert.equal(duckdbPath("duckdb:./app.duckdb", base), join(base, "app.duckdb"));
+  assert.equal(duckdbPath("duckdb:///data/app.duckdb", base), "/data/app.duckdb");
+  // On Windows the URL's path names a drive, as a file URL's does.
+  if (process.platform === "win32") assert.equal(duckdbPath("duckdb:///C:/data/app.duckdb", base), "C:/data/app.duckdb");
   assert.equal(duckdbPath("duckdb::memory:", "/srv/app"), ":memory:");
   assert.equal(duckdbPath("duckdb:", "/srv/app"), ":memory:");
 });

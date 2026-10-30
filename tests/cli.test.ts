@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, writeFil
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 const CLI = join(import.meta.dirname, "..", "src", "cli.ts");
 const REGISTER = join(import.meta.dirname, "..", "src", "register.ts");
@@ -181,7 +182,7 @@ test("a program run under the reylo/register preload prints nothing on stderr: n
   writeFileSync(join(root, "user.sql"), "select id, name from users where id = :id");
   writeFileSync(join(root, "main.ts"), `import { DatabaseSync } from "node:sqlite";\nimport user from "./user.sql";\nconsole.log(JSON.stringify(await user.run(new DatabaseSync("app.db"), { id: 1 })));\n`);
   // The engine loads in the preload's worker thread, which reports its warnings through the main thread's stderr.
-  const r = spawnSync(process.execPath, ["--import", REGISTER, "main.ts"], { cwd: root, encoding: "utf8", env: { PATH: process.env.PATH, DATABASE_URL: "file:./app.db" } });
+  const r = spawnSync(process.execPath, ["--import", pathToFileURL(REGISTER).href, "main.ts"], { cwd: root, encoding: "utf8", env: { PATH: process.env.PATH, DATABASE_URL: "file:./app.db" } });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, `{"id":1,"name":"ada"}\n`);
   assert.doesNotMatch(r.stderr, /ExperimentalWarning/);

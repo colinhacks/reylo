@@ -185,7 +185,9 @@ export class Engine extends EngineCore {
     } catch (e) {
       channel.end();
       target.close();
-      throw e;
+      // A socket the bridge could not open: its reason, rather than the connection it closed.
+      const failure = target.failure?.();
+      throw failure ? new Unreachable(failure) : e;
     }
     return {
       analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis!,

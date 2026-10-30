@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeF
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Go-to-definition from what a `.sql` module declares opens the `.sql` file at its statement, through
 // the span map the content mapper returns (src/mapper.ts), and a hover shows the file's comment and
@@ -13,7 +13,8 @@ import { pathToFileURL } from "node:url";
 // runs as an editor runs it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so
 // no server is needed.
 const ROOT = join(import.meta.dirname, "..");
-const TSC = join(ROOT, "node_modules", ".bin", "tsc");
+// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
+const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 
 type Position = { line: number; character: number };
 type Range = { start: Position; end: Position };
@@ -40,7 +41,7 @@ function project(): string {
 
 /** A language server over stdio with LSP framing, as an editor talks to it. */
 function server(root: string) {
-  const child = spawn(TSC, ["--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn(process.execPath, [TSC, "--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
   const pending = new Map<number, (result: any) => void>();
   let buffer = Buffer.alloc(0);
   const write = (message: object) => {
@@ -119,7 +120,10 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
     }
     assert.ok(added.endsWith("\n```sql\ninsert into posts (title, body)\nvalues (\n  @title,\n  @body\n)\n```"), added);
 
-    const sql = pathToFileURL(join(root, "queries", "posts.sql")).href;
+    // A file URI read back as its path: on Windows the server writes the drive in lowercase with its
+    // colon encoded (`file:///c%3A/…`), and the system matches a path's letters without regard to case.
+    const path = (uri: string) => (process.platform === "win32" ? fileURLToPath(uri).toLowerCase() : fileURLToPath(uri));
+    const sql = path(pathToFileURL(join(root, "queries", "posts.sql")).href);
     // Lines 2 to 5 of the file: the comment above the statement, through `:after`.
     const statement: Range = { start: { line: 1, character: 0 }, end: { line: 4, character: 17 } };
     for (const [what, position] of [
@@ -129,7 +133,7 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
       ["a column", at(`"title"]`, 2)],
     ] as const) {
       const links: { targetUri: string; targetSelectionRange: Range }[] = await lsp.request("textDocument/definition", { textDocument: { uri }, position });
-      assert.deepEqual(links.map((l) => [l.targetUri, l.targetSelectionRange]), [[sql, statement]], what);
+      assert.deepEqual(links.map((l) => [path(l.targetUri), l.targetSelectionRange]), [[sql, statement]], what);
     }
   } finally {
     await lsp.close();

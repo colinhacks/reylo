@@ -3,7 +3,7 @@
 // database, the engine, the `.reylo/` cache shared with the bundler plugins and `reylo generate`)
 // is `src/analyze.ts`; this file renders it as types and places its diagnostics in the file.
 import { createHash } from "node:crypto";
-import { dirname, relative } from "node:path";
+import { dirname, relative, sep } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, withinFile } from "./module-types.ts";
@@ -65,7 +65,7 @@ export function mapperHandlers(): MapperHandlers {
       const projectDir = dirname(p.configFileName);
       // Every setting lives in the project file, which PorgREST and Reylo Framework read too.
       const resolved = resolveProject(await anyEngine(projectDir), projectDir);
-      const projectFile = resolved.file ? relative(projectDir, resolved.file) || resolved.file : PROJECT_FILE;
+      const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
       projects.set(p.projectHandle, { strictParams: resolved.strictParams, projectFile, session: Session.open(projectDir) });
       const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");

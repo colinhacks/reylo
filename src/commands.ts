@@ -7,7 +7,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { glob } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { styleText } from "node:util";
 import { Session } from "./analyze.ts";
 import { play, PLAY_USAGE } from "./play.ts";
@@ -33,7 +33,8 @@ Which files are queries can be set in .reylo.yaml; the globs are relative to it:
 const INCLUDE = ["**/*.sql", "**/.server/**/*.sql"];
 const EXCLUDE = ["**/node_modules/**", "**/{dist,build,out,target,coverage}/**"];
 
-const shown = (path: string) => relative(process.cwd(), path) || ".";
+// A path from the working directory, written with `/` on every system, as tsc writes it.
+const shown = (path: string) => relative(process.cwd(), path).split(sep).join("/") || ".";
 const paint = (format: Parameters<typeof styleText>[0], text: string) => styleText(format, text);
 
 // Node's own glob, which does not descend into a symlinked directory, and on macOS and Windows

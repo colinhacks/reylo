@@ -12,9 +12,14 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, connect, type AddressInfo, type Socket } from "node:net";
 import { resolve } from "node:path";
 import { guestPath } from "./component.ts";
+import { Unreachable } from "./connection.ts";
 
-/** A URL as the component opens it, the bridge's token where it goes through one, and what to close with the connection. */
-export type HostUrl = { url: string; bridge?: string; close(): void };
+/**
+ * A URL as the component opens it, the bridge's token where it goes through one, what to close with
+ * the connection, and why the bridge could not open its socket, which the engine sees only as a
+ * connection closed.
+ */
+export type HostUrl = { url: string; bridge?: string; close(): void; failure?(): Error | undefined };
 
 /** The Postgres URL parameters that name a file. */
 const FILES = ["sslrootcert", "sslcert", "sslkey"];
@@ -25,8 +30,11 @@ const MYSQL_ATTRIBUTE = "reylo_bridge";
 /** How long a connection to the bridge may take to show its token. */
 const TOKEN_TIMEOUT = 10_000;
 
-/** `url` as the component opens it: files resolved and mapped, a Unix socket bridged. */
-export async function hostUrl(url: string, env: Record<string, string | undefined> = process.env): Promise<HostUrl> {
+/**
+ * `url` as the component opens it: files resolved and mapped, a Unix socket bridged. On Windows,
+ * where Node opens no Unix socket, a Postgres URL that names one is an Unreachable that says so.
+ */
+export async function hostUrl(url: string, env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): Promise<HostUrl> {
   const postgres = /^postgres(ql)?:\/\//i.test(url);
   const mysql = /^mysql:\/\//i.test(url);
   if (!postgres && !mysql) return { url, close: () => {} };
@@ -39,10 +47,13 @@ export async function hostUrl(url: string, env: Record<string, string | undefine
   });
   const socket = postgres ? postgresSocket(base, pairs, env) : mysqlSocket(pairs);
   if (!socket) return { url: join(base, pairs), close: () => {} };
+  if (postgres && platform === "win32") {
+    throw new Unreachable(new Error(`the URL names the Unix socket ${socket.path}, which Node cannot open on Windows: name the server's host and port, as host=localhost&port=5432`));
+  }
   const token = randomBytes(24).toString("hex");
   const bridge = await openBridge(socket.path, postgres ? "postgres" : "mysql", token);
   const rest = pairs.filter((pair) => !socket.params.includes(splitPair(pair)[0]));
-  return { url: join(withHost(base, `127.0.0.1:${bridge.port}`), rest), bridge: token, close: bridge.close };
+  return { url: join(withHost(base, `127.0.0.1:${bridge.port}`), rest), bridge: token, close: bridge.close, failure: bridge.failure };
 }
 
 /**
@@ -103,8 +114,10 @@ function withHost(base: string, host: string): string {
  * server's greeting so that the handshake is in plain text. None of its sockets keeps the process
  * alive.
  */
-async function openBridge(path: string, dialect: "postgres" | "mysql", token: string): Promise<{ port: number; close(): void }> {
+async function openBridge(path: string, dialect: "postgres" | "mysql", token: string): Promise<{ port: number; close(): void; failure(): Error | undefined }> {
   const open = new Set<Socket>();
+  let failure: Error | undefined;
+  const failed = (e: Error) => void (failure = new Error(`cannot open the socket ${path}: ${e.message}`));
   const track = (socket: Socket) => {
     open.add(socket);
     socket.unref();
@@ -121,8 +134,8 @@ async function openBridge(path: string, dialect: "postgres" | "mysql", token: st
       for (const chunk of toServer) upstream.write(chunk);
       client.pipe(upstream).pipe(client);
     };
-    if (dialect === "postgres") gatePostgres(client, token, () => openUpstream(path, client, track), pipe);
-    else gateMysql(client, token, openUpstream(path, client, track), pipe);
+    if (dialect === "postgres") gatePostgres(client, token, () => openUpstream(path, client, track, failed), pipe);
+    else gateMysql(client, token, openUpstream(path, client, track, failed), pipe);
   });
   await new Promise<void>((done, fail) => {
     server.once("error", fail);
@@ -135,14 +148,20 @@ async function openBridge(path: string, dialect: "postgres" | "mysql", token: st
       server.close();
       for (const socket of open) socket.destroy();
     },
+    failure: () => failure,
   };
 }
 
 /** The connection to the socket for `client`, each closed with the other. */
-function openUpstream(path: string, client: Socket, track: (socket: Socket) => void): Socket {
+function openUpstream(path: string, client: Socket, track: (socket: Socket) => void, failed: (e: Error) => void): Socket {
   const upstream = connect(path);
   track(upstream);
-  upstream.on("error", () => {
+  // Only a socket that never opened is the bridge's failure: an error after it opened (a reset once
+  // the server refused the login) leaves the engine's own answer, which names the refusal.
+  let opened = false;
+  upstream.once("connect", () => (opened = true));
+  upstream.on("error", (e) => {
+    if (!opened) failed(e);
     upstream.destroy();
     client.destroy();
   });

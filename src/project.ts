@@ -248,7 +248,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env): ResolvedProject {
   const file = findProjectFile(projectDir, env);
   const root = file ? dirname(file) : packageDir(projectDir);
-  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path) || path : path);
+  const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;
   if (file) {
@@ -366,8 +366,10 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */
 export function duckdbPath(url: string, baseDir: string): string {
-  const raw = url.replace(/^duckdb:(\/\/)?/i, "");
+  let raw = url.replace(/^duckdb:(\/\/)?/i, "");
   if (raw === "" || raw === ":memory:") return ":memory:";
+  // On Windows, `duckdb:///C:/app.duckdb` names the drive, as a file URL does.
+  if (process.platform === "win32") raw = raw.replace(/^\/(?=[A-Za-z]:[\\/])/, "");
   return isAbsolute(raw) ? raw : resolve(baseDir, raw);
 }
 
