@@ -590,6 +590,8 @@ export function PlayApp({ data, connect, theme, labels, home, github, api, about
     }
   };
 
+  // An empty editor has no types to show, only a dash in their place.
+  const blank = sql.trim() === '';
   // The types shown: the statement's own, or while it has an error the last good ones, dimmed. An
   // example's come from the build until the tab's own answer replaces them, and any other's are
   // highlighted once the highlighter has loaded.
@@ -683,11 +685,11 @@ export function PlayApp({ data, connect, theme, labels, home, github, api, about
           <div className="play-scroll play-types" data-stale={failing || undefined} data-built={built ? '' : undefined}>
             <div className="play-row">
               <span className="play-label">Params</span>
-              {shown.params === undefined ? <Code lines={voidLines} /> : params ? <Code lines={params} /> : <p className="play-none">…</p>}
+              {blank ? <p className="play-none">—</p> : shown.params === undefined ? <Code lines={voidLines} /> : params ? <Code lines={params} /> : <p className="play-none">…</p>}
             </div>
             <div className="play-row">
               <span className="play-label">Returns</span>
-              {returns ? <Code lines={returns} /> : <p className="play-none">…</p>}
+              {blank ? <p className="play-none">—</p> : returns ? <Code lines={returns} /> : <p className="play-none">…</p>}
             </div>
             {failing && (
               <p className="play-types-error">
@@ -697,7 +699,7 @@ export function PlayApp({ data, connect, theme, labels, home, github, api, about
             )}
           </div>
           {/* At the pane's bottom left, under the scrolling types. */}
-          {!failing && shown.returns !== undefined && (
+          {!blank && !failing && shown.returns !== undefined && (
             <p className="play-report">
               {/* The issue's text is written as the link is followed, from the query, schema and types shown then. */}
               <a

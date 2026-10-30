@@ -771,8 +771,10 @@ html[data-play-schema] #nd-page.play .play-types[data-built] .play-row::after {
     overflow: visible;
   }
 
+  /* The query keeps a fixed least height and the types take the rest, so the line between them stays put as a short query grows. */
   #nd-page.play .play-main {
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(18rem, auto) 1fr;
   }
 
   #nd-page.play .play-side {
