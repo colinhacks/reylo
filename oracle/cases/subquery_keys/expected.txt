@@ -39,6 +39,7 @@ null_extended_side.sql: many (id: int8) -> { id: int8, name: text }
 partial_key_restricted.sql: maybeOne (n: text) -> { id: int8, name: text }
 partial_key_unrestricted.sql: many (n: text) -> { id: int8, name: text }
 recursive.sql: many (id: int8) -> { id: int8 }
+recursive_shadows_enclosing.sql: many (id: int8) -> { id: int8 }
 recursive_sibling.sql: many (id: int8) -> { id: int8, depth: int4 }
 renamed.sql: maybeOne (id: int8) -> { post_id: int8, title: text }
 rollup.sql: many (a: int8) -> { author_id: int8, n: int8? }

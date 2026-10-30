@@ -672,7 +672,7 @@ where slug = :slug and not deleted
 
 **Subqueries, `with` queries and views**
 
-A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, when its `group by` or `distinct` lists the columns, or when it is a `union`, `intersect` or `except` without `all`. A key column its `where` pins to one value may be left out, and a column list renames the key's columns.
+A subquery, a `with` query or a view has a key when it selects a table's key unchanged and joins only one row per row of that table, or when its `group by` or `distinct` lists the columns. A `union`, `intersect` or `except` without `all` is keyed on its whole row when each column is one table column on both sides, of one type, and `intersect` and `except` keep their left side's keys, with `all` or without. A key column its `where` pins to one value may be left out, a column list renames the key's columns, and a unique index on an expression counts when the select list keeps the expression under an alias.
 
 <Inferred>
 
@@ -689,7 +689,7 @@ where id = :id::bigint
 
 </Inferred>
 
-A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast leaves no key.
+A `union all`, a set-returning function such as `unnest` in the select list, or a key column passed through an expression or a cast that no unique index covers leaves no key.
 
 **What doesn't count**
 

@@ -157,10 +157,11 @@ pub struct Catalog {
     /// subquery, a WITH query's body or a set operation's arm is proven on its own as: such a
     /// name read there unqualified is that WITH query, never the table of the same name.
     pub enclosing_ctes: Vec<String>,
-    /// The statements of those WITH queries that a reference to one is read through, in the order
-    /// they are in scope: each name, its SELECT as the parser deparses it, and the column names
-    /// its column list gives, if any. A recursive WITH query has none, and is read as nothing.
-    pub enclosing_bodies: Vec<(String, String, Vec<String>)>,
+    /// Those WITH queries in the order they are in scope, so that a reference to one is read
+    /// through its statement: each name, its SELECT as the parser deparses it, and the column names
+    /// its column list gives, if any. One the engine does not read (a recursive one, a write, one
+    /// that does not deparse) has no statement, and still hides an outer one of its name.
+    pub enclosing_bodies: Vec<(String, Option<String>, Vec<String>)>,
     /// Whether the statement being proven is a subquery of another one, whose columns it may read
     /// (a `SUBQ` site of the framework, proven on its own). An aggregate over such columns alone
     /// belongs to that statement and leaves the subquery a row per row of its FROM, so a nested
@@ -200,12 +201,14 @@ impl Catalog {
     /// that a reference to one reads its keys. A WITH query's body sees those before it.
     fn scoped(&self, names: &[String], with: Option<&protobuf::WithClause>, upto: Option<usize>) -> Catalog {
         let mut inner = self.enclosed(names);
-        for cte in with.filter(|w| !w.recursive).into_iter().flat_map(|w| w.ctes.iter().take(upto.unwrap_or(usize::MAX))) {
+        let recursive = with.is_some_and(|w| w.recursive);
+        for cte in with.into_iter().flat_map(|w| w.ctes.iter().take(upto.unwrap_or(usize::MAX))) {
             let Some(NodeEnum::CommonTableExpr(cte)) = cte.node.as_ref() else { continue };
-            let Some(NodeEnum::SelectStmt(body)) = cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) else { continue };
-            if let Some(text) = deparse_select(body) {
-                inner.enclosing_bodies.push((cte.ctename.clone(), text, cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect()));
-            }
+            let text = match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
+                Some(NodeEnum::SelectStmt(body)) if !recursive => deparse_select(body),
+                _ => None,
+            };
+            inner.enclosing_bodies.push((cte.ctename.clone(), text, cte.aliascolnames.iter().filter_map(field_name).map(String::from).collect()));
         }
         inner
     }
@@ -224,6 +227,7 @@ fn deparse_select(select: &SelectStmt) -> Option<String> {
 fn enclosing_body<T>(catalog: &Catalog, name: &str, f: impl FnOnce(&SelectStmt, &Catalog, &[String]) -> T) -> Option<T> {
     let at = catalog.enclosing_bodies.iter().rposition(|(n, _, _)| n == name)?;
     let (_, text, columns) = &catalog.enclosing_bodies[at];
+    let text = text.as_deref()?;
     let mut scoped = catalog.clone();
     scoped.enclosing_bodies.truncate(at);
     view_select(text, |body| f(body, &scoped, columns))
