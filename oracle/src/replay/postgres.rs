@@ -3,6 +3,8 @@
 //!   git clone --depth 1 --branch REL_18_6 https://github.com/postgres/postgres
 //!   cargo run -p reylo-oracle -- --url postgres://postgres@localhost:56432/postgres --replay postgres postgres/src/test/regress
 //!
+//! The suite also makes roles, a tablespace and databases of its own, which outlive the run (only `reylo_replay` is dropped and made again), so `--url` names a throwaway server, and port 5432 is refused as for a case run.
+//!
 //! psql's meta-commands are skipped but `\set`, `\getenv` and `\c`, and its variables (`:name`, `:'name'`, `:"name"`) are written in. `COPY … FROM stdin` is fed the data below it, and `COPY … TO STDOUT` is skipped. The session takes pg_regress's settings. Files that need the suite's C library (`regress.so`) fail where they call it, which is no evidence.
 
 use super::{Returned, Tally};
@@ -18,7 +20,7 @@ const DATABASE: &str = "reylo_replay";
 pub async fn run(url: &str, regress: &Path, timeout_ms: u64) -> Result<bool, String> {
     let schedule = std::fs::read_to_string(regress.join("parallel_schedule")).map_err(|e| format!("{}: {e}", regress.join("parallel_schedule").display()))?;
     let names: Vec<&str> = schedule.lines().filter_map(|l| l.trim().strip_prefix("test:")).flat_map(str::split_whitespace).collect();
-    let (admin, connection) = tokio_postgres::connect(url, NoTls).await.map_err(|e| format!("{url}: {e}"))?;
+    let (admin, connection) = crate::throwaway_config(url)?.connect(NoTls).await.map_err(|e| format!("{url}: {e}"))?;
     tokio::spawn(connection);
     admin.batch_execute(&format!("DROP DATABASE IF EXISTS {DATABASE} WITH (FORCE)")).await.map_err(|e| e.to_string())?;
     admin.batch_execute(&format!("CREATE DATABASE {DATABASE} TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'")).await.map_err(|e| e.to_string())?;

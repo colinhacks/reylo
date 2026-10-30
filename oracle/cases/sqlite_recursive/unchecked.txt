@@ -1,2 +1,0 @@
-round_reads_nullable.sql: every run timed out (5000 ms)
-rounds_keep_types.sql: every run timed out (5000 ms)

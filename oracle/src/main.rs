@@ -370,11 +370,17 @@ async fn connect(config: &Config) -> Result<Client, String> {
     Ok(client)
 }
 
-async fn connect_admin(url: &str) -> Result<(Client, Config, i32), String> {
+/// The server `url` names, refused on port 5432, the shared server's: the oracle creates and drops databases, and runs only on a throwaway cluster.
+fn throwaway_config(url: &str) -> Result<Config, String> {
     let config = Config::from_str(url).map_err(|e| e.to_string())?;
     if config.get_ports().contains(&5432) {
         return Err("port 5432 is the shared server; the oracle runs only on a throwaway cluster".into());
     }
+    Ok(config)
+}
+
+async fn connect_admin(url: &str) -> Result<(Client, Config, i32), String> {
+    let config = throwaway_config(url)?;
     let client = connect(&config).await?;
     let version: String = client.query_one("SHOW server_version_num", &[]).await.map_err(|e| e.to_string())?.get(0);
     Ok((client, config, version.parse().unwrap_or(0)))

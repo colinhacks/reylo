@@ -293,7 +293,11 @@ impl Owned {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            let _ = kill(&["-9"]);
+            // Only a server still running is killed: once it is gone, its pid may be another process's.
+            if kill(&["-0"]).is_ok_and(|s| s.success()) {
+                let _ = kill(&["-9"]);
+            }
+            let _ = std::fs::remove_file(self.dir.join("pid"));
         }
     }
 
