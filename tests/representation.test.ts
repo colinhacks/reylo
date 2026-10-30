@@ -4,22 +4,19 @@ import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { renderType } from "../src/render.ts";
 import { defineQuery } from "../src/index.ts";
+import { DRIVERS, PG, MYSQL, INDEX } from "./helpers.ts";
 
 // Reylo's one representation per SQL type (src/values.ts), on the real drivers, each set up by the
 // app against it: the module a build step writes, run on each, must give the same rows, and each
 // app's own query keeps the app's settings (the failing control). Postgres and MySQL run on
 // throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a database of its own; the
 // drivers are lab/drivers'.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
 const drivers = existsSync(join(DRIVERS, "pg")) || "lab/drivers is not installed";
 const pgLive = !PG ? "REYLO_TEST_PG names no server" : drivers === true ? false : drivers;
 const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : drivers === true ? false : drivers;

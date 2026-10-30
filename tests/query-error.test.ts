@@ -1,22 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { defineQuery, type MysqlClient, type MysqlCode, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresQueryError, type Query, type SqliteCode, type SqliteQueryError } from "../src/index.ts";
 import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
+import { DRIVERS, MYSQL, pgLive, mysqlLive, postgresDatabase, driver } from "./helpers.ts";
 
 // `.try()` and the database's error it reads from each driver's own (src/query-error.ts). The
 // drivers' errors below are the ones each throws, measured on the real package (lab/driver-matrix
 // checks them through `.try()` on every driver). Postgres and MySQL run on throwaway servers
 // (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a database of its own.
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
 /** A driver's error: an Error with the driver's own fields. */
 const thrown = (message: string, fields: Record<string, unknown> = {}, Class: new (message: string) => Error = Error) => Object.assign(new Class(message), fields);
@@ -239,16 +233,10 @@ test("trySync returns the value or the database's error on a synchronous SQLite 
 });
 
 test("Postgres: try reads each constraint, the syntax error's position and a function's own code, on pg and postgres.js", { skip: pgLive }, async () => {
-  const require = createRequire(join(DRIVERS, "postgres", "package.json"));
-  const postgres = require("postgres");
-  const pg = require("pg");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_try_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const sql = postgres(url.href, { max: 1, onnotice: () => {} });
+  const pg = driver("pg");
+  const own = await postgresDatabase("reylo_try");
+  const url = new URL(own.url);
+  const sql = own.sql;
   const client = new pg.Client({ connectionString: url.href });
   await client.connect();
   try {
@@ -280,9 +268,7 @@ test("Postgres: try reads each constraint, the syntax error's position and a fun
     }
   } finally {
     await client.end();
-    await sql.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 

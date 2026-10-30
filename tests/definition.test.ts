@@ -1,20 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
-// Go-to-definition from what a `.sql` module declares opens the `.sql` file at its statement, through
-// the span map the content mapper returns (src/mapper.ts), and a hover shows the file's comment and
-// statement, from the doc comments the module carries (src/doc-comment.ts). The language server
-// runs as an editor runs it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so
-// no server is needed.
-const ROOT = join(import.meta.dirname, "..");
-// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
-const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
+import { ROOT, languageServer } from "./helpers.ts";
 
 type Position = { line: number; character: number };
 type Range = { start: Position; end: Position };
@@ -39,46 +30,6 @@ function project(): string {
   return root;
 }
 
-/** A language server over stdio with LSP framing, as an editor talks to it. */
-function server(root: string) {
-  const child = spawn(process.execPath, [TSC, "--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
-  const pending = new Map<number, (result: any) => void>();
-  let buffer = Buffer.alloc(0);
-  const write = (message: object) => {
-    const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...message }), "utf8");
-    child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    child.stdin.write(body);
-  };
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      // A request from the server (registerCapability, workspace/configuration) is answered as a
-      // client that has nothing to add.
-      if (message.method && message.id !== undefined) write({ id: message.id, result: message.method === "workspace/configuration" ? message.params.items.map(() => null) : null });
-      else if (message.id !== undefined) pending.get(message.id)?.(message.result);
-    }
-  });
-  let id = 0;
-  const request = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      write({ id, method, params });
-    });
-  const notify = (method: string, params: unknown) => write({ method, params });
-  const close = async () => {
-    await request("shutdown", undefined);
-    notify("exit", undefined);
-    await new Promise((resolve) => child.once("exit", resolve));
-  };
-  return { request, notify, close };
-}
-
 test("go-to-definition on a query, its import's path, its Row and a column opens the .sql file at its statement, and a hover shows its comment and statement", async () => {
   const root = project();
   const main = join(root, "main.ts");
@@ -87,7 +38,7 @@ test("go-to-definition on a query, its import's path, its Row and a column opens
     const before = text.slice(0, text.indexOf(needle) + offset).split("\n");
     return { line: before.length - 1, character: before.at(-1)!.length };
   };
-  const lsp = server(root);
+  const lsp = languageServer(root);
   try {
     await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { definition: { linkSupport: true }, hover: { contentFormat: ["markdown"] } } }, initializationOptions: { runExternalCode: true } });
     lsp.notify("initialized", {});

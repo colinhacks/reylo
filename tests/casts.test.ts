@@ -1,23 +1,19 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { Session } from "../src/analyze.ts";
+import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
+import { DRIVERS, MYSQL, mysqlLive, INDEX, closeSessions, plain, mysqlDatabase } from "./helpers.ts";
 
 // A parameter's `::type` on MySQL and SQLite, which have no `::`: the build writes the dialect's
 // own cast, and the run time checks the value against the type, since both databases' casts turn
 // a value they cannot read into 0 or NULL (`::` everywhere,
 // converted by the compiler). MySQL runs on a throwaway server named by REYLO_TEST_MYSQL, in a database of
 // its own.
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const INDEX = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
 
 function project(driver?: string): string {
   const root = mkdtempSync(join(tmpdir(), "reylo-casts-"));
@@ -42,12 +38,6 @@ async function built(root: string, url: string, name: string, sql: string) {
   assert.equal(module.default["~standard"].query.text, `${text} /*file='${name}.sql'*/`);
   return { query: module.default, text, code };
 }
-
-const plain = (rows: readonly object[]) => [...rows].map((r) => ({ ...r }));
-
-const closeAll = async () => {
-  for (const session of Session.opened()) await session.close();
-};
 
 test("SQLite: a cast is SQLite's own, a date's to TEXT, JSON's through json(), and a value the cast would change is refused", async () => {
   const root = project();
@@ -81,22 +71,14 @@ test("SQLite: a cast is SQLite's own, a date's to TEXT, JSON's through json(), a
     await assert.rejects(built(root, url, "flag", "select :b::boolean as b"), /SQLite has no boolean type/);
   } finally {
     db.close();
-    await closeAll();
+    await closeSessions();
   }
 });
 
 test("MySQL: a cast is MySQL's own, LIMIT and a text cast take the bare placeholder, and a value the cast would change is refused", { skip: mysqlLive }, async () => {
-  const require = createRequire(join(DRIVERS, "mysql2", "package.json"));
-  const mysql = require("mysql2/promise");
-  const server = new URL(MYSQL!);
-  const connect = (database?: string) => mysql.createConnection({ host: server.hostname, port: Number(server.port), user: decodeURIComponent(server.username) || "root", password: decodeURIComponent(server.password), database });
-  const admin = await connect();
-  const name = `reylo_casts_${process.pid}`;
-  await admin.query(`drop database if exists ${name}`);
-  await admin.query(`create database ${name}`);
-  const url = new URL(MYSQL!);
-  url.pathname = `/${name}`;
-  const db = await connect(name);
+  const own = await mysqlDatabase("reylo_casts");
+  const url = new URL(own.url);
+  const db = own.db;
   const root = project("mysql2");
   try {
     await db.query("create table events (id bigint auto_increment primary key, amount decimal(10,2) not null, at datetime(6) not null)");
@@ -144,25 +126,15 @@ test("MySQL: a cast is MySQL's own, LIMIT and a text cast take the bare placehol
     await assert.rejects(built(root, url.href, "flag", "select :b::bool as b"), /MySQL has no boolean type/);
     await assert.rejects(built(root, url.href, "zone", "select :t::timestamptz as t"), /drops the zone/);
   } finally {
-    await closeAll();
-    await db.end();
-    await admin.query(`drop database if exists ${name}`);
-    await admin.end();
+    await closeSessions();
+    await own.drop();
   }
 });
 
 test("MySQL: a window frame's bound, NTILE's argument and the offset of LAG and LEAD take the bare placeholder, and the value is checked", { skip: mysqlLive }, async () => {
-  const require = createRequire(join(DRIVERS, "mysql2", "package.json"));
-  const mysql = require("mysql2/promise");
-  const server = new URL(MYSQL!);
-  const connect = (database?: string) => mysql.createConnection({ host: server.hostname, port: Number(server.port), user: decodeURIComponent(server.username) || "root", password: decodeURIComponent(server.password), database });
-  const admin = await connect();
-  const name = `reylo_window_casts_${process.pid}`;
-  await admin.query(`drop database if exists ${name}`);
-  await admin.query(`create database ${name}`);
-  const url = new URL(MYSQL!);
-  url.pathname = `/${name}`;
-  const db = await connect(name);
+  const own = await mysqlDatabase("reylo_window_casts");
+  const url = new URL(own.url);
+  const db = own.db;
   const root = project("mysql2");
   try {
     await db.query("create table t (id int primary key, n int not null)");
@@ -178,9 +150,7 @@ test("MySQL: a window frame's bound, NTILE's argument and the offset of LAG and 
     assert.deepEqual(plain(await range.query.run(db, { k: 10 })).map((r) => Object.values(r).map(String)), [["1", "1"], ["2", "2"], ["3", "2"]]);
     await assert.rejects(built(root, url.href, "tiles", "select ntile(:k::text) over (order by id) from t"), /NTILE's argument and the offset of LAG and LEAD take an integer/);
   } finally {
-    await closeAll();
-    await db.end();
-    await admin.query(`drop database if exists ${name}`);
-    await admin.end();
+    await closeSessions();
+    await own.drop();
   }
 });

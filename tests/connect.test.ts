@@ -4,17 +4,14 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import { connect, createServer, type AddressInfo, type Server } from "node:net";
 import { Session } from "../src/analyze.ts";
 import { guestPath } from "../src/component.ts";
 import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
+import { PG, MYSQL, ROOT } from "./helpers.ts";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
 const noPg = !PG && "REYLO_TEST_PG names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
 // Node listens on no Unix socket on Windows, where a path names a named pipe.

@@ -14,7 +14,7 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | `packages/<database>/` | The engine packages `@reylosql/postgres`, `@reylosql/mysql`, `@reylosql/sqlite` and `@reylosql/duckdb`: a `package.json`, a README, the committed engine component in `engine/` (jco's transpile of the component `engine/build.sh` builds), and `tooling.ts`, from which the build bundles the build-time half of `src/` into the package. Optional peers of `reylo` at its exact version |
 | `engine/` | The analysis engine, Rust: `core/`, shared by every database, and one crate per database, none depending on another, each implementing core's `Database` trait ([engine/README.md](./engine/README.md)). Built for the loader, with the program that connects it to its database (`native/`), to one WebAssembly component per database (`wasip2/`), and linked natively by the oracle |
 | `oracle/` | The soundness oracle (`reylo-oracle`) and `oracle/cases/`, the regression suite for everything the engine infers |
-| `tests/` | The loader's node tests |
+| `tests/` | The loader's node tests; `tests/helpers.ts` holds what they share: the test databases and a database of a test's own on each, the drivers, and the content mapper's and the language server's clients |
 | `site/` | The docs site, reylo.dev: Vite, React Router and MDX; its design is docs-kit, copied into `site/docs-kit/` |
 | `examples/` | One complete project per setup the docs describe, the models to copy when setting Reylo up elsewhere ([examples/README.md](./examples/README.md)); each is checked |
 | `lab/` | End-to-end check projects: one per dialect, the bundlers, Jest, Next.js, the drivers and the driver matrix |

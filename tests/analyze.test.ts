@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,12 +11,11 @@ import { mapperHandlers } from "../src/mapper-server.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
+import { DRIVERS, PG, postgresDatabase } from "./helpers.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
 // test makes a database of its own there and drops it after. The driver is the labs', never the
 // package's own.
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
 const live = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 // A SQLite project: a package, its database, and DATABASE_URL naming it.
@@ -282,14 +280,9 @@ test("a parameter as a whole sort key is an error the type check places, and a b
 });
 
 test("the Postgres fingerprint runs on the server, holds while nothing changes, and moves with each catalog the analysis reads, under a search path that puts a user's `||` first", { skip: live }, async () => {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG, { max: 1, onnotice: () => {} });
-  const name = `reylo_fingerprint_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const db = postgres(url.href, { max: 1, onnotice: () => {} });
+  const own = await postgresDatabase("reylo_fingerprint");
+  const url = new URL(own.url);
+  const db = own.sql;
   const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
   writeFileSync(join(root, "package.json"), "{}");
   mkdirSync(join(root, "node_modules"));
@@ -317,7 +310,7 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     // reads, and the fingerprint moves with each change below.
     await db.unsafe(`create function cat_null(text, text) returns text language sql immutable as 'select null::pg_catalog.text';
       create operator public.|| (leftarg = text, rightarg = text, function = cat_null)`);
-    await admin.unsafe(`alter database ${name} set search_path = public, pg_catalog`);
+    await db.unsafe(`alter database ${url.pathname.slice(1)} set search_path = public, pg_catalog`);
     const hostile = await fingerprint();
     assert.notEqual(hostile, first);
     assert.equal(await fingerprint(), hostile);
@@ -346,9 +339,7 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       last = next;
     }
   } finally {
-    await db.end();
-    await admin.unsafe(`drop database if exists ${name}`);
-    await admin.end();
+    await own.drop();
   }
 });
 

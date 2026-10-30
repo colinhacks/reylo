@@ -1,23 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { withinFile } from "../src/module-types.ts";
+import { DRIVERS, PG, pgLive, ROOT } from "./helpers.ts";
 
 // A statement that ends inside a string, a quoted name or a comment is an error at what it leaves
 // open, and its module is still typed. The error once sat at the end of the text, one byte past
 // the end of the file, and TypeScript refused the whole transform ("The content mapper returned an
 // invalid transform response"), which made the import `any`. The type check runs as a project runs
 // it, `tsc` with runExternalCode: over SQLite, and over Postgres where REYLO_TEST_PG names a server.
-const ROOT = join(import.meta.dirname, "..");
 // TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
 const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
-const PG = process.env.REYLO_TEST_PG;
-const DRIVERS = join(ROOT, "lab", "drivers", "node_modules");
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
 
 const FILES = {
   "string.sql": "select 'a",

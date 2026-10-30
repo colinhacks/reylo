@@ -1,27 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { fieldComment } from "../src/module-types.ts";
-
-// A column's comment (Postgres's COMMENT ON COLUMN, MySQL's COMMENT '…') is the doc comment of each
-// field that reads the column as it is, so an editor's hover over the field shows it. The content
-// mapper runs as the type check runs it, through its own JSON-RPC process, and the language server
-// as an editor runs it, on throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a
-// database of its own.
-const ROOT = join(import.meta.dirname, "..");
-const PG = process.env.REYLO_TEST_PG;
-const MYSQL = process.env.REYLO_TEST_MYSQL;
-const DRIVERS = fileURLToPath(new URL("../lab/drivers/node_modules", import.meta.url));
-const MAPPER = fileURLToPath(new URL("../src/mapper.ts", import.meta.url));
-// TypeScript's own launcher, run by this Node: node_modules/.bin holds a shell script, which Windows cannot start.
-const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
-const pgLive = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
-const mysqlLive = !MYSQL ? "REYLO_TEST_MYSQL names no server" : !existsSync(join(DRIVERS, "mysql2")) ? "lab/drivers is not installed" : false;
+import { DRIVERS, MYSQL, pgLive, mysqlLive, ROOT, declarations, postgresDatabase, languageServer } from "./helpers.ts";
 
 function project(url: string, driver: string, dialect: string): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-comments-")));
@@ -34,75 +19,11 @@ function project(url: string, driver: string, dialect: string): string {
   return root;
 }
 
-/** What the content mapper answers for each file, from a process of its own: its declaration. */
-async function transform(root: string, files: Record<string, string>): Promise<Record<string, string>> {
-  const child = spawn(process.execPath, [MAPPER], { cwd: root, stdio: ["pipe", "pipe", "inherit"] });
-  const pending = new Map<number, (result: unknown) => void>();
-  let buffer = Buffer.alloc(0);
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      pending.get(message.id)?.(message.error ? Promise.reject(new Error(message.error.message)) : message.result);
-    }
-  });
-  let id = 0;
-  const call = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", id, method, params }), "utf8");
-      child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-      child.stdin.write(body);
-    });
-  try {
-    await call("initialize", { protocolVersion: 1 });
-    await call("openProject", { projectHandle: "p", configFileName: join(root, "tsconfig.json"), options: {} });
-    const out: Record<string, string> = {};
-    for (const [name, content] of Object.entries(files)) {
-      const result = await call("transform", { fileName: join(root, name), content, projectHandle: "p" });
-      assert.deepEqual(result.diagnostics, [], name);
-      out[name] = result.text;
-    }
-    await call("closeProject", { projectHandle: "p" });
-    return out;
-  } finally {
-    child.stdin.end();
-    await new Promise((resolve) => child.once("exit", resolve));
-  }
-}
-
 /** The `Params` and `Row` a declaration exports. */
 function types(text: string): { params: string; row: string } {
   const params = /^export type Params = ([\s\S]*?);\nexport type Row/m.exec(text)![1]!;
   const row = /^export type Row = ([\s\S]*?);\n(?=\/\*\*|export )/m.exec(text)![1]!;
   return { params, row };
-}
-
-/** A database of its own on the throwaway Postgres, with `setup` run in it. */
-async function postgresDatabase(prefix: string, setup: string) {
-  const postgres = createRequire(join(DRIVERS, "postgres", "package.json"))("postgres");
-  const admin = postgres(PG!, { max: 1, onnotice: () => {} });
-  const name = `${prefix}_${process.pid}`;
-  await admin.unsafe(`drop database if exists ${name}`);
-  await admin.unsafe(`create database ${name}`);
-  const url = new URL(PG!);
-  url.pathname = `/${name}`;
-  const db = postgres(url.href, { max: 1, onnotice: () => {} });
-  await db.unsafe(setup);
-  return {
-    url: url.href,
-    run: (sql: string) => db.unsafe(sql),
-    async drop() {
-      await db.end();
-      await admin.unsafe(`drop database if exists ${name} with (force)`);
-      await admin.end();
-    },
-  };
 }
 
 const POSTGRES_SCHEMA = `create table users (id int primary key, age int, email text not null, note text);
@@ -130,7 +51,7 @@ test("Postgres: a field that reads a column as it is carries the column's commen
       "adults.sql": "select id, years from adults\n",
       "update.sql": "update users set age = :age, note = :note where id = :id returning age\n",
     };
-    const out = await transform(root, files);
+    const out = await declarations(root, files);
     // An alias keeps the column's comment; an expression over a column has none. A type with a
     // doc comment has a field per line, since TypeScript reads one only where a line starts with it.
     assert.deepEqual(types(out["user.sql"]!), {
@@ -162,8 +83,8 @@ test("Postgres: a field that reads a column as it is carries the column's commen
     });
 
     // The schema's fingerprint takes in the comments, so the entry `.reylo/` keeps is analyzed again.
-    await db.run("comment on column users.age is 'Age, in whole years'");
-    const again = await transform(root, { "user.sql": files["user.sql"] });
+    await db.sql.unsafe("comment on column users.age is 'Age, in whole years'");
+    const again = await declarations(root, { "user.sql": files["user.sql"] });
     assert.match(types(again["user.sql"]!).row, /\/\*\* Age, in whole years \*\/\n  age: number \| null;\n  \/\*\* Age, in whole years \*\/\n  years/);
   } finally {
     await db.drop();
@@ -188,7 +109,7 @@ test("MySQL: a field that reads a column as it is carries the column's comment, 
       "derived.sql": "select age from (select id as age from other) o\n",
       "update.sql": "update users set age = :age where id = :id\n",
     };
-    const out = await transform(root, files);
+    const out = await declarations(root, files);
     // An alias keeps the column's comment, an expression has none, and so has a column without one.
     // A parameter compared with a column carries its comment too.
     assert.deepEqual(types(out["user.sql"]!), {
@@ -213,7 +134,7 @@ test("MySQL: a field that reads a column as it is carries the column's comment, 
     assert.equal(types(out["update.sql"]!).params, "{\n  /** Age (in years) */\n  age?: number | null;\n  /** The user's id */\n  id: number;\n}");
 
     await db.query("alter table users modify age int comment 'Age, in whole years'");
-    const again = await transform(root, { "user.sql": files["user.sql"] });
+    const again = await declarations(root, { "user.sql": files["user.sql"] });
     assert.match(types(again["user.sql"]!).row, /\/\*\* Age, in whole years \*\/\n  years: number \| null;/);
   } finally {
     await db.end();
@@ -222,47 +143,9 @@ test("MySQL: a field that reads a column as it is carries the column's comment, 
   }
 });
 
-/** A language server over stdio with LSP framing, as an editor talks to it. */
-function server(root: string) {
-  const child = spawn(process.execPath, [TSC, "--lsp", "--stdio"], { cwd: root, stdio: ["pipe", "pipe", "ignore"] });
-  const pending = new Map<number, (result: any) => void>();
-  let buffer = Buffer.alloc(0);
-  const write = (message: object) => {
-    const body = Buffer.from(JSON.stringify({ jsonrpc: "2.0", ...message }), "utf8");
-    child.stdin.write(`Content-Length: ${body.length}\r\n\r\n`);
-    child.stdin.write(body);
-  };
-  child.stdout.on("data", (chunk: Buffer) => {
-    buffer = Buffer.concat([buffer, chunk]);
-    for (;;) {
-      const end = buffer.indexOf("\r\n\r\n");
-      if (end === -1) return;
-      const length = Number(/Content-Length:\s*(\d+)/i.exec(buffer.subarray(0, end).toString("ascii"))![1]);
-      if (buffer.length < end + 4 + length) return;
-      const message = JSON.parse(buffer.subarray(end + 4, end + 4 + length).toString("utf8"));
-      buffer = buffer.subarray(end + 4 + length);
-      if (message.method && message.id !== undefined) write({ id: message.id, result: message.method === "workspace/configuration" ? message.params.items.map(() => null) : null });
-      else if (message.id !== undefined) pending.get(message.id)?.(message.result);
-    }
-  });
-  let id = 0;
-  const request = (method: string, params: unknown) =>
-    new Promise<any>((resolve) => {
-      pending.set(++id, resolve);
-      write({ id, method, params });
-    });
-  const notify = (method: string, params: unknown) => write({ method, params });
-  const close = async () => {
-    await request("shutdown", undefined);
-    notify("exit", undefined);
-    await new Promise((resolve) => child.once("exit", resolve));
-  };
-  return { request, notify, close };
-}
-
 test("the hover over a field of a query's row shows its column's comment", { skip: pgLive }, async () => {
   const db = await postgresDatabase("reylo_hover", POSTGRES_SCHEMA);
-  const lsp = { close: async () => {} } as ReturnType<typeof server>;
+  const lsp = { close: async () => {} } as ReturnType<typeof languageServer>;
   try {
     const root = project(db.url, "postgres", "postgres");
     const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true };
@@ -273,7 +156,7 @@ test("the hover over a field of a query's row shows its column's comment", { ski
     const text = readFileSync(main, "utf8");
     const before = text.slice(0, text.indexOf("user?.age") + "user?.".length).split("\n");
     const position = { line: before.length - 1, character: before.at(-1)!.length + 1 };
-    Object.assign(lsp, server(root));
+    Object.assign(lsp, languageServer(root));
     await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { hover: { contentFormat: ["markdown", "plaintext"] } } }, initializationOptions: { runExternalCode: true } });
     lsp.notify("initialized", {});
     const uri = pathToFileURL(main).href;
