@@ -28,7 +28,7 @@ key_fixed_inside.sql: maybeOne (p: int8, t: text) -> { tag: text }
 key_not_fixed_inside.sql: many (p: int8, t: text) -> { tag: text }
 lateral_pinned.sql: maybeOne (u: int8, p: int8) -> { name: text, title: text }
 lateral_source.sql: many (id: int8) -> { id: int8 }
-left_join_equated.sql: many (id: int8, tag: text) -> { id: int8, tag: text? }
+left_join_equated.sql: many (id: int8, tag: text) -> { id: int8, tag: text }
 left_join_many.sql: many (id: int8) -> { id: int8 }
 left_join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text? }
 left_join_subquery.sql: maybeOne (p: int8, id: int8) -> { name: text, title: text? }
