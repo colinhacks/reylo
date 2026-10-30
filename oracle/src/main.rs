@@ -50,10 +50,9 @@
 
 #[cfg(feature = "duckdb")]
 mod duckdb;
-#[cfg(feature = "duckdb")]
-mod sqllogictest;
 mod errors;
 mod mysql;
+mod replay;
 mod seed;
 
 use reylo_engine::AnswerCache;
@@ -71,7 +70,8 @@ async fn main() -> ExitCode {
     let mut bless = false;
     let mut keep = false;
     let mut strict_coverage = false;
-    let mut sqllogictest = false;
+    let mut replay: Option<String> = None;
+    let mut mysqld: Option<PathBuf> = None;
     let mut timeout_ms: u64 = 5000;
     let mut given = Map::new();
     let mut dump: Option<PathBuf> = None;
@@ -84,7 +84,8 @@ async fn main() -> ExitCode {
             "--bless" => bless = true,
             "--keep" => keep = true,
             "--strict-coverage" => strict_coverage = true,
-            "--sqllogictest" => sqllogictest = true,
+            "--replay" => replay = args.next(),
+            "--mysqld" => mysqld = args.next().map(PathBuf::from),
             "--timeout" => match args.next().and_then(|ms| ms.parse::<u64>().ok()).filter(|ms| *ms > 0) {
                 Some(ms) => timeout_ms = ms,
                 None => {
@@ -106,15 +107,32 @@ async fn main() -> ExitCode {
             _ => paths.push(PathBuf::from(arg)),
         }
     }
-    // DuckDB's own test suite, replayed: `sqllogictest.rs`.
-    if sqllogictest {
-        #[cfg(feature = "duckdb")]
-        return if sqllogictest::run(&paths, timeout_ms) { ExitCode::SUCCESS } else { ExitCode::FAILURE };
-        #[cfg(not(feature = "duckdb"))]
-        {
-            eprintln!("--sqllogictest runs DuckDB's test files, in an oracle built with DuckDB: --features duckdb");
-            return ExitCode::from(2);
-        }
+    // A database's own test suite, replayed: `replay/`.
+    if let Some(database) = replay {
+        let outcome = match (database.as_str(), paths.as_slice()) {
+            #[cfg(feature = "duckdb")]
+            ("duckdb", _) => Ok(replay::duckdb::run(&paths, timeout_ms)),
+            #[cfg(not(feature = "duckdb"))]
+            ("duckdb", _) => Err("--replay duckdb runs DuckDB's tests, in an oracle built with DuckDB: --features duckdb".to_string()),
+            ("sqlite", _) => Ok(replay::sqlite::run(&paths, timeout_ms)),
+            ("postgres", [regress]) => match &url {
+                Some(url) => replay::postgres::run(url, regress, timeout_ms).await,
+                None => Err("--replay postgres runs on the server --url names".to_string()),
+            },
+            ("mysql", _) => match &mysqld {
+                Some(mysqld) => replay::mysql::run(mysqld, &paths, timeout_ms).await,
+                None => Err("--replay mysql runs on a server it starts from --mysqld <path to mysqld>".to_string()),
+            },
+            _ => Err("--replay takes duckdb, postgres, sqlite or mysql, and the suite's directory: postgres's src/test/regress alone".to_string()),
+        };
+        return match outcome {
+            Ok(true) => ExitCode::SUCCESS,
+            Ok(false) => ExitCode::FAILURE,
+            Err(e) => {
+                eprintln!("{e}");
+                ExitCode::from(2)
+            }
+        };
     }
     let cases = cases(&paths);
     if cases.is_empty() {

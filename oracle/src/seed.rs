@@ -926,7 +926,7 @@ fn sqlite_tables(db: &rusqlite::Connection) -> Result<Vec<SqliteTable>, String> 
 }
 
 /// Run `run` with the connection interrupted once `ms` have passed.
-fn with_deadline<T>(db: &rusqlite::Connection, ms: u64, run: impl FnOnce() -> T) -> T {
+pub(crate) fn with_deadline<T>(db: &rusqlite::Connection, ms: u64, run: impl FnOnce() -> T) -> T {
     let deadline = Instant::now() + Duration::from_millis(ms);
     let _ = db.progress_handler(1000, Some(move || Instant::now() >= deadline));
     let out = run();
