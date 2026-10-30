@@ -17,3 +17,4 @@ create table t (
 create table other (id int primary key, t_id int not null, label varchar(20) not null, maybe_label varchar(20));
 create table nothing (id int primary key, n int not null, check (false));
 create view shown as select id, n, n > 1 as more, coalesce(n, 0) as m, small, quarter(day) as q, big from t;
+create view far_days as select id, from_days(n) as d, from_days(3652499) as far from t;

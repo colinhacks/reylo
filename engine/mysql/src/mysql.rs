@@ -407,8 +407,16 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         }
         _ => Proven { flags: raw.columns.iter().map(|c| c.flags & 1 != 0).collect(), ..Proven::default() },
     };
+    // The unique keys, columns and views of the tables the query reads, which its cardinality
+    // reads, and whose views' own calls the flags below may miss.
+    let keys = match &parsed {
+        Some(Statement::Query(q)) if !assigns(q) => catalog(host, q),
+        _ => None,
+    };
     let mut never_null = proven.never_null(&raw.columns);
-    for position in flagged_wrongly(parsed.as_ref(), never_null.len()) {
+    let no_views = HashMap::new();
+    let views = keys.as_ref().map_or(&no_views, |keys| &keys.views);
+    for position in flagged_wrongly(parsed.as_ref(), never_null.len(), views) {
         never_null[position] = (false, None);
     }
     // A column of a view may be an expression, which the prepare does not tell from a table's.
@@ -478,10 +486,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     let (cardinality, reason) = match &parsed {
         // Its rows go into variables or a file: it returns none.
         Some(Statement::Query(q)) if assigns(q) => ("none".to_string(), None),
-        Some(Statement::Query(q)) => {
-            let keys = catalog(host, q)?;
-            cardinality(q, &keys)
-        }
+        Some(Statement::Query(q)) => cardinality(q, keys.as_ref()?),
         Some(Statement::Insert(_)) | Some(Statement::Update(_)) | Some(Statement::Delete(_)) => ("none".to_string(), None),
         Some(_) => ("many".to_string(), Some("only a SELECT is proven".into())),
         // MySQL has no RETURNING: a write returns no rows however the server reads it.
@@ -2037,25 +2042,26 @@ fn calls_flagged_wrongly(text: &str) -> bool {
 
 /// The positions of the result columns whose NOT NULL the server's flags, and every proof read
 /// from them, cannot show, since a call of [`FLAGGED_WRONGLY`] may make them: a select list item
-/// that makes one, or every column where one stands elsewhere (a derived table, a WITH query, a
-/// subquery, a set operation) or the list has a wildcard.
-fn flagged_wrongly(parsed: Option<&Statement>, columns: usize) -> Vec<usize> {
+/// that makes one, or every column where one stands where it can reach a column through the FROM
+/// (a derived table, a view's own query, which `views` holds) or a WITH query, or the statement is
+/// a set operation or the list has a wildcard. A call in the WHERE, GROUP BY, HAVING or ORDER BY
+/// only filters or orders, and makes no column.
+fn flagged_wrongly(parsed: Option<&Statement>, columns: usize, views: &HashMap<String, Query>) -> Vec<usize> {
     let Some(Statement::Query(q)) = parsed else { return Vec::new() };
-    if !calls_flagged_wrongly(&q.to_string()) {
+    let in_views = views.values().any(|view| calls_flagged_wrongly(&view.to_string()));
+    if !in_views && !calls_flagged_wrongly(&q.to_string()) {
         return Vec::new();
     }
-    let items = match select_of(q) {
-        Ok(s) if s.projection.len() == columns && s.projection.iter().all(|i| matches!(i, SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. })) => &s.projection,
+    let select = match select_of(q) {
+        Ok(s) if s.projection.len() == columns && s.projection.iter().all(|i| matches!(i, SelectItem::UnnamedExpr(_) | SelectItem::ExprWithAlias { .. })) => s,
         _ => return (0..columns).collect(),
     };
-    let mut rest = q.clone();
-    if let SetExpr::Select(s) = rest.body.as_mut() {
-        s.projection.clear();
-    }
-    if calls_flagged_wrongly(&rest.to_string()) {
+    let in_with = q.with.as_ref().is_some_and(|with| calls_flagged_wrongly(&with.to_string()));
+    let in_from = select.from.iter().any(|item| calls_flagged_wrongly(&item.to_string()));
+    if in_views || in_with || in_from {
         return (0..columns).collect();
     }
-    items.iter().enumerate().filter(|(_, item)| calls_flagged_wrongly(&item.to_string())).map(|(i, _)| i).collect()
+    select.projection.iter().enumerate().filter(|(_, item)| calls_flagged_wrongly(&item.to_string())).map(|(i, _)| i).collect()
 }
 
 pub(crate) fn select_of(q: &Query) -> Result<&Select, String> {

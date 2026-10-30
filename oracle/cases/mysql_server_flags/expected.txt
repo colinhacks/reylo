@@ -18,6 +18,8 @@ float_overflow.sql: many () -> { a: float8, b: float8, c: float8, d: float8?, e:
 for_update.sql: maybeOne (id: int4) -> { id: int4, name: text }
 from_days.sql: many () -> { id: int4, d: date?, far: date? }
 from_days_derived.sql: many () -> { id: int4?, d: date? }
+from_days_view.sql: many () -> { id: int4|int8?, d: date?, far: date? }
+from_days_where.sql: many () -> { id: int4, n: int4 }
 generated_always.sql: many () -> { id: int4, n: int8, name: text, shout: text?, maybe_name: text? }
 group_by_expression.sql: many () -> { shout: text?, c: int8 }
 having.sql: many () -> { n: int4, c: int8 }
