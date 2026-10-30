@@ -7,6 +7,12 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { ROOT, languageServer } from "./helpers.ts";
 
+// Go-to-definition from what a `.sql` module declares opens the `.sql` file at its statement, through
+// the span map the content mapper returns (src/mapper.ts), and a hover shows the file's comment and
+// statement, from the doc comments the module carries (src/doc-comment.ts). The language server
+// runs as an editor runs it, `tsc --lsp --stdio` with runExternalCode on, over a SQLite project, so
+// no server is needed.
+
 type Position = { line: number; character: number };
 type Range = { start: Position; end: Position };
 

@@ -1,13 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
-import { DRIVERS, MYSQL, mysqlLive, INDEX, closeSessions, plain, mysqlDatabase } from "./helpers.ts";
+import { DRIVERS, mysqlLive, INDEX, closeSessions, plain, mysqlDatabase } from "./helpers.ts";
 
 // A parameter's `::type` on MySQL and SQLite, which have no `::`: the build writes the dialect's
 // own cast, and the run time checks the value against the type, since both databases' casts turn

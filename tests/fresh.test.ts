@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { differences, sqliteDefault, type Fresh } from "../src/fresh.ts";
 import { sqlModule } from "../src/loader.ts";
-import { DRIVERS, MYSQL, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase } from "./helpers.ts";
+import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase } from "./helpers.ts";
 
 // The schema freshness check (src/fresh.ts, engine/core/src/fresh.rs; wiki/structured-params.md §6:
 // any change fails). Postgres and MySQL run on throwaway servers named by

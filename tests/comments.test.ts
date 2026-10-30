@@ -8,6 +8,12 @@ import { pathToFileURL } from "node:url";
 import { fieldComment } from "../src/module-types.ts";
 import { DRIVERS, MYSQL, pgLive, mysqlLive, ROOT, declarations, postgresDatabase, languageServer } from "./helpers.ts";
 
+// A column's comment (Postgres's COMMENT ON COLUMN, MySQL's COMMENT '…') is the doc comment of each
+// field that reads the column as it is, so an editor's hover over the field shows it. The content
+// mapper runs as the type check runs it, through its own JSON-RPC process, and the language server
+// as an editor runs it, on throwaway servers (REYLO_TEST_PG, REYLO_TEST_MYSQL), each test in a
+// database of its own.
+
 function project(url: string, driver: string, dialect: string): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-comments-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
