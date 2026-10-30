@@ -807,9 +807,12 @@ fn cast_variable<'n>(n: &'n Node, extras: &Extras) -> Option<&'n String> {
 fn level_of(sel: &Sel, extras: &Extras) -> Level {
     let own: HashSet<i64> = sel.from.iter().map(|f| f.cursor).collect();
     let outer: HashSet<i64> = sel.from.iter().filter(|f| f.outer).map(|f| f.cursor).collect();
+    // A RIGHT or FULL JOIN null-extends the items before it after their inner joins' ON terms
+    // removed rows: those terms narrow none of their columns.
+    let extended: HashSet<i64> = sel.from.iter().filter(|f| f.left_of_right).map(|f| f.cursor).collect();
     let mut narrowed = HashSet::new();
     for term in conjuncts(sel.where_.as_ref()).into_iter().filter(|t| !t.outer_on) {
-        narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor)));
+        narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor) && !(term.inner_on && extended.contains(cursor))));
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
     Level { narrowed, reduced, grouped: !sel.group_by.is_empty() }
@@ -2926,6 +2929,15 @@ enum Slot {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_row_assigned_fewer_values_than_columns_is_the_database_s_error() {
+        let ddl = vec!["create table t1 (a integer primary key, b, c, d)".to_string(), "create table t2 (w, x, y)".to_string()];
+        for sql in ["update t1 set (b, c, d) = (select x, y from t2 where w = a)", "update t1 set (a, a, a, b) = (select 99, 100)"] {
+            let a = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
+            assert!(!a.diagnostics.is_empty(), "{sql}: {a:?}");
+        }
+    }
+
     fn ddl() -> Vec<String> {
         vec![
             "create table users (id integer primary key, name text not null, email text unique, score real, avatar blob, created_at text not null default current_timestamp)".to_string(),
@@ -3176,6 +3188,10 @@ mod tests {
         assert_eq!(col(&reduced, "name"), ("text".into(), false));
         assert_eq!(col(&analysis("select p.title, u.name from posts p left join users u on u.id = p.user_id"), "name"), ("text".into(), true));
         // An ON term is not a WHERE test: the posts that meet no user still have NULL there.
+        // Nor is an inner join's, for the rows a RIGHT JOIN after it null-extends.
+        let right = analysis("select p.title, u.name from posts p join users u on u.email is not null right join posts q on q.id = 0");
+        assert_eq!((col(&right, "title").1, col(&right, "name").1), (true, true));
+        assert_eq!(col(&analysis("select u.email from posts p join users u on u.email is not null"), "email").1, false);
         assert_eq!(col(&analysis("select p.title, u.name from posts p left join users u on u.id = p.user_id and u.email = :e"), "name"), ("text".into(), true));
         // Under a plain GROUP BY no group is empty.
         let grouped = analysis("select user_id, max(title) as t, min(id) as m, group_concat(title) as g from posts group by user_id");

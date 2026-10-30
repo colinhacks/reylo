@@ -39,9 +39,12 @@ pub fn materialized(q: &Query, views: &HashSet<String>) -> Option<Query> {
         select.optimizer_hints.clear();
         merged |= select.from.iter().any(reads_merged);
         // A block that only selects every column of one table has nothing to null-extend the
-        // view's columns with, and is the shape a view is read through.
+        // view's columns with, and is the shape a view is read through. The view's own query may
+        // outer-join another view, merged into it, which the hint materializes.
         let alone = matches!(select.projection.as_slice(), [SelectItem::Wildcard(_)]) && matches!(select.from.as_slice(), [item] if item.joins.is_empty() && matches!(item.relation, TableFactor::Table { .. }));
-        if !alone {
+        if alone {
+            merged |= matches!(&select.from[0].relation, TableFactor::Table { name, .. } if matches!(name.0.last(), Some(ObjectNamePart::Identifier(last)) if views.contains(&last.value.to_ascii_lowercase())));
+        } else {
             for item in &mut select.from {
                 merged |= views_through_derived(item, views);
             }

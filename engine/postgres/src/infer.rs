@@ -675,8 +675,13 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
     // A `*` whose columns the FROM shows for certain is those columns, each read as the qualified
     // reference to it, which is what the WHERE's tests narrow.
     let level = scope.as_ref().map(|_| Level::of(&from, &reader.withs, columns));
+    let keys = match top {
+        NodeEnum::SelectStmt(s) if grouped => Some(GroupingKeys::of(s)),
+        _ => None,
+    };
+    let starred = targets.iter().any(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(rt)) if rt.val.as_deref().is_some_and(is_star)));
     let mut plan = Plan::default();
-    for target in &targets {
+    for (position, target) in targets.iter().enumerate() {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
         if is_star(val) {
@@ -705,6 +710,11 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
             Some(NodeEnum::ColumnRef(c)) => scope.as_ref().and_then(|scope| scope.column(c, val, &mut reader)),
             _ => Some(reader.read(val)),
         };
+        // A grouping key is NULL in the rows a grouping set leaves it out of, whatever it is.
+        let claim = match &keys {
+            Some(keys) if keys.reaches(position, &rt.name, val, starred, trust) => claim.map(|c| Expr::Nullable(Box::new(c))),
+            _ => claim,
+        };
         if plan.star {
             plan.tail.push(claim);
         } else {
@@ -722,6 +732,104 @@ fn plan_here(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns) -> P
         plan.leaves = select_text(version, &leaves, &from, filter, with.as_ref());
     }
     plan
+}
+
+/// The expressions a statement's grouping sets group by, which each is NULL in the rows of a set
+/// that leaves it out: each written, as a canonical tree, and those that name an output column by
+/// its name or its position.
+struct GroupingKeys {
+    trees: Vec<String>,
+    names: Vec<String>,
+    positions: Vec<usize>,
+}
+
+impl GroupingKeys {
+    fn of(s: &protobuf::SelectStmt) -> GroupingKeys {
+        fn collect(v: &serde_json::Value, inside: bool, keys: &mut GroupingKeys) {
+            if let Some(set) = v.pointer("/node/GroupingSet") {
+                for item in set.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
+                    collect(item, true, keys);
+                }
+                return;
+            }
+            if !inside {
+                return;
+            }
+            // `ROLLUP ((a, b))` groups by each of the row's members together.
+            if let Some(args) = v.pointer("/node/RowExpr/args").and_then(|a| a.as_array()) {
+                for arg in args {
+                    collect(arg, true, keys);
+                }
+                return;
+            }
+            // A bare integer in a grouping set is a position in the select list, never a constant
+            // the other columns could hold.
+            if let Some(k) = v.pointer("/node/AConst/val/Ival/ival").and_then(|k| k.as_u64()) {
+                keys.positions.push(k as usize);
+                return;
+            }
+            if let Some(fields) = v.pointer("/node/ColumnRef/fields").and_then(|f| f.as_array()) {
+                if let [only] = fields.as_slice() {
+                    if let Some(name) = only.pointer("/node/String/sval").and_then(|n| n.as_str()) {
+                        keys.names.push(name.to_string());
+                    }
+                }
+            }
+            keys.trees.push(canonical(v).to_string());
+        }
+        let mut keys = GroupingKeys { trees: Vec::new(), names: Vec::new(), positions: Vec::new() };
+        for item in &s.group_clause {
+            collect(&canonical(&serde_json::to_value(item).unwrap_or_default()), false, &mut keys);
+        }
+        keys
+    }
+
+    /// Whether the output column at `position` (from 0), named `name`, of the expression `val`, is
+    /// or holds a grouping key outside an aggregate: by its name (which an input column's of the
+    /// same name would take first, so this may say yes for nothing), by its position (which a `*`
+    /// before it moves), or by an expression it holds.
+    fn reaches(&self, position: usize, name: &str, val: &Node, starred: bool, trust: &Trust) -> bool {
+        if (!name.is_empty() && self.names.iter().any(|n| n == name)) || (!self.positions.is_empty() && (starred || self.positions.contains(&(position + 1)))) {
+            return true;
+        }
+        self.holds(&canonical(&serde_json::to_value(val).unwrap_or_default()), trust)
+    }
+
+    fn holds(&self, v: &serde_json::Value, trust: &Trust) -> bool {
+        // An aggregate's arguments and GROUPING's are read before the grouping sets null anything.
+        if v.pointer("/node/GroupingFunc").is_some() {
+            return false;
+        }
+        if let Some(call) = v.pointer("/node/FuncCall") {
+            let name = call.get("funcname").and_then(|f| f.as_array()).and_then(|f| f.last()).and_then(|n| n.pointer("/node/String/sval")).and_then(|n| n.as_str()).unwrap_or_default();
+            let arity = call.get("args").and_then(|a| a.as_array()).map_or(0, Vec::len);
+            // The aggregates the rules read ([`Reader::aggregates`]); any other call of a key may
+            // be NULL with it.
+            const READ: &[&str] = &["count", "sum", "avg", "min", "max", "json_agg", "jsonb_agg", "array_agg", "bit_and", "bit_or", "bool_and", "bool_or", "every", "string_agg", "json_object_agg", "jsonb_object_agg"];
+            let window = call.get("over").is_some_and(|o| !o.is_null());
+            if !window && (call.get("agg_star").and_then(|a| a.as_bool()) == Some(true) || (READ.contains(&name) && trust.aggregates(name, arity))) {
+                return false;
+            }
+        }
+        if v.get("node").is_some() && self.trees.contains(&v.to_string()) {
+            return true;
+        }
+        match v {
+            serde_json::Value::Object(map) => map.values().any(|v| self.holds(v, trust)),
+            serde_json::Value::Array(items) => items.iter().any(|v| self.holds(v, trust)),
+            _ => false,
+        }
+    }
+}
+
+/// A parse tree's JSON without the source locations, so that two writings of one expression compare
+/// equal.
+fn canonical(v: &serde_json::Value) -> serde_json::Value {
+    match v {
+        serde_json::Value::Object(map) => map.iter().filter(|(k, _)| k.as_str() != "location").map(|(k, v)| (k.clone(), canonical(v))).collect(),
+        serde_json::Value::Array(items) => items.iter().map(canonical).collect(),
+        other => other.clone(),
+    }
 }
 
 impl Plan {
@@ -4284,6 +4392,17 @@ mod tests {
         assert_eq!((1..4).map(|n| fact(&m, n, &[text(true), text(false), text(false)])).collect::<Vec<_>>(), [false, true, false]);
         let matched = pg("MERGE INTO todos t USING drafts s ON t.id = s.id WHEN MATCHED THEN UPDATE SET title = s.title RETURNING s.title || '' AS source");
         assert_eq!(matched.leaves.as_deref(), Some("SELECT s.title AS a0 FROM todos t, drafts s"));
+    }
+
+    #[test]
+    fn a_grouping_key_is_null_in_a_grouping_set_that_leaves_it_out() {
+        let nullable = |sql: &str| pg(sql).head.iter().map(|c| !resolve(c.as_ref().unwrap(), None).non_null).collect::<Vec<_>>();
+        // By its name, its position and its expression; an aggregate of it, GROUPING of it and a
+        // column outside every grouping set are what they are.
+        assert_eq!(nullable("SELECT 1 AS one, count(*) AS n FROM todos GROUP BY ROLLUP (one)"), [true, false]);
+        assert_eq!(nullable("SELECT 1 AS one, 'x' AS x FROM todos GROUP BY CUBE (1)"), [true, false]);
+        assert_eq!(nullable("SELECT generate_series(1, n) + 1 AS g, count(n) AS c, GROUPING(generate_series(1, n)) AS k FROM todos GROUP BY ROLLUP (generate_series(1, n))"), [true, false, false]);
+        assert_eq!(nullable("SELECT lower('A') AS l FROM todos GROUP BY GROUPING SETS ((lower('A')), ())"), [true]);
     }
 
     #[test]

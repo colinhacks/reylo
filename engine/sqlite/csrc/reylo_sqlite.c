@@ -197,6 +197,13 @@ static void columnRef(sqlite3_str *s, Expr *p, Select *pSel){
   if( IsView(pTab) ) kv_bool(s, "view", 1);
 }
 
+/* A row assigned fewer values than it has columns (`SET (a, b, c) = (SELECT x, y)`) is SQLite's
+** error when it codes the statement, after the hooks: the field past the values has no expression
+** for sqlite3ExprAffinity to read. */
+static int missingField(Expr *p){
+  return p->op==TK_SELECT_COLUMN && p->pLeft && ExprUseXSelect(p->pLeft) && p->pLeft->x.pSelect
+      && (p->pLeft->x.pSelect->pEList==0 || p->iColumn>=p->pLeft->x.pSelect->pEList->nExpr);
+}
 static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   int op;
   if( p==0 ){ sqlite3_str_appendall(s, "null"); return; }
@@ -204,11 +211,14 @@ static void expr(sqlite3_str *s, Expr *p, Select *pSel){
   if( op==TK_REGISTER ) op = p->op2;
   sqlite3_str_appendchar(s, 1, '{');
   kv_str(s, "op", opName(op));
-  kv_str(s, "aff", affName(sqlite3ExprAffinity(p)));
+  kv_str(s, "aff", affName(missingField(p) ? SQLITE_AFF_NONE : sqlite3ExprAffinity(p)));
   kv_bool(s, "canBeNull", sqlite3ExprCanBeNull(p));
   /* SQLite moves every ON term into the WHERE; one from an outer join's ON says so, and names the
   ** cursor of the join's right side, which the term restricts without removing a row. */
   if( ExprHasProperty(p, EP_OuterON) ){ kv_bool(s, "outerOn", 1); kv_int(s, "join", p->w.iJoin); }
+  /* One from an inner join's ON, which a RIGHT or FULL JOIN after it does not apply to the rows it
+  ** null-extends. */
+  if( ExprHasProperty(p, EP_InnerON) ) kv_bool(s, "innerOn", 1);
   switch( op ){
     case TK_COLUMN: case TK_AGG_COLUMN: case TK_TRIGGER:
       columnRef(s, p, pSel);
@@ -337,6 +347,7 @@ static void selectJson(sqlite3_str *s, Select *pTop){
     kv_bool(s, "outer", (pItem->fg.jointype & (JT_LEFT|JT_LTORJ))!=0);
     kv_bool(s, "cross", (pItem->fg.jointype & JT_CROSS)!=0);
     kv_bool(s, "right", (pItem->fg.jointype & JT_RIGHT)!=0);
+    kv_bool(s, "leftOfRight", (pItem->fg.jointype & JT_LTORJ)!=0);
     kv_bool(s, "tabFunc", pItem->fg.isTabFunc);
     if( pItem->fg.isTabFunc ){ key(s, "args"); exprList(s, pItem->u1.pFuncArg, p); sqlite3_str_appendchar(s, 1, ','); }
     kv_bool(s, "cte", pItem->fg.isCte);

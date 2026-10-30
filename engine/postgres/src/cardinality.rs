@@ -413,7 +413,7 @@ fn exactly_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         return Err("SELECT INTO creates a table and returns no rows".into());
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Err(why);
         }
@@ -666,7 +666,7 @@ fn at_most_one_select(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: 
         }
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Err(why);
         }
@@ -699,7 +699,7 @@ fn cte_passthrough(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Ca
         return None;
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if let Some(why) = calls_at_this_level(at_this_level).set_returning(catalog) {
             return Some(Err(why));
         }
@@ -1795,7 +1795,7 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
         return Vec::new();
     }
     if dialect == Dialect::Postgres {
-        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause);
+        let at_this_level = s.target_list.iter().chain(&s.sort_clause).chain(&s.distinct_clause).chain(&s.window_clause).chain(&s.group_clause);
         if calls_at_this_level(at_this_level).set_returning(catalog).is_some() {
             return Vec::new();
         }
