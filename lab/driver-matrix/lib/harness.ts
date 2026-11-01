@@ -331,6 +331,8 @@ export function queries(d: Dialect, typed = true) {
       "one",
       { inputs: Object.fromEntries(["s", "n", "b", "t", "o", "a", "e", "z"].map((p) => [p, { type: { kind: "json" } }])) },
     ),
+    // A JSON parameter the statement takes no null for: its null is JSON's null (src/execute.ts).
+    jsonNull: q(d === "postgres" ? "select (:z::jsonb)::text as z" : d === "mysql" ? "select cast(json_extract(:z, '$') as char) as z" : "select json(:z) as z", ["z"], "one", { inputs: { z: { type: { kind: "json" }, nullable: false } } }),
     // A timestamptz is an instant and takes a Date; a timestamp or a date has no zone and takes its text (MySQL has no timestamptz).
     times: q(
       d === "postgres"
@@ -592,6 +594,22 @@ export const SCENARIOS: Scenario[] = [
       const values = { s: 'say "hi"', n: 5, b: true, t: '{"a":1}', o: { k: [1, null] }, a: [1, 2], e: [], z: null };
       const row = (await call(ctx, q.jsonValues, client, values)) as Record<string, string | null>;
       eq(Object.fromEntries(Object.entries(row).map(([k, v]) => [k, v == null ? v : JSON.parse(v)])), values, "the stored JSON, parsed");
+    },
+  },
+  {
+    id: "S1i JSON null: a JSON parameter the statement takes no null for is stored as JSON's null for null, and is refused when left out",
+    on: "client",
+    async run(ctx, client, q) {
+      // Every driver gets the JSON text `null`; Bun.sql, which serializes a JSON parameter itself,
+      // gets an object whose toJSON() returns null.
+      eq(await call(ctx, q.jsonNull, client, { z: null }), { z: "null" }, "row");
+      let refused: unknown = null;
+      try {
+        await call(ctx, q.jsonNull, client, {});
+      } catch (e) {
+        refused = e;
+      }
+      if (!(refused instanceof TypeError) || !/^Parameter "z" is missing, and the statement takes no null for it/.test(refused.message)) throw new Mismatch(`not the refusal of a JSON parameter left out: ${describe(refused)}`);
     },
   },
   {
