@@ -547,7 +547,9 @@ select id from orders where placed_at > :since
 
 A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since MySQL would store the text's own bytes. Decode the text into a `Uint8Array` first.
 
-A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`. Where the query takes no null for it, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold.
+A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
+
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold. A `coalesce` or a null test doesn't make a parameter take null, so write `coalesce(:doc::nullable(json), doc)` to keep `doc` for `null`.
 
 ### Parameters that may be null
 

@@ -279,7 +279,7 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 </Inferred>
 
-A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds.
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
 
 ### Dynamic sorting
 

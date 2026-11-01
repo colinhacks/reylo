@@ -779,7 +779,7 @@ values ('click', :payload::text::jsonb)
 
 **JSON null**
 
-Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it, `null` is SQL's `NULL`:
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`:
 
 ```ts twoslash tab="main.ts"
 import jsonKind from "./pg_json_kind.sql";
@@ -791,6 +791,8 @@ const { kind } = await jsonKind.run(db, { doc: null });
 ```sql tab="pg_json_kind.sql"
 select jsonb_typeof(:doc::jsonb) as kind
 ```
+
+A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 </Rules>
 
