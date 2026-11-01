@@ -66,7 +66,7 @@ const apis = new WeakMap<object, Promise<Api>>();
 
 type ModuleCache = Record<string, { exports?: unknown } | undefined>;
 type NodeRequire = { (id: string): unknown; cache?: ModuleCache };
-type NodeProcess = { cwd(): string; getBuiltinModule?(id: string): { createRequire(from: string): NodeRequire } | undefined };
+type NodeProcess = { argv?: string[]; cwd(): string; getBuiltinModule?(id: string): { createRequire(from: string): NodeRequire } | undefined };
 
 /**
  * The @duckdb/node-api the connection `c` came from. node-api takes a nested or binary value only
@@ -75,7 +75,7 @@ type NodeProcess = { cwd(): string; getBuiltinModule?(id: string): { createRequi
  * can have it) builds values the connection refuses. node-api is CommonJS, so the copy that made
  * `c` is in Node's module cache however the app imported it: the one whose DuckDBConnection `c`
  * is an instance of, a subclass's included. For a connection that only wraps one, the copy is
- * the one loaded where there is one, else the copy the working directory's install resolves, which is refused only
+ * the one loaded where there is one, else the copy the app's install resolves, which is refused only
  * when `c` is another copy's DuckDBConnection.
  */
 function nodeApiOf(c: DuckdbClient): Promise<Api> {
@@ -113,17 +113,24 @@ async function loadNodeApi(c: DuckdbClient): Promise<Api> {
     loaded.push(exports);
   }
   if (loaded.length === 1) return loaded[0]!;
-  let imported: Api;
-  try {
-    const createRequire = proc?.getBuiltinModule?.("node:module")?.createRequire;
-    if (createRequire === undefined) throw new Error("this runtime has no node:module");
-    imported = createRequire(`${proc!.cwd()}/`)(NODE_API) as Api;
-  } catch (e) {
-    throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, and the copy the connection came from cannot be found, nor one installed in the project: ${(e as Error).message}`);
+  let imported: Api | undefined;
+  let failure: unknown;
+  const createRequire = proc?.getBuiltinModule?.("node:module")?.createRequire;
+  for (const from of [proc?.argv?.[1], proc && `${proc.cwd()}/`]) {
+    if (!from || !createRequire) continue;
+    try {
+      imported = createRequire(from)(NODE_API) as Api;
+      break;
+    } catch (e) {
+      failure ??= e;
+    }
+  }
+  if (imported === undefined) {
+    throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, and the copy the connection came from cannot be found, nor one installed in the project: ${(failure as Error | undefined)?.message ?? "this runtime has no process.getBuiltinModule"}`);
   }
   const another = classes.some((k) => k !== imported.DuckDBConnection && (k as { name?: unknown })?.name === "DuckDBConnection");
   if (loaded.length > 1 || another) {
-    const why = another ? "the copy the working directory's install resolves is another" : "the app has loaded several, and the connection is none of their DuckDBConnection";
+    const why = another ? "the copy the app's install resolves is another" : "the app has loaded several, and the connection is none of their DuckDBConnection";
     throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, which must come from the copy of the package the connection came from, and ${why}: install a single @duckdb/node-api.`);
   }
   return imported;
