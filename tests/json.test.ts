@@ -33,7 +33,7 @@ test("a module imports Json from reylo only where one of its types names it", ()
   assert.equal(reyloImport("Record<never, never>", `{\n  /** a " quote */\n  id: number;\n  /** Json" */\n  n: number;\n}`), QUERY_ONLY);
 });
 
-test("SQLite: a value nothing types inside JSON the statement builds is Json, which the type check reads as any JSON value", async () => {
+test("SQLite: a value nothing types inside JSON the statement builds is Json, which the type check reads as any JSON value, and a JSON parameter's null is JSON's null where the statement takes no SQL NULL", async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-json-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
   writeFileSync(join(root, ".env"), "DATABASE_URL=file:./app.db\n");
@@ -74,6 +74,17 @@ test("SQLite: a value nothing types inside JSON the statement builds is Json, wh
   const r = spawnSync(process.execPath, [TSC, "-p", "tsconfig.json", "--runExternalCode", "--pretty", "false"], { cwd: root, encoding: "utf8" });
   assert.equal(r.stdout + r.stderr, "");
   assert.equal(r.status, 0);
+  const keep = `select coalesce(:doc::json, json('"kept"')) as doc, coalesce(:keep::nullable(json), json('"kept"')) as keep\n`;
+  assert.deepEqual(types((await declarations(root, { "keep.sql": keep }))["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: string; keep: string };"]);
+  await closeSessions();
+  const lite = new DatabaseSync(join(root, "app.db"));
+  try {
+    // A coalesce of a parameter takes no SQL NULL for it, so its null is the JSON text null, which
+    // the coalesce keeps; one cast to nullable(json) takes SQL NULL, which the coalesce replaces.
+    assert.deepEqual({ ...((await (await built(root, "keep", keep)).run(lite, { doc: null, keep: null })) as object) }, { doc: "null", keep: '"kept"' });
+  } finally {
+    lite.close();
+  }
 });
 
 /** A project at a new directory on `url`, with `driver` from lab/drivers installed. */
@@ -107,10 +118,12 @@ test("Postgres: a jsonb value nothing constrains is Json, and its parameter's nu
   const root = project(own.url, "postgres");
   const stage = `with args as (select :stage::jsonb as stage) select stage, stage->'a' as a from args\n`;
   const insert = "insert into events (payload, meta) values (:payload, :meta) returning id\n";
+  const keep = `select coalesce(:doc::jsonb, '"kept"') as doc, coalesce(:keep::nullable(jsonb), '"kept"') as keep\n`;
   try {
-    const declared = await declarations(root, { "stage.sql": stage, "insert.sql": insert });
+    const declared = await declarations(root, { "stage.sql": stage, "insert.sql": insert, "keep.sql": keep });
     assert.deepEqual(types(declared["stage.sql"]!), [WITH_JSON, "export type Params = { stage: Json };", "export type Row = { stage: Json; a: Json };"]);
     assert.deepEqual(types(declared["insert.sql"]!), [WITH_JSON, "export type Params = { payload: Json; meta?: Json };", "export type Row = { id: number };"]);
+    assert.deepEqual(types(declared["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: Json; keep: Json };"]);
     await closeSessions();
     const write = await built(root, "insert", insert);
     // payload, a NOT NULL column, takes JSON's null; meta, which takes SQL NULL, takes it for null.
@@ -125,6 +138,9 @@ test("Postgres: a jsonb value nothing constrains is Json, and its parameter's nu
     const read = await built(root, "stage", stage);
     assert.deepEqual({ ...((await read.run(sql, { stage: { a: "draft" } })) as object) }, { stage: { a: "draft" }, a: "draft" });
     assert.deepEqual({ ...((await read.run(sql, { stage: null })) as object) }, { stage: null, a: null });
+    // A coalesce of a parameter takes no SQL NULL for it, so its null is JSON's null, which the
+    // coalesce keeps; one cast to nullable(jsonb) takes SQL NULL, which the coalesce replaces.
+    assert.deepEqual({ ...((await (await built(root, "keep", keep)).run(sql, { doc: null, keep: null })) as object) }, { doc: null, keep: "kept" });
   } finally {
     await closeSessions();
     await own.drop();
@@ -136,10 +152,12 @@ test("MySQL: a JSON value nothing constrains is Json, and its parameter's null i
   const root = project(own.url, "mysql2");
   const insert = "insert into events (payload, meta) values (:payload, :meta)\n";
   const read = "select payload, meta, payload->'$.a' as a from events order by id\n";
+  const keep = `select coalesce(:doc::json, cast('"kept"' as json)) as doc, coalesce(:keep::nullable(json), cast('"kept"' as json)) as keep\n`;
   try {
-    const declared = await declarations(root, { "insert.sql": insert, "read.sql": read });
+    const declared = await declarations(root, { "insert.sql": insert, "read.sql": read, "keep.sql": keep });
     assert.deepEqual(types(declared["insert.sql"]!), [WITH_JSON, "export type Params = { payload: Json; meta?: Json };", "export type Row = never;"]);
     assert.deepEqual(types(declared["read.sql"]!), [WITH_JSON, "export type Params = Record<never, never>;", "export type Row = { payload: Json; meta: Json; a: Json };"]);
+    assert.deepEqual(types(declared["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: Json; keep: Json };"]);
     await closeSessions();
     const write = await built(root, "insert", insert);
     await write.run(own.db, { payload: null, meta: null });
@@ -152,6 +170,8 @@ test("MySQL: a JSON value nothing constrains is Json, and its parameter's null i
       { payload: null, meta: null, a: null },
       { payload: { a: [1, "x"] }, meta: null, a: [1, "x"] },
     ]);
+    // As on Postgres: a coalesce keeps JSON's null, and replaces the SQL NULL of nullable(json).
+    assert.deepEqual({ ...((await (await built(root, "keep", keep)).run(own.db, { doc: null, keep: null })) as object) }, { doc: null, keep: "kept" });
   } finally {
     await closeSessions();
     await own.drop();

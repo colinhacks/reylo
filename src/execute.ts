@@ -596,8 +596,10 @@ function isJsonValue(query: QueryModule, name: string, v: unknown): boolean {
 
 /**
  * JSON's null, which a JSON parameter's null stands for where the statement takes no SQL NULL for
- * it: a NOT NULL `jsonb` column holds it, and SQL NULL there would only be refused by the
- * database, or match no row in a comparison. It stays apart from SQL NULL until each driver's
+ * it, as the engine reports it: a NOT NULL `jsonb` column holds JSON's null and refuses SQL NULL.
+ * A `coalesce` or a null test of the parameter takes no SQL NULL either, as for every other type,
+ * so `coalesce(:p::jsonb, col)` given null keeps JSON's null rather than `col`; a cast to
+ * `nullable(jsonb)` is what passes SQL NULL there. It stays apart from SQL NULL until each driver's
  * binding writes it as the JSON text `null`.
  */
 const JSON_NULL: unique symbol = Symbol("JSON null");
