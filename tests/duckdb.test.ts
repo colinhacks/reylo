@@ -392,5 +392,5 @@ test("DuckDB: the module declares the types .run() returns", { skip }, async () 
   const sql = "select id, tags, meta, h, d, ts, b, j, m, u, m2 from vals where id = :id\n";
   const declared = (await declarations(root, { "get.sql": sql }))["get.sql"]!;
   const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
-  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ id: number; tags: \(string \| null\)\[\] \| null; meta: \{ host: string \| null; pid: number \| null \} \| null; h: bigint \| null; d: string \| null; ts: string \| null; b: Uint8Array \| null; j: unknown \| null; m: \{ key: string; value: number \| null \}\[\] \| null; u: \{ tag: "num"; value: number \| null \} \| \{ tag: "str"; value: string \| null \} \| null; m2: "happy" \| "sad" \| null \}, "maybeOne", "duckdb", QueryError> & /, line);
+  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ id: number; tags: \(string \| null\)\[\] \| null; meta: \{ host: string \| null; pid: number \| null \} \| null; h: bigint \| null; d: string \| null; ts: string \| null; b: Uint8Array \| null; j: Json; m: \{ key: string; value: number \| null \}\[\] \| null; u: \{ tag: "num"; value: number \| null \} \| \{ tag: "str"; value: string \| null \} \| null; m2: "happy" \| "sad" \| null \}, "maybeOne", "duckdb", QueryError> & /, line);
 });

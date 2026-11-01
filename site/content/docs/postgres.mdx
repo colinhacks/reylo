@@ -80,7 +80,7 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | `timestamptz` | `string` | `"2026-10-20T08:00:00.123456Z"` |
 | `time`, `timetz` | `string` | `"10:00:00"` |
 | `interval` | `string` | `"P1DT2H3M4S"` |
-| `json`, `jsonb` | `unknown` | `{ a: 1 }` |
+| `json`, `jsonb` | `Json` | `{ a: 1 }` |
 | `json`, `jsonb` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10, y: 20 }` |
 | JSON the statement builds (`jsonb_build_object`, `jsonb_agg`) | the object or array it builds | `{ total: 12.5 }` |
 | `bytea` | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
@@ -213,7 +213,13 @@ An interval is an ISO 8601 duration with its sign in front, which `Temporal.Dura
 
 ### JSON
 
-A `json` or `jsonb` column is typed `unknown`, unless a JSON Schema `CHECK` constrains it or your query builds the JSON. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+A `json` or `jsonb` column is typed `Json`, any JSON value, unless a JSON Schema `CHECK` constrains it or your query builds the JSON. Reylo exports the type:
+
+```ts
+type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+```
+
+Here `payload` is typed by its schema, and `kind` by its `CHECK`:
 
 ```ts twoslash tab="main.ts"
 import events from "./pg_events.sql";
@@ -295,7 +301,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 **Aggregates beside columns**
 
-Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `unknown` values.
+Inside JSON a statement builds, an aggregate can sit beside the statement's columns wherever its `GROUP BY` allows. With `group by 1`, or a `GROUP BY` by a name from the select list, an object that mixes the two has `Json` values.
 
 <Inferred>
 
@@ -310,7 +316,7 @@ group by u.id
 
 **Aggregates over no rows**
 
-Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `unknown`.
+Over no rows, `jsonb_agg` returns `null`, and its type includes `null`. Write `coalesce(jsonb_agg(…), '[]')` to always get an array. With any other default, the column is `Json`.
 
 <Pairs>
 
@@ -364,11 +370,11 @@ from events
 
 **Where it doesn't**
 
-Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `unknown`.
+Any other expression on the column, a key read from a JSON parameter, a column under a `union`, a `CHECK` added `NOT VALID`, and `to_jsonb` of a single value are typed `Json`.
 
 <Inferred>
 
-```sql file="pg_json_unknown.sql"
+```sql file="pg_json_any.sql"
 select payload || '{"seen": true}' as merged, to_jsonb(kind) as k
 from events
 ```
@@ -377,7 +383,7 @@ from events
 
 **Through a `with` query or a subquery**
 
-JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `unknown`.
+JSON built in a `with` query or a subquery in `from`, a `lateral` one included, keeps its type when you select its column as it is, put it inside JSON you build, or default it with `coalesce(…, '[]')`. Through a `union` or a `*`, it's `Json`.
 
 <Inferred>
 
@@ -770,6 +776,23 @@ await addEvent.run(db, { payload: '{"x": 1}' });
 insert into events (kind, payload)
 values ('click', :payload::text::jsonb)
 ```
+
+**JSON null**
+
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, which a `not null` JSON column can hold. Where it takes null, as for a column that may hold it or a cast to [`nullable(jsonb)`](#parameters-that-may-be-null), `null` is SQL's `NULL`:
+
+```ts twoslash tab="main.ts"
+import jsonKind from "./pg_json_kind.sql";
+
+// "null": the parameter is JSON's null
+const { kind } = await jsonKind.run(db, { doc: null });
+```
+
+```sql tab="pg_json_kind.sql"
+select jsonb_typeof(:doc::jsonb) as kind
+```
+
+A `coalesce` or a null test doesn't make a parameter take null, so `coalesce(:doc::jsonb, doc)` given `null` gives JSON's `null`. Write `coalesce(:doc::nullable(jsonb), doc)` to keep `doc`.
 
 </Rules>
 

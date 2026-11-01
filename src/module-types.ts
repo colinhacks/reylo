@@ -4,7 +4,7 @@
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
-import { declaredType, ident, lastOfEachName, renderParamType, renderType } from "./render.ts";
+import { declaredType, ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
 export type FileDiagnostic = { message: string; start: number; length: number; code: number };
@@ -39,7 +39,19 @@ export function queryErrorType(dialect: Dialect, errors: Analysis["errors"]): st
 /** A parameter's TypeScript type: `unknown` when nothing in the statement types it (a CAST does), with `| null` where the statement lets the caller pass null. */
 function paramType(q: Analysis["params"][number], rendered: string): string {
   if (q.type.kind === "unknown") return "unknown";
-  return q.nullable ? `${rendered} | null` : rendered;
+  return q.nullable ? orNull(rendered) : rendered;
+}
+
+/**
+ * The module's import from `reylo`: `Query`, and `Json` where one of `types` names it. Comments,
+ * string literal types and a key named `Json` are left out of the search, so that the module never
+ * imports a name it does not use. Strings and comments are read in one pass, from the left, so a
+ * comment's delimiter inside a quoted name (`"/*"`) starts no comment, nor a quote inside a comment
+ * a string.
+ */
+export function reyloImport(...types: string[]): string {
+  const text = types.join("\n").replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? '""' : ""));
+  return `import type { ${/(?<![\w$])Json(?![\w$]|\s*\??:)/.test(text) ? "Json, " : ""}Query } from "reylo";`;
 }
 
 /**
@@ -114,7 +126,7 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
   }
   const cardinality = analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
-  const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? " | null" : ""}`, c.comment] as const);
+  const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
   const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);

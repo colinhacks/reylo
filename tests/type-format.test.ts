@@ -22,3 +22,10 @@ test("formatType leaves a type with no comment on one line where it fits", () =>
   assert.equal(formatType("{ id: number; name: string } | null", 40), "{ id: number; name: string } | null");
   assert.equal(formatType("{ id: number; name: string }[]", 20), "{\n  id: number;\n  name: string;\n}[]");
 });
+
+test("formatType reads Json, the named type of any JSON value, wherever src/render.ts writes it", () => {
+  assert.equal(formatType("{ stage: Json }", 80), "{ stage: Json }");
+  const row = "{ doc: Json; tags: Json[]; meta: Record<string, Json>; g: { type: string; [key: string]: Json | undefined } }";
+  assert.equal(formatType(row, Infinity), row);
+  assert.equal(formatType(row, 40), "{\n  doc: Json;\n  tags: Json[];\n  meta: Record<string, Json>;\n  g: {\n    type: string;\n    [key: string]: Json | undefined;\n  };\n}");
+});

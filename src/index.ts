@@ -22,24 +22,32 @@ export type Cardinality = "many" | "one" | "maybeOne" | "none";
 export type Materialize<Row, C extends Cardinality> = C extends "many" ? Row[] : C extends "one" ? Row : C extends "none" ? void : Row | null;
 
 /**
+ * Any JSON value: what a `json` or `jsonb` value is when nothing in the schema or the statement
+ * gives its shape, and what any value inside JSON a statement builds is where Reylo cannot type it.
+ * A key's value may be `undefined`, which a read of a missing key gives and `JSON.stringify` leaves
+ * out of a parameter.
+ */
+export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+/**
  * The shape of a row value as JSON: a BigInt is the integer it is (JSON.stringify refuses one, so a
  * serializer writes it, as `JSON.rawJSON(String(v))` does), and a Temporal value or a byte array
  * becomes text.
  */
-export type Json<T> = T extends bigint
+export type AsJson<T> = T extends bigint
   ? number
   : T extends Date | Uint8Array | { toJSON(): string }
   ? string
   : T extends readonly (infer U)[]
-    ? Json<U>[]
+    ? AsJson<U>[]
     : T extends object
-      ? { [K in keyof T]: Json<T[K]> }
+      ? { [K in keyof T]: AsJson<T[K]> }
       : T;
 
 export type ReyloTypes<Params, Row, C extends Cardinality> = {
   readonly element: Row;
   readonly cardinality: C;
-  readonly json: Materialize<Json<Row>, C>;
+  readonly json: Materialize<AsJson<Row>, C>;
   readonly input: Params;
 };
 

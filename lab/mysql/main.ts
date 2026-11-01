@@ -1,3 +1,4 @@
+import type { Json } from "reylo";
 import query, * as q from "./query.sql";
 import type { Row, Params } from "./query.sql";
 import count, { type Row as CountRow, type Params as CountParams } from "./count.sql";
@@ -12,7 +13,7 @@ type ExpectedRow = {
   big: bigint;
   n: string;
   at: string;
-  j: unknown;
+  j: Json;
   // A TINYINT(1), which BOOLEAN creates, read straight from its table: 0 or 1, or an error.
   flag: boolean;
   raw: Uint8Array | null;

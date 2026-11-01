@@ -16,7 +16,7 @@ import mysql from 'mysql2/promise';
 import postgres from 'postgres';
 import { Session } from '../../src/analyze.ts';
 import type { Analysis } from '../../src/engine.ts';
-import { ident, renderParamType, renderType } from '../../src/render.ts';
+import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { schemaType } from '../scripts/schema-type.ts';
 import { mdxOptions } from './mdx-options.ts';
 import { pageFiles } from './page-files.ts';
@@ -162,10 +162,10 @@ async function typesOf(dialect: Dialect, schema: string, written: string): Promi
   const untyped = analysis.params.filter((q) => q.type.kind === 'unknown' && !json.has(q.name));
   if (untyped.length && s.project.strictParams) return { error: `Nothing in the statement types ${untyped.map((q) => `:${q.name}`).join(', ')}; give it a cast.` };
   const params = analysis.params.map((q) => {
-    const rendered = json.get(q.name) ?? (q.type.kind === 'unknown' ? 'unknown' : `${renderParamType(q.type, dialect)}${q.nullable ? ' | null' : ''}`);
+    const rendered = json.get(q.name) ?? (q.type.kind === 'unknown' ? 'unknown' : (q.nullable ? orNull(renderParamType(q.type, dialect)) : renderParamType(q.type, dialect)));
     return `${ident(q.name)}: ${rendered}`;
   });
-  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? ' | null' : ''}`);
+  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
   return { params: params.length ? `{ ${params.join('; ')} }` : undefined, row: columns.length ? `{ ${columns.join('; ')} }` : 'never', cardinality: analysis.cardinality };
 }
 

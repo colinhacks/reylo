@@ -182,7 +182,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
  * as it is. A typed JSON parameter (wiki/typed-json-params.md) carries its schema beside it, and
  * a parameter cast with `::` on MySQL or SQLite the type as written (src/rows.ts, `checkCast`).
  * `nullable` is false where the statement takes no null for the parameter, which the run time
- * then refuses, given or left out; a query defined by hand without it binds what it is given.
+ * then refuses, given or left out, except that a JSON parameter's null there is JSON's null; a
+ * query defined by hand without it binds what it is given.
  */
 export type Inputs = Readonly<Record<string, { readonly type: EngineType; readonly schema?: JsonSchema; readonly cast?: string; readonly nullable?: boolean }>>;
 
@@ -346,7 +347,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // a number or an array of either by its JavaScript type ("cannot cast type boolean to
       // jsonb"): it gets an object whose toJSON() returns the value, which it binds as JSON and
       // serializes to exactly its JSON text. So does an unsafe() client without typed().
-      const json = () => bound.map((v, i) => (isJsonParam(v, i) ? JSON.stringify(v) : v));
+      const json = () => bound.map((v, i) => (isJsonParam(v, i) ? jsonText(v) : v));
       // Slonik before every other query(): its query() takes only its sql tag's queries.
       if (isSlonik(c)) return await slonik(c, text, json().map(slonikParam), query.columns);
       // query() before unsafe(): Neon's neon() has both, and its unsafe() builds a fragment
@@ -364,7 +365,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         // transaction shows neither. Bun.sql serializes the value itself.
         const bun = typeof c.commitDistributed === "function";
         const asText = typeof c.typed === "function" && !bun;
-        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(JSON.stringify(v), 705) : { toJSON: () => v }) : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
+        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
         return bun ? bunRows(await c.unsafe(text, mapped), query.columns) : await postgresJs(c, text, mapped, query.columns);
       }
       if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
@@ -437,8 +438,9 @@ function statement(query: QueryModule, params: ParamsInput) {
     const type = input?.type;
     // A typed JSON parameter (`:p::jsonb('…')`): a value left out takes the schema's default, a
     // key under `properties` too, and the value is checked against the schema before the
-    // statement runs (wiki/typed-json-params.md). Null is SQL NULL, which the parameter takes
-    // where the statement lets it be null or its schema allows null.
+    // statement runs (wiki/typed-json-params.md). Null is SQL NULL where the statement takes SQL
+    // NULL for the parameter, and elsewhere JSON's null, where the schema admits it; a value left
+    // out there is refused.
     const schema = input?.schema;
     if (schema !== undefined) {
       let v = params[name];
@@ -448,8 +450,9 @@ function statement(query: QueryModule, params: ParamsInput) {
         v = withDefaults(schema, v);
         const failure = validate(schema, v);
         if (failure) throw new ParameterError(`Parameter "${name}"${failure.path ? ` at ${failure.path}` : ""} ${failure.message}.`);
-      } else if (input?.nullable === false && validate(schema, null)) {
-        refuseNull(name, v);
+      } else if (input?.nullable === false) {
+        if (v === undefined || validate(schema, null)) refuseNull(name, v);
+        v = JSON_NULL;
       }
       bound.values[i] = v === undefined ? null : v;
       return;
@@ -468,10 +471,14 @@ function statement(query: QueryModule, params: ParamsInput) {
     // A parameter the statement takes no null for, which its types rely on (a column it alone
     // fills, an expression of it typed non-null), refuses null and refuses to be left out, which
     // would bind NULL: exactly where its declared type takes no null (src/render.ts,
-    // `renderParamType`). One typed `unknown`, and a JSON one with no schema, are declared
-    // `unknown` and take anything; a JSON one whose type alone carries a schema takes null where
-    // that schema allows null.
-    if (input?.nullable === false && bound.values[i] === null && refusesNull(query, type)) refuseNull(name, params[name]);
+    // `renderParamType`). One typed `unknown` is declared `unknown` and takes anything. A JSON one
+    // takes JSON's null there instead, unless the schema its type carries refuses null, and is
+    // refused only when left out.
+    let jsonNull = false;
+    if (input?.nullable === false && bound.values[i] === null) {
+      if (type?.kind === "json" && params[name] !== undefined && !refusesNull(query, type)) jsonNull = true;
+      else if (type?.kind === "json" || refusesNull(query, type)) refuseNull(name, params[name]);
+    }
     // An array parameter takes no NULL element, as its type says (`:ids::int[]` is `number[]`):
     // a NULL in `= any(:ids)` matches nothing. An array inside a
     // structured parameter's member keeps its NULL elements (src/rows.ts).
@@ -485,11 +492,11 @@ function statement(query: QueryModule, params: ParamsInput) {
     if (cast !== undefined && type !== undefined) checksFor(query, name).checkCast(name, cast, type, bound.values[i], query.dialect);
     checkTime(type, name, bound.values[i]);
     checkBinary(type, name, bound.values[i]);
-    bound.values[i] = encode(type, bound.values[i], query.dialect, name);
+    bound.values[i] = jsonNull ? JSON_NULL : encode(type, bound.values[i], query.dialect, name);
   });
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
-  if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.type.kind !== "rows" ? JSON.stringify(v) : v));
+  if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.type.kind !== "rows" ? jsonText(v) : v));
   // The comment naming the file goes on last, after a structured parameter's lists are written.
   bound.text = sentText(query, bound.text);
   return bound;
@@ -518,7 +525,7 @@ function postgresText(query: QueryModule, name: string, v: unknown): string | nu
   if (v == null) return null;
   const t = query.inputs?.[name]?.type;
   if (Array.isArray(v) && t?.kind === "array") return arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, t.delimiter);
-  if (isJsonValue(query, name, v)) return JSON.stringify(v);
+  if (isJsonValue(query, name, v)) return jsonText(v);
   if (Array.isArray(v)) return arrayLiteral(v);
   if (v instanceof Uint8Array) return asByteaHex(v) as string;
   if (typeof v === "boolean") return v ? "t" : "f";
@@ -546,7 +553,7 @@ function nullElement(array: readonly unknown[], path = ""): string | undefined {
   return undefined;
 }
 
-/** Whether a parameter the statement takes no null for is declared with a type that takes no null. */
+/** Whether a parameter the statement takes no null for is declared with a type that takes no null: for a JSON one, whether the schema its type carries refuses JSON's null too. */
 function refusesNull(query: QueryModule, type: EngineType | undefined): boolean {
   if (type === undefined || type.kind === "unknown") return false;
   if (type.kind !== "json") return true;
@@ -578,13 +585,30 @@ function asBuffer(v: unknown) {
 const isJson = (kind: EngineType["kind"] | undefined) => kind === "json" || kind === "object" || kind === "list" || kind === "rows";
 
 // A JSON parameter's value is a JavaScript value, which reaches the database as its JSON text
-// (JSON.stringify), so a string is a JSON string on every driver; null is SQL NULL. Each driver
+// (JSON.stringify), so a string is a JSON string on every driver; null is SQL NULL where the
+// statement takes SQL NULL for the parameter, and JSON's null elsewhere (`JSON_NULL`). Each driver
 // left to itself did something else (wiki/driver-decoding.md, 2026-10-12): pg wrote an array as
 // an array literal and a string as raw JSON text, mariadb expanded an array into a list, the
 // SQLite drivers refused an object, and mysql2 bound 5 as 5.0.
 function isJsonValue(query: QueryModule, name: string, v: unknown): boolean {
   return v != null && isJson(query.inputs?.[name]?.type.kind);
 }
+
+/**
+ * JSON's null, which a JSON parameter's null stands for where the statement takes no SQL NULL for
+ * it, as the engine reports it: a NOT NULL `jsonb` column holds JSON's null and refuses SQL NULL.
+ * A `coalesce` or a null test of the parameter takes no SQL NULL either, as for every other type,
+ * so `coalesce(:p::jsonb, col)` given null keeps JSON's null rather than `col`; a cast to
+ * `nullable(jsonb)` is what passes SQL NULL there. It stays apart from SQL NULL until each driver's
+ * binding writes it as the JSON text `null`.
+ */
+const JSON_NULL: unique symbol = Symbol("JSON null");
+
+/** A JSON parameter's value as JSON: `JSON_NULL` as null. */
+const jsonValue = (v: unknown) => (v === JSON_NULL ? null : v);
+
+/** A JSON parameter's value as the JSON text a driver binds. */
+const jsonText = (v: unknown) => JSON.stringify(jsonValue(v));
 
 // A date or time value's type says whether it has a zone (src/render.ts),
 // and a value that would be read in a zone nobody chose is refused before the

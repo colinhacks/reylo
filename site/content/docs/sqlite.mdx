@@ -314,7 +314,7 @@ Inside JSON, a value can differ from the same value in a column: a boolean is `1
 
 **Built JSON inside built JSON**
 
-JSON you build can nest inside other JSON you build, directly or through `coalesce` and `case`. To nest a scalar subquery's JSON, wrap the subquery in `json(…)`: without it, newer SQLite versions, such as 3.54.1 in Node 26.11's `node:sqlite`, nest it as text, so Reylo types it `unknown`.
+JSON you build can nest inside other JSON you build, directly or through `coalesce` and `case`. To nest a scalar subquery's JSON, wrap the subquery in `json(…)`: without it, newer SQLite versions, such as 3.54.1 in Node 26.11's `node:sqlite`, nest it as text, so Reylo types it `Json`, any JSON value.
 
 <Pairs>
 
@@ -544,6 +544,8 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | A typed JSON parameter | what its schema admits |
 
 A `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since SQLite would store it as `TEXT`. Decode the text into a `Uint8Array` first.
+
+Where the query takes no null for a JSON parameter, `null` is JSON's `null`, the text `null`. A `coalesce` or a null test doesn't make a parameter take null, so write `coalesce(:doc::nullable(json), doc)` to keep `doc` for `null`.
 
 ### Parameters without a type
 

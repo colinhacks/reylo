@@ -8,6 +8,7 @@
 // ---------------------------------------------------------------------------
 // 1. json_agg / jsonb_agg of a jsonb_build_object in a correlated subquery
 // ---------------------------------------------------------------------------
+import type { Json } from "reylo";
 import jsonAgg from "./json_agg.sql";
 import type { Params as JsonAggParams } from "./json_agg.sql";
 type JsonAggRow = {
@@ -63,7 +64,7 @@ type RowsRow = {
     slug: string;
     role: "admin" | "member";
     tags: (string | null)[];
-    meta: unknown;
+    meta: Json;
     score: number | "-Infinity" | "Infinity" | "NaN" | null;
     big: number;
     blob: string | null;
@@ -202,13 +203,13 @@ const fnTable2: Awaited<ReturnType<typeof fnTable.run>> = null! as FnTableRow[];
 // truth, and int/bigint map to number/bigint.
 
 import fnSrf from "./fn_srf.sql";
-type FnSrfRow = { id: number; k: unknown };
+type FnSrfRow = { id: number; k: Json };
 const fnSrf1: FnSrfRow[] = null! as Awaited<ReturnType<typeof fnSrf.run>>;
 const fnSrf2: Awaited<ReturnType<typeof fnSrf.run>> = null! as FnSrfRow[];
 // Right, and the best reason string in the lab: a set-returning function in the select list
 // makes the row count `many` even though the WHERE pins the primary key
 // ("the set-returning function jsonb_path_query returns a row per value, and none for an
-// empty set"). `jsonb` is `unknown`, which is the model's own answer for JSON.
+// empty set"). `jsonb` is `Json`, any JSON value.
 
 // ---------------------------------------------------------------------------
 // 8. The column types, plain
@@ -222,7 +223,7 @@ type ColumnsRow = {
   slug: string;
   role: "admin" | "member";
   tags: (string | null)[];
-  meta: unknown;
+  meta: Json;
   score: string | null;
   big: bigint;
   blob: Uint8Array | null;
@@ -232,7 +233,7 @@ const columns1: ColumnsRow[] = null! as Awaited<ReturnType<typeof columns.run>>;
 const columns2: Awaited<ReturnType<typeof columns.run>> = null! as ColumnsRow[];
 // Right throughout: the enum becomes its label union, the domain over text becomes the base
 // type with the column's NOT NULL, uuid, timestamptz and numeric are text and int8 a BigInt
-// (src/values.ts), bytea is Uint8Array, text[] is (string | null)[], jsonb is unknown.
+// (src/values.ts), bytea is Uint8Array, text[] is (string | null)[], jsonb is Json.
 
 // ---------------------------------------------------------------------------
 // 9. Nullability through joins
