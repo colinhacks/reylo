@@ -45,10 +45,12 @@ function paramType(q: Analysis["params"][number], rendered: string): string {
 /**
  * The module's import from `reylo`: `Query`, and `Json` where one of `types` names it. Comments,
  * string literal types and a key named `Json` are left out of the search, so that the module never
- * imports a name it does not use.
+ * imports a name it does not use. Strings and comments are read in one pass, from the left, so a
+ * comment's delimiter inside a quoted name (`"/*"`) starts no comment, nor a quote inside a comment
+ * a string.
  */
 export function reyloImport(...types: string[]): string {
-  const text = types.join("\n").replace(/\/\*[\s\S]*?\*\//g, "").replace(/"(?:[^"\\]|\\.)*"/g, '""');
+  const text = types.join("\n").replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? '""' : ""));
   return `import type { ${/(?<![\w$])Json(?![\w$]|\s*\??:)/.test(text) ? "Json, " : ""}Query } from "reylo";`;
 }
 

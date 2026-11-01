@@ -27,6 +27,10 @@ test("a module imports Json from reylo only where one of its types names it", ()
   // A key of that name, a string literal type and a column's comment name no type.
   assert.equal(reyloImport("{ Json: number; Jsonb?: string }", `{ kind: "Json" | "a Json b" }`), QUERY_ONLY);
   assert.equal(reyloImport("Record<never, never>", "{\n  /** the Json payload */\n  id: number;\n}"), QUERY_ONLY);
+  // A comment's delimiter inside a quoted name starts no comment, and a quote inside a comment no string.
+  assert.equal(reyloImport("Record<never, never>", `{ "/*": number; data: Json; "*/": number }`), WITH_JSON);
+  assert.equal(reyloImport("Record<never, never>", `{\n  /** a " quote */\n  data: Json;\n  /** another " */\n  id: number;\n}`), WITH_JSON);
+  assert.equal(reyloImport("Record<never, never>", `{\n  /** a " quote */\n  id: number;\n  /** Json" */\n  n: number;\n}`), QUERY_ONLY);
 });
 
 test("SQLite: a value nothing types inside JSON the statement builds is Json, which the type check reads as any JSON value", async () => {
