@@ -27,9 +27,9 @@ import { DatabaseSync } from 'node:sqlite';
 import postgres from 'postgres';
 import mysql from 'mysql2/promise';
 import { Session } from '../../src/analyze.ts';
-import { ident, renderParamType, renderType } from '../../src/render.ts';
+import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
-import { queryErrorType } from '../../src/module-types.ts';
+import { queryErrorType, reyloImport } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
@@ -128,14 +128,14 @@ async function render(session: Session, source: string, written: string, sql: st
   const paramType = (q: Analysis['params'][number], rendered: string): string => {
     if (json.has(q.name)) return json.get(q.name)!;
     if (q.type.kind === 'unknown') return 'unknown';
-    return q.nullable ? `${rendered} | null` : rendered;
+    return q.nullable ? orNull(rendered) : rendered;
   };
   const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined)) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
     return [
-      `import type { Query } from "reylo";`,
+      reyloImport(paramsType, rowType),
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
       `export type QueryError = ${queryError};`,
@@ -169,7 +169,7 @@ async function render(session: Session, source: string, written: string, sql: st
   const inferred = analysis.cardinality;
   const order = names;
   if (dialect === 'postgres' && analysis.kind === '') return { error: 'the statement is empty' };
-  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${renderType(c.type, false, dialect)}${c.nullable ? ' | null' : ''}`);
+  const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
   const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect))] as const);
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === 'object' && 'default' in q.schema)).map((q) => q.name));

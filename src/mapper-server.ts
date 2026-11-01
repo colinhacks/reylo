@@ -6,7 +6,7 @@ import { createHash } from "node:crypto";
 import { dirname, relative, sep } from "node:path";
 import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
-import { moduleTypes, queryErrorType, withinFile } from "./module-types.ts";
+import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
@@ -110,7 +110,7 @@ export function mapperHandlers(): MapperHandlers {
       const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined)) => {
         const written = statementAfter(sql, leading);
         const text = [
-          `import type { Query } from "reylo";`,
+          reyloImport(paramsType, rowType),
           `export type Params = ${paramsType};`,
           `export type Row = ${rowType};`,
           `export type QueryError = ${queryError};`,

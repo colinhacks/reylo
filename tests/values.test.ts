@@ -36,12 +36,15 @@ test("every Postgres type's decoded value is the type the module declares for it
     const kind = columnKind(t, "postgres");
     const value = textDecoder(kind)(text);
     const declared = renderType(t, false, "postgres");
-    if (declared !== "unknown") assert.equal(typeOf(value), declared, name);
+    // A JSON value is any JSON, `Json`: what JSON.parse gives back.
+    if (declared === "Json") assert.deepEqual(JSON.parse(JSON.stringify(value)), value, name);
+    else if (declared !== "unknown") assert.equal(typeOf(value), declared, name);
     // The array of it, NULL elements null.
     const array: EngineType = { kind: "array", of: t };
     const values = textDecoder(columnKind(array, "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
     assert.equal(values[1], null, name);
-    if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array, false, "postgres"), name);
+    if (declared === "Json") assert.equal(renderType(array, false, "postgres"), "Json[]", name);
+    else if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array, false, "postgres"), name);
     // The value written as JSON, a BigInt as the integer it is, has the schema's JSON type.
     const schema = typeSchema(t, "postgres") as { type?: string | string[] };
     if (schema.type !== undefined) {

@@ -157,7 +157,7 @@ test("a typed JSON, structured or cast parameter is checked with the checks its 
   assert.deepEqual(executeSync(db, { ...cast, checks }, { n: 1 }), [{ n: 1 }]);
 });
 
-test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs", async () => {
+test("a parameter the statement takes no null for refuses null and refuses to be left out, before the statement runs, and a JSON one takes JSON's null", async () => {
   const seen: unknown[][] = [];
   const client = { query: async (_: string, values?: unknown[]) => (seen.push(values!), { rows: [], rowCount: 0 }) };
   const int4 = { kind: "scalar", name: "int4" } as const;
@@ -171,21 +171,25 @@ test("a parameter the statement takes no null for refuses null and refuses to be
   await execute(client, q, { x: 1 });
   await execute(client, { ...q, inputs: { x: { type: { kind: "unknown" }, nullable: false }, email: { type: int4 } } }, { x: null, email: null });
   assert.deepEqual(seen, [[1, null], [null, null]]);
-  // A typed JSON parameter takes null where its schema allows null, and otherwise its default or
-  // nothing; pg gets the JSON as its text.
+  // A JSON parameter's null there is JSON's null, which pg gets as the JSON text `null`, unless its
+  // schema, the one it is written with or the one its type carries, refuses null; left out, it is
+  // refused, unless its schema has a default.
   const json = (schema: JsonSchema): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type: { kind: "json" }, schema, nullable: false } }, checks });
   await assert.rejects(async () => execute(client, json({ type: "integer" }), { p: null }), /Parameter "p" is null/);
   await assert.rejects(async () => execute(client, json({ type: "integer" }), {}), /Parameter "p" is missing/);
-  await execute(client, json({ type: ["integer", "null"] }), {});
+  await assert.rejects(async () => execute(client, json({ type: ["integer", "null"] }), {}), /Parameter "p" is missing/);
+  await execute(client, json({ type: ["integer", "null"] }), { p: null });
   await execute(client, json({ type: "integer", default: 3 }), {});
-  assert.deepEqual(seen.slice(2), [[null], ["3"]]);
-  // A JSON parameter with no schema is declared `unknown`, and takes null; one whose type alone
-  // carries a schema takes null where that schema allows null.
-  const untyped = (type: EngineType): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable: false } }, checks });
+  assert.deepEqual(seen.slice(2), [["null"], ["3"]]);
+  const untyped = (type: EngineType, nullable = false): QueryModule<"postgres"> => ({ dialect: "postgres", sql: "select :p::jsonb", params: ["p"], inputs: { p: { type, nullable } }, checks });
   await execute(client, untyped({ kind: "json" }), { p: null });
-  await execute(client, untyped({ kind: "json", schema: { type: ["integer", "null"] } }), {});
+  await assert.rejects(async () => execute(client, untyped({ kind: "json" }), {}), /Parameter "p" is missing/);
+  await execute(client, untyped({ kind: "json", schema: { type: ["integer", "null"] } }), { p: null });
   await assert.rejects(async () => execute(client, untyped({ kind: "json", schema: { type: "integer" } }), { p: null }), /Parameter "p" is null/);
-  assert.deepEqual(seen.slice(4), [[null], [null]]);
+  // Where the statement takes SQL NULL, a JSON parameter's null is SQL NULL, given or left out.
+  await execute(client, untyped({ kind: "json" }, true), { p: null });
+  await execute(client, untyped({ kind: "json" }, true), {});
+  assert.deepEqual(seen.slice(4), [["null"], ["null"], [null], [null]]);
   // A structured parameter keeps its own message, which says what to pass.
   const rows: QueryModule<"postgres"> = { dialect: "postgres", sql: "select 1", params: ["r"], inputs: { r: { type: { kind: "rows", one: true, fields: [] }, nullable: false } }, checks };
   await assert.rejects(async () => execute(client, rows, { r: null }), /pass one object/);

@@ -45,7 +45,8 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   timestamp: "string",
   timestamptz: "string",
   interval: "string",
-  json: "unknown",
+  // Any JSON value, the type `reylo` exports (src/render.ts).
+  json: "Json",
   bytes: "Uint8Array",
   vector: "number[]",
   hstore: "Record<string, string | null>",

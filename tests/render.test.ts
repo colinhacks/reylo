@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
-import { renderParamType, renderType } from "../src/render.ts";
+import { orNull, renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
 
 const scalar = (name: string): EngineType => ({ kind: "scalar", name });
@@ -52,7 +52,7 @@ test("one type per SQL type, on every driver: what the run time returns (src/val
   assert.equal(wire("int8"), "bigint");
   assert.deepEqual(["numeric", "money", "date", "timestamp", "timestamptz", "time", "timetz", "interval", "uuid", "text"].map((n) => wire(n)), Array(10).fill("string"));
   assert.equal(wire("bytea"), "Uint8Array");
-  assert.equal(renderType({ kind: "json" }), "unknown");
+  assert.equal(renderType({ kind: "json" }), "Json");
   // Every other type is its text: Reylo owns every oid, so no driver parses one.
   assert.deepEqual(["point", "xid", "int4range", "void", "record", "tsvector", "citext"].map((n) => wire(n)), Array(7).fill("string"));
   // An array of each, an enum's labels, a row value's array its text.
@@ -79,7 +79,7 @@ test("a scalar that names two types is either", () => {
   assert.equal(renderType(scalar("bool|int8"), true, "mysql"), "boolean | number");
   assert.equal(renderType({ kind: "list", of: scalar("bool|int8"), nullable_items: true }, false, "mysql"), "(boolean | number | null)[]");
   // A part no table spells is nothing known inside a document.
-  assert.equal(renderType(scalar("int8|mystery"), true, "mysql"), "unknown");
+  assert.equal(renderType(scalar("int8|mystery"), true, "mysql"), "Json");
 });
 
 test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
@@ -113,7 +113,7 @@ test("inside a document an oid is its text, a geometry its GeoJSON, and an exten
   assert.deepEqual(typeSchema(scalar("oid"), "postgres", false, true), { type: "string" });
   // PostGIS's cast to JSON writes GeoJSON: `{"type":"Point","coordinates":[1,2]}`.
   assert.equal(renderType(scalar("geometry"), false, "postgres"), "string");
-  assert.equal(renderType(scalar("geometry"), true, "postgres"), "{ type: string; [key: string]: unknown }");
+  assert.equal(renderType(scalar("geometry"), true, "postgres"), "{ type: string; [key: string]: Json | undefined }");
   assert.deepEqual(typeSchema(scalar("geometry"), "postgres", false, true), { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" });
   // A pgvector vector, a geography, a cube or an isbn inside a document is the JSON string of its text: `{"v" : "[1,2,3]"}`.
   for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(scalar(name), true, "postgres"), "string", name);
@@ -223,7 +223,7 @@ test("two columns or keys of one name keep the last, as a row object and JSON.pa
   const object: EngineType = { kind: "object", fields: [{ name: "x", type: scalar("text"), nullable: false }, { name: "x", type: scalar("int4"), nullable: true }] };
   assert.equal(renderType(object, false, "postgres"), "{ x: number | null }");
   // A row whose columns were not read (a subquery's) is an object of them inside a document.
-  assert.equal(renderType({ kind: "list", of: scalar("record"), nullable_items: false }, false, "postgres"), "Record<string, unknown>[]");
+  assert.equal(renderType({ kind: "list", of: scalar("record"), nullable_items: false }, false, "postgres"), "Record<string, Json>[]");
 });
 
 test("every date and time parameter takes a string: a timestamptz one the text that names its zone, which run returns, and no Date", () => {
@@ -264,14 +264,31 @@ test("a returned array's elements may be NULL unless the statement shows they ar
   assert.deepEqual(typeSchema(member, "postgres", true), { type: "object", properties: { tags: { type: "array", items: { type: ["string", "null"] } } }, required: ["tags"], additionalProperties: false });
 });
 
+test("a JSON value nothing constrains is any JSON value, Json, and so is a value nothing types inside JSON the statement builds", () => {
+  for (const dialect of ["postgres", "mysql", "sqlite", "duckdb"] as const) {
+    assert.equal(renderType({ kind: "json" }, false, dialect), "Json");
+    assert.equal(renderParamType({ kind: "json" }, dialect), "Json");
+  }
+  // Json admits null, which a NOT NULL jsonb column can hold, so a nullable one reads the same.
+  assert.equal(orNull("Json"), "Json");
+  assert.equal(orNull("string"), "string | null");
+  assert.equal(renderType({ kind: "array", of: { kind: "json" } }), "Json[]");
+  assert.equal(renderType({ kind: "list", of: { kind: "unknown" }, nullable_items: true }), "Json[]");
+  assert.equal(renderType({ kind: "object", fields: [{ name: "k", type: { kind: "unknown" }, nullable: true }, { name: "n", type: { kind: "json" }, nullable: false }, { name: "s", type: scalar("text"), nullable: true }] }), "{ k: Json; n: Json; s: string | null }");
+  assert.equal(renderType(scalar("mystery"), true, "postgres"), "Json");
+  // Outside JSON, a value nothing types may be any value: SQLite's json_extract, a column with no declared type.
+  assert.equal(renderType({ kind: "unknown" }, false, "sqlite"), "unknown");
+  assert.equal(renderType({ kind: "struct", fields: [{ name: "j", type: { kind: "json" }, nullable: true }, { name: "u", type: { kind: "unknown" }, nullable: true }] }, false, "duckdb"), "{ j: Json; u: unknown | null }");
+});
+
 test("a JSON column a CHECK holds to a JSON Schema is the type of the values the schema admits", () => {
   const json = (schema: unknown): EngineType => ({ kind: "json", schema: schema as never });
   const open = { type: "object", properties: { name: { type: "string" }, age: { type: ["integer", "null"] } }, required: ["name"], additionalProperties: true };
-  assert.equal(renderType(json(open)), "{ name: string; age?: number | null; [key: string]: unknown }");
+  assert.equal(renderType(json(open)), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
   assert.equal(renderType(json({ ...open, additionalProperties: false })), "{ name: string; age?: number | null }");
   assert.equal(renderType(json({ type: "object", additionalProperties: { type: "string" } })), "{ [key: string]: string }");
   assert.equal(renderType(json({ type: "object", additionalProperties: false })), "Record<never, never>");
-  assert.equal(renderType(json({ type: ["object", "null"] })), "Record<string, unknown> | null");
+  assert.equal(renderType(json({ type: ["object", "null"] })), "Record<string, Json> | null");
   // A discriminated union, a literal object, a tuple with an optional element and a rest.
   const tagged = { anyOf: [
     { type: "object", properties: { kind: { enum: ["a"] }, x: { type: "number" } }, required: ["kind", "x"], additionalProperties: false },
@@ -284,9 +301,10 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
   assert.equal(renderType(json({ type: "array", items: { type: ["string", "integer"] } })), "(string | number)[]");
   assert.equal(renderType(json({ type: "array", items: false })), "[]");
   assert.equal(renderType(json(false)), "never");
-  assert.equal(renderType(json({})), "unknown");
+  assert.equal(renderType(json({})), "Json");
+  assert.equal(renderType(json({ type: "array" })), "Json[]");
   // Reylo parses JSON on every driver; inside a document, and as a parameter, the schema's type stands.
-  assert.equal(renderType(json(open), true, "postgres"), "{ name: string; age?: number | null; [key: string]: unknown }");
-  assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null; [key: string]: unknown }");
-  assert.equal(renderType({ kind: "json" }), "unknown");
+  assert.equal(renderType(json(open), true, "postgres"), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
+  assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
+  assert.equal(renderType({ kind: "json" }), "Json");
 });

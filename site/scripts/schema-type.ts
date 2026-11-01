@@ -8,7 +8,8 @@
 // optional unless `required` lists it; every schema is an object, never a bare type name; `enum` and
 // `const` narrow a type, and `oneOf`, `anyOf` and `allOf` combine schemas. A database type name is an
 // error: database types belong to the statement's column list and to `row` and `rows` descriptors
-// (wiki/structured-params.md).
+// (wiki/structured-params.md). A schema that says nothing more admits any JSON value, `Json`, as
+// src/render.ts writes it.
 
 export type Dialect = 'postgres' | 'mysql' | 'sqlite' | 'duckdb';
 type Schema = string | boolean | { [key: string]: unknown };
@@ -27,7 +28,7 @@ const ident = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.s
 const parens = (type: string) => (topLevel(type, ' | ').length > 1 || topLevel(type, ' & ').length > 1 ? `(${type})` : type);
 const union = (types: string[]) => {
   const parts = [...new Set(types.flatMap((t) => topLevel(t, ' | ')))];
-  if (parts.includes('unknown')) return 'unknown';
+  if (parts.includes('Json')) return 'Json';
   return parts.join(' | ') || 'never';
 };
 /** The parts of a type around a separator at its top level, never inside braces, brackets or a string. */
@@ -63,11 +64,11 @@ function skipString(text: string, i: number): number {
  */
 export function schemaType(schema: Schema, dialect: Dialect, at = 'the schema'): string {
   const type = (s: unknown, where: string): string => {
-    if (s === true) return 'unknown';
+    if (s === true) return 'Json';
     if (s === false) return 'never';
     if (s === null || typeof s !== 'object' || Array.isArray(s)) throw new Error(`${where}: a schema is an object, as in { "type": "text" }, not ${JSON.stringify(s)}`);
     const o = s as Record<string, unknown>;
-    if (Object.keys(o).length === 0) return 'unknown';
+    if (Object.keys(o).length === 0) return 'Json';
     if ('const' in o) return JSON.stringify(o.const);
     if (Array.isArray(o.enum)) return union(o.enum.map((v) => JSON.stringify(v)));
     const alternatives = (['oneOf', 'anyOf'] as const).find((k) => Array.isArray(o[k]));
@@ -98,14 +99,14 @@ export function schemaType(schema: Schema, dialect: Dialect, at = 'the schema'):
     for (const name of required) if (!(name in props)) throw new Error(`${where}: "required" lists "${name}", which "properties" does not name`);
     const fields = Object.entries(props).map(([name, value]) => `${ident(name)}${required.has(name) ? '' : '?'}: ${type(value, `${where}.${name}`)}`);
     const extra = o.additionalProperties;
-    const rest = extra === undefined || extra === false ? undefined : extra === true ? 'unknown' : type(extra, `${where}.additionalProperties`);
-    if (!fields.length) return rest === undefined ? (extra === false ? 'Record<never, never>' : 'Record<string, unknown>') : `Record<string, ${rest}>`;
+    const rest = extra === undefined || extra === false ? undefined : extra === true ? 'Json' : type(extra, `${where}.additionalProperties`);
+    if (!fields.length) return rest === undefined ? (extra === false ? 'Record<never, never>' : 'Record<string, Json>') : `Record<string, ${rest}>`;
     const shape = `{ ${fields.join('; ')} }`;
     return rest === undefined ? shape : `${shape} & Record<string, ${rest}>`;
   };
   const array = (o: Record<string, unknown>, where: string): string => {
     if (Array.isArray(o.prefixItems)) return `[${(o.prefixItems as unknown[]).map((m, i) => type(m, `${where}[${i}]`)).join(', ')}]`;
-    if (o.items === undefined) return 'unknown[]';
+    if (o.items === undefined) return 'Json[]';
     return `${parens(type(o.items, `${where}[]`))}[]`;
   };
   return type(schema, at);
