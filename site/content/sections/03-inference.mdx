@@ -41,7 +41,7 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `timestamptz` | `string`, the instant in UTC, as `2026-10-20T08:00:00.123456Z` |
 | `time`, `timetz` | `string` |
 | `interval` | `string`, an ISO 8601 duration, as `P1DT2H3M4S` |
-| `json`, `jsonb` | [typed by its schema or the query](#json) |
+| `json`, `jsonb` | `Json`, any JSON value, unless [its schema or the query](#json) types it |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element type, a `NULL` element `null` |
 | An enum | the union of its labels |
@@ -68,7 +68,7 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `DATE` | `string`, as `2026-10-20` |
 | `DATETIME`, `TIMESTAMP` | `string`, as `2026-10-20T10:00:00.123` |
 | `TIME` | `string` |
-| `JSON` | [typed by its schema or the query](#json) |
+| `JSON` | `Json`, any JSON value, unless [its schema or the query](#json) types it |
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` |
 | `VECTOR` | `number[]` |
 
@@ -279,7 +279,7 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 </Inferred>
 
-A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value.
+A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds.
 
 ### Dynamic sorting
 

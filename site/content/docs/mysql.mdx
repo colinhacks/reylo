@@ -74,7 +74,7 @@ Each MySQL type maps to one TypeScript type, and `.run()` returns the same value
 | `DATE` | `string` | `"2026-10-20"` |
 | `DATETIME`, `TIMESTAMP` | `string` | `"2026-10-20T10:00:00.123"` |
 | `TIME` | `string` | `"10:00:00"` |
-| `JSON` | `unknown` | `{ a: 1 }` |
+| `JSON` | `Json` | `{ a: 1 }` |
 | `JSON` a JSON Schema `CHECK` holds | what the schema admits | `{ x: 10 }` |
 | `json_object(…)`, `json_arrayagg(…)` | the object or array it builds | `{ total: 12.5 }` |
 | `BINARY`, `VARBINARY`, `BLOB`, `BIT` wider than 1 | `Uint8Array` | `Uint8Array.of(1, 2, 255)` |
@@ -207,7 +207,13 @@ A `TINYINT(1)` can hold any number from −128 to 127. Reylo reads 0 and 1 as `f
 
 ### JSON
 
-A `JSON` column is typed `unknown`, unless a `JSON_SCHEMA_VALID` `CHECK` constrains it and your query selects it straight from its table, or your query builds the JSON:
+A `JSON` column is typed `Json`, any JSON value, unless a `JSON_SCHEMA_VALID` `CHECK` constrains it and your query selects it straight from its table, or your query builds the JSON. Reylo exports the type:
+
+```ts
+type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+```
+
+Here `payload` is typed by its schema:
 
 ```ts twoslash tab="main.ts"
 import events from "./my_events.sql";
@@ -268,7 +274,7 @@ Inside JSON, a value can differ from the same value in a column. Numbers past 2^
 
 **Where a schema's type applies**
 
-A schema's type reaches the column when you select it straight from its table, and inside `json_object` or `json_arrayagg`. Through a subquery or a `with` query, under a `union`, in an expression, and as a parameter written to the column, it's `unknown`.
+A schema's type reaches the column when you select it straight from its table, and inside `json_object` or `json_arrayagg`. Through a subquery or a `with` query, under a `union`, in an expression, and as a parameter written to the column, it's `Json`.
 
 <Inferred>
 
@@ -541,7 +547,7 @@ select id from orders where placed_at > :since
 
 A `BINARY`, `VARBINARY` or `BLOB` parameter takes only a `Uint8Array`, and rejects base64 or hex text before the query runs, since MySQL would store the text's own bytes. Decode the text into a `Uint8Array` first.
 
-A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`.
+A JSON parameter is sent as JSON, so a string is stored as a JSON string: `'{"a":1}'` becomes `"{\"a\":1}"`. Where the query takes no null for it, `null` is JSON's `null`, which a `NOT NULL` `JSON` column can hold.
 
 ### Parameters that may be null
 
@@ -739,7 +745,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | --- | --- |
 | An `ENUM`'s labels: an `ENUM` is typed `string` | Check the value in TypeScript where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
-| A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `unknown` |
+| A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
 | A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |
 | `with … insert`, which MySQL 8.4 rejects | Put the `with` after `insert into … (…)`, as in [Bulk inserts](/#bulk-inserts) |

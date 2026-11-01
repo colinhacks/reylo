@@ -67,7 +67,7 @@ DuckDB's prepared statement reports the exact type of every parameter and column
 | `TIMESTAMP`, `TIMESTAMP_S`, `TIMESTAMP_MS`, `TIMESTAMP_NS` | `string` | `"2026-10-20T10:00:00.5"` |
 | `TIMESTAMPTZ` | `string` | `"2026-10-20T08:00:00Z"` |
 | `INTERVAL` | `string` | `"P1Y2M3DT4H5M6.789S"` |
-| `JSON` | `unknown` | `{ a: [1, "x"] }` |
+| `JSON` | `Json` | `{ a: [1, "x"] }` |
 | `T[]` (a `LIST`) and `T[n]` (an `ARRAY`) | `(T \| null)[]` | `["a", "b"]` |
 | `STRUCT(a T, …)` | `{ a: T \| null; … }` | `{ host: "h", pid: 7 }` |
 | A `STRUCT` without field names, as `(1, 'a')` or `row(…)` makes | `[T \| null, …]` | `[1, "a"]` |
@@ -113,7 +113,7 @@ from events
 
 **JSON**
 
-A `JSON` column is the parsed value, typed `unknown`. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), is any JSON value or the values its schema admits.
+A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), is any JSON value or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
 
 </Rules>
 
