@@ -167,6 +167,7 @@ impl File {
         let copy = copies.dir.join("db");
         let logs: Vec<(std::path::PathBuf, std::path::PathBuf)> = ["-wal", "-journal"].iter().map(|suffix| (format!("{}{suffix}", self.path).into(), copies.dir.join(format!("db{suffix}")))).collect();
         // The file and its logs as they stand: their sizes and times, which a write changes.
+        let now = std::time::SystemTime::now();
         let stamp: Stamp = std::iter::once(std::path::Path::new(&self.path)).chain(logs.iter().map(|(from, _)| from.as_path())).map(|path| std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))).collect();
         if copies.made.as_ref() == Some(&stamp) {
             return open(&copy);
@@ -187,7 +188,12 @@ impl File {
                 }
             }
             if !changed && logs.iter().zip(&before).all(|((from, to), header)| *header == log_header(to) && *header == log_header(from)) {
-                copies.made = Some(stamp);
+                // A file written within the last second may be written again in the same clock tick
+                // with the same size, which the stamp would not tell from this copy, so the copy is
+                // kept for the next request only once every time is older than that: git's rule for
+                // a racy index entry.
+                let settled = stamp.iter().flatten().all(|(_, modified)| modified.is_some_and(|m| now.duration_since(m).is_ok_and(|age| age >= std::time::Duration::from_secs(1))));
+                copies.made = settled.then_some(stamp);
                 return open(&copy);
             }
         }
@@ -301,13 +307,22 @@ mod tests {
         assert_eq!(rewritten(&db), 0);
         assert_eq!(db.query_row("pragma integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
         drop(db);
-        // Nothing changed, so the next request reads the same copy.
+        // The file was written within the last second, so its copy is not kept: the next request
+        // copies it again, and once the file has settled, that copy is kept while it stands.
+        assert!(file.copies.borrow().as_ref().unwrap().made.is_none());
+        let settled = std::time::SystemTime::now() - std::time::Duration::from_secs(10);
+        for written in [path.clone(), dir.join("app.db-journal")] {
+            std::fs::File::options().write(true).open(written).unwrap().set_modified(settled).unwrap();
+        }
+        drop(file.open().unwrap());
+        assert!(file.copies.borrow().as_ref().unwrap().made.is_some());
+        // A mark made in the kept copy is what the next request reads, where a new copy would not have it.
         let copy = file.copies.borrow().as_ref().unwrap().dir.join("db");
-        let made = std::fs::metadata(&copy).unwrap().modified().unwrap();
+        Db::open(&copy).unwrap().execute("update users set name = 'kept' where id = 1", []).unwrap();
         let db = file.open().unwrap();
+        assert_eq!(db.query_row("select name from users where id = 1", [], |r| r.get::<_, String>(0)).unwrap(), "kept");
         assert_eq!(rewritten(&db), 0);
         drop(db);
-        assert_eq!(std::fs::metadata(&copy).unwrap().modified().unwrap(), made);
         drop(file);
         drop(app);
         std::fs::remove_dir_all(&dir).unwrap();

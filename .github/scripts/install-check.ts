@@ -145,5 +145,9 @@ try {
   console.log(`\n${platform}: installed, typed and ran`);
 } finally {
   server.kill();
-  rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  // Windows keeps the files of a program that runs, and the engine's children run until this
+  // process ends: what is left of the directory goes with the runner's own temporary files.
+  try {
+    rmSync(root, { recursive: true, force: true, maxRetries: 5 });
+  } catch {}
 }

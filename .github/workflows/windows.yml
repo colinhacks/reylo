@@ -65,13 +65,16 @@ jobs:
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -v ON_ERROR_STOP=1 -c "create user certuser" -c "create database reylo_windows owner certuser"
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U certuser -d reylo_windows -v ON_ERROR_STOP=1 -c "create table users (id integer primary key, name text not null)"
           "$PGBIN/psql" -h 127.0.0.1 -p "$PG_PORT" -U postgres -At -c "select version()"
-      # MySQL 8.0, which the runner carries, on TCP and on a named pipe: a Windows service, since the
+      # The MySQL server the runner carries, on TCP and on a named pipe: a Windows service, since the
       # runner stops every process a step started when the step ends. The pipe gives every account
       # full access, without which MySQL refuses the access Node's pipes ask for (EPERM).
       - name: Start MySQL with a named pipe
         shell: pwsh
         run: |
-          $bin = "C:\Program Files\MySQL\MySQL Server 8.0\bin"
+          # The runner's server, under the directory of whatever version its image carries.
+          $bin = (Get-ChildItem "C:\Program Files\MySQL\*\bin\mysqld.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).DirectoryName
+          if (-not $bin) { throw "no MySQL server on this runner: $(Get-ChildItem 'C:\Program Files\MySQL' -Recurse -Depth 2 -ErrorAction SilentlyContinue | Out-String)" }
+          & "$bin\mysqld.exe" --version
           $data = "$env:RUNNER_TEMP\mysql".Replace("\", "/")
           $ini = "$env:RUNNER_TEMP\reylo-mysql.ini"
           Set-Content $ini "[mysqld]`ndatadir=$data`nport=53306`nbind-address=127.0.0.1`nmysqlx=OFF`nnamed-pipe=ON`nsocket=reylo-mysql`nnamed_pipe_full_access_group=*everyone*`nlog-error=$data.log"
