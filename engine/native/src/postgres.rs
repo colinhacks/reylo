@@ -193,10 +193,16 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
         });
         Ok(client)
     };
-    match tokio::time::timeout(timeout, connecting).await {
-        Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
-        Ok(result) => result,
-    }
+    let client = match tokio::time::timeout(timeout, connecting).await {
+        Err(_) => return Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
+        Ok(result) => result?,
+    };
+    // The planner estimates three of the engine's catalog queries above `jit_above_cost`, one in
+    // the millions against a default of 100,000, so a server built with JIT compiles them for
+    // each statement: about 2.6 seconds, where running them takes 50 milliseconds. A server
+    // without the setting refuses it, and then there is nothing to turn off.
+    let _ = client.batch_execute("set jit = off").await;
+    Ok(client)
 }
 
 /// A libpq URL read: tokio-postgres's configuration, how much of the server's certificate to check,
