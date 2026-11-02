@@ -2,6 +2,9 @@ chain_bare.sql: maybeOne (id: int8) -> { body: text?, title: text?, email: text?
 comma_join.sql: maybeOne (id: int8) -> { title: text?, email: text? }
 distinct_chain.sql: maybeOne (a: int8) -> { author_id: int8, email: text? }
 distinct_on.sql: maybeOne (a: int8) -> { title: text? }
+distinct_on_output_name.sql: many (t: text) -> { title: int8? }
+distinct_on_position.sql: many (a: int8) -> { id: int8, title: text? }
+distinct_on_position_composite.sql: many (t: text) -> { id: int8, author_id: int8?, title: text?, score: float8?, t: text? }
 except.sql: maybeOne (id: int8) -> { id: int8 }
 group_pinned.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
 inner_join.sql: maybeOne (id: int8) -> { title: text?, email: text? }
