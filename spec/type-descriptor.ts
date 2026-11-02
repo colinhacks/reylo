@@ -1,4 +1,6 @@
-/** The result of introspecting one SQL statement (`StatementDescriptor`, below) and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. The TypeScript is notation: a descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans. */
+/** The result of introspecting one SQL statement (`StatementDescriptor`, below) and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. The TypeScript is notation: a descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans.
+ *
+ * The spec is a living document, and every part of it was weighed against the databases it covers. A change to it is a design decision: agree it with a maintainer before writing it, and where implementing it shows a limitation, raise the limitation rather than working around it. */
 export type Type =
   | BooleanType | IntegerType | FloatType | DecimalType
   | TextType | BytesType | UuidType
