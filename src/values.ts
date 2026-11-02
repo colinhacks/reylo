@@ -8,7 +8,8 @@
 // A value's representation is its kind, which the build writes into the module for each output
 // column (`columns`, as `[name, kind]`): `bool` is a boolean; `int` and `float` a number; `int8` a
 // BigInt; `decimal` the exact decimal text; `date` the text `YYYY-MM-DD`; `timestamp` the server's
-// wall-clock text with `T` between the date and the time; `timestamptz` the instant's ISO 8601 text
+// wall-clock text with `T` between the date and the time (a year of either outside 0000–9999 in
+// ISO 8601's extended form, `+012345` or `-000001` for 2 BC); `timestamptz` the instant's ISO 8601 text
 // in UTC, with `Z` and the server's fraction; `interval` an ISO 8601 duration with its sign in
 // front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `vector` pgvector's
 // `vector` or `halfvec` as an array of its numbers; `hstore` an hstore's keys as an object, each
@@ -192,8 +193,26 @@ export type Decoder = (text: string) => unknown;
 const identity: Decoder = (x) => x;
 const number: Decoder = (x) => +x;
 
-/** `2026-10-20 10:00:00.123456` → `2026-10-20T10:00:00.123456`; `infinity` and a BC year's suffix as written. */
-const timestamp: Decoder = (x) => x.replace(" ", "T");
+/**
+ * A date's or timestamp's text with its year as `isoYear` writes it: Postgres writes a year past
+ * 9999 with more digits (`12345-01-01`) and one before 1 AD in its own form (`0002-06-01 BC`), which
+ * `Temporal.PlainDate.from` refuses, so `12345-01-01` is `+012345-01-01` and `0002-06-01 BC` is
+ * `-000001-06-01`. A four-digit year after 1 BC, `infinity` and `-infinity` are left as they are.
+ */
+function isoDate(x: string): string {
+  const dash = x.indexOf("-");
+  const bc = x.endsWith(" BC");
+  if (dash < 4 || (dash === 4 && !bc)) return x;
+  const digits = x.slice(0, dash);
+  if (!/^\d+$/.test(digits)) return x;
+  return isoYear(bc ? 1 - +digits : +digits) + x.slice(dash, bc ? -3 : undefined);
+}
+
+/** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
+const date: Decoder = isoDate;
+
+/** `2026-10-20 10:00:00.123456` → `2026-10-20T10:00:00.123456`, its year as a date's (`isoDate`); `infinity` as written. */
+const timestamp: Decoder = (x) => isoDate(x.replace(" ", "T"));
 
 // timestamptz in DateStyle ISO: `2026-10-20 03:03:00.123456-07`, offsets with seconds before
 // standard time (`-07:52:58`), years past 9999, ` BC`. `new Date(text)`, which postgres.js and
@@ -230,7 +249,11 @@ const pad = (n: number, width = 2) => String(n).padStart(width, "0");
 
 /**
  * An ISO 8601 year: four digits from 0000 (1 BC) to 9999, and the extended form, a sign and six
- * digits, outside them (`+010000`, `-000001` for 2 BC), as `Temporal.Instant` reads and writes it.
+ * digits, outside them (`+010000`, `-000001` for 2 BC), as `Temporal` reads and writes it. A year
+ * past 999999, which only a Postgres `date` reaches (up to 5874897), takes the digits it needs after
+ * the sign (`+5874897`): ISO 8601 leaves the number of extended digits to the parties that exchange
+ * them, Temporal holds no such date in any form, and a sign keeps the rule that every year outside
+ * 0000–9999 has one, which `postgresYear` reads back.
  */
 const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-" : "+"}${pad(Math.abs(y), 6)}`);
 
@@ -242,7 +265,7 @@ const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-"
  * `0002 … BC` and `0000` or `+000000` is `0001 … BC`. Any other text is left as it is.
  */
 export function postgresYear(text: string): string {
-  const m = /^([+-]\d{6}|0000)(-.*)$/.exec(text);
+  const m = /^([+-]\d{6,}|0000)(-.*)$/.exec(text);
   if (m === null || /\sbc$/i.test(text)) return text;
   const year = +m[1]!;
   return year > 0 ? `${pad(year, 4)}${m[2]}` : `${pad(1 - year, 4)}${m[2]} BC`;
@@ -415,7 +438,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   int8: (x) => BigInt(x),
   decimal: identity,
   text: identity,
-  date: identity,
+  date,
   timestamp,
   timestamptz: instant,
   interval: duration,
@@ -587,17 +610,16 @@ function validDate(d: Date, column: string): void {
 }
 
 /**
- * A Date a driver read as UTC (Bun.sql's date and timestamp) back to the wall-clock text the server
- * wrote: `YYYY-MM-DD`, or with `T` and the fraction the driver kept, and ` BC` for a year before 1.
+ * A Date a driver read as UTC (Bun.sql's date and timestamp) back to the text the server's would
+ * decode to: `YYYY-MM-DD`, or with `T` and the fraction the driver kept, the year as `isoYear`
+ * writes it.
  */
 function utcText(d: Date, kind: "date" | "timestamp", column: string): string {
   validDate(d, column);
-  const year = d.getUTCFullYear();
-  const date = `${pad(year > 0 ? year : 1 - year, 4)}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-  const bc = year > 0 ? "" : " BC";
-  if (kind === "date") return date + bc;
+  const date = `${isoYear(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
+  if (kind === "date") return date;
   const ms = d.getUTCMilliseconds();
-  return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : ""}${bc}`;
+  return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : ""}`;
 }
 
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;

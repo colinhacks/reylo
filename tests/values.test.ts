@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, postgresYear, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import type { Columns } from "../src/values.ts";
 
@@ -66,7 +66,7 @@ test("the representation, value by value", () => {
   assert.equal(d("numeric", "12345678901234567890.123456789"), "12345678901234567890.123456789");
   assert.equal(d("date", "2026-10-20"), "2026-10-20");
   assert.equal(d("timestamp", "2026-10-20 10:00:00.123456"), "2026-10-20T10:00:00.123456");
-  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "0044-03-15T12:00:00 BC");
+  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "-000043-03-15T12:00:00");
   assert.equal(d("timestamp", "infinity"), "infinity");
   assert.equal(d("interval", "1 year 2 mons"), "P1Y2M");
   assert.deepEqual(d("bytea", "\\x0102ff"), Buffer.from([1, 2, 255]));
@@ -111,6 +111,59 @@ test("interval: an ISO 8601 duration with its sign in front, which Temporal read
   assert.equal(postgresInterval("+P1D"), "P1D");
   assert.deepEqual(textDecoder("interval[]")('{"1 day",NULL,-00:00:03}'), ["P1D", null, "-PT3S"]);
   assert.equal(coerce("interval", "-1 days", "span"), "-P1D", "a driver's text, as Bun.sql gives it");
+});
+
+test("date and timestamp: a year outside 0000 to 9999 in ISO 8601's extended form, as timestamptz's, which Temporal reads and a parameter takes back", () => {
+  type PlainFrom = { from(text: string): { toString(): string } };
+  const Temporal = (globalThis as unknown as { Temporal: { PlainDate: PlainFrom; PlainDateTime: PlainFrom } }).Temporal;
+  const date = textDecoder("date");
+  const timestamp = textDecoder("timestamp");
+  for (const [text, iso] of [
+    ["2026-10-20", "2026-10-20"],
+    ["0001-01-01", "0001-01-01"],
+    ["9999-12-31", "9999-12-31"],
+    ["0001-12-31 BC", "0000-12-31"],
+    ["0002-06-01 BC", "-000001-06-01"],
+    ["4714-11-24 BC", "-004713-11-24"],
+    ["10000-01-01", "+010000-01-01"],
+    ["12345-01-01", "+012345-01-01"],
+    ["275760-09-13", "+275760-09-13"],
+  ] as const) {
+    assert.equal(date(text), iso, text);
+    assert.equal(Temporal.PlainDate.from(iso).toString(), iso, iso);
+    // The round-trip rule: the parameter is the text the server wrote, which it reads as the same date.
+    assert.equal(postgresYear(iso), text, iso);
+  }
+  for (const [text, iso] of [
+    ["2026-10-20 10:00:00.123456", "2026-10-20T10:00:00.123456"],
+    ["0001-12-31 23:59:59.999999 BC", "0000-12-31T23:59:59.999999"],
+    ["0002-06-01 12:00:00 BC", "-000001-06-01T12:00:00"],
+    ["4714-11-24 00:00:00 BC", "-004713-11-24T00:00:00"],
+    ["10000-01-01 00:00:00", "+010000-01-01T00:00:00"],
+    ["123456-01-01 00:00:00.5", "+123456-01-01T00:00:00.5"],
+    ["275760-09-13 00:00:00", "+275760-09-13T00:00:00"],
+  ] as const) {
+    assert.equal(timestamp(text), iso, text);
+    assert.equal(Temporal.PlainDateTime.from(iso).toString(), iso, iso);
+    assert.equal(postgresYear(iso), text.replace(" ", "T"), iso);
+  }
+  // A date past 999999 AD, which only Postgres's date reaches (5874897), keeps a sign before the
+  // digits it needs; Temporal holds no such date, and the parameter still reads it back.
+  assert.equal(date("5874897-12-31"), "+5874897-12-31");
+  assert.equal(date("1000000-01-01"), "+1000000-01-01");
+  assert.equal(postgresYear("+5874897-12-31"), "5874897-12-31");
+  assert.throws(() => Temporal.PlainDate.from("+5874897-12-31"), RangeError);
+  for (const word of ["infinity", "-infinity"]) {
+    assert.equal(date(word), word);
+    assert.equal(timestamp(word), word);
+  }
+  // Arrays: each element as a scalar's, a BC element quoted in Postgres's text.
+  assert.deepEqual(textDecoder("date[]")('{"0002-06-01 BC",12345-01-01,2026-10-20,NULL,infinity}'), ["-000001-06-01", "+012345-01-01", "2026-10-20", null, "infinity"]);
+  assert.deepEqual(textDecoder("timestamp[]")('{"0002-06-01 12:00:00 BC","10000-01-01 00:00:00",-infinity}'), ["-000001-06-01T12:00:00", "+010000-01-01T00:00:00", "-infinity"]);
+  // A driver's Date (Bun.sql's, read as UTC) gives the same text as the server's.
+  assert.equal(coerce("date", new Date("+012345-01-01T00:00:00Z"), "d"), "+012345-01-01");
+  assert.equal(coerce("timestamp", new Date("+010000-01-01T00:00:00.250Z"), "t"), "+010000-01-01T00:00:00.25");
+  assert.equal(coerce("timestamp", new Date("-000001-06-01T12:00:00Z"), "t"), "-000001-06-01T12:00:00");
 });
 
 test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kept, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
