@@ -1,6 +1,6 @@
 {
   "name": "reylo",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Import SQL files as fully typed queries. A TypeScript content mapper plus a runtime loader.",
   "license": "MIT",
