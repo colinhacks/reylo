@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { AnswerCache, engine } from "../src/engine.ts";
-import { DRIVERS, PG, ROOT, postgresDatabase, driver } from "./helpers.ts";
+import { DRIVERS, PG, postgresDatabase, driver } from "./helpers.ts";
 
 // The engine's catalog queries answer the same rows whatever a user has created: each runs on a
 // database as the analysis of a set of statements asks it, then again once the database holds a
@@ -190,7 +190,7 @@ async function withAsked(body: (url: string, asked: Asked, postgres: any) => Pro
     await db.unsafe(SCHEMA);
     // The engine's analysis run here over a connection the engine opened, so that every catalog query
     // it asks, and its rows, pass through this side.
-    const postgresEngine = await engine("postgres", ROOT);
+    const postgresEngine = await engine("postgres");
     const asked: Asked = new Map();
     const clean = await postgresEngine.open(url.href);
     try {
@@ -223,7 +223,7 @@ test("every catalog query answers the same rows under a search path that puts a 
     } finally {
       await db.end();
     }
-    const captured = await (await engine("postgres", ROOT)).open(url);
+    const captured = await (await engine("postgres")).open(url);
     try {
       assert.deepEqual(await captured.query("select pg_catalog.current_setting('search_path'::pg_catalog.text)", []), [["public, pg_catalog"]]);
       for (const { sql, params, rows } of asked.values()) {
@@ -287,7 +287,7 @@ test("no catalog query converts a value implicitly, so each operator and functio
 });
 
 test("the engine binds and reads the catalog queries' arrays itself, each value as its type", { skip: live }, async () => {
-  const d = await (await engine("postgres", ROOT)).open(PG!);
+  const d = await (await engine("postgres")).open(PG!);
   try {
     const texts = ["a", 'b"c', "d\\e", "f,g", "NULL", "", "{x}"];
     // The arrays a catalog query binds: names and texts, oids and integers.

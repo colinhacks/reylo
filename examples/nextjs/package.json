@@ -19,7 +19,6 @@
     "reylo": "link:../../dist/reylo"
   },
   "devDependencies": {
-    "@reylosql/postgres": "link:../../dist/postgres",
     "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",

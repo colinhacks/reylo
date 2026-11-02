@@ -27,9 +27,6 @@ importers:
       '@jest/globals':
         specifier: ^30.5.2
         version: 30.5.2
-      '@reylosql/sqlite':
-        specifier: link:../../dist/sqlite
-        version: link:../../dist/sqlite
       '@types/better-sqlite3':
         specifier: ^9.6.0
         version: 9.6.0

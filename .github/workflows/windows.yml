@@ -1,7 +1,7 @@
 # .github/workflows/windows.yml
 #
-# The type check on Windows, where the engine reaches files through guest paths such as
-# `/C:/app/dev.db` and sockets through Node's named pipes. test.yml runs it on each push to main and
+# The type check on Windows, where the engine opens files by drive letters, shares and short names,
+# and MySQL through a named pipe, built for Windows on the runner itself. test.yml runs it on each push to main and
 # within each release, never on a pull request, which does not wait on it; it can also be run by hand.
 
 name: windows
@@ -18,7 +18,7 @@ jobs:
     if: ${{ !github.event.repository.private }}
     name: The type check on Windows
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 75
     defaults:
       run:
         shell: bash
@@ -32,6 +32,12 @@ jobs:
         with:
           nub-version: "0.9.6"
           node-version: "24"
+      # The binary, built here as the release builds it (release.yml), which every test that analyzes
+      # a statement starts.
+      - name: Build the reylo binary
+        run: |
+          .github/scripts/build-binary.sh win32-x64 "$RUNNER_TEMP/engines"
+          echo "REYLO_ENGINE_PATH=$RUNNER_TEMP/engines/engine-win32-x64/reylo.exe" >> "$GITHUB_ENV"
       - run: nub install --frozen-lockfile
       - run: nub install --frozen-lockfile
         working-directory: site
@@ -76,16 +82,14 @@ jobs:
           & "$bin\mysql.exe" --user=root --host=127.0.0.1 --port=53306 -e "select version(), @@named_pipe, @@socket; create database reylo_windows; create table reylo_windows.users (id int primary key, name text not null)"
       - run: nub install --frozen-lockfile
         working-directory: lab/jest
-      # The Jest lab reaches the package and its database's engine through links into this checkout,
-      # native ones, which Git's bash makes only when asked.
+      # The Jest lab reaches the package through a link into this checkout, a native one, which Git's
+      # bash makes only when asked, and the engine through REYLO_ENGINE_PATH.
       - name: Link the lab the tests load
         env:
           MSYS: winsymlinks:nativestrict
         run: |
-          mkdir -p lab/jest/node_modules/@reylosql
           ln -sfn ../../.. lab/jest/node_modules/reylo
-          ln -sfn ../../../../packages/sqlite lab/jest/node_modules/@reylosql/sqlite
-          ls -la lab/jest/node_modules/reylo lab/jest/node_modules/@reylosql/
+          ls -la lab/jest/node_modules/reylo
       - run: nub run typecheck
       # The loader's tests: those without a database everywhere, and Postgres's and MySQL's on the
       # runner's servers.
@@ -95,7 +99,8 @@ jobs:
           REYLO_TEST_MYSQL: mysql://root@127.0.0.1:53306
         run: |
           nub run test
-      - run: nub run build
+      # dist/reylo and dist/engine-win32-x64, around the binary the tests ran.
+      - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
       - name: Type-check a project through the built packages, on SQLite and Postgres
         env:
           REYLO_WINDOWS_PG: postgres://certuser@127.0.0.1:55432/reylo_windows

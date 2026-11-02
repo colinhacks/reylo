@@ -22,6 +22,8 @@ pub struct Sqlite {
 /// connection kept open would keep the schema it read first (see `open`).
 struct Connection {
     path: String,
+    /// Whether another process held the file the last time: the next request reads a copy at once.
+    held: std::cell::Cell<bool>,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
 }
@@ -37,18 +39,21 @@ impl Program for Sqlite {
         let sql = request["sql"].as_str().unwrap_or_default();
         Some(match op {
             // The host passes the file's path, resolved as the project names it (`sqlitePath` in src/project.ts).
-            "open" => match open(request["url"].as_str().unwrap_or_default()) {
-                Ok(_) => {
-                    self.next += 1;
-                    self.connections.insert(self.next, Connection { path: request["url"].as_str().unwrap_or_default().to_string(), answers: AnswerCache::default() });
-                    json!({ "status": "opened", "conn": self.next })
+            "open" => {
+                let (url, held) = (request["url"].as_str().unwrap_or_default(), std::cell::Cell::new(false));
+                match open(url, &held) {
+                    Ok(_) => {
+                        self.next += 1;
+                        self.connections.insert(self.next, Connection { path: url.to_string(), held, answers: AnswerCache::default() });
+                        json!({ "status": "opened", "conn": self.next })
+                    }
+                    // A file that cannot be opened is a database that cannot be reached: a build runs on `.reylo/`.
+                    Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
                 }
-                // A file that cannot be opened is a database that cannot be reached: a build runs on `.reylo/`.
-                Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
-            },
+            }
             "run" => match self.connections.get_mut(&id) {
                 None => closed(id),
-                Some(c) => match open(&c.path) {
+                Some(c) => match open(&c.path, &c.held) {
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
                     Ok(db) => match answers::analyze(&db, sql, &mut c.answers) {
                         Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
@@ -58,7 +63,7 @@ impl Program for Sqlite {
             },
             "query" => match self.connections.get(&id) {
                 None => closed(id),
-                Some(c) => match open(&c.path) {
+                Some(c) => match open(&c.path, &c.held) {
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
                     Ok(db) => {
                         let params = request["params"].as_array().cloned().unwrap_or_default();
@@ -91,8 +96,9 @@ fn closed(id: u64) -> Value {
     json!({ "status": "unreachable", "message": format!("connection {id} is closed") })
 }
 
-/// The database at `path`, read-only; `:memory:` is an empty one.
-fn open(path: &str) -> rusqlite::Result<Db> {
+/// The database at `path`, read-only; `:memory:` is an empty one. `held` says whether another
+/// process held it last time, and is set to whether it does now.
+fn open(path: &str, held: &std::cell::Cell<bool>) -> rusqlite::Result<Db> {
     if path == ":memory:" {
         return Db::open_in_memory();
     }
@@ -103,6 +109,47 @@ fn open(path: &str) -> rusqlite::Result<Db> {
     // app's own connections; a native build keeps SQLite's usual locking, which would. The mode also
     // trusts that nothing else writes the file, so the connection lives for one request.
     #[cfg(target_family = "wasm")]
-    db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+    {
+        let _ = held;
+        db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+    }
+    // Natively the locks are real, and an engine that keeps the file locked for as long as its
+    // connection is open (Turso's) leaves a reader waiting forever: after a short wait the program
+    // reads a copy of the file and its write-ahead log, as they stand, which sees every committed
+    // row and table; once a file is held, the next request goes to the copy without waiting.
+    #[cfg(not(target_family = "wasm"))]
+    {
+        db.busy_timeout(std::time::Duration::from_millis(if held.get() { 0 } else { 250 }))?;
+        match db.query_row("select count(*) from sqlite_schema", [], |_| Ok(())) {
+            Err(rusqlite::Error::SqliteFailure(e, _)) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                held.set(true);
+                return open_copy(path);
+            }
+            Err(e) => return Err(e),
+            Ok(()) => held.set(false),
+        }
+    }
     Ok(db)
+}
+
+/// A copy of the database at `path` and its write-ahead log, opened: one copy per file, made again
+/// for each request, so that it reads the file as it is then.
+#[cfg(not(target_family = "wasm"))]
+fn open_copy(path: &str) -> rusqlite::Result<Db> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let dir = std::env::temp_dir().join(format!("reylo-sqlite-{}-{:016x}", std::process::id(), hasher.finish()));
+    let copy = dir.join("db");
+    let failed = |e: std::io::Error| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN), Some(format!("cannot copy the database the app holds: {e}")));
+    std::fs::create_dir_all(&dir).map_err(failed)?;
+    for suffix in ["-wal", "-shm"] {
+        let _ = std::fs::remove_file(dir.join(format!("db{suffix}")));
+    }
+    std::fs::copy(path, &copy).map_err(failed)?;
+    let wal = format!("{path}-wal");
+    if std::path::Path::new(&wal).exists() {
+        std::fs::copy(&wal, dir.join("db-wal")).map_err(failed)?;
+    }
+    Db::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
 }

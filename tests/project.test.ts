@@ -6,9 +6,8 @@ import { basename, join } from "node:path";
 import { engine } from "../src/engine.ts";
 import { findProjectFile, resolveProject } from "../src/project.ts";
 import { Session } from "../src/analyze.ts";
-import { ROOT } from "./helpers.ts";
 
-// Any engine reads the project file; the repository's own install has every one.
+// The engine's core reads the project file, whichever database's engine is asked.
 
 // A project tree: `files` maps a path under a fresh directory to its text.
 function tree(files: Record<string, string>): string {
@@ -24,7 +23,7 @@ function tree(files: Record<string, string>): string {
 const posixShell = process.platform === "win32" && "its command is written for a POSIX shell, and Windows runs it in cmd.exe";
 
 test("without a project file, DATABASE_URL comes from the environment, then .env.local, then .env", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const root = tree({ "app/package.json": "{}", "app/.env": "DATABASE_URL=postgres://from-env-file/db\n", "app/.env.local": "DATABASE_URL=postgres://from-local/db\n" });
   const dir = join(root, "app");
   assert.equal(findProjectFile(dir, {}), undefined);
@@ -43,7 +42,7 @@ test("without a project file, DATABASE_URL comes from the environment, then .env
 });
 
 test("the project file sits beside package.json, and its direct_url, env files and strict_params apply", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const root = tree({
     "package.json": "{}",
     ".reylo.yaml": "url: postgres://pooler/app\ndirect_url: mysql://root:${DB_PASSWORD}@127.0.0.1:3306/app\nenv: [secrets.env]\nstrict_params: true\napi:\n  routes: api\n",
@@ -72,7 +71,7 @@ test("the project file sits beside package.json, and its direct_url, env files a
 });
 
 test("the project file may be named .reylo.yml, and both names beside one package.json are an error", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const yml = tree({ "package.json": "{}", ".reylo.yml": "direct_url: file:./x.db\n" });
   const r = resolveProject(e, yml, {});
   assert.deepEqual([r.file, r.dialect, r.error], [join(yml, ".reylo.yml"), "sqlite", undefined]);
@@ -88,7 +87,7 @@ test("the project file may be named .reylo.yml, and both names beside one packag
 });
 
 test("a types section, removed on 2026-10-20, is refused where it stands, whatever it holds; package.json decides no type", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   for (const types of ["types:\n  dates: temporal\n", "types: {}\n", "types:\n  datez: Date\n"]) {
     const root = tree({ "package.json": JSON.stringify({ dependencies: { mariadb: "^3", "@planetscale/database": "^1" } }), ".reylo.yaml": `direct_url: mysql://root@127.0.0.1:3306/app\n\n${types}` });
     const r = resolveProject(e, root, {});
@@ -102,7 +101,7 @@ test("a types section, removed on 2026-10-20, is refused where it stands, whatev
 });
 
 test("a key the library does not know, and a variable nothing sets, are errors that say where", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const typo = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\n\nstirct: true\n" });
   assert.match(resolveProject(e, typo, {}).error!, /^\.reylo\.yaml:3:1: unknown field `stirct`/);
   // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is unknown, and its error names the new one.
@@ -118,7 +117,7 @@ test("a key the library does not know, and a variable nothing sets, are errors t
 });
 
 test("a $(command) in direct_url is replaced by what it prints, once per process, percent-encoded in the user or password", { skip: posixShell }, async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   // The command counts its runs in a file beside it, and prints a password a URL cannot hold as it is.
   const root = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo run >> runs.txt; printf 'p@ss/w?rd&x')@db.internal:5432/app\n" });
   const runs = () => readFileSync(join(root, "runs.txt"), "utf8").split("\n").filter(Boolean).length;
@@ -143,7 +142,7 @@ test("a $(command) in direct_url is replaced by what it prints, once per process
 });
 
 test("a command's variables are its shell's, from the environment and the env files, and no value is read as shell syntax", { skip: posixShell }, async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const root = tree({
     "package.json": "{}",
     ".reylo.yaml": "direct_url: postgres://app:$(printf %s \"$DB_PASSWORD\")@$(printf %s \"$DB_HOST\")/app\n",
@@ -159,7 +158,7 @@ test("a command's variables are its shell's, from the environment and the env fi
 });
 
 test("a command that fails, prints nothing or is left open is an error that names it, and runs nothing more", { skip: posixShell }, async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   const failing = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://app:$(echo 'no item matches' >&2; exit 3)@h/app\n" });
   const r = resolveProject(e, failing, {});
   assert.equal(r.url, undefined);
@@ -178,7 +177,7 @@ test("a command that fails, prints nothing or is left open is an error that name
 const NOTICE = ".reylo.yaml: Reylo does not read url; set direct_url to the dev database Reylo reads your types from (it uses DATABASE_URL meanwhile)";
 
 test("url is never the type check's connection: alone, it draws a notice and DATABASE_URL is used; direct_url wins; both draw nothing", async () => {
-  const e = await engine("postgres", ROOT);
+  const e = await engine("postgres");
   // url alone: DATABASE_URL, from the environment or an env file, and one notice that names direct_url.
   const alone = tree({ "package.json": "{}", ".reylo.yaml": "url: postgres://prod-pooler/app\n", ".env": "DATABASE_URL=postgres://dev/app\n" });
   const fromFile = resolveProject(e, alone, {});

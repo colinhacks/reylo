@@ -12,9 +12,6 @@ importers:
         specifier: link:../../dist/reylo
         version: link:../../dist/reylo
     devDependencies:
-      '@reylosql/sqlite':
-        specifier: link:../../dist/sqlite
-        version: link:../../dist/sqlite
       '@types/bun':
         specifier: ^1.4.3
         version: 1.4.3

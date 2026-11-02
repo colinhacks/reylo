@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Stage one built package directory on npm: `npm stage publish` through OIDC trusted publishing.
 #
-# CI can only STAGE. The trusted publisher on reylo and on each @reylosql engine is stage-only, so a
+# CI can only STAGE. The trusted publisher on reylo and on each @reylosql/engine-<platform> is stage-only, so a
 # version reaches the registry only once a maintainer approves it with 2FA — a proof of presence that
 # no token, and no stolen push credential, can supply.
 #
@@ -19,7 +19,7 @@ version="${VERSION:?VERSION must name the version being staged}"
 name="$(nub --node -p "require(require('node:path').resolve('$dir', 'package.json')).name")"
 built="$(nub --node -p "require(require('node:path').resolve('$dir', 'package.json')).version")"
 [ "$built" = "$version" ] || { echo "::error::$dir holds $name@$built, not $version"; exit 1; }
-# registry.npmjs.org wants the scope separator percent-encoded: @reylosql/postgres -> @reylosql%2fpostgres.
+# registry.npmjs.org wants the scope separator percent-encoded: @reylosql/engine-linux-x64 -> @reylosql%2fengine-linux-x64.
 encoded="${name/\//%2f}"
 
 if curl -sf "https://registry.npmjs.org/$encoded/$version" > /dev/null; then

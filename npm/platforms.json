@@ -1,0 +1,10 @@
+[
+  { "platform": "darwin-arm64", "os": "darwin", "cpu": "arm64", "target": "aarch64-apple-darwin", "runner": "macos-15", "name": "macOS on Apple silicon" },
+  { "platform": "darwin-x64", "os": "darwin", "cpu": "x64", "target": "x86_64-apple-darwin", "runner": "macos-15", "name": "macOS on Intel" },
+  { "platform": "linux-x64", "os": "linux", "cpu": "x64", "libc": "glibc", "target": "x86_64-unknown-linux-gnu", "runner": "ubuntu-22.04", "name": "Linux on x64, glibc" },
+  { "platform": "linux-x64-musl", "os": "linux", "cpu": "x64", "libc": "musl", "target": "x86_64-unknown-linux-musl", "runner": "ubuntu-24.04", "name": "Linux on x64, musl" },
+  { "platform": "linux-arm64", "os": "linux", "cpu": "arm64", "libc": "glibc", "target": "aarch64-unknown-linux-gnu", "runner": "ubuntu-22.04-arm", "name": "Linux on arm64, glibc" },
+  { "platform": "linux-arm64-musl", "os": "linux", "cpu": "arm64", "libc": "musl", "target": "aarch64-unknown-linux-musl", "runner": "ubuntu-24.04-arm", "name": "Linux on arm64, musl" },
+  { "platform": "win32-x64", "os": "win32", "cpu": "x64", "target": "x86_64-pc-windows-msvc", "runner": "windows-2025", "name": "Windows on x64" },
+  { "platform": "win32-arm64", "os": "win32", "cpu": "arm64", "target": "aarch64-pc-windows-msvc", "runner": "windows-11-arm", "name": "Windows on arm64" }
+]

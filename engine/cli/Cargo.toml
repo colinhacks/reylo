@@ -1,0 +1,13 @@
+[package]
+name = "reylo"
+version.workspace = true
+edition = "2021"
+publish = false
+description = "One program for every database Reylo reads: the analysis engine each language's frontend talks to over standard input and output (reylo engine <database>)."
+
+[[bin]]
+name = "reylo"
+path = "src/main.rs"
+
+[dependencies]
+reylo-engine-native = { path = "../native" }

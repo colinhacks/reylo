@@ -6,11 +6,10 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer, type AddressInfo, type Server } from "node:net";
 import { Session } from "../src/analyze.ts";
-import { guestPath } from "../src/component.ts";
 import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
-import { PG, MYSQL, ROOT } from "./helpers.ts";
+import { PG, MYSQL } from "./helpers.ts";
 
 const noPg = !PG && "REYLO_TEST_PG names no server";
 const noMysql = !MYSQL && "REYLO_TEST_MYSQL names no server";
@@ -40,7 +39,7 @@ test("reason reads a refused connection, an AggregateError with no message of it
 
 test("the engine reports a connection the server refuses as Unreachable, on Postgres and on MySQL", async () => {
   for (const [dialect, url] of [["postgres", "postgres://127.0.0.1:1/x"], ["mysql", "mysql://root@127.0.0.1:1/x"]] as const) {
-    const [r] = await Promise.allSettled([(await engine(dialect, ROOT)).open(url)]);
+    const [r] = await Promise.allSettled([(await engine(dialect)).open(url)]);
     assert.equal(r!.status, "rejected", dialect);
     const e = (r as PromiseRejectedResult).reason;
     assert.ok(e instanceof Unreachable, `${dialect}: expected Unreachable, got ${e}`);
@@ -71,19 +70,16 @@ test("analyses waiting on a server that never answers fail together, at the one 
   }
 });
 
-test("the files a Postgres URL names are resolved from the working directory and mapped to the engine's paths", async () => {
+test("the files a Postgres URL names are resolved from the working directory, as libpq resolves them", async () => {
   const { url } = await hostUrl("postgres://u@h/d?sslmode=verify-ca&sslrootcert=certs/root.pem&sslcert=%2Fabs%2Fc.pem&sslkey=k.pem&application_name=a+b");
   const params = new URLSearchParams(url.slice(url.indexOf("?") + 1));
-  assert.equal(params.get("sslrootcert"), guestPath(resolve("certs/root.pem")));
-  assert.equal(params.get("sslcert"), guestPath(resolve("/abs/c.pem")));
-  assert.equal(params.get("sslkey"), guestPath(resolve("k.pem")));
+  assert.equal(params.get("sslrootcert"), resolve("certs/root.pem"));
+  assert.equal(params.get("sslcert"), resolve("/abs/c.pem"));
+  assert.equal(params.get("sslkey"), resolve("k.pem"));
   // Every other parameter is passed on as written.
   assert.match(url, /&application_name=a\+b$/);
   assert.equal((await hostUrl("postgres://u@h/d?sslrootcert=system")).url, "postgres://u@h/d?sslrootcert=system");
   assert.equal((await hostUrl("mysql://root@h/d?ssl=true")).url, "mysql://root@h/d?ssl=true");
-  assert.equal(guestPath("C:\\app\\dev.db", "win32"), "/C:/app/dev.db");
-  assert.equal(guestPath("\\\\host\\share\\dev.db", "win32"), "/host/share/dev.db");
-  assert.equal(guestPath("/app/dev.db", "linux"), "/app/dev.db");
 });
 
 test("a URL that names a Unix socket is opened through a bridge, on Postgres and on MySQL", { skip: noUnixSockets || noPg || noMysql }, async () => {
@@ -96,7 +92,7 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
       ["postgres", `postgres://${username}@${encodeURIComponent(pg.dir)}/${database.slice(1)}`],
       ["mysql", `mysql://root@localhost/?socketPath=${encodeURIComponent(my.path)}`],
     ] as const) {
-      const c = await (await engine(dialect, ROOT)).open(url);
+      const c = await (await engine(dialect)).open(url);
       assert.deepEqual((await c.analyze("select 1 as x")).columns.map((col) => col.name), ["x"], url);
       // The bridge's token never reaches the server, which shows a session's attributes to its accounts.
       if (dialect === "mysql") assert.deepEqual(await c.query("select count(*) from performance_schema.session_connect_attrs where attr_name = 'reylo_bridge'", []), [[0]]);
@@ -109,7 +105,7 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
 });
 
 test("a json or jsonb column of a Postgres query reads as its value, as the server-side extension's answers do", { skip: noPg }, async () => {
-  const c = await (await engine("postgres", ROOT)).open(PG!);
+  const c = await (await engine("postgres")).open(PG!);
   try {
     const rows = await c.query(`select '{"a": [1, null]}'::pg_catalog.jsonb as b, '[true]'::pg_catalog.json as j, null::pg_catalog.jsonb as n`, []);
     assert.deepEqual(rows, [[{ a: [1, null] }, [true], null]]);
@@ -123,7 +119,7 @@ test("a connection the server closed while it sat idle is opened again for the n
     ["postgres", PG!, "select pg_backend_pid()", (n: unknown) => `select pg_terminate_backend(${n})`],
     ["mysql", MYSQL!, "select connection_id()", (n: unknown) => `kill ${n}`],
   ] as const) {
-    const e = await engine(dialect, ROOT);
+    const e = await engine(dialect);
     const [c, other] = [await e.open(url), await e.open(url)];
     try {
       const [[backend]] = (await c.query(id, [])) as [[unknown]];
@@ -143,7 +139,7 @@ test("a connection waiting on a server that never answers holds up no other conn
   const silent = createServer((socket) => socket.on("error", () => {}));
   await new Promise<void>((done) => silent.listen(0, "127.0.0.1", done));
   try {
-    const e = await engine("postgres", ROOT);
+    const e = await engine("postgres");
     const waiting = e.open(`postgres://postgres@127.0.0.1:${(silent.address() as AddressInfo).port}/x`).catch((err: unknown) => err);
     const healthy = (async () => {
       const c = await e.open(PG!);
@@ -162,11 +158,11 @@ test("a connection waiting on a server that never answers holds up no other conn
   }
 });
 
-test("the engine runs under Node's watch mode, whose report its workers do not inherit", () => {
-  // `node --watch` runs its process with WATCH_REPORT_DEPENDENCIES set; a worker that inherits it
-  // reports each module it loads to its parent as a message.
+test("the engine runs under Node's watch mode", () => {
+  // `node --watch` runs its process with WATCH_REPORT_DEPENDENCIES set, which reports each module
+  // the process and its workers load to the watcher; the engine's children are no Node processes.
   const script = `const { engine } = await import(${JSON.stringify(new URL("../src/engine.ts", import.meta.url).href)});
-const c = await (await engine("sqlite", ${JSON.stringify(ROOT)})).open(":memory:");
+const c = await (await engine("sqlite")).open(":memory:");
 console.log((await c.analyze("select 1 as x")).columns[0].name);
 await c.close();`;
   const run = spawnSync(process.execPath, ["--input-type=module", "-e", script], { env: { ...process.env, WATCH_REPORT_DEPENDENCIES: "1" }, encoding: "utf8", timeout: 30_000 });
@@ -230,7 +226,7 @@ test("the bridge to a Unix socket closes a connection that does not carry its to
 
 test("a socket the bridge cannot open is reported with its reason, a Unix socket or a Windows named pipe", async () => {
   const path = process.platform === "win32" ? String.raw`\\.\pipe\reylo-no-such-socket` : join(mkdtempSync(join(tmpdir(), "reylo-sock-")), "mysql.sock");
-  await assert.rejects((await engine("mysql", ROOT)).open(`mysql://root@localhost/app?socketPath=${encodeURIComponent(path)}`), (e: Error) => e instanceof Unreachable && e.message.startsWith(`cannot open the socket ${path}: connect ENOENT`));
+  await assert.rejects((await engine("mysql")).open(`mysql://root@localhost/app?socketPath=${encodeURIComponent(path)}`), (e: Error) => e instanceof Unreachable && e.message.startsWith(`cannot open the socket ${path}: connect ENOENT`));
 });
 
 test("PGHOST names the socket's directory where the URL names no host, as libpq reads it", async () => {

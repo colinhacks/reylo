@@ -1,6 +1,6 @@
 // The type check's DuckDB. DuckDB runs inside the app, so the engine's needs (a statement's
 // describe, a catalog query) are answered by the project's own DuckDB, `@duckdb/node-api` loaded
-// from the project, as its prepared statement reports a statement's types: the engine component
+// from the project, as its prepared statement reports a statement's types: the engine
 // carries no DuckDB (engine/native/src/duckdb.rs). The database file is opened read-only for each
 // analysis and closed after it: DuckDB lets no other process open a file one process holds for
 // writing, nor open it for writing while another process holds it at all, so a type check that kept

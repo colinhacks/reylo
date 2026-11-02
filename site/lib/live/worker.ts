@@ -24,8 +24,9 @@ const EMPTY_MODULE = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0]);
 
 type Loaded = { engine: EngineCore; io: EngineIo; cache: AnswerCache; pg: PGlite };
 
-// The engine component's core modules, by their file names, which jco's output asks for by name.
-const coreUrls = Object.fromEntries(Object.entries(import.meta.glob<string>('../../../packages/postgres/engine/*.wasm', { query: '?url', import: 'default', eager: true })).map(([path, url]) => [path.slice(path.lastIndexOf('/') + 1), url]));
+// The engine component's core modules (lib/live/engine-dir.ts), by their file names, which jco's
+// output asks for by name.
+const coreUrls = Object.fromEntries(Object.entries(import.meta.glob<string>('../../.playground/*.wasm', { query: '?url', import: 'default', eager: true })).map(([path, url]) => [path.slice(path.lastIndexOf('/') + 1), url]));
 let loading: Promise<Loaded> | undefined;
 
 function load(): Promise<Loaded> {

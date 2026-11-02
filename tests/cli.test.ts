@@ -46,7 +46,7 @@ test("reylo generate analyzes every .sql file of the project, and prints each fi
 
   const first = reylo(root, "generate");
   assert.equal(first.status, 1, first.err);
-  // Loading the engine prints no ExperimentalWarning for node:wasi (src/engine.ts).
+  // Starting the engine prints nothing on stderr.
   assert.equal(first.err, "");
   assert.equal(first.out, [
     `sqlite at ${join(root, "app.db")} (DATABASE_URL in the environment)`,
@@ -170,7 +170,7 @@ test("reylo generate says once that the type check does not read url, and names 
   assert.doesNotMatch(both.out, /does not read url/);
 });
 
-test("a program run under the reylo/register preload prints nothing on stderr: node:wasi's ExperimentalWarning is swallowed", () => {
+test("a program run under the reylo/register preload prints nothing on stderr", () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-register-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
   // The module a `.sql` file becomes imports reylo, as a lab reaches it: through a link to this repository.
@@ -181,10 +181,9 @@ test("a program run under the reylo/register preload prints nothing on stderr: n
   db.close();
   writeFileSync(join(root, "user.sql"), "select id, name from users where id = :id");
   writeFileSync(join(root, "main.ts"), `import { DatabaseSync } from "node:sqlite";\nimport user from "./user.sql";\nconsole.log(JSON.stringify(await user.run(new DatabaseSync("app.db"), { id: 1 })));\n`);
-  // The engine loads in the preload's worker thread, which reports its warnings through the main thread's stderr.
+  // The engine is the preload's worker's child, whose stderr is the program's own.
   const r = spawnSync(process.execPath, ["--import", pathToFileURL(REGISTER).href, "main.ts"], { cwd: root, encoding: "utf8", env: { PATH: process.env.PATH, DATABASE_URL: "file:./app.db" } });
   assert.equal(r.status, 0, r.stderr);
   assert.equal(r.stdout, `{"id":1,"name":"ada"}\n`);
-  assert.doesNotMatch(r.stderr, /ExperimentalWarning/);
   assert.equal(r.stderr, "");
 });

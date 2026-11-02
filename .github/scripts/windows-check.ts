@@ -1,7 +1,7 @@
 // The type check on Windows (windows.yml), through the packages `nub run build` writes: one project
-// installs them from dist/, and for each way a URL can name its database `reylo generate` analyzes
-// its query and `tsc` types it. The engine reaches the files a URL names through jco's preview2-shim,
-// which maps a guest path such as `/C:/app/dev.db` to the drive or share (src/component.ts), so each
+// links dist/reylo, which finds the engine where an install puts it (dist/reylo/node_modules, a
+// junction to dist/engine-win32-x64), and for each way a URL can name its database `reylo generate`
+// analyzes its query and `tsc` types it. The engine opens the files a URL names itself, so each
 // case names its database differently: relative, absolute, as a file URL, on another drive, on a
 // `subst` drive, through a share, through a short (8.3) name, beside a writer holding a WAL open; a
 // DuckDB file, which the app's own @duckdb/node-api opens, named the same ways; and for Postgres the
@@ -29,10 +29,6 @@ writeFileSync(join(project, "package.json"), JSON.stringify({
   type: "module",
   dependencies: { reylo: `link:${posixRelative(project, join(repo, "dist", "reylo"))}` },
   devDependencies: {
-    "@reylosql/sqlite": `link:${posixRelative(project, join(repo, "dist", "sqlite"))}`,
-    "@reylosql/postgres": `link:${posixRelative(project, join(repo, "dist", "postgres"))}`,
-    "@reylosql/mysql": `link:${posixRelative(project, join(repo, "dist", "mysql"))}`,
-    "@reylosql/duckdb": `link:${posixRelative(project, join(repo, "dist", "duckdb"))}`,
     "@duckdb/node-api": "^2.0.0-r.1",
     "@types/node": "^26.6.1",
     typescript: "7.1.0-beta",

@@ -1,21 +1,20 @@
-// What the host does to a database's URL before its engine opens it (src/engine.ts). The component
-// reaches files through one preopen and opens only TCP sockets (WASI has no Unix sockets), so the
-// files a Postgres URL names (`sslrootcert`, `sslcert`, `sslkey`) are resolved as libpq resolves
-// them, from this process's working directory, and mapped to the component's paths; and a URL that
-// names a Unix socket (Postgres's `host=/dir`, or `PGHOST=/dir` where the URL names no host, and
-// mysql2's `socketPath`) is opened through a bridge, a TCP port on the loopback interface that this
-// thread pipes to the socket. The server sees a connection on its socket, which peer authentication
+// What the host does to a database's URL before its engine opens it (src/engine.ts). The files a
+// Postgres URL names (`sslrootcert`, `sslcert`, `sslkey`) are resolved as libpq resolves them, from
+// this process's working directory, so that the engine, a process of its own, reads the same file;
+// and a URL that names a Unix socket (Postgres's `host=/dir`, or `PGHOST=/dir` where the URL names
+// no host, and mysql2's `socketPath`) is opened through a bridge, a TCP port on the loopback
+// interface that this thread pipes to the socket, since the engine connects over TCP alone
+// (engine/native). The server sees a connection on its socket, which peer authentication
 // (Postgres's `peer`, MySQL's `auth_socket`) trusts as this process's user, so the bridge admits the
 // engine's own connections alone: each carries the bridge's token, which only the engine is given
 // and the server never sees, and any other is closed before the server reads a byte of it.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, connect, type AddressInfo, type Socket } from "node:net";
 import { resolve } from "node:path";
-import { guestPath } from "./component.ts";
 import { Unreachable } from "./connection.ts";
 
 /**
- * A URL as the component opens it, the bridge's token where it goes through one, what to close with
+ * A URL as the engine opens it, the bridge's token where it goes through one, what to close with
  * the connection, and why the bridge could not open its socket, which the engine sees only as a
  * connection closed.
  */
@@ -31,7 +30,7 @@ const MYSQL_ATTRIBUTE = "reylo_bridge";
 const TOKEN_TIMEOUT = 10_000;
 
 /**
- * `url` as the component opens it: files resolved and mapped, a Unix socket bridged. On Windows,
+ * `url` as the engine opens it: files resolved, a Unix socket bridged. On Windows,
  * where Node opens no Unix socket, a Postgres URL that names one is an Unreachable that says so.
  */
 export async function hostUrl(url: string, env: Record<string, string | undefined> = process.env, platform: NodeJS.Platform = process.platform): Promise<HostUrl> {
@@ -43,7 +42,7 @@ export async function hostUrl(url: string, env: Record<string, string | undefine
   if (postgres) pairs = pairs.map((pair) => {
     const [key, value] = splitPair(pair);
     if (!FILES.includes(key) || value === "" || value === "system") return pair;
-    return `${key}=${encodeURIComponent(guestPath(resolve(value)))}`;
+    return `${key}=${encodeURIComponent(resolve(value))}`;
   });
   const socket = postgres ? postgresSocket(base, pairs, env) : mysqlSocket(pairs);
   if (!socket) return { url: join(base, pairs), close: () => {} };

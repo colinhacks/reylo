@@ -10,13 +10,12 @@
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
 // `reylo generate`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
-// is that of the one engine the project installed.
+// is the one the project's `.reylo/` entries record.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type Engine, MissingEngine, ENGINE_PACKAGES, enginePath } from "./engine.ts";
+import { type Engine, MissingEngine } from "./engine.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
@@ -97,20 +96,31 @@ export function findProjectFile(from: string, env: Record<string, string | undef
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
-/** Whether the project itself installed `dialect`'s engine, as against reylo's own install. */
-function installedIn(root: string, dialect: Dialect): boolean {
-  try {
-    return existsSync(join(dirname(createRequire(join(root, "package.json")).resolve(`${ENGINE_PACKAGES[dialect]}/package.json`)), "engine", "engine.js"));
-  } catch {
-    return false;
-  }
-}
+/** How many of `.reylo/`'s entries are read for the dialect where no URL names one. */
+const CACHED_READ = 32;
 
-/** The databases whose engine the project installed, else those reylo's own install has. */
-function installedEngines(root: string): Dialect[] {
-  const dialects = Object.keys(ENGINE_PACKAGES) as Dialect[];
-  const own = dialects.filter((d) => installedIn(root, d));
-  return own.length ? own : dialects.filter((d) => enginePath(d, root));
+/**
+ * The dialects the entries in the project's `.reylo/` record (src/analyze.ts), which name the
+ * database where no URL does: a build with no URL reads them. A few entries are read, which a
+ * project's are all of one dialect unless its database changed.
+ */
+function cachedDialects(root: string): Dialect[] {
+  const dir = join(root, ".reylo", "queries");
+  let names: string[];
+  try {
+    names = readdirSync(dir).filter((n) => n.endsWith(".json"));
+  } catch {
+    return [];
+  }
+  const found = new Set<Dialect>();
+  for (const name of names.slice(0, CACHED_READ)) {
+    try {
+      const { dialect } = JSON.parse(readFileSync(join(dir, name), "utf8")) as { dialect?: unknown };
+      if (dialect === "postgres" || dialect === "mysql" || dialect === "sqlite" || dialect === "duckdb") found.add(dialect);
+    } catch {}
+    if (found.size > 1) break;
+  }
+  return [...found];
 }
 
 /** The dialect a URL's scheme names, or undefined for a scheme reylo does not read. */
@@ -243,7 +253,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
 
 /**
  * The project `projectDir` belongs to. `engine` reads the project file: any database's engine does
- * (src/engine.ts, `anyEngine`), and where none is installed a project file is the project's error.
+ * (src/engine.ts, `anyEngine`), and where reylo has none to run a project file is the project's error.
  */
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env): ResolvedProject {
   const file = findProjectFile(projectDir, env);
@@ -357,10 +367,10 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   if (url && !dialect) error ??= `Cannot tell the database from the URL (${urlSource}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.`;
   // Either name, created or removed, changes the project.
   const watched = [...new Set([...(file ? [file] : []), ...both]), ...envFiles];
-  // No URL names the database: the engine the project installed does, when it installed one, for
-  // `.reylo/`, which a build with no URL reads (src/analyze.ts).
-  const installed = url ? [] : installedEngines(root);
-  if (installed.length === 1) dialect = installed[0];
+  // No URL names the database: the entries of `.reylo/`, which a build with no URL reads
+  // (src/analyze.ts), do where they are all of one dialect.
+  const cached = url ? [] : cachedDialects(root);
+  if (cached.length === 1) dialect = cached[0];
   return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 

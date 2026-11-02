@@ -1,9 +1,8 @@
-// The content mapper TypeScript starts (package.json, `typescript.contentMapper`): the engine
-// package's (src/mapper-server.ts). Where no engine of reylo's version is installed, one that
-// answers every file with the reason, as the type check reports a missing engine everywhere else.
-// An engine installed while the process runs takes over: each call looks for it again, and the
-// projects opened meanwhile are opened again on it.
-import { tooling } from "./engine-package.ts";
+// The content mapper TypeScript starts (package.json, `typescript.contentMapper`): the build-time
+// half's (src/mapper-server.ts). Where that half cannot be loaded, one that answers every file with
+// the reason, as the type check reports a missing engine everywhere else; each call tries the half
+// again, and the projects opened meanwhile are opened again on it once it loads.
+import { tooling } from "./tooling-loader.ts";
 import { serve } from "./rpc.ts";
 
 type Handler = (params: unknown) => unknown | Promise<unknown>;
@@ -15,7 +14,7 @@ let real: Handlers | undefined;
 let message = "";
 const opened = new Map<string, unknown>();
 
-/** The engine's methods, once an engine of reylo's version is installed. */
+/** The build-time half's methods, once it loads. */
 async function engine(): Promise<Handlers | undefined> {
   if (real) return real;
   try {

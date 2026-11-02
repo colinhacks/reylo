@@ -11,24 +11,9 @@ importers:
       '@bytecodealliance/jco':
         specifier: 1.39.0
         version: 1.39.0(@oxc-parser/binding-wasm32-wasi@0.76.0)
-      '@bytecodealliance/preview2-shim':
-        specifier: 0.30.0
-        version: 0.30.0
       '@duckdb/node-api':
         specifier: 2.0.0-r.1
         version: 2.0.0-r.1
-      '@reylosql/duckdb':
-        specifier: link:packages/duckdb
-        version: link:packages/duckdb
-      '@reylosql/mysql':
-        specifier: link:packages/mysql
-        version: link:packages/mysql
-      '@reylosql/postgres':
-        specifier: link:packages/postgres
-        version: link:packages/postgres
-      '@reylosql/sqlite':
-        specifier: link:packages/sqlite
-        version: link:packages/sqlite
       '@types/node':
         specifier: ^26.6.1
         version: 26.6.1

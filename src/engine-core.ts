@@ -1,7 +1,8 @@
 // The engine's half that needs no host: a request to the engine, the lexer, and the replay loop
 // that hands each round's needs to an `EngineIo` until the analysis is done, for a host that answers
-// them over a connection of its own. It imports nothing from Node, so a browser runs it beside the
-// same component src/engine.ts loads.
+// them over a connection of its own. It imports nothing from Node, so a browser runs it beside a
+// WebAssembly build of the engine's core, as the docs site's playground does; src/engine.ts runs it
+// over the native engine.
 import { Unreachable } from "./connection.ts";
 import type { EngineType } from "./engine-type.ts";
 
@@ -80,13 +81,14 @@ export type Response =
   | { status: "configError"; error: { message: string; start: number; end: number } }
   | { status: "error"; message: string };
 
-/** An engine's request function: one JSON request in, its answer out (the component's `call` export). */
+/** An engine's request function: one JSON request in, its answer out (a WebAssembly build's `call` export, or the native engine's one-shot form). */
 export type EngineCall = (request: string) => string;
 
-/** A compiled core module of an engine component, opaque here: the WebAssembly namespace is not typed through the DOM lib. */
+
+/** A compiled core module of a WebAssembly build of the engine, opaque here: the WebAssembly namespace is not typed through the DOM lib. */
 export type CoreModule = unknown;
 
-/** The two exports of an engine component (engine/wasip2/src/lib.rs). */
+/** The exports of a WebAssembly build of the engine (engine/wasip2/src/lib.rs), which the docs site's playground runs. */
 export interface ComponentExports {
   /** The core's answer to a request that needs no database: `ping`, `lex`, `config`, and `analyze` with the host's answers. */
   call(request: string): string;
@@ -114,6 +116,11 @@ export class EngineCore {
     return JSON.parse(this.#call(JSON.stringify(request)));
   }
 
+  /** A request whose answer may wait: each round of `analyze`. Here the call itself; a host whose engine answers over a channel sends it there. */
+  protected async ask(request: object): Promise<Response> {
+    return this.call(request);
+  }
+
   lex(sql: string, dialect: Dialect): Lexed {
     const r = this.call({ op: "lex", sql, dialect });
     if (r.status !== "lexed") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);
@@ -124,7 +131,7 @@ export class EngineCore {
   async analyze(sql: string, dialect: Dialect, io: EngineIo, cache = new AnswerCache()): Promise<Analysis> {
     const answers: Record<string, Answer> = {};
     for (let round = 0; round < 16; round++) {
-      const r = this.call({ op: "analyze", sql, dialect, answers });
+      const r = await this.ask({ op: "analyze", sql, dialect, answers });
       if (r.status === "analysis") return r.analysis;
       if (r.status !== "need") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);
       await Promise.all(r.needs.map(async (need) => { answers[need.id] = await cache.get(need, () => fulfil(need, io)); }));

@@ -8,6 +8,7 @@ To install Reylo, you'll need:
 
 - **TypeScript 7.1 (currently in beta).** The first release with content mappers.
 - **Node 24 or later.**
+- **macOS, Linux or Windows, on x64 or Arm64.** Reylo's engine is a native program, installed for your machine.
 - **A running dev database.** Reylo reads your current schema from it ([Database](#database) points Reylo at it):
   - **Postgres** 14 to 18, including Neon and PGlite
   - **MySQL** 8.0.22 or later, including PlanetScale
@@ -21,7 +22,7 @@ Set up Reylo in this project. Reylo lets TypeScript import .sql files, with type
 
 Each setup has a complete, working example project to copy, whose README's "How Reylo is wired in" lists every line Reylo needs. Install from npm, since the examples link local builds: https://github.com/colinhacks/reylo/tree/main/examples
 
-1. Check the requirements and install Reylo, the engine of the project's database (@reylosql/postgres, @reylosql/mysql, @reylosql/sqlite or @reylosql/duckdb) and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
+1. Check the requirements and install Reylo, which brings its engine for the machine, and TypeScript 7.1 (currently in beta): https://reylo.dev/#setup
 2. Add Reylo to tsconfig.json as a content mapper for the extensions .sql, .reylo.yaml and .reylo.yml, and add a typecheck script that runs tsc --noEmit --runExternalCode (after next typegen on Next.js): https://reylo.dev/#typescript
 3. Make .sql imports load wherever the project runs code, with Node's --import or the plugin for its runtime, bundler or framework: https://reylo.dev/#plugins
    The example for that setup shows it end to end (node, nub, bun, vite, nextjs, esbuild, webpack, rspack, jest or cloudflare-workers): https://github.com/colinhacks/reylo/tree/main/examples/<name>
@@ -42,11 +43,10 @@ Then set Reylo up in six steps:
 
 ### Install
 
-Install Reylo, the engine for your database and TypeScript 7.1:
+Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres  # or mysql, sqlite, duckdb
 npm install -D typescript@beta
 ```
 
@@ -88,7 +88,7 @@ node --env-file=.env --import reylo/register main.ts
 
 <Callout title="In production">
 
-The preload builds each query's module as it loads, so your app needs the engine at run time: install it with `npm install @reylosql/postgres` (or mysql, sqlite, duckdb), without `-D`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
+The preload builds each query's module as it loads, so your app needs the engine at run time: keep `reylo` a dependency, not a dev dependency, and install it without `--omit=optional`. If you compile with `tsc`, copy your `.sql` files into its output directory, keeping their paths, and run the output with the preload.
 
 </Callout>
 

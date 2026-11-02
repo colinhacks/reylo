@@ -1,6 +1,6 @@
 [package]
 name = "reylo-engine-core"
-version = "0.0.0"
+version.workspace = true
 edition = "2021"
 publish = false
 description = "What every database's analysis engine shares: the request protocol and its host, the placeholder lexer, the project file, the type model and its JSON Schema, structured parameters, the freshness facts, and the WebAssembly ABI each database's artifact exports."

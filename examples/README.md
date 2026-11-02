@@ -23,7 +23,7 @@ Open the example for your setup and read its README's "How Reylo is wired in": e
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres typescript@beta   # or @reylosql/mysql, @reylosql/sqlite
+npm install -D typescript@beta
 ```
 
 Each README's "In your own project" lists anything else that exists only because the example lives in this repository: `.npmrc` (`minimumReleaseAge=0`, because this machine holds fresh releases back), and in Next.js the Turbopack root.
@@ -32,10 +32,10 @@ The examples pin TypeScript to `7.1.0-beta` exactly: a range such as `^7.1.0-bet
 
 ## Running one here
 
-Each example links the packages built from this repository, `dist/reylo` and `dist/<database>`, as `link:` dependencies. Build them once at the repository root, and again after a change to `src/`:
+Each example links the package built from this repository, `dist/reylo`, as a `link:` dependency, and finds the engine `dist/engine-<platform>` beside it, which the build links into `dist/reylo/node_modules` where an install would put it. Build them once at the repository root, and again after a change to `src/` or the engine:
 
 ```sh
-nub run build            # writes dist/
+nub run build            # writes dist/, building the engine with cargo
 cd examples/<name>
 nub install              # or pnpm install; npm does not take link: dependencies
 ```

@@ -31,7 +31,7 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 
 ## How Reylo is wired in
 
-- In `package.json`, `reylo` is a dependency, because the preload runs in the app; the SQLite engine `@reylosql/sqlite`, `typescript` 7.1 and Bun's types `@types/bun` are dev dependencies, used by the type check. SQLite needs no driver package: `bun:sqlite` is built into Bun.
+- In `package.json`, `reylo` is a dependency, because the preload runs in the app; `typescript` 7.1 and Bun's types `@types/bun` are dev dependencies, used by the type check, and `reylo` brings the engine that analyzes each statement for the machine. SQLite needs no driver package: `bun:sqlite` is built into Bun.
 - The `bunfig.toml` file sets `preload = ["reylo/register"]`, which Bun loads before the app, so `bun src/main.ts` imports `.sql` files with no flag; and the same line under `[test]`, because `bun test` reads its own preload and not the top-level one.
 - The `build.ts` file runs `Bun.build` with `plugins: [reylo()]` from `reylo/esbuild`, which builds each `.sql` import into the bundle at build time, analyzed against the database. The bundle `dist/main.js` then carries the statements, Reylo's runtime and nothing else it needs: it runs without the preload, `node_modules` or `.env`.
 - In the `package.json` scripts, `typecheck` is `tsc --noEmit --runExternalCode`, the flag that lets `tsc` run the content mapper. The `start` script is `bun src/main.ts`, `test` is `bun test`, `build` is `bun build.ts` and `start:dist` is `bun dist/main.js`.
@@ -42,7 +42,7 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 
 ## In your own project
 
-- Install from npm instead of the `link:` dependencies: `bun add reylo` and `bun add -d @reylosql/sqlite typescript@beta @types/bun`.
+- Install from npm instead of the `link:` dependencies: `bun add reylo` and `bun add -d typescript@beta @types/bun`.
 - The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
 
 ## Notes

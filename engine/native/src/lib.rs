@@ -33,8 +33,13 @@ pub trait Program {
     fn serve(&mut self, request: &Value) -> impl Future<Output = Option<Value>>;
 }
 
-pub fn main<P: Program>(mut program: P) {
-    if std::env::args().nth(1).as_deref() == Some("call") {
+pub fn main<P: Program>(program: P) {
+    serve(program, std::env::args().nth(1).as_deref() == Some("call"));
+}
+
+/// Serves requests line by line, or with `call`, answers the one request on standard input.
+pub fn serve<P: Program>(mut program: P, call: bool) {
+    if call {
         let mut request = String::new();
         let _ = std::io::Read::read_to_string(&mut std::io::stdin(), &mut request);
         println!("{}", program.call(&request));

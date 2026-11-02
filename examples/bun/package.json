@@ -14,7 +14,6 @@
     "reylo": "link:../../dist/reylo"
   },
   "devDependencies": {
-    "@reylosql/sqlite": "link:../../dist/sqlite",
     "@types/bun": "^1.4.3",
     "typescript": "7.1.0-beta"
   }

@@ -21,10 +21,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  # What a pull request touches, which decides the engine's and the oracle's jobs below: a pull request
-  # that touches no engine, no oracle and no build or CI file skips both, and one that touches one
-  # database's engine runs the oracle's cases of that database alone. A push to main and a release run
-  # everything.
+  # What a pull request touches, which decides the engine's, the oracle's and the playground's jobs
+  # below: a pull request that touches no engine, no oracle and no build or CI file skips them all, and
+  # one that touches one database's engine runs the oracle's cases of that database alone. A push to
+  # main and a release run everything.
   scope:
     if: ${{ !github.event.repository.private }}
     name: What the change touches
@@ -34,6 +34,7 @@ jobs:
       engine: ${{ steps.scope.outputs.engine }}
       tests: ${{ steps.scope.outputs.tests }}
       shards: ${{ steps.scope.outputs.shards }}
+      playground: ${{ steps.scope.outputs.playground }}
     steps:
       # A pull request's run checks out the merge of it into main: its first parent is main, so the
       # files between the two are the ones the pull request changes, without a token that reads pull requests.
@@ -50,8 +51,9 @@ jobs:
           # Every database, or the ones the change reaches.
           everything() {
             echo engine=true
-            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo-oracle'
+            echo 'tests=-p reylo-engine-core -p reylo-engine-postgres -p reylo-engine-sqlite -p reylo-engine-mysql -p reylo-engine-duckdb -p reylo-engine -p reylo-engine-native -p reylo -p reylo-oracle'
             echo 'shards=["postgres","sqlite","duckdb","mysql-1","mysql-2","mysql-slow"]'
+            echo playground=true
           }
           if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
           if ! git rev-parse -q --verify HEAD^2 > /dev/null; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
@@ -64,13 +66,14 @@ jobs:
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          postgres=false mysql=false sqlite=false duckdb=false
+          postgres=false mysql=false sqlite=false duckdb=false binary=false
           while read -r file; do
             case "$file" in
               engine/postgres/*) postgres=true ;;
               engine/mysql/* | oracle/cases/mysql_*) mysql=true ;;
               engine/sqlite/* | oracle/cases/sqlite_*) sqlite=true ;;
               engine/duckdb/* | oracle/cases/duckdb_*) duckdb=true ;;
+              engine/cli/*) binary=true ;;
               oracle/cases/*) postgres=true ;;
             esac
           done <<<"$files"
@@ -79,16 +82,59 @@ jobs:
           $sqlite && { tests="$tests -p reylo-engine-sqlite"; shards="$shards,\"sqlite\""; }
           $duckdb && { tests="$tests -p reylo-engine-duckdb"; shards="$shards,\"duckdb\""; }
           $mysql && { tests="$tests -p reylo-engine-mysql"; shards="$shards,\"mysql-1\",\"mysql-2\",\"mysql-slow\""; }
-          if [ -z "$shards" ]; then
+          # The binary's own crate, which links every database.
+          $binary && tests="$tests -p reylo"
+          if [ -z "$tests" ]; then
             { echo engine=false; echo tests=; echo 'shards=[]'; } >> "$GITHUB_OUTPUT"
           else
             { echo engine=true; echo "tests=$tests"; echo "shards=[${shards#,}]"; } >> "$GITHUB_OUTPUT"
           fi
+          # The playground's engine is Postgres's alone.
+          echo "playground=$postgres" >> "$GITHUB_OUTPUT"
+
+  # The `reylo` binary the loader's tests run (REYLO_ENGINE_PATH), built once per run from this commit's
+  # sources, on every pull request: the loader has no engine of its own. It is the release build
+  # without LTO, which the release's own build adds (release.yml): the same optimization, so the
+  # same stack depth for a statement the engine walks, at a fraction of the link time, and every
+  # crate's object kept by sccache between runs.
+  binary:
+    if: ${{ !github.event.repository.private }}
+    name: Build the reylo binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+      RUSTC_WRAPPER: sccache
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_LTO: "false"
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+      # As the release builds it (scripts/build.ts's RELEASE_ENV, .github/scripts/build-binary.sh).
+      LIBSQLITE3_FLAGS: -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba # v0.0.11
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: binary
+      - run: engine/build.sh --prepare
+      - run: cargo build --release --locked -p reylo
+      - run: target/release/reylo --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reylo-test-linux-x64
+          path: target/release/reylo
+          if-no-files-found: error
+          retention-days: 3
+      - if: always()
+        run: sccache --show-stats
 
   test:
     # This file lives in the private working repository too, which `scripts/publish/publish.ts` copies it from; CI runs in the public one only.
     if: ${{ !github.event.repository.private }}
     name: Typecheck, test and build on Node 24
+    needs: binary
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # Throwaway servers for the tests that run statements, on ports clear of the defaults: the loader's tests skip each database whose URL is unset, and this job fails on any skip.
@@ -126,6 +172,17 @@ jobs:
         with:
           nub-version: "0.9.6"
           node-version: "24"
+      # The binary the job above built, which every test that analyzes a statement starts. An artifact
+      # keeps no file mode, so its execute bit is set again.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: reylo-test-linux-x64
+          path: ${{ runner.temp }}/engine
+      - name: Name the binary for the tests
+        run: |
+          chmod +x "$RUNNER_TEMP/engine/reylo"
+          "$RUNNER_TEMP/engine/reylo" --version
+          echo "REYLO_ENGINE_PATH=$RUNNER_TEMP/engine/reylo" >> "$GITHUB_ENV"
       - run: nub install --frozen-lockfile
       # The docs site's toolchain, which builds reylo play's page into the reylo package.
       - run: nub install --frozen-lockfile
@@ -135,25 +192,17 @@ jobs:
         working-directory: lab/drivers
       - run: nub install --frozen-lockfile
         working-directory: lab/jest
-      # The Jest lab reaches the package and its database's engine through links into this checkout; nub install replaces node_modules, so the links come after it.
+      # The Jest lab reaches the package through a link into this checkout, and the engine through REYLO_ENGINE_PATH; nub install replaces node_modules, so the link comes after it.
       - name: Link the lab the tests load
-        run: |
-          link_lab () {
-            local dir="lab/$1" db="$2"
-            shift 2
-            mkdir -p "$dir/node_modules/@reylosql"
-            ln -sfn ../../.. "$dir/node_modules/reylo"
-            ln -sfn "../../../../packages/$db" "$dir/node_modules/@reylosql/$db"
-            for driver in "$@"; do ln -sfn "../../drivers/node_modules/$driver" "$dir/node_modules/$driver"; done
-          }
-          link_lab jest sqlite
+        run: ln -sfn ../../.. lab/jest/node_modules/reylo
       - run: nub run typecheck
       - name: Run the tests, none skipped
         run: |
           set -o pipefail
           nub run test 2>&1 | tee "$RUNNER_TEMP/test.log"
           grep -q '^ℹ skipped 0$' "$RUNNER_TEMP/test.log" || { echo "::error::a test was skipped"; exit 1; }
-      - run: nub run build
+      # dist/reylo and this machine's platform package, around the binary the tests ran.
+      - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
 
   # The type check on Windows (windows.yml): on each push to main and within each release, never on a
   # pull request, which does not wait on it.
@@ -161,10 +210,10 @@ jobs:
     if: ${{ !github.event.repository.private && github.event_name != 'pull_request' }}
     uses: ./.github/workflows/windows.yml
 
-  # The engine's sources, which the job above only meets as the committed packages/<database>/engine/
-  # components (tests/fingerprint.test.ts checks each is their build): built natively, with no warning, and the tests
-  # of the crates the change reaches run. sccache keeps each crate's and each C file's object between runs,
-  # libpg_query's and SQLite's included, which rust-cache does not keep, since they are the workspace's own.
+  # The engine's sources, beyond the binary the loader's tests run: the whole workspace built natively,
+  # with no warning, and the tests of the crates the change reaches run. sccache keeps each crate's and
+  # each C file's object between runs, libpg_query's and SQLite's included, which rust-cache does not
+  # keep, since they are the workspace's own.
   engine:
     needs: scope
     if: ${{ !github.event.repository.private && needs.scope.outputs.engine == 'true' }}
@@ -191,6 +240,27 @@ jobs:
       - run: cargo test ${{ needs.scope.outputs.tests }}
       - if: always()
         run: sccache --show-stats
+
+  # The docs site's playground engine, Postgres's engine as one WebAssembly component (engine/build.sh),
+  # which only a release builds and publishes (release.yml): built here too, so a change that breaks the
+  # wasm32-wasip2 build fails on its pull request rather than at the release.
+  playground:
+    needs: scope
+    if: ${{ !github.event.repository.private && needs.scope.outputs.playground == 'true' }}
+    name: Build the playground's engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # jco, from the root's install, transpiles the component.
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+      - run: nub install --frozen-lockfile
+      - run: .github/scripts/build-playground.sh "$RUNNER_TEMP/playground"
 
   # The soundness oracle (oracle/): every statement of oracle/cases is analyzed by the engine's sources and
   # run on live servers over seeded edge values, and a value that contradicts its inferred type or row count

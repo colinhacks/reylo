@@ -1,7 +1,7 @@
-# Reylo's engine as one WebAssembly component per database (`wasm32-wasip2`): the native program
-# (engine/native) behind two exports, `call` and `serve`, which the loader runs through jco's
-# preview2-shim (src/engine.ts, src/engine-worker.ts), whose WASI sockets open the engine's own
-# connections.
+# Reylo's engine as a WebAssembly component (`wasm32-wasip2`), which the docs site's playground
+# runs for Postgres: the native program (engine/native) behind two exports, `call` and `serve`, run
+# through jco's preview2-shim, whose WASI sockets would open the engine's own connections. The
+# playground calls only `call` and answers the engine's needs itself.
 #
 # A workspace of its own, so that its one patch, tokio-postgres made to build its `runtime` for
 # wasip2 (tokio-postgres-0.7.18.patch, applied into .patched/ by engine/build.sh --prepare), reaches

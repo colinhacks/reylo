@@ -21,9 +21,6 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261021.1
         version: 5.20261021.1
-      '@reylosql/sqlite':
-        specifier: link:../../dist/sqlite
-        version: link:../../dist/sqlite
       '@types/node':
         specifier: ^26.6.5
         version: 26.6.5
