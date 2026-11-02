@@ -51,6 +51,14 @@ export declare namespace StandardQueryV1 {
      * output (a second row where at most one is expected, say).
      */
     decode(rows: readonly (readonly RawValue<D>[])[]): Output;
+    /**
+     * The result key: output columns, by name, that identify each row of the result, since no two
+     * rows the statement returns agree on all of them (a null counting as equal to another null).
+     * A driver comparing two results of the query tells by it that a row changed in place rather
+     * than one row going and another coming. Empty where the statement returns one row at most,
+     * and absent where no key is known.
+     */
+    readonly key?: readonly string[];
   }
 
   /** The database a statement is written for. */
@@ -103,6 +111,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   const statementText = () => (text ??= sentText(module, compile(module).text));
   return {
     dialect: module.dialect,
+    ...(module.key === undefined ? {} : { key: module.key }),
     get text() {
       return statementText();
     },

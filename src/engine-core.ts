@@ -20,6 +20,8 @@ export type Analysis = {
   columns: { name: string; type: EngineType; nullable: boolean; type_name: string; comment?: string }[];
   cardinality: "one" | "maybeOne" | "many" | "none";
   cardinalityReason?: string;
+  /** The result key: output columns, by name, no two rows of the result agree on all of (a NULL equal to another NULL). Empty where the statement returns one row at most; absent where no key is proven (engine/core/src/api.rs). */
+  key?: string[];
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
   rewritten: { sql: string; order: string[]; spans: [number, number, number, number][]; inserted?: [number, number, number][] };
   style: "none" | "named" | "positional" | "mixed";

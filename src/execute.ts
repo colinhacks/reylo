@@ -163,6 +163,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
   readonly columns?: Columns | undefined;
+  /** The result key: output columns, by name, that identify each row of the result, where the analysis proves one. */
+  readonly key?: readonly string[] | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
