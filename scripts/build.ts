@@ -27,14 +27,13 @@ import { chmodSync, copyFileSync, mkdirSync, readdirSync, readFileSync, rmSync, 
 import { join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { transformSync } from "esbuild";
+import { PLATFORM_PACKAGES } from "../src/native.ts";
 
-// How the release builds the binary, here and in release.yml's build job, which sets the same two:
-// stripped of its symbol table, which is a tenth of it and which no user reads; and with SQLite's
-// SQL functions that Node's own SQLite has and rusqlite's bundled build leaves out, so that the
-// function list the SQLite engine refuses a statement by has them too.
+// How the release builds the binary, here and in .github/scripts/build-binary.sh, which sets the
+// same: stripped of its symbol table, which is a tenth of it and which no user reads. SQLite's flags
+// come from .cargo/config.toml, which every cargo build in the workspace reads.
 const RELEASE_ENV = {
   CARGO_PROFILE_RELEASE_STRIP: "symbols",
-  LIBSQLITE3_FLAGS: "-DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY",
 };
 
 type Platform = { platform: string; os: string; cpu: string; libc?: "glibc" | "musl"; target: string; runner: string; name: string };
@@ -43,6 +42,10 @@ const root = join(import.meta.dirname, "..");
 const dist = join(root, "dist");
 const js = (path: string) => path.replace(/\.ts$/, ".js");
 const PLATFORMS: Platform[] = JSON.parse(readFileSync(join(root, "npm", "platforms.json"), "utf8"));
+// The run time finds this machine's package by its own table (src/native.ts), which names the same platforms.
+const table = Object.entries(PLATFORM_PACKAGES).map(([key, name]) => `${key} ${name}`).sort();
+const listed = PLATFORMS.map((p) => `${p.platform} @reylosql/engine-${p.platform}`).sort();
+if (table.join() !== listed.join()) throw new Error(`src/native.ts's PLATFORM_PACKAGES (${table.join(", ")}) and npm/platforms.json (${listed.join(", ")}) name different platforms`);
 const { values: args } = parseArgs({ options: { binary: { type: "string" }, binaries: { type: "string" } } });
 if (args.binary && args.binaries) throw new Error("--binary names this machine's engine and --binaries every platform's: pass one");
 
@@ -92,6 +95,9 @@ if (engines.length) throw new Error(`dist/reylo holds an engine: ${engines.join(
 const named = [...Object.values(built.bin as Record<string, string>), ...Object.values(built.exports as Record<string, { types: string; default: string }>).flatMap((e) => [e.types, e.default]), ...(built.typescript.contentMapper.exec as string[]).slice(1)];
 const unnamed = named.map((f) => f.replace(/^\.\//, "")).filter((f) => !files.includes(f));
 if (unnamed.length) throw new Error(`dist/reylo/package.json names files the build did not write: ${unnamed.join(", ")}`);
+// The adapters load the build-time half with `require` (src/tooling-loader.ts), which refuses a
+// module graph with a top-level await in it: it is loaded here as they load it.
+execFileSync(process.execPath, ["-e", "require(process.argv[1])", join(reylo, "src", "tooling.js")], { stdio: "inherit" });
 console.log(`dist/reylo: ${files.length} files, package ${built.name}@${built.version}`);
 
 // `reylo play`'s page (src/play.ts), built from the docs site's playground with the site's own

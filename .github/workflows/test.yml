@@ -94,9 +94,10 @@ jobs:
 
   # The `reylo` binary the loader's tests run (REYLO_ENGINE_PATH), built once per run from this commit's
   # sources, on every pull request: the loader has no engine of its own. It is the release build
-  # without LTO, which the release's own build adds (release.yml): the same optimization, so the
-  # same stack depth for a statement the engine walks, at a fraction of the link time, and every
-  # crate's object kept by sccache between runs.
+  # without LTO, which the release's own build adds (binaries.yml), at a fraction of the link time
+  # and with every crate's object kept by sccache between runs. The depth a statement may nest holds
+  # under either, since the analysis runs on a stack of its own size (engine/core/src/stack.rs), and
+  # binaries.yml checks it on each platform's release build.
   binary:
     if: ${{ !github.event.repository.private }}
     name: Build the reylo binary
@@ -108,8 +109,6 @@ jobs:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      # As the release builds it (scripts/build.ts's RELEASE_ENV, .github/scripts/build-binary.sh).
-      LIBSQLITE3_FLAGS: -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

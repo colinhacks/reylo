@@ -1,6 +1,6 @@
-//! The `reylo` Postgres extension, seen from a client.
+//! A server-side Postgres extension that hosts this engine, seen from a client.
 //!
-//! The extension (`pg-extension/`) hosts this same engine inside the server, where a need is a
+//! The extension hosts this same engine inside the server, where a need is a
 //! function call and not a round trip. A client that finds it has two ways to use it:
 //!
 //! - The server's engine was built from the same sources as this one ([`crate::FINGERPRINT`]):

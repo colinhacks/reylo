@@ -163,7 +163,7 @@ pub struct Catalog {
     /// that does not deparse) has no statement, and still hides an outer one of its name.
     pub enclosing_bodies: Vec<(String, Option<String>, Vec<String>)>,
     /// Whether the statement being proven is a subquery of another one, whose columns it may read
-    /// (a `SUBQ` site of the framework, proven on its own). An aggregate over such columns alone
+    /// (a `SUBQ` site, proven on its own). An aggregate over such columns alone
     /// belongs to that statement and leaves the subquery a row per row of its FROM, so a nested
     /// statement is one row by an aggregate only where [`crate::levels`] finds the aggregate its
     /// own, from `columns`. A host that sets this lists the enclosing statement's WITH queries in

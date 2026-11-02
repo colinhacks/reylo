@@ -14,7 +14,7 @@ The engine is the SQL analysis: parsing, placeholders, types, nullability, neste
 | `reylo` | `cli/` | The binary: `reylo engine <database> [call]`, which serves the engine's program over stdin and stdout, the long-lived form and a one-shot one |
 | `reylo-engine-wasip2` | `wasip2/` | Postgres's program built to a `wasm32-wasip2` component for the docs site's playground, exporting `call` (the pure requests) and `serve` (the connection's). A Cargo workspace of its own, since it builds tokio-postgres with a patch (`tokio-postgres-0.7.18.patch`) and tokio with `--cfg tokio_unstable` for WASI's sockets |
 
-The `.sql` loader hosts it: [src/engine.ts](../src/engine.ts) runs the `reylo` binary as `reylo engine <database>`, one child for the database and one for each connection, speaking JSON lines, and [src/native.ts](../src/native.ts) finds the binary: `REYLO_ENGINE_PATH`, else the platform package `@reylosql/engine-<platform>` the install holds, else a checkout's `target/release/reylo` or `target/debug/reylo`. The docs site's playground runs the WebAssembly component in the reader's tab and answers its needs from PGlite.
+The `.sql` loader hosts it: [src/engine.ts](../src/engine.ts) runs the `reylo` binary as `reylo engine <database>`, one child for the database and one for each connection, speaking JSON lines, and [src/native.ts](../src/native.ts) finds the binary: `REYLO_ENGINE_PATH`, else the platform package `@reylosql/engine-<platform>` the install holds, else the newer of a checkout's `target/release/reylo` and `target/debug/reylo`. The docs site's playground runs the WebAssembly component in the reader's tab and answers its needs from PGlite.
 
 ## Building
 

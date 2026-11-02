@@ -148,44 +148,62 @@ impl File {
         Ok(db)
     }
 
-    /// A copy of the database and its write-ahead log, opened: made again for each request, so that
-    /// it reads the file as it is then. The log is copied after the file, and both again when the
-    /// log's header changed meanwhile: a checkpoint that restarts the log between the two copies
-    /// would pair the file as it was with a log that no longer holds what the file lacks, while a
-    /// checkpoint that only writes the file leaves the log holding every page it wrote.
+    /// A copy of the database and its logs, opened, as they stand: made again only once the file or
+    /// a log has changed since the last copy. Each log, the write-ahead log or the rollback journal,
+    /// is copied after the file, and both again when the log's header changed meanwhile: a log
+    /// restarted between the two copies would pair the file as it was with a log that no longer
+    /// holds what the file lacks, while a checkpoint that only writes the file leaves the log
+    /// holding every page it wrote. SQLite rolls a hot journal back when it opens the copy, which so
+    /// reads the last commit of a file a writer was changing.
     #[cfg(not(target_family = "wasm"))]
     fn open_copy(&self) -> rusqlite::Result<Db> {
         let failed = |e: std::io::Error| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN), Some(format!("cannot copy the database the app holds: {e}")));
+        let open = |copy: &std::path::Path| Db::open_with_flags(copy, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX);
         let mut copies = self.copies.borrow_mut();
         if copies.is_none() {
             *copies = Some(Copies::create().map_err(failed)?);
         }
-        let dir = &copies.as_ref().unwrap().0;
-        let (copy, wal, wal_copy) = (dir.join("db"), std::path::PathBuf::from(format!("{}-wal", self.path)), dir.join("db-wal"));
+        let copies = copies.as_mut().unwrap();
+        let copy = copies.dir.join("db");
+        let logs: Vec<(std::path::PathBuf, std::path::PathBuf)> = ["-wal", "-journal"].iter().map(|suffix| (format!("{}{suffix}", self.path).into(), copies.dir.join(format!("db{suffix}")))).collect();
+        // The file and its logs as they stand: their sizes and times, which a write changes.
+        let stamp: Stamp = std::iter::once(std::path::Path::new(&self.path)).chain(logs.iter().map(|(from, _)| from.as_path())).map(|path| std::fs::metadata(path).ok().map(|m| (m.len(), m.modified().ok()))).collect();
+        if copies.made.as_ref() == Some(&stamp) {
+            return open(&copy);
+        }
         for _ in 0..5 {
-            for stale in [&wal_copy, &dir.join("db-shm")] {
+            for stale in logs.iter().map(|(_, to)| to.clone()).chain([copies.dir.join("db-shm")]) {
                 let _ = std::fs::remove_file(stale);
             }
-            let before = wal_header(&wal);
+            let before: Vec<_> = logs.iter().map(|(from, _)| log_header(from)).collect();
             std::fs::copy(&self.path, &copy).map_err(failed)?;
-            // A log removed since its header was read is a log that changed.
-            match before.map(|_| std::fs::copy(&wal, &wal_copy)) {
-                Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Some(Err(e)) => return Err(failed(e)),
-                _ => {}
+            let mut changed = false;
+            for ((from, to), header) in logs.iter().zip(&before) {
+                // A log removed since its header was read is a log that changed.
+                match header.map(|_| std::fs::copy(from, to)) {
+                    Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => changed = true,
+                    Some(Err(e)) => return Err(failed(e)),
+                    _ => {}
+                }
             }
-            if before == wal_header(&wal_copy) && before == wal_header(&wal) {
-                return Db::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX);
+            if !changed && logs.iter().zip(&before).all(|((from, to), header)| *header == log_header(to) && *header == log_header(from)) {
+                copies.made = Some(stamp);
+                return open(&copy);
             }
         }
-        Err(failed(std::io::Error::other("its write-ahead log was restarted under every copy")))
+        Err(failed(std::io::Error::other("its logs were restarted under every copy")))
     }
 }
 
-/// The first 32 bytes of a write-ahead log, its header: a restarted log has another checkpoint
-/// sequence number and salts. None where there is no log, or none yet.
+/// A database file and its logs as they stood: each one's size and time, where it exists.
 #[cfg(not(target_family = "wasm"))]
-fn wal_header(path: &std::path::Path) -> Option<[u8; 32]> {
+type Stamp = Vec<Option<(u64, Option<std::time::SystemTime>)>>;
+
+/// The first 32 bytes of a log, its header: a restarted write-ahead log has another checkpoint
+/// sequence number and salts, and a rollback journal another nonce. None where there is no log, or
+/// none yet.
+#[cfg(not(target_family = "wasm"))]
+fn log_header(path: &std::path::Path) -> Option<[u8; 32]> {
     let mut header = [0; 32];
     std::io::Read::read_exact(&mut std::fs::File::open(path).ok()?, &mut header).ok()?;
     Some(header)
@@ -195,7 +213,12 @@ fn wal_header(path: &std::path::Path) -> Option<[u8; 32]> {
 /// made where nothing was, so that no directory or link another user put in the shared temporary
 /// directory is written through, and on Unix open to its own user alone.
 #[cfg(not(target_family = "wasm"))]
-struct Copies(std::path::PathBuf);
+struct Copies {
+    dir: std::path::PathBuf,
+    /// The file and its logs as they stood when the copy in `dir` was made: while they stand so, the
+    /// copy is read again.
+    made: Option<Stamp>,
+}
 
 #[cfg(not(target_family = "wasm"))]
 impl Copies {
@@ -210,7 +233,7 @@ impl Copies {
             let dir = std::env::temp_dir().join(format!("reylo-sqlite-{}-{}-{nanos:08x}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
             // `create` refuses a path that exists, where `create_dir_all` would take it.
             match builder.create(&dir) {
-                Ok(()) => return Ok(Copies(dir)),
+                Ok(()) => return Ok(Copies { dir, made: None }),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 16 => tries += 1,
                 Err(e) => return Err(e),
             }
@@ -221,7 +244,7 @@ impl Copies {
 #[cfg(not(target_family = "wasm"))]
 impl Drop for Copies {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 
@@ -229,8 +252,14 @@ impl Drop for Copies {
 mod tests {
     use super::*;
 
+    /// The tests that hold a file take turns: the bundled SQLite's page cache is one pool for the
+    /// process, so a connection of another test lends this one's cache room, and a transaction
+    /// meant to spill its pages into the file spills none.
+    static TURNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn a_held_file_is_read_through_a_copy_of_its_own_removed_with_the_connection() {
+        let _turn = TURNS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("reylo-sqlite-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("app.db");
@@ -241,13 +270,45 @@ mod tests {
         let db = file.open().unwrap();
         assert!(file.held.get());
         assert_eq!(db.query_row("select count(*) from users", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
-        let copies = file.copies.borrow().as_ref().unwrap().0.clone();
+        let copies = file.copies.borrow().as_ref().unwrap().dir.clone();
         assert!(copies.join("db").exists());
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&copies).unwrap().permissions()) & 0o777, 0o700);
         drop(db);
         drop(file);
         assert!(!copies.exists());
+        drop(app);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_held_file_mid_transaction_is_read_as_its_last_commit_and_its_copy_kept_while_it_stands() {
+        let _turn = TURNS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("reylo-sqlite-journal-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.db");
+        // The app's connection, in rollback-journal mode: 2,000 committed rows, then a transaction
+        // rewriting each one, whose pages a one-page cache has already spilled into the file, with
+        // the hot journal beside it.
+        let app = Db::open(&path).unwrap();
+        app.execute_batch("pragma journal_mode = delete; create table users (id integer primary key, name text); insert into users with recursive n(i) as (select 1 union all select i + 1 from n where i < 2000) select i, 'old' || hex(randomblob(200)) from n; pragma cache_size = 1; pragma locking_mode = exclusive; begin; update users set name = 'new' || substr(name, 4);").unwrap();
+        assert!(std::path::Path::new(&format!("{}-journal", path.display())).exists());
+        let file = File::new(path.to_str().unwrap());
+        let db = file.open().unwrap();
+        assert!(file.held.get());
+        // The copy is the file as of its last commit: none of the rows the transaction rewrote.
+        let rewritten = |db: &Db| db.query_row("select count(*) from users where name like 'new%'", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(rewritten(&db), 0);
+        assert_eq!(db.query_row("pragma integrity_check", [], |r| r.get::<_, String>(0)).unwrap(), "ok");
+        drop(db);
+        // Nothing changed, so the next request reads the same copy.
+        let copy = file.copies.borrow().as_ref().unwrap().dir.join("db");
+        let made = std::fs::metadata(&copy).unwrap().modified().unwrap();
+        let db = file.open().unwrap();
+        assert_eq!(rewritten(&db), 0);
+        drop(db);
+        assert_eq!(std::fs::metadata(&copy).unwrap().modified().unwrap(), made);
+        drop(file);
         drop(app);
         std::fs::remove_dir_all(&dir).unwrap();
     }

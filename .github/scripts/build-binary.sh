@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# Builds the `reylo` binary for one platform of npm/platforms.json on the runner release.yml gives
+# Builds the `reylo` binary for one platform of npm/platforms.json on the runner binaries.yml gives
 # it, natively: each platform has a runner of its own architecture, and the two that are not native
 # are made with the runner's own toolchain (macOS on Intel, from Apple silicon) or with musl's
-# (`musl-gcc` on Ubuntu, for Linux on musl). Writes `<out>/engine-<platform>/reylo` (`reylo.exe` on
+# (`musl-gcc` on Ubuntu, for Linux on musl). Linux on glibc is built in the platform's container,
+# manylinux_2_28 (AlmaLinux 8), so that the binary starts on glibc 2.28, as Node 24 itself does. Writes `<out>/engine-<platform>/reylo` (`reylo.exe` on
 # Windows), which scripts/build.ts packages with `--binaries <out>`.
 #
 #   .github/scripts/build-binary.sh <platform> <out>
 #
 # The build is the one scripts/build.ts makes on a developer's machine: the release profile,
-# stripped of its symbol table, with the SQLite flags it names (RELEASE_ENV there).
+# stripped of its symbol table (RELEASE_ENV there), with the SQLite flags of .cargo/config.toml.
 set -euo pipefail
 
 platform="${1:?usage: build-binary.sh <platform> <out>}"
@@ -17,11 +18,17 @@ target="$(node -p "(require('./npm/platforms.json').find((p) => p.platform === p
 [ -n "$target" ] || { echo "::error::npm/platforms.json names no platform $platform"; exit 1; }
 
 export CARGO_PROFILE_RELEASE_STRIP=symbols
-export LIBSQLITE3_FLAGS="-DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY"
 case "$target" in
   *-apple-darwin)
     # The oldest macOS the binary starts on, for the C the crates compile as for rustc's own code.
     export MACOSX_DEPLOYMENT_TARGET=11.0
+    ;;
+  *-linux-gnu)
+    # The container's toolchain, and what the build reads beside it: libclang for bindgen, and
+    # python3, unzip and patch for the prepare step.
+    if command -v dnf > /dev/null; then
+      dnf install -y -q clang-devel python3 unzip patch > /dev/null
+    fi
     ;;
   *-linux-musl)
     # musl's compiler wrapper for the C (libpg_query, SQLite, ring) and the linker, and a static
@@ -89,4 +96,14 @@ else
   done
   echo "$platform: $printed, and each database's engine answers"
 fi
+# A glibc binary starts on the oldest glibc whose version names every symbol it takes.
+case "$target" in
+  *-linux-gnu)
+    newest="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+    case "$newest" in
+      GLIBC_2.[0-9] | GLIBC_2.1[0-9] | GLIBC_2.1[0-9].* | GLIBC_2.2[0-8] | GLIBC_2.2[0-8].* | GLIBC_2.[0-9].*) echo "$platform: needs $newest at most" ;;
+      *) echo "::error::$platform: the binary needs $newest, newer than glibc 2.28"; exit 1 ;;
+    esac
+    ;;
+esac
 ls -l "$bin"

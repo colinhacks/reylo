@@ -4,7 +4,7 @@
 // is found from reylo's own install, never the project's: the run time never reaches this file, and
 // a bundler or a host's file tracing never pulls the binary into a function.
 import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,9 +52,9 @@ let found: string | undefined;
 
 /**
  * The path of the `reylo` executable: `REYLO_ENGINE_PATH`; else this platform's package, from
- * reylo's own install; else, in a checkout of reylo's repository, its cargo build
- * (`target/release/reylo`, then `target/debug/reylo`). Throws, saying how to get one, where there
- * is none.
+ * reylo's own install; else, in a checkout of reylo's repository, its cargo build (the newer of
+ * `target/release/reylo` and `target/debug/reylo`). Throws, saying how to get one, where there is
+ * none.
  */
 export function nativeBinary(): string {
   const named = process.env.REYLO_ENGINE_PATH;
@@ -74,11 +74,10 @@ export function nativeBinary(): string {
       } catch {}
     }
   }
+  // The checkout's newer build, so that the one just made with either profile is the one that runs.
   const checkout = fileURLToPath(new URL("../target/", import.meta.url));
-  for (const profile of ["release", "debug"]) {
-    const path = join(checkout, profile, exe);
-    if (existsSync(path)) return (found = path);
-  }
+  const built = ["release", "debug"].map((profile) => join(checkout, profile, exe)).filter((path) => existsSync(path));
+  if (built.length) return (found = built.reduce((a, b) => (statSync(b).mtimeMs > statSync(a).mtimeMs ? b : a)));
   const why = pkg ? `${pkg} is not installed (an install with --no-optional, or --omit=optional, leaves it out)` : `reylo ships no binary for ${key}`;
   throw new Error(`reylo's engine, the reylo executable, is missing: ${why}. Install reylo again on a supported platform (${Object.keys(PLATFORM_PACKAGES).join(", ")}), or set REYLO_ENGINE_PATH to a reylo executable; in a checkout of reylo's repository, cargo build --release -p reylo builds one.`);
 }

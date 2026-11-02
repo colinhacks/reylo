@@ -53,12 +53,11 @@ writeFileSync(join(project, "src", "main.ts"), [
   `console.log(name);`,
   ``,
 ].join("\n"));
-run("nub", ["install"], project, true);
-
 // The job names its binary in REYLO_ENGINE_PATH for the loader's tests; the check leaves it out, so
 // that dist/reylo finds the engine as an install does.
 const environment = { ...process.env };
 delete environment.REYLO_ENGINE_PATH;
+run("nub", ["install"], project, true);
 
 function run(command: string, args: string[], cwd: string, shell = false, env: Record<string, string> = {}) {
   const r = spawnSync(command, args, { cwd, encoding: "utf8", shell, env: { ...environment, ...env } });

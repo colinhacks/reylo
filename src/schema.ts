@@ -1,6 +1,6 @@
 // The JSON Schema of a query's input and output: `query.inputSchema`, `query.outputSchema`, and
 // Standard Schema's `jsonSchema` converter. A build step writes both into the module. The
-// spellings are the engine's (engine/core/src/schema.rs, the framework's encoding table); what differs
+// spellings are the engine's (engine/core/src/schema.rs); what differs
 // is where a value stands. The output is the result as JSON writes it (`AsJson<T>` in src/index.ts)
 // of the value `run` returns, which is each type's one representation (src/values.ts, the same
 // table the run time decodes with): a 64-bit integer, a BigInt, as the JSON integer it is (what a

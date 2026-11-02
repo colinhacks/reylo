@@ -63,7 +63,7 @@ export function mapperHandlers(): MapperHandlers {
     async openProject(params) {
       const p = params as { projectHandle: string; options?: Record<string, unknown>; configFileName: string };
       const projectDir = dirname(p.configFileName);
-      // Every setting lives in the project file, which PorgREST and Reylo Framework read too.
+      // Every setting lives in the project file, which other hosts read too.
       const resolved = resolveProject(await anyEngine(), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));

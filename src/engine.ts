@@ -332,9 +332,12 @@ class Channel {
     } catch {
       return;
     }
-    const resolve = this.#pending.get(answer.id!);
+    // A line the engine could not read as a request is answered without its `id`: the child answers
+    // in turn, so the answer is the oldest request's.
+    const id = answer.id ?? this.#pending.keys().next().value;
+    const resolve = id === undefined ? undefined : this.#pending.get(id);
     if (!resolve) return;
-    this.#pending.delete(answer.id!);
+    this.#pending.delete(id!);
     resolve(answer);
     if (this.#pending.size === 0) this.#hold(false);
   }

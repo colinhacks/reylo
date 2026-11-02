@@ -18,7 +18,7 @@
 //!
 //! This module is pure: `plan` reads the parse tree and synthesizes statement text, `resolve`
 //! turns the describes of that text into the column's `Type`. The build owns the round trips.
-//! The framework reads it too, and renders the `Type` to JSON Schema itself.
+//! A host may read it too, and render the `Type` to JSON Schema itself.
 
 use crate::dialect::Dialect;
 use crate::infer::Trust;

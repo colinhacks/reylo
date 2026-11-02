@@ -54,56 +54,12 @@ jobs:
     permissions:
       contents: read
 
-  # The platforms, from npm/platforms.json, which scripts/build.ts packages by too.
-  platforms:
-    needs: preflight
-    runs-on: ubuntu-latest
-    name: Read the platforms
-    permissions:
-      contents: read
-    outputs:
-      matrix: ${{ steps.matrix.outputs.matrix }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: matrix
-        run: |
-          echo "matrix=$(jq -c '{include: .}' npm/platforms.json)" >> "$GITHUB_OUTPUT"
-
-  # The binary of each platform, built on a runner of its own architecture (.github/scripts/build-binary.sh says how each is made), from the dispatched commit and with no cache, so that nothing an earlier run left reaches what ships. Each is an artifact of this run, `engine-<platform>`, which `stage` packages and `finish` attaches to the GitHub release.
+  # Each platform's binary, built on a runner of its own architecture from the dispatched commit, then installed from the nine packages and run on its own platform (binaries.yml). Each is an artifact of this run, `engine-<platform>`, which `stage` packages and `finish` attaches to the GitHub release; the workflow's `matrix` names the platforms.
   build:
-    needs: [preflight, platforms]
-    name: Build (${{ matrix.platform }})
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    needs: preflight
+    uses: ./.github/workflows/binaries.yml
     permissions:
       contents: read
-    strategy:
-      fail-fast: true
-      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
-    defaults:
-      run:
-        shell: bash
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # Node only, which the build script reads the platform table and the version with.
-      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
-        with:
-          nub-version: "0.9.6"
-          node-version: "24"
-          cache: false
-      - name: Build the binary
-        env:
-          PLATFORM: ${{ matrix.platform }}
-        run: .github/scripts/build-binary.sh "$PLATFORM" "$RUNNER_TEMP/engines"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: engine-${{ matrix.platform }}
-          path: ${{ runner.temp }}/engines/engine-${{ matrix.platform }}
-          if-no-files-found: error
 
   # The docs site's playground engine: Postgres's engine core as one WebAssembly component, which engine/build.sh builds and jco transpiles into target/playground/postgres/. No commit holds it; the release carries it as the asset `reylo-playground-postgres.tar.gz` (`engine.js` and its `engine.core*.wasm`), which the site's build fetches for its version (site/scripts/playground-engine.ts). Built here, before anything is staged, so a release whose playground cannot build stages nothing.
   playground:
@@ -234,7 +190,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   finish:
-    needs: [platforms, playground, stage]
+    needs: [build, playground, stage]
     # held by the environment's required reviewer, not by a runner: GitHub keeps the run waiting for up to 30 days, with no six-hour cap, until the deployment is approved. It is a resume signal only; a version nobody approved on npm still stops this job at the registry check.
     environment: release-approval
     runs-on: ubuntu-latest
@@ -248,7 +204,7 @@ jobs:
       - name: Wait for npm to serve every version
         env:
           VERSION: ${{ needs.stage.outputs.version }}
-          PLATFORMS: ${{ needs.platforms.outputs.matrix }}
+          PLATFORMS: ${{ needs.build.outputs.matrix }}
         run: |
           deadline=$(( $(date +%s) + 340 * 60 ))
           wait_for () {
@@ -285,7 +241,7 @@ jobs:
           path: ${{ runner.temp }}/assets
       - name: Pack the binaries
         env:
-          PLATFORMS: ${{ needs.platforms.outputs.matrix }}
+          PLATFORMS: ${{ needs.build.outputs.matrix }}
         run: |
           mkdir -p "$RUNNER_TEMP/assets"
           for platform in $(jq -r '.include[].platform' <<< "$PLATFORMS"); do

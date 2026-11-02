@@ -184,7 +184,7 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.deepEqual([fromFile.url, fromFile.urlSource, fromFile.error, fromFile.notice], ["postgres://dev/app", "DATABASE_URL in .env", undefined, NOTICE]);
   const fromEnv = resolveProject(e, alone, { DATABASE_URL: "file:./dev.db" });
   assert.deepEqual([fromEnv.url, fromEnv.urlSource, fromEnv.dialect, fromEnv.notice], ["file:./dev.db", "DATABASE_URL in the environment", "sqlite", NOTICE]);
-  // Nothing in url is resolved or checked: an unset variable or an odd scheme there is the framework's to report.
+  // Nothing in url is resolved or checked: an unset variable or an odd scheme there is for the host that serves the queries through it to report.
   const unread = tree({ "package.json": "{}", ".reylo.yaml": "url: ${NOPE}/x\n" });
   assert.deepEqual([resolveProject(e, unread, { DATABASE_URL: "postgres://dev/app" }).url, resolveProject(e, unread, { DATABASE_URL: "postgres://dev/app" }).error], ["postgres://dev/app", undefined]);
   // With no DATABASE_URL either, there is no connection, and the error says why url is not one.
