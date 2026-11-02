@@ -29,7 +29,7 @@ members = [
 
 # reylo's version, which the engine reports on ping and the npm package `reylo` must equal.
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 
 [patch.crates-io]
 pg_query = { path = "engine/postgres/.patched/pg_query" }
