@@ -2080,23 +2080,14 @@ enum Named<'a> {
 /// the name Postgres gives it, a column's own or a function's. An entry `*` gives the names of the
 /// columns it expands to, each a column of the FROM of that name, which the name reads as either.
 fn named_entry<'a>(s: &'a SelectStmt, name: &str) -> Named<'a> {
-    fn implicit(node: &protobuf::Node) -> Option<String> {
-        match node.node.as_ref()? {
-            NodeEnum::ColumnRef(c) => c.fields.last().and_then(field_name).map(String::from),
-            NodeEnum::FuncCall(f) => f.funcname.last().and_then(field_name).map(String::from),
-            NodeEnum::TypeCast(t) => implicit(t.arg.as_deref()?),
-            NodeEnum::AConst(_) | NodeEnum::AExpr(_) | NodeEnum::BoolExpr(_) | NodeEnum::ParamRef(_) => Some("?column?".into()),
-            _ => None,
-        }
-    }
     let mut found = Named::None;
     for t in &s.target_list {
         let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Named::Unknown };
         let Some(value) = r.val.as_deref() else { return Named::Unknown };
-        if matches!(value.node.as_ref(), Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))))) {
+        if expands(value) {
             continue;
         }
-        let own = if r.name.is_empty() { implicit(value) } else { Some(r.name.clone()) };
+        let own = if r.name.is_empty() { implicit_name(value).map(|(n, _)| n) } else { Some(r.name.clone()) };
         match own {
             Some(own) if own == name => {
                 if !matches!(found, Named::None) {
@@ -2111,6 +2102,51 @@ fn named_entry<'a>(s: &'a SelectStmt, name: &str) -> Named<'a> {
     found
 }
 
+/// The name Postgres gives an entry of a select list that has no alias, with its strength as
+/// Postgres's `FigureColname` ranks it (0 for `?column?`, 1 for a type's or `case`, 2 for a name
+/// of its own); `None` for an expression whose name the engine does not read, which may be any.
+fn implicit_name(node: &protobuf::Node) -> Option<(String, u8)> {
+    let unnamed = || Some(("?column?".to_string(), 0));
+    let last = |nodes: &[protobuf::Node]| nodes.last().and_then(field_name).map(String::from);
+    match node.node.as_ref()? {
+        NodeEnum::ColumnRef(c) => Some((last(&c.fields)?, 2)),
+        NodeEnum::FuncCall(f) => Some((last(&f.funcname)?, 2)),
+        NodeEnum::AExpr(e) if e.kind == protobuf::AExprKind::AexprNullif as i32 => Some(("nullif".into(), 2)),
+        NodeEnum::AExpr(_) | NodeEnum::AConst(_) | NodeEnum::BoolExpr(_) | NodeEnum::ParamRef(_) | NodeEnum::NullTest(_) | NodeEnum::BooleanTest(_) => unnamed(),
+        NodeEnum::TypeCast(t) => match implicit_name(t.arg.as_deref()?)? {
+            (name, 2) => Some((name, 2)),
+            _ => Some((last(&t.type_name.as_ref()?.names)?, 1)),
+        },
+        NodeEnum::CollateClause(c) => implicit_name(c.arg.as_deref()?),
+        NodeEnum::CaseExpr(c) => match c.defresult.as_deref() {
+            None => Some(("case".into(), 1)),
+            Some(d) => match implicit_name(d)? {
+                (name, 2) => Some((name, 2)),
+                _ => Some(("case".into(), 1)),
+            },
+        },
+        NodeEnum::CoalesceExpr(_) => Some(("coalesce".into(), 2)),
+        NodeEnum::AArrayExpr(_) => Some(("array".into(), 2)),
+        NodeEnum::RowExpr(_) => Some(("row".into(), 2)),
+        NodeEnum::GroupingFunc(_) => Some(("grouping".into(), 2)),
+        NodeEnum::MinMaxExpr(m) => Some((if m.op == protobuf::MinMaxOp::IsGreatest as i32 { "greatest" } else { "least" }.into(), 2)),
+        NodeEnum::SubLink(l) if l.sub_link_type == protobuf::SubLinkType::ExistsSublink as i32 => Some(("exists".into(), 2)),
+        NodeEnum::SubLink(l) if l.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => Some(("array".into(), 2)),
+        _ => None,
+    }
+}
+
+/// Whether an entry of a select list is a `*`, `t.*` or `(composite).*`, which expands to columns
+/// the statement does not count.
+fn expands(node: &protobuf::Node) -> bool {
+    let last_is_star = |items: &[protobuf::Node]| items.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))));
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => last_is_star(&c.fields),
+        Some(NodeEnum::AIndirection(i)) => last_is_star(&i.indirection),
+        _ => false,
+    }
+}
+
 /// Each entry of a SELECT's select list's output position, `None` from the first `*` on, whose
 /// width the statement does not say.
 fn target_positions(s: &SelectStmt) -> Vec<Option<usize>> {
@@ -2118,7 +2154,7 @@ fn target_positions(s: &SelectStmt) -> Vec<Option<usize>> {
     s.target_list
         .iter()
         .map(|t| {
-            let star = matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(r)) if matches!(r.val.as_deref().and_then(|v| v.node.as_ref()), Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))))));
+            let star = matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(r)) if r.val.as_deref().is_some_and(expands));
             if star {
                 at = None;
             }
@@ -2272,7 +2308,8 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     // `DISTINCT ON` when every expression it is distinct on is.
     if !s.distinct_clause.is_empty() {
         let constant = from.determined(true, dialect, trust, catalog);
-        // `DISTINCT ON (2)` is distinct on the second output column, as in ORDER BY.
+        // `DISTINCT ON (2)` is distinct on the second output column, and a bare name on the output
+        // column of that name before a column of the FROM, as in ORDER BY.
         let on: Option<Vec<&protobuf::Node>> = s
             .distinct_clause
             .iter()
@@ -2281,6 +2318,11 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
                 Some(NodeEnum::AConst(c)) => match &c.val {
                     Some(protobuf::a_const::Val::Ival(i)) => output(s, i.ival),
                     _ => Some(d),
+                },
+                Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => match named_entry(s, c.fields.first().and_then(field_name)?) {
+                    Named::One(r) => r.val.as_deref(),
+                    Named::None => Some(d),
+                    Named::Unknown => None,
                 },
                 _ => Some(d),
             })
@@ -3772,5 +3814,12 @@ mod tests {
         assert!(at_most_one("select distinct on (2) p.*, p.id from posts p", Dialect::Postgres, &Trust::default(), &c).is_err());
         assert!(at_most_one("select p.*, p.title as t from posts p where p.title = $1 group by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
         assert!(at_most_one("select p.title, p.id from posts p where p.title = $1 group by 1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // The same reading in the statement's own cardinality: `title` is the output column, `author_id`.
+        assert!(at_most_one("select distinct on (title) p.author_id as title from posts p where p.title = $1 order by title", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (title) p.title from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // `(p).*` expands to columns the statement does not count, as `p.*` does.
+        assert!(at_most_one("select distinct on (2) (p).*, p.title as t from posts p where p.title = $1 order by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // A cast with no name of its own is named after its type, so `text` here is the cast.
+        assert!(at_most_one("select s.x from (select distinct on (text) (p.id + 0)::text, p.title as x from (select id, title, title as text from posts) p order by text) s where s.x = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
     }
 }
