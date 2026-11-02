@@ -8,6 +8,8 @@ cross_join.sql: many (id: int8) -> { id: int8 }
 distinct.sql: maybeOne (a: int8) -> { author_id: int8 }
 distinct_expression.sql: many (a: int8) -> { author_id: int8, t: text }
 distinct_on.sql: maybeOne (a: int8) -> { author_id: int8, id: int8 }
+distinct_on_output_name.sql: many (t: text) -> { title: int8, t2: text }
+distinct_on_position_star.sql: many (a: text) -> { a: text }
 except_left_keys.sql: maybeOne (id: int8) -> { id: int8, title: text }
 expression.sql: many (id: int8) -> { id: int8, title: text }
 expression_key.sql: maybeOne (e: text) -> { id: int8, e: text }

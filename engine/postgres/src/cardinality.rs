@@ -801,9 +801,12 @@ fn one_group(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog)
     }
 }
 
-/// The expression of output column `n`, counting from one.
+/// The expression of output column `n`, counting from one; `None` past a `*`, whose width the
+/// statement does not say.
 fn output(s: &SelectStmt, n: i32) -> Option<&protobuf::Node> {
-    match s.target_list.get(usize::try_from(n).ok()?.checked_sub(1)?)?.node.as_ref()? {
+    let n = usize::try_from(n).ok()?.checked_sub(1)?;
+    let at = target_positions(s).iter().position(|p| *p == Some(n))?;
+    match s.target_list.get(at)?.node.as_ref()? {
         NodeEnum::ResTarget(r) => r.val.as_deref(),
         _ => None,
     }
@@ -1889,7 +1892,7 @@ type Key = Vec<Part>;
 ///
 /// None at all for a set operation, a VALUES list, or a set-returning call at this level, which
 /// repeats a row (`SELECT id, generate_series(1, 2) FROM posts`).
-fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
+fn output_keys<'a>(s: &'a SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> Vec<Key> {
     if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
         return set_keys(s, left, right, dialect, trust, &catalog.scoped(&with_names(s), s.with_clause.as_ref(), None));
     }
@@ -1926,18 +1929,37 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
         })
     };
     // The output column an expression of GROUP BY or DISTINCT ON is, with the table column behind it.
-    let part = |e: &protobuf::Node| -> Option<Part> {
+    // The entry of the select list at output position `n`, counted only where no `*` comes before
+    // it, whose width the statement does not say.
+    let positions = target_positions(s);
+    let entry = |n: usize| -> Option<&protobuf::ResTarget> {
+        let at = positions.iter().position(|p| *p == Some(n))?;
+        match s.target_list[at].node.as_ref()? {
+            NodeEnum::ResTarget(r) => Some(r),
+            _ => None,
+        }
+    };
+    // The column an entry holds as it is, with the name the entry gives it, if it gives one.
+    let held = |r: &'a protobuf::ResTarget| -> Option<(&'a protobuf::ColumnRef, Option<String>)> {
+        match r.val.as_deref()?.node.as_ref()? {
+            NodeEnum::ColumnRef(c) => Some((c, Some(r.name.clone()).filter(|n| !n.is_empty()))),
+            _ => None,
+        }
+    };
+    // The output column an expression of GROUP BY or DISTINCT ON is, with the table column behind
+    // it. A bare name in DISTINCT ON names an output column of that name first, as in ORDER BY, and
+    // in GROUP BY a column of the FROM.
+    let part = |e: &'a protobuf::Node, distinct_on: bool| -> Option<Part> {
         let (c, name) = match e.node.as_ref()? {
+            NodeEnum::ColumnRef(c) if distinct_on && c.fields.len() == 1 => match named_entry(s, c.fields.first().and_then(field_name)?) {
+                Named::One(r) => held(r)?,
+                Named::None => (c, None),
+                Named::Unknown => return None,
+            },
             NodeEnum::ColumnRef(c) => (c, None),
             // `GROUP BY 2` groups by the second output column.
             NodeEnum::AConst(k) => match &k.val {
-                Some(protobuf::a_const::Val::Ival(n)) => match s.target_list.get(usize::try_from(n.ival).ok()?.checked_sub(1)?)?.node.as_ref()? {
-                    NodeEnum::ResTarget(r) => match r.val.as_deref()?.node.as_ref()? {
-                        NodeEnum::ColumnRef(c) => (c, Some(r.name.clone()).filter(|n| !n.is_empty())),
-                        _ => return None,
-                    },
-                    _ => return None,
-                },
+                Some(protobuf::a_const::Val::Ival(n)) => held(entry(usize::try_from(n.ival).ok()?.checked_sub(1)?)?)?,
                 _ => return None,
             },
             _ => return None,
@@ -1952,7 +1974,7 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
     };
     let mut keys = Vec::new();
     if !s.group_clause.is_empty() {
-        keys.extend(s.group_clause.iter().map(part).collect::<Option<Key>>());
+        keys.extend(s.group_clause.iter().map(|g| part(g, false)).collect::<Option<Key>>());
         return keys;
     }
     if !s.distinct_clause.is_empty() {
@@ -1973,7 +1995,7 @@ fn output_keys(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalo
                 })
                 .collect()
         } else {
-            s.distinct_clause.iter().map(part).collect()
+            s.distinct_clause.iter().map(|d| part(d, true)).collect()
         };
         keys.extend(key);
     }
@@ -2042,6 +2064,69 @@ fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dial
         keys.extend(whole());
     }
     keys
+}
+
+/// What a bare name in ORDER BY or DISTINCT ON names among a select list's output columns.
+enum Named<'a> {
+    /// The one entry of that name.
+    One(&'a protobuf::ResTarget),
+    /// No entry: the name is a column of the FROM.
+    None,
+    /// Two entries of the name, or one whose name the engine does not read and may be it.
+    Unknown,
+}
+
+/// The entry of a select list a bare name in ORDER BY or DISTINCT ON names: an entry's alias, or
+/// the name Postgres gives it, a column's own or a function's. An entry `*` gives the names of the
+/// columns it expands to, each a column of the FROM of that name, which the name reads as either.
+fn named_entry<'a>(s: &'a SelectStmt, name: &str) -> Named<'a> {
+    fn implicit(node: &protobuf::Node) -> Option<String> {
+        match node.node.as_ref()? {
+            NodeEnum::ColumnRef(c) => c.fields.last().and_then(field_name).map(String::from),
+            NodeEnum::FuncCall(f) => f.funcname.last().and_then(field_name).map(String::from),
+            NodeEnum::TypeCast(t) => implicit(t.arg.as_deref()?),
+            NodeEnum::AConst(_) | NodeEnum::AExpr(_) | NodeEnum::BoolExpr(_) | NodeEnum::ParamRef(_) => Some("?column?".into()),
+            _ => None,
+        }
+    }
+    let mut found = Named::None;
+    for t in &s.target_list {
+        let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Named::Unknown };
+        let Some(value) = r.val.as_deref() else { return Named::Unknown };
+        if matches!(value.node.as_ref(), Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))))) {
+            continue;
+        }
+        let own = if r.name.is_empty() { implicit(value) } else { Some(r.name.clone()) };
+        match own {
+            Some(own) if own == name => {
+                if !matches!(found, Named::None) {
+                    return Named::Unknown;
+                }
+                found = Named::One(r);
+            }
+            Some(_) => {}
+            None => return Named::Unknown,
+        }
+    }
+    found
+}
+
+/// Each entry of a SELECT's select list's output position, `None` from the first `*` on, whose
+/// width the statement does not say.
+fn target_positions(s: &SelectStmt) -> Vec<Option<usize>> {
+    let mut at = Some(0usize);
+    s.target_list
+        .iter()
+        .map(|t| {
+            let star = matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(r)) if matches!(r.val.as_deref().and_then(|v| v.node.as_ref()), Some(NodeEnum::ColumnRef(c)) if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_))))));
+            if star {
+                at = None;
+            }
+            let here = at;
+            at = at.map(|a| a + 1);
+            here
+        })
+        .collect()
 }
 
 /// The names of a SELECT's output columns by position: an alias, or a column's own name, and
@@ -2187,7 +2272,20 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     // `DISTINCT ON` when every expression it is distinct on is.
     if !s.distinct_clause.is_empty() {
         let constant = from.determined(true, dialect, trust, catalog);
-        let on: Vec<&protobuf::Node> = s.distinct_clause.iter().filter(|d| d.node.is_some()).collect();
+        // `DISTINCT ON (2)` is distinct on the second output column, as in ORDER BY.
+        let on: Option<Vec<&protobuf::Node>> = s
+            .distinct_clause
+            .iter()
+            .filter(|d| d.node.is_some())
+            .map(|d| match d.node.as_ref() {
+                Some(NodeEnum::AConst(c)) => match &c.val {
+                    Some(protobuf::a_const::Val::Ival(i)) => output(s, i.ival),
+                    _ => Some(d),
+                },
+                _ => Some(d),
+            })
+            .collect();
+        let Some(on) = on else { return Err(from.why_not(&determined, catalog)) };
         let values: Vec<&protobuf::Node> = if on.is_empty() {
             s.target_list
                 .iter()
@@ -3658,5 +3756,21 @@ mod tests {
         for sql in ["SELECT 1 AS x", "SELECT 1 AS x LIMIT 1", "SELECT 1 AS x LIMIT $1", "SELECT 1 AS x LIMIT ALL", "SELECT 1 AS x OFFSET 1", "SELECT 1 AS x WHERE false"] {
             assert_eq!(never_a_row(sql, Dialect::Postgres), None, "{sql}");
         }
+    }
+
+    #[test]
+    fn a_bare_name_in_distinct_on_is_the_output_column_of_that_name() {
+        // DISTINCT ON (title) keeps a row per author here, so the subquery's rows share a `t2`.
+        let mut c = joined();
+        c.unique_keys.insert("posts".into(), vec![vec!["id".into()]]);
+        assert!(at_most_one("select s.t2 from (select distinct on (title) p.author_id as title, p.title as t2 from posts p order by title) s where s.t2 = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select s.t2 from (select distinct on (p.title) p.author_id as title, p.title as t2 from posts p order by p.title) s where s.t2 = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
+        // A position counts the entries of the select list only before a `*`.
+        assert!(at_most_one("select s.a from (select distinct on (2) p.*, p.title as a from posts p) s where s.a = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // An integer in DISTINCT ON is a position, not a value every row shares.
+        assert!(at_most_one("select distinct on (2) p.id, p.title from posts p", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (2) p.*, p.id from posts p", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select p.*, p.title as t from posts p where p.title = $1 group by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select p.title, p.id from posts p where p.title = $1 group by 1", Dialect::Postgres, &Trust::default(), &c).is_ok());
     }
 }
