@@ -4,8 +4,8 @@
 //! ([`cardinality`]), the nested JSON shapes ([`jsonshape`]) and the handshake with the `reylo` Postgres extension
 //! ([`extension`]).
 //!
-//! It is linked by the facade, `reylo-engine`, and the program built on it, `engine/native`, whose
-//! WebAssembly component the package `@reylosql/postgres` carries; by the `reylo` Postgres extension, which calls
+//! It is linked by the facade, `reylo-engine`, and the program built on it, `engine/native`, which the
+//! `reylo` binary serves and the docs site's playground runs as a WebAssembly component; by the `reylo` Postgres extension, which calls
 //! [`postgres::analyze`] inside the server; and by Reylo Framework, which replays [`postgres::describe`], [`postgres::trust`] and [`postgres::catalog`]
 //! through its own driver and reads the parse-tree modules directly.
 

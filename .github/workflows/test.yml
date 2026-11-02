@@ -62,7 +62,7 @@ jobs:
           echo "$files"
           # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
           # oracle reads, the validators' measurements the engine's tests read, and CI itself reach every database.
-          if grep -qE '^(engine/(core|build-support|facade|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
+          if grep -qE '^(\.cargo/|engine/(core|build-support|facade|native|wasip2)/|engine/build\.sh$|oracle/src/|oracle/Cargo\.toml$|Cargo\.(toml|lock)$|rust-toolchain|src/error-codes-|wiki/json-schema-checks/|\.github/)' <<<"$files"; then
             everything >> "$GITHUB_OUTPUT"
             exit 0
           fi

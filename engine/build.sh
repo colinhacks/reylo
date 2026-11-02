@@ -126,6 +126,11 @@ export CC_wasm32_wasip2="$WASI_SDK_PATH/bin/clang" AR_wasm32_wasip2="$WASI_SDK_P
 # it was standardized, since jco and wasmtime refuse the legacy `try`.
 export CFLAGS_wasm32_wasip2="--sysroot=$SYSROOT -idirafter $STUBS -DEHOSTDOWN=9001 -Dsigjmp_buf=jmp_buf -Dsigsetjmp(b,m)=setjmp(b) -Dsiglongjmp(b,v)=longjmp(b,v) -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID $PREFIX_MAPS"
 export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip2="--sysroot=$SYSROOT --target=wasm32-wasip2 -I $STUBS"
+# bindgen reads the C headers through wasi-sdk's own libclang and clang, whose builtin headers
+# (`stddef.h` and the rest) sit beside them and which take the flags above: a system's libclang may
+# come without those headers, a system's older clang refuses the `-mllvm` options bindgen asks it
+# for the include paths with, and for a wasm32 target no compiler of the system's supplies them.
+export LIBCLANG_PATH="$WASI_SDK_PATH/lib" CLANG_PATH="$WASI_SDK_PATH/bin/clang"
 # tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where C and the
 # Rust frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
 # libpg_query hands over (core/src/stack.rs) needs about 0.5 MiB of it.

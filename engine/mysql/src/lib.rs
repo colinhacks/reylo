@@ -4,7 +4,7 @@
 //! parameters the caller may pass null for ([`mysql_params`]).
 //!
 //! Its hosts are the facade, `reylo-engine`, which the oracle links, and the program built from it,
-//! `engine/native`, whose WebAssembly component the package `@reylosql/mysql` carries.
+//! `engine/native`, which the `reylo` binary serves.
 
 pub mod api;
 pub mod errors;

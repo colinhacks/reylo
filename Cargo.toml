@@ -1,10 +1,10 @@
 # One Cargo workspace over the engine (`engine/`: `reylo-engine-core`, what every database shares;
 # `reylo-engine-postgres`, `reylo-engine-sqlite`, `reylo-engine-mysql` and `reylo-engine-duckdb`,
-# one per database;
-# `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, the facade a Rust host links;
-# and `reylo-engine-native`, the program each database's WebAssembly component is built from) and the
-# soundness oracle (`oracle/`). One lockfile, one `target/`. The component crate, `engine/wasip2`, is
-# a workspace of its own (its Cargo.toml says why).
+# one per database; `reylo-engine-build`, their build scripts' source hash; `reylo-engine`, the
+# facade a Rust host links; `reylo-engine-native`, the program that connects each database's engine
+# to its database; and `reylo`, the binary that serves them all, `engine/cli`) and the soundness
+# oracle (`oracle/`). One lockfile, one `target/`. The component crate, `engine/wasip2`, is a
+# workspace of its own (its Cargo.toml says why).
 #
 # The `[patch]` is the Postgres crate's: `pg_query` 18.0.0, the Postgres 18 parser, with the patch
 # from `engine/postgres/vendor/` applied by `engine/build.sh --prepare`, which also fetches the SQLite
@@ -36,8 +36,9 @@ pg_query = { path = "engine/postgres/.patched/pg_query" }
 
 [profile.release]
 # 3 rather than "s": 7 µs less CPU on a 50-row read (71 against 78 with the other fixes), for a
-# Reylo Framework binary 31 % larger (20.3 to 26.6 MB stripped, measured 2026-10-03). The engine's
-# components stay "s" and without LTO, by the profile of their own workspace (engine/wasip2/Cargo.toml).
+# Reylo Framework binary 31 % larger (20.3 to 26.6 MB stripped, measured 2026-10-03). The
+# playground's component stays "s" and without LTO, by the profile of its own workspace
+# (engine/wasip2/Cargo.toml).
 opt-level = 3
 lto = true
 codegen-units = 1

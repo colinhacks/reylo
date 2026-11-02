@@ -21,11 +21,20 @@ pub struct Sqlite {
 /// A database file, opened afresh for each request, so that each reads the file as it is then: a
 /// connection kept open would keep the schema it read first (see `open`).
 struct Connection {
-    path: String,
-    /// Whether another process held the file the last time: the next request reads a copy at once.
-    held: std::cell::Cell<bool>,
+    file: File,
     /// The engine's answers, kept between statements as the loader's session keeps them.
     answers: AnswerCache<Describe>,
+}
+
+/// A database file as a connection reads it (`File::open`).
+struct File {
+    path: String,
+    /// Whether another process held the file the last time: the next request reads a copy at once.
+    #[cfg(not(target_family = "wasm"))]
+    held: std::cell::Cell<bool>,
+    /// Where the copies of a held file are made, from the first time it is held to the connection's close.
+    #[cfg(not(target_family = "wasm"))]
+    copies: std::cell::RefCell<Option<Copies>>,
 }
 
 impl Program for Sqlite {
@@ -40,11 +49,11 @@ impl Program for Sqlite {
         Some(match op {
             // The host passes the file's path, resolved as the project names it (`sqlitePath` in src/project.ts).
             "open" => {
-                let (url, held) = (request["url"].as_str().unwrap_or_default(), std::cell::Cell::new(false));
-                match open(url, &held) {
+                let file = File::new(request["url"].as_str().unwrap_or_default());
+                match file.open() {
                     Ok(_) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { path: url.to_string(), held, answers: AnswerCache::default() });
+                        self.connections.insert(self.next, Connection { file, answers: AnswerCache::default() });
                         json!({ "status": "opened", "conn": self.next })
                     }
                     // A file that cannot be opened is a database that cannot be reached: a build runs on `.reylo/`.
@@ -53,7 +62,7 @@ impl Program for Sqlite {
             }
             "run" => match self.connections.get_mut(&id) {
                 None => closed(id),
-                Some(c) => match open(&c.path, &c.held) {
+                Some(c) => match c.file.open() {
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
                     Ok(db) => match answers::analyze(&db, sql, &mut c.answers) {
                         Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
@@ -63,7 +72,7 @@ impl Program for Sqlite {
             },
             "query" => match self.connections.get(&id) {
                 None => closed(id),
-                Some(c) => match open(&c.path, &c.held) {
+                Some(c) => match c.file.open() {
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),
                     Ok(db) => {
                         let params = request["params"].as_array().cloned().unwrap_or_default();
@@ -96,60 +105,150 @@ fn closed(id: u64) -> Value {
     json!({ "status": "unreachable", "message": format!("connection {id} is closed") })
 }
 
-/// The database at `path`, read-only; `:memory:` is an empty one. `held` says whether another
-/// process held it last time, and is set to whether it does now.
-fn open(path: &str, held: &std::cell::Cell<bool>) -> rusqlite::Result<Db> {
-    if path == ":memory:" {
-        return Db::open_in_memory();
-    }
-    let db = Db::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI)?;
-    // A database in WAL mode keeps its index in shared memory, the `-shm` file mapped, which
-    // WebAssembly cannot map: in exclusive locking mode SQLite keeps the index in its own memory
-    // and reads the log whole. WASI's file locks are no-ops, so the mode holds nothing against the
-    // app's own connections; a native build keeps SQLite's usual locking, which would. The mode also
-    // trusts that nothing else writes the file, so the connection lives for one request.
-    #[cfg(target_family = "wasm")]
-    {
-        let _ = held;
-        db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
-    }
-    // Natively the locks are real, and an engine that keeps the file locked for as long as its
-    // connection is open (Turso's) leaves a reader waiting forever: after a short wait the program
-    // reads a copy of the file and its write-ahead log, as they stand, which sees every committed
-    // row and table; once a file is held, the next request goes to the copy without waiting.
-    #[cfg(not(target_family = "wasm"))]
-    {
-        db.busy_timeout(std::time::Duration::from_millis(if held.get() { 0 } else { 250 }))?;
-        match db.query_row("select count(*) from sqlite_schema", [], |_| Ok(())) {
-            Err(rusqlite::Error::SqliteFailure(e, _)) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
-                held.set(true);
-                return open_copy(path);
-            }
-            Err(e) => return Err(e),
-            Ok(()) => held.set(false),
+impl File {
+    fn new(path: &str) -> File {
+        File {
+            path: path.to_string(),
+            #[cfg(not(target_family = "wasm"))]
+            held: std::cell::Cell::new(false),
+            #[cfg(not(target_family = "wasm"))]
+            copies: std::cell::RefCell::new(None),
         }
     }
-    Ok(db)
+
+    /// The database, read-only; `:memory:` is an empty one.
+    fn open(&self) -> rusqlite::Result<Db> {
+        if self.path == ":memory:" {
+            return Db::open_in_memory();
+        }
+        let db = Db::open_with_flags(&self.path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX | OpenFlags::SQLITE_OPEN_URI)?;
+        // A database in WAL mode keeps its index in shared memory, the `-shm` file mapped, which
+        // WebAssembly cannot map: in exclusive locking mode SQLite keeps the index in its own memory
+        // and reads the log whole. WASI's file locks are no-ops, so the mode holds nothing against the
+        // app's own connections; a native build keeps SQLite's usual locking, which would. The mode also
+        // trusts that nothing else writes the file, so the connection lives for one request.
+        #[cfg(target_family = "wasm")]
+        db.pragma_update(None, "locking_mode", "EXCLUSIVE")?;
+        // Natively the locks are real, and an engine that keeps the file locked for as long as its
+        // connection is open (Turso's) leaves a reader waiting forever: after a short wait the program
+        // reads a copy of the file and its write-ahead log, as they stand, which sees every committed
+        // row and table; once a file is held, the next request goes to the copy without waiting.
+        #[cfg(not(target_family = "wasm"))]
+        {
+            db.busy_timeout(std::time::Duration::from_millis(if self.held.get() { 0 } else { 250 }))?;
+            match db.query_row("select count(*) from sqlite_schema", [], |_| Ok(())) {
+                Err(rusqlite::Error::SqliteFailure(e, _)) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => {
+                    self.held.set(true);
+                    return self.open_copy();
+                }
+                Err(e) => return Err(e),
+                Ok(()) => self.held.set(false),
+            }
+        }
+        Ok(db)
+    }
+
+    /// A copy of the database and its write-ahead log, opened: made again for each request, so that
+    /// it reads the file as it is then. The log is copied after the file, and both again when the
+    /// log's header changed meanwhile: a checkpoint that restarts the log between the two copies
+    /// would pair the file as it was with a log that no longer holds what the file lacks, while a
+    /// checkpoint that only writes the file leaves the log holding every page it wrote.
+    #[cfg(not(target_family = "wasm"))]
+    fn open_copy(&self) -> rusqlite::Result<Db> {
+        let failed = |e: std::io::Error| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN), Some(format!("cannot copy the database the app holds: {e}")));
+        let mut copies = self.copies.borrow_mut();
+        if copies.is_none() {
+            *copies = Some(Copies::create().map_err(failed)?);
+        }
+        let dir = &copies.as_ref().unwrap().0;
+        let (copy, wal, wal_copy) = (dir.join("db"), std::path::PathBuf::from(format!("{}-wal", self.path)), dir.join("db-wal"));
+        for _ in 0..5 {
+            for stale in [&wal_copy, &dir.join("db-shm")] {
+                let _ = std::fs::remove_file(stale);
+            }
+            let before = wal_header(&wal);
+            std::fs::copy(&self.path, &copy).map_err(failed)?;
+            // A log removed since its header was read is a log that changed.
+            match before.map(|_| std::fs::copy(&wal, &wal_copy)) {
+                Some(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Some(Err(e)) => return Err(failed(e)),
+                _ => {}
+            }
+            if before == wal_header(&wal_copy) && before == wal_header(&wal) {
+                return Db::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX);
+            }
+        }
+        Err(failed(std::io::Error::other("its write-ahead log was restarted under every copy")))
+    }
 }
 
-/// A copy of the database at `path` and its write-ahead log, opened: one copy per file, made again
-/// for each request, so that it reads the file as it is then.
+/// The first 32 bytes of a write-ahead log, its header: a restarted log has another checkpoint
+/// sequence number and salts. None where there is no log, or none yet.
 #[cfg(not(target_family = "wasm"))]
-fn open_copy(path: &str) -> rusqlite::Result<Db> {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut hasher);
-    let dir = std::env::temp_dir().join(format!("reylo-sqlite-{}-{:016x}", std::process::id(), hasher.finish()));
-    let copy = dir.join("db");
-    let failed = |e: std::io::Error| rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN), Some(format!("cannot copy the database the app holds: {e}")));
-    std::fs::create_dir_all(&dir).map_err(failed)?;
-    for suffix in ["-wal", "-shm"] {
-        let _ = std::fs::remove_file(dir.join(format!("db{suffix}")));
+fn wal_header(path: &std::path::Path) -> Option<[u8; 32]> {
+    let mut header = [0; 32];
+    std::io::Read::read_exact(&mut std::fs::File::open(path).ok()?, &mut header).ok()?;
+    Some(header)
+}
+
+/// A directory of the program's own for the copies of a held file, removed with its connection:
+/// made where nothing was, so that no directory or link another user put in the shared temporary
+/// directory is written through, and on Unix open to its own user alone.
+#[cfg(not(target_family = "wasm"))]
+struct Copies(std::path::PathBuf);
+
+#[cfg(not(target_family = "wasm"))]
+impl Copies {
+    fn create() -> std::io::Result<Copies> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        let mut tries = 0;
+        loop {
+            let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+            let dir = std::env::temp_dir().join(format!("reylo-sqlite-{}-{}-{nanos:08x}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+            // `create` refuses a path that exists, where `create_dir_all` would take it.
+            match builder.create(&dir) {
+                Ok(()) => return Ok(Copies(dir)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && tries < 16 => tries += 1,
+                Err(e) => return Err(e),
+            }
+        }
     }
-    std::fs::copy(path, &copy).map_err(failed)?;
-    let wal = format!("{path}-wal");
-    if std::path::Path::new(&wal).exists() {
-        std::fs::copy(&wal, dir.join("db-wal")).map_err(failed)?;
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl Drop for Copies {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
-    Db::open_with_flags(&copy, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+}
+
+#[cfg(all(test, not(target_family = "wasm")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_file_is_read_through_a_copy_of_its_own_removed_with_the_connection() {
+        let dir = std::env::temp_dir().join(format!("reylo-sqlite-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("app.db");
+        // The app's connection: the rows committed to the log alone, and the file held as Turso's engine holds it.
+        let app = Db::open(&path).unwrap();
+        app.execute_batch("pragma journal_mode = wal; pragma wal_autocheckpoint = 0; create table users (id integer primary key); insert into users values (1); pragma locking_mode = exclusive; begin exclusive; commit;").unwrap();
+        let file = File::new(path.to_str().unwrap());
+        let db = file.open().unwrap();
+        assert!(file.held.get());
+        assert_eq!(db.query_row("select count(*) from users", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let copies = file.copies.borrow().as_ref().unwrap().0.clone();
+        assert!(copies.join("db").exists());
+        #[cfg(unix)]
+        assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&copies).unwrap().permissions()) & 0o777, 0o700);
+        drop(db);
+        drop(file);
+        assert!(!copies.exists());
+        drop(app);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
