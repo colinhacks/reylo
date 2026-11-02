@@ -380,6 +380,7 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     day: new Date("2024-01-15T00:00:00Z"),
     wall: new Date("2024-01-15T10:30:00.120Z"),
     old: new Date("-000043-03-15T12:00:00Z"),
+    far: new Date("+012345-06-01T12:00:00Z"),
     ints: Int32Array.of(1, 2),
     roles: "{admin,member}",
     shapes: "{0101:0102}",
@@ -389,13 +390,13 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
     forever: Infinity,
   };
   const bun = { unsafe: async () => [{ ...bunRow }], commitDistributed: async () => {} };
-  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["prefs", "hstore"], ["at", "timestamptz"], ["forever", "date"]] };
+  const q: QueryModule<"postgres"> = { ...probe, columns: [["big", "int8"], ["day", "date"], ["wall", "timestamp"], ["old", "timestamp"], ["far", "timestamp"], ["ints", "int[]"], ["roles", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["prefs", "hstore"], ["at", "timestamptz"], ["forever", "date"]] };
   // The failing control: Bun.sql's timestamptz is a Date; Reylo's the instant's text, to Bun's millisecond.
   assert.ok(bunRow.at instanceof Date);
-  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "0044-03-15T12:00:00 BC", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], prefs: { a: "1" }, at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
+  assert.deepEqual(await execute(bun, q, { id: 1 }), [{ big: 9007199254740993n, day: "2024-01-15", wall: "2024-01-15T10:30:00.12", old: "-000043-03-15T12:00:00", far: "+012345-06-01T12:00:00", ints: [1, 2], roles: ["admin", "member"], shapes: ["0101", "0102"], embedding: [1, 2.5], prefs: { a: "1" }, at: "2024-01-15T08:30:00Z", forever: "infinity" }]);
   // Without bigint: true, Bun's int8 is its text.
   const plain = { unsafe: async () => [{ big: "9007199254740993", at: new Date("2024-01-15T08:30:00.5Z") }], commitDistributed: async () => {} };
   assert.deepEqual(await execute(plain, { ...probe, columns: [["big", "int8"], ["at", "timestamptz"]] }, { id: 1 }), [{ big: 9007199254740993n, at: "2024-01-15T08:30:00.5Z" }]);
   // A query defined by hand: a typed array an array, and a Date, which no value is, the instant's text.
-  assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00Z", wall: "2024-01-15T10:30:00.12Z", old: "-000043-03-15T12:00:00Z", at: "2024-01-15T08:30:00Z", ints: [1, 2] }]);
+  assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00Z", wall: "2024-01-15T10:30:00.12Z", old: "-000043-03-15T12:00:00Z", far: "+012345-06-01T12:00:00Z", at: "2024-01-15T08:30:00Z", ints: [1, 2] }]);
 });

@@ -62,7 +62,8 @@ create table t (
 insert into t values (1, 9007199254740993, true, 2, 1.5, 2.2, 12345678901234567890.123456789, '2026-10-20', '2026-10-20 10:00:00.123456', '2026-10-20 10:00:00.123456+02', '10:00:00',
   '1 year 2 mons 3 days 04:05:06.789', '{"a":1}', '{"big":1}', '\\x0102ff', 'sad', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '(1,"x,y")', '[1,5)',
   '{1,NULL,3}', '{9007199254740993}', '{1.5,12345678901234567890.1}', '{a,NULL,"NULL","b,c"}', '{ok,sad}', '{1,2}', array['(1,x)'::pair], '{"2026-10-20 10:00:00.5"}', '{"2026-10-20 10:00:00+00"}', '{"\\\\x01"}', '{"1 day"}'),
-  (2, null, null, null, null, null, null, 'infinity', '0044-03-15 12:00:00 BC', '0001-01-01 00:00:00+00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null)`;
+  (2, null, null, null, null, null, null, 'infinity', '0044-03-15 12:00:00 BC', '0001-01-01 00:00:00+00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null),
+  (3, null, null, null, null, null, null, '0002-06-01 BC', '10000-01-01 00:00:00', null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, '{"0002-06-01 12:00:00 BC","12345-01-01 00:00:00.5",infinity}', null, null, null)`;
 const PG_SELECT = "select * from t order by id";
 const PG_ROWS = [
   {
@@ -72,8 +73,13 @@ const PG_ROWS = [
     a_tx: ["a", null, "NULL", "b,c"], a_e: ["ok", "sad"], a_dom: [1, 2], a_p: '{"(1,x)"}', a_ts: ["2026-10-20T10:00:00.5"], a_tstz: ["2026-10-20T10:00:00Z"], a_by: [{ bytes: [1] }], a_iv: ["P1D"],
   },
   {
-    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "0044-03-15T12:00:00 BC", tstz: "0001-01-01T00:00:00Z", tm: null, iv: null,
+    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "-000043-03-15T12:00:00", tstz: "0001-01-01T00:00:00Z", tm: null, iv: null,
     j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null, a_ts: null, a_tstz: null, a_by: null, a_iv: null,
+  },
+  {
+    id: 3, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "-000001-06-01", ts: "+010000-01-01T00:00:00", tstz: null, tm: null, iv: null,
+    j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null,
+    a_ts: ["-000001-06-01T12:00:00", "+012345-01-01T00:00:00.5", "infinity"], a_tstz: null, a_by: null, a_iv: null,
   },
 ];
 

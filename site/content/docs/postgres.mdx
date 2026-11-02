@@ -176,13 +176,15 @@ Postgres's `infinity` and `-infinity` come back as those words, in every date an
 
 **Years past 9999 or before 1 AD**
 
-A `timestamptz` uses ISO 8601's extended year, as `Temporal.Instant` does. A `date` or `timestamp` keeps Postgres's own text.
+A `date`, `timestamp` or `timestamptz` uses ISO 8601's extended year, a sign and six digits, as `Temporal` does. The year 0000 is 1 BC, so 2 BC is `-000001`. A `date` past 999999 AD takes the digits it needs after the sign, which `Temporal` can't read.
 
 <Pairs>
 
+- `'12345-01-01'::date` → `"+012345-01-01"`
+- `'0002-06-01 BC'::date` → `"-000001-06-01"`
+- `'0002-06-01 12:00:00 BC'::timestamp` → `"-000001-06-01T12:00:00"`
 - `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00Z"`
-- `'0002-06-01 12:00:00+00 BC'::timestamptz` → `"-000001-06-01T12:00:00Z"`
-- `'0002-06-01 BC'::date` → `"0002-06-01 BC"`
+- `'5874897-12-31'::date` → `"+5874897-12-31"`
 
 </Pairs>
 

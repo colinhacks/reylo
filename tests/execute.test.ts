@@ -274,14 +274,14 @@ test("what run returns goes back in: a SQLite truth value as 1 or 0, a Postgres 
   // Postgres refuses `+010000` and the year 0000, which run returns for years past 9999 and 1 BC.
   const pq: QueryModule<"postgres"> = {
     dialect: "postgres",
-    sql: "select :far::timestamptz, :bc::timestamptz, :zero::date, :now::timestamptz, :days::date[]",
-    params: ["far", "bc", "zero", "now", "days"],
-    inputs: { far: s("timestamptz"), bc: s("timestamptz"), zero: s("date"), now: s("timestamptz"), days: { type: { kind: "array", of: { kind: "scalar", name: "date" } } } },
+    sql: "select :far::timestamptz, :bc::timestamptz, :zero::date, :now::timestamptz, :days::date[], :old::timestamp, :huge::date",
+    params: ["far", "bc", "zero", "now", "days", "old", "huge"],
+    inputs: { far: s("timestamptz"), bc: s("timestamptz"), zero: s("date"), now: s("timestamptz"), days: { type: { kind: "array", of: { kind: "scalar", name: "date" } } }, old: s("timestamp"), huge: s("date") },
   };
-  const values = { far: "+010000-01-01T00:00:00Z", bc: "-000001-06-01T12:00:00.5Z", zero: "0000-01-01", now: "2026-10-20T10:00:00Z", days: ["+010000-01-01", "2026-10-20"] };
+  const values = { far: "+010000-01-01T00:00:00Z", bc: "-000001-06-01T12:00:00.5Z", zero: "0000-01-01", now: "2026-10-20T10:00:00Z", days: ["+010000-01-01", "2026-10-20"], old: "-000001-06-01T12:00:00", huge: "+5874897-12-31" };
   seen.length = 0;
   await execute({ query: async (_: string, v?: unknown[]) => (seen.push(v!), { rows: [] }) }, pq, values);
-  assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}']]);
+  assert.deepEqual([...seen], [["10000-01-01T00:00:00Z", "0002-06-01T12:00:00.5Z BC", "0001-01-01 BC", "2026-10-20T10:00:00Z", '{"10000-01-01","2026-10-20"}', "0002-06-01T12:00:00 BC", "5874897-12-31"]]);
   // Postgres refuses a sign before an ISO 8601 duration's `P`, which run returns for a negative interval.
   const iq: QueryModule<"postgres"> = {
     dialect: "postgres",
