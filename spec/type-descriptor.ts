@@ -76,7 +76,7 @@ export interface FloatType extends Base, Bounds {
  * An exact decimal: `numeric`, MySQL `DECIMAL`, Oracle `NUMBER`, `DECFLOAT`. It is a kind of its own, so that a generator switching on the kind never turns money into `int64` or `double`.
  *
  * A decimal is a coefficient, a whole number, times a power of ten: 1.25 is 125 × 10^-2. IEEE 754 and the General Decimal Arithmetic specification call the coefficient's digits the precision and the power the exponent; SQL and Java's `BigDecimal` count the exponent negated, as the scale, the digits after the point. A type bounds both:
- *   - `numeric(10,2)`: precision 10, scale 2, so up to 99,999,999.99. MySQL `DECIMAL(M,D)`, SQL Server `decimal(p,s)` and Oracle `NUMBER(p,s)` alike, and SQL Server `money` is (19,4) with bounds at ±922,337,203,685,477.58. Oracle's `NUMBER(5,-2)` has scale -2, rounding to hundreds.
+ *   - `numeric(10,2)`: precision 10, scale 2, so up to 99,999,999.99. MySQL `DECIMAL(M,D)`, SQL Server `decimal(p,s)` and Oracle `NUMBER(p,s)` alike, and SQL Server `money` is (19,4) with bounds at -922,337,203,685,477.5808 and 922,337,203,685,477.5807. Oracle's `NUMBER(5,-2)` has scale -2, rounding to hundreds.
  *   - Postgres `numeric` with no size: scale 0 to 16,383, below 10^131072 in magnitude.
  *   - `DECFLOAT(34)`, IEEE's decimal128: precision 34, scale -6111 to 6176.
  *   - Oracle `NUMBER`: precision 40, below 10^126 in magnitude; Oracle `INTEGER` adds a scale of at most 0.
@@ -196,7 +196,7 @@ export interface JsonType extends Base {
 //
 // One kind per class every language has: a date, a time of day, a wall-clock date and time, an instant, and a duration. Each but the time of day may hold infinity and -infinity too, as Postgres's do. Wall-clock time is never an instant: a time with no zone cannot be read as UTC. `tick` is the smallest step, in seconds, in lowest terms: `"1/1000000"` (microseconds), `"1/300"` (SQL Server `datetime`), `"60"` (`smalldatetime`). A date-bearing kind's range is 0001-01-01 to 9999-12-31, and a time's 00:00:00 up to 24:00:00, unless its bounds say otherwise.
 
-/** A calendar date. Postgres's runs from `-4712-11-24` to `+5874897-12-31`, in astronomical years. */
+/** A calendar date. Postgres's runs from `-4713-11-24` to `+5874897-12-31`, in astronomical years. */
 export interface DateType extends Base, Bounds {
   kind: "date";
   /** Also holds infinity and -infinity, which sort after and before every other value. A bound excludes the one beyond it, so a column whose `min` is 2000-01-01 holds infinity but not -infinity. */
@@ -237,7 +237,7 @@ type Zone = "offset" | "region" | "region_or_offset";
  *   - Oracle's `INTERVAL YEAR TO MONTH` has `months`, and its `INTERVAL DAY TO SECOND` `time`, since it holds a day as 24 hours.
  *   - MySQL `TIME` is a `time` part, up to 838:59:59.
  *
- * A part's `max` bounds its magnitude, of either sign, as an ISO 8601 duration (`P2147483647M`, `PT838H59M59S`). SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.
+ * A part's `max` bounds its magnitude, of either sign, as an ISO 8601 duration (`P2147483648M`, `PT838H59M59S`). A two's complement part reaches one unit further below zero than above it, so its `max` is the negative side's magnitude: Postgres's `months` reaches -2147483648 and +2147483647, and is `P2147483648M`. SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.
  */
 export interface DurationType extends Base {
   kind: "duration";
@@ -412,6 +412,7 @@ export interface Dialect {
 //      - `zone` on a time or an instant;
 //      - `ill_formed` on text;
 //      - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
+//      - `months`, `days` and `time` on a duration, each a part its values may carry;
 //      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
 //
 // 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound appears only when it is true of every value: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums.
@@ -420,7 +421,7 @@ export interface Dialect {
 //
 // 4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds.
 //
-// 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4712-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
+// 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
 //
 // 6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
 //
@@ -487,8 +488,7 @@ export const first_example: StatementDescriptor = {
 
 const int64: IntegerType = { kind: "integer", bits: 64 };
 const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, name: "float8" };
-const float4: FloatType = { kind: "float", exponent_bits: 8, mantissa_bits: 23, infinity: true, nan: true, name: "float4" };
-const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4712-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, name: "timestamptz" };
+const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, name: "timestamptz" };
 const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
 
@@ -503,13 +503,13 @@ export const postgres_columns: Column[] = [
   { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" } },
   { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, name: "numeric" } },
   { name: "at", nullable: true, type: timestamptz },
-  { name: "day", nullable: true, type: { kind: "date", min: "-4712-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
-  { name: "span", nullable: true, type: { kind: "duration", months: { max: "P2147483647M" }, days: { max: "P2147483647D" }, time: { tick: "1/1000000", max: "PT2562047788H54.775807S" }, infinity: true, name: "interval" } },
+  { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
+  { name: "span", nullable: true, type: { kind: "duration", months: { max: "P2147483648M" }, days: { max: "P2147483648D" }, time: { tick: "1/1000000", max: "PT2562047788H54.775808S" }, infinity: true, name: "interval" } },
   { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], name: "public.mood" } },
   { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, name: "public.email" } },
   { name: "tags", nullable: true, type: { kind: "array", any_depth: true, name: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, name: "varchar" } } } },
   { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, name: "bit", element: { type: { kind: "boolean" } } } },
-  { name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, name: "public.vector", element: { type: float4 } } },
+  { name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, name: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } },
   { name: "body", nullable: true, type: { kind: "json", name: "jsonb" } },
   { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, name: "tstzrange" } },
   { name: "pos", nullable: true, type: point },
