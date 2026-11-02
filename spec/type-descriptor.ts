@@ -23,7 +23,7 @@ interface Base {
   comment?: string;
 }
 
-/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields, and a whole-number kind takes only `min` and `max` (`x > 0` is `min: "1"`). The infinities sort before and after every finite value, and NaN after infinity, as Postgres sorts them, so a `max` excludes NaN. */
+/** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A whole-number kind takes only `min` and `max` (`x > 0` is `min: "1"`); any other kind writes a bound as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`. Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
 interface Bounds {
   min?: string;
   max?: string;
@@ -199,7 +199,7 @@ export interface JsonType extends Base {
 /** A calendar date. Postgres's runs from `-4713-11-24` to `+5874897-12-31`, in astronomical years. */
 export interface DateType extends Base, Bounds {
   kind: "date";
-  /** Also holds infinity and -infinity, which sort after and before every other value. A bound excludes the one beyond it, so a column whose `min` is 2000-01-01 holds infinity but not -infinity. */
+  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
   infinity?: true;
 }
 
@@ -214,7 +214,7 @@ export interface TimeType extends Base, Bounds {
 export interface DateTimeType extends Base, Bounds {
   kind: "datetime";
   tick: string;
-  /** Also holds infinity and -infinity, which sort after and before every other value. A bound excludes the one beyond it, so a column whose `min` is 2000-01-01 holds infinity but not -infinity. */
+  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
   infinity?: true;
 }
 
@@ -224,7 +224,7 @@ export interface InstantType extends Base, Bounds {
   tick: string;
   /** Absent: only the moment, with no claim about any offset, as Postgres `timestamptz`, which takes `12:00+05:30` and gives back that moment in the session's zone. */
   zone?: Zone;
-  /** Also holds infinity and -infinity, which sort after and before every other value. A bound excludes the one beyond it, so a column whose `min` is 2000-01-01 holds infinity but not -infinity. */
+  /** Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values. */
   infinity?: true;
 }
 
@@ -343,8 +343,8 @@ export interface StatementDescriptor {
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;
-  /** Absent when the statement does not parse. */
-  kind?: "select" | "insert" | "update" | "delete" | "merge";
+  /** `other` for any statement that is none of the five (`CALL`, `VALUES`, `EXPLAIN`, a MySQL `SHOW`, DDL); absent when the statement does not parse. */
+  kind?: "select" | "insert" | "update" | "delete" | "merge" | "other";
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
   params: Param[];
@@ -419,7 +419,7 @@ export interface Dialect {
 //
 // 3. **A value is what the type denotes, never its encoding.** A decimal is a number, so `1.5` and `1.50` are one value; a `timestamptz` is one instant however a session prints it; a duration is its months, days and time, so `1 mon` and `30 days` are two values though Postgres finds them equal; an array is its elements, wherever its index starts. The format says nothing about how a driver or protocol encodes a value: decoding is the driver's.
 //
-// 4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds.
+// 4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds, and members of one kind in the order the database declares them (an object type before its subtypes; an `inet`'s IPv4 record before its IPv6 one).
 //
 // 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
 //
@@ -576,11 +576,11 @@ export const oracle_column: Column = {
   name: "S",
   nullable: true,
   type: { kind: "union", per: "value", name: "R.SHAPE_T", members: [
+    { kind: "record", name: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } }] },
     { kind: "record", name: "R.CIRCLE_T", fields: [
       { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } },
       { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", name: "NUMBER" } },
     ] },
-    { kind: "record", name: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } }] },
   ] },
 };
 
