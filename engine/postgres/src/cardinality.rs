@@ -2078,13 +2078,17 @@ enum Named<'a> {
 
 /// The entry of a select list a bare name in ORDER BY or DISTINCT ON names: an entry's alias, or
 /// the name Postgres gives it, a column's own or a function's. An entry `*` gives the names of the
-/// columns it expands to, each a column of the FROM of that name, which the name reads as either.
+/// columns it expands to, each a column of the FROM of that name, which the name reads as either;
+/// a `(composite).*` gives its fields' names, which the engine does not read.
 fn named_entry<'a>(s: &'a SelectStmt, name: &str) -> Named<'a> {
     let mut found = Named::None;
     for t in &s.target_list {
         let Some(NodeEnum::ResTarget(r)) = t.node.as_ref() else { return Named::Unknown };
         let Some(value) = r.val.as_deref() else { return Named::Unknown };
         if expands(value) {
+            if matches!(value.node.as_ref(), Some(NodeEnum::AIndirection(_))) {
+                return Named::Unknown;
+            }
             continue;
         }
         let own = if r.name.is_empty() { implicit_name(value).map(|(n, _)| n) } else { Some(r.name.clone()) };
@@ -3819,6 +3823,9 @@ mod tests {
         assert!(at_most_one("select distinct on (title) p.title from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
         // `(p).*` expands to columns the statement does not count, as `p.*` does.
         assert!(at_most_one("select distinct on (2) (p).*, p.title as t from posts p where p.title = $1 order by 2", Dialect::Postgres, &Trust::default(), &c).is_err());
+        // A composite's fields may carry the name, which the engine does not read.
+        assert!(at_most_one("select distinct on (title) (p).* from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
+        assert!(at_most_one("select distinct on (title) p.* from posts p where p.title = $1", Dialect::Postgres, &Trust::default(), &c).is_ok());
         // A cast with no name of its own is named after its type, so `text` here is the cast.
         assert!(at_most_one("select s.x from (select distinct on (text) (p.id + 0)::text, p.title as x from (select id, title, title as text from posts) p order by text) s where s.x = $1", Dialect::Postgres, &Trust::default(), &c).is_err());
     }
