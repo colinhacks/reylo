@@ -1,7 +1,7 @@
 add.sql: one (id: int4, addr: inet, net: cidr?, mac: macaddr?, mac8: macaddr8?) -> { id: int4, addr: inet, net: cidr?, mac: macaddr?, mac8: macaddr8? }
-any_addr.sql: many (addrs: inet[]) -> { id: int4, host: text?, bits: int4?, family: int4? }
-by_addr.sql: many (addr: inet) -> { id: int4, net: cidr? }
-by_mac.sql: many (mac: macaddr) -> { id: int4, mac8: macaddr8? }
-by_mac8.sql: many (mac8: macaddr8) -> { id: int4 }
-by_pin.sql: many (pin: text) -> { id: int4 }
-in_net.sql: many (net: cidr) -> { id: int4, addr: inet, mac: macaddr? }
+any_addr.sql: many (addrs: inet[]) -> { id: int4, host: text?, bits: int4?, family: int4? } key (id)
+by_addr.sql: many (addr: inet) -> { id: int4, net: cidr? } key (id)
+by_mac.sql: many (mac: macaddr) -> { id: int4, mac8: macaddr8? } key (id)
+by_mac8.sql: many (mac8: macaddr8) -> { id: int4 } key (id)
+by_pin.sql: many (pin: text) -> { id: int4 } key (id)
+in_net.sql: many (net: cidr) -> { id: int4, addr: inet, mac: macaddr? } key (id)

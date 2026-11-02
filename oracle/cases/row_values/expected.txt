@@ -1,7 +1,7 @@
 array.sql: one () -> { rows: docs{ id: int4, title: text, note: text? }[] }
 built.sql: one () -> { built: [docs{ id: int4?, title: text?, note: text? }]? }
 built_in_subquery.sql: one () -> { o: { x: docs{ id: int4?, title: text?, note: text? }? } }
-correlated.sql: many () -> { id: int4, rows: docs{ id: int4, title: text, note: text? }[], one: docs{ id: int4, title: text, note: text? }? }
+correlated.sql: many () -> { id: int4, rows: docs{ id: int4, title: text, note: text? }[], one: docs{ id: int4, title: text, note: text? }? } key (id)
 derived.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }
 function.sql: one () -> { o: { made: docs{ id: int4?, title: text?, note: text? }? } }
 held.sql: one () -> { held: [docs{ id: int4?, title: text?, note: text? }?]? }

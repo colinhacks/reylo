@@ -7,7 +7,7 @@ elements_text.sql: many () -> { value: text? }
 enum_labels.sql: many () -> { m: 'sad' | 'ok' | 'happy' }
 json_table.sql: many () -> { n: int4, v: int4?, m: int4? }
 lateral_column.sql: many () -> { id: int8, note: text?, at: timestamptz }
-lateral_count.sql: many () -> { id: int8, n: int8, latest: timestamptz? }
+lateral_count.sql: many () -> { id: int8, n: int8, latest: timestamptz? } key (id)
 lateral_left.sql: many () -> { id: int8, n: int8? }
 ordinality.sql: many () -> { tag: text?, n: int8 }
 ordinality_default.sql: many () -> { tag: text?, ordinality: int8? }

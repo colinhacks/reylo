@@ -872,6 +872,7 @@ impl<'a> Engine<'a> {
 
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
         let mut analysis = Analysis {
@@ -880,6 +881,7 @@ impl<'a> Engine<'a> {
             columns,
             cardinality,
             cardinality_reason: reason,
+            key,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -971,6 +973,7 @@ impl<'a> Engine<'a> {
             columns,
             cardinality: cardinality.into(),
             cardinality_reason: None,
+            key: None,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -3319,6 +3322,21 @@ fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
 /// vertical tab.
 fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
+}
+
+/// The result key of a statement ([`Analysis::key`]): empty for one that returns one row at most,
+/// and for a SELECT returning more, the columns [`cardinality::result_key`] proves identify its
+/// rows. None for a statement that returns no rows, and none for the rows of a write's RETURNING
+/// beyond the one row its cardinality may prove.
+fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &str, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
+    match cardinality {
+        "one" | "maybeOne" => Some(Vec::new()),
+        "many" if parsed.is_some_and(|p| p.statement == "select") => {
+            let columns: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+            cardinality::result_key(sql, trust, catalog, &columns)
+        }
+        _ => None,
+    }
 }
 
 #[cfg(test)]

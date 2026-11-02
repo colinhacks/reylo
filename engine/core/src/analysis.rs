@@ -186,6 +186,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         columns: Vec::new(),
         cardinality: "many".to_string(),
         cardinality_reason: None,
+        key: None,
         rewritten,
         style: lexed.style,
         diagnostics,

@@ -157,6 +157,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         columns,
         cardinality: cardinality.to_string(),
         cardinality_reason: reason,
+        key: None,
         rewritten,
         style: lexed.style,
         diagnostics: Vec::new(),

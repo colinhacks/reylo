@@ -1,6 +1,6 @@
-agg_inner.sql: many () -> { id: int4, emails: (text!)[] }
-agg_left.sql: many () -> { id: int4, emails: (text?)[] }
-any_param.sql: many (emails: text[]) -> { id: int4 }
+agg_inner.sql: many () -> { id: int4, emails: (text!)[] } key (id)
+agg_left.sql: many () -> { id: int4, emails: (text?)[] } key (id)
+any_param.sql: many (emails: text[]) -> { id: int4 } key (id)
 columns.sql: maybeOne (id: int4) -> { tags: text[], scores: int4[]? }
 constructors.sql: maybeOne (id: int4) -> { nicks: (text?)[], emails: (text!)[], nums: (int4!)[] }
 slices.sql: maybeOne (i: int4, id: int4) -> { head: text[]?, head2: text[]?, one: text? }
