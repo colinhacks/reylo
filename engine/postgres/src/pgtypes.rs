@@ -83,6 +83,9 @@ pub struct TypeRegistry {
     /// relation to, which a stored row of it holds ([`TypeRegistry::render_row`]) as a bare read of
     /// the column does.
     pub values: HashMap<(u32, i32), Vec<String>>,
+    /// By relation and attribute, the array columns of a composite's relation a CHECK keeps every
+    /// element of non-null, which a stored row of it holds as a bare read of the column does.
+    pub items: std::collections::HashSet<(u32, i32)>,
 }
 
 /// Whether every row a scan of relation `$rel` reads has a value in the column named `$col`, as
@@ -386,6 +389,15 @@ impl TypeRegistry {
         self.row_columns(oid, &[oid::TEXT, oid::VARCHAR])
     }
 
+    /// The array columns of the relation whose row type `oid` is, by relation and attribute: the
+    /// ones a CHECK may keep every element of non-null ([`TypeRegistry::items`]).
+    pub fn row_array_columns(&self, oid: u32) -> Vec<(u32, i32)> {
+        let oid = self.get(oid).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).unwrap_or(oid);
+        let Some(t) = self.get(oid).filter(|t| t.kind == TypeKind::Composite) else { return Vec::new() };
+        let Some(relid) = t.relid else { return Vec::new() };
+        t.fields.iter().filter(|f| f.attnum > 0 && self.get(self.resolve_domain(f.type_oid)).is_some_and(|t| t.kind == TypeKind::Array)).map(|f| (relid, f.attnum)).collect()
+    }
+
     fn row_columns(&self, oid: u32, types: &[u32]) -> Vec<(u32, i32)> {
         // An array of stored rows holds rows of its element's relation.
         let oid = self.get(oid).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).unwrap_or(oid);
@@ -436,9 +448,11 @@ impl TypeRegistry {
                             let ty = self.render_at(f.type_oid, depth + 1, false);
                             let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
                             let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
+                            let items = t.relid.filter(|_| stored).is_some_and(|r| self.items.contains(&(r, f.attnum)));
                             let ty = match (ty, document, values) {
                                 (Type::Json { schema: None }, Some(schema), _) => Type::Json { schema: Some(schema.clone()) },
                                 (Type::Scalar { name }, _, Some(values)) if (name == "text" || name == "varchar") && !values.is_empty() => Type::Enum { name, labels: values.clone() },
+                                (Type::Array { of, delimiter, .. }, _, _) if items => Type::Array { of, nullable_items: Some(false), delimiter },
                                 (ty, _, _) => ty,
                             };
                             Field { name: f.name.clone(), ty, nullable: !(stored && f.not_null) }

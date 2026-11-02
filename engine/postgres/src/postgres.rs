@@ -133,7 +133,8 @@ pub const CHECKS_QUERY: &str = concat!(
         AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true) \
         OR ",
     base_type!(),
-    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.json'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.jsonb'::pg_catalog.regtype::pg_catalog.oid]))"
+    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.json'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.jsonb'::pg_catalog.regtype::pg_catalog.oid]) \
+        OR t.typcategory OPERATOR(pg_catalog.=) 'A'::pg_catalog.\"char\")"
 );
 /// Whether each column of the named relations refuses null, for a parameter written to it
 /// ([`Engine::nullable_params`]): `(relation, attnum, column, whether its NOT NULL or a domain of
@@ -1315,7 +1316,7 @@ impl<'a> Engine<'a> {
     fn stored_checks<'c>(&self, columns: impl Iterator<Item = &'c DescribedColumn>, trust: &Trust) -> Lazy<()> {
         let stored: Vec<u32> = columns.filter(|c| c.whole_row).map(|c| c.type_oid).collect();
         let mut rows: Vec<(u32, i32)> = stored.iter().flat_map(|o| self.registry.borrow().row_json_columns(*o)).collect();
-        for key in stored.iter().flat_map(|o| self.registry.borrow().row_string_columns(*o)) {
+        for key in stored.iter().flat_map(|o| [self.registry.borrow().row_string_columns(*o), self.registry.borrow().row_array_columns(*o)].concat()) {
             if !rows.contains(&key) {
                 rows.push(key);
             }
@@ -1325,6 +1326,7 @@ impl<'a> Engine<'a> {
             let mut registry = self.registry.borrow_mut();
             registry.documents.extend(checks.documents);
             registry.values.extend(checks.values);
+            registry.items.extend(checks.items);
         }
         Some(())
     }
@@ -1462,6 +1464,9 @@ impl<'a> Engine<'a> {
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
             }
+            if checks.items.contains(&(raw.table, raw.attnum)) {
+                col.nullable_items = Some(false);
+            }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
         *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
@@ -1498,7 +1503,10 @@ impl<'a> Engine<'a> {
     /// columns, the ones a CHECK says something of.
     fn checks(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool, trust: &Trust) -> Lazy<Checks> {
         let own = own_provenance(sql, parsed, raw.columns.len());
-        let json = |oid: u32| !checked_only || jsonshape::is_json(&self.registry.borrow(), oid) || matches!(self.registry.borrow().resolve_domain(oid), crate::pgtypes::oid::TEXT | crate::pgtypes::oid::VARCHAR);
+        let json = |oid: u32| {
+            let registry = self.registry.borrow();
+            !checked_only || jsonshape::is_json(&registry, oid) || matches!(registry.resolve_domain(oid), crate::pgtypes::oid::TEXT | crate::pgtypes::oid::VARCHAR) || registry.get(registry.resolve_domain(oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array)
+        };
         let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().filter(|p| !pairs.contains(p)).copied().collect::<Vec<_>>());
         self.check_rows(&pairs, trust)
@@ -1601,6 +1609,11 @@ impl<'a> Engine<'a> {
                 (Some(names), Some(extensions), Some(versions)) => names.into_iter().zip(extensions).zip(versions).map(|((n, e), v)| (n, e, v)).collect(),
                 _ => Vec::new(),
             };
+            // A built-in function is pinned, so the catalog records no dependency on it: a call of
+            // `array_position` that resolved to a user's function lists it among the calls.
+            if check_items(text, name) && !calls.iter().any(|(n, _, _)| n == "array_position") {
+                out.items.insert(key);
+            }
             for (function, args) in check_documents(text, name) {
                 // The function the CHECK calls under that name, which the catalog names by its
                 // extension: every function of that name it depends on must be the one validator.
@@ -2116,6 +2129,9 @@ impl<'a> Engine<'a> {
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
             }
+            if checks.items.contains(&(raw.table, raw.attnum)) {
+                col.nullable_items = Some(false);
+            }
         }
         self.refine(sql, &mut described, trust)?;
         self.without_missing_rows(sql, parsed.as_ref(), &raw, &mut described);
@@ -2566,6 +2582,8 @@ fn sublink_rows(sql: &str) -> Option<SublinkRows> {
 #[derive(Default)]
 struct Checks {
     values: HashMap<(u32, i32), Vec<String>>,
+    /// The array columns a CHECK keeps every element of non-null ([`check_items`]).
+    items: HashSet<(u32, i32)>,
     documents: HashMap<(u32, i32), Value>,
     /// The schemas behind each document, which a parameter written to several columns meets all of.
     sources: HashMap<(u32, i32), Vec<(String, Validators)>>,
@@ -2698,6 +2716,42 @@ fn refuses_null(text: &str, column: &str) -> bool {
             Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column)),
             Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNotNull as i32 => match t.arg.as_deref().and_then(|a| a.node.as_ref()) {
                 Some(N::ColumnRef(c)) => matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column)),
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    target.val.as_deref().is_some_and(|v| conjunct(v, column))
+}
+
+/// Whether a CHECK on array column `column` (`VALUE` in a domain's) keeps every element non-null:
+/// one of its conjuncts is `array_position(column, NULL) IS NULL`, which holds only where no
+/// element is NULL. The caller makes sure the call is the built-in `array_position`.
+fn check_items(text: &str, column: &str) -> bool {
+    use pg_query::protobuf::node::Node as N;
+    use pg_query::protobuf::{BoolExprType, NullTestType};
+    let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return false };
+    let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return false };
+    let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return false };
+    fn null(node: &pg_query::protobuf::Node) -> bool {
+        match node.node.as_ref() {
+            Some(N::TypeCast(t)) => t.arg.as_deref().is_some_and(null),
+            Some(N::AConst(c)) => c.isnull,
+            _ => false,
+        }
+    }
+    fn conjunct(node: &pg_query::protobuf::Node, column: &str) -> bool {
+        match node.node.as_ref() {
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column)),
+            Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 => match t.arg.as_deref().and_then(|a| a.node.as_ref()) {
+                Some(N::FuncCall(f)) => {
+                    let name: Vec<&str> = f.funcname.iter().filter_map(|n| match n.node.as_ref() {
+                        Some(N::String(s)) => Some(s.sval.as_str()),
+                        _ => None,
+                    }).collect();
+                    matches!(name.as_slice(), ["array_position"] | ["pg_catalog", "array_position"])
+                        && matches!(f.args.as_slice(), [array, element] if null(element) && matches!(array.node.as_ref(), Some(N::ColumnRef(c)) if matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value"))))
+                }
                 _ => false,
             },
             _ => false,
@@ -3578,6 +3632,20 @@ mod tests {
         let two = check_documents(r#"jsonb_matches_schema('{"type": "string"}'::json, a) AND jsonb_matches_schema('{"type": "integer"}'::json, b)"#, "b");
         assert_eq!(two.iter().map(|(_, args)| args[1].clone()).collect::<Vec<_>>(), [CheckArg::Other, CheckArg::Column]);
         assert_eq!(check_documents(&format!("data = '1'::jsonb OR jsonb_matches_schema({printed}, data)"), "data"), vec![]);
+    }
+
+    #[test]
+    fn a_check_keeps_null_out_of_an_array_column() {
+        assert!(check_items("array_position(tags, NULL::text) IS NULL", "tags"));
+        assert!(check_items("array_position(VALUE, NULL::text) IS NULL", "labels"));
+        assert!(check_items("pg_catalog.array_position(tags, NULL::text) IS NULL", "tags"));
+        assert!(check_items("array_position(scores, NULL::integer) IS NULL AND cardinality(scores) > 0", "scores"));
+        // An OR lets a NULL element through, and another column's elements say nothing of this one.
+        assert!(!check_items("array_position(tags, NULL::text) IS NULL OR cardinality(tags) = 0", "tags"));
+        assert!(!check_items("array_position(other, NULL::text) IS NULL", "tags"));
+        assert!(!check_items("array_position(tags, 'x'::text) IS NULL", "tags"));
+        assert!(!check_items("array_position(tags, NULL::text) IS NOT NULL", "tags"));
+        assert!(!check_items("NOT (NULL::text = ANY (tags))", "tags"));
     }
 
     #[test]

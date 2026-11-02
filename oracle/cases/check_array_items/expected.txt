@@ -1,0 +1,9 @@
+columns.sql: maybeOne (id: int4) -> { tags: (text!)[], scores: (int4!)[]?, l: (text!)[]?, loose: text[]?, other: text[]? }
+json.sql: many () -> { doc: { tags: (text!)[] } }
+left_join.sql: many () -> { tags: (text!)[]? }
+returning.sql: one (id: int4, tags: text[]) -> { tags: (text!)[] }
+row.sql: many () -> { doc: { id: int4, tags: (text!)[], scores: (int4!)[]?, l: (text!)[]?, loose: text[]?, other: text[]? } }
+shadowed.sql: many () -> { tags: text[]? }
+subquery.sql: many () -> { tags: (text!)[] }
+union.sql: many () -> { tags: (text?)[] }
+view.sql: many () -> { tags: text[] }

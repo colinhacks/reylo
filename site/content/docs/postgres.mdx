@@ -27,7 +27,7 @@ create table users (
   name text not null,
   email text unique,
   role user_role not null default 'member',
-  tags text[] not null default '{}',
+  tags text[] not null default '{}' check (array_position(tags, null) is null),
   created_at timestamptz not null default now()
 );
 create unique index users_email_lower on users (lower(email));
@@ -451,6 +451,8 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 - `'{a,NULL}'::text[]` → `[ "a", null ]`
 
 </Pairs>
+
+A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`.
 
 **Several dimensions**
 
@@ -1064,7 +1066,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
-| An array's dimensions, and whether its elements are `null` | Keep arrays one-dimensional, and remove `null` elements before passing an array back in |
+| An array's dimensions, and whether its elements are `null` | Keep arrays one-dimensional, give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row value outside JSON, which comes back as text | Select its fields as columns, or build an object with `to_jsonb` |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
