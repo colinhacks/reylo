@@ -1,0 +1,274 @@
+---
+title: Migrating from Prisma
+description: How to move a Prisma project's queries to Reylo. The schema changes to make first, the build, each Prisma Client call as SQL, what each statement returns, and what to check before you finish.
+---
+
+<p className="dk-subheader">How to move a Prisma project's queries to Reylo</p>
+
+[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers moving a Prisma project onto it: Prisma keeps your schema and its migrations, and each Prisma Client call becomes a `.sql` file.
+
+| | |
+| --- | --- |
+| Stays | `schema.prisma` and Prisma Migrate |
+| Goes | Prisma Client, its generated types and `prisma generate` |
+| Needs | TypeScript 7.1 (currently in beta), and a migrated database wherever the type check or the build runs |
+| Examples | Postgres |
+
+<Details summary="View the schema behind the examples" id="schema">
+
+```sql file="schema.sql" dialect="postgres"
+create table users (
+  id text primary key default gen_random_uuid()::text,
+  email text not null unique,
+  name text,
+  "createdAt" timestamptz not null default now(),
+  "updatedAt" timestamptz not null default now()
+);
+
+create table posts (
+  id text primary key default gen_random_uuid()::text,
+  "authorId" text not null references users (id),
+  title text not null,
+  published boolean not null default false,
+  "createdAt" timestamptz not null default now()
+);
+```
+
+</Details>
+
+## Why move
+
+Each `.run()` is one statement and one round trip, whatever the query reads and writes. Prisma 7 sends a statement per call, and one more per level of `include`, so this call is two:
+
+```ts
+const author = await prisma.user.findUnique({
+  where: { id },
+  include: { posts: { orderBy: { createdAt: "desc" } } },
+});
+```
+
+As SQL, the posts are a subquery that builds them as JSON, in the same statement:
+
+<Inferred>
+
+```sql file="author_with_posts.sql" dialect="postgres"
+select
+  u.id,
+  u.name,
+  (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'id', p.id,
+      'title', p.title
+    ) order by p."createdAt" desc), '[]')
+    from posts p
+    where p."authorId" = u.id
+  ) as posts
+from users u
+where u.id = :id
+```
+
+</Inferred>
+
+- **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips; as scalar subqueries, they are one statement ([Counts](#counts)).
+- **Writes that read back.** An insert, an update or an upsert returns the rows it wrote, and a `with` query runs several writes in one statement.
+- **Types from the database.** Nullability, cardinality, enum labels and JSON shapes come from the schema and the statement, so a migration that changes a column fails the type check wherever the column is read.
+
+In one production app's migration, of about 750 Prisma Client calls, a billing report went from 40 calls to 5 statements, and a dashboard's twelve aggregates became one.
+
+## Common concerns
+
+| Concern | In practice |
+| --- | --- |
+| Relations become N+1 queries | A relation is a subquery in the same statement, as above |
+| Queries can't be built at run time | Optional filters are one JSON parameter ([Dynamic filtering](/#dynamic-filtering)), a sort order is a `case` ([Dynamic sorting](/#dynamic-sorting)), and a patch object is one update ([Partial updates](#partial-updates)) |
+| Dates come back as strings | As ISO text in UTC, exact to the microsecond, where a `Date` keeps milliseconds and Prisma's `timestamp(3)` keeps no zone |
+| The build needs a database | Yes: a fresh one, migrated by the build itself ([Build and deploy](#build-and-deploy)) |
+| A migration can break a running deploy | A query refuses a column that changed under it, rather than reading it wrong, so a column changes in two deploys ([Build and deploy](#build-and-deploy)) |
+
+## Before you start
+
+- **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules: `npx skills add colinhacks/reylo --skill using-reylo`.
+- **Set Reylo up** as [Setup](/#setup) shows. TypeScript 7 refuses `baseUrl` in `tsconfig.json`, so write your `paths` relative to the file.
+- **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
+- **Give your pool an error listener**, on the pool and on each connection a transaction takes. Prisma's adapter had both, and without them Node exits when the database drops an idle connection.
+
+```ts title="db.ts"
+import pg from "pg";
+
+export const db = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+db.on("error", (error) => console.warn(`database connection lost: ${error.message}`));
+```
+
+## The schema
+
+Prisma Client did four things your database never saw. Move each into the database, in migrations of their own, before you convert a query:
+
+| Prisma Client | In the database |
+| --- | --- |
+| A `DateTime`, stored as `timestamp(3)` and read as UTC | `timestamptz`, which is `@db.Timestamptz` in `schema.prisma` |
+| `@default(cuid())` and `@default(uuid())` | `@default(dbgenerated("(gen_random_uuid())::text"))` |
+| `@updatedAt` | `@default(now())`, and a trigger that sets it on every update |
+| A `String[]` that is never null | `NOT NULL`, once its nulls are filled |
+
+### Timestamps
+
+Retype every `timestamp(3)` column in UTC, one table per migration:
+
+```sql
+set time zone 'UTC';
+
+alter table "users"
+  alter column "createdAt" set data type timestamptz,
+  alter column "updatedAt" set data type timestamptz;
+```
+
+- **In UTC, no value moves.** Postgres reads each `timestamp` in the session's zone as it converts it, and Prisma wrote them in UTC. In UTC, it also rewrites no rows.
+- **Plain `timestamptz`**, not `timestamptz(3)`, which rewrites the table.
+- **One table per migration.** Prisma runs each migration in one transaction, so a file that alters several tables holds every one until it ends, and can deadlock a live insert that needs two of them.
+- **Each index on the column is rebuilt**, and the table is locked while it is. On a 1 GB table that took 5 seconds, and `set maintenance_work_mem = '256MB'` before it cut that by 40%.
+
+### `@updatedAt`
+
+Set `"updatedAt"` with a trigger on each table that has one:
+
+```sql
+create function set_updated_at() returns trigger language plpgsql as $$
+begin
+  if new."updatedAt" is not distinct from old."updatedAt" then
+    new."updatedAt" := current_timestamp;
+  end if;
+  return new;
+end $$;
+
+create trigger set_updated_at before update on "users"
+  for each row execute function set_updated_at();
+```
+
+- **An update that sets `"updatedAt"` itself** keeps its value.
+- **An upsert on the table returns a row or `null`**, since a `BEFORE` trigger can skip a row.
+- **A new table needs its trigger** added to its migration by hand, since Prisma's schema has no triggers.
+
+## Build and deploy
+
+Reylo types each query against a database with your migrations applied, so every place that type-checks or builds needs one:
+
+- **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/#in-ci)).
+- **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
+- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and throws when a column it names has changed its type, its `NOT NULL` or its default. So change a column in two deploys, the new shape before the code that uses it, and roll back by redeploying an older commit, since an older build refuses a newer schema.
+
+```yaml title=".reylo.yaml"
+# the type check's database; a build points it at a fresh, migrated one
+direct_url: ${DATABASE_URL_UNPOOLED}
+```
+
+## Queries
+
+Each Prisma Client call, as SQL:
+
+| Prisma Client | SQL |
+| --- | --- |
+| `findUnique`, `findFirst` | `select … where id = :id` |
+| `findMany` with `include` | a `jsonb_agg` subquery per relation, as in [Why move](#why-move) and [Nested fetching](/#nested-fetching) |
+| `count`, `aggregate`, `groupBy` | one `select` of scalar subqueries ([Counts](#counts)) |
+| `contains`, `startsWith` | `strpos(name, :q) > 0` and `starts_with(name, :q)`, since a `like` pattern reads `%` and `_` in the value |
+| `mode: "insensitive"` | `lower(email) = lower(:email)` |
+| `in: ids` | `id = any(:ids::text[])` ([Filtering by a list](/#filtering-by-a-list)) |
+| Optional filters | one JSON parameter ([Dynamic filtering](/#dynamic-filtering)) |
+| `create` | `insert … returning …` |
+| `createMany`, or `upsert` in a loop | one `insert … select` from a JSON parameter, with `on conflict` for an upsert ([Bulk inserts](/#bulk-inserts)) |
+| `upsert` | `insert … on conflict (id) do update … returning …` |
+| `update` with optional fields | `set name = coalesce(:name::nullable(text), name)` ([Nullable parameters](/#nullable-parameters)) |
+| `update` with a patch object | `jsonb_populate_record` ([Partial updates](#partial-updates)) |
+| An `update` or a `delete` that throws P2025 | `returning`, and a check for `null` |
+| A catch of P2002 or P2034 | [`.try()`](/#try) and the error's `condition` |
+| `$transaction` | a transaction of your driver ([Supported drivers](/#postgres-drivers)) |
+| `$queryRaw` with `Prisma.sql` fragments | a `with` query in one file, or a view or a function across files |
+| A table or column named at run time | your driver's own `query()`, which Reylo doesn't type |
+
+### Counts
+
+To read a page's counts in one round trip, select each as a scalar subquery, with no `from` around them:
+
+<Inferred>
+
+```sql file="dashboard_counts.sql" dialect="postgres"
+with input as (
+  select :since::timestamptz as since
+)
+select
+  (select count(*)::int from users u, input
+    where u."createdAt" >= input.since) as "newUsers",
+  (select count(*)::int from posts p, input
+    where p."createdAt" >= input.since) as "newPosts",
+  (select count(*)::int from posts where not published) as drafts
+```
+
+</Inferred>
+
+### Partial updates
+
+To update only the fields a request sends, read the row's new values from a JSON patch, in which a missing key keeps its value and `null` clears it:
+
+<Inferred>
+
+```sql file="update_user.sql" dialect="postgres"
+update users u
+set (name, email) = (
+  select p.name, p.email
+  from jsonb_populate_record(u, :patch::jsonb('{
+    "type": "object",
+    "properties": {
+      "name": { "type": ["string", "null"] },
+      "email": { "type": "string" }
+    },
+    "additionalProperties": false
+  }')) p
+)
+where u.id = :id
+returning u.id, u.name, u.email
+```
+
+</Inferred>
+
+## Cardinality
+
+Reylo infers each statement's cardinality, which decides what `.run()` returns:
+
+| Statement | `.run()` returns |
+| --- | --- |
+| A `select` by a primary or unique key | a row or `null` |
+| A `select` with no `from`, or an aggregate with no `group by` | a row |
+| Any other `select` | an array |
+| An `insert … values (…) returning`, or an upsert with `do update` | a row |
+| An upsert with `do nothing` or a `where` | a row or `null` |
+| An insert or an upsert on a table with a `BEFORE` trigger it fires | a row or `null` |
+| An `update` or a `delete` by key, with `returning` | a row or `null` |
+| A write that reads a `with` query | an array |
+| A write with no `returning` | nothing |
+
+A write that reads a `with` query returns an array even by key, so test its length, never the array itself:
+
+<Inferred>
+
+```sql file="rename_post.sql" dialect="postgres"
+with input as (
+  select :id::text as id, :title::text as title
+)
+update posts p
+set title = input.title
+from input
+where p.id = input.id
+returning p.id
+```
+
+</Inferred>
+
+## Before you finish
+
+The type check can't catch these, so look for each one in the converted code:
+
+- **Instants compared as strings.** An instant's text has as many fraction digits as it needs, so `<`, `>` and `localeCompare` misorder two of them. Compare their `Date.parse`, or sort in SQL.
+- **Instants passed through a `Date`.** A `Date` keeps milliseconds and Postgres keeps microseconds, so `where "createdAt" > :since` with a rounded value matches the row it came from. Pass back the text `.run()` returned.
+- **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name, so a query that kept one and dropped the other changes its order.
+- **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true.
+- **A `Promise.all` on a transaction's client.** Prisma queued a transaction's calls for you; a `pg` client handed several at once warns, and `pg` 9 will refuse them. Write them as one statement, or await each in turn.

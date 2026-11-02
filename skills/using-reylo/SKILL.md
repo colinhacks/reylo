@@ -1,6 +1,6 @@
 ---
 name: using-reylo
-description: "Use in a project that imports .sql files with Reylo, which a tsconfig.json whose contentMappers names reylo, a .reylo.yaml file or a reylo dependency shows: writing or changing a .sql query, calling its .run(), .runSync() or .with(), passing it a database client, tracing or logging its queries, or fixing an error the type check reports in a .sql file."
+description: "Use in a project that imports .sql files with Reylo, which a tsconfig.json whose contentMappers names reylo, a .reylo.yaml file or a reylo dependency shows: writing or changing a .sql query, calling its .run(), .runSync() or .with(), passing it a database client, tracing or logging its queries, fixing an error the type check reports in a .sql file, or evaluating, planning or carrying out a move of a project's queries to Reylo from Prisma Client."
 ---
 
 # Using Reylo
@@ -27,6 +27,14 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 - A column is nullable or not as the schema and the query make it: `not null`, a left join, `coalesce`. Change those to change the type.
 - On Postgres, a JSON column a JSON Schema `CHECK` holds is typed by that schema, and so is a key read from it with a literal key, `payload -> 'x'` or `payload ->> 'x'`. Any other JSON value, such as a column with no schema or a value read out of a document, is `Json`, any JSON value, which `reylo` exports (`import type { Json } from "reylo"`). Narrow it or validate it before reading it as a shape; `x as Settings` compiles only where `Settings` is a `type`, not an `interface`. Cast a `->>` read to type it (https://reylo.dev/postgres#json).
 - To see how Reylo types a query before writing it into the project, ask the playground's API: `GET https://reylo.dev/play/api/analyze?q=<sql>` answers with its Params, Returns and diagnostics as JSON (`POST` with `{"sql": "<sql>"}` works too). It runs on Postgres, against the docs' example schema of `users`, `posts` and `events`, which `GET https://reylo.dev/play/api/schema` lists; the project's own database is what decides.
+
+## Moving from Prisma
+
+- To evaluate, plan or carry out a move from Prisma Client, read https://reylo.dev/prisma first. It answers the usual concerns (relations, queries built at run time, dates as strings, the build's database) with what Reylo does about each, and gives each Prisma Client call as SQL.
+- Change the schema before converting a query, in migrations of their own: every `timestamp(3)` to `timestamptz` under `set time zone 'UTC'`, one table per migration; `cuid()` and `uuid()` ids to a database default; `@updatedAt` to a default and a `BEFORE UPDATE` trigger. Prisma Migrate stays.
+- A relation Prisma read with `include` is a `jsonb_agg` subquery in the same statement, and a page's counts are one `select` of scalar subqueries with no `from` around them, one typed row in one round trip.
+- Give the new `pg` pool an `'error'` listener, on the pool and on each connection a transaction takes: Prisma's adapter had both, and Node exits on an unhandled one.
+- Before calling the move done, check the converted code for what the type check can't see: `if (!rows)` where `.run()` returns an array (a write that reads a `with` query does, even by key); instants compared as strings, which misorder (compare their `Date.parse`); instants passed back through a `Date`, which drops microseconds; an enum `order by` that lost or gained a `::text`; and `Promise.all` on a transaction's client.
 
 ## Running a query
 

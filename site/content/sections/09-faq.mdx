@@ -20,6 +20,11 @@ Not at the moment: bring your own. Reylo types your queries against whatever sch
 Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too.
 
 </Accordion>
+<Accordion title="How do I move a project from Prisma?" id="faq-prisma">
+
+Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.sql` file. [Migrating from Prisma](/prisma) covers the schema changes to make first, the build, each call as SQL, and what to check before you finish.
+
+</Accordion>
 <Accordion title="What is the .reylo directory, and should I commit it?" id="faq-reylo-directory">
 
 It is Reylo's cache of each query's analysis. It has its own `.gitignore`, so git skips it: don't commit it.

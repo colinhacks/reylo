@@ -33,6 +33,7 @@ Each setup has a complete, working example project to copy, whose README's "How 
    For more queries, from nested JSON to bulk inserts, see https://reylo.dev/#inference
 7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add colinhacks/reylo --skill using-reylo
+9. If the project queries its database through Prisma Client, move each call to a .sql file as https://reylo.dev/prisma describes, starting with its schema changes.
 ```
 
 </AgentPrompt>

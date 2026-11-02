@@ -166,7 +166,7 @@ Reylo is bring-your-own-driver. Pass `.run()` a client from any of these, or a D
 
 ## Documentation
 
-[reylo.dev](https://reylo.dev) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and advanced examples. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt).
+[reylo.dev](https://reylo.dev) covers the rest: every plugin and editor, configuration, errors, each database's data types and edge cases, and advanced examples. Agents can read it all as Markdown at [reylo.dev/llms.txt](https://reylo.dev/llms.txt). To move a Prisma project's queries to Reylo, see [Migrating from Prisma](https://reylo.dev/prisma).
 
 ## License
 
