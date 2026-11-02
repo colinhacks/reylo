@@ -441,16 +441,21 @@ export interface Dialect {
 //
 // What a database writes inside its own JSON:
 //   - Postgres:
-//       - a `numeric` is a JSON number of any length, and a NaN or Infinity a string;
+//       - a `boolean` is `true` or `false`;
+//       - a `numeric` is a JSON number of any length, and a float's or a `numeric`'s NaN or Infinity a string;
 //       - an `int8` is a JSON number that may pass 2^53;
-//       - a `timestamptz` is ISO 8601 in the session's offset (the offset can carry seconds, and a BC year takes a suffix);
-//       - an `hstore` is an object of nullable text;
-//       - `jsonb` sorts keys and keeps the last duplicate, while `json` keeps the text as written.
+//       - a `date` and a `timestamp` are ISO 8601 (`"2026-01-02T03:04:05"`), and a `timestamptz` ISO 8601 in the session's offset (the offset can carry seconds, and a BC year takes a suffix);
+//       - an array is a JSON array of its elements, and a composite or any other row an object of its fields (`row(1, 'x')` is `{"f1":1,"f2":"x"}`);
+//       - an `hstore` is an object of nullable text, and PostGIS's `geometry` GeoJSON;
+//       - `jsonb` sorts keys and keeps the last duplicate, while `json` keeps the text as written;
+//       - every other type is a string of its text, structured or not: `bit` and `varbit` (`"101"`), the geometric types (`"(1,2)"`, `"[(0,0),(1,1)]"`), `inet`, `cidr`, `macaddr` and `macaddr8`, ranges and multiranges (`"[1,5)"`), `interval` in the session's IntervalStyle (`"1 mon -1 days"`), `time`, `uuid`, `money`, `oid`, `xml`, and `bytea` in hex (`"\\x0102"`).
 //   - MySQL:
-//       - a `DATETIME` or `TIMESTAMP` is a string with a space and six fractional digits;
-//       - a `DECIMAL` is a number that keeps its scale;
+//       - a `DATETIME` or `TIMESTAMP` is a string with a space and six fractional digits, and a `TIME` its text with six fractional digits (`"12:00:01.500000"`);
+//       - a `DECIMAL` is a number that keeps its scale, and a `YEAR` a number;
 //       - a comparison is `true` or `false`;
-//       - a binary value is `"base64:type15:…"`;
+//       - an `ENUM` is its label, and a `SET` its elements joined by commas (`"a,b"`);
+//       - a binary value, a `BIT` among them, is `"base64:type15:…"`, the number its protocol type;
+//       - a spatial value is GeoJSON;
 //       - the last duplicate key wins.
 //   - SQLite: ±Infinity is the number `9e999`, and a blob is never a JSON value.
 //
