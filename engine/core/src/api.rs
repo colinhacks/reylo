@@ -153,8 +153,8 @@ pub struct Analysis {
     pub cardinality_reason: Option<String>,
     /// The result key: output columns, by name, that identify each row of the result, since no two
     /// rows the statement returns agree on all of them (a NULL counting as equal to another NULL).
-    /// Empty where the statement returns one row at most, and `None` where no key is proven, which
-    /// is always sound.
+    /// Only for a result that can hold more than one row: `None` where the cardinality is `one` or
+    /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
     pub rewritten: lex::Rewritten,

@@ -55,8 +55,8 @@ export declare namespace StandardQueryV1 {
      * The result key: output columns, by name, that identify each row of the result, since no two
      * rows the statement returns agree on all of them (a null counting as equal to another null).
      * A driver comparing two results of the query tells by it that a row changed in place rather
-     * than one row going and another coming. Empty where the statement returns one row at most,
-     * and absent where no key is known.
+     * than one row going and another coming. Never empty: absent where the statement returns one
+     * row at most, which its cardinality says, and where no key is known.
      */
     readonly key?: readonly string[];
   }

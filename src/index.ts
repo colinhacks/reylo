@@ -127,7 +127,7 @@ export type QueryDefinition = {
   inputs?: Inputs;
   /** Each output column's name and kind (src/values.ts), in order: every build step puts them in the module, and the run time gives each value its kind by them. */
   columns?: Columns;
-  /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one (empty for one row at most). A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
+  /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one for a result that can hold more than one row. A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
   key?: readonly string[];
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];

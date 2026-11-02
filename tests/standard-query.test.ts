@@ -198,10 +198,10 @@ test("postgres: pg runs a built import as a Standard Query, with every parser of
     const output = sq.decode(raw.rows);
     assert.deepEqual(output, await query.run(pool, input));
     assert.deepEqual(output, [{ id: 9007199254740993n, at: "2026-10-22T14:46:00.123456Z", tags: [1, 2], doc: { a: 1 }, amount: "12345678901234567890.5" }]);
-    // The result key: the primary key identifies each row, a statement of one row at most has the
-    // empty one, and one whose rows nothing identifies has none.
+    // The result key: the primary key identifies each row; a statement of one row at most, which its
+    // cardinality says, and one whose rows nothing identifies have none.
     assert.deepEqual(sq.key, ["id"]);
-    assert.deepEqual((await built(root, "count", "select count(*) as n from events"))["~standard"].query.key, []);
+    assert.equal("key" in (await built(root, "count", "select count(*) as n from events"))["~standard"].query, false);
     assert.equal("key" in (await built(root, "amounts", "select amount from events"))["~standard"].query, false);
   } finally {
     pg.types.setTypeParser(20, (x: string) => x);

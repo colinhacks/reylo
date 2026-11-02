@@ -472,8 +472,8 @@ fn line(analysis: &Value) -> String {
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let columns: Vec<String> = analysis["columns"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let mut out = format!("{} ({}) -> {{ {} }}", analysis["cardinality"].as_str().unwrap_or("?"), params.join(", "), columns.join(", "));
-    // The result key, where it has a column: an empty one is what `one` and `maybeOne` already say.
-    if let Some(key) = analysis["key"].as_array().filter(|k| !k.is_empty()) {
+    // The result key, which a result of more than one row may have.
+    if let Some(key) = analysis["key"].as_array() {
         out.push_str(&format!(" key ({})", key.iter().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", ")));
     }
     for d in analysis["diagnostics"].as_array().into_iter().flatten() {
