@@ -67,8 +67,13 @@ pub fn config(check: Check, root: Option<&str>, identity: Option<Identity<'_>>) 
                     for cert in certs {
                         let _ = roots.add(cert);
                     }
-                    let extra = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().map_err(|e| e.to_string())?;
-                    Arc::new(OrExtra { system, extra })
+                    // A file none of whose certificates is a root is one Node warns of and goes on without.
+                    if roots.is_empty() {
+                        system
+                    } else {
+                        let extra = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().map_err(|e| e.to_string())?;
+                        Arc::new(OrExtra { system, extra })
+                    }
                 }
             }
         }
