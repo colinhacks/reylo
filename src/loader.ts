@@ -40,7 +40,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     params = analysis.params.map((p) => p.name);
   } else {
     try {
-      params = session.lex(sql).params;
+      params = (await session.lex(sql)).params;
     } catch (e) {
       throw new Error(`${path}: ${(e as Error).message}`);
     }

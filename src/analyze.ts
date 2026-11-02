@@ -50,12 +50,12 @@ const BUILD_IDLE = 250;
 const sessions = new Map<string, Session>();
 
 /**
- * The project a directory belongs to, its file read with whichever database's engine is installed,
- * and the engine of its own database, or why that cannot be loaded.
+ * The project a directory belongs to, its file read by the engine's core, and the engine of its own
+ * database, or why that cannot be run.
  */
 async function openProject(dir: string, env: Record<string, string | undefined>): Promise<{ project: ResolvedProject; engine: Engine | MissingEngine }> {
-  const project = resolveProject(await anyEngine(dir), dir, env);
-  const own = await engine(project.dialect, project.root).catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
+  const project = resolveProject(await anyEngine(), dir, env);
+  const own = await engine(project.dialect).catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
   return { project, engine: own };
 }
 
@@ -90,8 +90,7 @@ export class Session {
     this.#engine = engine;
     this.project = project;
     this.#url = project.url;
-    const ping = engine instanceof MissingEngine ? undefined : engine.call({ op: "ping" });
-    this.#engineFingerprint = ping?.status === "ok" ? ping.fingerprint : "unknown";
+    this.#engineFingerprint = engine instanceof MissingEngine ? "unknown" : engine.fingerprint;
   }
 
   /**
@@ -132,9 +131,9 @@ export class Session {
     return [...sessions.values()];
   }
 
-  lex(sql: string): Lexed {
+  async lex(sql: string): Promise<Lexed> {
     if (this.#engine instanceof MissingEngine) throw this.#engine;
-    return this.#engine.lex(sql, this.project.dialect);
+    return this.#engine.lexAsync(sql, this.project.dialect);
   }
 
   /**
@@ -221,12 +220,12 @@ export class Session {
   async #analyze(sql: string, options: { force?: boolean; store?: boolean }): Promise<Outcome> {
     if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
     // With no URL, `.reylo/` answers as it does where the database cannot be reached (the dialect
-    // is the installed engine's), and a statement it lacks needs a URL.
+    // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
       return hit ? { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file } : { ok: false, message: this.project.missingUrl, code: 4 };
     }
-    // The URL names the database, whose engine package the project has to have installed.
+    // The URL names the database, whose engine reylo has to be able to run.
     const engine = this.#engine;
     if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
     const file = this.entryFile(sql);
@@ -438,7 +437,7 @@ export class Session {
 
   async #open(url: string): Promise<Io> {
     const { dialect, root } = this.project;
-    // The URL names a database whose engine the project lacks: its error, as the import's.
+    // The URL names a database whose engine reylo cannot run: its error, as the import's.
     if (this.#engine instanceof MissingEngine) throw this.#engine;
     // DuckDB runs inside the app: the engine's needs are answered by the project's own DuckDB
     // (src/duckdb.ts), which opens the file for each analysis and holds nothing between them.

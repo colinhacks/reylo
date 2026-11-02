@@ -23,9 +23,8 @@ function project(): string {
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create table posts (id integer primary key, title text not null, body text)");
   db.close();
-  mkdirSync(join(root, "node_modules", "@reylosql"), { recursive: true });
+  mkdirSync(join(root, "node_modules"), { recursive: true });
   symlinkSync(ROOT, join(root, "node_modules", "reylo"));
-  symlinkSync(join(ROOT, "packages", "sqlite"), join(root, "node_modules", "@reylosql", "sqlite"));
   const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowImportingTsExtensions: true, paths: { "@/*": ["./*"] } };
   writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, contentMappers: [{ package: "reylo", extensions: [".sql"] }], include: ["main.ts"] }));
   mkdirSync(join(root, "queries"));

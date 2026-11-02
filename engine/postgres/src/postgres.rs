@@ -426,7 +426,7 @@ pub const ARBITERS_QUERY: &str = concat!(
 
 /// The analysis of a Postgres statement as its author wrote it: lexed, its structured parameters
 /// expanded, and replayed through `host`. The direct entry for a host that links this crate
-/// (the `reylo` Postgres extension, which calls it from inside the server, so it never probes for the extension).
+/// (a server-side extension, which calls it from inside the server, so it never probes for the extension).
 pub fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
     host.on_engine_stack(|host| analyze_here(sql, host))
 }
@@ -447,7 +447,7 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 }
 
 /// The described statement alone, for a host that renders its own types and reads its own JSON
-/// shapes and row counts (the framework's `describe.rs`): the parameter types in `$n` order and
+/// shapes and row counts: the parameter types in `$n` order and
 /// each result column's type and nullability, settled the way [`analyze`] settles them. `sql` is
 /// already in the server's `$n` form and is described as it is, and a parameter may be null,
 /// because such a host binds whatever its caller sends. `Some(Err)` is the server's refusal of
@@ -674,7 +674,7 @@ impl<'a> Engine<'a> {
             // is a command, typed from the describe alone. A file of several statements, which
             // the server would refuse to describe, says what a typed file holds and how to leave
             // a migration out of the type check, as on the other databases. `AnalyzeError` words
-            // both for Reylo Framework, which has no tsconfig.json to leave a file out of.
+            // both for a host that has no tsconfig.json to leave a file out of.
             Err(analyze::AnalyzeError::UnsupportedStatement) => return self.command(sql, lexed, rewritten),
             Err(analyze::AnalyzeError::NotOneStatement(n)) if n > 1 => {
                 diagnostics.push(diag(lex::several_statements(), 0, sql.trim_end().len(), 10));

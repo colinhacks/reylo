@@ -4,7 +4,7 @@
 // answer, which `reylo/register` gives.
 import { readFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { releaseConnections, tooling } from "./engine-package.ts";
+import { releaseConnections, tooling } from "./tooling-loader.ts";
 
 type Build = {
   onLoad(options: { filter: RegExp }, callback: (args: { path: string }) => Promise<{ contents: string; loader: "js"; watchFiles?: string[] }>): void;

@@ -1,16 +1,22 @@
 #!/usr/bin/env bash
-# Builds each database's engine as one WebAssembly component (`wasm32-wasip2`, from wasip2/): the
-# engine and the program that connects it to its database (native/), behind the exports `call` and
-# `serve`, transpiled by jco into its npm package's `engine/` directory, which the loader runs
-# through jco's preview2-shim (src/engine.ts). One artifact for every platform: the connections it
-# opens are WASI sockets, which the shim opens as Node's.
+# Prepares the engine's sources for cargo, and builds the WebAssembly engine the docs site's
+# playground runs. The engine users install is the native `reylo` binary (`cargo build --release -p
+# reylo`, packaged per platform by scripts/build.ts); this script builds no part of it but its
+# inputs.
 #
-#   engine/build.sh --prepare            the inputs below, and nothing else
-#   engine/build.sh                      every database's component
-#   engine/build.sh postgres [sqlite …]  the components named
+#   engine/build.sh --prepare      the inputs below, and nothing else
+#   engine/build.sh                the playground's engine, after the inputs
+#
+# The playground's engine is Postgres's, built as one WebAssembly component (`wasm32-wasip2`, from
+# wasip2/): the engine and the program that would connect it to its database (native/), behind the
+# exports `call` and `serve`. jco transpiles it into `target/playground/postgres/` (`engine.js` and
+# its `engine.core*.wasm` modules), which nothing commits. The site calls only `call`, through
+# src/engine-core.ts's replay loop, and answers the engine's needs from PGlite in the page itself,
+# so the component opens no connection there.
 #
 # Inputs: rustup's `wasm32-wasip2` target, wasi-sdk 34 (set WASI_SDK_PATH, or unpack it under
-# `.wasi-sdk/`) and jco from the root's install. The `pg_query` crate is the Postgres 18 parser:
+# `.wasi-sdk/`) and jco from the root's install, for the playground's engine only. The `pg_query`
+# crate is the Postgres 18 parser:
 # upstream's `pg-18` branch (pganalyze/pg_query.rs, pull request 79, "Release 18.0.0", not on
 # crates.io yet) at the commit `postgres/vendor/pg_query-source.sh` pins, with the libpg_query commit
 # its submodule names (tag 18.1.0, the grammar of Postgres 18.6), each fetched from GitHub by commit
@@ -18,11 +24,10 @@
 # `postgres/.patched/pg_query`. SQLite is the 3.53.4 amalgamation fetched into `sqlite/.sqlite/`
 # with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
 # crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
-# `./build.sh --prepare` stops after that, which is what a native `cargo test` needs, and what any
-# cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
+# `./build.sh --prepare` stops after that, which is what a native build of the binary needs, and
+# what any cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
 set -euo pipefail
 cd "$(dirname "$0")"
-DATABASES=(postgres sqlite mysql duckdb)
 
 SQLITE_ZIP="sqlite-amalgamation-3530400.zip"
 SQLITE_URL="https://sqlite.org/2026/$SQLITE_ZIP"
@@ -90,10 +95,10 @@ if [ "${1:-}" = "--prepare" ]; then
   exit 0
 fi
 
-if [ $# -gt 0 ]; then WANTED=("$@"); else WANTED=("${DATABASES[@]}"); fi
-for db in "${WANTED[@]}"; do
-  case " ${DATABASES[*]} " in *" $db "*) ;; *) echo "no engine for $db: build.sh builds ${DATABASES[*]}" >&2; exit 2 ;; esac
-done
+if [ $# -gt 0 ]; then
+  echo "usage: engine/build.sh [--prepare]" >&2
+  exit 2
+fi
 
 if [ -z "${WASI_SDK_PATH:-}" ]; then
   WASI_SDK_PATH=$(ls -d .wasi-sdk/wasi-sdk-* 2>/dev/null | head -1 || true)
@@ -108,9 +113,9 @@ STUBS="$(pwd)/postgres/vendor/stubs"
 JCO="$(cd .. && pwd)/node_modules/@bytecodealliance/jco/dist/jco.js"
 [ -f "$JCO" ] || { echo "jco not found: nub install at the repository's root" >&2; exit 1; }
 
-# The components are published, so they name no path on the machine that built them: the checkout,
-# the Cargo registry and wasi-sdk are written as /reylo, /cargo and /wasi-sdk wherever the Rust
-# panic locations and the C sources' __FILE__ would record them.
+# The component is served to every reader of the site, so it names no path on the machine that
+# built it: the checkout, the Cargo registry and wasi-sdk are written as /reylo, /cargo and
+# /wasi-sdk wherever the Rust panic locations and the C sources' __FILE__ would record them.
 REPO_ROOT=$(cd .. && pwd)
 CARGO_HOME_DIR=$(cd "${CARGO_HOME:-$HOME/.cargo}" 2>/dev/null && pwd || echo "$HOME/.cargo")
 PREFIX_MAPS="-ffile-prefix-map=$REPO_ROOT=/reylo -ffile-prefix-map=$CARGO_HOME_DIR=/cargo -ffile-prefix-map=$WASI_SDK_PATH=/wasi-sdk"
@@ -121,25 +126,23 @@ export CC_wasm32_wasip2="$WASI_SDK_PATH/bin/clang" AR_wasm32_wasip2="$WASI_SDK_P
 # it was standardized, since jco and wasmtime refuse the legacy `try`.
 export CFLAGS_wasm32_wasip2="--sysroot=$SYSROOT -idirafter $STUBS -DEHOSTDOWN=9001 -Dsigjmp_buf=jmp_buf -Dsigsetjmp(b,m)=setjmp(b) -Dsiglongjmp(b,v)=longjmp(b,v) -mllvm -wasm-enable-sjlj -mllvm -wasm-use-legacy-eh=false -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_GETPID $PREFIX_MAPS"
 export BINDGEN_EXTRA_CLANG_ARGS_wasm32_wasip2="--sysroot=$SYSROOT --target=wasm32-wasip2 -I $STUBS"
+# bindgen reads the C headers through wasi-sdk's own libclang and clang, whose builtin headers
+# (`stddef.h` and the rest) sit beside them and which take the flags above: a system's libclang may
+# come without those headers, a system's older clang refuses the `-mllvm` options bindgen asks it
+# for the include paths with, and for a wasm32 target no compiler of the system's supplies them.
+export LIBCLANG_PATH="$WASI_SDK_PATH/lib" CLANG_PATH="$WASI_SDK_PATH/bin/clang"
 # tokio's wasip2 sockets are behind `tokio_unstable` (tokio 1.51). The shadow stack, where C and the
 # Rust frames that spill keep their locals, is 8 MiB: the analysis of a statement as deep as
 # libpg_query hands over (core/src/stack.rs) needs about 0.5 MiB of it.
 export CARGO_TARGET_WASM32_WASIP2_RUSTFLAGS="--cfg tokio_unstable -C link-arg=-L$SYSROOT/lib/wasm32-wasip2 -C link-arg=-lwasi-emulated-signal -C link-arg=-lwasi-emulated-process-clocks -C link-arg=-lwasi-emulated-mman -C link-arg=-lwasi-emulated-getpid -C link-arg=-lsetjmp -C link-arg=-zstack-size=8388608 --remap-path-prefix=$REPO_ROOT=/reylo --remap-path-prefix=$CARGO_HOME_DIR=/cargo"
-# SQLite's SQL functions that Node's own SQLite has and rusqlite's bundled build leaves out, so that
-# the SQLite engine's function list, which it refuses a statement by, has them too.
-export LIBSQLITE3_FLAGS="${LIBSQLITE3_FLAGS:-} -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_ENABLE_PERCENTILE -DSQLITE_ENABLE_GEOPOLY"
-
-# One build per database: each is the same crate with another database's program behind its
-# exports, and wasip2/ is a workspace of its own, so that its tokio-postgres patch reaches no native
-# build. The components are built without LTO: the depth a statement may nest was measured on that
-# code, and LTO's larger frames spend more of the JavaScript engine's stack at the bound.
+# The component crate is a workspace of its own, so that its tokio-postgres patch reaches no native
+# build. It is built without LTO: the depth a statement may nest was measured on that code, and
+# LTO's larger frames spend more of the JavaScript engine's stack at the bound.
 TARGET_DIR="${CARGO_TARGET_DIR:-$REPO_ROOT/target/wasip2}"
-for db in "${WANTED[@]}"; do
-  CARGO_TARGET_DIR="$TARGET_DIR/$db" cargo build --manifest-path wasip2/Cargo.toml --release --target wasm32-wasip2 --features "$db"
-  OUT="../packages/$db/engine"
-  rm -rf "$OUT" && mkdir -p "$OUT"
-  node "$JCO" transpile "$TARGET_DIR/$db/wasm32-wasip2/release/reylo_engine_wasip2.wasm" -o "$OUT" --name engine --instantiation sync --bindgen-enable-wasm-exnref --no-typescript --quiet
-  # The loader types the component itself (src/component.ts); jco writes declarations with sync instantiation all the same.
-  rm -rf "$OUT/interfaces" "$OUT"/*.d.ts
-  ls -l "$OUT"/*.wasm "$OUT"/engine.js
-done
+CARGO_TARGET_DIR="$TARGET_DIR/postgres" cargo build --manifest-path wasip2/Cargo.toml --release --target wasm32-wasip2 --features postgres
+OUT="$REPO_ROOT/target/playground/postgres"
+rm -rf "$OUT" && mkdir -p "$OUT"
+node "$JCO" transpile "$TARGET_DIR/postgres/wasm32-wasip2/release/reylo_engine_wasip2.wasm" -o "$OUT" --name engine --instantiation sync --bindgen-enable-wasm-exnref --no-typescript --quiet
+# src/engine-core.ts types the component itself; jco writes declarations with sync instantiation all the same.
+rm -rf "$OUT/interfaces" "$OUT"/*.d.ts
+ls -l "$OUT"/*.wasm "$OUT"/engine.js

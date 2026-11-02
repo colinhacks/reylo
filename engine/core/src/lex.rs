@@ -252,7 +252,7 @@ fn quoted_end(b: &[u8], i: usize, escapes: bool) -> Option<usize> {
 pub enum Named {
     /// `:name` everywhere, and SQLite's own `@name` and `$name` there: the loader's rule.
     Dialect,
-    /// `:name` alone; SQLite's `@name` and `$name` are errors: the framework's rule.
+    /// `:name` alone; SQLite's `@name` and `$name` are errors: the portable spelling alone.
     Colon,
 }
 
@@ -586,7 +586,7 @@ impl From<Repeated> for LexError {
 /// form a parameter is named by: `:name` (a dotted global such as `:auth.user_id` too), SQLite's
 /// `@name` and `$name`, and the positional `$n` and `?n`, whose name is the number, so `?1` after
 /// a bare `?` that took 1 repeats it. A bare `?` is a parameter of its own and never repeats.
-/// Reylo's analysis reports each one where it is written, and Reylo Framework's build fails on it.
+/// Reylo's analysis reports each one where it is written, and a host's build may fail on it.
 pub fn repeated(sql: &str, lexed: &Lexed) -> Vec<Repeated> {
     let mut seen: Vec<&str> = Vec::new();
     let mut out = Vec::new();
@@ -815,7 +815,7 @@ mod tests {
         // Elsewhere the forms keep their meaning: Postgres `@` is an operator, MySQL `@x` a variable.
         assert!(names("select @a from t", Dialect::Postgres).is_empty());
         assert!(names("select @a, $b from t", Dialect::Mysql).is_empty());
-        // The framework takes `:name` alone.
+        // `Named::Colon` takes `:name` alone.
         let colon = |sql: &str| lex_with(sql, Dialect::Sqlite, Named::Colon).unwrap_err().message;
         assert_eq!(colon("select @a.b from t"), "SQLite reads @a.b as a parameter that Reylo does not bind; write :a.b");
         assert_eq!(colon("select :x, $y"), "SQLite reads $y as a parameter that Reylo does not bind; write :y");

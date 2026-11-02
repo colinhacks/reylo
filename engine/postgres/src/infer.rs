@@ -525,7 +525,7 @@ pub struct Trust {
     /// trusts every name, which is what SQLite gets: nothing there can define a cast.
     pub cast_targets: Option<HashSet<String>>,
     /// Functions the host registers on its own connection, by name, with the type oid each
-    /// returns: NULL only when an argument is NULL. Reylo Framework's `reylo_html` on SQLite is one.
+    /// returns: NULL only when an argument is NULL.
     pub total: HashMap<String, u32>,
     /// Whether a parameter is a non-null value. A host whose callers cannot pass null (Reylo
     /// types a parameter without it) sets this; by default a placeholder proves nothing.

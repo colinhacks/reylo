@@ -6,7 +6,7 @@ on:
   #
   # Everything the release needs is given at dispatch: the commit is the one dispatched, the version comes from its `package.json` (every package moves at reylo's version, which `scripts/build.ts` enforces), and the release notes are the required `notes` input. A run's inputs are fixed for its whole life, so the notes survive the approval wait and any re-run of a job.
   #
-  # One run, two release jobs. `stage` puts the five versions in npm's staged queue: the four engines, then reylo, which names them as peers at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
+  # One run builds the `reylo` binary on each platform of npm/platforms.json (`build`, a job per platform on a runner of its architecture), then two release jobs. `stage` puts the nine versions in npm's staged queue: the eight platform packages `@reylosql/engine-<platform>`, each holding its platform's binary, then reylo, which names them as optional dependencies at its own version. `finish` is a job on the `release-approval` environment, whose required reviewer is a maintainer: GitHub holds the run there, with no runner, for up to 30 days. The npm approval is the gate; the environment approval only resumes the run, and `finish` checks the registry before it tags or releases anything. The GitHub release carries the same eight binaries as assets, and the docs site's playground engine (`playground`), which no commit holds. `stager`, run by a maintainer with one authenticator code, does both, approving on npm and then resuming the run.
   #
   # Only `finish` can create a tag. The "Release tags" ruleset refuses tag creation, moves and deletions to everyone, admins and workflow tokens included, except deploy keys; the one deploy key is the `RELEASE_TAG_KEY` secret on `release-approval`, so a tag exists only after a maintainer approved the run.
   #
@@ -54,8 +54,41 @@ jobs:
     permissions:
       contents: read
 
+  # Each platform's binary, built on a runner of its own architecture from the dispatched commit, then installed from the nine packages and run on its own platform (binaries.yml). Each is an artifact of this run, `engine-<platform>`, which `stage` packages and `finish` attaches to the GitHub release; the workflow's `matrix` names the platforms.
+  build:
+    needs: preflight
+    uses: ./.github/workflows/binaries.yml
+    permissions:
+      contents: read
+
+  # The docs site's playground engine: Postgres's engine core as one WebAssembly component, which engine/build.sh builds and jco transpiles into target/playground/postgres/. No commit holds it; the release carries it as the asset `reylo-playground-postgres.tar.gz` (`engine.js` and its `engine.core*.wasm`), which the site's build fetches for its version (site/scripts/playground-engine.ts). Built here, before anything is staged, so a release whose playground cannot build stages nothing.
+  playground:
+    needs: preflight
+    name: Build the playground's engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # jco, from the root's install, transpiles the component.
+      - uses: nubjs/setup-nub@c7b970ec04655a2f0a111cd436cc182a3b660e7a # v0.6.0
+        with:
+          nub-version: "0.9.6"
+          node-version: "24"
+          cache: false
+      - run: nub install --frozen-lockfile
+      - run: .github/scripts/build-playground.sh "$RUNNER_TEMP/playground"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playground-postgres
+          path: ${{ runner.temp }}/playground/reylo-playground-postgres.tar.gz
+          if-no-files-found: error
+
   stage:
-    needs: [preflight, test]
+    needs: [preflight, test, build, playground]
     runs-on: ubuntu-latest
     name: Stage on npm
     # a required reviewer approves every run, and the environment only deploys main; npm's trusted publishers are bound to it so no other branch or workflow can even stage. The environment is the first of two gates — the second is the 2FA approval of each staged version, which this job cannot perform.
@@ -95,21 +128,27 @@ jobs:
       # The docs site's toolchain, which builds reylo play's page into the reylo package.
       - run: nub install --frozen-lockfile
         working-directory: site
-      # dist/reylo, dist/postgres, dist/sqlite, dist/mysql and dist/duckdb; the build refuses an engine whose version is not reylo's
-      - run: nub run build
+      # Every platform's binary, each in binaries/engine-<platform>/ as `build` uploaded it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: engine-*
+          path: binaries
+      # dist/reylo and dist/engine-<platform> for each of the eight; the build refuses a binary built for another platform than its package's, and one whose version, where this runner can run it, is not reylo's
+      - run: nub scripts/build.ts --binaries binaries
 
       - name: Resolve the version
         id: version
         run: echo "version=$(nub --node -p "require('./dist/reylo/package.json').version")" >> "$GITHUB_OUTPUT"
 
-      # This job cannot publish. Every trusted publisher is stage-only, so all it can do is put a version in npm's staged queue, where it is not installable and its number is reserved; a maintainer then approves it with 2FA. A credential that reaches this workflow can therefore fill a queue and nothing else. The engines go first and reylo last, so that a failure part-way leaves reylo unstaged rather than staged beside an engine it names that is not; the approval takes them oldest first, in the same order.
-      - name: Stage the engines and reylo on npm
+      # This job cannot publish. Every trusted publisher is stage-only, so all it can do is put a version in npm's staged queue, where it is not installable and its number is reserved; a maintainer then approves it with 2FA. A credential that reaches this workflow can therefore fill a queue and nothing else. The platform packages go first and reylo last, so that a failure part-way leaves reylo unstaged rather than staged beside a platform package it names that is not; the approval takes them oldest first, in the same order.
+      - name: Stage the platform packages and reylo on npm
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          for dir in dist/postgres dist/sqlite dist/mysql dist/duckdb dist/reylo; do
-            bash .github/scripts/npm-stage-publish.sh "$dir" --provenance --access public
+          for platform in $(jq -r '.[].platform' npm/platforms.json); do
+            bash .github/scripts/npm-stage-publish.sh "dist/engine-$platform" --provenance --access public
           done
+          bash .github/scripts/npm-stage-publish.sh dist/reylo --provenance --access public
 
       - name: Check whether npm serves every version
         id: served
@@ -117,7 +156,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           served=true
-          for name in reylo @reylosql%2fpostgres @reylosql%2fsqlite @reylosql%2fmysql @reylosql%2fduckdb; do
+          for name in $(jq -r '.[].platform | "@reylosql%2fengine-\(.)"' npm/platforms.json) reylo; do
             curl -sf "https://registry.npmjs.org/$name/$VERSION" > /dev/null || served=false
           done
           echo "served=$served" >> "$GITHUB_OUTPUT"
@@ -134,16 +173,16 @@ jobs:
           {
             echo "## Staged on npm, waiting for approval"
             echo
-            for name in @reylosql/postgres @reylosql/sqlite @reylosql/mysql @reylosql/duckdb reylo; do echo "- \`$name@$VERSION\`"; done
+            for name in $(jq -r '.[].platform | "@reylosql/engine-\(.)"' npm/platforms.json) reylo; do echo "- \`$name@$VERSION\`"; done
             echo
             echo 'No version is installable until a maintainer approves it with 2FA. This run is now held on the `release-approval` environment, with no runner, for up to 30 days. It resumes when that deployment is approved, and `finish` then waits for npm to serve every version before it tags and releases.'
             echo
             echo '```'
-            echo "stager   # in your own terminal: a, Enter, then ONE authenticator code approves the five versions and resumes this run"
+            echo "stager   # in your own terminal: a, Enter, then ONE authenticator code approves the nine versions and resumes this run"
             echo "stager reject 'reylo@$VERSION' '@reylosql/*@$VERSION'    # drop the staged versions and fail this run"
             echo '```'
             echo
-            echo "Without stager: read the stage ids with \`npm stage list reylo\` and \`npm stage list @reylosql/postgres\` (and sqlite, mysql, duckdb), then approve each with \`npm stage approve <id>\`, engines first; \`pnpm stage approve\` takes them in one interactive picker under a single one-time password, as does the Staged Packages tab on npmjs.com. Then approve the pending \`release-approval\` deployment on $RUN_URL."
+            echo "Without stager: read the stage ids with \`npm stage list reylo\` and \`npm stage list @reylosql/engine-<platform>\` for each of the eight platforms, then approve each with \`npm stage approve <id>\`, platform packages first; \`pnpm stage approve\` takes them in one interactive picker under a single one-time password, as does the Staged Packages tab on npmjs.com. Then approve the pending \`release-approval\` deployment on $RUN_URL."
             echo
             echo "## Release notes"
             echo
@@ -151,7 +190,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   finish:
-    needs: stage
+    needs: [build, playground, stage]
     # held by the environment's required reviewer, not by a runner: GitHub keeps the run waiting for up to 30 days, with no six-hour cap, until the deployment is approved. It is a resume signal only; a version nobody approved on npm still stops this job at the registry check.
     environment: release-approval
     runs-on: ubuntu-latest
@@ -165,6 +204,7 @@ jobs:
       - name: Wait for npm to serve every version
         env:
           VERSION: ${{ needs.stage.outputs.version }}
+          PLATFORMS: ${{ needs.build.outputs.matrix }}
         run: |
           deadline=$(( $(date +%s) + 340 * 60 ))
           wait_for () {
@@ -180,10 +220,9 @@ jobs:
             done
             echo "$label is live"
           }
-          wait_for "@reylosql/postgres@$VERSION" "https://registry.npmjs.org/@reylosql%2fpostgres/$VERSION"
-          wait_for "@reylosql/sqlite@$VERSION" "https://registry.npmjs.org/@reylosql%2fsqlite/$VERSION"
-          wait_for "@reylosql/mysql@$VERSION" "https://registry.npmjs.org/@reylosql%2fmysql/$VERSION"
-          wait_for "@reylosql/duckdb@$VERSION" "https://registry.npmjs.org/@reylosql%2fduckdb/$VERSION"
+          for platform in $(jq -r '.include[].platform' <<< "$PLATFORMS"); do
+            wait_for "@reylosql/engine-$platform@$VERSION" "https://registry.npmjs.org/@reylosql%2fengine-$platform/$VERSION"
+          done
           wait_for "reylo@$VERSION" "https://registry.npmjs.org/reylo/$VERSION"
 
       # the public repository answers `git ls-remote` without a credential, so none is kept on disk
@@ -191,13 +230,35 @@ jobs:
         with:
           persist-credentials: false
 
-      # the job token cannot create a tag or move `release`, so both are pushed with the deploy key the rulesets exempt, and the key file is gone when the step ends, however it ends; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
-      # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto the previous release, which main holds too. It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. Where `release` already holds the tag (that dispatch, or a re-run of this job), it is left as it is, docs fixes cherry-picked onto it since included; the shallow checkout can't tell, so GitHub's compare does. The tag is a lightweight one, so `ls-remote` names its commit.
-      - name: Tag the release and move the docs to it
+      # The binaries npm serves, as the GitHub release's assets: `reylo-<platform>.tar.gz` holding `reylo` (`reylo.exe` on Windows) with its execute bit, which an artifact does not keep, beside the playground's engine, `reylo-playground-postgres.tar.gz`, and SHA256SUMS over them all, which the site's build checks the playground's engine against.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: engine-*
+          path: ${{ runner.temp }}/binaries
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: playground-postgres
+          path: ${{ runner.temp }}/assets
+      - name: Pack the binaries
+        env:
+          PLATFORMS: ${{ needs.build.outputs.matrix }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/assets"
+          for platform in $(jq -r '.include[].platform' <<< "$PLATFORMS"); do
+            dir="$RUNNER_TEMP/binaries/engine-$platform"
+            exe=reylo
+            case "$platform" in win32-*) exe=reylo.exe ;; esac
+            [ -f "$dir/$exe" ] || { echo "::error::the build left no $exe for $platform"; exit 1; }
+            chmod 755 "$dir/$exe"
+            tar -czf "$RUNNER_TEMP/assets/reylo-$platform.tar.gz" -C "$dir" "$exe"
+          done
+          (cd "$RUNNER_TEMP/assets" && sha256sum reylo-*.tar.gz > SHA256SUMS && cat SHA256SUMS)
+
+      # the job token cannot create a tag or move `release`, so both are pushed with the deploy key the rulesets exempt, and the key file is gone when each step ends, however it ends; nothing is installed in this job, so no dependency's script ever runs while the key is on disk
+      - name: Tag the release
         env:
           VERSION: ${{ needs.stage.outputs.version }}
           RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           trap 'rm -f "$RUNNER_TEMP/release-tag-key"' EXIT
           printf '%s\n' "$RELEASE_TAG_KEY" > "$RUNNER_TEMP/release-tag-key"
@@ -211,6 +272,40 @@ jobs:
             git tag "v$VERSION" "$GITHUB_SHA"
             git push "$remote" "refs/tags/v$VERSION"
           fi
+
+      # the notes go through env and a file so their text can't break out of the command; a re-dispatch with corrected notes rewrites an existing release's body, and leaves its assets as they are, the binaries npm serves, which this run's build did not make
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.stage.outputs.version }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/release_notes.md"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release_notes.md"
+            echo "v$VERSION was already released; its notes are rewritten from this dispatch"
+            exit 0
+          fi
+          gh release create "v$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "v$VERSION" \
+            --notes-file "$RUNNER_TEMP/release_notes.md" \
+            "$RUNNER_TEMP"/assets/*
+
+      # reylo.dev serves the `release` branch, so the docs describe what npm serves: it moves to the release's tagged commit, past any docs fix cherry-picked onto the previous release, which main holds too. It moves after the GitHub release exists, since the site's build fetches the playground's engine from the release of its version (site/scripts/playground-engine.ts). It follows the tag, not this run's commit, since a dispatch that only rewrites a release's notes runs on a main that may hold unreleased changes. Where `release` already holds the tag (that dispatch, or a re-run of this job), it is left as it is, docs fixes cherry-picked onto it since included; the shallow checkout can't tell, so GitHub's compare does. The tag is a lightweight one, so `ls-remote` names its commit.
+      - name: Move the docs to the release
+        env:
+          VERSION: ${{ needs.stage.outputs.version }}
+          RELEASE_TAG_KEY: ${{ secrets.RELEASE_TAG_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/release-tag-key"' EXIT
+          printf '%s\n' "$RELEASE_TAG_KEY" > "$RUNNER_TEMP/release-tag-key"
+          chmod 600 "$RUNNER_TEMP/release-tag-key"
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/release-tag-key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          remote="git@github.com:$GITHUB_REPOSITORY.git"
           tagged="$(git ls-remote origin "refs/tags/v$VERSION" | cut -f1)"
           # `identical` or `ahead`: release is the tag, or the tag with docs fixes on it. Only a missing branch (ls-remote's exit 2) counts as missing; any other failure, of ls-remote or of the compare, fails the step rather than move release back, and a re-run is safe.
           set +e
@@ -233,21 +328,3 @@ jobs:
               ;;
           esac
 
-      # the notes go through env and a file so their text can't break out of the command; a re-dispatch with corrected notes rewrites an existing release's body
-      - name: Create release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          VERSION: ${{ needs.stage.outputs.version }}
-          NOTES: ${{ inputs.notes }}
-        run: |
-          printf '%s\n' "$NOTES" > "$RUNNER_TEMP/release_notes.md"
-          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --notes-file "$RUNNER_TEMP/release_notes.md"
-            echo "v$VERSION was already released; its notes are rewritten from this dispatch"
-            exit 0
-          fi
-          gh release create "v$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
-            --title "v$VERSION" \
-            --notes-file "$RUNNER_TEMP/release_notes.md"

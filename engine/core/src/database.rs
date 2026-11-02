@@ -35,7 +35,7 @@ pub trait Database {
     }
 
     /// One request's round: the analysis, and then the facts it relied on. Postgres overrides it
-    /// to settle what the server's `reylo` extension offers first.
+    /// to settle what a server-side extension offers first.
     fn round(sql: &str, answers: &Answers<Self::Describe>) -> Response {
         let host = Host::new(answers);
         match Self::analyze(sql, &host) {

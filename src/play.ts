@@ -162,7 +162,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
       if (!outcome.ok) return playResult(sql, dialect, { error: { message: outcome.message, code: outcome.code } }, { width, ms });
       let lexed;
       try {
-        lexed = session.lex(sql);
+        lexed = await session.lex(sql);
       } catch {}
       return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, width, ms });
     },

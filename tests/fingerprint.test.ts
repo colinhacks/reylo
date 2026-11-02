@@ -3,17 +3,16 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Engine } from "../src/engine.ts";
+import { engine } from "../src/engine.ts";
 
-// Each committed engine component must be the build of the sources beside it. A component reports two
-// hashes on ping: its engine's fingerprint, core's source hash combined with its database crate's
-// (engine/core/src/fingerprint.rs), and `host`, the hash of the code that connects it to its database
-// (engine/wasip2/build.rs), each the hash a crate's build script takes of its sources
-// (engine/build-support/src/lib.rs). This takes them again, the same way, and compares, so a change
-// to an engine's sources whose component was not rebuilt fails here, with no Rust toolchain.
+// The engine the tests run must be the build of the sources beside it. Its ping reports each
+// database's fingerprint, core's source hash combined with its database crate's
+// (engine/core/src/fingerprint.rs), each the hash a crate's build script takes of its sources
+// (engine/build-support/src/lib.rs). This takes them again, the same way, and compares, so that a
+// change to an engine's sources that the binary was not rebuilt from, a checkout's
+// target/release/reylo above all, which is found before target/debug/reylo, fails here.
 
 const ENGINE = fileURLToPath(new URL("../engine", import.meta.url));
-const PACKAGES = fileURLToPath(new URL("../packages", import.meta.url));
 
 /** FNV-1a, 64-bit, over `bytes`, from `hash`; a carriage return is skipped where `crlf` is set, as the build script does. */
 function fnv(hash: bigint, bytes: Uint8Array, crlf: boolean): bigint {
@@ -83,12 +82,9 @@ function fingerprint(database: string): string {
   return fnv(0xcbf29ce484222325n, parts, false).toString(16).padStart(16, "0");
 }
 
-for (const database of ["postgres", "sqlite", "mysql", "duckdb"]) {
-  test(`packages/${database}/engine is the build of the engine's sources`, async () => {
-    const engine = await Engine.load(join(PACKAGES, database, "engine"));
-    const ping = engine.call({ op: "ping" }) as { fingerprint: string; host?: string };
-    assert.equal(ping.fingerprint, fingerprint(database), `packages/${database}/engine was built from other sources than engine/core and engine/${database}: rebuild it with engine/build.sh ${database} and commit it`);
-    const host = sourceHash(join(ENGINE, "wasip2")).toString(16).padStart(16, "0");
-    assert.equal(ping.host, host, `packages/${database}/engine was built from other sources than engine/wasip2, engine/native and engine/facade: rebuild it with engine/build.sh ${database} and commit it`);
+for (const database of ["postgres", "sqlite", "mysql", "duckdb"] as const) {
+  test(`the ${database} engine is the build of the engine's sources`, async () => {
+    const { binary, fingerprint: built } = await engine(database);
+    assert.equal(built, fingerprint(database), `${binary} was built from other sources than engine/core and engine/${database}: build it again with cargo build --release -p reylo`);
   });
 }

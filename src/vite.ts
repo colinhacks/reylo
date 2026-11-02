@@ -8,7 +8,7 @@
 // reached `load`, and `.run` was undefined on the string it gave (examples/cloudflare-workers).
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
-import { releaseConnections, tooling } from "./engine-package.ts";
+import { releaseConnections, tooling } from "./tooling-loader.ts";
 
 /** What Vitest hands a plugin's `configureVitest`, as far as it is used here. */
 type VitestContext = {

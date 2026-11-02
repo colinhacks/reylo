@@ -2,7 +2,7 @@
 //! nothing unless a root certificate file is named; `verify-ca` checks the certificate chain;
 //! `verify-full` and `sslrootcert=system` check the chain and the host name. Without a root
 //! certificate file, the chain is checked against the operating system's certificates, or in the
-//! WebAssembly component against the Mozilla roots webpki-roots carries and those
+//! WebAssembly component against the Mozilla roots webpki-roots carries, and in both against those
 //! `NODE_EXTRA_CA_CERTS` names, as Node's own TLS checks it. A server certificate that
 //! is itself one of the root file's certificates, as a self-signed server's is when its own
 //! certificate is named as the root, is accepted as libpq accepts it. A client certificate
@@ -55,8 +55,28 @@ pub fn config(check: Check, root: Option<&str>, identity: Option<Identity<'_>>) 
             let chain = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().map_err(|e| e.to_string())?;
             Arc::new(OrRoot { chain, roots: certs, name: check == Check::Full })
         }
+        // The operating system's certificates, and those Node adds from `NODE_EXTRA_CA_CERTS` (a
+        // company's root, say), checked as Node checks them; a root file names any other.
         #[cfg(not(target_family = "wasm"))]
-        (_, None) => Arc::new(rustls_platform_verifier::Verifier::new(provider.clone()).map_err(|e| e.to_string())?),
+        (_, None) => {
+            let system: Arc<dyn ServerCertVerifier> = Arc::new(rustls_platform_verifier::Verifier::new(provider.clone()).map_err(|e| e.to_string())?);
+            match extra_roots() {
+                None => system,
+                Some(certs) => {
+                    let mut roots = RootCertStore::empty();
+                    for cert in certs {
+                        let _ = roots.add(cert);
+                    }
+                    // A file none of whose certificates is a root is one Node warns of and goes on without.
+                    if roots.is_empty() {
+                        system
+                    } else {
+                        let extra = rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().map_err(|e| e.to_string())?;
+                        Arc::new(OrExtra { system, extra })
+                    }
+                }
+            }
+        }
         // A WebAssembly engine has no operating system's store to read: it checks against the
         // Mozilla roots webpki-roots carries, as Node's own TLS does, with those Node adds from
         // `NODE_EXTRA_CA_CERTS` (a company's root, say), and a root file names any other.
@@ -64,10 +84,8 @@ pub fn config(check: Check, root: Option<&str>, identity: Option<Identity<'_>>) 
         (_, None) => {
             let mut roots = RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            if let Some(certs) = std::env::var("NODE_EXTRA_CA_CERTS").ok().and_then(|file| CertificateDer::pem_file_iter(file).ok()) {
-                for cert in certs.flatten() {
-                    let _ = roots.add(cert);
-                }
+            for cert in extra_roots().unwrap_or_default() {
+                let _ = roots.add(cert);
             }
             rustls::client::WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone()).build().map_err(|e| e.to_string())?
         }
@@ -88,6 +106,14 @@ pub fn config(check: Check, root: Option<&str>, identity: Option<Identity<'_>>) 
         }
     })?;
     builder.with_client_auth_cert(certs, key).map_err(|e| format!("sslcert {} and sslkey {}: {e}", identity.cert, identity.key))
+}
+
+/// The certificates of the file `NODE_EXTRA_CA_CERTS` names, which Node trusts beside its own roots:
+/// none where it names no file Node could read either.
+fn extra_roots() -> Option<Vec<CertificateDer<'static>>> {
+    let file = std::env::var("NODE_EXTRA_CA_CERTS").ok()?;
+    let certs: Vec<_> = CertificateDer::pem_file_iter(file).ok()?.flatten().collect();
+    (!certs.is_empty()).then_some(certs)
 }
 
 /// Whether `e`, or what caused it, is the TLS handshake's failure: a certificate the check refused,
@@ -152,6 +178,42 @@ impl ServerCertVerifier for OrRoot {
     }
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.chain.supported_verify_schemes()
+    }
+}
+
+/// A chain the operating system refuses, checked against the certificates `NODE_EXTRA_CA_CERTS`
+/// names as webpki checks it, which is how Node's own TLS checks a chain to one of them: the
+/// operating system's own rules for its store (macOS's refuse a server certificate with no extended
+/// key usage) are not what a root Node trusts is held to.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Debug)]
+struct OrExtra {
+    system: Arc<dyn ServerCertVerifier>,
+    extra: Arc<dyn ServerCertVerifier>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl ServerCertVerifier for OrExtra {
+    fn verify_server_cert(&self, end: &CertificateDer<'_>, intermediates: &[CertificateDer<'_>], name: &ServerName<'_>, ocsp: &[u8], now: UnixTime) -> Result<ServerCertVerified, Error> {
+        let refused = match self.system.verify_server_cert(end, intermediates, name, ocsp, now) {
+            Ok(verified) => return Ok(verified),
+            Err(refused) => refused,
+        };
+        match self.extra.verify_server_cert(end, intermediates, name, ocsp, now) {
+            Ok(verified) => Ok(verified),
+            // A chain to none of the extra roots is the operating system's to say why it refused.
+            Err(Error::InvalidCertificate(CertificateError::UnknownIssuer)) => Err(refused),
+            Err(e) => Err(e),
+        }
+    }
+    fn verify_tls12_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        self.extra.verify_tls12_signature(message, cert, dss)
+    }
+    fn verify_tls13_signature(&self, message: &[u8], cert: &CertificateDer<'_>, dss: &DigitallySignedStruct) -> Result<HandshakeSignatureValid, Error> {
+        self.extra.verify_tls13_signature(message, cert, dss)
+    }
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        self.extra.supported_verify_schemes()
     }
 }
 

@@ -153,7 +153,7 @@ async function render(session: Session, source: string, written: string, sql: st
   };
   let names: string[] = [];
   try {
-    ({ params: names } = session.lex(sql));
+    ({ params: names } = await session.lex(sql));
   } catch {}
   const outcome = await session.analyze(sql);
   if (!outcome.ok) return { error: outcome.message };

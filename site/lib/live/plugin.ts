@@ -13,6 +13,7 @@ import path from 'node:path';
 import type { Extension } from '@electric-sql/pglite';
 import type { Plugin } from 'vite';
 import { pagePostgresSchema } from '../remark-mapper.ts';
+import { engineDir } from './engine-dir.ts';
 import { pgJsonschemaStub, STUB_SQL } from './pg-stub.ts';
 
 const site = path.resolve(import.meta.dirname, '../..');
@@ -24,7 +25,7 @@ async function writeFiles(): Promise<void> {
   const pkg = path.dirname(path.dirname(require.resolve('@electric-sql/pglite')));
   const version = JSON.parse(readFileSync(path.join(pkg, 'package.json'), 'utf8')).version as string;
   const schema = pagePostgresSchema();
-  const engine = path.join(site, '..', 'packages', 'postgres', 'engine');
+  const engine = engineDir(site);
   const cores = readdirSync(engine).filter((name) => name.endsWith('.wasm')).sort();
   const engineHash = createHash('sha256');
   for (const name of cores) engineHash.update(name).update(readFileSync(path.join(engine, name)));

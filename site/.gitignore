@@ -5,3 +5,4 @@ build/
 *.tsbuildinfo
 .live/
 .share/
+.playground/

@@ -4,7 +4,7 @@
 //   webpack / Rspack:  module.rules: [{ test: /\.sql$/, use: "reylo/webpack" }]
 //   Turbopack:         turbopack: { rules: { "*.sql": { loaders: ["reylo/turbopack"], as: "*.js" } } }
 import { dirname } from "node:path";
-import { tooling } from "./engine-package.ts";
+import { tooling } from "./tooling-loader.ts";
 
 type LoaderContext = {
   resourcePath: string;

@@ -1,2 +1,2 @@
-math_missing.sql: no such function: acos in select id, acos(score) as a from users at offset 11
-math_missing_in_where.sql: no such function: sqrt in select id from users where sqrt(score) > ? at offset 27
+offset_missing.sql: no such function: sqlite_offset in select id, sqlite_offset(score) as a from users at offset 11
+offset_missing_in_where.sql: no such function: sqlite_offset in select id from users where sqlite_offset(score) > ? at offset 27

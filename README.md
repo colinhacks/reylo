@@ -70,11 +70,10 @@ To install Reylo, you'll need:
 - **Node 24 or later.**
 - **A running dev database.** Postgres, MySQL 8.0.22 or later, or a SQLite or DuckDB file: Reylo reads your current schema from it.
 
-Install Reylo, the engine for your database and TypeScript 7.1:
+Install Reylo, which brings its engine for your machine, and TypeScript 7.1:
 
 ```sh
 npm install reylo
-npm install -D @reylosql/postgres  # or mysql, sqlite, duckdb
 npm install -D typescript@beta
 ```
 

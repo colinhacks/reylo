@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { lexPlaceholders } from "../src/lex.ts";
 import { defineQuery } from "../src/index.ts";
-import { fileURLToPath } from "node:url";
 import { engine as load, type Dialect } from "../src/engine.ts";
 
 const names = (sql: string, dialect: "postgres" | "mysql" | "sqlite" = "postgres") => lexPlaceholders(sql, dialect).params;
@@ -55,7 +54,7 @@ test("MySQL text is read as a session in the default sql_mode reads it", () => {
 
 test("the runtime's lexer agrees with the engine's", async () => {
   // Every database's engine lexes every dialect: the lexer is the core's.
-  const engine = await load("sqlite", fileURLToPath(new URL("..", import.meta.url)));
+  const engine = await load("sqlite");
   const statements: [string, Dialect][] = [
     ["select 'it\\'s :not', 'a\\\\', :x, \"say \\\":no\", `n:m`, 'a\\nb' from t where id = :id # :c\n and :d --:e\n -- :f\n /* :g */ :h", "mysql"],
     ["select ?, '?', \"\\\"?\", ? -- ?\n # ?\n", "mysql"],
@@ -66,9 +65,11 @@ test("the runtime's lexer agrees with the engine's", async () => {
   ];
   for (const [sql, dialect] of statements) {
     const ours = lexPlaceholders(sql, dialect);
-    const theirs = engine.lex(sql, dialect);
-    assert.deepEqual(ours.params, theirs.params, `${dialect}: ${sql}`);
-    assert.deepEqual(ours.placeholders, theirs.placeholders, `${dialect}: ${sql}`);
+    // Through the engine's long-lived child, and through its one-shot form (a text of its own, so that neither answers from what the other kept).
+    for (const theirs of [await engine.lexAsync(sql, dialect), engine.lex(`${sql}\n`, dialect)]) {
+      assert.deepEqual(ours.params, theirs.params, `${dialect}: ${sql}`);
+      assert.deepEqual(ours.placeholders, theirs.placeholders, `${dialect}: ${sql}`);
+    }
   }
 });
 

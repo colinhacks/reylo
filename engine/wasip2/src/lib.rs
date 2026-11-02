@@ -2,8 +2,8 @@
 //! two exports. `call` answers a request the core answers with no database (`ping`, `lex`,
 //! `config`), at once. `serve` answers any request the program answers on a line of its standard
 //! input, `open`, `run`, `query`, `describe`, `forget` and `close` among them, and returns when the
-//! answer is whole: the connections it opens are WASI sockets, which its host carries (src/engine.ts
-//! runs it in a worker, src/engine-worker.ts, where a call may wait on the network).
+//! answer is whole: the connections it opens are WASI sockets, which its host carries (jco's
+//! preview2-shim, in a worker where a call may wait on the network).
 //!
 //! The program, its connections and its runtime live as long as the instance. The runtime runs
 //! only while `serve` does: before it returns, the tasks the request woke (a connection's own task,

@@ -1,4 +1,4 @@
-// The commands of the `reylo` CLI (src/cli.ts), which each engine package carries (src/tooling.ts):
+// The commands of the `reylo` CLI (src/cli.ts), in reylo's build-time half (src/tooling.ts):
 // `reylo generate`, here, and `reylo play` (src/play.ts).
 // `reylo generate`: analyzes every `.sql` file of the project into `.reylo/`, the cache that the type
 // check and the build steps share, and prints each file with a mark and every error in full. A

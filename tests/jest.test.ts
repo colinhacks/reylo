@@ -58,10 +58,9 @@ test("Vitest needs nothing beyond reylo/vite", { skip }, () => {
 // `maybeOne`. Each run of its test adds the cardinality its module carries to `seen.txt`.
 function cachedProject() {
   const dir = mkdtempSync(join(tmpdir(), "reylo-vitest-"));
-  mkdirSync(`${dir}/node_modules/@reylosql`, { recursive: true });
+  mkdirSync(`${dir}/node_modules`, { recursive: true });
   symlinkSync(`${lab}/node_modules/vitest`, `${dir}/node_modules/vitest`);
   symlinkSync(root, `${dir}/node_modules/reylo`);
-  symlinkSync(`${root}/packages/sqlite`, `${dir}/node_modules/@reylosql/sqlite`);
   writeFileSync(`${dir}/package.json`, `{ "private": true }\n`);
   writeFileSync(`${dir}/.reylo.yaml`, "direct_url: file:./app.db\n");
   writeFileSync(`${dir}/vitest.config.mjs`, `import reylo from "reylo/vite";\nexport default { plugins: [reylo()], test: { globals: true, fsModuleCache: true } };\n`);

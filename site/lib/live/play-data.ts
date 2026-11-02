@@ -12,6 +12,7 @@ import { collectFiles, moduleTypes, pagePostgresSchema, readModules } from '../r
 import { formatType, resultType } from '../../../src/type-format.ts';
 import { answerJson, REYLO_API } from './api-docs.ts';
 import { analyzeStatement, type LiveResult } from './analyze.ts';
+import { engineDir } from './engine-dir.ts';
 import { instantiateEngine } from './engine.ts';
 import type { Example, PlayData } from './app.tsx';
 import { loadHighlighter, tokens } from './highlight.ts';
@@ -33,7 +34,7 @@ async function compute(): Promise<PlayData> {
   const { PGlite } = await import('@electric-sql/pglite');
   const pg = await PGlite.create({ loadDataDir: new Blob([readFileSync(path.join(site, '.live', 'postgres.tar'))]) });
   try {
-    const dir = path.join(site, '..', 'packages', 'postgres', 'engine');
+    const dir = engineDir(site);
     const cores = Object.fromEntries(await Promise.all(readdirSync(dir).filter((n) => n.endsWith('.wasm')).map(async (n) => [n, await WebAssembly.compile(readFileSync(path.join(dir, n)))] as const)));
     const engine = instantiateEngine(cores);
     const io = pgliteIo(pg);

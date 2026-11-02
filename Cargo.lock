@@ -1522,6 +1522,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "reylo"
+version = "0.6.0"
+dependencies = [
+ "reylo-engine-native",
+]
+
+[[package]]
 name = "reylo-engine"
 version = "0.0.0"
 dependencies = [
@@ -1542,7 +1549,7 @@ version = "0.0.0"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.0.0"
+version = "0.6.0"
 dependencies = [
  "libc",
  "reylo-engine-build",

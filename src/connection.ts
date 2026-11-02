@@ -1,7 +1,7 @@
 // The ways a describer fails before it describes anything, which the analysis tells apart from a
-// statement's own error. Each engine package bundles its database's describer apart from the rest
-// of the type check (src/tooling.ts), so each bundle has a copy of these classes of its own, and
-// `instanceof` reads a mark from the global symbol registry instead of comparing classes.
+// statement's own error. The build-time half is loaded apart from the run time (src/tooling-loader.ts),
+// and a bundler may copy either, so each copy may have these classes of its own, and `instanceof`
+// reads a mark from the global symbol registry instead of comparing classes.
 
 const UNREACHABLE = Symbol.for("reylo.unreachable");
 const NOT_MYSQL = Symbol.for("reylo.not-mysql");

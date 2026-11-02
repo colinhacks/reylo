@@ -1,15 +1,14 @@
 //! The project file, `.reylo.yaml`: the settings the content mapper reads, parsed once here so
-//! every host reads the same YAML the same way. The file is shared with Reylo Framework (decision
-//! 93 of its log): the framework reads the top-level `env` too and `url`, its connection, which
-//! the importer never reads (since 2026-10-21), and its own settings are the `api` section, which
-//! `framework/engine/src/config.rs` parses.
+//! every host reads the same YAML the same way. A host that serves the project's queries itself
+//! reads the file too: the top-level `env`, `url`, its connection, which the importer never reads,
+//! and its own settings, the `api` section, which it parses itself.
 //!
 //! A host finds the file (beside the project's `package.json`), reads it and hands the text over;
 //! what the file names outside itself (the environment, `.env` files, the database) is the host's
 //! to resolve, and a `${VAR}` in a URL stays as written. There is no dialect key: the URL's scheme
 //! names the dialect. A key the library does not know is an error, so a typo does not pass for a
-//! default; the framework's `api` section and `rest`, the section PorgREST would have read, are
-//! accepted as they are, and a top-level `$schema` (the JSON Schema an editor validates the file
+//! default; the `api` and `rest` sections, which the importer does not read, are accepted as they
+//! are, and a top-level `$schema` (the JSON Schema an editor validates the file
 //! against, which `reylo schema --config` prints) is ignored. `cli` says which files `reylo
 //! generate` analyzes.
 
@@ -21,17 +20,17 @@ pub struct Project {
     /// The published schema an editor validates the file against; no host reads it.
     #[serde(rename = "$schema", default, skip_serializing)]
     pub schema: Option<serde_yaml::Value>,
-    /// Reylo Framework's connection, through which its queries run, usually `${DATABASE_URL}`.
-    /// Parsed for the framework: the importer's type check never connects through it (since
-    /// 2026-10-21), and tells a file that sets it without `direct_url` so.
+    /// The connection a host that serves the queries runs them through, usually `${DATABASE_URL}`.
+    /// Parsed for that host: the importer's type check never connects through it, and tells a file
+    /// that sets it without `direct_url` so.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// The dev database the importer's type check reads, `${DATABASE_URL}` when absent: a
     /// connection that bypasses a pooler, since describing a statement through a transaction
-    /// pooler can fail. The importer's alone: the framework serves through `url`.
+    /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
-    /// The `.env` files the importer and Reylo Framework read, relative to the project file
+    /// The `.env` files the importer and every other host read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -49,7 +48,7 @@ pub struct Project {
     pub cli: Cli,
     #[serde(default, skip_serializing)]
     pub rest: Option<serde_yaml::Value>,
-    /// Reylo Framework's settings, which the framework parses.
+    /// The settings of a host that serves the queries, which that host parses.
     #[serde(default, skip_serializing)]
     pub api: Option<serde_yaml::Value>,
 }
@@ -116,8 +115,8 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
 }
 
 /// The text with each `${VAR}` spelled `$<VAR>`. A bare `${VAR}` inside a flow mapping or
-/// sequence is not YAML (its `{` opens a nested mapping), and the framework's `api` section is
-/// often written so (`jwt: { jwks: ${JWKS_URL} }`): the framework interpolates before it parses,
+/// sequence is not YAML (its `{` opens a nested mapping), and the `api` section is often
+/// written so (`jwt: { jwks: ${JWKS_URL} }`): the host that reads it interpolates before it parses,
 /// but the importer keeps a URL's `${VAR}` as written. The spelling has the same length, so an
 /// error's offsets still point into the text, and `unmask_placeholders` turns it back in what
 /// the parse returns. A text that already holds `$<` is parsed as written.
@@ -215,7 +214,7 @@ mod tests {
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec!["${ENV_FILE}".to_string(), ".env".to_string()]));
-        assert_eq!(p.api.unwrap()["authenticators"]["clerk"]["jwt"]["jwks"].as_str(), Some("$<JWKS_URL>"), "the api section is the framework's to read");
+        assert_eq!(p.api.unwrap()["authenticators"]["clerk"]["jwt"]["jwks"].as_str(), Some("$<JWKS_URL>"), "the api section is its own host's to read");
         // The offsets of an error still point into the text as written.
         let text = "url: ${DATABASE_URL}\napi: { a: ${X} }\ndialect: x\n";
         let e = parse(text).unwrap_err();

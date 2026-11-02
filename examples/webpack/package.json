@@ -15,7 +15,6 @@
     "reylo": "link:../../dist/reylo"
   },
   "devDependencies": {
-    "@reylosql/mysql": "link:../../dist/mysql",
     "@swc/core": "^1.16.18",
     "@types/node": "^24.0.0",
     "swc-loader": "^0.2.7",

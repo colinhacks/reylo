@@ -136,7 +136,7 @@ pub struct SqliteAnalysis {
     /// `IS`, `IS NULL`, `NOT`, `AND`, `OR`, `TRUE` or `FALSE`, a `like`, `glob`, `regexp` or `match`
     /// call, or a `CASE`, `coalesce`, `ifnull`, `iif`, scalar subquery or subquery column whose
     /// every value is one. SQLite stores one as the integer 0 or 1, and its type stays `integer`;
-    /// a host that types by meaning, as the framework does, reads it as a boolean. Empty when the
+    /// a host that types by meaning reads it as a boolean. Empty when the
     /// statement did not prepare.
     pub booleans: Vec<bool>,
 }
@@ -4057,7 +4057,7 @@ mod tests {
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
         let types: Vec<String> = r.analysis.columns.iter().map(|c| scalar_name(&c.ty).unwrap_or("?").to_string()).collect();
         assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "real", "bool", "bool", "bool"]);
-        // The framework's truth values are the ones SQLite computes alone.
+        // The truth values are the ones SQLite computes alone.
         assert_eq!(r.booleans, [false; 10]);
         // Through a view, and across a compound only where every arm is one.
         let r = analyze_ddl("select done from v", &ddl, &Extras::default());

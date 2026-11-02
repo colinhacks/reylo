@@ -4,7 +4,7 @@
 //! ([`sqlite`]). No other parser is linked: what SQLite resolves is what the analysis reads.
 //!
 //! Two hosts link it: the facade, `reylo-engine`, and the program built from it, `engine/native`,
-//! whose WebAssembly component the package `@reylosql/sqlite` carries; and Reylo Framework, which runs [`sqlite::analyze_ddl`] over a connection of
+//! which the `reylo` binary serves; and a host that runs [`sqlite::analyze_ddl`] over a connection of
 //! its own.
 
 pub mod api;

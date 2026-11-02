@@ -5,7 +5,7 @@ A Next.js 16.3 App Router app that imports `get_user.sql` in a route handler (`a
 ```sh
 nub install
 ln -sfn ../../.. node_modules/reylo
-mkdir -p node_modules/@reylosql && ln -sfn ../../../../packages/postgres node_modules/@reylosql/postgres
+(cd ../.. && cargo build --release -p reylo)   # the engine: the link finds the checkout's target/release/reylo, or REYLO_ENGINE_PATH names one
 echo 'DATABASE_URL=postgres://localhost:5432/postgres' > .env   # the lab/basic tables
 nub run typecheck        # next typegen, then tsc --noEmit --runExternalCode
 nub run dev              # Turbopack; nub run dev:webpack for webpack

@@ -1,8 +1,10 @@
 aggregates.sql: one () -> { n: integer, e: integer, names: text?, t: real?, m: real?, first: text?, mean: real? }
 dates.sql: one () -> { d: text, y: text, u: integer, jd: real, zero: text }
 json.sql: many () -> { a: unknown?, l: integer?, v: integer?, o: { n: text }, items: integer }
-math_missing.sql: many () -> {  } !! reylo6: no such function: acos on this database's SQLite
-math_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function: sqrt on this database's SQLite
+math.sql: many () -> { id: integer, a: real? }
+math_in_where.sql: many (s: real) -> { id: integer }
+offset_missing.sql: many () -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
+offset_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
 operators.sql: many (p: text, a: integer, b: integer) -> { l: bool, g: bool, j: unknown?, k: unknown?, c: text, t: text, i: integer, e: text, ty: text, n: integer }
 soundex.sql: many (x: text) -> { s: text, e: text }
 strings.sql: many () -> { u: text, l: integer, s: text, r: text, t: text, i: integer, h: text, q: text, p: text, a: real?, rd: real?, nu: text?, em: text, ch: text, un: integer?, rn: integer, lk: bool }

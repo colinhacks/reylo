@@ -116,9 +116,7 @@ test("two databases the project uses in turn keep an entry each, so neither anal
 
 test("a build that cannot reach the database reads .reylo/ with another URL, with none, and in a copy of the project elsewhere", async () => {
   const { root, env } = project();
-  // The project installs its database's engine, which names the dialect where no URL does.
-  mkdirSync(join(root, "node_modules", "@reylosql"), { recursive: true });
-  symlinkSync(fileURLToPath(new URL("../packages/sqlite", import.meta.url)), join(root, "node_modules", "@reylosql", "sqlite"));
+  // The entries record their dialect, which names the database where no URL does.
   const typed = await analyze(root, env, SELECT);
   assert.ok(typed.ok);
   assert.equal(typed.source, "database");
@@ -533,7 +531,7 @@ test("the type check names the dialect of the project a kept session recovers to
   await mapper.openProject!({ projectHandle, configFileName: join(root, ".reylo.yaml") });
   const transform = async () => (await mapper.transform!({ fileName: join(root, "q.sql"), content: "select 1", projectHandle })) as { text: string; diagnostics: { code: number }[] };
   try {
-    // With no URL, and no engine installed in the project, the dialect is Postgres's.
+    // With no URL, and no entry in .reylo/ to name one, the dialect is Postgres's.
     const before = await transform();
     assert.deepEqual(before.diagnostics.map((d) => d.code), [11]);
     assert.match(before.text, /QueryError<"postgres">/);

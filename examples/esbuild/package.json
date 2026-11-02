@@ -14,7 +14,6 @@
     "reylo": "link:../../dist/reylo"
   },
   "devDependencies": {
-    "@reylosql/postgres": "link:../../dist/postgres",
     "@types/node": "^24.0.0",
     "esbuild": "^0.28.2",
     "typescript": "7.1.0-beta"

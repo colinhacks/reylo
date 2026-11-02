@@ -22,7 +22,7 @@ Each test runs inside a transaction that it rolls back, so `app.db` stays as `se
 
 - In `package.json`:
   - In `dependencies`, `reylo` is the runtime each query module imports, and the transformer `reylo/jest`.
-  - In `devDependencies`, `@reylosql/sqlite` and `typescript` (`7.1.0-beta`) are the SQLite engine that the type check and the transformer analyze each statement with, and the first TypeScript with content mappers.
+  - In `devDependencies`, `typescript` (`7.1.0-beta`) is the first TypeScript with content mappers. The engine that the type check and the transformer analyze each statement with comes with `reylo`, built for the machine.
   - The `test` script runs `node --experimental-vm-modules node_modules/jest/bin/jest.js`: Jest runs ES modules only behind that Node flag, and passing it to `node` directly works in every shell, with no `NODE_OPTIONS=` prefix or `cross-env`. The flag `--env-file-if-exists=.env` gives the tests `DATABASE_URL`; one set in the environment wins.
   - The `test:cjs` script runs Jest without the flag, with `jest.cjs.config.js`.
   - The `typecheck` script runs `tsc --noEmit --runExternalCode`, which lets `tsc` run the content mapper.
@@ -35,7 +35,7 @@ Each test runs inside a transaction that it rolls back, so `app.db` stays as `se
 
 ## In your own project
 
-- Install the packages instead of linking them: `npm install reylo better-sqlite3`, then `npm install -D @reylosql/sqlite typescript@beta jest @jest/globals @types/better-sqlite3 @types/node`, and for the CommonJS run `npm install -D babel-jest @babel/core @babel/preset-env @babel/preset-typescript`.
+- Install the packages instead of linking them: `npm install reylo better-sqlite3`, then `npm install -D typescript@beta jest @jest/globals @types/better-sqlite3 @types/node`, and for the CommonJS run `npm install -D babel-jest @babel/core @babel/preset-env @babel/preset-typescript`.
 - Keep the configuration of the mode you run, as `jest.config.js`. The ES module run needs no Babel. In a package without `"type": "module"`, write the configuration with `module.exports =`.
 - Nothing else here exists only for the link. Linked, Reylo sits outside any `node_modules` (Jest sees its real path, `dist/reylo/`), so `transformIgnorePatterns` changes nothing in this repository; installed, it is what lets Babel compile Reylo, and its pattern matches both `node_modules/reylo/` (npm) and a store such as `node_modules/.pnpm/reylo@…/node_modules/reylo/` (pnpm, nub, Bun).
 

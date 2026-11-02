@@ -17,7 +17,6 @@
     "@babel/preset-env": "^8.0.7",
     "@babel/preset-typescript": "^8.0.7",
     "@jest/globals": "^30.5.2",
-    "@reylosql/sqlite": "link:../../dist/sqlite",
     "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.5",
     "babel-jest": "^30.5.2",

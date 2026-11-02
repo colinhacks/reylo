@@ -15,9 +15,6 @@ importers:
         specifier: link:../../dist/reylo
         version: link:../../dist/reylo
     devDependencies:
-      '@reylosql/mysql':
-        specifier: link:../../dist/mysql
-        version: link:../../dist/mysql
       '@swc/core':
         specifier: ^1.16.18
         version: 1.16.18

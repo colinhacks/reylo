@@ -1,7 +1,6 @@
 //! JSON Schema as a rendering of the type model: what a value of a [`Type`] looks like once it is
-//! JSON. The spellings are the framework's encoding table (`framework/docs`, the endpoints
-//! page), whose formats tell a client which decoder a value needs, so each one is stated even
-//! where JSON has a native type.
+//! JSON. A spelling's format tells a client which decoder a value needs, so each one is stated
+//! even where JSON has a native type.
 //!
 //! One type reads two ways, by where the value stands. A value the caller decodes itself (a
 //! result column, a parameter) takes the caller's representation: `int8` as a digit string
@@ -16,8 +15,8 @@ use serde_json::{json, Map, Value};
 /// Where a value stands and how the caller encodes what it decodes itself.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SchemaOptions {
-    /// `int8` as a JSON number rather than a digit string where the caller decodes it (the
-    /// framework's `encoding.int8: number`). Inside a JSON document it is a number either way.
+    /// `int8` as a JSON number rather than a digit string where the caller decodes it (a
+    /// host's `encoding.int8: number`). Inside a JSON document it is a number either way.
     pub int8_as_number: bool,
     /// The value is inside a JSON document the database wrote.
     pub in_json: bool,
@@ -189,7 +188,7 @@ fn scalar(name: &str, opts: SchemaOptions) -> Value {
         // `format: byte` is the table's word; `contentEncoding` is the JSON Schema 2020-12
         // spelling of the same base64, kept beside it for validators.
         "bytea" => json!({"type": "string", "format": "byte", "contentEncoding": "base64"}),
-        // `unknown`: an expression column nothing could type (SQLite's, through the framework's
+        // `unknown`: an expression column nothing could type (SQLite's, through a host's own
         // registry), so any JSON.
         "json" | "jsonb" | "unknown" => json!({}),
         _ => json!({"type": "string", "description": format!("pg type {name}")}),

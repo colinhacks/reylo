@@ -11,9 +11,9 @@ pub fn too_deep(error: &str) -> bool {
     error.contains("nested too deeply") || error.contains("stack depth limit exceeded")
 }
 
-/// Parse `sql` with libpg_query, on the engine's stack. Every parse of the engine and of Reylo
-/// Framework comes through here: the reading of the tree is the deepest recursion of an analysis,
-/// and a caller that is not on the engine's stack (a framework helper on a tokio worker) gets the
+/// Parse `sql` with libpg_query, on the engine's stack. Every parse of the engine and of a host
+/// that reads the tree itself comes through here: the reading of the tree is the deepest recursion
+/// of an analysis, and a caller that is not on the engine's stack (a helper on a tokio worker) gets the
 /// room for it all the same. The tree comes back to the caller, whose own walks over it take far
 /// less stack per level.
 ///

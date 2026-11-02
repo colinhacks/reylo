@@ -15,9 +15,6 @@ importers:
         specifier: link:../../dist/reylo
         version: link:../../dist/reylo
     devDependencies:
-      '@reylosql/postgres':
-        specifier: link:../../dist/postgres
-        version: link:../../dist/postgres
       '@rspack/cli':
         specifier: ^2.2.9
         version: 2.2.9(@rspack/core@2.2.9)

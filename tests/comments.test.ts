@@ -18,10 +18,9 @@ function project(url: string, driver: string, dialect: string): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-comments-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
   writeFileSync(join(root, ".env"), `DATABASE_URL=${url}\n`);
-  mkdirSync(join(root, "node_modules", "@reylosql"), { recursive: true });
+  mkdirSync(join(root, "node_modules"), { recursive: true });
   symlinkSync(join(DRIVERS, driver), join(root, "node_modules", driver));
   symlinkSync(ROOT, join(root, "node_modules", "reylo"));
-  symlinkSync(join(ROOT, "packages", dialect), join(root, "node_modules", "@reylosql", dialect));
   return root;
 }
 

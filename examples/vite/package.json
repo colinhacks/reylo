@@ -22,7 +22,6 @@
   },
   "devDependencies": {
     "@react-router/dev": "^8.5.0",
-    "@reylosql/postgres": "link:../../dist/postgres",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/react": "^19.3.0",
