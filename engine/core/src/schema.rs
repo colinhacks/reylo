@@ -143,9 +143,10 @@ impl Type {
             Kind::Record(r) if !r.fields.is_empty() && r.fields.iter().all(|f| f.name.is_empty()) => {
                 json!({"type": "array", "prefixItems": r.fields.iter().map(|f| nullable(f.ty.json_schema(opts))).collect::<Vec<_>>(), "items": false, "minItems": r.fields.len()})
             }
-            // A row's fields stand where the row does. A composite's (a record with a name) column
-            // that the catalog does not mark `NOT NULL` is always spelled as an `anyOf` with null;
-            // a field of an object a statement built is widened as `nullable` widens any value.
+            // A row's fields stand where the row does. A field that may be null is spelled as an
+            // `anyOf` with null in a record with a name (a composite, an anonymous `record`), and is
+            // widened as `nullable` widens any value in one without (an object a statement built, a
+            // DuckDB struct).
             Kind::Record(r) => object(&r.fields, |f| {
                 let schema = f.ty.json_schema(opts);
                 match (f.nullable, self.name.is_some()) {
