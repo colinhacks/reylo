@@ -1260,50 +1260,80 @@ fn emit(ty: &Ty) -> Value {
     if ty.is_never() {
         return json!(false);
     }
-    let mut members: Vec<Value> = Vec::new();
-    let mut types: Vec<&str> = Vec::new();
+    // The members in the order a TypeScript union is written: the literals, the scalar types, the
+    // arrays, the objects, and null last, as in `"auto" | number | { w: number } | null`. Types
+    // side by side are one `type` list.
     let mut literals: Vec<Value> = Vec::new();
-    match &ty.objects {
-        Shapes::All => types.push("object"),
-        Shapes::Some(shapes) => members.extend(shapes.iter().map(emit_object)),
-    }
-    match &ty.arrays {
-        Shapes::All => types.push("array"),
-        Shapes::Some(shapes) => members.extend(shapes.iter().map(emit_array)),
-    }
+    let mut scalars: Vec<&str> = Vec::new();
     match &ty.string {
-        Lits::All => types.push("string"),
+        Lits::All => scalars.push("string"),
         Lits::Some(values) => literals.extend(values.iter().map(|s| json!(s))),
         Lits::No => {}
     }
     match &ty.number {
-        Num::All { integer } => types.push(if *integer { "integer" } else { "number" }),
+        Num::All { integer } => scalars.push(if *integer { "integer" } else { "number" }),
         Num::Some(values) => literals.extend(values.iter().map(|n| Value::Number(n.clone()))),
         Num::No => {}
     }
     match &ty.boolean {
-        Lits::All => types.push("boolean"),
+        Lits::All => scalars.push("boolean"),
         Lits::Some(values) => literals.extend(values.iter().map(|b| json!(b))),
         Lits::No => {}
     }
-    // A null joins the literals where there are some: `"a" | null` is one list.
-    if ty.null && literals.is_empty() {
-        types.push("null");
-    } else if ty.null {
-        literals.push(Value::Null);
-    }
+    let mut members: Vec<Member> = Vec::new();
     if !literals.is_empty() {
-        members.push(json!({ "enum": literals }));
+        members.push(Member::Enum(literals));
     }
-    match types.as_slice() {
-        [] => {}
-        [one] => members.push(json!({ "type": one })),
-        many => members.push(json!({ "type": many })),
+    if !scalars.is_empty() {
+        members.push(Member::Types(scalars));
     }
+    match &ty.arrays {
+        Shapes::All => members.push(Member::Types(vec!["array"])),
+        Shapes::Some(shapes) => members.extend(shapes.iter().map(|a| Member::Shape(emit_array(a)))),
+    }
+    match &ty.objects {
+        Shapes::All => members.push(Member::Types(vec!["object"])),
+        Shapes::Some(shapes) => members.extend(shapes.iter().map(|o| Member::Shape(emit_object(o)))),
+    }
+    let mut members = members.into_iter().fold(Vec::new(), |mut merged: Vec<Member>, member| {
+        match (merged.last_mut(), member) {
+            (Some(Member::Types(before)), Member::Types(more)) => before.extend(more),
+            (_, member) => merged.push(member),
+        }
+        merged
+    });
+    // A null joins the list before it, `"a" | null` one `enum` and `string | null` one `type`, and
+    // follows a shape on its own.
+    if ty.null {
+        match members.last_mut() {
+            Some(Member::Enum(values)) => values.push(Value::Null),
+            Some(Member::Types(types)) => types.push("null"),
+            _ => members.push(Member::Types(vec!["null"])),
+        }
+    }
+    let mut members: Vec<Value> = members.into_iter().map(Member::emit).collect();
     if members.len() == 1 {
         members.pop().expect("one member")
     } else {
         json!({ "anyOf": members })
+    }
+}
+
+/// One member of a union the canonical schema writes.
+enum Member {
+    Enum(Vec<Value>),
+    Types(Vec<&'static str>),
+    Shape(Value),
+}
+
+impl Member {
+    fn emit(self) -> Value {
+        match self {
+            Member::Enum(values) => json!({ "enum": values }),
+            Member::Types(types) if types.len() == 1 => json!({ "type": types[0] }),
+            Member::Types(types) => json!({ "type": types }),
+            Member::Shape(shape) => shape,
+        }
     }
 }
 
@@ -1523,7 +1553,7 @@ mod tests {
         // `required` with no `type` says nothing of a string.
         assert_eq!(
             ty(json!({"required": ["a"]})),
-            json!({"anyOf": [{"type": "object", "properties": {"a": {}}, "required": ["a"], "additionalProperties": true}, {"type": ["array", "string", "number", "boolean", "null"]}]})
+            json!({"anyOf": [{"type": ["string", "number", "boolean", "array"]}, {"type": "object", "properties": {"a": {}}, "required": ["a"], "additionalProperties": true}, {"type": "null"}]})
         );
         assert_eq!(ty(json!({"minLength": 2, "pattern": "^a", "format": "email"})), json!({}));
     }
@@ -1534,8 +1564,8 @@ mod tests {
         assert_eq!(ty(json!({"enum": ["a", 1, null, true]})), json!({"enum": ["a", 1, true, null]}));
         assert_eq!(ty(json!({"type": "integer", "enum": [1.0, 1.5]})), json!({"enum": [1.0]}));
         assert_eq!(ty(json!({"enum": [{"a": 1}, [1, "x"]]})), json!({"anyOf": [
-            {"type": "object", "properties": {"a": {"enum": [1]}}, "required": ["a"], "additionalProperties": false},
-            {"type": "array", "prefixItems": [{"enum": [1]}, {"enum": ["x"]}], "items": false, "minItems": 2}
+            {"type": "array", "prefixItems": [{"enum": [1]}, {"enum": ["x"]}], "items": false, "minItems": 2},
+            {"type": "object", "properties": {"a": {"enum": [1]}}, "required": ["a"], "additionalProperties": false}
         ]}));
     }
 
@@ -1573,8 +1603,19 @@ mod tests {
     }
 
     #[test]
+    fn unions_list_literals_scalars_arrays_objects_then_null() {
+        let wh = json!({"type": "object", "properties": {"w": {"type": "integer"}}, "required": ["w"], "additionalProperties": false});
+        assert_eq!(ty(json!({"anyOf": [wh.clone(), {"const": "auto"}]})), json!({"anyOf": [{"enum": ["auto"]}, wh.clone()]}));
+        assert_eq!(ty(json!({"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "string"}]})), json!({"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]}));
+        // A null follows a shape on its own, and joins a list before it.
+        assert_eq!(ty(json!({"anyOf": [wh.clone(), {"enum": ["auto", null]}]})), json!({"anyOf": [{"enum": ["auto"]}, wh.clone(), {"type": "null"}]}));
+        assert_eq!(ty(json!({"enum": ["auto", null]})), json!({"enum": ["auto", null]}));
+        assert_eq!(ty(json!({"anyOf": [{"enum": ["auto"]}, {"type": ["integer", "null"]}]})), json!({"anyOf": [{"enum": ["auto"]}, {"type": ["integer", "null"]}]}));
+    }
+
+    #[test]
     fn not_removes_whole_types_only() {
-        assert_eq!(ty(json!({"not": {"type": "null"}})), json!({"type": ["object", "array", "string", "number", "boolean"]}));
+        assert_eq!(ty(json!({"not": {"type": "null"}})), json!({"type": ["string", "number", "boolean", "array", "object"]}));
         // `not` of a string of length 3 or more leaves short strings: nothing is removed.
         assert_eq!(ty(json!({"type": "string", "not": {"type": "string", "minLength": 3}})), json!({"type": "string"}));
         assert_eq!(ty(json!({"not": {}})), json!(false));
@@ -1596,7 +1637,7 @@ mod tests {
         let tuple = json!({"items": [{"type": "string"}, {"type": "integer"}], "additionalItems": false, "minItems": 1});
         assert_eq!(
             type_schema(&tuple, &DRAFT7),
-            json!({"anyOf": [{"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}], "items": false, "minItems": 1}, {"type": ["object", "string", "number", "boolean", "null"]}]})
+            json!({"anyOf": [{"type": ["string", "number", "boolean"]}, {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}], "items": false, "minItems": 1}, {"type": ["object", "null"]}]})
         );
         // In 2020-12 a list under `items` is no keyword of the draft, and `prefixItems` is.
         assert_eq!(ty(json!({"type": "array", "items": [{"type": "string"}]})), json!({"type": "array"}));
