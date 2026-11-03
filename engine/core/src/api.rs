@@ -339,8 +339,7 @@ fn call_here<D: Database>(request: &str) -> String {
                 D::unbundle(&mut answers);
                 match D::round(&sql, &answers) {
                     Response::Analysis { mut analysis } => {
-                        let prose = crate::comment::leading(&sql, D::DIALECT).prose;
-                        analysis.comment = (!prose.is_empty()).then_some(prose);
+                        analysis.comment = crate::comment::prose(&sql, D::DIALECT);
                         Response::Analysis { analysis }
                     }
                     other => other,

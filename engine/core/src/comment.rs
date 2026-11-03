@@ -10,6 +10,13 @@ pub struct Leading {
     pub end: usize,
 }
 
+/// The prose of the comments before a statement, where it has any: an analysis's `comment`, which
+/// every host's analysis carries ([`crate::api::call`], [`crate::replay`]).
+pub fn prose(sql: &str, dialect: Dialect) -> Option<String> {
+    let prose = leading(sql, dialect).prose;
+    (!prose.is_empty()).then_some(prose)
+}
+
 /// The `--` lines and `/* … */` blocks before the statement's first token, markers stripped and
 /// lines kept: a blank line between two comments, or a change from one form to the other, starts a
 /// paragraph. Read as the dialect reads comments: Postgres and DuckDB nest block comments, MySQL's
