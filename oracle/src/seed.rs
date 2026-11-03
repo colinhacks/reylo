@@ -32,7 +32,9 @@
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
 //! - a statement proven `one` returns exactly one row, and one proven `at_most_one` at most one;
-//! - no two rows agree on every column of the result key, a NULL counting as equal to another.
+//! - no two rows agree on every column of the result key, a NULL counting as equal to another;
+//! - where the order is total, no two rows in a row tie on every sort key: a sort key that is no
+//!   output column is read from a copy of the statement that also selects it.
 //!
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
 //! nothing about it was checked.
@@ -551,8 +553,8 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                 let order: Vec<String> = analysis["rewritten"]["order"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
                 let params = analysis["params"].as_array().cloned().unwrap_or_default();
                 // Each placeholder `$n` is the n-th name of `order`; the value is that parameter's.
-                let text_of = |values: &[String]| {
-                    let mut text = rewritten.clone();
+                let fill = |base: &str, values: &[String]| {
+                    let mut text = base.to_string();
                     for (n, name) in order.iter().enumerate().rev() {
                         let index = params.iter().position(|p| p["name"].as_str() == Some(name)).unwrap_or(n);
                         let literal = values.get(index).cloned().unwrap_or_else(|| "NULL".into());
@@ -560,6 +562,20 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         text = text.replace(&format!("${}", n + 1), &format!("({literal})::{ty}"));
                     }
                     text
+                };
+                let text_of = |values: &[String]| fill(&rewritten, values);
+                // An order the engine says is total is checked on each run: no two rows in a row tie
+                // on every sort key. A sort key that is no output column is read from a copy of the
+                // statement that selects it too.
+                let probe = if analysis["ordered"].as_bool() == Some(true) {
+                    let names: Vec<String> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("").to_string()).collect();
+                    let probe = reylo_engine::postgres::cardinality::sort_probe(&rewritten, &names);
+                    if probe.is_none() {
+                        problems.push(format!("{file}: ordered, and the oracle cannot read its ORDER BY's sort keys to check it"));
+                    }
+                    probe
+                } else {
+                    None
                 };
                 for values in assignments(&bound.pools) {
                     let text = text_of(&values);
@@ -639,6 +655,32 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                     if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
                         problems.push(format!("{file}: {why} with ({})", values.join(", ")));
                     }
+                    match &probe {
+                        Some((None, at)) => {
+                            if let Some(why) = ties(&rows, at) {
+                                problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                            }
+                        }
+                        Some((Some(wrapped), at)) => {
+                            client.batch_execute("SAVEPOINT q").await.map_err(|e| message(&e))?;
+                            let outcome = client.simple_query(&fill(wrapped, &values)).await;
+                            client.batch_execute("ROLLBACK TO SAVEPOINT q").await.map_err(|e| message(&e))?;
+                            match outcome {
+                                Ok(messages) => {
+                                    let rows: Vec<&tokio_postgres::SimpleQueryRow> = messages.iter().filter_map(|m| match m {
+                                        tokio_postgres::SimpleQueryMessage::Row(r) => Some(r),
+                                        _ => None,
+                                    }).collect();
+                                    if let Some(why) = ties(&rows, at) {
+                                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                                    }
+                                }
+                                Err(e) if e.code() == Some(&SqlState::QUERY_CANCELED) => {}
+                                Err(e) => problems.push(format!("{file}: ordered, and the copy that selects its sort keys failed: {} with ({})", message(&e), values.join(", "))),
+                            }
+                        }
+                        None => {}
+                    }
                     for row in &rows {
                         for (i, col) in columns.iter().enumerate() {
                             let value = row.try_get(i).ok().flatten();
@@ -665,6 +707,16 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
         outcome?;
     }
     Ok(report(statements, &tallies, timeout_ms, problems, notes))
+}
+
+/// Why the rows of one run contradict an order the analysis says is total, if they do: two rows in
+/// a row hold the same text, or both NULL, in every column `at` names, the sort keys.
+fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String> {
+    let keys = |row: &tokio_postgres::SimpleQueryRow| at.iter().map(|&i| row.try_get(i).ok().flatten().map(String::from)).collect::<Vec<Option<String>>>();
+    rows.windows(2).enumerate().find_map(|(k, pair)| {
+        let (a, b) = (keys(pair[0]), keys(pair[1]));
+        (a == b).then(|| format!("ordered, and rows {} and {} tie on every sort key, as ({})", k + 1, k + 2, a.iter().map(|v| v.as_deref().map_or_else(|| "NULL".to_string(), |v| format!("'{v}'"))).collect::<Vec<_>>().join(", ")))
+    })
 }
 
 /// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on

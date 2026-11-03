@@ -477,8 +477,8 @@ fn analyze_sqlite(db: &rusqlite::Connection, sql: &str) -> Result<Value, String>
 // The printed form
 // ---------------------------------------------------------------------------------------------
 
-/// `many (id: int4) -> { id: int4, title: text, author: text? } key (id)`, then any diagnostics:
-/// each type as [`Type::short`] prints it.
+/// `many (id: int4) -> { id: int4, title: text, author: text? } key (id) ordered`, then any
+/// diagnostics: each type as [`Type::short`] prints it.
 fn line(analysis: &Value) -> String {
     let field = |v: &Value| format!("{}: {}{}", v["name"].as_str().unwrap_or("?"), render(&v["type"]), if v["nullable"].as_bool().unwrap_or(false) { "?" } else { "" });
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
@@ -487,6 +487,10 @@ fn line(analysis: &Value) -> String {
     // The result key, which a result of more than one row may have.
     if let Some(key) = analysis["key"].as_array() {
         out.push_str(&format!(" key ({})", key.iter().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", ")));
+    }
+    // An ORDER BY that orders the rows totally.
+    if analysis["ordered"].as_bool() == Some(true) {
+        out.push_str(" ordered");
     }
     for d in analysis["diagnostics"].as_array().into_iter().flatten() {
         out.push_str(&format!(" !! reylo{}: {}", d["code"], d["message"].as_str().unwrap_or("")));

@@ -9,8 +9,8 @@ composite_unique.sql: many () -> { author_id: int8, slug: text, title: text? } k
 cross_join_one_side.sql: many () -> { id: int8, label: text }
 cte.sql: many (after: int8) -> { id: int8, title: text? } key (id)
 distinct.sql: many () -> { title: text? } key (title)
-distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id)
-distinct_on_output_name.sql: many () -> { x: text?, title: int8 } key (x)
+distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id) ordered
+distinct_on_output_name.sql: many () -> { x: text?, title: int8 } key (x) ordered
 except_all.sql: many () -> { id: int8, title: text? } key (id)
 except_all_converted.sql: many () -> { id: float8 }
 group_by.sql: many () -> { author_id: int8, posts: int8 } key (author_id)
@@ -21,7 +21,7 @@ intersect_all.sql: many () -> { id: int8 } key (id)
 lateral.sql: many () -> { user_id: int8, post_id: int8 } key (user_id, post_id)
 left_nullable_side.sql: many () -> { user_id: int8?, name: text? }
 left_to_one.sql: many () -> { id: int8, bio: text? } key (id)
-limited.sql: many () -> { id: int8, title: text? } key (id)
+limited.sql: many () -> { id: int8, title: text? } key (id) ordered
 limited_union.sql: many () -> { title: text? }
 nullable_unique.sql: many () -> { handle: text?, name: text? }
 nullable_unique_filtered.sql: many () -> { handle: text, name: text? } key (handle)

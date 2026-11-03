@@ -768,6 +768,7 @@ impl<'a> Engine<'a> {
             merge_keys(&mut catalog, build_catalog(&operators, rows));
         }
         catalog.views = view_definitions;
+        catalog.not_null = self.not_null_columns();
         catalog.param_types = raw.params.clone();
         trusted(&mut catalog, &trust);
         let arbiters = arbiters.unwrap_or_default();
@@ -894,6 +895,7 @@ impl<'a> Engine<'a> {
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
         let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
         let mut analysis = Analysis {
@@ -904,6 +906,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: reason,
             key,
+            ordered,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -919,6 +922,21 @@ impl<'a> Engine<'a> {
         analysis.domains = registry.domain_bases(&names);
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
+    }
+
+    /// Each relation's columns, by the relation's name as the statement writes it, every row of which
+    /// a scan reads holds a value ([`Catalog::not_null`]).
+    fn not_null_columns(&self) -> HashMap<String, HashSet<String>> {
+        let relations = self.relations.borrow();
+        let by_name = self.columns_by_name.borrow();
+        let oids = self.oids_by_name.borrow();
+        oids.iter()
+            .filter_map(|(asked, oid)| {
+                let (_, reads) = relations.get(oid)?;
+                let columns = by_name.get(asked)?;
+                Some((asked.clone(), columns.iter().filter(|(attnum, _)| reads.get(attnum) == Some(&true)).map(|(_, (name, _))| name.clone()).collect()))
+            })
+            .collect()
     }
 
     /// The columns of an UPDATE's or a DELETE's RETURNING list its WHERE is strict in, non-null
@@ -996,6 +1014,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: None,
             key: None,
+            ordered: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -3662,6 +3681,25 @@ fn identifies(ty: &Type) -> bool {
         TyKind::Opaque => ty.name.as_deref() != Some("record"),
         _ => true,
     }
+}
+
+/// Whether a statement's ORDER BY orders its rows totally ([`Analysis::ordered`]): for a SELECT that
+/// can return more than one row, as [`cardinality::total_order`] proves; never where the
+/// cardinality already says the result holds one row at most or none.
+fn total_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> bool {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
+        return false;
+    }
+    // A type with no collation orders its values by one equality whatever the statement writes; a
+    // string's order is its collation's, which may be one under which two values tie.
+    let plain: Vec<bool> = columns.iter().map(|c| uncollated(&c.ty)).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::total_order(sql, trust, catalog, &named, &plain)
+}
+
+/// Whether values of `ty` have no collation: a number, a truth value, bytes, a UUID or a time.
+fn uncollated(ty: &Type) -> bool {
+    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
 }
 
 #[cfg(test)]

@@ -1,0 +1,30 @@
+alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id)
+by_primary_key.sql: many () -> { id: int8, name: text? } key (id) ordered
+by_unique_desc.sql: many () -> { email: text, name: text? } key (email) ordered
+cte.sql: many (min: int4) -> { title: text? } ordered
+distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id) ordered
+explicit_collation.sql: many () -> { id: int8, email: text } key (id) ordered
+explicit_collation_only.sql: many () -> { email: text } key (email)
+expression.sql: many () -> { id: int8, title: text? } key (id)
+group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
+group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id)
+key_not_selected.sql: many () -> { title: text? } ordered
+limited.sql: many () -> { id: int8, title: text? } key (id) ordered
+no_order.sql: many () -> { id: int8, title: text? } key (id)
+non_unique.sql: many () -> { title: text? }
+non_unique_then_key.sql: many () -> { title: text?, score: int4? } ordered
+nondeterministic.sql: many () -> { tag: text } key (tag)
+nullable_side_key.sql: many () -> { name: text? }
+nullable_unique.sql: many () -> { handle: text?, name: text? }
+offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) ordered
+position.sql: many () -> { title: text?, id: int8 } key (id) ordered
+subquery.sql: many () -> { title: text? } ordered
+to_many_both_keys.sql: many () -> { name: text?, title: text? } ordered
+to_many_join.sql: many () -> { name: text?, title: text? }
+to_one_join.sql: many () -> { title: text?, name: text? } ordered
+to_one_left_join.sql: many () -> { name: text?, bio: text? } ordered
+union.sql: many () -> { title: text? } key (title) ordered
+union_all.sql: many () -> { title: text? }
+unique_not_selected.sql: many () -> { name: text? } ordered
+view.sql: many () -> { id: int8, title: text? } key (id) ordered
+view_key_not_selected.sql: many () -> { title: text? } ordered
