@@ -25,6 +25,7 @@
 // those oids are arrays, cached in a WeakMap keyed by the app's object.
 import { coerce, DecodeError, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
+import { rowOf, type RowBuilder } from "./row.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -325,7 +326,7 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
 type BufferLike = Uint8Array;
 const textOf = utf8;
 
-export async function postgresJs(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined): Promise<unknown[]> {
+export async function postgresJs(c: AnyClient, text: string, params: unknown[], columns: Columns | undefined, row?: RowBuilder): Promise<unknown[]> {
   // Prepared, as postgres.js prepares its own queries: its unsafe() prepares nothing by default,
   // so every run with a parameter took two round trips (Parse and Describe, then Bind and Execute)
   // where a statement prepared on the connection takes one. A client made with `prepare: false`,
@@ -346,17 +347,19 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   const decoders = await fieldDecoders(fields, columns, c, load);
   // The module's names, which a `transform.column` of the app's does not rename; a query defined by
   // hand has the server's.
-  const names = columns && columns.length === fields.length ? columns.map(([name]) => name) : fields.map((f) => f.name);
-  const n = names.length;
+  const byColumns = columns !== undefined && columns.length === fields.length;
+  const build = byColumns && row ? row : rowOf(byColumns ? columns.map(([name]) => name) : fields.map((f) => f.name));
+  const n = fields.length;
+  // Each row's values, decoded into one array the builder copies from.
+  const decoded = new Array<unknown>(n);
   const out = new Array(raw.length);
   for (let r = 0; r < raw.length; r++) {
     const values = raw[r] as (BufferLike | null)[];
-    const row: Record<string, unknown> = {};
     for (let i = 0; i < n; i++) {
       const v = values[i];
-      row[names[i]!] = v === null || v === undefined ? null : decoders[i]!(textOf(v));
+      decoded[i] = v === null || v === undefined ? null : decoders[i]!(textOf(v));
     }
-    out[r] = row;
+    out[r] = build(decoded);
   }
   return out;
 }

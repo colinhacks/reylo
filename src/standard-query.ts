@@ -16,7 +16,8 @@
 import { normalize } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
-import { coerce, DecodeError, textDecoder } from "./values.ts";
+import { rowOf, type RowBuilder } from "./row.ts";
+import { coerce, DecodeError, textDecoder, type Decoder } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -84,20 +85,19 @@ export declare namespace StandardQueryV1 {
     : [input: StandardTypedV1.InferInput<Q>];
 }
 
-/** A column's raw value as its kind, on Postgres from its text, on MySQL from whatever form the driver read. SQLite's rows go through `normalize` whole. */
-function decoder(dialect: Dialect, name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
-  if (dialect === "postgres") {
-    const fromText = textDecoder(kind, delim);
-    return (v) => {
-      if (typeof v !== "string") throw new DecodeError(`Column "${name}" is not in Postgres's text form: a driver hands a Standard Query each value's text.`);
-      return fromText(v);
-    };
-  }
+/** A column's raw value as its kind, on MySQL from whatever form the driver read. Postgres's are its text's decoders; SQLite's rows go through `normalize` whole. */
+function decoder(name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
   // column that may be one included (src/decode-mysql.ts, `mariadb`).
   if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
   return (v) => coerce(kind, v, name, delim);
 }
+
+const notText = (name: string): never => {
+  throw new DecodeError(`Column "${name}" is not in Postgres's text form: a driver hands a Standard Query each value's text.`);
+};
+
+const columnCount = (columns: number, got: number) => new DecodeError(`The statement selects ${columns} columns, and a row has ${got}.`);
 
 /**
  * The query members of a module: `encode` through `.run()`'s own binding, `decode` through its
@@ -106,6 +106,8 @@ function decoder(dialect: Dialect, name: string, kind: string, delim: string | u
 export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>, materialize: (rows: Record<string, unknown>[]) => Output): StandardQueryV1.Query<Output, D> {
   let text: string | undefined;
   let decoders: ((v: unknown) => unknown)[] | undefined;
+  let textDecoders: Decoder[] | undefined;
+  let build: RowBuilder | undefined;
   // A closure, not `this`: a driver may take `encode` off the object.
   // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.
   const statementText = () => (text ??= sentText(module, compile(module).text));
@@ -125,19 +127,41 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
     decode(rows) {
       const columns = module.columns;
       if (columns === undefined) throw new TypeError("A query defined by hand without its columns cannot map rows to its output: a module a build step writes carries them.");
+      const n = columns.length;
+      // Each row's values, decoded into one array the builder copies from.
+      const values = new Array<unknown>(n);
+      build ??= module.row ?? rowOf(columns.map(([name]) => name));
+      const out = new Array<Record<string, unknown>>(rows.length);
+      if (module.dialect === "postgres") {
+        // Postgres's text decoders, each value checked for text where the decoder takes it.
+        const text = (textDecoders ??= columns.map(([, kind, delim]) => textDecoder(kind, delim)));
+        for (let r = 0; r < rows.length; r++) {
+          const raw = rows[r]!;
+          if (raw.length !== n) throw columnCount(n, raw.length);
+          for (let i = 0; i < n; i++) {
+            const v = raw[i];
+            values[i] = v === null || v === undefined ? null : typeof v === "string" ? text[i]!(v) : notText(columns[i]![0]);
+          }
+          out[r] = build(values);
+        }
+        return materialize(out);
+      }
       // SQLite's values go through `.run()`'s own `normalize`, its refusals of a storage class the
       // column's type does not allow included. Its default reading suits a driver whose integer
       // mode is unknown: a BigInt is read exact, and a number past 2^53 in an INTEGER column is
       // refused as a rounded one.
       const sqlite = module.dialect === "sqlite";
-      if (!sqlite) decoders ??= columns.map(([name, kind, delim]) => decoder(module.dialect, name, kind, delim));
-      const keyed = rows.map((raw) => {
-        if (raw.length !== columns.length) throw new DecodeError(`The statement selects ${columns.length} columns, and a row has ${raw.length}.`);
-        const row: Record<string, unknown> = {};
-        for (let i = 0; i < raw.length; i++) row[columns[i]![0]] = raw[i] === null || raw[i] === undefined ? null : sqlite ? raw[i] : decoders![i]!(raw[i]);
-        return row;
-      });
-      return materialize(sqlite ? (normalize(keyed, columns) as Record<string, unknown>[]) : keyed);
+      if (!sqlite) decoders ??= columns.map(([name, kind, delim]) => decoder(name, kind, delim));
+      for (let r = 0; r < rows.length; r++) {
+        const raw = rows[r]!;
+        if (raw.length !== n) throw columnCount(n, raw.length);
+        for (let i = 0; i < n; i++) {
+          const v = raw[i];
+          values[i] = v === null || v === undefined ? null : sqlite ? v : decoders![i]!(v);
+        }
+        out[r] = build(values);
+      }
+      return materialize(sqlite ? (normalize(out, columns) as Record<string, unknown>[]) : out);
     },
   };
 }

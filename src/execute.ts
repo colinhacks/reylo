@@ -16,6 +16,7 @@ import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import type { Checks } from "./checks.ts";
 import type { Structured } from "./rows.ts";
+import type { RowBuilder } from "./row.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
@@ -163,6 +164,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
   readonly columns?: Columns | undefined;
+  /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step puts it in the module, beside `columns`. */
+  readonly row?: RowBuilder | undefined;
   /** The result key: output columns, by name, that identify each row of the result, where the analysis proves one. */
   readonly key?: readonly string[] | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
@@ -368,7 +371,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         const bun = typeof c.commitDistributed === "function";
         const asText = typeof c.typed === "function" && !bun;
         const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
-        return bun ? bunRows(await c.unsafe(text, mapped), query.columns) : await postgresJs(c, text, mapped, query.columns);
+        return bun ? bunRows(await c.unsafe(text, mapped), query.columns) : await postgresJs(c, text, mapped, query.columns, query.row);
       }
       if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
       break;

@@ -4,6 +4,7 @@ import { compile, execute, executeSync, type ClientFor, type Dialect, type Input
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
+import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns } from "./values.ts";
@@ -127,6 +128,8 @@ export type QueryDefinition = {
   inputs?: Inputs;
   /** Each output column's name and kind (src/values.ts), in order: every build step puts them in the module, and the run time gives each value its kind by them. */
   columns?: Columns;
+  /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step writes it beside `columns`; a query defined by hand without it builds the same object in a loop. */
+  row?: RowBuilder;
   /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one for a result that can hold more than one row. A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
   key?: readonly string[];
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
@@ -161,6 +164,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     order: def.order,
     inputs: def.inputs,
     columns: def.columns,
+    row: def.row,
     key: def.key,
     structured: def.structured,
     fresh: def.fresh,
