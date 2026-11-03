@@ -2056,6 +2056,18 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_row_with_no_probe_answered_is_no_row_at_a_sql_position() {
+        let registry = TypeRegistry::with_builtins();
+        let row = Shape::Row { probe: 0 };
+        let rows = Shape::Array { items: Box::new(row.clone()), non_null: false };
+        // A probe the engine never ran, or one past its budget: the describe's type stands.
+        for shape in [&row, &rows] {
+            assert!(resolve_row(shape, &[None], &registry, &[]).is_none(), "{shape:?}");
+            assert!(resolve_row(shape, &[], &registry, &[]).is_none(), "{shape:?}");
+        }
+    }
+
+    #[test]
     fn a_whole_row_probes_the_star() {
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         assert_eq!(p.probes[0].sql, "SELECT u.* FROM users u");

@@ -2080,7 +2080,12 @@ impl<'a> Engine<'a> {
                 out.push(None);
                 continue;
             };
-            let named = |i: usize, c: &DescribedColumn| queries[item].columns.get(i).cloned().unwrap_or_else(|| c.name.clone());
+            // The clauses list the WITH query's own columns, by the names its WITH clause gives
+            // them, never a reading's alias (`from t as r(a, b)`). That alias cannot rename the
+            // columns the clauses add, nor give another column one of their names: Postgres
+            // refuses either reference as missing or ambiguous.
+            let own = names(&cte.aliascolnames);
+            let named = |i: usize, c: &DescribedColumn| own.get(i).cloned().unwrap_or_else(|| c.name.clone());
             let found: Option<Vec<&DescribedColumn>> = listed.iter().map(|name| described.columns.iter().enumerate().find(|(i, c)| named(*i, c) == *name).map(|(_, c)| c)).collect();
             let Some(found) = found else {
                 out.push(None);
