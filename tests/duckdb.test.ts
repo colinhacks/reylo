@@ -413,6 +413,26 @@ test("DuckDB: a list binds through a subclass of DuckDBConnection, and through a
   }
 });
 
+test("DuckDB: a UNION of one member is a union, declared, returned and bound as its tag and value", { skip }, async () => {
+  const root = await project("create table single (id integer primary key, u union(k integer) not null);");
+  const sql = "select u from single where id = :id\n";
+  const declared = (await declarations(root, { "one.sql": sql }))["one.sql"]!;
+  const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
+  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ u: \{ tag: "k"; value: number \| null \} \}, "maybeOne", "duckdb", QueryError> & /, line);
+  const insert = await built(root, "insert", "insert into single values (:id, :u) returning u");
+  const get = await built(root, "get", sql);
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    assert.deepEqual({ ...(await insert.run(c, { id: 1, u: { tag: "k", value: 5 } })) }, { u: { tag: "k", value: 5 } });
+    assert.deepEqual({ ...(await get.run(c, { id: 1 })) }, { u: { tag: "k", value: 5 } });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: an ISO 8601 duration is bound as DuckDB's own interval text", () => {
   assert.equal(duckdbInterval("P1Y2M3DT4H5M6.789S"), "1 years 2 months 3 days 4 hours 5 minutes 6.789 seconds");
   assert.equal(duckdbInterval("-P1DT2H"), "-1 days -2 hours");

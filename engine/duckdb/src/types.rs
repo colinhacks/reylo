@@ -9,7 +9,7 @@
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{
-    ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, Size, TimePart, TimeType, Type, Zone, MICROSECOND,
+    ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, Size, TimePart, TimeType, Type, UnionType, Zone, MICROSECOND,
 };
 
 /// DuckDB's earliest and latest dates and timestamps, the latter at microseconds (a
@@ -102,8 +102,8 @@ pub fn of(t: &LogicalType) -> Type {
             _ => return Type::unknown(),
         },
         // One of its members, by tag: a record of the one field the tag names, whose value may be
-        // NULL.
-        "UNION" => return Type::union(t.fields.iter().map(|f| Type::record(vec![Field::new(f.name.clone(), of(&f.ty), true)])).collect(), Per::Value).named("union"),
+        // NULL. A union of one member stays a union, since its value carries the tag all the same.
+        "UNION" => return Type::new(Kind::Union(UnionType { members: t.fields.iter().map(|f| Type::record(vec![Field::new(f.name.clone(), of(&f.ty), true)])).collect(), per: Per::Value })).named("union"),
         "" => return Type::unknown(),
         other => return Type::opaque(other.to_ascii_lowercase()),
     };
