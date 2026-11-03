@@ -1404,7 +1404,7 @@ mod tests {
             {"name": "r", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true}, "nullable": true},
             {"name": "doc", "type": {"kind": "unknown"}},
             {"name": "tags", "type": {"kind": "array", "element": {"type": utf8}}},
-            {"name": "pair", "type": {"kind": "json", "schema": {"dialect": "https://json-schema.org/draft/2020-12/schema", "source": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}], "items": false, "minItems": 2}}}},
+            {"name": "pair", "type": {"kind": "json", "schema": {"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "array", "prefixItems": [{"type": "integer"}, {"type": "string"}], "items": false, "minItems": 2}}},
         ]}}});
         assert_eq!(built_contradiction(&ty, &text(r#"{"id":1,"r":9.0e+999,"doc":null,"tags":["a"],"pair":[1,"a"]}"#)), None);
         assert_eq!(built_contradiction(&ty, &text(r#"{"id":1,"r":null,"doc":{"a":1},"tags":[],"pair":[1,"a"]}"#)), None);
