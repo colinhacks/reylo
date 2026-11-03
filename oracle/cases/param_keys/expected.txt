@@ -1,6 +1,6 @@
 aggregate_order.sql: one (o: text) -> { names: text? } !! reylo17: order by :o sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :o when 'name' then name end
-case_chooses.sql: many (sort: text) -> { id: int4, name: text } key (id)
-case_direction.sql: many (desc: bool) -> { id: int4, name: text } key (id)
+case_chooses.sql: many (sort: text) -> { id: int4, name: text } key (id) ordered
+case_direction.sql: many (desc: bool) -> { id: int4, name: text } key (id) ordered
 distinct_on.sql: at_most_one (d: text) -> { id: int4, name: text } !! reylo17: distinct on (:d) keeps a single row, since a parameter is a value and not a column's name; choose the column with case :d when 'name' then name end
 group_alone.sql: at_most_one (g: text) -> { n: int4 } !! reylo17: group by :g puts every row in one group, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end
 group_beside.sql: many (g: text) -> { name: text, n: int4 } !! reylo17: group by :g groups every row by the same value, since a parameter is a value and not a column's name; choose the column with case :g when 'name' then name end

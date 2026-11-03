@@ -388,13 +388,14 @@ test("postgres: a built import's columns decode the types the database created a
       { id: 1, mood: "happy", moods: ["happy", null, "sad"], prefs: { a: "1", "b c": null }, history: [{ x: "y" }, null], at: "2026-10-22T12:46:00.5Z", big: 9007199254740993n },
       { id: 2, mood: "sad", moods: null, prefs: null, history: null, at: "1883-11-18T19:52:58Z", big: null },
     ]);
-    // The declaration types each column's decoder by the column's type, without null.
+    // The declaration types each column's decoder by the column's type, without null, and the
+    // statement's total order (`order by id`) as the literal `true`.
     await closeSessions();
     const declared = (await declarations(root, { "notes.sql": sql }))["notes.sql"]!;
     const line = declared.split("\n").find((l) => l.includes(`readonly "~standard"`));
     assert.equal(
       line,
-      `  readonly "~standard": { readonly query: { readonly columns: readonly [{ readonly name: "id"; decode(value: string): number }, { readonly name: "mood"; decode(value: string): "happy" | "sad" }, { readonly name: "moods"; decode(value: string): ("happy" | "sad" | null)[] }, { readonly name: "prefs"; decode(value: string): Record<string, string | null> }, { readonly name: "history"; decode(value: string): (Record<string, string | null> | null)[] }, { readonly name: "at"; decode(value: string): string }, { readonly name: "big"; decode(value: string): bigint }] } };`,
+      `  readonly "~standard": { readonly query: { readonly columns: readonly [{ readonly name: "id"; decode(value: string): number }, { readonly name: "mood"; decode(value: string): "happy" | "sad" }, { readonly name: "moods"; decode(value: string): ("happy" | "sad" | null)[] }, { readonly name: "prefs"; decode(value: string): Record<string, string | null> }, { readonly name: "history"; decode(value: string): (Record<string, string | null> | null)[] }, { readonly name: "at"; decode(value: string): string }, { readonly name: "big"; decode(value: string): bigint }]; readonly ordered: true } };`,
     );
     // Of two columns with one name the row keeps the last, while `columns` lists both: a JSON column
     // only `columns` names still has its type imported.
