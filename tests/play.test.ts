@@ -89,7 +89,7 @@ test("reylo play answers this machine's own pages and tools, and refuses another
   }
 });
 
-test("reylo play says, as reylo generate does, that a project file's url alone is not read", async () => {
+test("reylo play says, as reylo analyze does, that a project file's url alone is not read", async () => {
   const root = project({ ".reylo.yaml": 'url: "file:./other.db"\n' });
   new DatabaseSync(join(root, "app.db")).close();
   const play = await startPlay({ cwd: root, port: 0, env: { DATABASE_URL: "file:./app.db" } });

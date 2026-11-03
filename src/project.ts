@@ -8,7 +8,7 @@
 // a file. The URL's scheme names the dialect. The connection is
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
-// `reylo generate`, once, and by the error a project with no connection gets; never by an error of
+// `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
 // is the one the project's `.reylo/` entries record.
 import { spawnSync } from "node:child_process";
@@ -27,11 +27,7 @@ export type ProjectFile = {
   env?: string[];
   strict_params?: boolean;
   sqlcommenter?: boolean;
-  cli?: Cli;
 };
-
-/** The files `reylo generate` analyzes, as globs relative to the project file's directory. */
-export type Cli = { include?: string[]; exclude?: string[] };
 
 export type ResolvedProject = {
   /** The project file, when there is one. */
@@ -43,8 +39,6 @@ export type ResolvedProject = {
   strictParams: boolean;
   /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
-  /** Which files `reylo generate` analyzes: `include` replaces every `.sql` file, `exclude` adds to what is left out. */
-  cli: Cli;
   /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
@@ -371,7 +365,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   // (src/analyze.ts), do where they are all of one dialect.
   const cached = url ? [] : cachedDialects(root);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, cli: config.cli ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */

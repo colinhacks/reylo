@@ -202,16 +202,21 @@ fn lost(message: &str) -> Value {
 async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Value> {
     let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
-    let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
     let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
     let opening = async {
         let Some(token) = bridge else {
+            // With no TLS to ask for (`sslmode=disable`, or a Unix socket) no TLS connector is made:
+            // tokio-postgres makes one for each host before it reads the mode, and rustls's takes the
+            // host for the name the certificate must carry, which a socket's directory is not.
+            if config.get_ssl_mode() == SslMode::Disable {
+                let (client, connection) = config.connect(tokio_postgres::NoTls).await.map_err(|e| failure(&e))?;
+                return Ok(started(client, connection));
+            }
+            // The TLS settings are read only here, so a certificate file named for TLS that the
+            // connection never asks for cannot stop it.
+            let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
             let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
-            let version = connection.parameter("server_version").unwrap_or_default().to_string();
-            tokio::spawn(async move {
-                let _ = connection.await;
-            });
-            return Ok((client, version));
+            return Ok(started(client, connection));
         };
         let unreachable = |e: std::io::Error| json!({ "status": "unreachable", "message": format!("cannot reach the host's bridge to the socket: {e}") });
         let (host, port) = match (config.get_hosts().first(), config.get_ports().first()) {
@@ -222,11 +227,7 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Va
         tokio::io::AsyncWriteExt::write_all(&mut stream, token.as_bytes()).await.map_err(unreachable)?;
         config.ssl_mode(SslMode::Disable);
         let (client, connection) = config.connect_raw(stream, tokio_postgres::NoTls).await.map_err(|e| failure(&e))?;
-        let version = connection.parameter("server_version").unwrap_or_default().to_string();
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
-        Ok((client, version))
+        Ok(started(client, connection))
     };
     let connecting = async {
         let (client, version) = opening.await?;
@@ -241,6 +242,20 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Va
         Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),
         Ok(result) => result,
     }
+}
+
+/// The client of a connection just opened, and the server's version from what its startup reported,
+/// the connection driven on a task of its own.
+fn started<S, T>(client: Client, connection: tokio_postgres::Connection<S, T>) -> (Client, String)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let version = connection.parameter("server_version").unwrap_or_default().to_string();
+    tokio::spawn(async move {
+        let _ = connection.await;
+    });
+    (client, version)
 }
 
 /// A libpq URL read: tokio-postgres's configuration, how much of the server's certificate to check,
@@ -334,6 +349,10 @@ fn parse(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Parsed, Stri
             return Err(format!("host={name} is a Unix socket's directory, which this engine cannot open: connect over TCP, as host=localhost"));
         }
     }
+    // libpq asks for no TLS over a Unix socket, whatever sslmode says, and a socket's directory is
+    // no name a certificate could carry: where every host is a socket, the connection has none.
+    #[cfg(unix)]
+    let ssl = if !config.get_hosts().is_empty() && config.get_hosts().iter().all(|h| matches!(h, tokio_postgres::config::Host::Unix(_))) { SslMode::Disable } else { ssl };
     config.ssl_mode(ssl);
     if config.get_connect_timeout().is_none() {
         config.connect_timeout(CONNECT_TIMEOUT);
@@ -431,5 +450,16 @@ mod tests {
         assert_eq!(check("postgres://h/d?sslrootcert=system"), (SslMode::Require, Check::Full));
         assert_eq!(check("postgres://h/d?channel_binding=require"), (SslMode::Require, Check::Nothing));
         assert!(parse("postgres://h/d?sslmode=sometimes", &no_env).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_unix_socket_connects_without_tls_as_libpq_does() {
+        let mode = |url: &str| parse(url, &no_env).unwrap().config.get_ssl_mode();
+        assert_eq!(mode("postgres://u@/d?host=/tmp"), SslMode::Disable);
+        assert_eq!(mode("postgres://u@/d?host=/tmp&sslmode=require"), SslMode::Disable);
+        assert_eq!(mode("postgres://u@db.example.com/d"), SslMode::Prefer);
+        let env = |key: &str| (key == "PGHOST").then(|| "/var/run/postgresql".to_string());
+        assert_eq!(parse("postgres:///d", &env).unwrap().config.get_ssl_mode(), SslMode::Disable);
     }
 }

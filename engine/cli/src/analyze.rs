@@ -22,7 +22,7 @@ directory, one in the project's URL from the project's root. A statement the eng
 analyze is printed with one diagnostic that says why. Exits with 1 when any statement has a
 diagnostic, and with 2 when the database cannot be reached or the statements cannot be read.";
 
-/// The directories a directory's search leaves out, as `reylo generate` left them out.
+/// The directories a directory's search leaves out: dependencies and build output.
 const SKIPPED: &[&str] = &["node_modules", "dist", "build", "out", "target", "coverage"];
 
 /// One statement to analyze, and the file it was read from.
