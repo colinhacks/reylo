@@ -147,38 +147,52 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
 
 /**
  * The TypeScript type of a JSON value the engine's canonical JSON Schema describes: the values a
- * CHECK's schema admits (engine/core/src/schema_type.rs), where a schema that says nothing more is any
- * JSON value, `Json`. An object that may hold keys besides the ones it names says so with an index
- * signature, `Json | undefined` beside named keys, since TypeScript requires every named key's type,
- * `undefined` included for an optional one, to fit the signature.
+ * CHECK's schema admits (engine/core/src/schema_type.rs), or a typed JSON parameter's or a
+ * `json('…')` member's, where a schema that says nothing more is any JSON value, `Json`. An object
+ * whose other keys may hold anything is typed by the keys it names alone: a TypeScript object type
+ * admits other keys already, and one with no index signature flags a misspelled key, in a read or
+ * in an object literal. One whose schema types its other keys, or that names none, says so with an
+ * index signature, `Json | undefined` beside named keys, since TypeScript requires every named key's
+ * type, `undefined` included for an optional one, to fit the signature. So does an open object that
+ * is one of a union's objects (`besideObjects`): `"k" in v` narrows a union to the members that name
+ * `k` or have a signature, and an open member that names no `k` may still hold one of any type.
  */
-export function schemaType(schema: unknown, input = false): string {
+export function schemaType(schema: unknown, besideObjects = false): string {
   if (schema === false) return "never";
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return JSON_TYPE;
   const m = schema as Record<string, unknown>;
-  const sub = (s: unknown) => schemaType(s, input);
-  if (Array.isArray(m.anyOf)) return union(m.anyOf.map(sub));
+  if (Array.isArray(m.anyOf)) {
+    const shared = besideObjects || objectAlternatives(m) > 1;
+    return union(m.anyOf.map((s) => schemaType(s, shared)));
+  }
   if (Array.isArray(m.enum)) return union(m.enum.map(literalType));
   if (m.not !== undefined) return "never";
-  const kinds = typeof m.type === "string" ? [m.type] : Array.isArray(m.type) ? m.type.filter((k): k is string => typeof k === "string") : [];
-  return kinds.length ? union(kinds.map((kind) => kindType(kind, m, input))) : JSON_TYPE;
+  const kinds = kindsOf(m);
+  return kinds.length ? union(kinds.map((kind) => kindType(kind, m, besideObjects))) : JSON_TYPE;
 }
 
-/**
- * `input`: the value is one the caller passes, a typed JSON parameter's or a `json('…')` member's,
- * whose keys the schema does not name are ignored unless it closes the object; its type names the
- * keys alone, so that TypeScript still flags a misspelled one in an object literal.
- */
-function kindType(kind: string, m: Record<string, unknown>, input = false): string {
-  const schemaType_ = (s: unknown) => schemaType(s, input);
+function kindsOf(m: Record<string, unknown>): string[] {
+  return typeof m.type === "string" ? [m.type] : Array.isArray(m.type) ? m.type.filter((k): k is string => typeof k === "string") : [];
+}
+
+/** How many object types a schema's union holds: its object members, nested unions' and literal objects included. */
+function objectAlternatives(schema: unknown): number {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return 0;
+  const m = schema as Record<string, unknown>;
+  if (Array.isArray(m.anyOf)) return m.anyOf.reduce((n: number, s) => n + objectAlternatives(s), 0);
+  if (Array.isArray(m.enum)) return m.enum.filter((v) => v !== null && typeof v === "object" && !Array.isArray(v)).length;
+  return kindsOf(m).includes("object") ? 1 : 0;
+}
+
+function kindType(kind: string, m: Record<string, unknown>, besideObjects: boolean): string {
   switch (kind) {
     case "string": return "string";
     case "integer": case "number": return "number";
     case "boolean": return "boolean";
     case "null": return "null";
     case "array": {
-      const prefix = Array.isArray(m.prefixItems) ? m.prefixItems.map(schemaType_) : [];
-      const rest = m.items === undefined ? JSON_TYPE : schemaType_(m.items);
+      const prefix = Array.isArray(m.prefixItems) ? m.prefixItems.map((s) => schemaType(s)) : [];
+      const rest = m.items === undefined ? JSON_TYPE : schemaType(m.items);
       if (!prefix.length) return rest === "never" ? "[]" : `${grouped(rest)}[]`;
       const min = typeof m.minItems === "number" ? m.minItems : 0;
       const items = prefix.map((item, i) => (i < min ? item : `${grouped(item)}?`));
@@ -188,10 +202,11 @@ function kindType(kind: string, m: Record<string, unknown>, input = false): stri
     case "object": {
       const properties = m.properties !== null && typeof m.properties === "object" && !Array.isArray(m.properties) ? (m.properties as Record<string, unknown>) : {};
       const required = Array.isArray(m.required) ? m.required : [];
-      const fields = Object.entries(properties).map(([key, value]) => `${ident(key)}${required.includes(key) ? "" : "?"}: ${schemaType_(value)}`);
-      const open = m.additionalProperties === undefined || m.additionalProperties === true;
-      const rest = m.additionalProperties === undefined || m.additionalProperties === false || (input && open && Object.keys(properties).length > 0) ? "never" : schemaType_(m.additionalProperties);
-      if (rest !== "never") fields.push(`[key: string]: ${fields.length ? `${JSON_TYPE} | undefined` : rest}`);
+      const fields = Object.entries(properties).map(([key, value]) => `${ident(key)}${required.includes(key) ? "" : "?"}: ${schemaType(value)}`);
+      const rest = m.additionalProperties === undefined || m.additionalProperties === false ? "never" : schemaType(m.additionalProperties);
+      const open = m.additionalProperties === undefined || rest === JSON_TYPE;
+      const signature = fields.length ? (rest !== "never" && rest !== JSON_TYPE) || (open && besideObjects) : rest !== "never";
+      if (signature) fields.push(`[key: string]: ${fields.length ? `${JSON_TYPE} | undefined` : rest}`);
       if (fields.length) return `{ ${fields.join("; ")} }`;
       return m.additionalProperties === undefined ? `Record<string, ${JSON_TYPE}>` : "Record<never, never>";
     }
@@ -252,16 +267,6 @@ function renderFields(fields: readonly Field[], dialect: Dialect): string {
 }
 
 /**
- * The type of a value whose JSON Schema the statement writes, a typed JSON parameter's
- * (`:p::jsonb('…')`) or a `json('…')` member's: the caller's, so a key its schema does not name is
- * left out of the type (src/render.ts, `schemaType`'s `input`); `undefined` for any other.
- */
-export function declaredType(t: EngineType, declared: unknown): string | undefined {
-  const schema = schemaOf(t);
-  return declared !== undefined && schema !== undefined ? schemaType(schema, true) : undefined;
-}
-
-/**
  * The type a parameter accepts: what `run` returns for its SQL type, so that a row goes back in as
  * it came out (the round-trip rule), and what else every driver binds
  * the same way. Every Postgres and MySQL driver binds a number, a BigInt or a digit string for a
@@ -282,7 +287,7 @@ export function declaredType(t: EngineType, declared: unknown): string | undefin
  * statement builds with NULL elements (`array_agg` over a left join is `(string | null)[]`) goes
  * back into a row.
  */
-export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string; readonly schema?: unknown }[]): string {
+export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string }[]): string {
   const kind = columnKind(t, dialect);
   // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
   // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of
@@ -303,8 +308,8 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   if (members !== undefined) {
     const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
     if (record !== undefined) {
-      const fields = record.fields.map((f, k) => {
-        const type = declaredType(f.type, members[k]?.schema) ?? renderParamType(f.type, dialect, true);
+      const fields = record.fields.map((f) => {
+        const type = renderParamType(f.type, dialect, true);
         return `${ident(f.name)}${f.optional ? "?" : ""}: ${f.nullable ? orNull(type) : type}`;
       });
       const row = fields.length ? `{ ${fields.join("; ")} }` : "Record<never, never>";
