@@ -126,13 +126,11 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // A DuckDB map's entries stand as a row's values do.
       if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect)}; value: ${orNull(renderType(t.value.type, false, dialect))} }[]`;
       break;
-    case "union":
-      // A DuckDB union is one member, `{ tag, value }`, by the one field of its record.
-      if (dialect === "duckdb" && !inJson) {
-        const tagged = t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [m.fields[0]!] : []));
-        return tagged.length ? tagged.map((f) => `{ tag: ${JSON.stringify(f.name)}; value: ${orNull(renderType(f.type, false, dialect))} }`).join(" | ") : "never";
-      }
-      break;
+    case "tagged_union":
+      // A tagged union is one alternative, `{ tag, value }`, as DuckDB's client returns it; inside
+      // a document, whose form of it the engine does not read, any JSON.
+      if (inJson) break;
+      return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect)) : renderType(a.type, false, dialect)} }`).join(" | ") : "never";
     case "text":
       // An enum's labels, or the strings a CHECK keeps a column to.
       if (t.enum !== undefined) return t.enum.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";

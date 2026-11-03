@@ -3,13 +3,13 @@
 //! whose elements may be NULL, a `STRUCT` as a record whose fields may each be NULL (DuckDB has no
 //! NOT NULL inside one; a struct whose fields have no names, a tuple, is no type the format has,
 //! and the analysis refuses it, [`unnamed`]), a
-//! `MAP` as a map, a `UNION` as a union of one-field records, each named by its tag, an `ENUM` as
+//! `MAP` as a map, a `UNION` as a tagged union of its alternatives, an `ENUM` as
 //! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
 //! not structure (`GEOMETRY`, a type an extension adds) is opaque.
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{
-    ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, Size, TimePart, TimeType, Type, UnionType, Zone, MICROSECOND,
+    Alternative, ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Position, Size, TimePart, TimeType, Type, Zone, MICROSECOND,
 };
 
 /// DuckDB's earliest and latest dates and timestamps, the latter at microseconds (a
@@ -101,9 +101,9 @@ pub fn of(t: &LogicalType) -> Type {
             (Some(key), Some(value)) => return Type::new(Kind::Map(MapType { key: Box::new(of(key)), value: Box::new(Position::nullable(of(value))) })),
             _ => return Type::unknown(),
         },
-        // One of its members, by tag: a record of the one field the tag names, whose value may be
-        // NULL. A union of one member stays a union, since its value carries the tag all the same.
-        "UNION" => return Type::new(Kind::Union(UnionType { members: t.fields.iter().map(|f| Type::record(vec![Field::new(f.name.clone(), of(&f.ty), true)])).collect(), per: Per::Value })).named("union"),
+        // One of its alternatives, by the tag every value carries, whose value may be NULL, as any
+        // value inside a nested type may be: one alternative alone stays a tagged union.
+        "UNION" => return Type::tagged_union(t.fields.iter().map(|f| Alternative { tag: f.name.clone(), ty: of(&f.ty), nullable: true }).collect()).named("union"),
         "" => return Type::unknown(),
         other => return Type::opaque(other.to_ascii_lowercase()),
     };
@@ -165,7 +165,7 @@ mod tests {
         assert!(of(&t(tuple)).is_unknown());
         assert!(unnamed(&t(tuple)) && unnamed(&t(&format!(r#"{{"id":"LIST","child":{tuple}}}"#))));
         assert!(!unnamed(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}}]}"#)));
-        assert_eq!(of(&t(r#"{"id":"UNION","fields":[{"name":"num","type":{"id":"INTEGER"}},{"name":"str","type":{"id":"VARCHAR"}}]}"#)).short(), "union({ num: integer? } | { str: varchar? })");
+        assert_eq!(of(&t(r#"{"id":"UNION","fields":[{"name":"num","type":{"id":"INTEGER"}},{"name":"str","type":{"id":"VARCHAR"}}]}"#)).short(), "union<num: integer? | str: varchar?>");
         assert_eq!(of(&t(r#"{"id":"MAP","key":{"id":"VARCHAR"},"value":{"id":"INTEGER"}}"#)).short(), "map(varchar => integer?)");
         for id in ["BOOLEAN", "BIGNUM", "FLOAT", "DOUBLE", "DATE", "TIME", "TIME_NS", "TIME_TZ", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_TZ", "TIMESTAMP_TZ_NS", "INTERVAL", "UUID", "BIT", "BLOB"] {
             of(&t(&format!(r#"{{"id":"{id}"}}"#))).check().unwrap_or_else(|e| panic!("{id}: {e}"));

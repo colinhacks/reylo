@@ -426,12 +426,12 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   },
   mysql: {
     big: my("integer", "bigint", { bits: 64 }), ubig: my("integer", "bigint", { bits: 64, unsigned: true }), amount: my("decimal", "decimal"), day: my("date", "date"), at: my("datetime", "datetime", { tick: "1/1000000" }), doc: my("json", "json"),
-    bit1: { kind: "union", per: "value", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text" } } }), kind: my("text", "enum"),
+    bit1: { kind: "union", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text" } } }), kind: my("text", "enum"),
     flag: my("integer", "tinyint(1)", { bits: 8 }), yr: my("integer", "year", { bits: 16, min: "0", max: "2155" }), f8: my("float", "double", { exponent_bits: 11, mantissa_bits: 52 }), tm: my("duration", "time", { time: { tick: "1/1000000", max: "PT838H59M59S" } }), s: my("text", "varchar"),
   },
   sqlite: {
     n: { kind: "integer", bits: 64 }, r: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, s: { kind: "text", ill_formed: "utf8" }, b: { kind: "bytes" },
-    flag: { kind: "union", per: "value", name: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
+    flag: { kind: "union", name: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
     x: { kind: "unknown" },
   },
 };

@@ -197,10 +197,10 @@ function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
   return a.VARCHAR;
 }
 
-/** A DuckDB UNION's members, each a record of the one field its tag names, as tags and their types. */
+/** A DuckDB UNION's alternatives, as tags and their types. */
 function tagsOf(t: EngineType | undefined): { name: string; type: EngineType }[] | undefined {
-  if (t?.kind !== "union") return undefined;
-  return t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [{ name: m.fields[0]!.name, type: m.fields[0]!.type }] : []));
+  if (t?.kind !== "tagged_union") return undefined;
+  return t.alternatives.map((a) => ({ name: a.tag, type: a.type }));
 }
 
 function firstOf(entries: unknown[], key: "key" | "value"): unknown {
