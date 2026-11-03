@@ -808,6 +808,8 @@ impl<'a> Engine<'a> {
         self.types(&shape_oids)?;
         self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(&described.columns), &trust)?;
 
+        let record = |c: &DescribedColumn| c.type_oid == crate::pgtypes::oid::RECORD || c.type_oid == crate::pgtypes::oid::RECORD_ARRAY;
+        let generated = if described.columns.iter().any(record) { self.generated_rows(&rewritten.sql, described.columns.len(), &trust)? } else { vec![None; described.columns.len()] };
         let registry = self.registry.borrow();
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
@@ -815,6 +817,9 @@ impl<'a> Engine<'a> {
         let comments = self.comments.borrow();
         for (position, (col, built)) in described.columns.iter().zip(&built).enumerate() {
             let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
+            // A whole row of no type the catalog has, or an array of them, whose shape reads to
+            // the row's fields; else the describe's type stands.
+            let row = shape.filter(|_| record(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params));
             let (ty, nullable) = match (shape, built) {
                 (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
                     shapes_used.insert(i);
@@ -824,12 +829,22 @@ impl<'a> Engine<'a> {
                     let ty = Type { name: registry.render(col.type_oid).name, ..resolved.ty };
                     (ty, !resolved.non_null)
                 }
+                // A whole row of no type the catalog has, or an array of them: the row's fields,
+                // as a probe of its columns reads them.
+                (Some((i, _)), _) if row.is_some() => {
+                    shapes_used.insert(i);
+                    let resolved = row.expect("a row's fields");
+                    unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
+                    (resolved.ty, col.nullable && !resolved.non_null)
+                }
                 // The item's own result settled whether the column is NULL, an outer join here
                 // included; what it builds is its document.
                 (None, Some(built)) => {
                     unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     (Type { name: registry.render(col.type_oid).name, ..built.ty.clone() }, col.nullable || !built.non_null)
                 }
+                // A WITH query's SEARCH or CYCLE column of rows.
+                _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
                 _ => {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render(col.type_oid) };
                     (with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref()), col.nullable)
@@ -1979,6 +1994,115 @@ impl<'a> Engine<'a> {
                 },
                 ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
             }
+        }
+        Some(out)
+    }
+
+    /// The types of the SEARCH and CYCLE columns of the statement's WITH queries that it reads,
+    /// which the describe types `record` and `record[]`: a CYCLE's path is an array of rows of the
+    /// columns it names, a depth-first SEARCH's sequence an array of rows of the columns it
+    /// searches by, and a breadth-first one's a row of its depth, `*DEPTH*`, and those columns.
+    /// Per result column, `None` where it is no such column for certain.
+    fn generated_rows(&self, sql: &str, count: usize, trust: &Trust) -> Lazy<Vec<Option<Type>>> {
+        use infer::ItemRead;
+        use pg_query::protobuf::CommonTableExpr;
+        let none = vec![None; count];
+        let Ok(parsed) = crate::stack::parse(sql) else { return Some(none) };
+        let with = match parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) {
+            Some(NodeEnum::SelectStmt(s)) => s.with_clause.clone(),
+            _ => None,
+        };
+        let ctes: Vec<CommonTableExpr> = with.map(|w| w.ctes).unwrap_or_default().into_iter().filter_map(|n| match n.node {
+            Some(NodeEnum::CommonTableExpr(c)) if c.search_clause.is_some() || c.cycle_clause.is_some() => Some(*c),
+            _ => None,
+        }).collect();
+        if ctes.is_empty() {
+            return Some(none);
+        }
+        let Some((reads, queries)) = infer::item_reads(sql) else { return Some(none) };
+        // The columns a WITH query's clauses add after its own, in the order Postgres adds them:
+        // the SEARCH's sequence, the CYCLE's mark and the CYCLE's path.
+        let added = |item: usize| -> Option<(&CommonTableExpr, Vec<String>)> {
+            let cte = ctes.iter().find(|c| Some(&c.ctename) == queries[item].with.as_ref())?;
+            let mut names = Vec::new();
+            names.extend(cte.search_clause.as_ref().map(|c| c.search_seq_column.clone()));
+            if let Some(c) = &cte.cycle_clause {
+                names.extend([c.cycle_mark_column.clone(), c.cycle_path_column.clone()]);
+            }
+            (names.len() == queries[item].extra).then_some((cte, names))
+        };
+        // One `*` at most, as [`Engine::item_columns`] reads it.
+        let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. } | ItemRead::TableStar)).count();
+        let Some(width) = (count + stars).checked_sub(reads.len()).filter(|w| stars == 1 || (stars == 0 && *w == 0)) else { return Some(none) };
+        let mut at: Vec<Option<(usize, String)>> = Vec::with_capacity(count);
+        for read in &reads {
+            match read {
+                ItemRead::Column { item, column } => at.push(Some((*item, column.clone()))),
+                ItemRead::Star { item: Some(item) } => match added(*item).filter(|(_, names)| names.len() <= width) {
+                    Some((_, names)) => {
+                        at.extend(std::iter::repeat_n(None, width - names.len()));
+                        at.extend(names.into_iter().map(|n| Some((*item, n))));
+                    }
+                    None => at.extend(std::iter::repeat_n(None, width)),
+                },
+                ItemRead::Star { .. } | ItemRead::TableStar => at.extend(std::iter::repeat_n(None, width)),
+                _ => at.push(None),
+            }
+        }
+        if at.len() != count {
+            return Some(none);
+        }
+        let names = |nodes: &[pg_query::protobuf::Node]| nodes.iter().filter_map(|n| match n.node.as_ref() {
+            Some(NodeEnum::String(s)) => Some(s.sval.clone()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let mut out = Vec::with_capacity(count);
+        for slot in at {
+            let Some((item, column)) = slot else {
+                out.push(None);
+                continue;
+            };
+            let Some((cte, _)) = added(item) else {
+                out.push(None);
+                continue;
+            };
+            // Which rows the column holds: the columns of each, whether it is an array of them,
+            // and whether a row leads with its depth.
+            let (listed, array, depth) = match (&cte.search_clause, &cte.cycle_clause) {
+                (Some(search), _) if search.search_seq_column == column => (names(&search.search_col_list), !search.search_breadth_first, search.search_breadth_first),
+                (_, Some(cycle)) if cycle.cycle_path_column == column => (names(&cycle.cycle_col_list), true, false),
+                _ => {
+                    out.push(None);
+                    continue;
+                }
+            };
+            let Some(described) = self.probe(&queries[item].sql, trust)? else {
+                out.push(None);
+                continue;
+            };
+            // The clauses list the WITH query's own columns, by the names its WITH clause gives
+            // them, never a reading's alias (`from t as r(a, b)`). That alias cannot rename the
+            // columns the clauses add, nor give another column one of their names: Postgres
+            // refuses either reference as missing or ambiguous.
+            let own = names(&cte.aliascolnames);
+            let named = |i: usize, c: &DescribedColumn| own.get(i).cloned().unwrap_or_else(|| c.name.clone());
+            let found: Option<Vec<&DescribedColumn>> = listed.iter().map(|name| described.columns.iter().enumerate().find(|(i, c)| named(*i, c) == *name).map(|(_, c)| c)).collect();
+            let Some(found) = found else {
+                out.push(None);
+                continue;
+            };
+            self.types(&found.iter().map(|c| c.type_oid).chain([crate::pgtypes::oid::INT8]).collect::<Vec<_>>())?;
+            let registry = self.registry.borrow();
+            let mut fields: Vec<crate::types::Field> = Vec::new();
+            if depth {
+                fields.push(crate::types::Field::new("*DEPTH*", registry.render(crate::pgtypes::oid::INT8), false));
+            }
+            fields.extend(listed.iter().zip(&found).map(|(name, c)| crate::types::Field::new(name.clone(), registry.render(c.type_oid), c.nullable)));
+            let row = Type::record(fields).named("record");
+            out.push(Some(match array {
+                true => Type::new(TyKind::Array(crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(row)), size: None, any_depth: true })).named("_record"),
+                false => row,
+            }));
         }
         Some(out)
     }

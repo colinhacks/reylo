@@ -108,7 +108,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     }
     case "record":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
-      if (inJson) return dialect === "postgres" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
+      if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
       // A DuckDB struct's fields stand as a row's values do.
       if (dialect === "duckdb") {
         return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect))}`).join("; ")} }` : "Record<never, never>";

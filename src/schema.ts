@@ -193,7 +193,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       }
       // A built-in geometric type is its text, inside a document too.
       if (dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
-      return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${name || "a record"} as Postgres prints it` };
+      return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${name && name !== "record" ? name : "a record"} as Postgres prints it` };
     }
     case "json":
       // What a statement built: its keys and items are inside the document.

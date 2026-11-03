@@ -625,6 +625,17 @@ from orders o
 
 </Inferred>
 
+So does the whole row of a subquery or a `with` query, which Postgres itself types only as `record`, and a recursive `with` query's `cycle` path and `search` column, which hold rows of the columns they name.
+
+<Inferred>
+
+```sql file="pg_subquery_rows.sql"
+select jsonb_agg(u) as people
+from (select id, name, email from users) u
+```
+
+</Inferred>
+
 </Rules>
 
 Your own operators, functions and casts, or an extension's, tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
