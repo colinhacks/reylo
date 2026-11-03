@@ -7,6 +7,12 @@ description: How Reylo types SQL queries on DuckDB. The TypeScript type of each 
 
 [Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. This page covers how it types and runs queries on DuckDB: column types, null values, row counts, parameters, files and drivers.
 
+<Callout title="Preview">
+
+DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.run()` returns for them, may still change in a minor release.
+
+</Callout>
+
 | | |
 | --- | --- |
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
