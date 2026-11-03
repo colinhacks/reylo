@@ -37,6 +37,28 @@ struct File {
     copies: std::cell::RefCell<Option<Copies>>,
 }
 
+/// The statements of one command line's run against a database file, which is opened afresh for
+/// each, as the program's are, and keeps the engine's answers between them.
+pub struct Session {
+    connection: Connection,
+    /// The version of the SQLite that reads the file, as `3.50.2`.
+    pub version: String,
+}
+
+impl Session {
+    /// The database file at `path`, resolved as the project names it (`sqlitePath` in src/project.ts).
+    pub fn open(path: &str) -> Result<Session, crate::Failure> {
+        let file = File::new(path);
+        file.open().map_err(|e| crate::Failure::Unreachable(e.to_string()))?;
+        Ok(Session { connection: Connection { file, answers: AnswerCache::default() }, version: rusqlite::version().to_string() })
+    }
+
+    pub fn analyze(&mut self, sql: &str) -> Result<reylo_engine_core::api::Analysis, crate::Failure> {
+        let db = self.connection.file.open().map_err(|e| crate::Failure::Unreachable(e.to_string()))?;
+        answers::analyze(&db, sql, &mut self.connection.answers).map_err(|e| crate::Failure::Error(e.to_string()))
+    }
+}
+
 impl Program for Sqlite {
     fn call(&self, request: &str) -> String {
         reylo_engine_core::api::call::<reylo_engine::sqlite::Sqlite>(request)
