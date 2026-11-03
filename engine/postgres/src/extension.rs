@@ -85,6 +85,9 @@ struct Remote {
     diagnostics: Vec<Diagnostic>,
     #[serde(default)]
     unresolved: Vec<String>,
+    /// Each domain the descriptors name, to its base type, which the loader reads a value by.
+    #[serde(default)]
+    domains: std::collections::BTreeMap<String, String>,
 }
 
 /// The whole analysis from the server. `Some(None)` is a server that did not answer it (the
@@ -110,7 +113,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         fresh: None,
         errors: None,
         tables: None,
-        domains: Default::default(),
+        domains: remote.domains,
     }))
 }
 
@@ -209,6 +212,21 @@ mod tests {
         assert_eq!(server(&Host::new(&answers)), Some(Server::Other { answers: true }));
         answers.insert(version_id(), rows(json!({ "extension": "0.1.0", "engine": null, "fingerprint": null })));
         assert_eq!(server(&Host::new(&answers)), Some(Server::Other { answers: false }));
+    }
+
+    #[test]
+    fn the_servers_analysis_keeps_each_domains_base_type() {
+        let mut answers = HashMap::new();
+        let sql = "select embedding from items";
+        answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
+            "kind": "select",
+            "params": [],
+            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "name": "public.embedding" } }],
+            "cardinality": "many",
+            "domains": { "public.embedding": "vector" },
+        })));
+        let analysis = analyze(sql, &Host::new(&answers)).expect("answered").expect("read");
+        assert_eq!(analysis.domains.get("public.embedding").map(String::as_str), Some("vector"));
     }
 
     #[test]
