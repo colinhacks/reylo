@@ -284,13 +284,13 @@ select to_jsonb(u) as "user" from users u where u.id = :id::int
 
 **Values inside a document**
 
-Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a float or `numeric` that is not finite is text (JSON has no number for it), a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, a `date` or `timestamp` before 1 AD or past 9999 keeps Postgres's own year rather than ISO 8601's extended one, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text.
+Inside JSON, a value can differ from the same value in a column. Numbers past 2^53 lose precision in `JSON.parse`, a `timestamptz` is written in the session's time zone (here `America/Los_Angeles`), a `bytea` is hex text, an `oid` is text, an `interval` is Postgres's own text rather than an ISO 8601 duration, a `date` or `timestamp` before 1 AD or past 9999 keeps Postgres's own year rather than ISO 8601's extended one, and a PostGIS `geometry` is GeoJSON. An extension's type with no cast to JSON, such as pgvector's `vector`, is its text. A float or `numeric` that is not finite, which Postgres writes there as text since JSON has no number for it, comes back as the number `NaN`, `Infinity` or `-Infinity`.
 
 <Pairs>
 
 - `jsonb_build_object('n', 9007199254740993::bigint)` → `{ n: 9007199254740992 }`
 - `jsonb_build_object('n', 12.50::numeric)` → `{ n: 12.5 }`
-- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: "NaN" }`
+- `jsonb_build_object('n', 'NaN'::numeric)` → `{ n: NaN }`
 - `jsonb_build_object('at', '2026-10-20 08:00:00+00'::timestamptz)` → `{ at: "2026-10-20T01:00:00-07:00" }`
 - `jsonb_build_object('b', '\x0102ff'::bytea)` → `{ b: "\\x0102ff" }`
 - `jsonb_build_object('d', '1 day 02:03:04'::interval)` → `{ d: "1 day 02:03:04" }`

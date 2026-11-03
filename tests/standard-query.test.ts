@@ -179,6 +179,21 @@ test("columns and output: decode(raw) is output(raw through columns), for every 
   assert.throws(() => bare.output([{ a: 1 }, { a: 2 }]), /Expected at most one row, got 2/);
 });
 
+test("postgres: a float or a decimal inside JSON that Postgres writes as text is the number it is, through decode and through its column's decoder, as .run() gives it", () => {
+  const q = defineQuery({ dialect: "postgres", sql: "select doc, raw from t", params: [], columns: [["doc", "json"], ["raw", "json"]], nonFinite: [{ keys: [["n", true]] }, null] })["~standard"].query;
+  const text = '{"n": "NaN", "s": "Infinity"}';
+  assert.deepStrictEqual(q.decode([[text, text]]), [{ doc: { n: NaN, s: "Infinity" }, raw: { n: "NaN", s: "Infinity" } }]);
+  assert.deepStrictEqual(q.columns![0]!.decode(text as never), { n: NaN, s: "Infinity" });
+  assert.equal(q.columns![0]!.decode(null as never), null);
+  // Each column converts by its own position: of two columns of one name, the row keeps the last,
+  // and a name `Object.prototype` holds is no mask.
+  const twice = defineQuery({ dialect: "postgres", sql: "select", params: [], columns: [["x", "json"], ["x", "json"], ["constructor", "json"], ["__proto__", "json"]], nonFinite: [{ keys: [["n", true]] }, null, null, { keys: [["n", true]] }] })["~standard"].query;
+  const doc = '{"n": "NaN"}';
+  const [row] = twice.decode([[doc, doc, doc, doc]]) as Record<string, unknown>[];
+  assert.deepStrictEqual({ ...row }, { x: { n: "NaN" }, constructor: { n: "NaN" }, ["__proto__"]: { n: NaN } });
+  assert.deepStrictEqual(twice.columns!.map((c) => c.decode(doc as never)), [{ n: NaN }, { n: "NaN" }, { n: "NaN" }, { n: NaN }]);
+});
+
 test("mysql and sqlite: each value as a driver binds it, and decode takes every form a driver reads", () => {
   const my = defineQuery<{ id: bigint; doc: unknown }, { id: bigint; at: string; amount: string; ok: boolean }, "maybeOne", "mysql">({
     dialect: "mysql",

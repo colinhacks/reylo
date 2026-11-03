@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
 import { reyloImport } from "../src/module-types.ts";
-import { closeSessions, declarations, DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
+import { closeSessions, declarations, driver, DRIVERS, INDEX, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
 
 // A `json` or `jsonb` value that nothing in the schema or the statement gives a shape is any JSON
 // value, `Json`, which `reylo` exports and a module imports where one of its types names it; so is
@@ -142,6 +142,57 @@ test("Postgres: a jsonb value nothing constrains is Json, and its parameter's nu
     // coalesce keeps; one cast to nullable(jsonb) takes SQL NULL, which the coalesce replaces.
     assert.deepEqual({ ...((await (await built(root, "keep", keep)).run(sql, { doc: null, keep: null })) as object) }, { doc: null, keep: "kept" });
   } finally {
+    await closeSessions();
+    await own.drop();
+  }
+});
+
+test("Postgres: a float or a numeric inside JSON is a number, NaN and the infinities Postgres writes there as text included, on every driver", { skip: pgLive }, async () => {
+  // `ratio` and `score` can hold neither NaN nor an infinity: their CHECKs keep them out, so the
+  // module converts nothing there. `amount`'s keeps out -Infinity alone.
+  const setup = `create domain unit_score as float8 check (value >= 0 and value <= 1);
+    create table prices (id int primary key, rate float8, amount numeric check (amount >= 0), total numeric(10,2), ratio float8 check (ratio between 0 and 1), score unit_score);
+    insert into prices values (1, 'NaN', 'Infinity', 'NaN', 0.5, 1), (2, '-Infinity', 'NaN', 12.5, 0, 0), (3, 1.5, 2, 3.25, null, null)`;
+  const own = await postgresDatabase("reylo_json_numbers", setup);
+  const root = project(own.url, "pg");
+  const built_ = `select id, json_build_object('rate', rate, 'amount', amount, 'total', total, 'ratio', ratio, 'score', score, 'pair', array[rate, rate]) as doc from prices order by id\n`;
+  const whole = `select jsonb_agg(p order by p.id) as rows from prices p\n`;
+  const pg = driver("pg");
+  const client = new pg.Client({ connectionString: own.url });
+  await client.connect();
+  try {
+    const declared = await declarations(root, { "built.sql": built_, "whole.sql": whole });
+    assert.deepEqual(types(declared["built.sql"]!).slice(-1), ["export type Row = { id: number; doc: { rate: number | null; amount: number | null; total: number | null; ratio: number | null; score: number | null; pair: (number | null)[] } };"]);
+    assert.deepEqual(types(declared["whole.sql"]!).slice(-1), ["export type Row = { rows: ({ id: number; rate: number | null; amount: number | null; total: number | null; ratio: number | null; score: number | null })[] | null };"]);
+    await closeSessions();
+    // The module names the fields that may hold one, and leaves out the ones a CHECK keeps clear.
+    const { code } = await sqlModule(join(root, "built.sql"), built_);
+    assert.match(code, /nonFinite: \[null,\{"keys":\[\["rate",true\],\["amount",true\],\["total",true\],\["pair",\{"items":true,"deep":true\}\]\]\}\]/);
+    const read = await built(root, "built", built_);
+    const expected = [
+      { id: 1, doc: { rate: NaN, amount: Infinity, total: NaN, ratio: 0.5, score: 1, pair: [NaN, NaN] } },
+      { id: 2, doc: { rate: -Infinity, amount: NaN, total: 12.5, ratio: 0, score: 0, pair: [-Infinity, -Infinity] } },
+      { id: 3, doc: { rate: 1.5, amount: 2, total: 3.25, ratio: null, score: null, pair: [1.5, 1.5] } },
+    ];
+    for (const db of [own.sql, client]) assert.deepEqual(((await read.run(db)) as object[]).map((row) => ({ ...row })), expected);
+    const rows = await built(root, "whole", whole);
+    for (const db of [own.sql, client]) {
+      assert.deepEqual({ ...((await rows.run(db)) as object) }, { rows: expected.map(({ id, doc: { pair: _, ...doc } }) => ({ id, ...doc })) });
+    }
+    // A row keeps the last column of each name, and converts by that column's type alone; a
+    // column named `__proto__` or `constructor` is one like any other.
+    const shadowed = `select json_build_object('n', 'NaN'::float8) as x, json_build_object('n', 'NaN'::text) as x, json_build_object('n', 'NaN'::text) as y, json_build_object('n', 'NaN'::float8) as y, json_build_object('n', 'NaN'::float8) as "__proto__", json_build_object('n', 'NaN'::text) as "constructor"\n`;
+    // The module holds a mask by position, one for each column, which the module's own JSON writes
+    // with no key of a name, `__proto__` included.
+    assert.match((await sqlModule(join(root, "shadowed.sql"), shadowed)).code, /nonFinite: \[\{"keys":\[\["n",true\]\]\},null,null,\{"keys":\[\["n",true\]\]\},\{"keys":\[\["n",true\]\]\},null\]/);
+    const same = await built(root, "shadowed", shadowed);
+    for (const db of [own.sql, client]) {
+      const row = { ...((await same.run(db)) as object) };
+      assert.deepEqual(row, { x: { n: "NaN" }, y: { n: NaN }, ["__proto__"]: { n: NaN }, constructor: { n: "NaN" } });
+      assert.ok(Object.hasOwn(row, "__proto__"));
+    }
+  } finally {
+    await client.end();
     await closeSessions();
     await own.drop();
   }
