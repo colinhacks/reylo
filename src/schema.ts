@@ -7,7 +7,7 @@
 // serializer that writes a BigInt exactly writes, `JSON.rawJSON(String(v))`; JSON.stringify itself
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
-import { bareName, type EngineType, type JsonSchema } from "./engine-type.ts";
+import { bareName, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
 import { columnKind, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 
 type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
@@ -187,10 +187,8 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       return { type: "array", items: (input ? inRow : t.element.nullable) ? nullable(items) : items };
     }
     case "record": {
-      // A DuckDB tuple, a struct whose fields have no names, is its values in order; a DuckDB
-      // struct's fields stand as a row's values do, each may be null.
+      // A DuckDB struct's fields stand as a row's values do, each may be null.
       if (dialect === "duckdb" && !inJson) {
-        if (t.fields.length && t.fields.every((f) => f.name === "")) return { type: "array", prefixItems: t.fields.map((f) => nullable(typeSchema(f.type, dialect, input))), items: false, minItems: t.fields.length };
         return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input)));
       }
       // A built-in geometric type is its text, inside a document too.
@@ -203,7 +201,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
         const content = typeSchema(t.content.type, dialect, input, true);
         return t.content.nullable ? nullable(content) : content;
       }
-      return t.schema?.source as JsonSchema | undefined ?? {};
+      return schemaOf(t) ?? {};
     case "map":
       // A DuckDB map as its entries, each a key and its value, in order.
       if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value.type, dialect, input)))) };

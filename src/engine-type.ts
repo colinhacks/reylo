@@ -16,10 +16,21 @@ export type EngineType = Type;
  */
 export type JsonSchema = boolean | { readonly [key: string]: unknown };
 
-/** A JSON type's JSON Schema (the engine's canonical one), where it has one. */
+/**
+ * A JSON type's JSON Schema in the engine's canonical form, where it has one: without the
+ * `$schema` the type carries it with, and `true` and `false` as themselves, which the engine
+ * writes as `{}` and `{ "not": {} }` to carry it (`Type::json_schema_of` in engine/core).
+ */
 export function schemaOf(t: Type): JsonSchema | undefined {
-  return t.kind === "json" && t.schema !== undefined ? (t.schema.source as JsonSchema) : undefined;
+  if (t.kind !== "json" || t.schema === undefined) return undefined;
+  const { $schema: _, ...keywords } = t.schema;
+  const keys = Object.keys(keywords);
+  if (keys.length === 0) return true;
+  if (keys.length === 1 && keys[0] === "not" && isEmptyObject(keywords.not)) return false;
+  return keywords;
 }
+
+const isEmptyObject = (v: unknown) => v !== null && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0;
 
 /** A type's name without the schema that qualifies it: `vector` of `public.vector`, `"Odd"` of `app."Odd"` unquoted. */
 export function bareName(t: Type): string {

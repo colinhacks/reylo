@@ -1170,8 +1170,9 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
         // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema
         // admits, a JSON null included, unless the place may hold SQL's NULL, which a document
         // writes alike.
-        Kind::Json(JsonType { schema: Some(schema), .. }) => {
-            return (!(json.is_null() && nullable) && !reylo_engine_core::schema_type::admits(&schema.source, json)).then(|| format!("holds {json} at {at}, which the schema {} does not admit", schema.source));
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            return (!(json.is_null() && nullable) && !reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"));
         }
         // What a statement built: its content, at the top of the document.
         Kind::Json(JsonType { content: Some(content), .. }) => return document_contradiction(&content.ty, json, nullable || content.nullable, path),

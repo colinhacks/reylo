@@ -264,15 +264,9 @@ pub struct RecordType {
 pub struct JsonType {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub content: Option<Box<Position>>,
+    /// A JSON Schema every value satisfies, whose `$schema` names the draft it is read by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema: Option<JsonSchema>,
-}
-
-/// A JSON Schema and the draft it is read by.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct JsonSchema {
-    pub dialect: String,
-    pub source: Value,
+    pub schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -782,17 +776,32 @@ impl Type {
         Kind::Json(JsonType { content: Some(Box::new(content)), schema: None }).into()
     }
 
-    /// JSON every value of which the engine's canonical JSON Schema `source` admits.
+    /// JSON every value of which the engine's canonical JSON Schema `source` admits, carrying
+    /// `$schema`, the draft the canonical form is read by ([`CANONICAL_SCHEMA`]). `true` and
+    /// `false`, which have no keyword to carry it, are written as the objects that mean the same,
+    /// `{}` and `{ "not": {} }`.
     pub fn json_schema_of(source: Value) -> Type {
-        Kind::Json(JsonType { content: None, schema: Some(JsonSchema { dialect: CANONICAL_SCHEMA.to_string(), source }) }).into()
+        let mut keywords = match source {
+            Value::Object(keywords) => keywords,
+            Value::Bool(false) => serde_json::Map::from_iter([("not".to_string(), Value::Object(serde_json::Map::new()))]),
+            _ => serde_json::Map::new(),
+        };
+        keywords.insert("$schema".into(), CANONICAL_SCHEMA.into());
+        Kind::Json(JsonType { content: None, schema: Some(Value::Object(keywords)) }).into()
     }
 
-    /// A JSON type's JSON Schema, where it has one.
-    pub fn schema(&self) -> Option<&Value> {
-        match &self.kind {
-            Kind::Json(JsonType { schema: Some(s), .. }) => Some(&s.source),
-            _ => None,
-        }
+    /// A JSON type's JSON Schema in the engine's canonical form, where it has one: without its
+    /// `$schema`, and `true` and `false` as themselves ([`Type::json_schema_of`]).
+    pub fn schema(&self) -> Option<Value> {
+        let Kind::Json(JsonType { schema: Some(schema), .. }) = &self.kind else { return None };
+        let Value::Object(keywords) = schema else { return Some(schema.clone()) };
+        let mut keywords = keywords.clone();
+        keywords.remove("$schema");
+        Some(match keywords.len() {
+            0 => Value::Bool(true),
+            1 if keywords.get("not").is_some_and(|n| n.as_object().is_some_and(|n| n.is_empty())) => Value::Bool(false),
+            _ => Value::Object(keywords),
+        })
     }
 
     /// Whether the type is JSON: any JSON, JSON a statement built, or JSON a schema holds to.
@@ -940,9 +949,9 @@ impl Type {
                 let fields: Vec<String> = r.fields.iter().map(|f| format!("{}{}: {}", f.name, if f.optional { "?" } else { "" }, position_short(&f.position()))).collect();
                 format!("{}{{ {} }}", self.name.clone().unwrap_or_default(), fields.join(", "))
             }
-            Kind::Json(j) => match (&j.content, &j.schema) {
+            Kind::Json(j) => match (&j.content, self.schema()) {
                 (Some(content), _) => format!("{} {}", label(), position_short(content)),
-                (None, Some(schema)) => format!("{} {}", label(), schema.source),
+                (None, Some(schema)) => format!("{} {}", label(), schema),
                 (None, None) => label(),
             },
             Kind::Union(u) => {

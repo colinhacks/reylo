@@ -95,8 +95,8 @@ export const record = (fields: Field[], name?: string): EngineType => ({ kind: "
 /** JSON a statement built, of `content`. */
 export const doc = (content: EngineType, nullable = false): EngineType => ({ kind: "json", content: { type: content, ...(nullable ? { nullable: true } : {}) } });
 
-/** JSON every value of which the engine's canonical JSON Schema `source` admits. */
-export const checked = (source: unknown): EngineType => ({ kind: "json", schema: { dialect: "https://json-schema.org/draft/2020-12/schema", source: source as object } });
+/** JSON every value of which the engine's canonical JSON Schema `source` admits, carrying its draft as the engine writes it. */
+export const checked = (source: unknown): EngineType => ({ kind: "json", schema: { ...(source === false ? { not: {} } : typeof source === "object" && source !== null ? source : {}), $schema: "https://json-schema.org/draft/2020-12/schema" } });
 
 /** One of several types the execution chooses among (`per: "execution"`), or each value one of (`per: "value"`). */
 export const either = (...members: EngineType[]): EngineType => ({ kind: "union", per: "execution", members });

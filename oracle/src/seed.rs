@@ -754,8 +754,9 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
     match &ty.kind {
         // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema
         // admits, a JSON null included.
-        Kind::Json(JsonType { schema: Some(schema), .. }) => {
-            (!reylo_engine_core::schema_type::admits(&schema.source, json)).then(|| format!("holds {json} at {at}, which the schema {} does not admit", schema.source))
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            (!reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
         }
         // A row value inside a document is an object of its fields, each key there.
         Kind::Record(record) if !written_as_text(ty) => {
@@ -763,7 +764,7 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
             for f in &record.fields {
                 let Some(v) = obj.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
                 // A null where the field's own schema admits one is the column's value.
-                if v.is_null() && !f.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(s, v)) {
+                if v.is_null() && !f.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, v)) {
                     if !f.nullable {
                         return Some(format!("has a null at {path}.{}, typed non-null", f.name));
                     }
@@ -779,7 +780,7 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
         Kind::Array(array) if !written_as_text(ty) => {
             let Some(items) = json.as_array() else { return Some(format!("holds {json} at {at}, typed an array")) };
             for (i, item) in items.iter().enumerate() {
-                if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(s, item)) {
+                if item.is_null() && !array.element.ty.schema().is_some_and(|s| reylo_engine_core::schema_type::admits(&s, item)) {
                     if !array.element.nullable {
                         return Some(format!("has a null element at {path}[{i}], typed non-null"));
                     }
@@ -1216,7 +1217,10 @@ fn built_value(ty: &Type, json: &Value, path: &str) -> Option<String> {
             }
             None
         }
-        Kind::Json(JsonType { schema: Some(schema), .. }) => (!reylo_engine_core::schema_type::admits(&schema.source, json)).then(|| format!("holds {json} at {at}, which the schema {} does not admit", schema.source)),
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            (!reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"))
+        }
         _ => None,
     }
 }

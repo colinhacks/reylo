@@ -109,9 +109,8 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     case "record":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
       if (inJson) return dialect === "postgres" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
-      // A DuckDB struct's fields, and a tuple's values, stand as a row's values do.
+      // A DuckDB struct's fields stand as a row's values do.
       if (dialect === "duckdb") {
-        if (t.fields.length && t.fields.every((f) => f.name === "")) return `[${t.fields.map((f) => orNull(renderType(f.type, false, dialect))).join(", ")}]`;
         return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect))}`).join("; ")} }` : "Record<never, never>";
       }
       // On the wire a Postgres row value is the text the server prints, which no driver parses.
@@ -122,7 +121,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
         const content = renderType(t.content.type, true, dialect);
         return t.content.nullable ? orNull(content) : content;
       }
-      return t.schema === undefined ? JSON_TYPE : schemaType(t.schema.source);
+      return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
     case "map":
       // A DuckDB map's entries stand as a row's values do.
       if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect)}; value: ${orNull(renderType(t.value.type, false, dialect))} }[]`;
@@ -298,7 +297,7 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   // A JSON parameter takes the JSON a result of its type holds, which `.run()` writes with
   // `JSON.stringify`; its null is JSON's null where the statement takes no SQL NULL
   // (src/execute.ts), so `Json` admits it either way.
-  if (t.kind === "json") return t.schema === undefined ? JSON_TYPE : schemaType(t.schema.source);
+  if (t.kind === "json") return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
   // A structured parameter: one row, or an array of rows, each key as a parameter of its type
   // takes it, `?` where the caller may leave it out, `| null` where it may be null.
   if (members !== undefined) {

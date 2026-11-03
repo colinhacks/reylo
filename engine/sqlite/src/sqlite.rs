@@ -4171,7 +4171,7 @@ mod tests {
                 if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
             }
             Kind::Array(a) => list(null(ts(&a.element.ty, true), a.element.nullable)),
-            Kind::Json(crate::types::JsonType { schema: Some(schema), .. }) => schema_ts(&schema.source),
+            Kind::Json(crate::types::JsonType { schema: Some(_), .. }) => schema_ts(&t.schema().unwrap_or(serde_json::Value::Bool(true))),
             _ => match (affinity_of(t).unwrap_or("?"), in_json) {
                 ("integer" | "real", _) | ("int8", true) => "number".into(),
                 ("int8", false) => "bigint".into(),
