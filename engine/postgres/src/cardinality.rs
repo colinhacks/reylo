@@ -2046,7 +2046,9 @@ fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dial
     use protobuf::SetOperation as Op;
     let mut keys = Vec::new();
     if s.op == Op::SetopIntersect as i32 || s.op == Op::SetopExcept as i32 {
-        keys.extend(output_keys(left, dialect, trust, catalog));
+        let names = output_names(left).unwrap_or_default();
+        let unconverted = |p: &Part| names.iter().position(|n| n.as_deref() == Some(p.name.as_str())).is_some_and(|at| unconverted(left, right, at, dialect, trust, catalog));
+        keys.extend(output_keys(left, dialect, trust, catalog).into_iter().filter(|key| key.iter().all(unconverted)));
     }
     if !s.all {
         let whole = || -> Option<Key> {
@@ -2071,11 +2073,24 @@ fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dial
     keys
 }
 
+/// Whether output column `at` of a set operation is its left side's column unconverted: each side
+/// passes one table column through, both of one type. Otherwise the operation may convert the left
+/// side's values to a type in which two of them are equal (two `bigint` keys to one `float8`), and
+/// the left side's keys hold no more.
+fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> bool {
+    let (Some(names), Some(others)) = (output_names(left), output_names(right)) else { return false };
+    let (Some(Some(name)), Some(Some(other))) = (names.get(at), others.get(at)) else { return false };
+    let ty = |s: &SelectStmt, name: &str| output_base(s, name, dialect, trust, catalog).and_then(|(r, c)| catalog.column_types.get(&r).and_then(|t| t.get(&c)).copied());
+    let left_type = ty(left, name);
+    names.len() == others.len() && left_type.is_some() && left_type == ty(right, other)
+}
+
 /// The result key of one rewritten SELECT: output columns, by name, no two of its rows agree on
 /// all of, a NULL counting as equal to another NULL. `columns` are the statement's output columns
 /// in order, each with whether it may be NULL. Of the keys proven, the one of fewest columns, the
 /// earliest columns breaking a tie, in output order; `None` where none is proven, or where a key's
-/// column shares its name with another output column.
+/// column shares its name with another output column, or is one `identifies` marks false: of a
+/// type two of whose values may read alike.
 ///
 /// - Without ALL, UNION, INTERSECT and EXCEPT return distinct rows: the whole output is a key.
 ///   INTERSECT and EXCEPT, with ALL or without, return only rows of their left side, which keep its
@@ -2092,12 +2107,12 @@ fn set_keys(s: &SelectStmt, left: &SelectStmt, right: &SelectStmt, dialect: Dial
 /// - A LIMIT or an OFFSET only removes rows, and keeps every key.
 ///
 /// None at all for a VALUES list, or a set-returning call at this level, which repeats a row.
-pub fn result_key(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> Option<Vec<String>> {
+pub fn result_key(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Option<Vec<String>> {
     crate::stack::run(|| {
         let s = one_select(sql, Dialect::Postgres).ok()?;
         let keys = select_keys(&s, trust, &with_fields(&s, catalog), columns);
         // A column whose name another output column also has is not one a row can be read by.
-        let named = |i: usize| columns.get(i).filter(|(name, _)| columns.iter().filter(|(other, _)| other == name).count() == 1).map(|(name, _)| name.clone());
+        let named = |i: usize| columns.get(i).filter(|(name, _)| identifies.get(i) == Some(&true) && columns.iter().filter(|(other, _)| other == name).count() == 1).map(|(name, _)| name.clone());
         keys.into_iter()
             .filter_map(|mut key| {
                 key.sort_unstable();
@@ -2116,15 +2131,18 @@ fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(Str
         return select_keys(&unlimited(s), trust, catalog, columns);
     }
     let whole: Vec<usize> = (0..columns.len()).collect();
-    if let (Some(left), Some(_)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
         use protobuf::SetOperation as Op;
         let mut keys = Vec::new();
         if !s.all {
             keys.push(whole);
         }
-        // A set operation's columns are its left side's, by position and by name.
+        // A set operation's columns are its left side's, by position and by name, where neither
+        // side's values are converted to a common type.
         if s.op == Op::SetopIntersect as i32 || s.op == Op::SetopExcept as i32 {
-            keys.extend(select_keys(left, trust, &catalog.scoped(&with_names(s), s.with_clause.as_ref(), None), columns));
+            let scoped = catalog.scoped(&with_names(s), s.with_clause.as_ref(), None);
+            let kept = select_keys(left, trust, &scoped, columns).into_iter().filter(|key| key.iter().all(|&at| unconverted(left, right, at, Dialect::Postgres, trust, &scoped)));
+            keys.extend(kept.collect::<Vec<_>>());
         }
         return keys;
     }
@@ -3956,7 +3974,7 @@ mod tests {
     /// The result key of `sql` over `joined()`, its output columns named and nullable as given.
     fn key_of(sql: &str, columns: &[(&str, bool)]) -> Option<Vec<String>> {
         let columns: Vec<(String, bool)> = columns.iter().map(|(n, nullable)| (n.to_string(), *nullable)).collect();
-        result_key(sql, &Trust::default(), &joined(), &columns)
+        result_key(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()])
     }
 
     #[test]
@@ -3994,6 +4012,9 @@ mod tests {
         assert_eq!(key_of("select p.title from posts p union select u.name from users u", &[("title", true)]), key(&["title"]));
         assert_eq!(key_of("select p.title from posts p union all select u.name from users u", &[("title", true)]), None);
         assert_eq!(key_of("select p.id from posts p except all select u.id from users u", &[("id", false)]), key(&["id"]));
+        // A side converted to a common type may make two of its keys equal.
+        assert_eq!(key_of("select p.id from posts p except all select 0::float8 where false", &[("id", false)]), None);
+        assert_eq!(key_of("select p.id from posts p except all select p.score from posts p", &[("id", false)]), None);
         assert_eq!(key_of("select * from (values (1), (1)) v (x)", &[("x", true)]), None);
     }
 

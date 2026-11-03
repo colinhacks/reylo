@@ -718,7 +718,7 @@ returning id
 
 A query that can return more than one row may also have a result key: the columns that identify each row, since no two rows of a result agree on all of them. Anything that compares two results of the same query can match each row to its earlier version by them. Reylo lists them on the query's Standard Query object, as `query["~standard"].query.key`.
 
-A table's primary key or unique key is the result key when the query selects every column of it unchanged, none of them may be null, and its joins add one row at most per row of that table; where each table's key is selected, the keys together are. So are the `group by` columns, the `distinct on` columns, and the whole row of a `distinct`, or of a `union`, `intersect` or `except` without `all`. A query that returns one row at most has none, since its cardinality says as much, and neither does one Reylo cannot prove a key for.
+A table's primary key or unique key is the result key when the query selects every column of it unchanged, none of them may be null, and its joins add one row at most per row of that table; where each table's key is selected, the keys together are. So are the `group by` columns, the `distinct on` columns, and the whole row of a `distinct`, or of a `union`, `intersect` or `except` without `all`. A column of an array, JSON or composite type is never part of one, since two of its values can read alike. A query that returns one row at most has none, since its cardinality says as much, and neither does one Reylo infers no key for.
 
 ```ts twoslash tab="main.ts"
 import paidOrders from "./pg_key_orders.sql";

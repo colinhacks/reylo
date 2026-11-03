@@ -1,4 +1,5 @@
 aggregate.sql: one () -> { n: int8 }
+array_unique.sql: many () -> { items: int4[] }
 by_key_lookup.sql: maybeOne (id: int8) -> { id: int8, title: text? }
 by_primary_key.sql: many () -> { id: int8, name: text? } key (id)
 by_unique.sql: many () -> { email: text, name: text? } key (email)
@@ -11,6 +12,7 @@ distinct.sql: many () -> { title: text? } key (title)
 distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id)
 distinct_on_output_name.sql: many () -> { x: text?, title: int8 } key (x)
 except_all.sql: many () -> { id: int8, title: text? } key (id)
+except_all_converted.sql: many () -> { id: float8 }
 group_by.sql: many () -> { author_id: int8, posts: int8 } key (author_id)
 group_by_hidden.sql: many () -> { posts: int8 }
 group_by_nullable.sql: many () -> { title: text?, posts: int8 } key (title)

@@ -6,3 +6,4 @@ create table posts (id bigint primary key, author_id bigint not null references 
 create table profiles (user_id bigint primary key references users (id), bio text);
 create table tags (id int primary key, label text not null);
 create view live_users as select id, email, name from users where deleted_at is null;
+create table lists (id int primary key, items int[] not null unique);

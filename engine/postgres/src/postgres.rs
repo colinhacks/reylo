@@ -3332,8 +3332,12 @@ fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &str, columns: &[
     if cardinality != "many" || !parsed.is_some_and(|p| p.statement == "select") {
         return None;
     }
-    let columns: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
-    cardinality::result_key(sql, trust, catalog, &columns).filter(|key| !key.is_empty())
+    // A value read whole as a number, a string or an enum's label stays as distinct as the database
+    // keeps it; an array (`{1}` and `[0:0]={1}` read alike), a JSON document (two large numbers
+    // read alike) or a composite may not, so no key holds one.
+    let identifies: Vec<bool> = columns.iter().map(|c| matches!(c.ty, Type::Scalar { .. } | Type::Enum { .. }) && !matches!(&c.ty, Type::Scalar { name } if name == "record")).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::result_key(sql, trust, catalog, &named, &identifies).filter(|key| !key.is_empty())
 }
 
 #[cfg(test)]
