@@ -110,7 +110,7 @@ export function mapperHandlers(): MapperHandlers {
       const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined), columns?: string) => {
         const written = statementAfter(sql, leading);
         const text = [
-          reyloImport(paramsType, rowType),
+          reyloImport(paramsType, rowType, columns ?? ""),
           `export type Params = ${paramsType};`,
           `export type Row = ${rowType};`,
           `export type QueryError = ${queryError};`,

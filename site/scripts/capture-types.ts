@@ -136,7 +136,7 @@ async function render(session: Session, source: string, written: string, sql: st
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
     return [
-      reyloImport(paramsType, rowType),
+      reyloImport(paramsType, rowType, columns ?? ''),
       `export type Params = ${paramsType};`,
       `export type Row = ${rowType};`,
       `export type QueryError = ${queryError};`,

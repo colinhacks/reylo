@@ -13,7 +13,7 @@ import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
 import { ParameterError } from "../src/values.ts";
 import type { StandardQueryV1 } from "../src/standard-query.ts";
 import type { Dialect } from "../src/execute.ts";
-import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX } from "./helpers.ts";
+import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX, transform } from "./helpers.ts";
 
 // Every import is a Standard Query: `~standard.query` holds the statement, its database, and the
 // two mappings a driver calls, `encode` (the input to the values it binds, each in the database's
@@ -364,6 +364,13 @@ test("postgres: a built import's columns decode the types the database created a
       line,
       `  readonly "~standard": { readonly query: { readonly columns: readonly [{ readonly name: "id"; decode(value: string): number }, { readonly name: "mood"; decode(value: string): "happy" | "sad" }, { readonly name: "moods"; decode(value: string): ("happy" | "sad" | null)[] }, { readonly name: "prefs"; decode(value: string): Record<string, string | null> }, { readonly name: "history"; decode(value: string): (Record<string, string | null> | null)[] }, { readonly name: "at"; decode(value: string): string }, { readonly name: "big"; decode(value: string): bigint }] } };`,
     );
+    // Of two columns with one name the row keeps the last, while `columns` lists both: a JSON column
+    // only `columns` names still has its type imported.
+    // The mapper warns of the repeated name (14), and still declares the module.
+    const { text: twice, diagnostics } = (await transform(root, { "twice.sql": "select '{}'::jsonb as x, 1 as x" }))["twice.sql"]!;
+    assert.deepEqual(diagnostics.map((d: { code: number }) => d.code), [14]);
+    assert.ok(twice.startsWith(`import type { Json, Query } from "reylo";`), twice);
+    assert.ok(twice.includes(`readonly columns: readonly [{ readonly name: "x"; decode(value: string): Json }, { readonly name: "x"; decode(value: string): number }]`), twice);
   } finally {
     await closeSessions();
     await pool.end();
