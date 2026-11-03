@@ -164,15 +164,20 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
       const values = new Array<unknown>(n);
       build ??= module.row ?? rowOf(names.map(([name]) => name));
       const out = new Array<Record<string, unknown>>(rows.length);
-      // Postgres's values are text, each checked where its decoder takes it.
-      const text = dialect === "postgres";
       for (let r = 0; r < rows.length; r++) {
         const raw = rows[r]!;
         if (raw.length !== n) throw columnCount(n, raw.length);
-        for (let i = 0; i < n; i++) {
-          const v = raw[i];
-          values[i] = v === null || v === undefined ? null : text && typeof v !== "string" ? notText(names[i]![0]) : fns[i]!(v);
-        }
+        // Postgres's values are text, each checked where its decoder takes it.
+        if (dialect === "postgres")
+          for (let i = 0; i < n; i++) {
+            const v = raw[i];
+            values[i] = v === null || v === undefined ? null : typeof v === "string" ? fns[i]!(v) : notText(names[i]![0]);
+          }
+        else
+          for (let i = 0; i < n; i++) {
+            const v = raw[i];
+            values[i] = v === null || v === undefined ? null : fns[i]!(v);
+          }
         out[r] = build(values);
       }
       return materialize(out);
