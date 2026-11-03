@@ -47,7 +47,7 @@ function sqliteClass(t: EngineType): string {
 }
 
 /** A value of a type with no structure of its own here, standing where `inJson` says: inside a JSON document, as a parameter the caller passes, or as `run` returns it. */
-function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean): Schema {
+function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean, inUnion = false): Schema {
   const name = bareName(t);
   if (dialect === "sqlite") {
     // A SQLite INTEGER is a number as a parameter (src/render.ts), and its JSON spelling inside a
@@ -71,19 +71,20 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     }
     return kindSchema(kinds[0] as ScalarKind, t, dialect);
   }
-  if (t.kind === "union" && !(dialect === "postgres" && (name === "inet" || name === "cidr"))) return { anyOf: t.members.map((m) => scalar(m, dialect, inJson, input)) };
+  if (t.kind === "union" && !(dialect === "postgres" && (name === "inet" || name === "cidr"))) return { anyOf: t.members.map((m) => scalar(m, dialect, inJson, input, true)) };
   const kind = columnKind(t, dialect);
   if (inJson) {
     // As the database writes the value inside a document.
-    // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text;
-    // MySQL stores none.
+    // JSON has no number for a non-finite value, so Postgres writes a float's or a decimal's as text,
+    // which the run time gives as the number it is where the value stands on its own
+    // (src/render.ts, `jsonNumbers`); MySQL stores none.
     if (t.kind === "integer" && name === "oid" && dialect === "postgres") return { type: "string" };
     // An integer is a JSON number in there, a MySQL `tinyint(1)` too.
     if (t.kind === "integer") return { type: "integer", format: t.bits > 32 || (t.bits === 32 && t.unsigned) ? "int64" : "int32" };
     if (t.kind === "float" || t.kind === "decimal") {
       const number = { type: "number", format: t.kind === "decimal" ? "decimal" : t.exponent_bits <= 8 ? "float" : "double" };
       const text = [...(t.nan ? ["NaN"] : []), ...(t.infinity ? ["Infinity", "-Infinity"] : [])];
-      return dialect === "postgres" && text.length ? { anyOf: [number, { enum: text }] } : number;
+      return dialect === "postgres" && inUnion && text.length ? { anyOf: [number, { enum: text }] } : number;
     }
     if (kind === "bytes") return { type: "string", format: "hex" };
     // Postgres's own interval text: the run time converts a column's interval, never one inside a document.
@@ -193,7 +194,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       }
       // A built-in geometric type is its text, inside a document too.
       if (dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
-      return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${name || "a record"} as Postgres prints it` };
+      return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${name && name !== "record" ? name : "a record"} as Postgres prints it` };
     }
     case "json":
       // What a statement built: its keys and items are inside the document.
@@ -206,10 +207,11 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       // A DuckDB map as its entries, each a key and its value, in order.
       if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value.type, dialect, input)))) };
       break;
-    case "union":
-      // A DuckDB union as its tag and its value.
-      if (dialect === "duckdb") return { anyOf: t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: m.fields[0]!.name } : nullable(typeSchema(m.fields[0]!.type, dialect, input))))] : [])) };
-      break;
+    case "tagged_union":
+      // A tagged union as its tag and its value; inside a document, whose form of it the engine
+      // does not read, any JSON.
+      if (inJson) return {};
+      return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input))))) };
     case "unknown":
       return {};
   }

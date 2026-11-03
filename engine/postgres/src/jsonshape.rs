@@ -45,6 +45,9 @@ const ROW_FNS: &[&str] = &["to_json", "to_jsonb", "row_to_json"];
 const TUPLE_FNS: &[&str] = &["json_build_array", "jsonb_build_array"];
 /// `array_to_json(a)`: the JSON array of a Postgres array's elements, NULL for a NULL array.
 const ARRAY_TO_JSON: &str = "array_to_json";
+/// `array_agg(x)`: a Postgres array of `x`, read as a shape only for a whole row of no type the
+/// catalog has ([`Builder::anonymous_row`]).
+const ARRAY_AGG: &str = "array_agg";
 /// Every function name the shapes read on Postgres, for the trust check ([`Trust::shadowed`]): a
 /// name a user has also defined may resolve to that function, which builds what it likes.
 pub const POSTGRES_FUNCTIONS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object", "json_agg", "jsonb_agg", "json_group_array", "to_json", "to_jsonb", "row_to_json", "json_build_array", "jsonb_build_array", "array_to_json", "array_agg"];
@@ -191,7 +194,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
     for target in &targets {
         let Some(NodeEnum::ResTarget(rt)) = target.node.as_ref() else { continue };
         let Some(val) = rt.val.as_deref() else { continue };
-        if !is_constructor(val) && !builder.reads_lateral(val) {
+        if !is_constructor(val) && !builder.reads_lateral(val) && !builder.reads_anonymous_row(val) {
             continue;
         }
         let Some(name) = target_name(rt) else { continue };
@@ -245,6 +248,25 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
     let ctx = ResolveCtx { probes, registry, param_oids };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     Resolved { ty: document(ty), non_null, unresolved }
+}
+
+/// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL
+/// position into the column's type, under Postgres's names for it: `record`, and `_record` for an
+/// array, of any depth as every Postgres array is ([`Builder::anonymous_row`]). `None` where the
+/// shape resolves to no row's fields, or to no array of them: the describe's type stands then.
+pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Option<Resolved> {
+    let mut unresolved = Vec::new();
+    let ctx = ResolveCtx { probes, registry, param_oids };
+    let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
+    let ty = match ty.kind {
+        Kind::Record(_) => ty.named("record"),
+        Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
+            let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
+            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: true, ..array })).named("_record")
+        }
+        _ => return None,
+    };
+    Some(Resolved { ty, non_null, unresolved })
 }
 
 /// A JSON document of `content`, what a shape resolves to inside one: a document as it is, and
@@ -457,7 +479,9 @@ impl Builder<'_> {
                         fields.push((key, self.walk(&pair[1])));
                     }
                     Shape::Object { fields, non_null: true }
-                } else if AGG_FNS.contains(&name.as_str()) {
+                } else if AGG_FNS.contains(&name.as_str()) || (self.dialect == Dialect::Postgres && name == ARRAY_AGG && f.args.len() == 1 && !f.agg_star && !f.func_variadic && self.anonymous_row(&f.args[0])) {
+                    // `array_agg(s)` of an item whose row has no type of the catalog's is an
+                    // array of those rows, NULL over no rows as `json_agg` is.
                     if f.args.len() != 1 {
                         return Shape::Unknown;
                     }
@@ -541,7 +565,7 @@ impl Builder<'_> {
                 match (self.walk(first), &c.args[1..]) {
                     (shape, []) => shape,
                     (shape @ (Shape::Object { non_null: true, .. } | Shape::Array { non_null: true, .. } | Shape::Tuple { non_null: true, .. }), _) => shape,
-                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) => Shape::Array { items, non_null: true },
+                    (Shape::Array { items, .. }, [default]) if crate::infer::is_empty_array(default) || (is_array_agg(first) && is_empty_sql_array(default)) => Shape::Array { items, non_null: true },
                     // A placeholder is the whole's type under a default that cannot widen it, and it
                     // resolves nullable. Under any other one the whole is no probe's to read, since a
                     // probe binds nothing: `coalesce($1::int, 1.5)` is a numeric.
@@ -577,9 +601,13 @@ impl Builder<'_> {
             Some(NodeEnum::ColumnRef(_)) if star_alias(expr).is_some() => self.whole(&star_alias(expr).expect("a star alias")),
             // A column of a LATERAL subquery that the subquery builds: the shape of what it builds
             // there. A WITH query's or another subquery's is a statement of its own, which the
-            // probe reading the column follows ([`Outcome::built`]).
+            // probe reading the column follows ([`Outcome::built`]). A bare name that is no column
+            // but an item's (`jsonb_agg(s)`) is the item's whole row, as `s.*` is, where the row is
+            // of no type the catalog has: a derived table's or a WITH query's describes as
+            // `record`, of no fields, where its probe's columns are its fields.
             Some(NodeEnum::ColumnRef(_)) => match self.lateral_target(expr) {
                 Some(lateral) => self.lateral(lateral),
+                None if self.anonymous_row(expr) => self.whole(&bare_alias(expr).expect("an item's alias")),
                 None => self.leaf(expr),
             },
             // A CASE whose one branch builds JSON and whose others are NULL: that branch's shape,
@@ -914,6 +942,37 @@ impl Builder<'_> {
         names.iter().any(|n| !here.shows(n) && around.iter().any(|l| !l.lacks(n)))
     }
 
+    /// Whether `expr` is a bare name that is no column but the whole row of an item whose row is of
+    /// no type the catalog has (`s` of a derived table `s`), which describes as `record`, of no
+    /// fields, and which a probe of `s.*` reads field by field. A table's row describes as the
+    /// table's type, with its columns.
+    fn anonymous_row(&self, expr: &Node) -> bool {
+        bare_alias(expr).is_some_and(|alias| self.stack.iter().zip(&self.withs).any(|((_, from, _), withs)| Level::of(from, withs, self.columns).names_anonymous(&alias)) && self.no_column(&alias))
+    }
+
+    /// Whether a target of the statement's own is such a row at a SQL position, which the describe
+    /// types `record` or `record[]` ([`Builder::anonymous_row`]): the row itself, an `array_agg` of
+    /// it, under a `coalesce`, or as a scalar subquery's one target over its own FROM.
+    fn reads_anonymous_row(&self, expr: &Node) -> bool {
+        match expr.node.as_ref() {
+            Some(NodeEnum::ColumnRef(_)) => self.anonymous_row(expr),
+            Some(NodeEnum::FuncCall(f)) => is_array_agg(expr) && f.args.first().is_some_and(|a| self.anonymous_row(a)),
+            Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| self.reads_anonymous_row(a)),
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32 => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none()) else { return false };
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
+                let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+                let row = |a: &Node| bare_alias(a).is_some_and(|alias| level.names_anonymous(&alias) && level.lacks(&alias));
+                match inner.node.as_ref() {
+                    Some(NodeEnum::FuncCall(f)) => is_array_agg(inner) && f.args.first().is_some_and(row),
+                    Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| is_array_agg(a) && matches!(a.node.as_ref(), Some(NodeEnum::FuncCall(f)) if f.args.first().is_some_and(row))),
+                    _ => row(inner),
+                }
+            }
+            _ => false,
+        }
+    }
+
     /// Whether no FROM in scope shows a column of this name, for certain.
     fn no_column(&self, name: &str) -> bool {
         self.ahead || self.stack.iter().zip(&self.withs).all(|((_, from, _), withs)| Level::of(from, withs, self.columns).lacks(name))
@@ -1051,6 +1110,20 @@ fn is_constructor(expr: &Node) -> bool {
                     .and_then(|rt| rt.val.clone())
                     .is_some_and(|v| is_constructor(&v))
         }
+        _ => false,
+    }
+}
+
+/// Whether `expr` is a one-argument `array_agg(…)`, not a window's.
+fn is_array_agg(expr: &Node) -> bool {
+    matches!(expr.node.as_ref(), Some(NodeEnum::FuncCall(f)) if func_name(f).is_some_and(|n| n == ARRAY_AGG) && f.args.len() == 1 && !f.agg_star && !f.func_variadic && f.over.is_none())
+}
+
+/// Whether `expr` is an empty Postgres array: `'{}'`, under casts.
+fn is_empty_sql_array(expr: &Node) -> bool {
+    match expr.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => matches!(&c.val, Some(protobuf::a_const::Val::Sval(s)) if s.sval == "{}"),
+        Some(NodeEnum::TypeCast(t)) => t.arg.as_deref().is_some_and(is_empty_sql_array),
         _ => false,
     }
 }
@@ -1402,10 +1475,11 @@ struct ResolveCtx<'a> {
 impl ResolveCtx<'_> {
     /// A probe's column as a type: what the catalog says of it, with what the probe's own
     /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
-    /// values and the document a CHECK keeps it to, as a result column gets them.
+    /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
+    /// column gets them.
     fn column(&self, col: &DescribedColumn) -> Type {
         let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref())
+        col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref()))
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -1983,6 +2057,18 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_row_with_no_probe_answered_is_no_row_at_a_sql_position() {
+        let registry = TypeRegistry::with_builtins();
+        let row = Shape::Row { probe: 0 };
+        let rows = Shape::Array { items: Box::new(row.clone()), non_null: false };
+        // A probe the engine never ran, or one past its budget: the describe's type stands.
+        for shape in [&row, &rows] {
+            assert!(resolve_row(shape, &[None], &registry, &[]).is_none(), "{shape:?}");
+            assert!(resolve_row(shape, &[], &registry, &[]).is_none(), "{shape:?}");
+        }
+    }
+
+    #[test]
     fn a_whole_row_probes_the_star() {
         let p = shapes("SELECT to_jsonb(u) AS author FROM users u");
         assert_eq!(p.probes[0].sql, "SELECT u.* FROM users u");
@@ -2015,6 +2101,22 @@ mod tests {
             assert!(shapes(sql).columns.is_empty(), "{sql}");
         }
         assert_eq!(probes_ahead("SELECT to_jsonb(u) AS author FROM unlisted u")[0].sql, "SELECT u.* FROM unlisted u");
+        // A bare name of an item whose row is of no type the catalog has, a derived table's or a
+        // WITH query's, is its whole row wherever it stands, which describes as `record`; a
+        // table's describes as the table's type and stays a value of its own.
+        for sql in ["SELECT jsonb_agg(s) AS rows FROM (SELECT id, title FROM posts) s", "WITH s AS (SELECT id, title FROM posts) SELECT jsonb_agg(s) AS rows FROM s"] {
+            let p = shapes(sql);
+            assert_eq!(p.columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false }, "{sql}");
+            assert!(p.probes[0].sql.contains("SELECT s.* FROM"), "{sql}: {}", p.probes[0].sql);
+        }
+        assert_ne!(shapes("SELECT jsonb_agg(u) AS rows FROM users u").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: false });
+        // So is one at a SQL position, alone, under `array_agg` (`coalesce(…, '{}')` never NULL),
+        // and as a scalar subquery's one target, which the describe types `record` or `record[]`.
+        assert_eq!(shapes("SELECT s FROM (SELECT id FROM posts) s").columns[0].1, Shape::Row { probe: 0 });
+        assert_eq!(shapes("SELECT coalesce(array_agg(s), '{}') AS rows FROM (SELECT id FROM posts) s").columns[0].1, Shape::Array { items: Box::new(Shape::Row { probe: 0 }), non_null: true });
+        assert!(matches!(shapes("SELECT u.id, (SELECT array_agg(c) FROM (SELECT id FROM comments) c) AS cs FROM users u").columns[0].1, Shape::Array { .. }));
+        // A bare name that is a column is the column, however an item is called.
+        assert!(shapes("SELECT array_agg(id) AS ids FROM (SELECT id FROM posts) id").columns.is_empty());
         assert!(needs_columns("SELECT to_jsonb(u) AS author FROM users u") && needs_columns("SELECT row_to_json(u) FROM users u"));
         assert!(needs_columns("SELECT (SELECT json_agg(p.id) FROM posts p) AS ids") && !needs_columns("SELECT json_agg(p.id) AS ids FROM posts p"));
     }
@@ -2288,7 +2390,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, whole_row: false }
+        DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
     }
 
     #[test]

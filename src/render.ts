@@ -5,7 +5,7 @@
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
 import { bareName, schemaOf, type EngineType, type Field } from "./engine-type.ts";
-import { columnKind, kindType as typeOfKind, type Dialect } from "./values.ts";
+import { columnKind, kindType as typeOfKind, type Dialect, type JsonNumbers } from "./values.ts";
 
 // What Postgres writes inside a JSON document for a type whose form there its kind does not say
 // (the spec's facts): the text of a type the format structures (a bit string, a vector, a
@@ -54,7 +54,7 @@ export const ident = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name :
  * table above names, an object for an hstore and a row, GeoJSON for a geometry, and any JSON value
  * for one nothing types.
  */
-function jsonImage(t: EngineType, dialect: Dialect): string {
+function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
   const name = bareName(t);
   switch (t.kind) {
     case "boolean": return "boolean";
@@ -64,6 +64,10 @@ function jsonImage(t: EngineType, dialect: Dialect): string {
     case "float":
     case "decimal": {
       if (dialect === "sqlite") return "number";
+      // Postgres writes a NaN or an infinity inside a document as its text, which the run time
+      // gives as the number it is wherever a float or a decimal stands on its own (`jsonNumbers`);
+      // a union's member keeps the text, which another member may also be.
+      if (dialect === "postgres" && !inUnion) return "number";
       const text = [...(t.nan ? [`"NaN"`] : []), ...(t.infinity ? [`"Infinity"`, `"-Infinity"`] : [])];
       return ["number", ...text].join(" | ");
     }
@@ -73,7 +77,7 @@ function jsonImage(t: EngineType, dialect: Dialect): string {
       // SQLite: a value of a column a NUMERIC declares is a number or the text it holds.
       if (dialect === "sqlite") return /^bool(ean)?$/i.test(name) ? "boolean" : name.toUpperCase() === "NUMERIC" ? "number | string" : JSON_TYPE;
       if (dialect === "postgres" && json[name]) return json[name]!;
-      const parts = t.members.map((m) => jsonImage(m, dialect));
+      const parts = t.members.map((m) => jsonImage(m, dialect, true));
       return parts.includes(JSON_TYPE) ? JSON_TYPE : [...new Set(parts.flatMap((part) => part.split(" | ")))].join(" | ");
     }
     case "bytes":
@@ -108,7 +112,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
     }
     case "record":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.
-      if (inJson) return dialect === "postgres" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
+      if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
       // A DuckDB struct's fields stand as a row's values do.
       if (dialect === "duckdb") {
         return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect))}`).join("; ")} }` : "Record<never, never>";
@@ -126,13 +130,11 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // A DuckDB map's entries stand as a row's values do.
       if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect)}; value: ${orNull(renderType(t.value.type, false, dialect))} }[]`;
       break;
-    case "union":
-      // A DuckDB union is one member, `{ tag, value }`, by the one field of its record.
-      if (dialect === "duckdb" && !inJson) {
-        const tagged = t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [m.fields[0]!] : []));
-        return tagged.length ? tagged.map((f) => `{ tag: ${JSON.stringify(f.name)}; value: ${orNull(renderType(f.type, false, dialect))} }`).join(" | ") : "never";
-      }
-      break;
+    case "tagged_union":
+      // A tagged union is one alternative, `{ tag, value }`, as DuckDB's client returns it; inside
+      // a document, whose form of it the engine does not read, any JSON.
+      if (inJson) break;
+      return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect)) : renderType(a.type, false, dialect)} }`).join(" | ") : "never";
     case "text":
       // An enum's labels, or the strings a CHECK keeps a column to.
       if (t.enum !== undefined) return t.enum.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";
@@ -143,6 +145,40 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       return inJson ? JSON_TYPE : "unknown";
   }
   return inJson ? jsonImage(t, dialect) : typeOfKind(columnKind(t, dialect));
+}
+
+/**
+ * Where a Postgres value of type `t` holds a float or a decimal inside JSON that may be NaN or an
+ * infinity, which Postgres writes there as the text `"NaN"`, `"Infinity"` or `"-Infinity"` and the
+ * run time gives as that number (src/values.ts, `numbersInJson`): `true` for such a value, `items`
+ * for an array's elements (through nested arrays where Postgres's own may nest), `keys` for an
+ * object's fields; undefined where it holds none. It walks the type as `renderType` prints it, so
+ * each place printed `number` there is one the run time converts.
+ */
+export function jsonNumbers(t: EngineType, inJson = false): JsonNumbers | undefined {
+  const name = bareName(t);
+  switch (t.kind) {
+    case "float":
+    case "decimal":
+      return inJson && (t.nan === true || t.infinity === true) ? true : undefined;
+    case "array": {
+      if (inJson ? json[name] !== undefined : !columnKind(t, "postgres").endsWith("[]")) return undefined;
+      const items = jsonNumbers(t.element.type, inJson);
+      return items === undefined ? undefined : { items, ...(t.any_depth ? { deep: true as const } : {}) };
+    }
+    case "record": {
+      if (!inJson || json[name] !== undefined) return undefined;
+      const keys = lastOfEachName(t.fields).flatMap((f): [string, JsonNumbers][] => {
+        const inner = jsonNumbers(f.type, true);
+        return inner === undefined ? [] : [[f.name, inner]];
+      });
+      return keys.length ? { keys } : undefined;
+    }
+    case "json":
+      return t.content === undefined ? undefined : jsonNumbers(t.content.type, true);
+    default:
+      return undefined;
+  }
 }
 
 /**

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
-import { orNull, renderParamType, renderType } from "../src/render.ts";
+import { jsonNumbers, orNull, renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
 import { array, checked, doc, either, enumOf, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 
@@ -123,7 +123,7 @@ test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the
   // A column read as it is holds what its affinity stores, under the name its table declares.
   assert.equal(renderType({ ...lite("numeric"), name: "DECIMAL(10,2)" } as EngineType, false, "sqlite"), "number | string");
   assert.equal(renderType({ ...lite("numeric"), name: "bigint(20)" } as EngineType, false, "sqlite"), "bigint");
-  assert.equal(renderType({ kind: "union", per: "value", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
+  assert.equal(renderType({ kind: "union", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
   // The driver binds a number for an INTEGER, and the run time a truth value as 1 or 0.
   assert.equal(renderParamType(lite("integer"), "sqlite"), "number");
   assert.equal(renderParamType(lite("numeric"), "sqlite"), "number | string | boolean");
@@ -203,11 +203,30 @@ test("parameters take what every driver binds, whatever Reylo returns", () => {
   // A JSON value, built by the statement or read from a column, is parsed.
   assert.equal(renderType(doc(record([field("id", my("int"))])), false, "mysql"), "{ id: number }");
   // Inside a JSON value the database wrote the bytes and the number already. A non-finite decimal
-  // or float is the text Postgres writes inside a document (`{"n": "NaN"}`); MySQL stores none.
-  assert.equal(renderType(doc(record([field("b", pg("bytea")), field("n", pg("numeric"))])), false, "postgres"), '{ b: string; n: number | "NaN" | "Infinity" | "-Infinity" }');
+  // or float is the text Postgres writes inside a document (`{"n": "NaN"}`), which the run time
+  // gives as the number it is; MySQL stores none.
+  assert.equal(renderType(doc(record([field("b", pg("bytea")), field("n", pg("numeric"))])), false, "postgres"), "{ b: string; n: number }");
   assert.equal(renderType(doc(record([field("b", my("varbinary")), field("n", my("decimal"))])), false, "mysql"), "{ b: string; n: number }");
-  // A `numeric(10,2)` holds NaN and no infinity, which its type says.
-  assert.equal(renderType(doc(record([field("n", { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" })])), false, "postgres"), '{ n: number | "NaN" }');
+  // A union's member keeps the text, which the run time leaves as it is.
+  assert.equal(renderType(doc(record([field("u", either(pg("float8"), pg("int4")))])), false, "postgres"), '{ u: number | "NaN" | "Infinity" | "-Infinity" }');
+});
+
+test("the run time converts each float or decimal inside Postgres JSON that may be NaN or an infinity, and only those", () => {
+  const sized = { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" } as const;
+  const finite = { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } as const;
+  const row = record([field("id", pg("int4")), field("n", pg("numeric")), field("p", sized), field("f", finite), field("at", pg("point")), field("xs", array(pg("float8")))]);
+  assert.deepEqual(jsonNumbers(doc(row)), { keys: [["n", true], ["p", true], ["xs", { items: true, deep: true }]] });
+  // An array a statement aggregates, of JSON, and a Postgres array of JSON values.
+  assert.deepEqual(jsonNumbers(doc({ kind: "array", element: { type: row } })), { items: { keys: [["n", true], ["p", true], ["xs", { items: true, deep: true }]] } });
+  assert.deepEqual(jsonNumbers(array(doc(record([field("n", pg("float4"))])))), { items: { keys: [["n", true]] }, deep: true });
+  // Outside JSON a float is a number already, and a row value is its text; a number a CHECK keeps
+  // clear, a geometric type written as text and a union need nothing.
+  assert.equal(jsonNumbers(pg("float8")), undefined);
+  assert.equal(jsonNumbers(array(pg("float8"))), undefined);
+  assert.equal(jsonNumbers(record([field("n", pg("numeric"))])), undefined);
+  assert.equal(jsonNumbers(doc(record([field("f", finite), field("at", pg("point")), field("u", either(pg("float8"), pg("int4")))]))), undefined);
+  // Two keys of one name keep the last.
+  assert.deepEqual(jsonNumbers(doc(record([field("x", pg("float8")), field("x", pg("int4"))]))), undefined);
 });
 
 test("two columns or keys of one name keep the last, as a row object and JSON.parse do", () => {
@@ -311,4 +330,12 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
   assert.equal(renderType(json(open), true, "postgres"), "{ name: string; age?: number | null }");
   assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null }");
   assert.equal(renderType({ kind: "json" }), "Json");
+});
+
+test("a DuckDB tagged union is { tag, value } as a value, and any JSON inside a document", () => {
+  const choice = { kind: "tagged_union", alternatives: [{ tag: "num", type: { kind: "integer", bits: 64 }, nullable: true }, { tag: "str", type: { kind: "text" }, nullable: true }], name: "union" } as unknown as EngineType;
+  assert.equal(renderType(choice, false, "duckdb"), `{ tag: "num"; value: bigint | null } | { tag: "str"; value: string | null }`);
+  // A 64-bit integer is a bigint as a value, never inside parsed JSON.
+  assert.equal(renderType(choice, true, "duckdb"), "Json");
+  assert.deepEqual(typeSchema(choice, "duckdb", false, true), {});
 });

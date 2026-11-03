@@ -1,0 +1,1 @@
+with recursive t as (select id, name from staff where id = 1 union all select s.id, s.name from staff s join t on s.manager_id = t.id) search depth first by id set seq select r.seq from t as r(name, id)

@@ -392,6 +392,15 @@ export function queries(d: Dialect, typed = true) {
       "one",
       { columns: [["profile", "json"], ["pair", "json"], ["glued", "text"], ["doc", "text"]] },
     ),
+    // Postgres: JSON a statement builds holding floats and decimals that are not finite, which
+    // Postgres writes there as text, with the `nonFinite` the loader writes for it (src/render.ts,
+    // `jsonNumbers`), beside JSON whose text is only text.
+    nonFiniteJson: q(
+      `select json_build_object('nan', 'NaN'::float8, 'inf', 'Infinity'::numeric, 'neg', '-Infinity'::float4, 'n', 1.5::numeric, 'xs', array['NaN'::float8, 2]) as doc, jsonb_build_object('s', 'NaN') as raw`,
+      [],
+      "one",
+      { columns: [["doc", "json"], ["raw", "json"]], nonFinite: [{ keys: [["nan", true], ["inf", true], ["neg", true], ["n", true], ["xs", { items: true, deep: true }]] }, null] },
+    ),
     dup: q(`insert into ${t("uniq")} (k) values (:k)`, ["k"], "none"),
   };
 }
@@ -426,12 +435,12 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   },
   mysql: {
     big: my("integer", "bigint", { bits: 64 }), ubig: my("integer", "bigint", { bits: 64, unsigned: true }), amount: my("decimal", "decimal"), day: my("date", "date"), at: my("datetime", "datetime", { tick: "1/1000000" }), doc: my("json", "json"),
-    bit1: { kind: "union", per: "value", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text" } } }), kind: my("text", "enum"),
+    bit1: { kind: "union", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text" } } }), kind: my("text", "enum"),
     flag: my("integer", "tinyint(1)", { bits: 8 }), yr: my("integer", "year", { bits: 16, min: "0", max: "2155" }), f8: my("float", "double", { exponent_bits: 11, mantissa_bits: 52 }), tm: my("duration", "time", { time: { tick: "1/1000000", max: "PT838H59M59S" } }), s: my("text", "varchar"),
   },
   sqlite: {
     n: { kind: "integer", bits: 64 }, r: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, s: { kind: "text", ill_formed: "utf8" }, b: { kind: "bytes" },
-    flag: { kind: "union", per: "value", name: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
+    flag: { kind: "union", name: "NUMERIC", members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, { kind: "text", ill_formed: "utf8" }, { kind: "bytes" }] },
     x: { kind: "unknown" },
   },
 };
@@ -1024,6 +1033,15 @@ export const SCENARIOS: Scenario[] = [
         { profile: { user: { id: 1, name: "ada" }, scores: [{ id: 1, score: 10 }, { id: 3, score: 30 }], none: [] }, pair: [1, "ada", 10], glued: '{"n":"ada"}', doc: '{"a":[1,2]}' },
         "row",
       );
+    },
+  },
+  {
+    id: "S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string",
+    on: "client",
+    params: false,
+    dialects: ["postgres"],
+    async run(ctx, client, q) {
+      typedEq(await call(ctx, q.nonFiniteJson, client), { doc: { nan: NaN, inf: Infinity, neg: -Infinity, n: 1.5, xs: [NaN, 2] }, raw: { s: "NaN" } }, "row");
     },
   },
   {

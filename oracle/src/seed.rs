@@ -37,7 +37,7 @@
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
 //! nothing about it was checked.
 
-use reylo_engine_core::types::{JsonType, Kind, TextType, Type};
+use reylo_engine_core::types::{DecimalType, FloatType, JsonType, Kind, TextType, Type};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -691,7 +691,8 @@ fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item
 }
 
 /// Why a non-NULL value contradicts its type, if it does: a value outside the strings a text is
-/// kept to, a NULL element in an array typed without one, its elements separated by
+/// kept to, a NaN or an infinity in a float or a decimal typed without one, a NULL element in an
+/// array typed without one, its elements separated by
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
 fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
@@ -699,6 +700,12 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
     match &ty.kind {
         // A union of literals, from an enum or a CHECK list: the value is one of them.
         Kind::Text(TextType { values: Some(values), .. }) => (!values.is_empty() && !values.iter().any(|v| v == text)).then(|| format!("typed as one of {values:?} holds {text:?}")),
+        // Postgres prints a float's or a `numeric`'s non-finite values so.
+        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => match text {
+            "NaN" if !nan => Some("typed without NaN holds NaN".to_string()),
+            "Infinity" | "-Infinity" if !infinity => Some(format!("typed without the infinities holds {text}")),
+            _ => None,
+        },
         // A Postgres array, as its text shows it: a type that is structured as an array but
         // written otherwise (`bit`, `vector`) is not one here.
         Kind::Array(array) if !array.element.nullable && ty.name.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_')) => {
@@ -806,19 +813,20 @@ fn written_as_text(ty: &Type) -> bool {
 
 /// Whether a JSON value inside a document is of the form Postgres writes a value of the type in
 /// there (the spec's facts): a boolean, a number for the integers but `oid` and for the floats and
-/// `numeric` (or the text of a non-finite one), an object for a row whose columns were not read,
+/// `numeric` (or the text of a non-finite one the type holds), an object for a row whose columns were not read,
 /// for an hstore and as GeoJSON for a geometry, and text for every other type the format names
 /// (a structured one written as its text among them). JSON, and a type the engine does not know,
 /// admit any value.
 fn json_admits(ty: &Type, json: &Value) -> bool {
     let name = ty.name.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
-    let non_finite = || matches!(json.as_str(), Some("NaN" | "Infinity" | "-Infinity"));
     match &ty.kind {
         _ if written_as_text(ty) => json.is_string(),
         Kind::Boolean => json.is_boolean(),
         Kind::Integer(_) if name == "oid" => json.is_string(),
         Kind::Integer(_) => json.is_number(),
-        Kind::Float(_) | Kind::Decimal(_) => json.is_number() || non_finite(),
+        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => {
+            json.is_number() || (*nan && json.as_str() == Some("NaN")) || (*infinity && matches!(json.as_str(), Some("Infinity" | "-Infinity")))
+        }
         Kind::Text(_) | Kind::Uuid | Kind::Date(_) | Kind::Time(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Range(_) | Kind::Multirange(_) | Kind::Xml(_) => json.is_string(),
         Kind::Map(_) if name == "hstore" => json.as_object().is_some_and(|map| map.values().all(|v| v.is_string() || v.is_null())),
         Kind::Geometry(_) if name == "geometry" => json.get("type").is_some_and(Value::is_string),

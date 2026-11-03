@@ -1,0 +1,1 @@
+with recursive t as (select id, manager_id from staff where manager_id is null union all select s.id, s.manager_id from staff s join t on s.manager_id = t.id) search breadth first by id, manager_id set ordercol select id, ordercol from t

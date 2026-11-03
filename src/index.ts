@@ -7,7 +7,7 @@ import type { Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
-import { DecodeError, ParameterError, type Columns } from "./values.ts";
+import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 
@@ -128,6 +128,8 @@ export type QueryDefinition = {
   inputs?: Inputs;
   /** Each output column's name and kind (src/values.ts), in order: every build step puts them in the module, and the run time gives each value its kind by them. */
   columns?: Columns;
+  /** Where each Postgres JSON column, by position beside `columns`, holds a float or a decimal that may be NaN or an infinity, which Postgres writes there as text, `null` for one that holds none: a build step puts it in the module, and the run time gives each such value as the number it is. */
+  nonFinite?: readonly (JsonNumbers | null)[];
   /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step writes it beside `columns`; a query defined by hand without it builds the same object in a loop. */
   row?: RowBuilder;
   /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one for a result that can hold more than one row. A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
@@ -164,6 +166,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     order: def.order,
     inputs: def.inputs,
     columns: def.columns,
+    nonFinite: def.nonFinite,
     row: def.row,
     key: def.key,
     structured: def.structured,

@@ -7,7 +7,7 @@ export type Type =
   | ArrayType | RecordType | JsonType
   | DateType | TimeType | DateTimeType | InstantType | DurationType
   | UnionType | SetType | MapType | RangeType | MultirangeType | GeometryType | XmlType
-  | OpaqueType | AnyType | UnknownType;
+  | OpaqueType | AnyType | UnknownType | TaggedUnionType;
 
 /** What every type may carry. */
 interface Base {
@@ -253,16 +253,15 @@ export interface DurationType extends Base {
 // Advanced -----------------------------------------------------------------------------------
 
 /**
- * One of several types.
- *   - `per: "value"`: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record.
- *   - `per: "execution"`: every value of one execution is the same one. MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL, by what is bound.
+ * One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.
  *
  * A union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.
  */
 export interface UnionType extends Base {
   kind: "union";
   members: Type[];
-  per: "value" | "execution";
+  /** Every value of one execution is of the same member, which what is bound decides: MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL. A consumer that ignores it reads each value as any member, which holds. */
+  per?: "execution";
 }
 
 /** Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index. */
@@ -334,6 +333,19 @@ export interface AnyType extends Base {
 /** Nothing is known about the values. */
 export interface UnknownType {
   kind: "unknown";
+}
+
+// Appended kinds ----------------------------------------------------------------------------
+
+/** One of several alternatives, each named by the tag every value carries, in the order the type declares them: DuckDB's `UNION(num INTEGER, str VARCHAR)`, a Rust enum. Unlike a union's members, two alternatives may hold one type, and a value says which alternative it is, even where it holds NULL (DuckDB's `union_value(num := NULL)` is no NULL union). */
+export interface TaggedUnionType extends Base {
+  kind: "tagged_union";
+  alternatives: Alternative[];
+}
+
+/** An alternative of a tagged union: its tag, unique in the type, and the value it holds. */
+export interface Alternative extends Position {
+  tag: string;
 }
 
 // =============================================================================================
@@ -416,6 +428,7 @@ export interface Dialect {
 //      - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
 //      - `months`, `days` and `time` on a duration, each a part its values may carry;
 //      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
+//    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
 //
 // 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums.
 //
@@ -522,7 +535,7 @@ export const postgres_columns: Column[] = [
   { name: "ring", nullable: true, type: { kind: "record", name: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
   {
     name: "addr", nullable: true,
-    type: { kind: "union", per: "value", name: "inet", members: [
+    type: { kind: "union", name: "inet", members: [
       { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
       { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
     ] },
@@ -571,9 +584,9 @@ export const sqlserver_columns: Column[] = [
  * A NUMERIC column stores `'0012'` as 12, `'abc'` as text and a blob as a blob; a TEXT column stores 12 as `'12'`. In the STRICT table, `n` is an integer alone.
  */
 export const sqlite_columns: Column[] = [
-  { name: "price", nullable: true, type: { kind: "union", per: "value", name: "NUMERIC", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
-  { name: "name", nullable: true, type: { kind: "union", per: "value", name: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
-  { name: "x", nullable: true, type: { kind: "union", per: "value", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
+  { name: "price", nullable: true, type: { kind: "union", name: "NUMERIC", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
+  { name: "name", nullable: true, type: { kind: "union", name: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
+  { name: "x", nullable: true, type: { kind: "union", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
   { name: "n", nullable: true, type: { ...int64, name: "INTEGER" } },
 ];
 
@@ -581,12 +594,22 @@ export const sqlite_columns: Column[] = [
 export const oracle_column: Column = {
   name: "S",
   nullable: true,
-  type: { kind: "union", per: "value", name: "R.SHAPE_T", members: [
+  type: { kind: "union", name: "R.SHAPE_T", members: [
     { kind: "record", name: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } }] },
     { kind: "record", name: "R.CIRCLE_T", fields: [
       { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } },
       { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", name: "NUMBER" } },
     ] },
+  ] },
+};
+
+/** DuckDB: `select union_value(num := 1)::union(num integer, str varchar) as u`, a tagged union whose every alternative may hold NULL, as DuckDB lets any value inside a nested type be. */
+export const duckdb_column: Column = {
+  name: "u",
+  nullable: true,
+  type: { kind: "tagged_union", name: "union", alternatives: [
+    { tag: "num", nullable: true, type: { kind: "integer", bits: 32, name: "integer" } },
+    { tag: "str", nullable: true, type: { kind: "text", name: "varchar" } },
   ] },
 };
 
