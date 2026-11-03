@@ -180,6 +180,10 @@ struct Item {
     /// The catalog's relation the item is, by the name [`Columns`] keys it under, where its columns
     /// keep their names.
     relation: Option<String>,
+    /// Whether the item's whole row is of no type the catalog has, so it describes as `record`: a
+    /// derived table's, a WITH query's, a function's whose columns the statement defines, a
+    /// join's under an alias.
+    anonymous: bool,
 }
 
 /// The FROM of one query.
@@ -220,14 +224,14 @@ impl Level {
                 let relation = (with.is_none() && rv.alias.as_ref().is_none_or(|a| a.colnames.is_empty()))
                     .then(|| if rv.schemaname.is_empty() { rv.relname.clone() } else { format!("{}.{}", rv.schemaname, rv.relname) });
                 let name = rv.alias.as_ref().map_or_else(|| rv.relname.clone(), |a| a.aliasname.clone());
-                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation });
+                self.items.push(Item { name: Some(name), shown: shown.renamed(rv.alias.as_ref()), relation, anonymous: with.is_some() });
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let shown = match r.subquery.as_deref().and_then(as_select) {
                     Some(select) => shown_by(select, withs, columns),
                     None => Shown::unknown(),
                 };
-                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()), relation: None });
+                self.items.push(Item { name: r.alias.as_ref().map(|a| a.aliasname.clone()), shown: shown.renamed(r.alias.as_ref()), relation: None, anonymous: true });
             }
             Some(NodeEnum::RangeFunction(r)) => {
                 // `f(…) AS r (k int, v text)` is the columns it defines, and WITH ORDINALITY one
@@ -243,7 +247,7 @@ impl Level {
                     Shown::unknown().renamed(r.alias.as_ref())
                 };
                 let name = r.alias.as_ref().map(|a| a.aliasname.clone()).or_else(|| crate::infer::function_item_name(r));
-                self.items.push(Item { name, shown, relation: None });
+                self.items.push(Item { name, shown, relation: None, anonymous: !r.coldeflist.is_empty() });
             }
             Some(NodeEnum::JoinExpr(j)) => {
                 let mut inner = Level::default();
@@ -253,12 +257,12 @@ impl Level {
                 inner.merged |= j.is_natural || !j.using_clause.is_empty();
                 match &j.alias {
                     // An alias on the join hides the names of the items under it.
-                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)), relation: None }),
+                    Some(alias) => self.items.push(Item { name: Some(alias.aliasname.clone()), shown: inner.all().renamed(Some(alias)), relation: None, anonymous: true }),
                     None => {
                         // `USING (id) AS x` names the merged columns and hides nothing.
                         if let Some(alias) = &j.join_using_alias {
                             let names = j.using_clause.iter().map(|n| last_string(std::slice::from_ref(n))).collect();
-                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false }, relation: None });
+                            self.items.push(Item { name: Some(alias.aliasname.clone()), shown: Shown { names, exact: false }, relation: None, anonymous: true });
                         }
                         self.merged |= inner.merged;
                         self.items.extend(inner.items);
@@ -271,7 +275,7 @@ impl Level {
                 }
             }
             // XMLTABLE, JSON_TABLE and whatever else a FROM takes: an item of unknown columns.
-            _ => self.items.push(Item { name: None, shown: Shown::unknown(), relation: None }),
+            _ => self.items.push(Item { name: None, shown: Shown::unknown(), relation: None, anonymous: false }),
         }
     }
 
@@ -332,6 +336,12 @@ impl Level {
     /// Whether an item of this FROM shows a column of this name, for certain.
     pub fn shows(&self, column: &str) -> bool {
         self.items.iter().any(|i| i.shown.has(column))
+    }
+
+    /// Whether an item of this FROM goes by this name and its whole row is of no type the catalog
+    /// has ([`Item::anonymous`]).
+    pub fn names_anonymous(&self, name: &str) -> bool {
+        self.items.iter().any(|i| i.name.as_deref() == Some(name) && i.anonymous)
     }
 
     /// Whether an item of this FROM goes by this name: `None` where none of the names read is it

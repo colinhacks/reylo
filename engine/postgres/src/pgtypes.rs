@@ -31,6 +31,8 @@ pub mod oid {
     pub const NUMERIC: u32 = 1700;
     pub const UNKNOWN: u32 = 705;
     pub const JSONB: u32 = 3802;
+    pub const RECORD: u32 = 2249;
+    pub const RECORD_ARRAY: u32 = 2287;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
