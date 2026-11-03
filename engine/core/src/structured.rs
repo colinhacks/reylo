@@ -1781,7 +1781,7 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
             .collect();
         // The column list against the table: only once the database took every type.
         if probe.diagnostics.is_empty() {
-            analysis.diagnostics.extend(check_table(f, sql, &fields, table, dialect));
+            analysis.diagnostics.extend(check_table(f, sql, &fields, table, &probe.domains, dialect));
         }
         if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
             p.members = f.members.iter().map(|m| crate::api::Member { written: m.ty.clone(), schema: m.schema.clone() }).collect();
@@ -2179,7 +2179,9 @@ fn column_of<'a>(columns: &'a [TableColumn], name: &str, dialect: Dialect) -> Op
 /// that may hold NULL, a key the caller may leave out to a column with a default, every column
 /// that needs a value is in the list, and each member's type is its column's, so that the run
 /// time's checks are the column's own (the descriptor is explicit and checked against the table).
-fn check_table(f: &Found, sql: &str, fields: &[Field], columns: &[TableColumn], dialect: Dialect) -> Vec<Diagnostic> {
+/// `domains` maps each domain the probe's types name to its base type, which the catalog's
+/// columns are read by.
+fn check_table(f: &Found, sql: &str, fields: &[Field], columns: &[TableColumn], domains: &std::collections::BTreeMap<String, String>, dialect: Dialect) -> Vec<Diagnostic> {
     let Some((ts, te)) = f.table else { return Vec::new() };
     if columns.is_empty() {
         return Vec::new();
@@ -2209,7 +2211,7 @@ fn check_table(f: &Found, sql: &str, fields: &[Field], columns: &[TableColumn], 
         } else if m.optional && !c.has_default {
             at(m.name_span, format!("`{}?` lets a row leave the key out, but {table}.{} has no default, so such a row would fail: drop the `?`, or give the column a default.", m.name, c.name));
         }
-        if let Some(message) = type_differs(m, field, c, dialect) {
+        if let Some(message) = type_differs(m, field, c, domains, dialect) {
             at(m.type_span, format!("{table}.{} is {}, and the column list says {}: {message}", c.name, c.written, m.ty));
         }
     }
@@ -2222,15 +2224,16 @@ fn check_table(f: &Found, sql: &str, fields: &[Field], columns: &[TableColumn], 
 }
 
 /// Why a member's type is not its column's, if it is not.
-fn type_differs(m: &Member, field: &Field, c: &TableColumn, dialect: Dialect) -> Option<String> {
+fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::collections::BTreeMap<String, String>, dialect: Dialect) -> Option<String> {
     let advice = "a column list writes each column's own type, so that the checks the run time makes are the column's.";
     match dialect {
         Dialect::Postgres => {
-            // The catalog's own name for the type, which the table's column names unqualified.
+            // The catalog's own name for the type, which the table's column names unqualified and
+            // unquoted, a domain's by its base type, as the column's base is.
             let base = match (&field.ty.kind, &field.ty.name) {
                 (Kind::Json(_), _) => m.ty.clone(),
                 (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
-                (_, Some(name)) => name.rsplit('.').next().unwrap_or(name).to_string(),
+                (_, Some(name)) => split_name(domains.get(name).unwrap_or(name)).1,
             };
             (base != c.base || modifiers(&m.ty) != modifiers(&c.written)).then(|| advice.to_string())
         }
@@ -2837,9 +2840,28 @@ mod tests {
             .map(|r| TableColumn { name: r[0].as_str().unwrap().into(), base: "text".into(), written: "text".into(), not_null: r[3] == true, has_default: false, generated: false, always: false, default: None, inherited: r[9] == true })
             .collect();
         let fields: Vec<Field> = found[0].members.iter().map(|m| Field { name: m.name.clone(), ty: Type::text().named("text"), nullable: !m.not_null, optional: m.omittable() }).collect();
-        let d = check_table(&found[0], sql, &fields, &columns, Dialect::Postgres);
+        let d = check_table(&found[0], sql, &fields, &columns, &Default::default(), Dialect::Postgres);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].message.starts_with("v.note is a column of a view with no default of its own"), "{}", d[0].message);
+    }
+
+    #[test]
+    fn a_member_written_as_its_columns_domain_or_quoted_type_is_the_columns_type() {
+        let sql = "insert into t :a::rows(d dom_t not null, s \"Status\" not null)";
+        let found = find(sql, Dialect::Postgres, &Server::default()).unwrap();
+        let column = |name: &str, base: &str, written: &str| TableColumn { name: name.into(), base: base.into(), written: written.into(), not_null: true, has_default: false, generated: false, always: false, default: None, inherited: false };
+        let columns = vec![column("d", "text", "text"), column("s", "Status", "\"Status\"")];
+        let named = |name: &str| Type::text().named(name);
+        let fields: Vec<Field> = vec![
+            Field { name: "d".into(), ty: named("public.dom_t"), nullable: false, optional: false },
+            Field { name: "s".into(), ty: named("public.\"Status\""), nullable: false, optional: false },
+        ];
+        let domains = std::collections::BTreeMap::from([("public.dom_t".to_string(), "text".to_string())]);
+        let d = check_table(&found[0], sql, &fields, &columns, &domains, Dialect::Postgres);
+        assert!(d.is_empty(), "{d:?}");
+        // Without the domain's base, the member's type is another type than the column's.
+        let d = check_table(&found[0], sql, &fields, &columns, &Default::default(), Dialect::Postgres);
+        assert_eq!(d.len(), 1, "{d:?}");
     }
 
 }
