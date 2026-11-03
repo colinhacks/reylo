@@ -817,6 +817,9 @@ impl<'a> Engine<'a> {
         let comments = self.comments.borrow();
         for (position, (col, built)) in described.columns.iter().zip(&built).enumerate() {
             let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
+            // A whole row of no type the catalog has, or an array of them, whose shape reads to
+            // the row's fields; else the describe's type stands.
+            let row = shape.filter(|_| record(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params));
             let (ty, nullable) = match (shape, built) {
                 (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
                     shapes_used.insert(i);
@@ -828,9 +831,9 @@ impl<'a> Engine<'a> {
                 }
                 // A whole row of no type the catalog has, or an array of them: the row's fields,
                 // as a probe of its columns reads them.
-                (Some((i, (_, shape))), _) if col.type_oid == crate::pgtypes::oid::RECORD || col.type_oid == crate::pgtypes::oid::RECORD_ARRAY => {
+                (Some((i, _)), _) if row.is_some() => {
                     shapes_used.insert(i);
-                    let resolved = jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params);
+                    let resolved = row.expect("a row's fields");
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     (resolved.ty, col.nullable && !resolved.non_null)
                 }

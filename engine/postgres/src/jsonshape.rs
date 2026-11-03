@@ -252,20 +252,21 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
 
 /// Turn the shape of a whole row of no type the catalog has, or of an array of such rows, at a SQL
 /// position into the column's type, under Postgres's names for it: `record`, and `_record` for an
-/// array, of any depth as every Postgres array is ([`Builder::anonymous_row`]).
-pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Resolved {
+/// array, of any depth as every Postgres array is ([`Builder::anonymous_row`]). `None` where the
+/// shape resolves to no row's fields, or to no array of them: the describe's type stands then.
+pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Option<Resolved> {
     let mut unresolved = Vec::new();
     let ctx = ResolveCtx { probes, registry, param_oids };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    let record = |ty: Type| if matches!(ty.kind, Kind::Record(_)) { ty.named("record") } else { ty };
     let ty = match ty.kind {
-        Kind::Array(array) => {
-            let element = Position { ty: record(array.element.ty), nullable: array.element.nullable };
+        Kind::Record(_) => ty.named("record"),
+        Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
+            let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
             Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: true, ..array })).named("_record")
         }
-        _ => record(ty),
+        _ => return None,
     };
-    Resolved { ty, non_null, unresolved }
+    Some(Resolved { ty, non_null, unresolved })
 }
 
 /// A JSON document of `content`, what a shape resolves to inside one: a document as it is, and
