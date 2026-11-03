@@ -202,6 +202,72 @@ test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kep
   assert.equal(new Date("2026-10-20T03:03:00.123456-07:00").toISOString(), "2026-10-20T10:03:00.123Z");
 });
 
+test("timestamptz: the text read by position is the pattern's, for every server text and for text that is not one", () => {
+  // The reading by pattern alone, as `instant` was before it read the usual text by position.
+  const TSTZ = /^(\d{4,})-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d)(\.\d{1,6})?([+-])(\d\d)(?::(\d\d))?(?::(\d\d))?( BC)?$/;
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-" : "+"}${pad(Math.abs(y), 6)}`);
+  const daysFromCivil = (y: number, m: number, d: number) => {
+    y -= m <= 2 ? 1 : 0;
+    const era = Math.floor(y / 400);
+    const yoe = y - era * 400;
+    const doy = Math.floor((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1;
+    return era * 146097 + yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy - 719468;
+  };
+  const civilFromDays = (days: number): [number, number, number] => {
+    const z = days + 719468;
+    const era = Math.floor(z / 146097);
+    const doe = z - era * 146097;
+    const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+    const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+    const mp = Math.floor((5 * doy + 2) / 153);
+    const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+    const m = mp + (mp < 10 ? 3 : -9);
+    return [era * 400 + yoe + (m <= 2 ? 1 : 0), m, d];
+  };
+  const byPattern = (x: string): string => {
+    const m = TSTZ.exec(x);
+    if (m === null) return x;
+    const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
+    const offset = (m[8] === "-" ? -1 : 1) * (+m[9]! * 3600 + (m[10] === undefined ? 0 : +m[10] * 60) + (m[11] === undefined ? 0 : +m[11]));
+    const seconds = daysFromCivil(year, +m[2]!, +m[3]!) * 86400 + +m[4]! * 3600 + +m[5]! * 60 + +m[6]! - offset;
+    const days = Math.floor(seconds / 86400);
+    const s = seconds - days * 86400;
+    const [y, mo, d] = civilFromDays(days);
+    return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${m[7] ?? ""}Z`;
+  };
+  // A seeded generator, so that a failure names a text that fails again.
+  let seed = 0x2545f491;
+  const random = () => ((seed = (Math.imul(seed ^ (seed >>> 15), 0x2c1b3c6d) + 0x6d2b79f5) | 0) >>> 0) / 2 ** 32;
+  const int = (lo: number, hi: number) => lo + Math.floor(random() * (hi - lo + 1));
+  const pick = <T,>(xs: readonly T[]): T => xs[int(0, xs.length - 1)]!;
+  const DAYS = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  // What the server writes in DateStyle ISO: a year of four digits or more (` BC` before 1 AD), a
+  // fraction of up to six digits, an offset in hours, minutes or seconds (a zone's local mean time).
+  const serverText = () => {
+    const kind = random();
+    const year = kind < 0.6 ? int(1000, 9999) : kind < 0.75 ? int(1, 999) : kind < 0.9 ? int(10000, 294276) : int(1, 4713);
+    const month = int(1, 12);
+    const fraction = random() < 0.5 ? "" : `.${String(int(0, 999999)).padStart(6, "0").slice(0, int(1, 6))}`;
+    const sign = random() < 0.5 ? "+" : "-";
+    const zone = random();
+    const offset = `${sign}${pad(int(0, 15))}${zone < 0.6 ? "" : `:${pad(int(0, 59))}${zone < 0.85 ? "" : `:${pad(int(0, 59))}`}`}`;
+    return `${pad(year, 4)}-${pad(month)}-${pad(int(1, DAYS[month - 1]!))} ${pad(int(0, 23))}:${pad(int(0, 59))}:${pad(int(0, 59))}${fraction}${offset}${kind >= 0.9 ? " BC" : ""}`;
+  };
+  // A server text with one character changed, taken out or put in: text the pattern refuses, or reads otherwise.
+  const CHARS = "0123456789-+:. BCTZx";
+  const mutated = () => {
+    const t = serverText();
+    const at = int(0, t.length - 1);
+    const op = random();
+    return op < 0.5 ? t.slice(0, at) + pick([...CHARS]) + t.slice(at + 1) : op < 0.75 ? t.slice(0, at) + t.slice(at + 1) : t.slice(0, at) + pick([...CHARS]) + t.slice(at);
+  };
+  const texts = ["infinity", "-infinity", "", "2026-10-20 10:00:00+00", "2026-10-20 10:00:00.1234567+00", "2026-10-20 10:00:00.+00", "2026-10-20 10:00:00+0", "2026-10-20 10:00:00+00:0", "2026-10-20 10:00:00+00:00:00:00"];
+  for (let i = 0; i < 300_000; i++) texts.push(serverText());
+  for (let i = 0; i < 100_000; i++) texts.push(mutated());
+  for (const text of texts) if (instant(text) !== byPattern(text)) assert.equal(instant(text), byPattern(text), JSON.stringify(text));
+});
+
 test("SQLite: the kinds, and a NUMERIC column of either", () => {
   assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool", "mystery"].map((n) => scalarKind(n, "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool", "unknown"]);
   assert.deepEqual(["int", "int|float|text", "unknown", "bytes"].map(kindType), ["number", "number | string", "unknown", "Uint8Array"]);

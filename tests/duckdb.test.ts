@@ -364,6 +364,22 @@ test("DuckDB: a DuckDB connection is never taken for better-sqlite3", { skip }, 
   }
 });
 
+test("DuckDB: a column named __proto__ is an own property of the row, never its prototype", { skip }, async () => {
+  const db = await api().DuckDBInstance.create(":memory:");
+  const c = await db.connect();
+  try {
+    const q = defineQuery({ dialect: "duckdb", sql: `select 1 as id, {'leaked': true} as "__proto__"`, params: [], cardinality: "one" });
+    const row = (await q.run(c as never)) as Record<string, unknown>;
+    assert.equal(Object.getPrototypeOf(row), Object.prototype);
+    assert.deepEqual(Object.keys(row), ["id", "__proto__"]);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(row, "__proto__")?.value, { leaked: true });
+    assert.equal((row as { leaked?: boolean }).leaked, undefined);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: a list binds through a subclass of DuckDBConnection, and through an object that wraps one", { skip }, async () => {
   const node = createRequire(join(DRIVERS, "package.json"))("@duckdb/node-api") as Api & { DuckDBConnection: new (...args: never[]) => Connection };
   const db = await node.DuckDBInstance.create(":memory:");

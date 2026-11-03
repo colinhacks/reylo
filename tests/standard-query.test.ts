@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { Session } from "../src/analyze.ts";
 import { defineQuery } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
+import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
 import { ParameterError } from "../src/values.ts";
 import { DRIVERS, PG, pgLive, INDEX } from "./helpers.ts";
 
@@ -66,6 +67,34 @@ test("postgres: decode gives each value its kind, and the output its cardinality
   assert.throws(() => one["~standard"].query.decode([["1"], ["2"]]), /Expected at most one row, got 2/);
   const none = defineQuery<{}, never, "none", "postgres">({ dialect: "postgres", sql: "delete from users", params: [], columns: [], cardinality: "none" });
   assert.equal(none["~standard"].query.decode([]), undefined);
+});
+
+test("a row has the columns' names: one named __proto__ is an own property, and of two with one name the last value wins at the first's place", () => {
+  const names = ["id", "__proto__", "id", "x y", "1"];
+  // The builder a module carries, as its source reads, and the loop a query defined by hand builds rows with.
+  const generated = new Function(`return ${rowSource(names)};`)() as RowBuilder;
+  for (const build of [generated, rowOf(names)]) {
+    const row = build([1, { leaked: true }, 2, "s", "n"]);
+    assert.deepEqual(Object.keys(row), ["1", "id", "__proto__", "x y"]);
+    assert.equal(Object.getPrototypeOf(row), Object.prototype);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(row, "__proto__"), { value: { leaked: true }, writable: true, enumerable: true, configurable: true });
+    assert.equal((row as { leaked?: boolean }).leaked, undefined);
+    assert.equal(row.id, 2);
+    // A new object every row, which keeps nothing of the values array it copies.
+    assert.notEqual(build([1, null, 2, "s", "n"]), row);
+  }
+  // decode builds the same rows with the module's builder and without it.
+  const columns = [["id", "int"], ["__proto__", "json"], ["at", "timestamptz"]] as const;
+  const def = { dialect: "postgres", sql: "select 1", params: [], columns } as const;
+  const rows = [["1", '{"leaked":true}', "2026-10-22 14:46:00.5+02"], ["2", null, null]];
+  const expected = [Object.defineProperty({ id: 1, at: "2026-10-22T12:46:00.5Z" }, "__proto__", { value: { leaked: true }, writable: true, enumerable: true, configurable: true }), Object.defineProperty({ id: 2, at: null }, "__proto__", { value: null, writable: true, enumerable: true, configurable: true })];
+  for (const q of [defineQuery(def), defineQuery({ ...def, row: new Function(`return ${rowSource(columns.map(([n]) => n))};`)() as RowBuilder })]) {
+    const out = q["~standard"].query.decode(rows) as Record<string, unknown>[];
+    assert.deepStrictEqual(out, expected);
+    assert.deepEqual(out.map((r) => Object.keys(r)), [["id", "__proto__", "at"], ["id", "__proto__", "at"]]);
+  }
+  // A driver that hands a value in another form than text is refused, naming the column.
+  assert.throws(() => defineQuery(def)["~standard"].query.decode([[1 as unknown as string, null, null]]), /Column "id" is not in Postgres's text form/);
 });
 
 test("mysql and sqlite: each value as a driver binds it, and decode takes every form a driver reads", () => {

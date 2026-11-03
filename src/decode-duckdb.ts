@@ -16,6 +16,7 @@
 import { DecodeError, duration, ParameterError } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
 import type { Columns } from "./values.ts";
+import { rowOf } from "./row.ts";
 
 /** @duckdb/node-api's DuckDBConnection, a connection of a DuckDBInstance: `run` takes it. */
 export type DuckdbClient = {
@@ -165,10 +166,12 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
   if (columns !== undefined && columns.length === 0) return [];
   const names = reader.columnNames();
   const kinds = reader.columnTypes();
+  // Each row by Reylo's row builder (src/row.ts): a column named `__proto__` is an own property.
+  const build = rowOf(names);
+  const decoded = new Array<unknown>(names.length);
   return reader.getRows().map((row) => {
-    const out: Record<string, unknown> = {};
-    for (let i = 0; i < names.length; i++) out[names[i]!] = decode(row[i], kinds[i]!, names[i]!);
-    return out;
+    for (let i = 0; i < names.length; i++) decoded[i] = decode(row[i], kinds[i]!, names[i]!);
+    return build(decoded);
   });
 }
 
