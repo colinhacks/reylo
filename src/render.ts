@@ -287,7 +287,7 @@ function renderFields(fields: readonly Field[], dialect: Dialect): string {
  * statement builds with NULL elements (`array_agg` over a left join is `(string | null)[]`) goes
  * back into a row.
  */
-export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string; readonly schema?: unknown }[]): string {
+export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string }[]): string {
   const kind = columnKind(t, dialect);
   // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
   // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of
@@ -308,7 +308,7 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   if (members !== undefined) {
     const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
     if (record !== undefined) {
-      const fields = record.fields.map((f, k) => {
+      const fields = record.fields.map((f) => {
         const type = renderParamType(f.type, dialect, true);
         return `${ident(f.name)}${f.optional ? "?" : ""}: ${f.nullable ? orNull(type) : type}`;
       });
