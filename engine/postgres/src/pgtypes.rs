@@ -3,7 +3,7 @@
 
 use crate::host::{as_bool, as_strings, as_u32};
 use reylo_engine_core::types::{
-    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
+    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Position, RangeType, Size, TextType, TimeType, Type, XmlType, Zone, MICROSECOND,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -706,7 +706,9 @@ fn to_tick(bounds: Bounds, digits: i32) -> Bounds {
 /// An interval under its fields and precision: `year`, `month` and `year to month` keep months
 /// alone, `day` months and days, `hour` and `day to hour` whole hours, a range ending in `minute`
 /// whole minutes, and one ending in `second(p)`, or `interval(p)`, p fractional digits. Postgres
-/// truncates the parts below the last field it names and keeps the ones above.
+/// truncates the parts below the last field it names and keeps the ones above, so the largest
+/// value falls with them: `year` reaches 178956970 years, 2147483640 months, and time in whole
+/// minutes or hours stops at 2562047788 hours.
 fn interval(duration: DurationType, typmod: i32) -> DurationType {
     const MONTH: i32 = 1 << 1;
     const YEAR: i32 = 1 << 2;
@@ -716,24 +718,33 @@ fn interval(duration: DurationType, typmod: i32) -> DurationType {
     const SECOND: i32 = 1 << 12;
     const FULL_RANGE: i32 = 0x7fff;
     const FULL_PRECISION: i32 = 0xffff;
+    const MONTHS_AND_DAYS: &str = "P2147483648M2147483648D";
+    const WHOLE_HOURS: &str = "P2147483648M2147483648DT2562047788H";
     let range = (typmod >> 16) & 0x7fff;
     let precision = typmod & 0xffff;
-    let second = |time: TimePart| if precision == FULL_PRECISION || precision > 6 { time } else { TimePart { tick: tick(precision), ..time } };
-    let step = |time: TimePart, seconds: &str| TimePart { tick: seconds.to_string(), ..time };
+    let narrowed = |max: String, tick: Option<String>| DurationType { max, tick, infinity: duration.infinity };
     if range == FULL_RANGE || range & SECOND != 0 {
-        return DurationType { time: duration.time.map(second), ..duration };
+        if precision == FULL_PRECISION || precision > 6 {
+            return duration;
+        }
+        let fraction = "775808"[..precision as usize].trim_end_matches('0');
+        let seconds = if fraction.is_empty() { "54".to_string() } else { format!("54.{fraction}") };
+        return narrowed(format!("{WHOLE_HOURS}{seconds}S"), Some(tick(precision)));
     }
     if range & MINUTE != 0 {
-        return DurationType { time: duration.time.map(|t| step(t, "60")), ..duration };
+        return narrowed(WHOLE_HOURS.into(), Some("60".into()));
     }
     if range & HOUR != 0 {
-        return DurationType { time: duration.time.map(|t| step(t, "3600")), ..duration };
+        return narrowed(WHOLE_HOURS.into(), Some("3600".into()));
     }
     if range & DAY != 0 {
-        return DurationType { time: None, ..duration };
+        return narrowed(MONTHS_AND_DAYS.into(), None);
     }
-    if range & (YEAR | MONTH) != 0 {
-        return DurationType { days: None, time: None, ..duration };
+    if range & MONTH != 0 {
+        return narrowed("P2147483648M".into(), None);
+    }
+    if range & YEAR != 0 {
+        return narrowed("P2147483640M".into(), None);
     }
     duration
 }
@@ -808,9 +819,8 @@ fn base_type(t: &PgType) -> Type {
         // Infinite intervals came with version 17, which the engine does not tell apart: an
         // interval may be infinite.
         (true, "interval") => Type::new(Kind::Duration(DurationType {
-            months: Some(Part { max: Some("P2147483648M".into()) }),
-            days: Some(Part { max: Some("P2147483648D".into()) }),
-            time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT2562047788H54.775808S".into()) }),
+            max: "P2147483648M2147483648DT2562047788H54.775808S".into(),
+            tick: Some(MICROSECOND.into()),
             infinity: true,
         })),
         (true, "json" | "jsonb") => Type::json(),
@@ -946,18 +956,31 @@ mod tests {
         assert_eq!(json(oid::TIME, 3), json!({"kind": "time", "tick": "1/1000", "max": "24:00:00", "name": "time"}));
         assert_eq!(json(oid::TIMESTAMP, 3)["max"], json!("+294276-12-31T23:59:59.999"));
         assert_eq!(json(oid::TIMESTAMPTZ, 0), json!({"kind": "instant", "tick": "1", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59Z", "infinity": true, "name": "timestamptz"}));
-        // An interval's fields: year to month, day, hour, hour to minute, second(3) and interval(2).
-        let parts = |typmod: i32| {
-            let d = json(oid::INTERVAL, typmod);
-            (d.get("months").is_some(), d.get("days").is_some(), d["time"]["tick"].as_str().map(str::to_string))
-        };
-        assert_eq!(parts(458751), (true, false, None));
-        assert_eq!(parts(589823), (true, true, None));
-        assert_eq!(parts((1 << 10 << 16) | 0xffff), (true, true, Some("3600".into())));
-        assert_eq!(parts(201392127), (true, true, Some("60".into())));
-        assert_eq!(parts(268435459), (true, true, Some("1/1000".into())));
-        assert_eq!(parts(2147418114), (true, true, Some("1/100".into())));
-        assert_eq!(parts(-1), (true, true, Some("1/1000000".into())));
+        // An interval's fields and precision: its maximum, as Postgres 18 truncates its largest value, and its tick.
+        let whole_hours = "P2147483648M2147483648DT2562047788H";
+        for (typmod, max, tick) in [
+            (327679, "P2147483640M".to_string(), None),                                 // year
+            (196607, "P2147483648M".to_string(), None),                                 // month
+            (458751, "P2147483648M".to_string(), None),                                 // year to month
+            (589823, "P2147483648M2147483648D".to_string(), None),                      // day
+            (67174399, whole_hours.to_string(), Some("3600")),                          // hour
+            (67698687, whole_hours.to_string(), Some("3600")),                          // day to hour
+            (134283263, whole_hours.to_string(), Some("60")),                           // minute
+            (201392127, whole_hours.to_string(), Some("60")),                           // hour to minute
+            (268500991, format!("{whole_hours}54.775808S"), Some("1/1000000")),         // second
+            (268435456, format!("{whole_hours}54S"), Some("1")),                        // second(0)
+            (268435459, format!("{whole_hours}54.775S"), Some("1/1000")),               // second(3)
+            (268435461, format!("{whole_hours}54.7758S"), Some("1/100000")),            // second(5), whose last digit is 0
+            (470286337, format!("{whole_hours}54.7S"), Some("1/10")),                   // day to second(1)
+            (2147418114, format!("{whole_hours}54.77S"), Some("1/100")),                // interval(2)
+            (-1, format!("{whole_hours}54.775808S"), Some("1/1000000")),                // no modifier
+        ] {
+            let ty = registry.render_typmod(oid::INTERVAL, typmod);
+            ty.check().unwrap_or_else(|e| panic!("typmod {typmod}: {e}"));
+            let d = serde_json::to_value(ty).unwrap();
+            assert_eq!((d["max"].as_str().unwrap(), d["tick"].as_str()), (max.as_str(), tick), "typmod {typmod}");
+            assert_eq!(d["infinity"], json!(true), "typmod {typmod}");
+        }
         // bit(7) and varbit(5), and an array's modifier on its element: varchar(20)[].
         assert_eq!(registry.render_typmod(1560, 7).short(), "bit(boolean[7])");
         assert_eq!(registry.render_typmod(1562, 5).short(), "varbit(boolean[..5])");

@@ -2,7 +2,7 @@
 //! type code, flags, character set and display length say of a value, under MySQL's own name for
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 
-use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, TimePart, Type, MICROSECOND};
+use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, Type, MICROSECOND};
 
 /// The protocol's flag for an UNSIGNED integer column.
 const UNSIGNED: u32 = 32;
@@ -80,7 +80,7 @@ pub(crate) fn date() -> Type {
 
 /// A `TIME`, which is a length of time, up to 838:59:59 either way.
 pub(crate) fn time() -> Type {
-    Type::new(Kind::Duration(DurationType { time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT838H59M59S".into()) }), ..DurationType::default() })).named("time")
+    Type::new(Kind::Duration(DurationType { max: "PT838H59M59S".into(), tick: Some(MICROSECOND.into()), infinity: false })).named("time")
 }
 
 pub(crate) fn bigint() -> Type {

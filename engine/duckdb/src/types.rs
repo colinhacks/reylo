@@ -9,7 +9,7 @@
 
 use crate::api::LogicalType;
 use reylo_engine_core::types::{
-    Alternative, ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Position, Size, TimePart, TimeType, Type, Zone, MICROSECOND,
+    Alternative, ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Position, Size, TimeType, Type, Zone, MICROSECOND,
 };
 
 /// DuckDB's earliest and latest dates and timestamps, the latter at microseconds (a
@@ -81,9 +81,8 @@ pub fn of(t: &LogicalType) -> Type {
         "TIMESTAMP_TZ_NS" => instant("1/1000000000"),
         // Months, days and microseconds, each its own signed integer.
         "INTERVAL" => Type::new(Kind::Duration(DurationType {
-            months: Some(Part { max: Some("P2147483648M".into()) }),
-            days: Some(Part { max: Some("P2147483648D".into()) }),
-            time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT2562047788H54.775808S".into()) }),
+            max: "P2147483648M2147483648DT2562047788H54.775808S".into(),
+            tick: Some(MICROSECOND.into()),
             infinity: false,
         })),
         "ENUM" => Type::text_of(t.values.clone()),

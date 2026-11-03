@@ -43,7 +43,7 @@ export const postgres_columns: Column[] = [
   { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, name: "numeric" } },
   { name: "at", nullable: true, type: timestamptz },
   { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
-  { name: "span", nullable: true, type: { kind: "duration", months: { max: "P2147483648M" }, days: { max: "P2147483648D" }, time: { tick: "1/1000000", max: "PT2562047788H54.775808S" }, infinity: true, name: "interval" } },
+  { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, name: "interval" } },
   { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], name: "public.mood" } },
   { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, name: "public.email" } },
   { name: "tags", nullable: true, type: { kind: "array", any_depth: true, name: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, name: "varchar" } } } },
