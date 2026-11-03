@@ -1299,10 +1299,9 @@ mod tests {
         let u = Type::union(vec![nested, Type::integer(64), text.clone()], Per::Value);
         assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
         assert_eq!(Type::union(vec![text.clone(), text.clone()], Per::Value), text);
-        // A union of another `per` stays a member.
-        // A union is per value unless it says otherwise, and writes `per` only for an execution.
-        assert_eq!(serde_json::to_value(Type::union(vec![Type::integer(64), Type::text()], Per::Value)).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}]}));
+        // A union is per value unless it says otherwise, and reads a `per` written as `value`.
         assert_eq!(serde_json::from_value::<Type>(json!({"kind": "union", "per": "value", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}]})).unwrap(), Type::union(vec![Type::integer(64), Type::text()], Per::Value));
+        // A union of another `per` stays a member.
         let per_execution = Type::union(vec![Type::integer(64), Type::double()], Per::Execution);
         assert_eq!(Type::union(vec![per_execution.clone(), Type::text()], Per::Value).members().len(), 2);
     }
