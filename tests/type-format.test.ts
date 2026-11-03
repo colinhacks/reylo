@@ -29,3 +29,27 @@ test("formatType reads Json, the named type of any JSON value, wherever src/rend
   assert.equal(formatType(row, Infinity), row);
   assert.equal(formatType(row, 40), "{\n  doc: Json;\n  tags: Json[];\n  meta: Record<string, Json>;\n  g: {\n    type: string;\n    [key: string]: Json | undefined;\n  };\n}");
 });
+
+test("formatType keeps number literals, as a JSON Schema's enum or const writes them", () => {
+  const row = '{ columns: "auto" | 1 | 2 | -0.5 | 1e+21; version: 2 }';
+  assert.equal(formatType(row, Infinity), row);
+  assert.equal(formatType(row, 30), '{\n  columns: "auto" | 1 | 2 | -0.5 | 1e+21;\n  version: 2;\n}');
+});
+
+test("formatType reads tuples, as a JSON Schema's prefixItems writes them", () => {
+  for (const t of ["{ s: [string, number][] }", "{ p: [string, number?, ...Json[]] }", "{ e: [] }", "{ o: [(string | null)?, ...(number | boolean)[]] }", "{ n: [[number, number], { x: number }] }"]) {
+    assert.equal(formatType(t, Infinity), t);
+  }
+  assert.equal(formatType("{ id: number; samples: [string, number][] } | null", 64), "{ id: number; samples: [string, number][] } | null");
+  assert.equal(formatType("{ samples: [string, { at: string; value: number }?][] }", 30), "{\n  samples: [\n    string,\n    {\n      at: string;\n      value: number;\n    }?,\n  ][];\n}");
+});
+
+test("formatType reads readonly arrays and tuples, as a parameter's type writes them", () => {
+  const params = "{ ids: readonly number[]; pair: readonly [string, number]; pairs: readonly { key: string; value: number | null }[] }";
+  assert.equal(formatType(params, Infinity), params);
+  assert.equal(formatType("{ pair: readonly [string, number] }", 20), "{\n  pair: readonly [\n    string,\n    number,\n  ];\n}");
+});
+
+test("formatType refuses text it cannot read rather than printing the type without it", () => {
+  assert.throws(() => formatType("{ a: string & { b: number } }", Infinity), /no form reads "&"/);
+});

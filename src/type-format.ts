@@ -1,18 +1,26 @@
 // A TypeScript type as the docs' Inference cards (site/lib/remark-mapper.ts) and `reylo play` show
 // it: the one-line type a statement's module declares (src/render.ts's form: object literals,
-// unions, arrays, string literals and names, and a column's comment as the doc comment before its
-// field, src/module-types.ts), broken over lines where it is wider than the column.
+// unions, arrays, tuples, `readonly`, string and number literals and names, and a column's comment
+// as the doc comment before its field, src/module-types.ts), broken over lines where it is wider
+// than the column.
 
 type Node =
   | { kind: "name"; text: string }
   | { kind: "object"; members: { key: string; type: Node; doc?: string }[] }
   | { kind: "union"; of: Node[] }
-  | { kind: "array"; of: Node };
+  | { kind: "array"; of: Node }
+  | { kind: "tuple"; items: { type: Node; optional: boolean; rest: boolean }[] }
+  | { kind: "readonly"; of: Node };
+
+// A doc comment is one token, the field's that follows it.
+const TOKEN = /\/\*\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|[A-Za-z_$][\w$]*(?:<[^<>]*>)?|\.\.\.|\[\]|[{}()[\]|;:?,]/g;
 
 /** The type's text as a tree. Throws on text outside the forms src/render.ts writes. */
 export function parseType(text: string): Node {
-  // A doc comment is one token, the field's that follows it.
-  const tokens = text.match(/\/\*\*[\s\S]*?\*\/|"(?:[^"\\]|\\.)*"|[A-Za-z_$][\w$]*(?:<[^<>]*>)?|\[\]|[{}()[\]|;:?,]/g) ?? [];
+  const tokens = text.match(TOKEN) ?? [];
+  // Text no token matches would be dropped without a word, and the type printed wrong.
+  const unread = text.replace(TOKEN, "").trim();
+  if (unread) throw new Error(`type-format: no form reads "${unread}" in ${text}`);
   let at = 0;
   const peek = () => tokens[at];
   const take = (expected?: string) => {
@@ -29,6 +37,11 @@ export function parseType(text: string): Node {
     return of.length === 1 ? of[0]! : { kind: "union", of };
   };
   const postfix = (): Node => {
+    // `readonly` binds looser than `[]`: `readonly string[]` is a read-only array of strings.
+    if (peek() === "readonly") {
+      take("readonly");
+      return { kind: "readonly", of: postfix() };
+    }
     let node = primary();
     while (peek() === "[]") {
       take("[]");
@@ -45,7 +58,29 @@ export function parseType(text: string): Node {
       return inner;
     }
     if (token === "{") return object();
+    // `[]` here is the empty tuple; after a type it is an array, which `postfix` reads.
+    if (token === "[]") {
+      take("[]");
+      return { kind: "tuple", items: [] };
+    }
+    if (token === "[") return tuple();
     return { kind: "name", text: take() };
+  };
+  const tuple = (): Node => {
+    take("[");
+    const items: { type: Node; optional: boolean; rest: boolean }[] = [];
+    while (peek() !== "]") {
+      const rest = peek() === "...";
+      if (rest) take("...");
+      const type = union();
+      const optional = peek() === "?";
+      if (optional) take("?");
+      items.push({ type, optional, rest });
+      if (peek() === ",") take(",");
+      else if (peek() !== "]") take("]");
+    }
+    take("]");
+    return { kind: "tuple", items };
   };
   const object = (): Node => {
     take("{");
@@ -80,8 +115,30 @@ export function parseType(text: string): Node {
 const oneLineDoc = (doc: string) => doc.replace(/\n\s*\*\/$/, " */").replace(/(?:\n[ \t]*\*[ \t]*)+/g, " ").replace(/^\/\*\*\s*/, "/** ");
 
 /** Whether an object in the type has a field with a doc comment. */
-const hasDoc = (node: Node): boolean =>
-  node.kind === "object" ? node.members.some((m) => m.doc || hasDoc(m.type)) : node.kind === "union" ? node.of.some(hasDoc) : node.kind === "array" ? hasDoc(node.of) : false;
+const hasDoc = (node: Node): boolean => {
+  switch (node.kind) {
+    case "name":
+      return false;
+    case "object":
+      return node.members.some((m) => m.doc || hasDoc(m.type));
+    case "union":
+      return node.of.some(hasDoc);
+    case "tuple":
+      return node.items.some((item) => hasDoc(item.type));
+    case "array":
+    case "readonly":
+      return hasDoc(node.of);
+  }
+};
+
+/** Whether the type needs parentheses as an array's element or an optional tuple element. */
+const loose = (node: Node) => node.kind === "union" || node.kind === "readonly";
+
+/** A tuple element's text around its type: `...` before a rest element, `?` after an optional one, and the parentheses a loose type needs there. */
+const around = (item: { type: Node; optional: boolean; rest: boolean }) => {
+  const wrap = item.optional && loose(item.type);
+  return { before: `${item.rest ? "..." : ""}${wrap ? "(" : ""}`, after: `${wrap ? ")" : ""}${item.optional ? "?" : ""}` };
+};
 
 const flat = (node: Node): string => {
   switch (node.kind) {
@@ -92,7 +149,11 @@ const flat = (node: Node): string => {
     case "union":
       return node.of.map(flat).join(" | ");
     case "array":
-      return node.of.kind === "union" ? `(${flat(node.of)})[]` : `${flat(node.of)}[]`;
+      return loose(node.of) ? `(${flat(node.of)})[]` : `${flat(node.of)}[]`;
+    case "tuple":
+      return `[${node.items.map((item) => `${around(item).before}${flat(item.type)}${around(item).after}`).join(", ")}]`;
+    case "readonly":
+      return `readonly ${flat(node.of)}`;
   }
 };
 
@@ -126,11 +187,23 @@ function print(node: Node, indent: number, lead: number, width: number, reserve 
         .join(" | ");
     }
     case "array":
-      return node.of.kind === "union" ? `(${print(node.of, indent, lead + 1, width, reserve + 3)})[]` : `${print(node.of, indent, lead, width, reserve + 2)}[]`;
+      return loose(node.of) ? `(${print(node.of, indent, lead + 1, width, reserve + 3)})[]` : `${print(node.of, indent, lead, width, reserve + 2)}[]`;
+    case "tuple": {
+      if (!node.items.length) return one;
+      // Each element on a line of its own, as an object's members are.
+      const inner = " ".repeat(indent + 2);
+      const items = node.items.map((item) => {
+        const { before, after } = around(item);
+        return `${inner}${before}${print(item.type, indent + 2, indent + 2 + before.length, width, after.length + 1)}${after},`;
+      });
+      return `[\n${items.join("\n")}\n${" ".repeat(indent)}]`;
+    }
+    case "readonly":
+      return `readonly ${print(node.of, indent, lead + "readonly ".length, width, reserve)}`;
   }
 }
 
-/** The type's text, its objects broken over lines where it is wider than `width`. */
+/** The type's text, its objects and tuples broken over lines where it is wider than `width`. */
 export function formatType(text: string, width: number): string {
   return print(parseType(text), 0, 0, width);
 }
