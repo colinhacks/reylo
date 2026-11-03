@@ -297,8 +297,10 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     let raw = match raw {
         Ok(r) => r,
         Err(e) => {
-            let message = match &e.code {
-                Some(code) => format!("{} ({code})", e.message),
+            // The host reports the server's error number: the message names it as mysql2 does,
+            // and the descriptor carries the number.
+            let message = match e.code.as_deref().and_then(|code| code.parse().ok()).and_then(error_name) {
+                Some(name) => format!("{} ({name})", e.message),
                 None => e.message.clone(),
             };
             let message = if matches!(statement, lex::Statement::Command(_)) { lex::refused_command(&message) } else { message };
@@ -1564,6 +1566,56 @@ fn vectors_as_text(rewritten: lex::Rewritten, raw: &MysqlDescribe) -> lex::Rewri
     let moved = |p: usize| rewritten.spans.iter().zip(&spans).filter(|((_, _, _, re), _)| *re <= p).last().map_or(p, |((_, _, _, re), (_, _, _, new_re))| p - re + new_re);
     let inserted = rewritten.inserted.iter().map(|&(at, rs, re)| (at, moved(rs), moved(re))).collect();
     lex::Rewritten { sql, order: rewritten.order, spans, inserted }
+}
+
+/// The name mysql2 gives a server error (`err.code`), which a message prints after the server's
+/// text: the errors a prepare of a statement answers with. An error not listed here goes without a
+/// name, where mysql2 would have one; the descriptor's code is the number either way.
+fn error_name(code: u16) -> Option<&'static str> {
+    Some(match code {
+        1046 => "ER_NO_DB_ERROR",
+        1048 => "ER_BAD_NULL_ERROR",
+        1051 => "ER_BAD_TABLE_ERROR",
+        1052 => "ER_NON_UNIQ_ERROR",
+        1054 => "ER_BAD_FIELD_ERROR",
+        1055 => "ER_WRONG_FIELD_WITH_GROUP",
+        1056 => "ER_WRONG_GROUP_FIELD",
+        1060 => "ER_DUP_FIELDNAME",
+        1064 => "ER_PARSE_ERROR",
+        1066 => "ER_NONUNIQ_TABLE",
+        1093 => "ER_UPDATE_TABLE_USED",
+        1109 => "ER_UNKNOWN_TABLE",
+        1111 => "ER_INVALID_GROUP_FUNC_USE",
+        1136 => "ER_WRONG_VALUE_COUNT_ON_ROW",
+        1140 => "ER_MIX_OF_GROUP_FUNC_AND_FIELDS",
+        1146 => "ER_NO_SUCH_TABLE",
+        1210 => "ER_WRONG_ARGUMENTS",
+        1222 => "ER_WRONG_NUMBER_OF_COLUMNS_IN_SELECT",
+        1235 => "ER_NOT_SUPPORTED_YET",
+        1241 => "ER_OPERAND_COLUMNS",
+        1242 => "ER_SUBQUERY_NO_1_ROW",
+        1247 => "ER_ILLEGAL_REFERENCE",
+        1248 => "ER_DERIVED_MUST_HAVE_ALIAS",
+        1250 => "ER_TABLENAME_NOT_ALLOWED_HERE",
+        1267 => "ER_CANT_AGGREGATE_2COLLATIONS",
+        1295 => "ER_UNSUPPORTED_PS",
+        1305 => "ER_SP_DOES_NOT_EXIST",
+        1318 => "ER_SP_WRONG_NO_OF_ARGS",
+        1327 => "ER_SP_UNDECLARED_VAR",
+        1353 => "ER_VIEW_WRONG_LIST",
+        1356 => "ER_VIEW_INVALID",
+        1364 => "ER_NO_DEFAULT_FOR_FIELD",
+        1390 => "ER_PS_MANY_PARAM",
+        1582 => "ER_WRONG_PARAMCOUNT_TO_NATIVE_FCT",
+        1583 => "ER_WRONG_PARAMETERS_TO_NATIVE_FCT",
+        1630 => "ER_FUNC_INEXISTENT_NAME_COLLISION",
+        3140 => "ER_INVALID_JSON_TEXT",
+        3143 => "ER_INVALID_JSON_PATH",
+        3554 => "ER_NO_SYSTEM_TABLE_ACCESS",
+        3579 => "ER_WINDOW_NO_SUCH_WINDOW",
+        3593 => "ER_WINDOW_INVALID_WINDOW_FUNC_USE",
+        _ => return None,
+    })
 }
 
 /// A parameter's type from the server's context guess. Every integer context comes back as

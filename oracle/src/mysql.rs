@@ -10,7 +10,7 @@
 //! connection's collation, and the server's own `sql_mode` with IGNORE_SPACE, which mysql2's
 //! client flags add, or the one in the case's `sql_mode` file, which a project would set on its
 //! sessions. A prepare the server refuses is the engine's to report, by the server's message and the
-//! error's name as mysql2 gives it ([`error_name`]); a catalog query that fails fails the case.
+//! error's name as mysql2 gives it; a catalog query that fails fails the case.
 //!
 //! MySQL has no transactional DDL and no deferred constraints, so the isolation is not Postgres's
 //! one transaction. Each state is seeded in a transaction that is never committed, and every run
