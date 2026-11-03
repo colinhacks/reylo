@@ -48,8 +48,6 @@ type Api = {
   STRUCT(fields: Record<string, unknown>): unknown;
   MAP(key: unknown, value: unknown): unknown;
   UNION(members: Record<string, unknown>): unknown;
-  TUPLE(items: unknown[]): unknown;
-  tupleValue(items: unknown[]): unknown;
   BOOLEAN: unknown;
   HUGEINT: unknown;
   DOUBLE: unknown;
@@ -179,14 +177,12 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
 
 /**
  * The type node-api builds a nested or binary value with, standing where the engine's type `t`
- * does: its shape (a LIST, a STRUCT, a TUPLE, a MAP, a UNION) with every scalar inside it a VARCHAR
+ * does: its shape (a LIST, a STRUCT, a MAP, a UNION) with every scalar inside it a VARCHAR
  * of the value's text, and binary data a BLOB. DuckDB casts the text to the parameter's own type,
  * exactly and checking its range, so no integer is narrowed to a type node-api picks.
  */
 function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v instanceof Uint8Array) return a.BLOB;
-  const items = tupleOf(t);
-  if (items && Array.isArray(v)) return a.TUPLE(items.map((item, i) => bindType(a, item, v[i])));
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.MAP(bindType(a, t.key, firstOf(v, "key")), bindType(a, t.value.type, firstOf(v, "value")));
     return a.LIST(bindType(a, t?.kind === "array" ? t.element.type : undefined, v.find((e) => e != null)));
@@ -199,11 +195,6 @@ function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
     return a.UNION(Object.fromEntries(tags.map((m) => [m.name, bindType(a, m.type, (v as { tag?: unknown; value?: unknown }).tag === m.name ? (v as { value?: unknown }).value : undefined)])));
   }
   return a.VARCHAR;
-}
-
-/** A tuple's values' types: a record whose fields have no names. */
-function tupleOf(t: EngineType | undefined): EngineType[] | undefined {
-  return t?.kind === "record" && t.fields.length > 0 && t.fields.every((f) => f.name === "") ? t.fields.map((f) => f.type) : undefined;
 }
 
 /** A DuckDB UNION's members, each a record of the one field its tag names, as tags and their types. */
@@ -221,8 +212,6 @@ function firstOf(entries: unknown[], key: "key" | "value"): unknown {
 function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (v instanceof Uint8Array) return a.blobValue(v);
-  const items = tupleOf(t);
-  if (items && Array.isArray(v)) return a.tupleValue(items.map((item, i) => bindValue(a, item, v[i])));
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.mapValue(v.map((e) => ({ key: bindValue(a, t.key, (e as { key?: unknown } | null)?.key), value: bindValue(a, t.value.type, (e as { value?: unknown } | null)?.value) })));
     return a.listValue(v.map((e) => bindValue(a, t?.kind === "array" ? t.element.type : undefined, e)));
@@ -248,8 +237,6 @@ function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
 export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: string): unknown {
   if (type === undefined || v == null) return v;
   if (type.kind === "array" && Array.isArray(v)) return v.map((e) => encodeDuckdb(type.element.type, e, name));
-  const items = tupleOf(type);
-  if (items && Array.isArray(v)) return v.map((e, i) => encodeDuckdb(items[i], e, name));
   if (type.kind === "map" && Array.isArray(v)) return v.map((e) => (e !== null && typeof e === "object" ? { ...e, key: encodeDuckdb(type.key, (e as { key?: unknown }).key, name), value: encodeDuckdb(type.value.type, (e as { value?: unknown }).value, name) } : e));
   if (type.kind === "record" && typeof v === "object" && !Array.isArray(v)) {
     const out: Record<string, unknown> = { ...(v as Record<string, unknown>) };

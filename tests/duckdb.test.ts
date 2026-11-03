@@ -161,6 +161,13 @@ test("DuckDB: each parameter is typed where it stands, and may be NULL where the
   }
   // A rows(…) parameter is Postgres's, SQLite's and MySQL's for now.
   assert.match((await analyze(root, "insert into teams :rows::rows(id integer not null, name varchar not null)")).diagnostics[0]!.message, /DuckDB statements take no rows\(…\) or row\(…\) parameter yet/);
+  // A struct whose fields have no names, as (1, 'a') and row(…) build, is refused where a column
+  // or a parameter holds one, inside a list too: a value's fields are read by their names.
+  const tuples = await analyze(root, "select (id, msg) as pair, [row(id)] as singles, {'id': id} as named from logs where (id, msg) = :p");
+  assert.deepEqual(tuples.diagnostics.map((d) => d.code), [22, 22, 22]);
+  assert.equal(tuples.diagnostics[0]!.message, `Column "pair" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {'a': 1, 'b': 'x'} or struct_pack(a := 1, b := 'x')`);
+  assert.equal(tuples.diagnostics[2]!.message, ":p takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in :p::struct(a integer, b varchar)");
+  assert.deepEqual(columns(tuples), ["pair: unknown", "singles: unknown[]", "named: struct(id integer)"]);
 });
 
 test("DuckDB: an error DuckDB raises is placed where its caret points", { skip }, async () => {
@@ -309,7 +316,8 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   // DuckDB's own test_all_types(): each type's extremes, which .run() decodes and a parameter
   // writes back, each column into a table of its own; DuckDB then compares each with the original.
   // An array that holds NULL is not written: an array parameter takes no NULL element.
-  const root = await project("create table t as select row_number() over () as k, * exclude (geometry) from test_all_types()");
+  // A struct whose fields have no names, the `tuple` column, is refused (tested above).
+  const root = await project("create table t as select row_number() over () as k, * exclude (geometry, \"tuple\") from test_all_types()");
   const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c0 = await db0.connect();
   const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);

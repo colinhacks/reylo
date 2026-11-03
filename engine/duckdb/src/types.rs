@@ -1,7 +1,8 @@
 //! A DuckDB logical type as the format's type (`spec/type-descriptor.ts`), under DuckDB's own name
 //! for it, lowercased (`integer`, `hugeint`, `timestamptz`): a `LIST` or an `ARRAY` as an array
 //! whose elements may be NULL, a `STRUCT` as a record whose fields may each be NULL (DuckDB has no
-//! NOT NULL inside one; a struct whose fields have no names, a tuple, has fields of empty names), a
+//! NOT NULL inside one; a struct whose fields have no names, a tuple, is no type the format has,
+//! and the analysis refuses it, [`unnamed`]), a
 //! `MAP` as a map, a `UNION` as a union of one-field records, each named by its tag, an `ENUM` as
 //! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
 //! not structure (`GEOMETRY`, a type an extension adds) is opaque.
@@ -94,6 +95,7 @@ pub fn of(t: &LogicalType) -> Type {
             Some(child) => return Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(of(child))), size: t.size.map(|n| Size::exact(n.into())), any_depth: false })),
             None => return Type::unknown(),
         },
+        "STRUCT" if t.fields.iter().any(|f| f.name.is_empty()) => return Type::unknown(),
         "STRUCT" => return Type::record(t.fields.iter().map(|f| Field::new(f.name.clone(), of(&f.ty), true)).collect()),
         "MAP" => match (&t.key, &t.value) {
             (Some(key), Some(value)) => return Type::new(Kind::Map(MapType { key: Box::new(of(key)), value: Box::new(Position::nullable(of(value))) })),
@@ -106,6 +108,14 @@ pub fn of(t: &LogicalType) -> Type {
         other => return Type::opaque(other.to_ascii_lowercase()),
     };
     ty.named(lowercase_name(&t.id))
+}
+
+/// Whether a type is or holds a struct whose fields have no names, as `(1, 'a')` and `row(…)`
+/// build: a record's fields are read by their names, so the format has no type for one.
+pub fn unnamed(t: &LogicalType) -> bool {
+    (t.id == "STRUCT" && t.fields.iter().any(|f| f.name.is_empty()))
+        || t.fields.iter().any(|f| unnamed(&f.ty))
+        || [&t.child, &t.key, &t.value].into_iter().any(|inner| inner.as_deref().is_some_and(unnamed))
 }
 
 /// DuckDB's name for a type, lowercased, as its id writes it (`timestamptz` for `TIMESTAMP_TZ`).
@@ -150,8 +160,11 @@ mod tests {
         assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}},{"name":"pid","type":{"id":"INTEGER"}}]}"#)).short(), "{ host: varchar?, pid: integer? }");
         assert_eq!(of(&t(r#"{"id":"ENUM","text":"ENUM('a', 'b')","values":["a","b"]}"#)).short(), "enum('a' | 'b')");
         assert_eq!(of(&t(r#"{"id":"GEOMETRY"}"#)), Type::opaque("geometry"));
-        // A tuple's fields have no names.
-        assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#)).short(), "{ : integer?, : varchar? }");
+        // A tuple's fields have no names, which no type of the format describes, inside a list too.
+        let tuple = r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#;
+        assert!(of(&t(tuple)).is_unknown());
+        assert!(unnamed(&t(tuple)) && unnamed(&t(&format!(r#"{{"id":"LIST","child":{tuple}}}"#))));
+        assert!(!unnamed(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}}]}"#)));
         assert_eq!(of(&t(r#"{"id":"UNION","fields":[{"name":"num","type":{"id":"INTEGER"}},{"name":"str","type":{"id":"VARCHAR"}}]}"#)).short(), "union({ num: integer? } | { str: varchar? })");
         assert_eq!(of(&t(r#"{"id":"MAP","key":{"id":"VARCHAR"},"value":{"id":"INTEGER"}}"#)).short(), "map(varchar => integer?)");
         for id in ["BOOLEAN", "BIGNUM", "FLOAT", "DOUBLE", "DATE", "TIME", "TIME_NS", "TIME_TZ", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_TZ", "TIMESTAMP_TZ_NS", "INTERVAL", "UUID", "BIT", "BLOB"] {

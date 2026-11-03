@@ -31,6 +31,10 @@ pub fn analyze_text(sql: &str, host: &Host) -> Lazy<Analysis> {
     reylo_engine_core::structured::analyze(sql, Dialect::Duckdb, host, &|sql, marked| analyze(sql, host, marked), &|diagnostics| reylo_engine_core::analysis::bare_of(sql, Dialect::Duckdb, diagnostics))
 }
 
+/// The diagnostic code of a column or a parameter that holds a struct whose fields have no names
+/// ([`crate::types::unnamed`]).
+pub const UNNAMED_FIELDS: u32 = 22;
+
 /// The analysis of a statement whose placeholders are Reylo's and DuckDB's own; `marked` names the
 /// parameters cast to `nullable(…)`.
 fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
@@ -155,6 +159,25 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             None => (Cardinality::Many, Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
         }
     };
+    // A struct whose fields have no names is refused where a column or a parameter has one.
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    if rows {
+        for c in raw.columns.iter().filter(|c| crate::types::unnamed(&c.ty)) {
+            let message = format!("Column \"{}\" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {{'a': 1, 'b': 'x'}} or struct_pack(a := 1, b := 'x')", c.name);
+            diagnostics.push(Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code: UNNAMED_FIELDS, server_code: None });
+        }
+    }
+    for (i, name) in lexed.params.iter().enumerate() {
+        let n = (i + 1).to_string();
+        let described = raw.params.iter().find(|p| p.name == n).or_else(|| raw.params.get(i));
+        if !described.and_then(|p| p.ty.as_ref()).is_some_and(crate::types::unnamed) {
+            continue;
+        }
+        let Some(p) = lexed.placeholders.iter().find(|p| &p.name == name) else { continue };
+        let written = &sql[p.start..p.end];
+        let message = format!("{written} takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in {written}::struct(a integer, b varchar)");
+        diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
+    }
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -165,7 +188,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         key: None,
         rewritten,
         style: lexed.style,
-        diagnostics: Vec::new(),
+        diagnostics,
         unresolved: Vec::new(),
         structured: Vec::new(),
         fresh: None,
