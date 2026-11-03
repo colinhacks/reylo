@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 import { Session } from "../src/analyze.ts";
-import { defineQuery } from "../src/index.ts";
+import { defineQuery, type Query } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
 import { ParameterError } from "../src/values.ts";
@@ -258,6 +258,23 @@ test("the result key a build step writes is the Standard Query's key", () => {
   assert.deepEqual(keyed["~standard"].query.key, ["id"]);
   assert.equal("key" in users["~standard"].query, false);
 });
+
+test("a total order a build step writes is the Standard Query's ordered, which a driver's signature can require", () => {
+  const listed = defineQuery({ dialect: "postgres", sql: "select id from users order by id", params: [], columns: [["id", "int"]], key: ["id"], ordered: true });
+  assert.equal(listed["~standard"].query.ordered, true);
+  assert.equal("ordered" in users["~standard"].query, false);
+});
+
+/** What a driver that compares results by position asks of a query, and what a module of a total order declares. */
+type Positional = { readonly "~standard": { readonly query: { readonly ordered: true } } };
+type DeclaredOrdered = Query<{}, { id: number }, "many", "postgres"> & Positional;
+// Checked by the type check, never run: a query declared ordered passes, and one declared without it does not.
+export function positionalSignature(ordered: DeclaredOrdered, plain: Query<{}, { id: number }, "many", "postgres">) {
+  const takes = (q: Positional) => q;
+  takes(ordered);
+  // @ts-expect-error A query whose order is not declared total.
+  takes(plain);
+}
 
 test("a query defined by hand without its columns cannot decode, and says so", () => {
   const bare = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", sql: "select :id::int as id", params: ["id"] });

@@ -134,6 +134,8 @@ export type QueryDefinition = {
   row?: RowBuilder;
   /** The result key: output columns, by name, no two rows of the result agree on all of, where the analysis proves one for a result that can hold more than one row. A build step puts it in the module; the query's Standard Query `key` (src/standard-query.ts). */
   key?: readonly string[];
+  /** Whether the statement's ORDER BY orders its rows totally, so the order is the same on every run, where the analysis proves it. A build step puts it in the module; the query's Standard Query `ordered` (src/standard-query.ts). */
+  ordered?: boolean;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
@@ -169,6 +171,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     nonFinite: def.nonFinite,
     row: def.row,
     key: def.key,
+    ordered: def.ordered,
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,

@@ -76,6 +76,14 @@ export declare namespace StandardQueryV1 {
      * wherever `columns` is.
      */
     output?(rows: readonly Record<string, unknown>[]): Output;
+    /**
+     * Whether the order of the rows is total: the statement's ORDER BY sorts by a key of the rows
+     * it sorts, so no two rows of a result tie and the order is the same on every run. A driver
+     * comparing two results of the query by position can rely on it. `true` where the order is
+     * total, and absent otherwise, a statement of one row at most included; a query's declared
+     * type carries the literal `true`, so a driver's signature can require it.
+     */
+    readonly ordered?: true;
   }
 
   /** One output column of a query: its name, and the decoder of its raw values. */
@@ -151,6 +159,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
     ...(module.key === undefined ? {} : { key: module.key }),
     ...(columns === undefined ? {} : { columns: Object.freeze(columns) }),
     output: (rows) => materialize(rows as Record<string, unknown>[]),
+    ...(module.ordered ? { ordered: true as const } : {}),
     get text() {
       return statementText();
     },

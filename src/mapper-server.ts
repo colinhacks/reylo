@@ -107,7 +107,7 @@ export function mapperHandlers(): MapperHandlers {
       // statement as written. `sql` and `raw` are declared as their own texts, which a hover over
       // either shows once, with no doc comment to repeat it.
       const leading = leadingComment(sql, dialect);
-      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined), columns?: string) => {
+      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined), columns?: string, ordered = false) => {
         const written = statementAfter(sql, leading);
         const text = [
           reyloImport(paramsType, rowType, columns ?? ""),
@@ -129,8 +129,10 @@ export function mapperHandlers(): MapperHandlers {
           // which may not be the project the type check opened.
           `  readonly source: string;`,
           // Each output column's name and decoder, which a driver that decodes each value once as it
-          // reads it calls: typed column by column, so it knows what each gives.
-          ...(columns === undefined ? [] : [`  readonly "~standard": { readonly query: { readonly columns: ${columns} } };`]),
+          // reads it calls: typed column by column, so it knows what each gives. A total order is the
+          // literal `true`, which a driver's signature can require of a query it compares results of
+          // by position.
+          ...(columns === undefined && !ordered ? [] : [`  readonly "~standard": { readonly query: { ${[columns === undefined ? "" : `readonly columns: ${columns};`, ordered ? "readonly ordered: true;" : ""].filter(Boolean).join(" ")} } };`]),
           `};`,
           `export default query;`,
           ``,
@@ -149,7 +151,7 @@ export function mapperHandlers(): MapperHandlers {
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The compiled statement, without the comment naming its file, which the run time adds where
       // it sends the statement (src/sqlcommenter.ts).
-      return emit(analysis.rewritten.sql.trimEnd(), types.params, types.row, types.cardinality, types.names, types.queryError, types.columns);
+      return emit(analysis.rewritten.sql.trimEnd(), types.params, types.row, types.cardinality, types.names, types.queryError, types.columns, analysis.ordered === true);
     },
     async closeProject(params) {
       const handle = (params as { projectHandle: string }).projectHandle;

@@ -32,6 +32,8 @@ export type Analysis = {
   cardinalityReason?: string;
   /** The result key: output columns, by name, no two rows of the result agree on all of (a NULL equal to another NULL). Only for a result that can hold more than one row: absent where the cardinality is `one` or `maybeOne`, and where no key is proven (engine/core/src/api.rs). */
   key?: string[];
+  /** Whether the statement's ORDER BY orders its rows totally: no two rows of a result tie on every sort key, so the order is the same on every run. Only for a result that can hold more than one row, as `key` is (engine/core/src/api.rs). */
+  ordered?: true;
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
   rewritten: { sql: string; order: string[]; spans: [number, number, number, number][]; inserted?: [number, number, number][] };
   style: "none" | "named" | "positional" | "mixed";

@@ -170,6 +170,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly row?: RowBuilder | undefined;
   /** The result key: output columns, by name, that identify each row of the result, where the analysis proves one. */
   readonly key?: readonly string[] | undefined;
+  /** Whether the statement's ORDER BY orders its rows totally, where the analysis proves it. */
+  readonly ordered?: boolean | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
