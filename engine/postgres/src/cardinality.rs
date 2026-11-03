@@ -2480,15 +2480,16 @@ fn output_named(s: &SelectStmt, name: &str, columns: &[(String, bool)]) -> Outpu
     }
 }
 
-/// The aggregates whose value turns on the order they read their rows in, unless the call orders
-/// them itself: a list or a document built in that order, a floating-point sum, and a value of
-/// any row of the group.
-const ORDER_SENSITIVE: &[&str] = &["array_agg", "string_agg", "json_agg", "jsonb_agg", "json_object_agg", "jsonb_object_agg", "json_objectagg", "json_arrayagg", "json_agg_strict", "jsonb_agg_strict", "json_object_agg_strict", "jsonb_object_agg_strict", "json_object_agg_unique", "jsonb_object_agg_unique", "json_object_agg_unique_strict", "jsonb_object_agg_unique_strict", "xmlagg", "any_value", "sum", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp", "corr", "covar_pop", "covar_samp", "regr_avgx", "regr_avgy", "regr_intercept", "regr_r2", "regr_slope", "regr_sxx", "regr_sxy", "regr_syy"];
+/// The aggregates whose value turns on the order they read their rows in: a list or a document
+/// built in that order, a floating-point sum, and a value of any row of the group. An ORDER BY of
+/// the call's own is no cure, since it need not be total over the group's rows.
+const ORDER_SENSITIVE: &[&str] = &["array_agg", "string_agg", "json_agg", "jsonb_agg", "json_object_agg", "jsonb_object_agg", "json_agg_strict", "jsonb_agg_strict", "json_object_agg_strict", "jsonb_object_agg_strict", "json_object_agg_unique", "jsonb_object_agg_unique", "json_object_agg_unique_strict", "jsonb_object_agg_unique_strict", "xmlagg", "any_value", "sum", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp", "corr", "covar_pop", "covar_samp", "regr_avgx", "regr_avgy", "regr_intercept", "regr_r2", "regr_slope", "regr_sxx", "regr_sxy", "regr_syy"];
 
 /// Whether a sort key's value for a row is the same on every run over the same data: an output
 /// column ORDER BY names whose entry is one, or an expression of the FROM's columns, each a table's
 /// passed through, that calls nothing volatile, no window function, no subquery and no aggregate
-/// whose value turns on the order of its rows ([`ORDER_SENSITIVE`]).
+/// whose value turns on the order of its rows ([`ORDER_SENSITIVE`], and SQL/JSON's
+/// `json_arrayagg` and `json_objectagg`).
 #[allow(clippy::too_many_arguments)]
 fn stable_sort_key(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, positions: &[Option<usize>], trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> bool {
     match e.node.as_ref() {
@@ -2529,14 +2530,14 @@ fn stable_output(s: &SelectStmt, at: usize, trust: &Trust, catalog: &Catalog) ->
 }
 
 fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &Catalog) -> bool {
-    if mentions_window(e) || mentions(e, "SubLink") || calls_volatile(e, catalog) {
+    if mentions_window(e) || mentions(e, "SubLink") || mentions(e, "JsonArrayAgg") || mentions(e, "JsonObjectAgg") || calls_volatile(e, catalog) {
         return false;
     }
     fn calls(v: &Value, trust: &Trust) -> bool {
         match v {
             Value::Object(map) => map.iter().all(|(key, child)| {
                 let ok = match key.as_str() {
-                    "FuncCall" => last_name(child.get("funcname")).is_some_and(|n| trust.builtin(&n) && (!ORDER_SENSITIVE.contains(&n.as_str()) || child.get("agg_order").and_then(Value::as_array).is_some_and(|o| !o.is_empty()))),
+                    "FuncCall" => last_name(child.get("funcname")).is_some_and(|n| trust.builtin(&n) && !ORDER_SENSITIVE.contains(&n.as_str())),
                     _ => true,
                 };
                 ok && calls(child, trust)
@@ -4419,6 +4420,8 @@ mod tests {
         assert!(!ordered_of("select u.id from users u order by random(), u.id", &[("id", false)]));
         assert!(!ordered_of("select p.id from posts p order by row_number() over (), p.id", &[("id", false)]));
         assert!(!ordered_of("select p.author_id, string_agg(p.title, ',') as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(!ordered_of("select p.author_id, string_agg(p.title, ',' order by p.score) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(!ordered_of("select p.author_id, json_arrayagg(p.title returning jsonb) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
         assert!(ordered_of("select p.author_id, count(*) as n from posts p group by p.author_id order by n desc, p.author_id", &[("author_id", false), ("n", false)]));
         // A name a `*` expands to is the FROM's column of that name.
         assert!(ordered_of("select * from users u order by email", &[("id", false), ("email", false), ("name", true), ("pinned_post", true)]));

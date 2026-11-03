@@ -1,5 +1,6 @@
 aggregate_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
 aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id)
+aggregate_own_order.sql: many () -> { author_id: int8, titles: text? } key (author_id)
 alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id)
 by_primary_key.sql: many () -> { id: int8, name: text? } key (id) ordered
 by_unique_desc.sql: many () -> { email: text, name: text? } key (email) ordered
@@ -10,6 +11,7 @@ explicit_collation_only.sql: many () -> { email: text } key (email)
 expression.sql: many () -> { id: int8, title: text? } key (id)
 group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
 group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id)
+json_arrayagg.sql: many () -> { author_id: int8, titles: json? } key (author_id)
 key_not_selected.sql: many () -> { title: text? } ordered
 limited.sql: many () -> { id: int8, title: text? } key (id) ordered
 no_order.sql: many () -> { id: int8, title: text? } key (id)
