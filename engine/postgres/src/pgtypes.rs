@@ -111,6 +111,9 @@ pub struct TypeRegistry {
     /// relation to, which a stored row of it holds ([`TypeRegistry::render_row`]) as a bare read of
     /// the column does.
     pub values: HashMap<(u32, i32), Vec<String>>,
+    /// By relation and attribute, the non-finite values a CHECK keeps out of a float or `numeric`
+    /// column of a composite's relation, which a stored row of it holds no more.
+    pub non_finite: HashMap<(u32, i32), crate::types::NonFinite>,
 }
 
 /// Whether every row a scan of relation `$rel` reads has a value in the column named `$col`, as
@@ -436,6 +439,12 @@ impl TypeRegistry {
         self.row_columns(oid, &[oid::TEXT, oid::VARCHAR])
     }
 
+    /// The float and `numeric` columns of the relation whose row type `oid` is, by relation and
+    /// attribute: the ones a CHECK may keep NaN or the infinities out of ([`TypeRegistry::non_finite`]).
+    pub fn row_number_columns(&self, oid: u32) -> Vec<(u32, i32)> {
+        self.row_columns(oid, &[oid::FLOAT4, oid::FLOAT8, oid::NUMERIC])
+    }
+
     fn row_columns(&self, oid: u32, types: &[u32]) -> Vec<(u32, i32)> {
         // An array of stored rows holds rows of its element's relation.
         let oid = self.get(oid).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).unwrap_or(oid);
@@ -447,8 +456,9 @@ impl TypeRegistry {
     /// The type of a stored row of the relation whose row type `oid` is (`d` of `from docs d`):
     /// the table's constraints held it, so a column is non-null where its `NOT NULL` is valid, a
     /// JSON column a CHECK holds to a JSON Schema is the values it admits
-    /// ([`TypeRegistry::documents`]), and a string column a CHECK keeps to a list of strings is
-    /// those strings ([`TypeRegistry::values`]). A row value of the same type that a statement
+    /// ([`TypeRegistry::documents`]), a string column a CHECK keeps to a list of strings is those
+    /// strings ([`TypeRegistry::values`]), and a float or `numeric` column holds no non-finite
+    /// value a CHECK keeps out ([`TypeRegistry::non_finite`]). A row value of the same type that a statement
     /// builds (`row(…)::docs`), or that another table's column holds, met none of them, and
     /// renders as [`TypeRegistry::render`] does.
     pub fn render_row(&self, oid: u32) -> Type {
@@ -472,6 +482,12 @@ impl TypeRegistry {
     /// a list of strings ([`with_values`]).
     pub fn is_string(&self, oid: u32) -> bool {
         matches!(self.resolve_domain(oid), oid::TEXT | oid::VARCHAR)
+    }
+
+    /// Whether type `oid` is a float or `numeric`, through any domain: a number a CHECK may keep
+    /// NaN or the infinities out of ([`crate::types::NonFinite`]).
+    pub fn is_number(&self, oid: u32) -> bool {
+        matches!(self.resolve_domain(oid), oid::FLOAT4 | oid::FLOAT8 | oid::NUMERIC)
     }
 
     /// Each domain among `names` with the name of the base type it is made from, through any
@@ -514,10 +530,12 @@ impl TypeRegistry {
                         let ty = self.render_at(f.type_oid, depth + 1, false);
                         let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
                         let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
+                        let non_finite = t.relid.filter(|_| stored).and_then(|r| self.non_finite.get(&(r, f.attnum)));
                         let string = self.is_string(f.type_oid);
-                        let ty = match (document, values) {
-                            (Some(schema), _) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema.clone()).kind, ..ty },
-                            (_, Some(values)) if string => with_values(ty, values),
+                        let ty = match (document, values, non_finite) {
+                            (Some(schema), _, _) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema.clone()).kind, ..ty },
+                            (_, Some(values), _) if string => with_values(ty, values),
+                            (_, _, Some(kept_out)) => kept_out.apply(ty),
                             _ => ty,
                         };
                         Field::new(f.name.clone(), ty, !(stored && f.not_null))

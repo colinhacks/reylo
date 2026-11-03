@@ -1402,10 +1402,11 @@ struct ResolveCtx<'a> {
 impl ResolveCtx<'_> {
     /// A probe's column as a type: what the catalog says of it, with what the probe's own
     /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
-    /// values and the document a CHECK keeps it to, as a result column gets them.
+    /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
+    /// column gets them.
     fn column(&self, col: &DescribedColumn) -> Type {
         let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref())
+        col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref()))
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -2288,7 +2289,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, whole_row: false }
+        DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
     }
 
     #[test]
