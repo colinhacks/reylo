@@ -6,11 +6,12 @@
 //! the server dropped while it sat idle (a restart, `wait_timeout`) is opened again for the request
 //! that finds it dropped.
 
-use crate::Program;
+use crate::{Failure, Program};
 use mysql_async::prelude::Queryable;
 use mysql_async::{ClientIdentity, Conn, Opts, OptsBuilder, SslOpts};
 use reylo_engine::clients::mysql_async::{self as answers, Describe};
 use reylo_engine::{AnswerCache, ReplayError};
+use reylo_engine_core::api::Analysis;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -48,8 +49,51 @@ impl Connection {
 
     /// The connection opened again where the server dropped it, as the old one is.
     async fn reopen(&mut self) -> Result<(), Value> {
-        self.conn = connect(&self.url, self.bridge.as_deref()).await?;
+        self.conn = connect(&self.url, self.bridge.as_deref()).await?.0;
         Ok(())
+    }
+
+    /// The analysis of one statement over the connection, opened again once where the server
+    /// dropped it; a failure is the answer the program gives for it.
+    async fn analyze(&mut self, sql: &str) -> Result<Analysis, Value> {
+        let mut result = answers::analyze(&mut self.conn, sql, &mut self.answers).await;
+        if matches!(result, Err(ReplayError::Host(_))) && self.lost().await {
+            self.reopen().await?;
+            result = answers::analyze(&mut self.conn, sql, &mut self.answers).await;
+        }
+        match result {
+            Ok(analysis) => Ok(analysis),
+            // The connection went while the engine asked: the database cannot be reached.
+            Err(ReplayError::Host(e)) if e.0.starts_with("the prepare did not reach the server") || self.lost().await => {
+                Err(json!({ "status": "unreachable", "message": e.0.lines().next().unwrap_or_default() }))
+            }
+            Err(e) => Err(json!({ "status": "error", "message": e.to_string() })),
+        }
+    }
+}
+
+/// A connection to the MySQL server a URL names, as the program opens one, refused where the
+/// server is MariaDB, and the server's `version()`, which the open asks for that check.
+pub async fn open(url: &str) -> Result<(Conn, String), Failure> {
+    connect(url, None).await.map_err(|answer| Failure::of(&answer))
+}
+
+/// The statements of one command line's run, analyzed over one connection, which keeps the engine's
+/// answers between them.
+pub struct Session {
+    connection: Connection,
+    /// The server's `version()`, as `8.4.11`.
+    pub version: String,
+}
+
+impl Session {
+    pub async fn open(url: &str) -> Result<Session, Failure> {
+        let (conn, version) = open(url).await?;
+        Ok(Session { connection: Connection { conn, url: url.to_string(), bridge: None, answers: AnswerCache::default() }, version })
+    }
+
+    pub async fn analyze(&mut self, sql: &str) -> Result<Analysis, Failure> {
+        self.connection.analyze(sql).await.map_err(|answer| Failure::of(&answer))
     }
 }
 
@@ -67,7 +111,7 @@ impl Program for Mysql {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
                 match connect(url, bridge.as_deref()).await {
-                    Ok(conn) => {
+                    Ok((conn, _)) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { conn, url: url.to_string(), bridge, answers: AnswerCache::default() });
                         json!({ "status": "opened", "conn": self.next })
@@ -77,23 +121,10 @@ impl Program for Mysql {
             }
             "run" => match self.connections.get_mut(&id) {
                 None => closed(id),
-                Some(c) => {
-                    let mut result = answers::analyze(&mut c.conn, sql, &mut c.answers).await;
-                    if matches!(result, Err(ReplayError::Host(_))) && c.lost().await {
-                        if let Err(failure) = c.reopen().await {
-                            return Some(failure);
-                        }
-                        result = answers::analyze(&mut c.conn, sql, &mut c.answers).await;
-                    }
-                    match result {
-                        Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
-                        // The connection went while the engine asked: the database cannot be reached.
-                        Err(ReplayError::Host(e)) if e.0.starts_with("the prepare did not reach the server") || c.lost().await => {
-                            json!({ "status": "unreachable", "message": e.0.lines().next().unwrap_or_default() })
-                        }
-                        Err(e) => json!({ "status": "error", "message": e.to_string() }),
-                    }
-                }
+                Some(c) => match c.analyze(sql).await {
+                    Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
+                    Err(failure) => failure,
+                },
             },
             // A query the host runs itself (the schema's fingerprint), its rows as mysql2 reads them,
             // and its failure told apart as `open`'s is: a refused login, a lost server, an error.
@@ -156,7 +187,7 @@ fn closed(id: u64) -> Value {
 /// A connection to the MySQL server a URL names, refused where the server is MariaDB. Where the URL
 /// is the host's bridge to a Unix socket (src/host-url.ts), the login carries the bridge's `token`
 /// as a connection attribute, which is how the bridge knows it from any other local process's.
-async fn connect(url: &str, bridge: Option<&str>) -> Result<Conn, Value> {
+async fn connect(url: &str, bridge: Option<&str>) -> Result<(Conn, String), Value> {
     let mut opts = parse(url).map_err(|message| json!({ "status": "error", "message": message }))?;
     if let Some(token) = bridge {
         opts = OptsBuilder::from_opts(opts).connect_attribute(BRIDGE_ATTRIBUTE, token).into();
@@ -171,7 +202,7 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Conn, Value> {
         let _ = conn.disconnect().await;
         return Err(json!({ "status": "notMysql", "server": server }));
     }
-    Ok(conn)
+    Ok((conn, version.unwrap_or_default()))
 }
 
 /// The server a `version()` names where it is MariaDB, as src/connection.ts's `notMysql` reads it.

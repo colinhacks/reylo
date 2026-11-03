@@ -6,9 +6,10 @@
 //! the request that finds it closed.
 
 use crate::tls::{self, Check};
-use crate::Program;
+use crate::{Failure, Program};
 use reylo_engine::clients::tokio_postgres::{self as answers, Describe};
 use reylo_engine::{AnswerCache, AsyncAnswerer, ReplayError};
+use reylo_engine_core::api::Analysis;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
@@ -47,8 +48,51 @@ impl Connection {
     /// connection only from the request that finds it so, since its connection's task runs only
     /// while a request does: that request is answered over the new one.
     async fn reopen(&mut self) -> Result<(), Value> {
-        self.client = connect(&self.url, self.bridge.as_deref()).await?;
+        self.client = connect(&self.url, self.bridge.as_deref()).await?.0;
         Ok(())
+    }
+
+    /// The analysis of one statement over the connection, opened again once where the server
+    /// closed it; a failure is the answer the program gives for it.
+    async fn analyze(&mut self, sql: &str) -> Result<Analysis, Value> {
+        let mut result = answers::analyze(&self.client, sql, &mut self.answers).await;
+        if matches!(&result, Err(ReplayError::Host(e)) if self.client.is_closed() || e.0.starts_with(answers::ENDED)) {
+            self.reopen().await?;
+            result = answers::analyze(&self.client, sql, &mut self.answers).await;
+        }
+        match result {
+            Ok(analysis) => Ok(analysis),
+            // The connection went while the engine asked: the database cannot be reached.
+            Err(ReplayError::Host(e)) if self.client.is_closed() || e.0.starts_with("the describe did not reach the server") || e.0.starts_with(answers::ENDED) => Err(lost(&e.0)),
+            Err(e) => Err(json!({ "status": "error", "message": e.to_string() })),
+        }
+    }
+}
+
+/// A connection to the database a libpq URL names, as the program opens one, and the server's
+/// version as it reports it when the connection starts (`server_version`), which costs no round
+/// trip: its number alone, `18.1` of `18.1 (Homebrew)`.
+pub async fn open(url: &str) -> Result<(Client, String), Failure> {
+    let (client, version) = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
+    Ok((client, version.split_whitespace().next().unwrap_or_default().to_string()))
+}
+
+/// The statements of one command line's run, analyzed over one connection, which keeps the engine's
+/// answers between them.
+pub struct Session {
+    connection: Connection,
+    /// The server's version ([`open`]).
+    pub version: String,
+}
+
+impl Session {
+    pub async fn open(url: &str) -> Result<Session, Failure> {
+        let (client, version) = open(url).await?;
+        Ok(Session { connection: Connection { client, url: url.to_string(), bridge: None, answers: AnswerCache::default() }, version })
+    }
+
+    pub async fn analyze(&mut self, sql: &str) -> Result<Analysis, Failure> {
+        self.connection.analyze(sql).await.map_err(|answer| Failure::of(&answer))
     }
 }
 
@@ -66,7 +110,7 @@ impl Program for Postgres {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
                 match connect(url, bridge.as_deref()).await {
-                    Ok(client) => {
+                    Ok((client, _)) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::default() });
                         json!({ "status": "opened", "conn": self.next })
@@ -76,21 +120,10 @@ impl Program for Postgres {
             }
             "run" => match self.connections.get_mut(&conn) {
                 None => closed(conn),
-                Some(c) => {
-                    let mut result = answers::analyze(&c.client, sql, &mut c.answers).await;
-                    if matches!(&result, Err(ReplayError::Host(e)) if c.client.is_closed() || e.0.starts_with(answers::ENDED)) {
-                        if let Err(failure) = c.reopen().await {
-                            return Some(failure);
-                        }
-                        result = answers::analyze(&c.client, sql, &mut c.answers).await;
-                    }
-                    match result {
-                        Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
-                        // The connection went while the engine asked: the database cannot be reached.
-                        Err(ReplayError::Host(e)) if c.client.is_closed() || e.0.starts_with("the describe did not reach the server") || e.0.starts_with(answers::ENDED) => lost(&e.0),
-                        Err(e) => json!({ "status": "error", "message": e.to_string() }),
-                    }
-                }
+                Some(c) => match c.analyze(sql).await {
+                    Ok(analysis) => json!({ "status": "analysis", "analysis": analysis }),
+                    Err(failure) => failure,
+                },
             },
             // A statement described on the connection, as the engine's own describe reads it: for a
             // host that runs the engine's analysis over this connection itself (EngineCore's `analyze`).
@@ -166,7 +199,7 @@ fn lost(message: &str) -> Value {
 /// socket (src/host-url.ts), the connection opens with the bridge's `token`, which is how the bridge
 /// knows it from any other local process's, and carries no TLS, which libpq does not use over a
 /// Unix socket either.
-async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
+async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Value> {
     let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
     let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
@@ -174,10 +207,11 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
     let opening = async {
         let Some(token) = bridge else {
             let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
+            let version = connection.parameter("server_version").unwrap_or_default().to_string();
             tokio::spawn(async move {
                 let _ = connection.await;
             });
-            return Ok(client);
+            return Ok((client, version));
         };
         let unreachable = |e: std::io::Error| json!({ "status": "unreachable", "message": format!("cannot reach the host's bridge to the socket: {e}") });
         let (host, port) = match (config.get_hosts().first(), config.get_ports().first()) {
@@ -188,19 +222,20 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
         tokio::io::AsyncWriteExt::write_all(&mut stream, token.as_bytes()).await.map_err(unreachable)?;
         config.ssl_mode(SslMode::Disable);
         let (client, connection) = config.connect_raw(stream, tokio_postgres::NoTls).await.map_err(|e| failure(&e))?;
+        let version = connection.parameter("server_version").unwrap_or_default().to_string();
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        Ok(client)
+        Ok((client, version))
     };
     let connecting = async {
-        let client = opening.await?;
+        let (client, version) = opening.await?;
         // The planner estimates three of the engine's catalog queries above `jit_above_cost`, one in
         // the millions against a default of 100,000, so a server built with JIT compiles them for
         // each statement: about 2.6 seconds, where running them takes 50 milliseconds. A server
         // without the setting refuses it, and then there is nothing to turn off.
         let _ = client.batch_execute("set jit = off").await;
-        Ok(client)
+        Ok((client, version))
     };
     match tokio::time::timeout(timeout, connecting).await {
         Err(_) => Err(json!({ "status": "unreachable", "message": "no answer within the connect timeout" })),

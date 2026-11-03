@@ -25,6 +25,45 @@ pub mod sqlite;
 #[cfg(any(feature = "postgres", feature = "mysql"))]
 mod tls;
 
+/// Why a connection could not be opened or kept, by kind, as a command line tells its user: the
+/// `status` of a program's failure answer, with its message (for `NotMysql`, the server it found).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failure {
+    /// The server gave no answer, or went away.
+    Unreachable(String),
+    /// The server refused the login.
+    Refused(String),
+    /// A MySQL URL reached a server that is not MySQL: MariaDB, named as its `version()` names it.
+    NotMysql(String),
+    /// Anything else: a URL that cannot be read, TLS settings, an error from the server.
+    Error(String),
+}
+
+impl Failure {
+    /// The failure a program's answer reports.
+    #[cfg_attr(not(any(feature = "postgres", feature = "mysql", feature = "sqlite")), allow(dead_code))]
+    fn of(answer: &Value) -> Failure {
+        let message = answer["message"].as_str().unwrap_or_default().to_string();
+        match answer["status"].as_str() {
+            Some("unreachable") => Failure::Unreachable(message),
+            Some("refused") => Failure::Refused(message),
+            Some("notMysql") => Failure::NotMysql(answer["server"].as_str().unwrap_or_default().to_string()),
+            _ => Failure::Error(message),
+        }
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Unreachable(m) => write!(f, "cannot reach the database: {m}"),
+            Failure::Refused(m) => write!(f, "the database refused the login: {m}"),
+            Failure::NotMysql(server) => write!(f, "the URL names a MySQL database, and the server is {server}, which Reylo does not read"),
+            Failure::Error(m) => f.write_str(m),
+        }
+    }
+}
+
 /// One database's program: the core's own requests, and those that need a connection.
 pub trait Program {
     /// The core's answer to a request that needs no database, as the WebAssembly engine gives it.
