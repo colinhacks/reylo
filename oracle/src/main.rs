@@ -64,8 +64,18 @@ use std::process::ExitCode;
 use std::str::FromStr;
 use tokio_postgres::{Client, Config, NoTls};
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// The stack the oracle runs on. A descriptor is as deep as its statement nests (a JSON shape 495
+/// levels deep in `deep_statements`), and reading one back through serde, which buffers each level
+/// of a flattened kind, takes more than a main thread's 8 MiB in an unoptimized build. Reserved
+/// address space: only the pages a deep descriptor touches are backed by memory.
+const STACK_BYTES: usize = 256 << 20;
+
+fn main() -> ExitCode {
+    let oracle = std::thread::Builder::new().name("oracle".into()).stack_size(STACK_BYTES).spawn(|| tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("the oracle's runtime starts").block_on(oracle()));
+    oracle.expect("the oracle's thread starts").join().unwrap_or(ExitCode::FAILURE)
+}
+
+async fn oracle() -> ExitCode {
     let mut url = std::env::var("ORACLE_URL").ok();
     let mut mysql_url = std::env::var("ORACLE_MYSQL_URL").ok();
     let mut bless = false;
