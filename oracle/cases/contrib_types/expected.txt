@@ -1,10 +1,10 @@
 add.sql: at_most_one (id: int4, dims: public.cube, spot: public.earth?, span: public.seg?, isbn13: public.isbn13, issn: public.issn?, ismn: public.ismn?, upc: public.upc?, blob: public.lo?, ref: oid?) -> { id: int4, dims: public.cube, spot: public.cube?, span: public.seg?, isbn13: public.isbn13, issn: public.issn?, ismn: public.ismn?, upc: public.upc?, blob: oid?, ref: oid? }
-by_ean.sql: many (eans: public.ean13?[]) -> { id: int4, ean: public.ean13?, upc: public.upc? }
-by_isbn.sql: many (isbn: public.isbn13) -> { id: int4, printed: text, weak: bool?, valid: bool?, fixed: public.isbn13? }
-by_ref.sql: many (ref: oid, blob: oid) -> { id: int4, blob: oid?, ref: oid? }
-cube_ops.sql: many (c: public.cube, c2: public.cube) -> { id: int4, n: int4?, low: float8?, distance: float8?, holds: bool? }
-earth_ops.sql: many (lat: float8, lng: float8) -> { id: int4, meters: float8?, lat: float8?, lng: float8?, made: public.cube? }
+by_ean.sql: many (eans: public.ean13?[]) -> { id: int4, ean: public.ean13?, upc: public.upc? } key (id)
+by_isbn.sql: many (isbn: public.isbn13) -> { id: int4, printed: text, weak: bool?, valid: bool?, fixed: public.isbn13? } key (id)
+by_ref.sql: many (ref: oid, blob: oid) -> { id: int4, blob: oid?, ref: oid? } key (id)
+cube_ops.sql: many (c: public.cube, c2: public.cube) -> { id: int4, n: int4?, low: float8?, distance: float8?, holds: bool? } key (id)
+earth_ops.sql: many (lat: float8, lng: float8) -> { id: int4, meters: float8?, lat: float8?, lng: float8?, made: public.cube? } key (id)
 json_object.sql: many () -> { doc: json { dims: public.cube, spot: public.cube?, span: public.seg?, isbn13: public.isbn13, upc: public.upc?, blob: oid?, ref: oid?, boxes: public.cube?[]? } }
-plain.sql: many () -> { id: int4, dims: public.cube, spot: public.cube?, span: public.seg?, isbn: public.isbn?, isbn13: public.isbn13, ean: public.ean13?, issn: public.issn?, ismn: public.ismn?, upc: public.upc?, blob: oid?, ref: oid?, boxes: public.cube?[]? }
-seg_ops.sql: many (s: public.seg) -> { id: int4, low: float4?, high: float4?, overlaps: bool? }
+plain.sql: many () -> { id: int4, dims: public.cube, spot: public.cube?, span: public.seg?, isbn: public.isbn?, isbn13: public.isbn13, ean: public.ean13?, issn: public.issn?, ismn: public.ismn?, upc: public.upc?, blob: oid?, ref: oid?, boxes: public.cube?[]? } key (id)
+seg_ops.sql: many (s: public.seg) -> { id: int4, low: float4?, high: float4?, overlaps: bool? } key (id)
 whole_row.sql: many () -> { doc: jsonb { id: int4, dims: public.cube, spot: public.cube?, span: public.seg?, isbn: public.isbn?, isbn13: public.isbn13, ean: public.ean13?, issn: public.issn?, ismn: public.ismn?, upc: public.upc?, blob: oid?, ref: oid?, boxes: public.cube?[]? } }

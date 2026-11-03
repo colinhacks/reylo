@@ -1,7 +1,7 @@
 array.sql: one () -> { rows: (public.docs{ id: int4, title: text, note: text? }?)[] }
 built.sql: one () -> { built: jsonb (public.docs{ id: int4?, title: text?, note: text? })[]? }
 built_in_subquery.sql: one () -> { o: json { x: public.docs{ id: int4?, title: text?, note: text? }? } }
-correlated.sql: many () -> { id: int4, rows: (public.docs{ id: int4, title: text, note: text? }?)[], one: public.docs{ id: int4, title: text, note: text? }? }
+correlated.sql: many () -> { id: int4, rows: (public.docs{ id: int4, title: text, note: text? }?)[], one: public.docs{ id: int4, title: text, note: text? }? } key (id)
 derived.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text, note: text? })[]? }
 function.sql: one () -> { o: json { made: public.docs{ id: int4?, title: text?, note: text? }? } }
 held.sql: one () -> { held: jsonb (public.docs{ id: int4?, title: text?, note: text? }?)[]? }

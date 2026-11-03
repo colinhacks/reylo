@@ -43,6 +43,6 @@ temporal_subquery.sql: many (note: text) -> { note: text, who: text? }
 temporal_unique.sql: many (room: int4, during: int4range) -> { note: text? }
 uuid_functions.sql: many () -> { v7: uuid, v4: uuid, folded: text }
 virtual_columns.sql: at_most_one (id: int4) -> { v: int4, w: int4?, s: int4, k: text('pos' | 'neg') }
-virtual_filter.sql: many (v: int4) -> { id: int4 }
+virtual_filter.sql: many (v: int4) -> { id: int4 } key (id)
 virtual_insert.sql: one (id: int4, a: int4, b: int4?) -> { v: int4, w: int4?, s: int4, k: text('pos' | 'neg'), next: int4 }
-virtual_star.sql: many () -> { id: int4, a: int4, b: int4?, v: int4, w: int4?, s: int4, k: text('pos' | 'neg') }
+virtual_star.sql: many () -> { id: int4, a: int4, b: int4?, v: int4, w: int4?, s: int4, k: text('pos' | 'neg') } key (id)

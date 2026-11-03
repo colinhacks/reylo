@@ -1,8 +1,8 @@
 between.sql: many () -> { age: int4 }
 case_guard.sql: many () -> { n: text }
 case_not_guard.sql: many () -> { n: text? }
-filter_array.sql: many () -> { id: int4, nicks: text[]? }
-filter_json.sql: many () -> { id: int4, posts: json ({ id: int4, title: text })[]? }
+filter_array.sql: many () -> { id: int4, nicks: text[]? } key (id)
+filter_json.sql: many () -> { id: int4, posts: json ({ id: int4, title: text })[]? } key (id)
 in_list.sql: many () -> { nickname: text }
 later_inner_join.sql: many () -> { title: text, name: text, team: text }
 later_left_join.sql: many () -> { title: text, name: text? }

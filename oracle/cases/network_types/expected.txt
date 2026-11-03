@@ -1,7 +1,7 @@
 add.sql: one (id: int4, addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) }), net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })?, mac: macaddr(=6)?, mac8: macaddr8(=8)?) -> { id: int4, addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) }), net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })?, mac: macaddr(=6)?, mac8: macaddr8(=8)? }
-any_addr.sql: many (addrs: (inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })?)[]) -> { id: int4, host: text?, bits: int4?, family: int4? }
-by_addr.sql: many (addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })) -> { id: int4, net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })? }
-by_mac.sql: many (mac: macaddr(=6)) -> { id: int4, mac8: macaddr8(=8)? }
-by_mac8.sql: many (mac8: macaddr8(=8)) -> { id: int4 }
-by_pin.sql: many (pin: public.pin) -> { id: int4 }
-in_net.sql: many (net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })) -> { id: int4, addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) }), mac: macaddr(=6)? }
+any_addr.sql: many (addrs: (inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })?)[]) -> { id: int4, host: text?, bits: int4?, family: int4? } key (id)
+by_addr.sql: many (addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })) -> { id: int4, net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })? } key (id)
+by_mac.sql: many (mac: macaddr(=6)) -> { id: int4, mac8: macaddr8(=8)? } key (id)
+by_mac8.sql: many (mac8: macaddr8(=8)) -> { id: int4 } key (id)
+by_pin.sql: many (pin: public.pin) -> { id: int4 } key (id)
+in_net.sql: many (net: cidr({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })) -> { id: int4, addr: inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) }), mac: macaddr(=6)? } key (id)

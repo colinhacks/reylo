@@ -1,7 +1,7 @@
 date_parts.sql: many () -> { year: numeric, epoch: numeric, century: numeric, decade: numeric, hour: numeric, part_year: float8, part_millennium: float8, month: numeric?, day_of_date: numeric?, day_of_wait: numeric?, dow: float8? }
 enum_labels.sql: many () -> { moods: (public.mood('sad' | 'ok' | 'happy'))[], each: public.mood('sad' | 'ok' | 'happy') }
 enum_labels_from.sql: many () -> { label: public.mood('sad' | 'ok' | 'happy') }
-grouped.sql: many () -> { kind: text, some_n: int4, some_note: text?, median: float8, middle: timestamptz, usual: public.mood('sad' | 'ok' | 'happy'), filtered: float8? }
+grouped.sql: many () -> { kind: text, some_n: int4, some_note: text?, median: float8, middle: timestamptz, usual: public.mood('sad' | 'ok' | 'happy'), filtered: float8? } key (kind)
 grouping_key_by_name.sql: many () -> { one: int4?, label: text, n: int8 }
 grouping_key_by_position.sql: many () -> { kind: text?, n: int8, tagged: text }
 grouping_key_set_returning.sql: many () -> { g: int4?, n: int8 }

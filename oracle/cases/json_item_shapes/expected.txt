@@ -3,7 +3,7 @@ derived_object.sql: one () -> { stats: jsonb { count: int8, latest: timestamptz?
 derived_renamed.sql: many () -> { k: jsonb { id: int8 } }
 direct_param.sql: many (p: text) -> { j: jsonb { id: int8, p: text? } }
 lateral.sql: many () -> { j: jsonb { id: int8 } }
-with_aggregated.sql: many () -> { id: int8, posts: jsonb ({ id: int8, title: text })[] }
+with_aggregated.sql: many () -> { id: int8, posts: jsonb ({ id: int8, title: text })[] } key (id)
 with_chain.sql: many () -> { doc: jsonb { id: int8, user_id: int8, title: text, published_at: timestamptz? } }
 with_chain_nested.sql: many () -> { k: jsonb { js: ({ id: int8 })[] } }
 with_coalesced.sql: many () -> { name: text, posts: jsonb ({ id: int8, title: text })[] }

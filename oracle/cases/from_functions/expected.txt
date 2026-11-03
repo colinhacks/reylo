@@ -3,10 +3,10 @@ alias_column.sql: one () -> { at: timestamptz }
 beside_key.sql: at_most_one (id: int8) -> { email: text, t: timestamptz }
 column_list.sql: one () -> { a: int4?, b: text? }
 current_date.sql: one () -> { current_date: date }
-distinct.sql: many () -> { v: int8? }
+distinct.sql: many () -> { v: int8? } key (v)
 full_join.sql: many () -> { a: timestamptz?, b: timestamptz? }
 lateral.sql: at_most_one (id: int8) -> { id: int8, l: text? }
-lateral_many.sql: many () -> { id: int8, l: text? }
+lateral_many.sql: many () -> { id: int8, l: text? } key (id)
 left_join_nulled.sql: at_most_one (id: int8) -> { id: int8, t: timestamptz? }
 limit_zero.sql: at_most_one () -> { now: timestamptz }
 lower_cast.sql: one (s: text) -> { lower: text }
@@ -19,10 +19,10 @@ one_text.sql: one (p: text) -> { one_text: text? }
 ordinality.sql: one (p: text) -> { v: text?, n: int8 }
 out_params.sql: one (p: int4) -> { a: int4?, b: text? }
 overloaded.sql: many (p: int4) -> { either: int4? }
-pins_nothing.sql: many (p: text) -> { id: int8 }
+pins_nothing.sql: many (p: text) -> { id: int8 } key (id)
 preserved.sql: one (id: int8) -> { t: timestamptz, email: text? }
 returns_table.sql: many (p: int4) -> { a: int4?, b: text? }
-right_join_nulled.sql: many (s: text) -> { t: text?, id: int8 }
+right_join_nulled.sql: many (s: text) -> { t: text?, id: int8 } key (id)
 rows_from.sql: one (p: text) -> { at: timestamptz?, t: text? }
 rows_from_set.sql: many () -> { at: timestamptz?, n: int4? }
 set_ordinality.sql: many () -> { v: int4, n: int8 }

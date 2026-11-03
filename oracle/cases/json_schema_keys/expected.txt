@@ -5,7 +5,7 @@ constructor.sql: many () -> { o: jsonb { name: jsonb {"type":"string"}, owner_id
 derived.sql: many () -> { name: text, owner_id: jsonb {"type":"integer"} }
 json_column.sql: many () -> { title: json {"type":"string"}, title_text: text, other: json? }
 not_literal.sql: many (key: text) -> { v: jsonb?, w: text? }
-outer_joined.sql: many () -> { id: int4, kind: text('a' | 'b')? }
+outer_joined.sql: many () -> { id: int4, kind: text('a' | 'b')? } key (id)
 path.sql: many () -> { owner_id: jsonb {"type":"integer"}, owner_id_text: text, email: jsonb {"type":"string"}?, whole: jsonb {"type":"object","properties":{"name":{"type":"string"},"kind":{"enum":["a","b"]},"size":{"type":["integer","null"]},"tags":{"type":"array","items":{"type":"string"}},"owner":{"type":"object","properties":{"id":{"type":"integer"},"email":{"type":"string"}},"required":["id"],"additionalProperties":true},"meta":{"anyOf":[{"type":"object","properties":{"note":{"type":"string"}},"required":["note"],"additionalProperties":true},{"type":"null"}]},"0":{"type":"boolean"}},"required":["name","kind","size","owner"],"additionalProperties":true}, kind: text('a' | 'b') }
 path_index.sql: many () -> { first_tag: jsonb?, zero: jsonb {"type":"boolean"}?, zero_key: jsonb {"type":"boolean"}?, first_a: jsonb?, a: jsonb? }
 signed_index.sql: many () -> { last: jsonb?, first: jsonb?, second: jsonb?, a: jsonb {"type":"string"}? }

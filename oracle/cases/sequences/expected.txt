@@ -12,4 +12,4 @@ star.sql: one () -> { last_value: int8, log_cnt: int8, is_called: bool }
 two.sql: one () -> { last_value: int8, is_called: bool }
 view.sql: many () -> { last_value: int8 }
 where.sql: at_most_one () -> { last_value: int8 }
-with_shadow.sql: many () -> { last_value: int8 }
+with_shadow.sql: many () -> { last_value: int8 } key (last_value)
