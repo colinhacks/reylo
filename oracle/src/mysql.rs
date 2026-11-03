@@ -886,13 +886,13 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         for (i, col) in columns.iter().enumerate() {
                             let name = col["name"].as_str().unwrap_or("?");
                             match row.get(i) {
-                                Some(My::NULL) if !col["nullable"].as_bool().unwrap_or(true) => found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})")),
+                                Some(My::NULL) if !col["nullable"].as_bool().unwrap_or(false) => found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})")),
                                 // A truth value the statement computes is 1 or 0; a TINYINT(1) or
                                 // BIT(1) column holds what was stored, which the run time refuses
                                 // unless it is one of them.
                                 Some(value) if col["type"]["kind"] == "boolean" && !matches!(value, My::NULL) && !is_truth(value) => found.push(format!("{file}: column {name} typed bool holds {value:?} with ({shown})")),
                                 Some(My::Bytes(bytes)) if returned.get(i).is_some_and(|c| c.code == 245) => {
-                                    if let Some(why) = serde_json::from_slice::<Value>(bytes).ok().and_then(|document| json_contradiction(&col["type"], &document, col["nullable"].as_bool().unwrap_or(true), "")) {
+                                    if let Some(why) = serde_json::from_slice::<Value>(bytes).ok().and_then(|document| json_contradiction(&col["type"], &document, col["nullable"].as_bool().unwrap_or(false), "")) {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -927,7 +927,7 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         _ if killed => tally.timed_out += 1,
                         Ok((returned, rows)) => {
                             tally.ran += 1;
-                            if (cardinality == "maybeOne" && rows > 1) || (cardinality == "one" && rows != 1) || (cardinality == "none" && rows > 0) {
+                            if (cardinality == "at_most_one" && rows > 1) || (cardinality == "one" && rows != 1) || (cardinality == "none" && rows > 0) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {rows} rows with ({shown})"));
                             }
                             if returned.len() != columns.len() {

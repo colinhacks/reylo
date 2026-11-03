@@ -9,7 +9,7 @@
 //! transaction that is rolled back, since DuckDB has no savepoint to undo a failed run within one.
 //! A parameter is bound as its text, which DuckDB casts to the parameter's type. DuckDB says each
 //! column's type exactly, so a run checks what the engine says of NULL and of the row count: a
-//! column typed non-null holds no NULL, and a statement proven `one` returns one row and `maybeOne`
+//! column typed non-null holds no NULL, and a statement proven `one` returns one row and `at_most_one`
 //! at most one. A run is stopped at the timeout by `duckdb_interrupt` from a watchdog thread.
 
 use crate::seed::{self, Report, Scenario, Tally, SCENARIOS};
@@ -687,13 +687,13 @@ fn check(file: &Path, statements: &[(String, String, Value)], timeout_ms: u64, f
                         let shown = |v: &Option<String>| v.as_deref().map_or("NULL".to_string(), |s| format!("'{s}'"));
                         let with = values.iter().map(shown).collect::<Vec<_>>().join(", ");
                         for (c, null) in columns.iter().zip(&nulls) {
-                            if *null && !c["nullable"].as_bool().unwrap_or(true) {
+                            if *null && !c["nullable"].as_bool().unwrap_or(false) {
                                 problems.push(format!("{file_name} ({}, with {with}): column {} is typed non-null and holds NULL", scenario.name(), c["name"].as_str().unwrap_or("?")));
                             }
                         }
                         let wrong = match cardinality {
                             "one" => rows != 1,
-                            "maybeOne" => rows > 1,
+                            "at_most_one" => rows > 1,
                             _ => false,
                         };
                         if wrong {

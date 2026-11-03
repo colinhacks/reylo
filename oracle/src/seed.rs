@@ -31,7 +31,7 @@
 //!
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
-//! - a statement proven `one` returns exactly one row, and one proven `maybeOne` at most one;
+//! - a statement proven `one` returns exactly one row, and one proven `at_most_one` at most one;
 //! - no two rows agree on every column of the result key, a NULL counting as equal to another.
 //!
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
@@ -632,7 +632,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         _ => None,
                     }).collect();
                     let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
-                    if (cardinality == "maybeOne" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
+                    if (cardinality == "at_most_one" && rows.len() > 1) || (cardinality == "one" && rows.len() != 1) {
                         problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
@@ -644,14 +644,14 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                             let value = row.try_get(i).ok().flatten();
                             let name = col["name"].as_str().unwrap_or("?");
                             if value.is_none() {
-                                if !col["nullable"].as_bool().unwrap_or(true) {
+                                if !col["nullable"].as_bool().unwrap_or(false) {
                                     problems.push(format!("{file}: column {name} typed non-null is NULL with ({})", values.join(", ")));
                                 }
                                 continue;
                             }
                             // The delimiter the catalog gives the array type, by its name without its schema.
                             let delimiter = col["type"]["name"].as_str().map(|n| n.rsplit('.').next().unwrap_or(n).trim_matches('"')).and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
-                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(true), delimiter) {
+                            if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(false), delimiter) {
                                 problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
                             }
                         }
@@ -1010,7 +1010,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                         for (i, col) in columns.iter().enumerate() {
                             let name = col["name"].as_str().unwrap_or("?");
                             match row.get(i) {
-                                Some(rusqlite::types::Value::Null) if !col["nullable"].as_bool().unwrap_or(true) => {
+                                Some(rusqlite::types::Value::Null) if !col["nullable"].as_bool().unwrap_or(false) => {
                                     found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})"));
                                 }
                                 // A truth value SQLite computes is 1 or 0; a column declared
@@ -1032,7 +1032,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                     }
                                 }
                                 Some(rusqlite::types::Value::Text(text)) => {
-                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(true), ',') {
+                                    if let Some(why) = contradiction(&col["type"], text, col["nullable"].as_bool().unwrap_or(false), ',') {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -1053,7 +1053,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                     match outcome {
                         Ok(()) => {
                             tally.ran += 1;
-                            if (cardinality == "maybeOne" && returned > 1) || (cardinality == "one" && returned != 1) {
+                            if (cardinality == "at_most_one" && returned > 1) || (cardinality == "one" && returned != 1) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {returned} rows with ({shown})"));
                             }
                         }
