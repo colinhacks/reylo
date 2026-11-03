@@ -152,5 +152,5 @@ const asciiLower = (s: string) => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 
 /** The error a call fails with when the schema changed under its query. */
 export function staleError(source: string | undefined, lines: readonly string[]): Error {
-  return new Error(`The database changed after ${source ? `${source} was built` : "this query was built"}: ${lines.join("; ")}. Build it again (the type check, or reylo generate) and deploy the new build.`);
+  return new Error(`The database changed after ${source ? `${source} was built` : "this query was built"}: ${lines.join("; ")}. Build it again and deploy the new build.`);
 }

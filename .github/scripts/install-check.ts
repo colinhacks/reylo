@@ -1,9 +1,10 @@
 // Installs reylo as a project does, from the packages a run built, on the platform it runs on, and
 // checks that the engine installed for that platform types and runs a query: the nine packages
 // published to a registry of the check's own (Verdaccio, holding nothing else), `npm install reylo`
-// in a fresh project, which must bring this platform's engine package alone, `reylo generate` on a
-// SQLite query, a program run under the reylo/register preload, and Postgres statements nested to
-// the engine's bound, analyzed by the installed binary as tests/depth.test.ts analyzes them.
+// in a fresh project, which must bring this platform's engine package alone, `reylo analyze` on a
+// SQLite query through the `reylo` command npm installed, a program run under the reylo/register
+// preload, and Postgres statements nested to the engine's bound, analyzed by the installed binary
+// as tests/depth.test.ts analyzes them.
 //
 //   node .github/scripts/install-check.ts <packs> <platform>
 //
@@ -30,9 +31,9 @@ delete process.env.REYLO_ENGINE_PATH;
 const root = mkdtempSync(join(tmpdir(), "reylo-install-"));
 const step = (what: string) => console.log(`\n== ${what}`);
 
-/** A command run to its end with its output shown, which must exit 0; npm through a shell on Windows, where it is npm.cmd. */
+/** A command run to its end with its output shown, which must exit 0; npm and a `.cmd` through a shell on Windows, where npm is npm.cmd. */
 function run(command: string, args: string[], options: SpawnSyncOptions = {}): string {
-  const r = spawnSync(command, args, { encoding: "utf8", shell: windows && command === "npm", ...options });
+  const r = spawnSync(command, args, { encoding: "utf8", shell: windows && (command === "npm" || command.endsWith(".cmd")), ...options });
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   if (r.status !== 0) throw new Error(`${command} ${args.join(" ")} exited with ${r.status ?? r.signal}${r.error ? `: ${r.error.message}` : ""}\n${out}`);
   return String(r.stdout ?? "");
@@ -97,20 +98,25 @@ try {
   if (printed !== `reylo ${version}`) throw new Error(`the installed binary prints "${printed}", where reylo is ${version}`);
   console.log(printed);
 
-  step("reylo generate, and the preload, on a SQLite database");
+  step("reylo analyze through the installed command, and the preload, on a SQLite database");
   const db = new DatabaseSync(join(project, "app.db"));
   db.exec("create table users (id integer primary key, name text not null); insert into users values (1, 'ada')");
   db.close();
   writeFileSync(join(project, "user.sql"), "select id, name from users where id = :id");
   writeFileSync(join(project, "main.ts"), `import { DatabaseSync } from "node:sqlite";\nimport user from "./user.sql";\nconsole.log(JSON.stringify(await user.run(new DatabaseSync("app.db"), { id: 1 })));\n`);
   const env = { ...process.env, DATABASE_URL: "file:./app.db" };
-  const generated = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "generate"], { cwd: project, env });
-  console.log(generated.trim());
-  if (!/user\.sql\s+✓/.test(generated)) throw new Error("reylo generate did not type user.sql");
-  if (!existsSync(join(project, ".reylo"))) throw new Error("reylo generate wrote no .reylo/");
+  // npm's own shim for reylo's bin, which starts the launcher (src/cli.ts), which runs the binary.
+  const command = join(project, "node_modules", ".bin", windows ? "reylo.cmd" : "reylo");
+  const analyzed = run(command, ["analyze", "user.sql"], { cwd: project, env }).trim();
+  console.log(analyzed);
+  const descriptor = JSON.parse(analyzed) as { file?: string; columns?: { name: string }[]; cardinality?: string };
+  if (descriptor.file !== "user.sql" || descriptor.columns?.map((c) => c.name).join() !== "id,name" || descriptor.cardinality !== "at_most_one") throw new Error("reylo analyze did not type user.sql");
+  // The playground's server, which the launcher runs in JavaScript.
+  if (!run(command, ["play", "--help"], { cwd: project }).startsWith("Usage: reylo play")) throw new Error("reylo play --help printed no usage");
   const ran = run(process.execPath, ["--import", "reylo/register", "main.ts"], { cwd: project, env }).trim();
   console.log(ran);
   if (ran !== `{"id":1,"name":"ada"}`) throw new Error(`the preload's run printed ${ran}`);
+  if (!existsSync(join(project, ".reylo"))) throw new Error("the preload's build step wrote no .reylo/");
 
   step("Postgres statements nested to the engine's bound");
   const { engine } = (await import(pathToFileURL(join(project, "node_modules", "reylo", "src", "engine.js")).href)) as typeof import("../../src/engine.ts");

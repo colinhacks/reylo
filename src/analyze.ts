@@ -1,9 +1,9 @@
-// One analysis path for every consumer of a `.sql` file — the type check, the bundler plugins,
-// the runtime hook and `reylo generate` — and one cache they share: `.reylo/` beside the project
+// One analysis path for every consumer of a `.sql` file — the type check, the bundler plugins and
+// the runtime hook — and one cache they share: `.reylo/` beside the project
 // file, one entry per statement. The cache is only for speed. An entry records the schema it was
 // analyzed against; while the database answers, an entry for another schema is analyzed again,
 // and while it does not, or no URL names it, the entries are used as they are, so a build that
-// cannot reach the database runs on what `reylo generate` or an earlier type check wrote.
+// cannot reach the database runs on what an earlier type check or build wrote.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -126,7 +126,7 @@ export class Session {
     return new Session(engine, project, idle, from, env);
   }
 
-  /** Every build-step session this process opened, for a caller that ends them (`reylo generate`). */
+  /** Every build-step session this process opened, for a caller that ends them (a test). */
   static opened(): Session[] {
     return [...sessions.values()];
   }
@@ -234,7 +234,7 @@ export class Session {
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run reylo generate where the database can be reached.`, code: 5 };
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
@@ -504,7 +504,7 @@ function writeEntry(root: string, file: string, entry: Entry): void {
   try {
     mkdirSync(join(dir, "queries"), { recursive: true });
     const ignore = join(dir, ".gitignore");
-    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check, the build steps and reylo generate; never committed.\n*\n");
+    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check and the build steps; never committed.\n*\n");
     writeFileSync(tmp, JSON.stringify(entry) + "\n");
     renameSync(tmp, file);
   } catch {

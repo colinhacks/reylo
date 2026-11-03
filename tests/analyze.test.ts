@@ -28,7 +28,7 @@ function project(): { root: string; env: Record<string, string> } {
   return { root, env: { DATABASE_URL: "file:./app.db" } };
 }
 
-// Each session stands for a process of its own: the type check, a build, reylo generate.
+// Each session stands for a process of its own: the type check, a build.
 async function analyze(root: string, env: Record<string, string>, sql: string, options: { force?: boolean } = {}) {
   const session = await Session.open(root, env);
   try {
@@ -73,7 +73,7 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
-test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that names reylo generate", async () => {
+test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
   const { root, env } = project();
   assert.ok((await analyze(root, env, SELECT)).ok);
   renameSync(join(root, "app.db"), join(root, "gone.db"));
@@ -83,7 +83,7 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
-  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run reylo generate where the database can be reached\.$/);
+  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run the type check or a build where the database can be reached first\.$/);
   // --force asks the database even for a statement .reylo/ holds.
   const forced = await analyze(root, env, SELECT, { force: true });
   assert.ok(!forced.ok);
@@ -172,7 +172,7 @@ test("the module a build step emits carries the analysis and reads nothing at ru
     // A build (a process of its own) that has neither the database nor the entry fails instead of guessing.
     for (const session of Session.opened()) await session.close();
     renameSync(join(root, "app.db"), join(root, "gone.db"));
-    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run reylo generate/);
+    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run the type check or a build where/);
   } finally {
     for (const session of Session.opened()) await session.close();
   }

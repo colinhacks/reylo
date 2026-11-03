@@ -1,12 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { Session } from "../src/analyze.ts";
 
 // Jest and Vitest are lab/jest's dependencies, never the package's own.
 const lab = fileURLToPath(new URL("../lab/jest", import.meta.url));
@@ -91,13 +92,20 @@ test("Vitest's module cache makes a .sql module again after a migration", { skip
 
 test("Vitest's watch mode makes a .sql module again when the type check analyzes it anew", { skip }, async () => {
   const { dir, exec, seen } = cachedProject();
-  // The type check (here `reylo generate`) writes the statement's entry to `.reylo/`, which the
-  // module is built from; it is there before Vitest starts, so that its first run writes none.
-  const generate = () => {
-    const r = spawnSync(process.execPath, [`${root}/src/cli.ts`, "generate"], { cwd: dir, env: env(), encoding: "utf8" });
-    assert.equal(r.status, 0, r.stdout + r.stderr);
+  // The type check (here its session, as the content mapper opens one) writes the statement's entry
+  // to `.reylo/`, which the module is built from; it is there before Vitest starts, so that its
+  // first run writes none. The session opens on the directory's real path, as Vitest sees it (on
+  // macOS the temporary directory is under a link), since an entry is named for its database's.
+  const typeCheck = async () => {
+    const session = await Session.open(realpathSync(dir), {});
+    try {
+      const outcome = await session.analyze(readFileSync(`${dir}/by-email.sql`, "utf8"));
+      assert.ok(outcome.ok, outcome.ok ? "" : outcome.message);
+    } finally {
+      await session.close();
+    }
   };
-  generate();
+  await typeCheck();
   const watch = spawn(process.execPath, [`${lab}/node_modules/vitest/vitest.mjs`, "--watch"], { cwd: dir, env: env(), stdio: ["ignore", "pipe", "pipe"] });
   let output = "";
   watch.stdout.on("data", (chunk) => (output += chunk));
@@ -108,7 +116,7 @@ test("Vitest's watch mode makes a .sql module again when the type check analyzes
   try {
     await until(1);
     exec("create unique index users_email on users(email)");
-    generate();
+    await typeCheck();
     await until(2);
     assert.deepEqual(seen(), ["many", "maybeOne"]);
   } finally {
