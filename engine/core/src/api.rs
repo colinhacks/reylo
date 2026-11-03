@@ -151,6 +151,12 @@ pub struct Analysis {
     /// Why the proof stopped short of `one`, when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cardinality_reason: Option<String>,
+    /// The result key: output columns, by name, that identify each row of the result, since no two
+    /// rows the statement returns agree on all of them (a NULL counting as equal to another NULL).
+    /// Only for a result that can hold more than one row: `None` where the cardinality is `one` or
+    /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key: Option<Vec<String>>,
     pub rewritten: lex::Rewritten,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,

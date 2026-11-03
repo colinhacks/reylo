@@ -7,10 +7,10 @@ case_under_rollup.sql: many () -> { o: { n: text? }? }
 inside_object.sql: many () -> { j: { teams: [text]? } }
 lateral_after_comma.sql: many () -> { o: { n: text, motto: text? }? }
 lateral_beside_aliased_join.sql: many () -> { o: { n: text? } }
-lateral_coalesce.sql: many () -> { id: int4, teams: [{ id: int4 }] }
+lateral_coalesce.sql: many () -> { id: int4, teams: [{ id: int4 }] } key (id)
 lateral_column_list.sql: many () -> { b: { n: text } }
-lateral_correlated_not_null.sql: many () -> { id: int4, items: [{ name: text }]? }
-lateral_left.sql: many () -> { id: int4, teams: [{ id: int4, name: text }]? }
+lateral_correlated_not_null.sql: many () -> { id: int4, items: [{ name: text }]? } key (id)
+lateral_left.sql: many () -> { id: int4, teams: [{ id: int4, name: text }]? } key (id)
 lateral_nested.sql: many () -> { o: { t: { n: text } } }
 lateral_object_inner.sql: many () -> { snapshot: { name: text } }
 lateral_object_left.sql: many () -> { snapshot: { name: text }? }

@@ -17,8 +17,8 @@ key_limit_offset.sql: maybeOne (id: int8, n: int8, skip: int8) -> { id: int8, na
 key_limit_param.sql: maybeOne (id: int8, n: int8) -> { id: int8, name: text? }
 key_offset.sql: maybeOne (id: int8) -> { id: int8, name: text? }
 key_ties.sql: maybeOne (id: int8) -> { id: int8, name: text? }
-scan_limit_5.sql: many () -> { id: int8, name: text? }
-scan_limit_param.sql: many (n: int8) -> { id: int8, name: text? }
+scan_limit_5.sql: many () -> { id: int8, name: text? } key (id)
+scan_limit_param.sql: many (n: int8) -> { id: int8, name: text? } key (id)
 scan_ties.sql: many () -> { name: text? }
 with_limit.sql: one () -> { n: int8 }
 with_limit_param.sql: maybeOne (n: int8) -> { n: int8 }

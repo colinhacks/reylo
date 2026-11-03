@@ -872,6 +872,7 @@ impl<'a> Engine<'a> {
 
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
         let mut analysis = Analysis {
@@ -880,6 +881,7 @@ impl<'a> Engine<'a> {
             columns,
             cardinality,
             cardinality_reason: reason,
+            key,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -971,6 +973,7 @@ impl<'a> Engine<'a> {
             columns,
             cardinality: cardinality.into(),
             cardinality_reason: None,
+            key: None,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -3319,6 +3322,22 @@ fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
 /// vertical tab.
 fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
+}
+
+/// The result key of a statement ([`Analysis::key`]): for a SELECT that can return more than one
+/// row, the columns [`cardinality::result_key`] proves identify its rows. None where the
+/// cardinality already says the result holds one row at most or none, and none for the rows of a
+/// write's RETURNING.
+fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &str, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
+    if cardinality != "many" || !parsed.is_some_and(|p| p.statement == "select") {
+        return None;
+    }
+    // A value read whole as a number, a string or an enum's label stays as distinct as the database
+    // keeps it; an array (`{1}` and `[0:0]={1}` read alike), a JSON document (two large numbers
+    // read alike) or a composite may not, so no key holds one.
+    let identifies: Vec<bool> = columns.iter().map(|c| matches!(c.ty, Type::Scalar { .. } | Type::Enum { .. }) && !matches!(&c.ty, Type::Scalar { name } if name == "record")).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::result_key(sql, trust, catalog, &named, &identifies).filter(|key| !key.is_empty())
 }
 
 #[cfg(test)]

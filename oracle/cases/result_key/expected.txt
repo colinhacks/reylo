@@ -1,0 +1,41 @@
+aggregate.sql: one () -> { n: int8 }
+array_unique.sql: many () -> { items: int4[] }
+by_key_lookup.sql: maybeOne (id: int8) -> { id: int8, title: text? }
+by_primary_key.sql: many () -> { id: int8, name: text? } key (id)
+by_unique.sql: many () -> { email: text, name: text? } key (email)
+composite_part.sql: many () -> { slug: text, title: text? }
+composite_pinned.sql: many (author: int8) -> { slug: text, title: text? } key (slug)
+composite_unique.sql: many () -> { author_id: int8, slug: text, title: text? } key (author_id, slug)
+cross_join_one_side.sql: many () -> { id: int8, label: text }
+cte.sql: many (after: int8) -> { id: int8, title: text? } key (id)
+distinct.sql: many () -> { title: text? } key (title)
+distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id)
+distinct_on_output_name.sql: many () -> { x: text?, title: int8 } key (x)
+except_all.sql: many () -> { id: int8, title: text? } key (id)
+except_all_converted.sql: many () -> { id: float8 }
+group_by.sql: many () -> { author_id: int8, posts: int8 } key (author_id)
+group_by_hidden.sql: many () -> { posts: int8 }
+group_by_nullable.sql: many () -> { title: text?, posts: int8 } key (title)
+group_by_position.sql: many () -> { title: text?, latest: int8 } key (title)
+intersect_all.sql: many () -> { id: int8 } key (id)
+lateral.sql: many () -> { user_id: int8, post_id: int8 } key (user_id, post_id)
+left_nullable_side.sql: many () -> { user_id: int8?, name: text? }
+left_to_one.sql: many () -> { id: int8, bio: text? } key (id)
+limited.sql: many () -> { id: int8, title: text? } key (id)
+limited_union.sql: many () -> { title: text? }
+nullable_unique.sql: many () -> { handle: text?, name: text? }
+nullable_unique_filtered.sql: many () -> { handle: text, name: text? } key (handle)
+partial_unique.sql: many () -> { name: text?, email: text } key (email)
+partial_unique_live.sql: many () -> { name: text } key (name)
+partial_unique_unfiltered.sql: many () -> { name: text? }
+set_returning.sql: many () -> { id: int4, n: int4 }
+star.sql: many () -> { id: int4, label: text } key (id)
+star_joined.sql: many () -> { id: int4, label: text, id: int8, author_id: int8, slug: text, title: text? } key (author_id, slug) !! reylo14: Columns 1 and 3 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
+subquery.sql: many () -> { author_id: int8, n: int8 } key (author_id)
+to_many_both_keys.sql: many () -> { user_id: int8, post_id: int8, tag_id: int4 } key (user_id, post_id, tag_id)
+to_many_join.sql: many () -> { id: int8, title: text? }
+to_one_join.sql: many () -> { id: int8, title: text?, name: text? } key (id)
+union.sql: many () -> { title: text? } key (title)
+union_all.sql: many () -> { title: text? }
+values.sql: many () -> { x: int4 }
+view.sql: many () -> { id: int8, name: text? } key (id)

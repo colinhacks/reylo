@@ -127,6 +127,12 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   assert.throws(() => lq.decode([[2n ** 60n, "a", null]]), /"n"/);
 });
 
+test("the result key a build step writes is the Standard Query's key", () => {
+  const keyed = defineQuery({ dialect: "postgres", sql: "select id, name from users", params: [], columns: [["id", "int"], ["name", "text"]], key: ["id"] });
+  assert.deepEqual(keyed["~standard"].query.key, ["id"]);
+  assert.equal("key" in users["~standard"].query, false);
+});
+
 test("a query defined by hand without its columns cannot decode, and says so", () => {
   const bare = defineQuery<{ id: number }, { id: number }, "many", "postgres">({ dialect: "postgres", sql: "select :id::int as id", params: ["id"] });
   assert.equal(bare["~standard"].query.text, "select $1::int as id");
@@ -157,6 +163,8 @@ test("sqlite: node:sqlite runs a built import as a Standard Query, with its own 
       { id: 1, name: "ada", ok: true, big: 9007199254740993n, data: new Uint8Array([0, 255]) },
       { id: 2, name: "bob", ok: false, big: null, data: null },
     ]);
+    // SQLite's analysis proves no result key yet.
+    assert.equal("key" in sq, false);
     conn.close();
   } finally {
     for (const session of Session.opened()) await session.close();
@@ -190,6 +198,11 @@ test("postgres: pg runs a built import as a Standard Query, with every parser of
     const output = sq.decode(raw.rows);
     assert.deepEqual(output, await query.run(pool, input));
     assert.deepEqual(output, [{ id: 9007199254740993n, at: "2026-10-22T14:46:00.123456Z", tags: [1, 2], doc: { a: 1 }, amount: "12345678901234567890.5" }]);
+    // The result key: the primary key identifies each row; a statement of one row at most, which its
+    // cardinality says, and one whose rows nothing identifies have none.
+    assert.deepEqual(sq.key, ["id"]);
+    assert.equal("key" in (await built(root, "count", "select count(*) as n from events"))["~standard"].query, false);
+    assert.equal("key" in (await built(root, "amounts", "select amount from events"))["~standard"].query, false);
   } finally {
     pg.types.setTypeParser(20, (x: string) => x);
     pg.types.setTypeParser(1184, pg.types.getTypeParser(1114));

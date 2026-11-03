@@ -31,7 +31,8 @@
 //!
 //! - a column the engine typed non-null holds no NULL, an array it typed with non-null elements
 //!   holds no NULL element, and a JSON field it typed non-null is never null;
-//! - a statement proven `one` returns exactly one row, and one proven `maybeOne` at most one.
+//! - a statement proven `one` returns exactly one row, and one proven `maybeOne` at most one;
+//! - no two rows agree on every column of the result key, a NULL counting as equal to another.
 //!
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
 //! nothing about it was checked.
@@ -634,6 +635,9 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                         problems.push(format!("{file}: proven {cardinality}, returned {} rows with ({})", rows.len(), values.join(", ")));
                     }
                     let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+                    if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
+                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                    }
                     for row in &rows {
                         for (i, col) in columns.iter().enumerate() {
                             let value = row.try_get(i).ok().flatten();
@@ -659,6 +663,29 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
         outcome?;
     }
     Ok(report(statements, &tallies, timeout_ms, problems, notes))
+}
+
+/// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on
+/// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
+/// text, in order, `None` for NULL.
+fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let key = analysis["key"].as_array()?;
+    let names: Vec<&str> = key.iter().map(|k| k.as_str().unwrap_or("?")).collect();
+    let Some(at) = names.iter().map(|name| columns.iter().position(|c| c["name"].as_str() == Some(name))).collect::<Option<Vec<usize>>>() else {
+        return Some(format!("key ({}) names a column the statement does not return", names.join(", ")));
+    };
+    let mut seen = HashSet::new();
+    for row in rows {
+        let values: Vec<Option<&str>> = at.iter().map(|&i| row.get(i).copied().flatten()).collect();
+        if !seen.insert(values.clone()) {
+            if names.is_empty() {
+                return Some("an empty key says one row at most, and the statement returned more".into());
+            }
+            let shown: Vec<String> = values.iter().map(|v| v.map_or_else(|| "NULL".to_string(), |v| format!("'{v}'"))).collect();
+            return Some(format!("key ({}) repeats in two rows, as ({})", names.join(", "), shown.join(", ")));
+        }
+    }
+    None
 }
 
 /// Why a non-NULL value contradicts its type, if it does: a NULL element in an array typed without
