@@ -157,6 +157,21 @@ const flat = (node: Node): string => {
   }
 };
 
+// A type with a doc comment is broken over lines at any finite width, each comment on the lines before its field, as TypeScript reads one.
+const fits = (node: Node, lead: number, width: number, reserve: number) => lead + flat(node).length + reserve <= width && (width === Infinity || !hasDoc(node));
+
+/** Whether the union is one type with `null` or `undefined`, which keeps its place on the line, as Prettier keeps it. */
+const hugs = (node: Node) => node.kind === "union" && node.of.filter((n) => !(n.kind === "name" && (n.text === "null" || n.text === "undefined"))).length === 1;
+
+type Union = Node & { kind: "union" };
+
+/** Whether the type is a union too wide for its line that takes a line per member, each after a leading `|`, as Prettier breaks one; it starts on a line of its own. */
+const piped = (node: Node, lead: number, width: number, reserve: number): node is Union => node.kind === "union" && !hugs(node) && !fits(node, lead, width, reserve);
+
+/** A union on lines of its own, starting at `indent`: a member per line after a leading `|`, the last followed by `reserve` columns. */
+const pipes = (node: Union, indent: number, width: number, reserve = 0) =>
+  node.of.map((n, i) => `| ${print(n, indent + 2, indent + 2, width, i === node.of.length - 1 ? reserve : 0)}`).join(`\n${" ".repeat(indent)}`);
+
 /**
  * The type on one line where it fits `width` columns after the `lead` columns already on its line
  * and before the `reserve` columns that must follow it there, else with each object's members on
@@ -164,17 +179,23 @@ const flat = (node: Node): string => {
  */
 function print(node: Node, indent: number, lead: number, width: number, reserve = 0): string {
   const one = flat(node);
-  // A type with a doc comment is broken over lines at any finite width, each comment on the lines before its field, as TypeScript reads one.
-  if (lead + one.length + reserve <= width && (width === Infinity || !hasDoc(node))) return one;
+  if (fits(node, lead, width, reserve)) return one;
+  const pad = " ".repeat(indent);
   switch (node.kind) {
     case "name":
       return one;
     case "object": {
       const inner = " ".repeat(indent + 2);
       const doc = (text: string | undefined) => (text ? `${text.split("\n").map((line) => inner + line).join("\n")}\n` : "");
-      return `{\n${node.members.map((m) => `${doc(m.doc)}${inner}${m.key}: ${print(m.type, indent + 2, indent + 2 + m.key.length + 2, width, 1)};`).join("\n")}\n${" ".repeat(indent)}}`;
+      const member = (m: { key: string; type: Node }) => {
+        const lead = indent + 2 + m.key.length + 2;
+        if (!piped(m.type, lead, width, 1)) return `${m.key}: ${print(m.type, indent + 2, lead, width, 1)};`;
+        return `${m.key}:\n${inner}  ${pipes(m.type, indent + 4, width, 1)};`;
+      };
+      return `{\n${node.members.map((m) => `${doc(m.doc)}${inner}${member(m)}`).join("\n")}\n${pad}}`;
     }
     case "union": {
+      if (!hugs(node) && lead === indent) return pipes(node, indent, width, reserve);
       let line = lead;
       return node.of
         .map((n, i) => {
@@ -187,6 +208,7 @@ function print(node: Node, indent: number, lead: number, width: number, reserve 
         .join(" | ");
     }
     case "array":
+      if (piped(node.of, lead + 1, width, reserve + 3)) return `(\n${pad}  ${pipes(node.of, indent + 2, width)}\n${pad})[]`;
       return loose(node.of) ? `(${print(node.of, indent, lead + 1, width, reserve + 3)})[]` : `${print(node.of, indent, lead, width, reserve + 2)}[]`;
     case "tuple": {
       if (!node.items.length) return one;
@@ -194,16 +216,17 @@ function print(node: Node, indent: number, lead: number, width: number, reserve 
       const inner = " ".repeat(indent + 2);
       const items = node.items.map((item) => {
         const { before, after } = around(item);
+        if (before === "(" && piped(item.type, indent + 3, width, after.length + 1)) return `${inner}(\n${inner}  ${pipes(item.type, indent + 4, width)}\n${inner}${after},`;
         return `${inner}${before}${print(item.type, indent + 2, indent + 2 + before.length, width, after.length + 1)}${after},`;
       });
-      return `[\n${items.join("\n")}\n${" ".repeat(indent)}]`;
+      return `[\n${items.join("\n")}\n${pad}]`;
     }
     case "readonly":
       return `readonly ${print(node.of, indent, lead + "readonly ".length, width, reserve)}`;
   }
 }
 
-/** The type's text, its objects and tuples broken over lines where it is wider than `width`. */
+/** The type's text, its objects, tuples and unions broken over lines where it is wider than `width`. */
 export function formatType(text: string, width: number): string {
   return print(parseType(text), 0, 0, width);
 }
