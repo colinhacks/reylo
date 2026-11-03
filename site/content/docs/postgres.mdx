@@ -766,7 +766,7 @@ where o.paid
 
 A query whose `order by` sorts by a unique key of the rows it sorts has a total order: no two rows of a result tie, so the order is the same on every run. Reylo marks it on the query's Standard Query object as `ordered: true`, in its type too, so anything that compares two results by position can require it.
 
-The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`. A query that returns one row at most has none, since its cardinality says as much.
+The key may be a result key or a table's primary key or unique key, selected or not, whose columns may not be null, through joins that add one row at most per row of that table; where each table's key is sorted by, the keys together are. A `limit` or `offset` keeps the order total. A query without an `order by` has none, and so does one that sorts a key's column by an expression, with `using`, or under a collation that is not deterministic, or with `collate`, and one that sorts by anything whose value can change from run to run, such as `random()`, a window function or a `string_agg`. A query that returns one row at most has none, since its cardinality says as much.
 
 ```ts twoslash tab="main.ts"
 import recentOrders from "./pg_ordered_orders.sql";

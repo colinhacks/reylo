@@ -1,3 +1,5 @@
+aggregate_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
+aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id)
 alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id)
 by_primary_key.sql: many () -> { id: int8, name: text? } key (id) ordered
 by_unique_desc.sql: many () -> { email: text, name: text? } key (email) ordered
@@ -18,6 +20,8 @@ nullable_side_key.sql: many () -> { name: text? }
 nullable_unique.sql: many () -> { handle: text?, name: text? }
 offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) ordered
 position.sql: many () -> { title: text?, id: int8 } key (id) ordered
+probe_alias.sql: many () -> { reylo_sort_0: text? } ordered
+star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id) ordered
 subquery.sql: many () -> { title: text? } ordered
 to_many_both_keys.sql: many () -> { name: text?, title: text? } ordered
 to_many_join.sql: many () -> { name: text?, title: text? }
@@ -28,3 +32,5 @@ union_all.sql: many () -> { title: text? }
 unique_not_selected.sql: many () -> { name: text? } ordered
 view.sql: many () -> { id: int8, title: text? } key (id) ordered
 view_key_not_selected.sql: many () -> { title: text? } ordered
+volatile_first.sql: many () -> { id: int8, name: text? } key (id)
+window_first.sql: many () -> { id: int8, title: text? } key (id)

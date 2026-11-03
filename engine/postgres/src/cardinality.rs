@@ -2376,8 +2376,14 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
     let mut sorted_at = HashSet::new();
     let mut sorted_inputs: HashSet<(usize, String)> = HashSet::new();
     for item in &s.sort_clause {
-        let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { continue };
-        let Some(e) = by.node.as_deref() else { continue };
+        let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { return false };
+        let Some(e) = by.node.as_deref() else { return false };
+        // A sort key whose value for a row may change from run to run (a volatile call, a window
+        // function, an aggregate whose value turns on the order it reads its rows in) may reorder
+        // rows that do not tie, wherever it stands in the ORDER BY.
+        if !stable_sort_key(s, from.as_ref(), e, &positions, trust, catalog, columns) {
+            return false;
+        }
         if !by.use_op.is_empty() {
             continue;
         }
@@ -2424,11 +2430,15 @@ fn sort_target(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, position
         Some(NodeEnum::ColumnRef(c)) if !c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => {
             if c.fields.len() == 1 {
                 let Some(name) = c.fields.first().and_then(field_name) else { return (None, None) };
-                let mut named = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
-                match (named.next(), named.next()) {
-                    (Some(at), None) => return (Some(at), held(at)),
-                    (Some(_), Some(_)) => return (None, None),
-                    _ => {}
+                match output_named(s, name, columns) {
+                    Output::At(at) => return (Some(at), held(at)),
+                    Output::Ambiguous => return (None, None),
+                    // A column a `*` expands to is the FROM's column of that name, as below.
+                    Output::Expanded(at) => {
+                        let input = from.and_then(|f| f.place_column(c, catalog));
+                        return (input.is_some().then_some(at), input);
+                    }
+                    Output::None => {}
                 }
             }
             let Some(input) = from.and_then(|f| f.place_column(c, catalog)) else { return (None, None) };
@@ -2437,6 +2447,115 @@ fn sort_target(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, position
         }
         _ => (None, None),
     }
+}
+
+/// What a bare name in ORDER BY names among a SELECT's output columns (`columns`, as the statement
+/// returns them): an entry of the select list, at its output position; a column a `*` expands to;
+/// none, so the name is the FROM's; or two of them.
+enum Output {
+    At(usize),
+    Expanded(usize),
+    None,
+    Ambiguous,
+}
+
+fn output_named(s: &SelectStmt, name: &str, columns: &[(String, bool)]) -> Output {
+    let mut named = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
+    let at = match (named.next(), named.next()) {
+        (Some(at), None) => at,
+        (Some(_), Some(_)) => return Output::Ambiguous,
+        _ => return Output::None,
+    };
+    if s.larg.is_some() || s.rarg.is_some() {
+        return Output::At(at);
+    }
+    let positions = target_positions(s);
+    match named_entry(s, name) {
+        Named::One(r) => match s.target_list.iter().position(|t| matches!(t.node.as_ref(), Some(NodeEnum::ResTarget(t)) if std::ptr::eq(t.as_ref(), r))).and_then(|t| positions[t]) {
+            Some(p) if p == at => Output::At(at),
+            _ => Output::Ambiguous,
+        },
+        Named::None => Output::Expanded(at),
+        Named::Unknown => Output::Ambiguous,
+    }
+}
+
+/// The aggregates whose value turns on the order they read their rows in, unless the call orders
+/// them itself: a list or a document built in that order, a floating-point sum, and a value of
+/// any row of the group.
+const ORDER_SENSITIVE: &[&str] = &["array_agg", "string_agg", "json_agg", "jsonb_agg", "json_object_agg", "jsonb_object_agg", "json_objectagg", "json_arrayagg", "json_agg_strict", "jsonb_agg_strict", "json_object_agg_strict", "jsonb_object_agg_strict", "json_object_agg_unique", "jsonb_object_agg_unique", "json_object_agg_unique_strict", "jsonb_object_agg_unique_strict", "xmlagg", "any_value", "sum", "avg", "stddev", "stddev_pop", "stddev_samp", "variance", "var_pop", "var_samp", "corr", "covar_pop", "covar_samp", "regr_avgx", "regr_avgy", "regr_intercept", "regr_r2", "regr_slope", "regr_sxx", "regr_sxy", "regr_syy"];
+
+/// Whether a sort key's value for a row is the same on every run over the same data: an output
+/// column ORDER BY names whose entry is one, or an expression of the FROM's columns, each a table's
+/// passed through, that calls nothing volatile, no window function, no subquery and no aggregate
+/// whose value turns on the order of its rows ([`ORDER_SENSITIVE`]).
+#[allow(clippy::too_many_arguments)]
+fn stable_sort_key(s: &SelectStmt, from: Option<&From>, e: &protobuf::Node, positions: &[Option<usize>], trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> bool {
+    match e.node.as_ref() {
+        Some(NodeEnum::CollateClause(c)) => return c.arg.as_deref().is_some_and(|arg| stable_sort_key(s, from, arg, positions, trust, catalog, columns)),
+        Some(NodeEnum::AConst(k)) => {
+            if let Some(protobuf::a_const::Val::Ival(n)) = &k.val {
+                return usize::try_from(n.ival).ok().and_then(|n| n.checked_sub(1)).is_some_and(|at| stable_output(s, at, trust, catalog));
+            }
+        }
+        Some(NodeEnum::ColumnRef(c)) if c.fields.len() == 1 => {
+            let Some(name) = c.fields.first().and_then(field_name) else { return false };
+            match output_named(s, name, columns) {
+                Output::At(at) => return stable_output(s, at, trust, catalog),
+                Output::Ambiguous => return false,
+                Output::Expanded(_) | Output::None => {}
+            }
+        }
+        _ => {}
+    }
+    from.is_some_and(|from| stable_expression(from, e, trust, catalog))
+}
+
+/// Whether output column `at` of a SELECT holds a value the same on every run, on both sides of a
+/// set operation: its entry is a stable expression ([`stable_sort_key`]). A column past a `*` is
+/// not read.
+fn stable_output(s: &SelectStmt, at: usize, trust: &Trust, catalog: &Catalog) -> bool {
+    if let (Some(left), Some(right)) = (s.larg.as_deref(), s.rarg.as_deref()) {
+        let scoped = catalog.scoped(&with_names(s), s.with_clause.as_ref(), None);
+        return stable_output(left, at, trust, &scoped) && stable_output(right, at, trust, &scoped);
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return false;
+    }
+    let Some(t) = target_positions(s).iter().position(|p| *p == Some(at)) else { return false };
+    let Some(NodeEnum::ResTarget(r)) = s.target_list[t].node.as_ref() else { return false };
+    r.val.as_deref().is_some_and(|v| stable_expression(&from, v, trust, catalog))
+}
+
+fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &Catalog) -> bool {
+    if mentions_window(e) || mentions(e, "SubLink") || calls_volatile(e, catalog) {
+        return false;
+    }
+    fn calls(v: &Value, trust: &Trust) -> bool {
+        match v {
+            Value::Object(map) => map.iter().all(|(key, child)| {
+                let ok = match key.as_str() {
+                    "FuncCall" => last_name(child.get("funcname")).is_some_and(|n| trust.builtin(&n) && (!ORDER_SENSITIVE.contains(&n.as_str()) || child.get("agg_order").and_then(Value::as_array).is_some_and(|o| !o.is_empty()))),
+                    _ => true,
+                };
+                ok && calls(child, trust)
+            }),
+            Value::Array(items) => items.iter().all(|i| calls(i, trust)),
+            _ => true,
+        }
+    }
+    let Ok(tree) = serde_json::to_value(e) else { return false };
+    if !calls(&tree, trust) {
+        return false;
+    }
+    let passed = |i: usize, column: &str| from.base(i, column, Dialect::Postgres, trust, catalog).is_some();
+    // A column alone is placed as the select list's are, a bare name over one WITH query or
+    // subquery included.
+    if let Some(NodeEnum::ColumnRef(c)) = e.node.as_ref() {
+        return from.place_column(c, catalog).is_some_and(|(i, column)| passed(i, &column));
+    }
+    from.reads(e, catalog).is_some_and(|read| read.iter().all(|(i, column)| column.as_deref().is_some_and(|c| passed(*i, c))))
 }
 
 /// Whether output column `at` of a SELECT is a table's column, on both sides of a set operation,
@@ -2544,8 +2663,11 @@ pub fn sort_probe(sql: &str, columns: &[String]) -> Option<(Option<String>, Vec<
         if added.is_empty() {
             return Some((None, at));
         }
-        for (k, e) in added.into_iter().enumerate() {
-            let target = protobuf::ResTarget { name: format!("reylo_sort_{k}"), val: Some(Box::new(e)), ..Default::default() };
+        // Names no output column and no sort key has, so that adding them changes what no name reads.
+        let taken = |name: &str| columns.iter().any(|c| c == name) || serde_json::to_string(&s.sort_clause).is_ok_and(|text| text.contains(&format!("\"{name}\"")));
+        let mut fresh = (0..).map(|n| format!("reylo_sort_{n}")).filter(|n| !taken(n));
+        for e in added {
+            let target = protobuf::ResTarget { name: fresh.next()?, val: Some(Box::new(e)), ..Default::default() };
             s.target_list.push(protobuf::Node { node: Some(NodeEnum::ResTarget(Box::new(target))) });
         }
         Some((Some(deparse_select(&s)?), at))
@@ -4293,6 +4415,13 @@ mod tests {
         assert!(!ordered_of("select p.id from posts p order by p.id + 0", &[("id", false)]));
         // A bare name is the output column of that name first.
         assert!(!ordered_of("select p.title as id, p.id as post_id from posts p order by id", &[("id", true), ("post_id", false)]));
+        // A sort key whose value may change from run to run reorders rows that do not tie.
+        assert!(!ordered_of("select u.id from users u order by random(), u.id", &[("id", false)]));
+        assert!(!ordered_of("select p.id from posts p order by row_number() over (), p.id", &[("id", false)]));
+        assert!(!ordered_of("select p.author_id, string_agg(p.title, ',') as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
+        assert!(ordered_of("select p.author_id, count(*) as n from posts p group by p.author_id order by n desc, p.author_id", &[("author_id", false), ("n", false)]));
+        // A name a `*` expands to is the FROM's column of that name.
+        assert!(ordered_of("select * from users u order by email", &[("id", false), ("email", false), ("name", true), ("pinned_post", true)]));
     }
 
     #[test]
@@ -4303,5 +4432,8 @@ mod tests {
         assert_eq!(at, vec![1, 2]);
         assert!(text.unwrap().contains("score AS reylo_sort_0, id AS reylo_sort_1"));
         assert_eq!(sort_probe("select title from posts union select name from users order by p.title", &names(&["title"])), None);
+        // An added column takes a name no output column and no sort key has.
+        let (text, _) = sort_probe("select title as reylo_sort_0 from posts order by id, reylo_sort_0", &names(&["reylo_sort_0"])).unwrap();
+        assert!(text.unwrap().contains("id AS reylo_sort_1"));
     }
 }
