@@ -168,7 +168,7 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
     const listed = "select name from users order by id\n";
     const unordered = "select name from users order by name\n";
     const lines = await declarations(root, { "listed.sql": listed, "unordered.sql": unordered });
-    assert.match(lines["listed.sql"]!, /^  readonly "~standard": { readonly query: { .*readonly ordered: true; } };$/m);
+    assert.match(lines["listed.sql"]!, /^  readonly "~standard": { readonly query: { .*readonly ordered: true } };$/m);
     assert.ok(!lines["unordered.sql"]!.includes("ordered"), lines["unordered.sql"]!);
     await closeSessions();
     assert.equal((await built(root, "listed", listed)).default["~standard"].query.ordered, true);

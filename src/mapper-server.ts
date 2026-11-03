@@ -132,7 +132,7 @@ export function mapperHandlers(): MapperHandlers {
           // reads it calls: typed column by column, so it knows what each gives. A total order is the
           // literal `true`, which a driver's signature can require of a query it compares results of
           // by position.
-          ...(columns === undefined && !ordered ? [] : [`  readonly "~standard": { readonly query: { ${[columns === undefined ? "" : `readonly columns: ${columns};`, ordered ? "readonly ordered: true;" : ""].filter(Boolean).join(" ")} } };`]),
+          ...(columns === undefined && !ordered ? [] : [`  readonly "~standard": { readonly query: { ${[columns === undefined ? "" : `readonly columns: ${columns}`, ordered ? "readonly ordered: true" : ""].filter(Boolean).join("; ")} } };`]),
           `};`,
           `export default query;`,
           ``,
