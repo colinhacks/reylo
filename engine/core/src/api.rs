@@ -220,6 +220,11 @@ pub struct Analysis {
     /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
+    /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
+    /// every sort key, so the order is the same on every run. Only for a result that can hold more
+    /// than one row, as `key` is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ordered: bool,
     pub rewritten: lex::Rewritten,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,

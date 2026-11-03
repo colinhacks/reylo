@@ -32,7 +32,7 @@ async function built(root: string, name: string, raw: string) {
   const { code } = await sqlModule(file, raw);
   const out = join(root, `${name}.mjs`);
   writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
-  return (await import(pathToFileURL(out).href)) as { default: { sql: string; raw: string; "~standard": { query: { text: string } }; run(client: unknown, params?: unknown): Promise<unknown> }; sql: string; raw: string };
+  return (await import(pathToFileURL(out).href)) as { default: { sql: string; raw: string; "~standard": { query: { text: string; ordered?: true } }; run(client: unknown, params?: unknown): Promise<unknown> }; sql: string; raw: string };
 }
 
 /** The declaration's lines that carry the two texts, their doc comments left out. */
@@ -163,6 +163,16 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
       `  readonly source: string;`,
     ]);
     assert.deepEqual(texts(declared["names.sql"]!).slice(0, 2), [`export declare const sql: "select $1::jsonb as names";`, `export declare const raw: ${JSON.stringify(names)};`]);
+    // An order that is total is declared as the literal `true` on the Standard Query, and the
+    // module carries it; one that is not total, or not ordered at all, declares and carries none.
+    const listed = "select name from users order by id\n";
+    const unordered = "select name from users order by name\n";
+    const lines = await declarations(root, { "listed.sql": listed, "unordered.sql": unordered });
+    assert.match(lines["listed.sql"]!, /^  readonly "~standard": { readonly query: { .*readonly ordered: true } };$/m);
+    assert.ok(!lines["unordered.sql"]!.includes("ordered"), lines["unordered.sql"]!);
+    await closeSessions();
+    assert.equal((await built(root, "listed", listed)).default["~standard"].query.ordered, true);
+    assert.equal("ordered" in (await built(root, "unordered", unordered)).default["~standard"].query, false);
   } finally {
     await closeSessions();
     await own.drop();
