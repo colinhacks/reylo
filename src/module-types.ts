@@ -5,7 +5,7 @@
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
 import { analysisWithBases } from "./engine-type.ts";
-import { declaredType, ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
+import { ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
 export type FileDiagnostic = { message: string; start: number; length: number; code: number };
@@ -22,6 +22,8 @@ export type ModuleTypes = {
   names: string[];
   /** The type of the error `.try()` gives: the module's `QueryError`. */
   queryError: string;
+  /** The Standard Query's `columns`, one entry per output column in order: `readonly [{ readonly name: "id"; decode(value: string): number }]`; undefined where the statement failed. */
+  columns?: string;
 };
 
 /**
@@ -132,7 +134,7 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
   const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
-  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect, false, q.members)), q.comment] as const);
+  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members)), q.comment] as const);
   // A parameter that takes null may be left out, which binds NULL; so may one the engine says the
   // caller may leave out, a typed JSON parameter whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
@@ -144,5 +146,15 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),
+    columns: standardColumnsType(analysis.columns, dialect),
   };
+}
+
+/**
+ * The type of a module's Standard Query `columns`: one entry per output column, in order, whose
+ * decoder takes the column's raw value, never NULL, and gives the column's type without null.
+ */
+export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect): string {
+  const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
+  return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect)} }`).join(", ")}]`;
 }
