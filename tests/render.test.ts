@@ -274,8 +274,11 @@ test("a JSON value nothing constrains is any JSON value, Json, and so is a value
 test("a JSON column a CHECK holds to a JSON Schema is the type of the values the schema admits", () => {
   const json = checked;
   const open = { type: "object", properties: { name: { type: "string" }, age: { type: ["integer", "null"] } }, required: ["name"], additionalProperties: true };
-  assert.equal(renderType(json(open)), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
+  // Other keys that may hold anything need no index signature beside the named ones, so a misspelled key is an error.
+  assert.equal(renderType(json(open)), "{ name: string; age?: number | null }");
   assert.equal(renderType(json({ ...open, additionalProperties: false })), "{ name: string; age?: number | null }");
+  assert.equal(renderType(json({ ...open, additionalProperties: { type: "boolean" } })), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
+  assert.equal(renderType(json({ type: "object", additionalProperties: true })), "{ [key: string]: Json }");
   assert.equal(renderType(json({ type: "object", additionalProperties: { type: "string" } })), "{ [key: string]: string }");
   assert.equal(renderType(json({ type: "object", additionalProperties: false })), "Record<never, never>");
   assert.equal(renderType(json({ type: ["object", "null"] })), "Record<string, Json> | null");
@@ -294,7 +297,7 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
   assert.equal(renderType(json({})), "Json");
   assert.equal(renderType(json({ type: "array" })), "Json[]");
   // Reylo parses JSON on every driver; inside a document, and as a parameter, the schema's type stands.
-  assert.equal(renderType(json(open), true, "postgres"), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
-  assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
+  assert.equal(renderType(json(open), true, "postgres"), "{ name: string; age?: number | null }");
+  assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null }");
   assert.equal(renderType({ kind: "json" }), "Json");
 });
