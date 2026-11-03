@@ -29,7 +29,7 @@ import mysql from 'mysql2/promise';
 import { Session } from '../../src/analyze.ts';
 import { ident, orNull, renderParamType, renderType } from '../../src/render.ts';
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
-import { queryErrorType, reyloImport } from '../../src/module-types.ts';
+import { queryErrorType, reyloImport, standardColumnsType } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
 import { analysisWithBases } from '../../src/engine-type.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
@@ -131,7 +131,7 @@ async function render(session: Session, source: string, written: string, sql: st
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? orNull(rendered) : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined)) => {
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined), columns?: string) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
@@ -147,6 +147,7 @@ async function render(session: Session, source: string, written: string, sql: st
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
+      ...(columns === undefined ? [] : [`  readonly "~standard": { readonly query: { readonly columns: ${columns} } };`]),
       `};`,
       `export default query;`,
       ``,
@@ -175,7 +176,7 @@ async function render(session: Session, source: string, written: string, sql: st
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors)), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect)), analysis };
 }
 
 // ---- The scratch databases ----

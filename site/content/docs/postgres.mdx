@@ -733,6 +733,24 @@ join users u on u.id = o.user_id
 where o.paid
 ```
 
+**Decoding each value once**
+
+A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. A driver never calls a column's `decode` for NULL, which is `null` in the row.
+
+```ts twoslash tab="main.ts"
+import paidOrders from "./pg_columns_orders.sql";
+
+const { columns, output } = paidOrders["~standard"].query;
+columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00Z"
+output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00Z" }]);
+```
+
+```sql tab="pg_columns_orders.sql"
+select o.id, o.total, o.placed_at
+from orders o
+where o.paid
+```
+
 </Rules>
 
 ## Parameters
