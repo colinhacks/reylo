@@ -11,6 +11,7 @@ explicit_collation_only.sql: many () -> { email: text } key (email)
 expression.sql: many () -> { id: int8, title: text? } key (id)
 group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
 group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id)
+json_array_query.sql: many () -> { id: int8 } key (id)
 json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id)
 key_not_selected.sql: many () -> { title: text? } ordered
 limited.sql: many () -> { id: int8, title: text? } key (id) ordered
@@ -21,6 +22,7 @@ nondeterministic.sql: many () -> { tag: text } key (tag)
 nullable_side_key.sql: many () -> { name: text? }
 nullable_unique.sql: many () -> { handle: text?, name: text? }
 offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) ordered
+parameter_sort.sql: many (sort: text) -> { id: int8, name: text? } key (id) ordered
 position.sql: many () -> { title: text?, id: int8 } key (id) ordered
 probe_alias.sql: many () -> { reylo_sort_0: text? } ordered
 star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id) ordered

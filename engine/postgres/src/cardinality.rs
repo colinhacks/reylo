@@ -2530,7 +2530,8 @@ fn stable_output(s: &SelectStmt, at: usize, trust: &Trust, catalog: &Catalog) ->
 }
 
 fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &Catalog) -> bool {
-    if mentions_window(e) || mentions(e, "SubLink") || mentions(e, "JsonArrayAgg") || mentions(e, "JsonObjectAgg") || calls_volatile(e, catalog) {
+    // `json_array(select …)` is a query of its own before analysis makes it a subquery.
+    if mentions_window(e) || mentions(e, "SubLink") || mentions(e, "JsonArrayQueryConstructor") || mentions(e, "JsonArrayAgg") || mentions(e, "JsonObjectAgg") || calls_volatile(e, catalog) {
         return false;
     }
     fn calls(v: &Value, trust: &Trust) -> bool {
@@ -2550,13 +2551,40 @@ fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &C
     if !calls(&tree, trust) {
         return false;
     }
-    let passed = |i: usize, column: &str| from.base(i, column, Dialect::Postgres, trust, catalog).is_some();
+    let passed = |i: usize, column: &str| stable_column(from, i, column, trust, catalog);
     // A column alone is placed as the select list's are, a bare name over one WITH query or
     // subquery included.
     if let Some(NodeEnum::ColumnRef(c)) = e.node.as_ref() {
         return from.place_column(c, catalog).is_some_and(|(i, column)| passed(i, &column));
     }
     from.reads(e, catalog).is_some_and(|read| read.iter().all(|(i, column)| column.as_deref().is_some_and(|c| passed(*i, c))))
+}
+
+/// Whether column `column` of item `i` holds a value the same on every run: a table's column passed
+/// through, or a WITH query's or a subquery's column whose entry in its statement is itself a stable
+/// expression ([`stable_expression`]), such as a parameter (`with input as (select :sort::text as
+/// sort)`).
+fn stable_column(from: &From, i: usize, column: &str, trust: &Trust, catalog: &Catalog) -> bool {
+    if from.base(i, column, Dialect::Postgres, trust, catalog).is_some() {
+        return true;
+    }
+    from.through(i, catalog, |body, scope, columns| {
+        let Some(inner) = inner_name(column, body, columns) else { return false };
+        if body.larg.is_some() || body.rarg.is_some() || !body.values_lists.is_empty() {
+            return false;
+        }
+        let at_this_level = body.target_list.iter().chain(&body.sort_clause).chain(&body.distinct_clause).chain(&body.group_clause);
+        if calls_at_this_level(at_this_level).set_returning(scope).is_some() {
+            return false;
+        }
+        let inner_from = From::read(body, scope);
+        if inner_from.refused.is_some() {
+            return false;
+        }
+        let Named::One(r) = named_entry(body, &inner) else { return false };
+        r.val.as_deref().is_some_and(|v| stable_expression(&inner_from, v, trust, scope))
+    })
+    .unwrap_or(false)
 }
 
 /// Whether output column `at` of a SELECT is a table's column, on both sides of a set operation,
@@ -4423,6 +4451,10 @@ mod tests {
         assert!(!ordered_of("select p.author_id, string_agg(p.title, ',' order by p.score) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
         assert!(!ordered_of("select p.author_id, json_arrayagg(p.title returning jsonb) as t from posts p group by p.author_id order by t, p.author_id", &[("author_id", false), ("t", true)]));
         assert!(ordered_of("select p.author_id, count(*) as n from posts p group by p.author_id order by n desc, p.author_id", &[("author_id", false), ("n", false)]));
+        assert!(!ordered_of("select p.id from posts p order by json_array(select q.title from posts q where q.author_id = p.author_id returning jsonb), p.id", &[("id", false)]));
+        // A WITH query's column computed from a parameter is the same on every run.
+        assert!(ordered_of("with input as (select $1::text as sort) select u.id, u.name from users u, input order by case when input.sort = 'name' then u.name end, u.id", &[("id", false), ("name", true)]));
+        assert!(!ordered_of("with input as (select random() as r) select u.id from users u, input order by input.r, u.id", &[("id", false)]));
         // A name a `*` expands to is the FROM's column of that name.
         assert!(ordered_of("select * from users u order by email", &[("id", false), ("email", false), ("name", true), ("pinned_post", true)]));
     }
