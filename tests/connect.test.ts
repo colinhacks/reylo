@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -8,6 +8,7 @@ import { connect, createServer, type AddressInfo, type Server } from "node:net";
 import { Session } from "../src/analyze.ts";
 import { engine, reason, Unreachable } from "../src/engine.ts";
 import { hostUrl } from "../src/host-url.ts";
+import { nativeBinary } from "../src/native.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { PG, MYSQL } from "./helpers.ts";
 
@@ -101,6 +102,29 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
   } finally {
     pg.server.close();
     my.server.close();
+  }
+});
+
+test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads no certificate file named for TLS", { skip: noUnixSockets || noPg }, async () => {
+  const pg = await socketFor(PG!, ".s.PGSQL.5432");
+  const { pathname: database, username } = new URL(PG!);
+  const project = mkdtempSync(join(tmpdir(), "reylo-sock-project-"));
+  try {
+    const url = `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&sslmode=verify-ca&sslrootcert=${encodeURIComponent(join(pg.dir, "missing.pem"))}`;
+    writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
+    writeFileSync(join(project, "q.sql"), "select 1 as x");
+    // Run asynchronously: the socket's server is this process's, which a synchronous run would stall.
+    const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done) => {
+      const child = spawn(nativeBinary(), ["analyze", "q.sql"], { cwd: project, timeout: 30_000 });
+      let stdout = "", stderr = "";
+      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      child.on("close", (code) => done({ code, stdout, stderr }));
+    });
+    assert.equal(run.code, 0, run.stderr + run.stdout);
+    assert.deepEqual(JSON.parse(run.stdout).columns.map((col: { name: string }) => col.name), ["x"]);
+  } finally {
+    pg.server.close();
   }
 });
 

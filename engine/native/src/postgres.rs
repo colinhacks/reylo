@@ -202,7 +202,6 @@ fn lost(message: &str) -> Value {
 async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Value> {
     let Parsed { mut config, check, root, identity } = parse(url, &|key| std::env::var(key).ok()).map_err(|message| json!({ "status": "error", "message": message }))?;
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
-    let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
     let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
     let opening = async {
         let Some(token) = bridge else {
@@ -213,6 +212,9 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<(Client, String), Va
                 let (client, connection) = config.connect(tokio_postgres::NoTls).await.map_err(|e| failure(&e))?;
                 return Ok(started(client, connection));
             }
+            // The TLS settings are read only here, so a certificate file named for TLS that the
+            // connection never asks for cannot stop it.
+            let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
             let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
             return Ok(started(client, connection));
         };
