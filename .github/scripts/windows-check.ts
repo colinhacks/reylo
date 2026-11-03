@@ -76,15 +76,17 @@ function sqliteDb(path: string, wal = false): DatabaseSync {
 }
 
 // The loader's analysis of the query, as the type check and the build steps make it: a session of
-// the package's own, opened on the project as the content mapper opens one.
+// the package's own, opened on the project as the content mapper opens one. An analysis that holds
+// a diagnostic typed nothing, so it fails as a refusal does.
 const loaderAnalysis = [
   `import { readFileSync } from "node:fs";`,
   `const { Session } = await import(process.argv[1]);`,
   `const session = await Session.open(process.cwd());`,
   `const outcome = await session.analyze(readFileSync("queries/get_user.sql", "utf8"));`,
   `await session.close();`,
-  `console.log(outcome.ok ? "typed" : outcome.message);`,
-  `process.exit(outcome.ok ? 0 : 1);`,
+  `const errors = outcome.ok ? outcome.analysis.diagnostics.map((d) => d.message) : [outcome.message];`,
+  `console.log(errors.length ? errors.join("\\n") : "typed");`,
+  `process.exit(errors.length ? 1 : 0);`,
 ].join("\n");
 const sessionModule = pathToFileURL(join(project, "node_modules", "reylo", "src", "analyze.js")).href;
 
