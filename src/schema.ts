@@ -207,7 +207,9 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value.type, dialect, input)))) };
       break;
     case "tagged_union":
-      // A tagged union as its tag and its value.
+      // A tagged union as its tag and its value; inside a document, whose form of it the engine
+      // does not read, any JSON.
+      if (inJson) return {};
       return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input))))) };
     case "unknown":
       return {};

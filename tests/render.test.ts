@@ -298,3 +298,11 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
   assert.equal(renderParamType(json(open), "postgres"), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
   assert.equal(renderType({ kind: "json" }), "Json");
 });
+
+test("a DuckDB tagged union is { tag, value } as a value, and any JSON inside a document", () => {
+  const choice = { kind: "tagged_union", alternatives: [{ tag: "num", type: { kind: "integer", bits: 64 }, nullable: true }, { tag: "str", type: { kind: "text" }, nullable: true }], name: "union" } as unknown as EngineType;
+  assert.equal(renderType(choice, false, "duckdb"), `{ tag: "num"; value: bigint | null } | { tag: "str"; value: string | null }`);
+  // A 64-bit integer is a bigint as a value, never inside parsed JSON.
+  assert.equal(renderType(choice, true, "duckdb"), "Json");
+  assert.deepEqual(typeSchema(choice, "duckdb", false, true), {});
+});
