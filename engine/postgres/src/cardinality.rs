@@ -2561,12 +2561,17 @@ fn stable_expression(from: &From, e: &protobuf::Node, trust: &Trust, catalog: &C
 }
 
 /// Whether column `column` of item `i` holds a value the same on every run: a table's column passed
-/// through, or a WITH query's or a subquery's column whose entry in its statement is itself a stable
-/// expression ([`stable_expression`]), such as a parameter (`with input as (select :sort::text as
-/// sort)`).
+/// through, or a WITH query's or a (not LATERAL) subquery's column whose entry in its statement is
+/// itself a stable expression ([`stable_expression`]), such as a parameter (`with input as (select
+/// :sort::text as sort)`).
 fn stable_column(from: &From, i: usize, column: &str, trust: &Trust, catalog: &Catalog) -> bool {
     if from.base(i, column, Dialect::Postgres, trust, catalog).is_some() {
         return true;
+    }
+    // A LATERAL subquery reads the other items of the FROM, whose columns its own statement does
+    // not place.
+    if matches!(from.items[i].source, Source::Subquery(_, true)) {
+        return false;
     }
     from.through(i, catalog, |body, scope, columns| {
         let Some(inner) = inner_name(column, body, columns) else { return false };
@@ -4455,6 +4460,7 @@ mod tests {
         // A WITH query's column computed from a parameter is the same on every run.
         assert!(ordered_of("with input as (select $1::text as sort) select u.id, u.name from users u, input order by case when input.sort = 'name' then u.name end, u.id", &[("id", false), ("name", true)]));
         assert!(!ordered_of("with input as (select random() as r) select u.id from users u, input order by input.r, u.id", &[("id", false)]));
+        assert!(!ordered_of("select p.id from posts p, (select random() - 0.5 as r) x, lateral (select p.score * x.r as n) t order by t.n, p.id", &[("id", false)]));
         // A name a `*` expands to is the FROM's column of that name.
         assert!(ordered_of("select * from users u order by email", &[("id", false), ("email", false), ("name", true), ("pinned_post", true)]));
     }

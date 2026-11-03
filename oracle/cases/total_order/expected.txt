@@ -14,6 +14,7 @@ group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id)
 json_array_query.sql: many () -> { id: int8 } key (id)
 json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id)
 key_not_selected.sql: many () -> { title: text? } ordered
+lateral_sibling.sql: many () -> { id: int8 } key (id)
 limited.sql: many () -> { id: int8, title: text? } key (id) ordered
 no_order.sql: many () -> { id: int8, title: text? } key (id)
 non_unique.sql: many () -> { title: text? }
