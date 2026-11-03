@@ -278,6 +278,59 @@ export function postgresYear(text: string): string {
  * words.
  */
 export function instant(x: string): string {
+  // The server's usual text, `YYYY-MM-DD HH:MM:SS[.f]±HH[:MM[:SS]]` with a year from 1000 to 9999,
+  // is read by position, every character checked, and moved to UTC in integer arithmetic: a
+  // third of the pattern's cost. Any other text (BC, a year outside those, infinity) is the
+  // pattern's, and so is an instant in UTC outside those years, so that both give the same text.
+  const n = x.length;
+  if (n < 22 || !digits(x, 0, 4) || x.charCodeAt(0) === 48 || x.charCodeAt(4) !== 45 || !digits(x, 5, 7) || x.charCodeAt(7) !== 45 || !digits(x, 8, 10) || x.charCodeAt(10) !== 32) return instantByPattern(x);
+  if (!digits(x, 11, 13) || x.charCodeAt(13) !== 58 || !digits(x, 14, 16) || x.charCodeAt(16) !== 58 || !digits(x, 17, 19)) return instantByPattern(x);
+  let i = 19;
+  if (x.charCodeAt(19) === 46) {
+    i = 20;
+    while (i < n && i < 26 && isDigit(x, i)) i++;
+    if (i === 20) return instantByPattern(x);
+  }
+  const sign = x.charCodeAt(i);
+  if (sign !== 43 && sign !== 45) return instantByPattern(x);
+  const zone = n - i - 1;
+  if (!(zone === 2 || (zone === 5 && x.charCodeAt(i + 3) === 58) || (zone === 8 && x.charCodeAt(i + 3) === 58 && x.charCodeAt(i + 6) === 58))) return instantByPattern(x);
+  if (!digits(x, i + 1, i + 3) || (zone >= 5 && !digits(x, i + 4, i + 6)) || (zone === 8 && !digits(x, i + 7, i + 9))) return instantByPattern(x);
+  const fraction = i > 19 ? x.slice(19, i) : "";
+  const offset = (sign === 45 ? -1 : 1) * (two(x, i + 1) * 3600 + (zone >= 5 ? two(x, i + 4) * 60 : 0) + (zone === 8 ? two(x, i + 7) : 0));
+  const seconds = daysFromCivil(two(x, 0) * 100 + two(x, 2), two(x, 5), two(x, 8)) * 86400 + two(x, 11) * 3600 + two(x, 14) * 60 + two(x, 17) - offset;
+  const days = Math.floor(seconds / 86400);
+  const s = seconds - days * 86400;
+  // `civilFromDays`, inline, without its array.
+  const z = days + 719468;
+  const era = Math.floor(z / 146097);
+  const doe = z - era * 146097;
+  const yoe = Math.floor((doe - Math.floor(doe / 1460) + Math.floor(doe / 36524) - Math.floor(doe / 146096)) / 365);
+  const doy = doe - (365 * yoe + Math.floor(yoe / 4) - Math.floor(yoe / 100));
+  const mp = Math.floor((5 * doy + 2) / 153);
+  const d = doy - Math.floor((153 * mp + 2) / 5) + 1;
+  const mo = mp + (mp < 10 ? 3 : -9);
+  const y = era * 400 + yoe + (mo <= 2 ? 1 : 0);
+  if (y < 1000 || y > 9999) return instantByPattern(x);
+  return `${y}-${TWO[mo]}-${TWO[d]}T${TWO[Math.floor(s / 3600)]}:${TWO[Math.floor(s / 60) % 60]}:${TWO[s % 60]}${fraction}Z`;
+}
+
+/** `00` to `99`, by number. */
+const TWO = Array.from({ length: 100 }, (_, i) => pad(i));
+const isDigit = (x: string, i: number) => {
+  const c = x.charCodeAt(i);
+  return c >= 48 && c <= 57;
+};
+/** Whether every character of `x` from `start` to `end` is a digit. */
+function digits(x: string, start: number, end: number): boolean {
+  for (let i = start; i < end; i++) if (!isDigit(x, i)) return false;
+  return true;
+}
+/** The two digits at `i` as a number. */
+const two = (x: string, i: number) => (x.charCodeAt(i) - 48) * 10 + x.charCodeAt(i + 1) - 48;
+
+/** `instant` by the pattern, for every text: BC, any year, infinity, and text that is not a timestamptz's, returned as it is. */
+function instantByPattern(x: string): string {
   const m = TSTZ.exec(x);
   if (m === null) return x;
   const year = m[12] === undefined ? +m[1]! : 1 - +m[1]!;
