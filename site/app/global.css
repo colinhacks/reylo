@@ -375,6 +375,22 @@
   white-space: nowrap;
 }
 
+/* DuckDB's heading in Dialects says its support is a preview in the same light gray label, after the
+   name. It is drawn by the stylesheet, so the table of contents, the anchor and the section's Markdown
+   keep the name alone. */
+#nd-page .prose h3#duckdb .dk-heading-text::after {
+  content: 'Preview';
+  display: inline-block;
+  margin-inline-start: 0.625rem;
+  vertical-align: 0.15em;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0;
+  color: var(--color-fd-muted-foreground);
+}
+
 
 /* Setup's optional steps, the editor and the skill: a chip after the name. It is drawn by the
    stylesheet, so the table of contents, the anchor and the section's Markdown keep the name alone. */
