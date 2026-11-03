@@ -1,0 +1,10 @@
+create schema api;
+create type api.status as enum ('on', 'off');
+create domain api.handle as text check (value ~ '^[a-z]+$');
+create table api.users (id integer primary key, handle api.handle not null, status api.status not null default 'on', constraint handle_short check (length(handle) < 30));
+create index users_status on api.users (status);
+create function api.touch() returns trigger language plpgsql as $$ begin return new; end $$;
+create trigger users_touch before update on api.users for each row execute function api.touch();
+alter table api.users enable row level security;
+create policy users_all on api.users using (true);
+comment on function api.touch() is 'Keeps a row as it is';

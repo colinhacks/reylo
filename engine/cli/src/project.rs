@@ -232,8 +232,7 @@ impl Project {
         self.file.as_deref().map(|f| shown(&self.cwd, f)).unwrap_or_else(|| ".reylo.yaml".into())
     }
 
-    /// Each `${VAR}` replaced, or the variables nothing sets.
-    #[cfg(test)]
+    /// Each `${VAR}` replaced, or the variables nothing sets: a `migrate` setting's value.
     pub fn expand(&self, key: &str, text: &str) -> Result<String, String> {
         let mut missing = Vec::new();
         let out = self.substitute(text, &mut missing);

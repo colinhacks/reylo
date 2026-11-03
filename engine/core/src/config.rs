@@ -43,11 +43,54 @@ pub struct Project {
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
+    /// `reylo migrate`'s settings; the section's presence opts the project in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migrate: Option<Migrate>,
     #[serde(default, skip_serializing)]
     pub rest: Option<serde_yaml::Value>,
     /// The settings of a host that serves the queries, which that host parses.
     #[serde(default, skip_serializing)]
     pub api: Option<serde_yaml::Value>,
+}
+
+/// `reylo migrate`'s settings: where the migrations and the declared schema are (`migrations` and
+/// `schema.sql` beside the project file when absent), the database (the type check's connection
+/// when absent), a server to make shadow databases on where the target's refuses `create database`,
+/// the main branch a bare `rebase` compares with (git's `origin/HEAD` when absent), how the history
+/// is ordered, the strictness flags, and `post`, a shell command run after `apply --reset` replays
+/// every migration (a seed).
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Migrate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub main_branch: Option<String>,
+    /// `loose` when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<History>,
+    /// Compare comments on objects (on when absent).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict_comments: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub post: Option<String>,
+}
+
+/// How a project's migrations are ordered. `loose`: a migration older than one a database applied
+/// still runs there, once replaying the database's own order and the order by time both reach
+/// `schema.sql`. `linear`: it is refused, and `migrations/lock.yaml` lists every migration in the
+/// order they run, so that two branches that each add one conflict in git, which `rebase` resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum History {
+    Loose,
+    Linear,
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -88,6 +131,11 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
+        if let Some(m) = project.migrate.as_mut() {
+            for value in [&mut m.dir, &mut m.schema, &mut m.url, &mut m.shadow_url, &mut m.main_branch, &mut m.post].into_iter().flatten() {
+                *value = unmask_placeholders(value);
+            }
+        }
         for item in project.env.iter_mut().flatten() {
             *item = unmask_placeholders(item);
         }
@@ -151,6 +199,16 @@ mod tests {
         assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
+    }
+
+    #[test]
+    fn reads_the_migrate_section() {
+        let p = parse("migrate:\n  dir: db/migrations\n  url: ${MIGRATE_URL}\n  history: linear\n  post: reylo run --file seed.sql\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "migrate": { "dir": "db/migrations", "url": "${MIGRATE_URL}", "history": "linear", "post": "reylo run --file seed.sql" } }));
+        assert_eq!(parse("migrate:\n  history: loose\n").unwrap().migrate.and_then(|m| m.history), Some(History::Loose));
+        assert_eq!(parse("migrate: {}\n").unwrap().migrate, Some(Migrate::default()));
+        assert!(parse("migrate:\n  folder: x\n").is_err());
+        assert!(parse("migrate:\n  history: strict\n").is_err());
     }
 
     #[test]

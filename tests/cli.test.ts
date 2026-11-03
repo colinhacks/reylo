@@ -45,6 +45,25 @@ test("the reylo command runs the binary with its arguments, standard input and e
   assert.match(unknown.err, /^reylo: unknown command frobnicate\n\nUsage: reylo <command>/);
 });
 
+test("reylo migrate and reylo run are the binary's, with their output and exit codes", () => {
+  const root = project();
+  const help = reylo(root, ["--help"]);
+  assert.equal(help.status, 0, help.err);
+  for (const usage of ["  migrate <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
+  const migrate = reylo(root, ["migrate", "--help"]);
+  assert.equal(migrate.status, 0, migrate.err);
+  assert.match(migrate.out, /^Usage: reylo migrate <command>\n/);
+  const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
+  assert.equal(run.status, 0, run.err);
+  const db = new DatabaseSync(join(root, "app.db"));
+  assert.deepEqual({ ...db.prepare("select count(*) as n from users").get() }, { n: 2 });
+  db.close();
+  const missing = reylo(root, ["run", "--file", "nope.sql"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.err, /^reylo run: cannot read nope\.sql: /);
+  assert.notEqual(reylo(root, ["migrate", "sideways"]).status, 0);
+});
+
 test("reylo generate is gone, and says what fills .reylo/ instead", () => {
   const gone = reylo(project(), ["generate"]);
   assert.equal(gone.status, 2);

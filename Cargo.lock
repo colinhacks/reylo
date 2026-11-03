@@ -1527,6 +1527,7 @@ version = "0.7.0"
 dependencies = [
  "reylo-engine-core",
  "reylo-engine-native",
+ "reylo-migrate",
  "serde_json",
  "tokio",
 ]
@@ -1624,6 +1625,23 @@ dependencies = [
  "reylo-engine-core",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "reylo-migrate"
+version = "0.0.0"
+dependencies = [
+ "mysql_async",
+ "pg_query",
+ "prost",
+ "regex",
+ "reylo-engine-native",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "tokio",
+ "tokio-postgres",
 ]
 
 [[package]]

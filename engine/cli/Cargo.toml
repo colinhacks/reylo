@@ -3,7 +3,7 @@ name = "reylo"
 version.workspace = true
 edition = "2021"
 publish = false
-description = "One program for every database Reylo reads: the analysis engine each language's frontend talks to over standard input and output (reylo engine <database>), and each statement's type descriptor on the command line (reylo analyze)."
+description = "One program for every database Reylo reads: the analysis engine each language's frontend talks to over standard input and output (reylo engine <database>), each statement's type descriptor on the command line (reylo analyze), and the migrations (reylo migrate, reylo run)."
 
 [[bin]]
 name = "reylo"
@@ -12,5 +12,6 @@ path = "src/main.rs"
 [dependencies]
 reylo-engine-core = { path = "../core" }
 reylo-engine-native = { path = "../native" }
+reylo-migrate = { path = "../migrate" }
 serde_json = { version = "1", features = ["preserve_order", "unbounded_depth"] }
-tokio = { version = "1", features = ["rt"] }
+tokio = { version = "1", features = ["rt", "time"] }
