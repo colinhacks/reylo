@@ -171,7 +171,7 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
     let identity = identity.as_ref().map(|(cert, key, password)| tls::Identity { cert, key, password: *password });
     let tls = tls::config(check, root.as_deref(), identity).map_err(|message| json!({ "status": "error", "message": message }))?;
     let timeout = config.get_connect_timeout().copied().unwrap_or(CONNECT_TIMEOUT) + Duration::from_secs(1);
-    let connecting = async {
+    let opening = async {
         let Some(token) = bridge else {
             let (client, connection) = config.connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls)).await.map_err(|e| failure(&e))?;
             tokio::spawn(async move {
@@ -191,6 +191,15 @@ async fn connect(url: &str, bridge: Option<&str>) -> Result<Client, Value> {
         tokio::spawn(async move {
             let _ = connection.await;
         });
+        Ok(client)
+    };
+    let connecting = async {
+        let client = opening.await?;
+        // The planner estimates three of the engine's catalog queries above `jit_above_cost`, one in
+        // the millions against a default of 100,000, so a server built with JIT compiles them for
+        // each statement: about 2.6 seconds, where running them takes 50 milliseconds. A server
+        // without the setting refuses it, and then there is nothing to turn off.
+        let _ = client.batch_execute("set jit = off").await;
         Ok(client)
     };
     match tokio::time::timeout(timeout, connecting).await {
