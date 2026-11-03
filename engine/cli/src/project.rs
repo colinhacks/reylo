@@ -76,20 +76,53 @@ pub fn dialect_of(url: &str) -> Option<&'static str> {
 }
 
 /// `file:./dev.db`, `file:///abs/dev.db`, `sqlite:./dev.db`, `:memory:` → a path, a relative one
-/// resolved against `root` (`sqlitePath` in src/project.ts).
-pub fn sqlite_path(url: &str, root: &Path) -> String {
+/// resolved against `root` (`sqlitePath` in src/project.ts). A `file://` URL is read as Node's
+/// `fileURLToPath` reads it, or refused as it refuses it.
+pub fn sqlite_path(url: &str, root: &Path) -> Result<String, String> {
     if url == ":memory:" || url == "file::memory:" {
-        return ":memory:".into();
+        return Ok(":memory:".into());
     }
     let raw = match url.strip_prefix("file://") {
-        Some(rest) => percent_decode(rest),
+        Some(rest) => file_url_path(rest, cfg!(windows)).map_err(|why| format!("Cannot read the SQLite URL {url}: {why}."))?,
         None => {
             let rest = url.strip_prefix("file:").or_else(|| url.strip_prefix("sqlite:")).unwrap_or(url);
             rest.strip_prefix("//").unwrap_or(rest).to_string()
         }
     };
     let path = Path::new(&raw);
-    if path.is_absolute() { raw } else { root.join(path).to_string_lossy().into_owned() }
+    Ok(if path.is_absolute() { raw } else { root.join(path).to_string_lossy().into_owned() })
+}
+
+/// The path of a `file://` URL, `rest` being what follows `file://`: its host empty or
+/// `localhost`, else on Windows a share (`\\host\path`); on Windows `/C:/x` is `C:\x`. Its
+/// query and fragment are no part of the path.
+fn file_url_path(rest: &str, windows: bool) -> Result<String, String> {
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let (host, path) = match rest.find('/') {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, ""),
+    };
+    let host = if host.eq_ignore_ascii_case("localhost") { "" } else { host };
+    if path.to_ascii_lowercase().contains("%2f") || (windows && path.to_ascii_lowercase().contains("%5c")) {
+        return Err("its path encodes a separator".into());
+    }
+    let path = percent_decode(path);
+    if !windows {
+        if !host.is_empty() {
+            return Err(format!("its host must be localhost or empty, not {host}"));
+        }
+        return Ok(path);
+    }
+    let path = path.replace('/', "\\");
+    if !host.is_empty() {
+        return Ok(format!("\\\\{host}{path}"));
+    }
+    let b = path.as_bytes();
+    if b.len() >= 3 && b[0] == b'\\' && b[1].is_ascii_alphabetic() && b[2] == b':' {
+        Ok(path[1..].to_string())
+    } else {
+        Err("its path must be absolute, with a drive letter".into())
+    }
 }
 
 fn percent_decode(text: &str) -> String {
@@ -200,9 +233,16 @@ impl Project {
     }
 
     /// Each `${VAR}` replaced, or the variables nothing sets.
+    #[cfg(test)]
     pub fn expand(&self, key: &str, text: &str) -> Result<String, String> {
-        let mut out = String::new();
         let mut missing = Vec::new();
+        let out = self.substitute(text, &mut missing);
+        if missing.is_empty() { Ok(out) } else { Err(self.unset(key, &missing)) }
+    }
+
+    /// `text` with each `${VAR}` replaced, the variables nothing sets added to `missing`.
+    fn substitute(&self, text: &str, missing: &mut Vec<String>) -> String {
+        let mut out = String::new();
         let mut rest = text;
         while let Some(at) = rest.find("${") {
             out.push_str(&rest[..at]);
@@ -223,12 +263,13 @@ impl Project {
             }
         }
         out.push_str(rest);
-        if missing.is_empty() {
-            Ok(out)
-        } else {
-            let files = self.env_files.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect::<Vec<_>>().join(" nor ");
-            Err(format!("{}: \"{key}\" names {}, which neither the environment nor {files} sets.", self.shown_file(), missing.join(", ")))
-        }
+        out
+    }
+
+    /// The message for a key that names variables nothing sets.
+    fn unset(&self, key: &str, missing: &[String]) -> String {
+        let files = self.env_files.iter().map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()).collect::<Vec<_>>().join(" nor ");
+        format!("{}: \"{key}\" names {}, which neither the environment nor {files} sets.", self.shown_file(), missing.join(", "))
     }
 
     /// The type check's connection: `direct_url`, its `$(command)`s run, else `DATABASE_URL`.
@@ -236,10 +277,20 @@ impl Project {
         let Some(written) = &self.config.direct_url else { return Ok(self.lookup("DATABASE_URL")) };
         let parts = url_parts(written).map_err(|open| format!("{}: \"direct_url\" opens $( at column {} and never closes it.", self.shown_file(), open + 1))?;
         let encoded = in_userinfo(&parts);
+        // Every `${VAR}` of the text first: a project that cannot be used anyway runs no command,
+        // so that it asks for no password.
+        let mut missing = Vec::new();
+        let texts: Vec<Option<String>> = parts.iter().map(|part| match part {
+            Part::Text(t) => Some(self.substitute(t, &mut missing)),
+            Part::Command(_) => None,
+        }).collect();
+        if !missing.is_empty() {
+            return Err(self.unset("direct_url", &missing));
+        }
         let mut url = String::new();
         for (k, part) in parts.iter().enumerate() {
             match part {
-                Part::Text(t) => url.push_str(&self.expand("direct_url", t)?),
+                Part::Text(_) => url.push_str(texts[k].as_deref().unwrap_or_default()),
                 Part::Command(c) => {
                     let value = self.command_output(c).map_err(|why| format!("{}: \"direct_url\" runs `{c}`, {why}.", self.shown_file()))?;
                     url.push_str(&if encoded.contains(&k) { percent_encode(&value) } else { value });
@@ -273,6 +324,19 @@ impl Project {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .map_err(|e| format!("which could not start: {e}"))?;
+        // Both streams are read as the command writes them, so that one that writes more than a
+        // pipe holds never blocks before it exits.
+        let drain = |stream: Option<Box<dyn std::io::Read + Send>>| {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(mut stream) = stream {
+                    let _ = std::io::Read::read_to_end(&mut stream, &mut bytes);
+                }
+                bytes
+            })
+        };
+        let stdout = drain(child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
+        let stderr = drain(child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>));
         let started = std::time::Instant::now();
         while child.try_wait().map_err(|e| format!("which could not be waited for: {e}"))?.is_none() {
             if started.elapsed() > COMMAND_TIMEOUT {
@@ -282,7 +346,8 @@ impl Project {
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let out = child.wait_with_output().map_err(|e| format!("which could not be read: {e}"))?;
+        let status = child.wait().map_err(|e| format!("which could not be waited for: {e}"))?;
+        let out = std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() };
         if !out.status.success() {
             let said = String::from_utf8_lossy(&out.stderr).lines().map(str::trim).find(|l| !l.is_empty()).map(|l| format!(": {}", l.chars().take(300).collect::<String>())).unwrap_or_default();
             return Err(match out.status.code() {
@@ -435,13 +500,44 @@ mod tests {
         assert_eq!(dialect_of("duckdb::memory:"), Some("duckdb"));
         assert_eq!(dialect_of("http://h"), None);
         assert_eq!(dialect_of(":memory:"), None);
-        assert_eq!(sqlite_path(":memory:", Path::new("/app")), ":memory:");
+        assert_eq!(sqlite_path(":memory:", Path::new("/app")).unwrap(), ":memory:");
         if cfg!(unix) {
             let root = Path::new("/app");
-            assert_eq!(sqlite_path("file:./dev.db", root), "/app/./dev.db");
-            assert_eq!(sqlite_path("sqlite:dev.db", root), "/app/dev.db");
-            assert_eq!(sqlite_path("file:///var/my%20db.db", root), "/var/my db.db");
+            assert_eq!(sqlite_path("file:./dev.db", root).unwrap(), "/app/./dev.db");
+            assert_eq!(sqlite_path("sqlite:dev.db", root).unwrap(), "/app/dev.db");
+            assert_eq!(sqlite_path("file:///var/my%20db.db", root).unwrap(), "/var/my db.db");
+            assert_eq!(sqlite_path("file://localhost/var/app.db", root).unwrap(), "/var/app.db");
+            assert!(sqlite_path("file://db.example/var/app.db", root).is_err());
         }
+    }
+
+    #[test]
+    fn a_file_url_is_read_as_node_reads_it_on_each_platform() {
+        assert_eq!(file_url_path("/var/app.db", false).unwrap(), "/var/app.db");
+        assert_eq!(file_url_path("localhost/var/app.db?mode=ro", false).unwrap(), "/var/app.db");
+        assert!(file_url_path("host/var/app.db", false).is_err());
+        assert!(file_url_path("/var/a%2Fb.db", false).is_err());
+        assert_eq!(file_url_path("/C:/app/my%20app.db", true).unwrap(), "C:\\app\\my app.db");
+        assert_eq!(file_url_path("localhost/C:/app.db", true).unwrap(), "C:\\app.db");
+        assert_eq!(file_url_path("server/share/app.db", true).unwrap(), "\\\\server\\share\\app.db");
+        assert!(file_url_path("/app.db", true).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_direct_url_runs_no_command_until_every_variable_is_set_and_reads_long_output() {
+        let dir = std::env::temp_dir().join(format!("reylo-direct-url-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // A variable nothing sets after the command: the command never runs.
+        std::fs::write(dir.join(".reylo.yaml"), "direct_url: postgres://u:$(touch ran && echo pw)@${UNSET_HOST_X}/app\n").unwrap();
+        let p = Project::resolve(&dir, HashMap::new()).unwrap();
+        assert!(p.type_check_url().unwrap_err().contains("${UNSET_HOST_X}"));
+        assert!(!dir.join("ran").exists());
+        // A command that writes more than a pipe holds to each stream before its answer finishes.
+        std::fs::write(dir.join(".reylo.yaml"), "direct_url: postgres://u:$(head -c 200000 /dev/zero | tr '\\0' x >&2; head -c 200000 /dev/zero >/dev/null; echo pw)@h/app\n").unwrap();
+        let p = Project::resolve(&dir, HashMap::new()).unwrap();
+        assert_eq!(p.type_check_url().unwrap().as_deref(), Some("postgres://u:pw@h/app"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

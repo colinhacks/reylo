@@ -99,6 +99,37 @@ test("analyze takes the project's direct_url and --url, and says what it cannot 
   assert.match(analyze(root, []).stderr, /name a \.sql file, a directory, - for standard input, or --sql/);
 });
 
+test("analyze prints a statement the engine cannot analyze as its line with one diagnostic, and goes on to the next file", () => {
+  const broken = "select value from tally\n";
+  const root = project({ "q/a.sql": "select id from users\n", "q/b.sql": broken, "q/c.sql": "select name from users\n" });
+  // A view over a table-valued function the database's own SQLite lacks: the engine reads the
+  // view, and the catalog query that reads its columns fails on the database.
+  const db = new DatabaseSync(join(root, "app.db"));
+  db.exec("create view tally as select value from carray(1, 2, 'int32')");
+  db.close();
+  const { status, lines, stderr } = analyze(root, ["q"]);
+  assert.equal(status, 1, stderr);
+  assert.deepEqual(lines.map((l) => [l.file, l.diagnostics.length]), [["q/a.sql", 0], ["q/b.sql", 1], ["q/c.sql", 0]]);
+  const line = lines[1]!;
+  assert.deepEqual({ sql: line.sql, kind: line.kind, params: line.params, columns: line.columns, cardinality: line.cardinality }, { sql: broken, kind: undefined, params: [], columns: [], cardinality: "many" });
+  const [diagnostic] = line.diagnostics as [Line["diagnostics"][number]];
+  assert.match(diagnostic.message, /carray/);
+  assert.deepEqual([diagnostic.start, diagnostic.end, diagnostic.code], [0, broken.length, undefined]);
+});
+
+test("analyze reads a relative SQLite path in --url from the working directory, and the project's from its root", () => {
+  const root = project({});
+  mkdirSync(join(root, "sub"));
+  new DatabaseSync(join(root, "sub", "x.db")).exec("create table things (label text not null)");
+  const given = analyze(join(root, "sub"), ["--sql", "select label from things", "--url", "file:./x.db"]);
+  assert.equal(given.status, 0, given.stderr);
+  assert.deepEqual(given.lines[0]!.columns.map((c) => c.name), ["label"]);
+  // The project's DATABASE_URL, file:./app.db, is the root's app.db from the subdirectory too.
+  const own = analyze(join(root, "sub"), ["--sql", "select name from users"]);
+  assert.equal(own.status, 0, own.stderr);
+  assert.deepEqual(own.lines[0]!.columns.map((c) => c.name), ["name"]);
+});
+
 test("analyze reads a Postgres statement over its own connection, the server's version beside it", { skip: pgLive }, async () => {
   const own = await postgresDatabase("reylo_analyze_cli", "create table users (id int4 primary key, name text not null)");
   try {

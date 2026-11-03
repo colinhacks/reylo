@@ -4,7 +4,7 @@
 use crate::project::{self, Project};
 use reylo_engine_core::api::{utf16_offset, Analysis};
 use reylo_engine_core::dialect::Dialect;
-use reylo_engine_core::types::{DialectVersion, Diagnostic, Kind};
+use reylo_engine_core::types::{Cardinality, DialectVersion, Diagnostic, Kind, StatementDescriptor};
 use reylo_engine_native::Failure;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -17,8 +17,10 @@ Prints each statement's type descriptor as one line of JSON, with the file it wa
 A directory is searched for .sql files, leaving out node_modules, dist, build, out, target,
 coverage, hidden directories and what git ignores; - reads one statement from standard input.
 The database is --url, else the project file's direct_url, else DATABASE_URL, from the
-environment or the .env files. Exits with 1 when any statement has a diagnostic, and with 2
-when the statements cannot be analyzed.";
+environment or the .env files; a relative SQLite path in --url is read from the working
+directory, one in the project's URL from the project's root. A statement the engine cannot
+analyze is printed with one diagnostic that says why. Exits with 1 when any statement has a
+diagnostic, and with 2 when the database cannot be reached or the statements cannot be read.";
 
 /// The directories a directory's search leaves out, as `reylo generate` left them out.
 const SKIPPED: &[&str] = &["node_modules", "dist", "build", "out", "target", "coverage"];
@@ -37,11 +39,12 @@ enum Session {
 }
 
 impl Session {
-    async fn open(dialect: &str, url: &str, project: &Project) -> Result<Session, Failure> {
+    /// `base` is the directory a relative SQLite path is read from.
+    async fn open(dialect: &str, url: &str, base: &Path) -> Result<Session, Failure> {
         Ok(match dialect {
             "postgres" => Session::Postgres(reylo_engine_native::postgres::Session::open(url).await?),
             "mysql" => Session::Mysql(reylo_engine_native::mysql::Session::open(url).await?),
-            _ => Session::Sqlite(reylo_engine_native::sqlite::Session::open(&project::sqlite_path(url, &project.root))?),
+            _ => Session::Sqlite(reylo_engine_native::sqlite::Session::open(&project::sqlite_path(url, base).map_err(Failure::Error)?)?),
         })
     }
 
@@ -119,16 +122,19 @@ pub fn run(args: &[String]) -> i32 {
         return fail("A DuckDB database runs inside the app, and the type check reads it through the project's @duckdb/node-api: reylo analyze cannot open one yet.");
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
-    runtime.block_on(analyze_all(dialect, url, given, &project, inputs))
+    // A relative SQLite path in a URL typed on the command line is the shell's, from the working
+    // directory; one in the project's URL is from the project's root, as the type check reads it.
+    let base = if given { cwd.clone() } else { project.root.clone() };
+    runtime.block_on(analyze_all(dialect, url, given, &base, &project, inputs))
 }
 
-async fn analyze_all(dialect: &str, url: String, given: bool, project: &Project, inputs: Vec<Input>) -> i32 {
-    let mut session = match Session::open(dialect, &url, project).await {
+async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, project: &Project, inputs: Vec<Input>) -> i32 {
+    let mut session = match Session::open(dialect, &url, base).await {
         Ok(session) => session,
         // A command in `direct_url` that makes a short-lived token is run again once the token is
         // refused, as the type check runs it again.
         Err(Failure::Refused(_)) if !given && project.url_runs_command() => match project.type_check_url() {
-            Ok(Some(fresh)) => match Session::open(dialect, &fresh, project).await {
+            Ok(Some(fresh)) => match Session::open(dialect, &fresh, base).await {
                 Ok(session) => session,
                 Err(failure) => return fail(&failure.to_string()),
             },
@@ -145,17 +151,34 @@ async fn analyze_all(dialect: &str, url: String, given: bool, project: &Project,
     };
     let mut flagged = false;
     for input in inputs {
-        let analysis = match session.analyze(&input.sql).await {
-            Ok(analysis) => analysis,
-            Err(failure) => return fail(&match &input.file {
-                Some(file) => format!("{file}: {failure}"),
-                None => failure.to_string(),
-            }),
+        let descriptor = match session.analyze(&input.sql).await {
+            Ok(analysis) => {
+                let mut descriptor = analysis.descriptor(&input.sql, version.clone());
+                if project.strict_params() && analysis.diagnostics.is_empty() {
+                    descriptor.diagnostics.extend(untyped_params(&input.sql, &analysis, engine_dialect, project));
+                }
+                descriptor
+            }
+            // The connection is gone, or never was the database's: no later statement can be read.
+            Err(failure @ (Failure::Unreachable(_) | Failure::Refused(_) | Failure::NotMysql(_))) => {
+                return fail(&match &input.file {
+                    Some(file) => format!("{file}: {failure}"),
+                    None => failure.to_string(),
+                })
+            }
+            // This statement alone could not be analyzed: its line says why, over the whole
+            // statement, and the run goes on.
+            Err(Failure::Error(message)) => StatementDescriptor {
+                dialect: version.clone(),
+                sql: input.sql.clone(),
+                kind: None,
+                comment: None,
+                params: Vec::new(),
+                columns: Vec::new(),
+                cardinality: Cardinality::Many,
+                diagnostics: vec![Diagnostic { message, start: 0, end: utf16_offset(&input.sql, input.sql.len()), code: None }],
+            },
         };
-        let mut descriptor = analysis.descriptor(&input.sql, version.clone());
-        if project.strict_params() && analysis.diagnostics.is_empty() {
-            descriptor.diagnostics.extend(untyped_params(&input.sql, &analysis, engine_dialect, project));
-        }
         flagged |= !descriptor.diagnostics.is_empty();
         let mut line = Map::new();
         if let Some(file) = input.file {
@@ -260,10 +283,13 @@ fn git_ignored(dir: &Path, files: &[PathBuf]) -> Vec<PathBuf> {
         return Vec::new();
     };
     let list: Vec<u8> = files.iter().flat_map(|f| f.to_string_lossy().into_owned().into_bytes().into_iter().chain([0])).collect();
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(&list);
-    }
+    // The list is written while git's answer is read: git writes each ignored path as it reads it,
+    // and stops reading once a full pipe stops its writes.
+    let writer = child.stdin.take().map(|mut stdin| std::thread::spawn(move || drop(stdin.write_all(&list))));
     let Ok(out) = child.wait_with_output() else { return Vec::new() };
+    if let Some(writer) = writer {
+        let _ = writer.join();
+    }
     out.stdout.split(|b| *b == 0).filter(|s| !s.is_empty()).map(|s| PathBuf::from(String::from_utf8_lossy(s).into_owned())).collect()
 }
 
