@@ -1,16 +1,16 @@
-collate_binary_integer.sql: many (v: integer) -> { id: integer }
-collate_in_list.sql: many (v: text) -> { id: integer }
-collate_on_column.sql: many (v: text) -> { id: integer }
-collate_on_parameter.sql: many (v: text) -> { id: integer }
-collate_on_parameter_left.sql: many (v: text) -> { id: integer }
-column_side.sql: many (v: text) -> { id: integer }
-in_list.sql: many (v: text) -> { id: integer }
-key_binary.sql: maybeOne (v: text) -> { id: integer }
-key_binary_written.sql: many (v: text) -> { id: integer }
-key_column_nocase.sql: many (v: text) -> { id: integer }
-key_delete_nocase.sql: many (v: text) -> { id: integer }
-key_nocase.sql: maybeOne (v: text) -> { id: integer }
-key_param_nocase.sql: many (v: text) -> { id: integer }
-key_param_nocase_left.sql: many (v: text) -> { id: integer }
-param_left.sql: many (v: text) -> { id: integer }
-param_right.sql: many (v: text) -> { id: integer }
+collate_binary_integer.sql: many (v: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+collate_in_list.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+collate_on_column.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+collate_on_parameter.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+collate_on_parameter_left.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+column_side.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+in_list.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_binary.sql: at_most_one (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_binary_written.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_column_nocase.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_delete_nocase.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_nocase.sql: at_most_one (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_param_nocase.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+key_param_nocase_left.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+param_left.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+param_right.sql: many (v: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }

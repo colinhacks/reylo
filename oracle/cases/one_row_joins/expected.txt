@@ -1,24 +1,24 @@
 comma_with.sql: one () -> { n: int8, m: int8 }
 cross_with.sql: one () -> { n: int8, m: int8 }
 derived.sql: one () -> { n: int8, m: int8 }
-empty_side.sql: maybeOne (id: int8) -> { n: int8, id: int8 }
+empty_side.sql: at_most_one (id: int8) -> { n: int8, id: int8 }
 full_join.sql: many () -> { n: int8?, m: int8? }
 full_join_true.sql: many () -> { n: int8?, m: int8? }
 insert_beside.sql: one (id: int8, name: text?) -> { id: int8, n: int8 }
-insert_do_nothing.sql: maybeOne (id: int8, name: text?) -> { id: int8, n: int8 }
+insert_do_nothing.sql: at_most_one (id: int8, name: text?) -> { id: int8, n: int8 }
 insert_left_join.sql: one (id: int8, name: text?) -> { id: int8, user_id: int8? }
 lateral.sql: one () -> { n: int8, m: int8 }
 left_join.sql: one (id: int8) -> { n: int8, email: text? }
-left_join_table_first.sql: maybeOne (id: int8) -> { n: int8?, email: text? }
+left_join_table_first.sql: at_most_one (id: int8) -> { n: int8?, email: text? }
 left_join_unpinned.sql: many () -> { n: int8, email: text? }
-many_side.sql: many () -> { n: int8, id: int8 } key (id)
-natural.sql: maybeOne () -> { n: int8? }
-on_condition.sql: maybeOne (d: int8) -> { n: int8 }
-on_false.sql: maybeOne () -> { n: int8 }
-on_unequal.sql: maybeOne () -> { n: int8 }
+many_side.sql: many () -> { n: int8, id: int8 }
+natural.sql: at_most_one () -> { n: int8? }
+on_condition.sql: at_most_one (d: int8) -> { n: int8 }
+on_false.sql: at_most_one () -> { n: int8 }
+on_unequal.sql: at_most_one () -> { n: int8 }
 right_join.sql: one (id: int8) -> { n: int8, email: text? }
 self_on_equal.sql: one () -> { n: int8, m: int8 }
 self_on_true.sql: one () -> { n: int8, m: int8 }
 three_kinds.sql: one () -> { n: int8, t: timestamptz, last_value: int8 }
-using.sql: maybeOne () -> { n: int8? }
-where.sql: maybeOne () -> { n: int8, m: int8 }
+using.sql: at_most_one () -> { n: int8? }
+where.sql: at_most_one () -> { n: int8, m: int8 }

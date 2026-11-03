@@ -1,12 +1,12 @@
-bare.sql: many () -> { id: int4, doc: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true} }
-constructor.sql: many () -> { o: { d: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true}, n: [json {"anyOf":[{"type":"object","properties":{"type":{"enum":["click"]},"x":{"type":"number"}},"required":["type","x"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["key"]},"key":{"type":"string"}},"required":["type","key"],"additionalProperties":false}]}?]? } }
+bare.sql: many () -> { id: int, doc: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true} }
+constructor.sql: many () -> { o: json { d: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true}, n: (json {"anyOf":[{"type":"object","properties":{"type":{"enum":["click"]},"x":{"type":"number"}},"required":["type","x"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["key"]},"key":{"type":"string"}},"required":["type","key"],"additionalProperties":false}]}?)[]? } }
 consts.sql: many () -> { c: json? }
 derived.sql: many () -> { doc: json? }
-expression.sql: maybeOne () -> { n: json?, doc: json }
+expression.sql: at_most_one () -> { n: json?, doc: json }
 join.sql: many () -> { doc: json {"type":"object","properties":{"name":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}},"kind":{"enum":["a","b"]}},"required":["name","kind"],"additionalProperties":true}, plain: json? }
 pairs.sql: many () -> { p: json {"type":"array","prefixItems":[{"type":"string"},{"type":"integer"}],"items":false}? }
 refs.sql: many () -> { a: json?, b: json {"type":"string"}? }
-tagged.sql: maybeOne (id: int4) -> { payload: json {"anyOf":[{"type":"object","properties":{"type":{"enum":["click"]},"x":{"type":"number"}},"required":["type","x"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["key"]},"key":{"type":"string"}},"required":["type","key"],"additionalProperties":false}]}? }
+tagged.sql: at_most_one (id: int32) -> { payload: json {"anyOf":[{"type":"object","properties":{"type":{"enum":["click"]},"x":{"type":"number"}},"required":["type","x"],"additionalProperties":false},{"type":"object","properties":{"type":{"enum":["key"]},"key":{"type":"string"}},"required":["type","key"],"additionalProperties":false}]}? }
 view.sql: many () -> { doc: json }
 with_query.sql: many () -> { doc: json? }
 words.sql: many () -> { w: json {"enum":["it's","a\\b","café","😀"]}? }

@@ -1,10 +1,10 @@
 case_row.sql: many () -> { y: int4 }
-case_window_array.sql: many () -> { arr: (int4?)[]? }
-case_window_coalesce.sql: many () -> { arr: (int4?)[] }
+case_window_array.sql: many () -> { arr: int4?[]? }
+case_window_coalesce.sql: many () -> { arr: int4?[] }
 case_window_lag.sql: many () -> { l: int4? }
 derived.sql: many (id: int8) -> { name: text? }
 reduced.sql: many (id: int8) -> { name: text }
-self_join.sql: maybeOne (id: int8) -> { boss_name: text? }
+self_join.sql: at_most_one (id: int8) -> { boss_name: text? }
 subquery_alias.sql: many () -> { name: text? }
 using_left.sql: many () -> { bx: int4? }
 using_left_expression.sql: many () -> { bx1: int4? }

@@ -613,11 +613,11 @@ fn seed(db: &Db, scenario: Scenario) -> Result<Vec<String>, String> {
 /// The values a parameter of the engine's type `ty` is run with, as text DuckDB casts: NULL too
 /// where the statement takes it. None where the engine did not type the parameter.
 fn parameter_pool(ty: &Value, nullable: bool, scenario: Scenario) -> Option<Vec<Option<String>>> {
-    let name = match ty["kind"].as_str() {
-        Some("scalar") => ty["name"].as_str()?.to_string(),
-        Some("enum") => return Some(ty["labels"].as_array()?.iter().filter_map(|l| l.as_str().map(|s| Some(s.to_string()))).chain(nullable.then_some(None)).collect()),
-        Some("json") => "json".into(),
-        _ => return None,
+    let ty: reylo_engine_core::types::Type = serde_json::from_value(ty.clone()).ok()?;
+    let name = match &ty.kind {
+        reylo_engine_core::types::Kind::Text(text) if text.values.is_some() => return Some(text.values.iter().flatten().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
+        reylo_engine_core::types::Kind::Json(_) => "json".into(),
+        _ => ty.name.clone()?,
     };
     let edges = scenario == Scenario::Edges;
     let mut values: Vec<&str> = match name.as_str() {

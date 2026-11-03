@@ -6,12 +6,12 @@ import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
 import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, postgresYear, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
+import { array, either, lite, my, pg } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
 // for it, the JSON Schema of its JSON form, and the value the run time gives it, which must agree.
 
-const scalar = (name: string): EngineType => ({ kind: "scalar", name });
 /** The TypeScript type a value is, as the declared type names it. */
 function typeOf(v: unknown): string {
   if (v === null) return "null";
@@ -32,7 +32,7 @@ const TEXTS: Record<string, string> = {
 
 test("every Postgres type's decoded value is the type the module declares for it, and its JSON form is its schema's", () => {
   for (const [name, text] of Object.entries(TEXTS)) {
-    const t = scalar(name);
+    const t = pg(name);
     const kind = columnKind(t, "postgres");
     const value = textDecoder(kind)(text);
     const declared = renderType(t, false, "postgres");
@@ -40,11 +40,10 @@ test("every Postgres type's decoded value is the type the module declares for it
     if (declared === "Json") assert.deepEqual(JSON.parse(JSON.stringify(value)), value, name);
     else if (declared !== "unknown") assert.equal(typeOf(value), declared, name);
     // The array of it, NULL elements null.
-    const array: EngineType = { kind: "array", of: t };
-    const values = textDecoder(columnKind(array, "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
+    const values = textDecoder(columnKind(array(t), "postgres"))(`{${JSON.stringify(text)},NULL}`) as unknown[];
     assert.equal(values[1], null, name);
-    if (declared === "Json") assert.equal(renderType(array, false, "postgres"), "Json[]", name);
-    else if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array, false, "postgres"), name);
+    if (declared === "Json") assert.equal(renderType(array(t), false, "postgres"), "Json[]", name);
+    else if (declared !== "unknown") assert.equal(`(${typeOf(values[0])} | null)[]`, renderType(array(t), false, "postgres"), name);
     // The value written as JSON, a BigInt as the integer it is, has the schema's JSON type.
     const schema = typeSchema(t, "postgres") as { type?: string | string[] };
     if (schema.type !== undefined) {
@@ -58,10 +57,10 @@ test("every Postgres type's decoded value is the type the module declares for it
 });
 
 test("the representation, value by value", () => {
-  const d = (name: string, text: string) => textDecoder(scalarKind(name, "postgres"))(text);
+  const d = (name: string, text: string) => textDecoder(scalarKind(name))(text);
   assert.equal(d("int8", "9007199254740993"), 9007199254740993n);
   assert.equal(d("int8", "-9223372036854775808"), -9223372036854775808n);
-  assert.deepEqual(textDecoder(scalarKind("int8", "postgres") + "[]")("{1,NULL,9223372036854775807}"), [1n, null, 9223372036854775807n]);
+  assert.deepEqual(textDecoder(scalarKind("int8") + "[]")("{1,NULL,9223372036854775807}"), [1n, null, 9223372036854775807n]);
   assert.equal(d("timestamptz", "2026-10-20 10:00:00.123456+02"), "2026-10-20T08:00:00.123456Z");
   assert.equal(d("numeric", "12345678901234567890.123456789"), "12345678901234567890.123456789");
   assert.equal(d("date", "2026-10-20"), "2026-10-20");
@@ -269,22 +268,23 @@ test("timestamptz: the text read by position is the pattern's, for every server 
 });
 
 test("SQLite: the kinds, and a NUMERIC column of either", () => {
-  assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool", "mystery"].map((n) => scalarKind(n, "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool", "unknown"]);
+  assert.deepEqual(["integer", "real", "text", "blob", "numeric", "bool"].map((n) => columnKind(lite(n), "sqlite")), ["int", "float", "text", "bytes", "int|float|text", "bool"]);
+  assert.equal(columnKind({ kind: "unknown" }, "sqlite"), "unknown");
   assert.deepEqual(["int", "int|float|text", "unknown", "bytes"].map(kindType), ["number", "number | string", "unknown", "Uint8Array"]);
 });
 
 test("SQLite: a column declared BIGINT, INT8 or UNSIGNED BIG INT (the engine's int8) is a BigInt, as on Postgres and MySQL, and its parameter takes one back", () => {
-  assert.equal(scalarKind("int8", "sqlite"), "int8");
-  assert.equal(renderType(scalar("int8"), false, "sqlite"), "bigint");
-  assert.equal(renderType(scalar("int8"), true, "sqlite"), "number", "inside a JSON document, the number SQLite writes");
-  assert.equal(renderParamType(scalar("int8"), "sqlite"), "number | bigint");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite"), typeSchema(scalar("int8"), "postgres"));
+  assert.equal(columnKind(lite("int8"), "sqlite"), "int8");
+  assert.equal(renderType(lite("int8"), false, "sqlite"), "bigint");
+  assert.equal(renderType(lite("int8"), true, "sqlite"), "number", "inside a JSON document, the number SQLite writes");
+  assert.equal(renderParamType(lite("int8"), "sqlite"), "number | bigint");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite"), typeSchema(pg("int8"), "postgres"));
   // Inside a document a non-finite float or decimal is the text Postgres writes; MySQL stores none.
-  assert.deepEqual(typeSchema(scalar("float8"), "postgres", false, true), { anyOf: [{ type: "number", format: "double" }, { enum: ["NaN", "Infinity", "-Infinity"] }] });
-  assert.deepEqual(typeSchema(scalar("numeric"), "mysql", false, true), { type: "number", format: "decimal" });
-  assert.deepEqual(typeSchema(scalar("interval"), "postgres", false, true), { type: "string", description: "pg type interval" }, "inside a document, Postgres's own text");
-  assert.deepEqual(typeSchema(scalar("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
+  assert.deepEqual(typeSchema(pg("float8"), "postgres", false, true), { anyOf: [{ type: "number", format: "double" }, { enum: ["NaN", "Infinity", "-Infinity"] }] });
+  assert.deepEqual(typeSchema(my("decimal"), "mysql", false, true), { type: "number", format: "decimal" });
+  assert.deepEqual(typeSchema(pg("interval"), "postgres", false, true), { type: "string", description: "pg type interval" }, "inside a document, Postgres's own text");
+  assert.deepEqual(typeSchema(lite("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
 });
 
 test("SQLite: a BIGINT column on node:sqlite exact past 2^53 beside an INTEGER read as a number, whatever the database's setting; on the drivers that round, a BigInt within 2^53 and a rounded value refused", async () => {
@@ -365,17 +365,18 @@ test("a truth value: 0 or 1 in every form a driver gives it, and any other value
 });
 
 test("the kinds: a BIGINT is a BigInt, and an integer a temporary table may widen to one is too; a timestamptz a string; no kind a Date", () => {
-  assert.deepEqual(["int8", "int8|int4", "int4|int8", "int8|float8|numeric", "int4|int8|float8|numeric", "bool", "timestamptz"].map((n) => scalarKind(n, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamptz"]);
-  assert.deepEqual(["int8", "int8|int4", "int8|float8|numeric", "bool", "timestamptz", "date"].map((n) => kindType(scalarKind(n, "mysql"))), ["bigint", "bigint", "bigint | number | string", "boolean", "string", "string"]);
-  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "(bigint | null)[]");
-  assert.equal(renderType(scalar("int8"), true), "number", "inside a JSON document, as the database writes it");
-  assert.deepEqual(typeSchema(scalar("int8"), "postgres"), { type: "integer", format: "int64" });
-  assert.deepEqual(typeSchema(scalar("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");
-  assert.deepEqual(typeSchema(scalar("timestamptz"), "postgres"), { type: "string", format: "date-time" });
-  assert.deepEqual(typeSchema(scalar("bool"), "mysql"), { type: "boolean" });
-  assert.deepEqual(typeSchema(scalar("bool"), "sqlite"), { type: "boolean" });
-  assert.deepEqual(typeSchema(scalar("integer"), "sqlite"), { type: "integer", format: "int64" });
-  assert.deepEqual(typeSchema(scalar("numeric"), "sqlite"), { type: ["number", "string"] });
+  const mysql = [my("bigint"), either(my("bigint"), my("int")), either(my("int"), my("bigint")), either(my("bigint"), my("double"), my("decimal")), either(my("int"), my("bigint"), my("double"), my("decimal")), { kind: "boolean" } as EngineType, my("timestamp"), my("date")];
+  assert.deepEqual(mysql.map((t) => columnKind(t, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamp", "date"]);
+  assert.deepEqual(mysql.map((t) => kindType(columnKind(t, "mysql"))), ["bigint", "bigint", "bigint", "bigint | number | string", "number | bigint | string", "boolean", "string", "string"]);
+  assert.equal(renderType(array(pg("int8"))), "(bigint | null)[]");
+  assert.equal(renderType(pg("int8"), true), "number", "inside a JSON document, as the database writes it");
+  assert.deepEqual(typeSchema(pg("int8"), "postgres"), { type: "integer", format: "int64" });
+  assert.deepEqual(typeSchema(pg("int8"), "postgres", true), { type: ["integer", "string"], format: "int64" }, "a parameter, as every driver binds it");
+  assert.deepEqual(typeSchema(pg("timestamptz"), "postgres"), { type: "string", format: "date-time" });
+  assert.deepEqual(typeSchema({ kind: "boolean" }, "mysql"), { type: "boolean" });
+  assert.deepEqual(typeSchema(lite("bool"), "sqlite"), { type: "boolean" });
+  assert.deepEqual(typeSchema(lite("integer"), "sqlite"), { type: "integer", format: "int64" });
+  assert.deepEqual(typeSchema(lite("numeric"), "sqlite"), { type: ["number", "string"] });
   for (const kind of ["bool", "int", "float", "int8", "decimal", "text", "date", "timestamp", "timestamptz", "json", "bytes", "unknown"]) assert.notEqual(kindType(kind), "Date", kind);
 });
 
@@ -559,7 +560,7 @@ test("MySQL: a truth value is a boolean on every driver, whatever form it gives 
 });
 
 test("MySQL: a VECTOR is an array of its floats on every driver that reads one, and its parameter binds their text", async () => {
-  const vector: EngineType = { kind: "array", of: scalar("float4"), nullable_items: false };
+  const vector: EngineType = { kind: "array", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } }, name: "vector" };
   assert.equal(columnKind(vector, "mysql"), "float[]");
   assert.equal(renderType(vector), "number[]");
   assert.equal(renderParamType(vector, "mysql"), "number[]");

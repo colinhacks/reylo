@@ -1,28 +1,28 @@
 backticked_coalesce.sql: many () -> {  } !! reylo6: FUNCTION reylo_oracle_mysql_qualified_names.coalesce does not exist. Check the 'Function Name Parsing and Resolution' section in the Reference Manual (ER_FUNC_INEXISTENT_NAME_COLLISION)
-backticked_count.sql: many () -> { n: int8? }
-backticked_count_subquery.sql: many () -> { id: int8, n: int8? }
-backticked_count_subquery_limit.sql: many () -> { id: int8, n: int8? }
-backticked_lower.sql: many (e: text) -> { id: int8 }
-backticked_max.sql: many () -> { n: int8? }
-own_schema_table.sql: many (id: int4) -> { id: int8 }
+backticked_count.sql: many () -> { n: bigint? }
+backticked_count_subquery.sql: many () -> { id: bigint, n: bigint? }
+backticked_count_subquery_limit.sql: many () -> { id: bigint, n: bigint? }
+backticked_lower.sql: many (e: varchar) -> { id: bigint }
+backticked_max.sql: many () -> { n: bigint? }
+own_schema_table.sql: many (id: int32) -> { id: bigint }
 qualified_coalesce.sql: many () -> { o: json? }
-qualified_column.sql: many (id: int4) -> { id: int8, name: text }
-qualified_count.sql: many () -> { n: int8? }
-qualified_count_in_object.sql: many () -> { o: { n: unknown? } }
-qualified_count_subquery.sql: many () -> { id: int8, n: int8? }
+qualified_column.sql: many (id: int32) -> { id: bigint, name: varchar }
+qualified_count.sql: many () -> { n: bigint? }
+qualified_count_in_object.sql: many () -> { o: json { n: unknown? } }
+qualified_count_subquery.sql: many () -> { id: bigint, n: bigint? }
 qualified_json_arrayagg.sql: many () -> { o: json? }
 qualified_json_object.sql: many () -> { o: json? }
-qualified_lower.sql: many (e: text) -> { id: int8 }
-qualified_other_table_in_subquery.sql: many () -> { id: int8, n: int8? }
-qualified_table.sql: many (id: int4) -> { id: int8 }
-qualified_table_alias.sql: many (id: int4) -> { id: int8 }
-spaced_count.sql: one () -> { n: int8 }
-spaced_count_comment.sql: many () -> { n: int8? }
-spaced_count_newline.sql: one () -> { n: int8 }
-spaced_count_star.sql: one () -> { n: int8 }
-spaced_count_subquery.sql: many () -> { id: int8, n: int8 }
-spaced_count_subquery_limit.sql: many () -> { id: int8, n: int8? }
-spaced_max.sql: one () -> { n: int8? }
-unqualified_count.sql: one () -> { n: int8 }
-unqualified_lower.sql: maybeOne (e: text) -> { id: int8 }
-unqualified_table.sql: maybeOne (id: int8) -> { id: int8 }
+qualified_lower.sql: many (e: varchar) -> { id: bigint }
+qualified_other_table_in_subquery.sql: many () -> { id: bigint, n: bigint? }
+qualified_table.sql: many (id: int32) -> { id: bigint }
+qualified_table_alias.sql: many (id: int32) -> { id: bigint }
+spaced_count.sql: one () -> { n: bigint }
+spaced_count_comment.sql: many () -> { n: bigint? }
+spaced_count_newline.sql: one () -> { n: bigint }
+spaced_count_star.sql: one () -> { n: bigint }
+spaced_count_subquery.sql: many () -> { id: bigint, n: bigint }
+spaced_count_subquery_limit.sql: many () -> { id: bigint, n: bigint? }
+spaced_max.sql: one () -> { n: bigint? }
+unqualified_count.sql: one () -> { n: bigint }
+unqualified_lower.sql: at_most_one (e: varchar) -> { id: bigint }
+unqualified_table.sql: at_most_one (id: bigint) -> { id: bigint }

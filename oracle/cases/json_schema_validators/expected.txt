@@ -1,5 +1,5 @@
-adunstan.sql: many () -> { d: json {"type":"array"}?, e: json {"type":"object"}? }
-boon.sql: many () -> { a: json {"type":"object","properties":{"k":{}},"required":["k"],"additionalProperties":true}?, b: json {"type":"object","properties":{"k":{"enum":["x"]}},"required":["k"],"additionalProperties":true}?, c: json {"type":"array","items":{"type":"integer"}}? }
-gavinwahl.sql: many () -> { d: json {"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":true}? }
-is_jsonb_valid.sql: many () -> { d4: json {"type":"string"}?, d7: json {"enum":["a"]}? }
-no_extension.sql: many () -> { d: json? }
+adunstan.sql: many () -> { d: jsonb {"type":"array"}?, e: jsonb {"type":"object"}? }
+boon.sql: many () -> { a: jsonb {"type":"object","properties":{"k":{}},"required":["k"],"additionalProperties":true}?, b: jsonb {"type":"object","properties":{"k":{"enum":["x"]}},"required":["k"],"additionalProperties":true}?, c: jsonb {"type":"array","items":{"type":"integer"}}? }
+gavinwahl.sql: many () -> { d: jsonb {"type":"object","properties":{"n":{"type":"integer"}},"required":["n"],"additionalProperties":true}? }
+is_jsonb_valid.sql: many () -> { d4: jsonb {"type":"string"}?, d7: jsonb {"enum":["a"]}? }
+no_extension.sql: many () -> { d: jsonb? }

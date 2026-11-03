@@ -185,18 +185,31 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
  */
 function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v instanceof Uint8Array) return a.BLOB;
-  if (t?.kind === "tuple" && Array.isArray(v)) return a.TUPLE(t.items.map((item, i) => bindType(a, item, v[i])));
+  const items = tupleOf(t);
+  if (items && Array.isArray(v)) return a.TUPLE(items.map((item, i) => bindType(a, item, v[i])));
   if (Array.isArray(v)) {
-    if (t?.kind === "map") return a.MAP(bindType(a, t.key, firstOf(v, "key")), bindType(a, t.value, firstOf(v, "value")));
-    return a.LIST(bindType(a, t?.kind === "array" ? t.of : undefined, v.find((e) => e != null)));
+    if (t?.kind === "map") return a.MAP(bindType(a, t.key, firstOf(v, "key")), bindType(a, t.value.type, firstOf(v, "value")));
+    return a.LIST(bindType(a, t?.kind === "array" ? t.element.type : undefined, v.find((e) => e != null)));
   }
-  if (t?.kind === "struct" && v !== null && typeof v === "object") {
+  if (t?.kind === "record" && v !== null && typeof v === "object") {
     return a.STRUCT(Object.fromEntries(t.fields.map((f) => [f.name, bindType(a, f.type, (v as Record<string, unknown>)[f.name])])));
   }
-  if (t?.kind === "union" && v !== null && typeof v === "object") {
-    return a.UNION(Object.fromEntries(t.members.map((m) => [m.name, bindType(a, m.type, (v as { tag?: unknown; value?: unknown }).tag === m.name ? (v as { value?: unknown }).value : undefined)])));
+  const tags = tagsOf(t);
+  if (tags && v !== null && typeof v === "object") {
+    return a.UNION(Object.fromEntries(tags.map((m) => [m.name, bindType(a, m.type, (v as { tag?: unknown; value?: unknown }).tag === m.name ? (v as { value?: unknown }).value : undefined)])));
   }
   return a.VARCHAR;
+}
+
+/** A tuple's values' types: a record whose fields have no names. */
+function tupleOf(t: EngineType | undefined): EngineType[] | undefined {
+  return t?.kind === "record" && t.fields.length > 0 && t.fields.every((f) => f.name === "") ? t.fields.map((f) => f.type) : undefined;
+}
+
+/** A DuckDB UNION's members, each a record of the one field its tag names, as tags and their types. */
+function tagsOf(t: EngineType | undefined): { name: string; type: EngineType }[] | undefined {
+  if (t?.kind !== "union") return undefined;
+  return t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [{ name: m.fields[0]!.name, type: m.fields[0]!.type }] : []));
 }
 
 function firstOf(entries: unknown[], key: "key" | "value"): unknown {
@@ -204,22 +217,22 @@ function firstOf(entries: unknown[], key: "key" | "value"): unknown {
   return undefined;
 }
 
-const INTEGERS = new Set(["tinyint", "smallint", "integer", "bigint", "hugeint", "utinyint", "usmallint", "uinteger", "ubigint", "uhugeint", "bignum"]);
-
 /** `v` as node-api builds it for `bindType`'s type: a scalar its text, a JSON value its JSON. */
 function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v === null || v === undefined) return null;
   if (v instanceof Uint8Array) return a.blobValue(v);
-  if (t?.kind === "tuple" && Array.isArray(v)) return a.tupleValue(t.items.map((item, i) => bindValue(a, item, v[i])));
+  const items = tupleOf(t);
+  if (items && Array.isArray(v)) return a.tupleValue(items.map((item, i) => bindValue(a, item, v[i])));
   if (Array.isArray(v)) {
-    if (t?.kind === "map") return a.mapValue(v.map((e) => ({ key: bindValue(a, t.key, (e as { key?: unknown } | null)?.key), value: bindValue(a, t.value, (e as { value?: unknown } | null)?.value) })));
-    return a.listValue(v.map((e) => bindValue(a, t?.kind === "array" ? t.of : undefined, e)));
+    if (t?.kind === "map") return a.mapValue(v.map((e) => ({ key: bindValue(a, t.key, (e as { key?: unknown } | null)?.key), value: bindValue(a, t.value.type, (e as { value?: unknown } | null)?.value) })));
+    return a.listValue(v.map((e) => bindValue(a, t?.kind === "array" ? t.element.type : undefined, e)));
   }
   if (typeof v === "object") {
-    if (t?.kind === "struct") return a.structValue(Object.fromEntries(t.fields.map((f) => [f.name, bindValue(a, f.type, (v as Record<string, unknown>)[f.name])])));
-    if (t?.kind === "union") {
+    if (t?.kind === "record") return a.structValue(Object.fromEntries(t.fields.map((f) => [f.name, bindValue(a, f.type, (v as Record<string, unknown>)[f.name])])));
+    const tags = tagsOf(t);
+    if (tags) {
       const { tag, value } = v as { tag?: unknown; value?: unknown };
-      return a.unionValue(String(tag), bindValue(a, t.members.find((m) => m.name === tag)?.type, value));
+      return a.unionValue(String(tag), bindValue(a, tags.find((m) => m.name === tag)?.type, value));
     }
     return JSON.stringify(v);
   }
@@ -234,40 +247,39 @@ function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
  */
 export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: string): unknown {
   if (type === undefined || v == null) return v;
-  if (type.kind === "array" && Array.isArray(v)) return v.map((e) => encodeDuckdb(type.of, e, name));
-  if (type.kind === "tuple" && Array.isArray(v)) return v.map((e, i) => encodeDuckdb(type.items[i], e, name));
-  if (type.kind === "map" && Array.isArray(v)) return v.map((e) => (e !== null && typeof e === "object" ? { ...e, key: encodeDuckdb(type.key, (e as { key?: unknown }).key, name), value: encodeDuckdb(type.value, (e as { value?: unknown }).value, name) } : e));
-  if (type.kind === "struct" && typeof v === "object" && !Array.isArray(v)) {
+  if (type.kind === "array" && Array.isArray(v)) return v.map((e) => encodeDuckdb(type.element.type, e, name));
+  const items = tupleOf(type);
+  if (items && Array.isArray(v)) return v.map((e, i) => encodeDuckdb(items[i], e, name));
+  if (type.kind === "map" && Array.isArray(v)) return v.map((e) => (e !== null && typeof e === "object" ? { ...e, key: encodeDuckdb(type.key, (e as { key?: unknown }).key, name), value: encodeDuckdb(type.value.type, (e as { value?: unknown }).value, name) } : e));
+  if (type.kind === "record" && typeof v === "object" && !Array.isArray(v)) {
     const out: Record<string, unknown> = { ...(v as Record<string, unknown>) };
     for (const f of type.fields) out[f.name] = encodeDuckdb(f.type, out[f.name], name);
     return out;
   }
   // A UNION takes `{ tag, value }`, its tag one of its members and its value that member's.
   // node-api cannot build a union whose member is NULL, which DuckDB keeps apart from a NULL union.
-  if (type.kind === "union") {
+  const members = tagsOf(type);
+  if (members) {
     const { tag, value } = (typeof v === "object" ? v : {}) as { tag?: unknown; value?: unknown };
-    const member = type.members.find((m) => m.name === tag);
-    const tags = type.members.map((m) => JSON.stringify(m.name)).join(", ");
+    const member = members.find((m) => m.name === tag);
+    const tags = members.map((m) => JSON.stringify(m.name)).join(", ");
     if (member === undefined) throw new ParameterError(`Parameter "${name}" is a UNION, so it takes { tag, value } with the tag one of ${tags}; got ${JSON.stringify(v)}.`);
     if (value == null) throw new ParameterError(`Parameter "${name}" is a UNION, and @duckdb/node-api cannot bind one whose ${JSON.stringify(tag)} member is null: pass null for the whole parameter, or a value of the member.`);
     return { tag, value: encodeDuckdb(member.type, value, name) };
   }
-  if (type.kind !== "scalar") return v;
-  if (INTEGERS.has(type.name)) {
+  if (type.kind === "integer" || (type.kind === "decimal" && type.name === "bignum")) {
     if (typeof v === "number" && !Number.isInteger(v)) throw new ParameterError(`Parameter "${name}" is an integer, and ${v} has a fraction, which DuckDB would round away.`);
     if (typeof v === "string" && !/^\s*[+-]?\d+\s*$/.test(v)) throw new ParameterError(`Parameter "${name}" is an integer, so a string for it holds the digits alone; got ${JSON.stringify(v)}.`);
   }
-  if (type.name === "interval" && typeof v === "string") return duckdbInterval(v);
+  if (type.kind === "duration" && typeof v === "string") return duckdbInterval(v);
   // A number goes as its text, which DuckDB casts to the parameter's type exactly: bound as it
   // is, node-api would type a whole number as an integer (a float's 3.4e38 overflows a BIGINT)
   // and a BigInt as a signed HUGEINT (a UHUGEINT's maximum overflows it).
   if (typeof v === "number" || typeof v === "bigint") return String(v);
   // DuckDB reads a year past 9999 without the sign ISO 8601 writes before it (`+10000-01-01`).
-  if (typeof v === "string" && TIMES.has(type.name)) return v.replace(/^\+0*(\d{4,})/, "$1");
+  if (typeof v === "string" && (type.kind === "date" || type.kind === "datetime" || type.kind === "instant")) return v.replace(/^\+0*(\d{4,})/, "$1");
   return v;
 }
-
-const TIMES = new Set(["date", "timestamp", "timestamp_s", "timestamp_ms", "timestamp_ns", "timestamptz", "timestamptz_ns"]);
 
 /**
  * An ISO 8601 duration (`P1Y2M3DT4H5M6.789S`, `-P1D`, `P1M-1D`) as DuckDB's interval text,

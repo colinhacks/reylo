@@ -2,6 +2,9 @@
 //! statement mentions, read from `pg_type` through the host.
 
 use crate::host::{as_bool, as_strings, as_u32};
+use reylo_engine_core::types::{
+    ArrayType, Bounds, BytesType, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -37,6 +40,8 @@ pub enum TypeKind {
     Domain,
     Array,
     Composite,
+    Range,
+    Multirange,
     Other,
 }
 
@@ -57,6 +62,29 @@ pub struct PgType {
     pub relid: Option<u32>,
     /// `typdelim` where it is not a comma: what separates the elements of an array of the type.
     pub delimiter: Option<String>,
+    /// The schema the type is defined in; `None` where the host did not say.
+    pub namespace: Option<String>,
+    /// A range's or a multirange's subtype.
+    pub subtype: Option<u32>,
+}
+
+impl PgType {
+    /// The type's name as the format writes it: bare for a `pg_catalog` type (`int4`), qualified
+    /// by its schema for any other (`public.mood`, `extensions.vector`), each part quoted as
+    /// Postgres quotes an identifier where it must be.
+    pub fn qualified(&self) -> String {
+        match self.namespace.as_deref() {
+            None | Some("pg_catalog") => self.name.clone(),
+            Some(namespace) => format!("{}.{}", quote_ident(namespace), quote_ident(&self.name)),
+        }
+    }
+}
+
+/// An identifier as Postgres writes it: bare where it is lowercase letters, digits and
+/// underscores not starting with a digit, else in double quotes.
+fn quote_ident(name: &str) -> String {
+    let plain = name.chars().next().is_some_and(|c| c.is_ascii_lowercase() || c == '_') && name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if plain { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) }
 }
 
 /// One column of a composite type, read from `pg_attribute` beside its relation.
@@ -124,9 +152,9 @@ macro_rules! composite_fields {
 /// The columns of one `pg_type` row `t` as [`TypeRegistry::insert_rows`] reads them: the oid, the
 /// name, `typtype`, the element and base types, an enum's labels, the name a cast spells, and a
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
-/// `NOT NULL`), so a whole-row value has its fields in the same round as its type, and the
-/// delimiter of an array of it. An enum of no label, or a composite of no column, has NULL for
-/// its arrays.
+/// `NOT NULL`), so a whole-row value has its fields in the same round as its type, the delimiter
+/// of an array of it, its schema, and a range's or multirange's subtype. An enum of no label, or a
+/// composite of no column, has NULL for its arrays.
 macro_rules! type_columns {
     () => {
         concat!("t.oid::pg_catalog.int8, t.typname::pg_catalog.text, t.typtype::pg_catalog.text, t.typelem::pg_catalog.int8, t.typbasetype::pg_catalog.int8, \
@@ -138,7 +166,9 @@ macro_rules! type_columns {
     composite_fields!(concat!("a.attnotnull AND ", not_null_rows!("t.typrelid", "a.attname"))), ", \
     CASE WHEN t.typtype OPERATOR(pg_catalog.=) 'c'::pg_catalog.\"char\" THEN t.typrelid::pg_catalog.int8 END, ",
     composite_fields!("a.attnum::pg_catalog.int4"), ", \
-    t.typdelim::pg_catalog.text")
+    t.typdelim::pg_catalog.text, \
+    (SELECT n.nspname::pg_catalog.text FROM pg_catalog.pg_namespace n WHERE n.oid OPERATOR(pg_catalog.=) t.typnamespace), \
+    (SELECT r.rngsubtype::pg_catalog.int8 FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) t.oid OR r.rngmultitypid OPERATOR(pg_catalog.=) t.oid)")
     };
 }
 
@@ -258,9 +288,22 @@ impl TypeRegistry {
     /// A registry holding [`BUILTINS`].
     pub fn with_builtins() -> TypeRegistry {
         let mut registry = TypeRegistry::default();
+        let subtype = |oid: u32| match oid {
+            3904 => Value::from(oid::INT4),
+            3906 => Value::from(oid::NUMERIC),
+            3908 => Value::from(oid::TIMESTAMP),
+            3910 => Value::from(oid::TIMESTAMPTZ),
+            3912 => Value::from(oid::DATE),
+            3926 => Value::from(oid::INT8),
+            _ => Value::Null,
+        };
         let rows: Vec<Vec<Value>> = BUILTINS
             .iter()
-            .map(|(oid, name, typtype, elem, base, cast)| vec![Value::from(*oid), Value::from(*name), Value::from(*typtype), Value::from(*elem), Value::from(*base), Value::Null, Value::from(*cast)])
+            .map(|(oid, name, typtype, elem, base, cast)| {
+                let mut row = vec![Value::from(*oid), Value::from(*name), Value::from(*typtype), Value::from(*elem), Value::from(*base), Value::Null, Value::from(*cast)];
+                row.extend([Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, Value::from("pg_catalog"), subtype(*oid)]);
+                row
+            })
             .collect();
         registry.insert_rows(&rows);
         registry
@@ -290,6 +333,8 @@ impl TypeRegistry {
             };
             let relid = row.get(10).and_then(as_u32).filter(|r| *r != 0);
             let delimiter = row.get(12).and_then(Value::as_str).filter(|d| *d != ",").map(str::to_string);
+            let namespace = row.get(13).and_then(Value::as_str).map(str::to_string);
+            let subtype = row.get(14).and_then(as_u32).filter(|s| *s != 0);
             let name = name.to_string();
             let kind = match typtype {
                 "b" | "p" if elem != 0 && name.starts_with('_') => TypeKind::Array,
@@ -297,11 +342,13 @@ impl TypeRegistry {
                 "e" => TypeKind::Enum,
                 "d" => TypeKind::Domain,
                 "c" => TypeKind::Composite,
+                "r" => TypeKind::Range,
+                "m" => TypeKind::Multirange,
                 _ => TypeKind::Other,
             };
             self.types.insert(
                 oid,
-                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter },
+                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype },
             );
         }
     }
@@ -319,6 +366,8 @@ impl TypeRegistry {
             cast_name: String::new(),
             relid: None,
             delimiter: None,
+            namespace: None,
+            subtype: None,
         });
     }
 
@@ -365,6 +414,7 @@ impl TypeRegistry {
         match (t.kind, t.elem, t.base) {
             (TypeKind::Array, Some(e), _) => self.missing_at(e, out, depth + 1),
             (TypeKind::Domain, _, Some(b)) => self.missing_at(b, out, depth + 1),
+            (TypeKind::Range | TypeKind::Multirange, _, _) if t.subtype.is_some() => self.missing_at(t.subtype.unwrap_or(0), out, depth + 1),
             (TypeKind::Composite, _, _) => {
                 for f in &t.fields {
                     self.missing_at(f.type_oid, out, depth + 1);
@@ -394,79 +444,210 @@ impl TypeRegistry {
         t.fields.iter().filter(|f| f.attnum > 0 && types.contains(&self.resolve_domain(f.type_oid))).map(|f| (relid, f.attnum)).collect()
     }
 
-    /// The type model of a stored row of the relation whose row type `oid` is (`d` of `from docs
-    /// d`): the table's constraints held it, so a column is non-null where its `NOT NULL` is valid,
-    /// a JSON column a CHECK holds to a JSON Schema is the values it admits
+    /// The type of a stored row of the relation whose row type `oid` is (`d` of `from docs d`):
+    /// the table's constraints held it, so a column is non-null where its `NOT NULL` is valid, a
+    /// JSON column a CHECK holds to a JSON Schema is the values it admits
     /// ([`TypeRegistry::documents`]), and a string column a CHECK keeps to a list of strings is
-    /// their union ([`TypeRegistry::values`]). A row value of the same type that a statement builds
-    /// (`row(…)::docs`), or that another table's column holds, met none of them, and renders as
-    /// [`TypeRegistry::render`] does.
-    pub fn render_row(&self, oid: u32) -> crate::types::Type {
+    /// those strings ([`TypeRegistry::values`]). A row value of the same type that a statement
+    /// builds (`row(…)::docs`), or that another table's column holds, met none of them, and
+    /// renders as [`TypeRegistry::render`] does.
+    pub fn render_row(&self, oid: u32) -> Type {
         self.render_at(oid, 0, true)
     }
 
-    /// The type model for one oid. A composite's fields are each nullable: a row value of a table's
-    /// type need not be one of its stored rows ([`TypeRegistry::render_row`]).
-    pub fn render(&self, oid: u32) -> crate::types::Type {
+    /// The type of one oid. A composite's fields are each nullable: a row value of a table's type
+    /// need not be one of its stored rows ([`TypeRegistry::render_row`]).
+    pub fn render(&self, oid: u32) -> Type {
         self.render_at(oid, 0, false)
     }
 
-    fn render_at(&self, oid: u32, depth: usize, stored: bool) -> crate::types::Type {
-        use crate::types::{Field, Type};
-        if depth > MAX_DEPTH {
-            return Type::Unknown;
-        }
-        let mut cur = oid;
-        for _ in 0..8 {
-            let Some(t) = self.get(cur) else { return Type::Unknown };
-            match (t.kind, t.elem, t.base) {
-                // The elements of an array of stored rows are stored rows. A domain has its base
-                // type's delimiter.
-                (TypeKind::Array, Some(e), _) => {
-                    let delimiter = self.get(e).and_then(|t| t.delimiter.clone());
-                    return Type::Array { of: Box::new(self.render_at(e, depth + 1, stored)), nullable_items: None, delimiter };
-                }
-                (TypeKind::Domain, _, Some(b)) => cur = b,
-                (TypeKind::Enum, _, _) => return Type::Enum { name: t.name.clone(), labels: t.labels.clone() },
-                (TypeKind::Composite, _, _) if !t.fields.is_empty() => {
-                    let fields = t
-                        .fields
-                        .iter()
-                        .map(|f| {
-                            let ty = self.render_at(f.type_oid, depth + 1, false);
-                            let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
-                            let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
-                            let ty = match (ty, document, values) {
-                                (Type::Json { schema: None }, Some(schema), _) => Type::Json { schema: Some(schema.clone()) },
-                                (Type::Scalar { name }, _, Some(values)) if (name == "text" || name == "varchar") && !values.is_empty() => Type::Enum { name, labels: values.clone() },
-                                (ty, _, _) => ty,
-                            };
-                            Field { name: f.name.clone(), ty, nullable: !(stored && f.not_null) }
-                        })
-                        .collect();
-                    return Type::Composite { name: t.name.clone(), fields };
-                }
-                // A row value whose columns were not read: no driver parses one, so it reaches
-                // the caller as its text form, and so does an array of them.
-                (TypeKind::Composite, _, _) => return Type::Scalar { name: "record".into() },
-                (TypeKind::Base, _, _) if matches!(t.oid, oid::JSON | oid::JSONB) => return Type::Json { schema: None },
-                _ => return Type::Scalar { name: t.name.clone() },
-            }
-        }
-        Type::Unknown
+    /// What separates the elements of an array of type `oid`'s text, where it is not a comma: its
+    /// element type's `typdelim` (`:` for PostGIS's `geometry`), a domain's its base type's.
+    pub fn delimiter(&self, oid: u32) -> Option<String> {
+        let t = self.get(oid).filter(|t| t.kind == TypeKind::Array)?;
+        self.get(t.elem?).and_then(|e| e.delimiter.clone())
     }
+
+    /// Whether type `oid` is `text` or `varchar`, through any domain: a string a CHECK may keep to
+    /// a list of strings ([`with_values`]).
+    pub fn is_string(&self, oid: u32) -> bool {
+        matches!(self.resolve_domain(oid), oid::TEXT | oid::VARCHAR)
+    }
+
+    /// Each domain among `names` with the name of the base type it is made from, through any
+    /// domain between: a domain's values are sent and decoded as its base type's.
+    pub fn domain_bases(&self, names: &[String]) -> std::collections::BTreeMap<String, String> {
+        self.types
+            .values()
+            .filter(|t| t.kind == TypeKind::Domain && names.contains(&t.qualified()))
+            .filter_map(|t| {
+                let base = self.get(self.resolve_domain(t.oid)).filter(|b| b.kind != TypeKind::Domain)?;
+                Some((t.qualified(), base.qualified()))
+            })
+            .collect()
+    }
+
+    fn render_at(&self, oid: u32, depth: usize, stored: bool) -> Type {
+        if depth > MAX_DEPTH {
+            return Type::unknown();
+        }
+        let Some(t) = self.get(oid) else { return Type::unknown() };
+        match t.kind {
+            // A Postgres array holds any number of dimensions, whatever a column declares, and an
+            // element may be NULL whatever a column's NOT NULL says. The elements of an array of
+            // stored rows are stored rows.
+            TypeKind::Array => match t.elem {
+                Some(e) => Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(self.render_at(e, depth + 1, stored))), size: None, any_depth: true })).named(t.qualified()),
+                None => Type::unknown(),
+            },
+            // A domain is its base type's values under its own name.
+            TypeKind::Domain => match t.base.map(|b| self.render_at(b, depth + 1, stored)) {
+                Some(base) if !base.is_unknown() => base.named(t.qualified()),
+                _ => Type::unknown(),
+            },
+            TypeKind::Enum => Type::text_of(t.labels.clone()).named(t.qualified()),
+            TypeKind::Composite if !t.fields.is_empty() => {
+                let fields = t
+                    .fields
+                    .iter()
+                    .map(|f| {
+                        let ty = self.render_at(f.type_oid, depth + 1, false);
+                        let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
+                        let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
+                        let string = self.is_string(f.type_oid);
+                        let ty = match (document, values) {
+                            (Some(schema), _) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema.clone()).kind, ..ty },
+                            (_, Some(values)) if string => with_values(ty, values),
+                            _ => ty,
+                        };
+                        Field::new(f.name.clone(), ty, !(stored && f.not_null))
+                    })
+                    .collect();
+                Type::record(fields).named(t.qualified())
+            }
+            // A row value whose columns were not read: no driver parses one, so it reaches the
+            // caller as its text form, and so does an array of them.
+            TypeKind::Composite => Type::opaque("record"),
+            TypeKind::Range | TypeKind::Multirange => match t.subtype.map(|s| self.render_at(s, depth + 1, false)) {
+                Some(subtype) if !subtype.is_unknown() => {
+                    let range = RangeType { subtype: Box::new(subtype) };
+                    Type::new(if t.kind == TypeKind::Range { Kind::Range(range) } else { Kind::Multirange(range) }).named(t.qualified())
+                }
+                _ => Type::opaque(t.qualified()),
+            },
+            TypeKind::Base | TypeKind::Other => base_type(t),
+        }
+    }
+}
+
+/// A `text` or `varchar` value kept to a CHECK's list of strings (`status IN ('active',
+/// 'banned')`): those strings alone. The caller says the type is one of the two, through any
+/// domain; `bpchar` pads what it stores, so its values are not the list's.
+pub fn with_values(ty: Type, values: &[String]) -> Type {
+    match ty.kind {
+        Kind::Text(text) if !values.is_empty() => Type { kind: Kind::Text(TextType { values: Some(values.to_vec()), ..text }), ..ty },
+        kind => Type { kind, ..ty },
+    }
+}
+
+/// Postgres's floats, which hold infinity, -infinity and NaN.
+fn pg_float(exponent_bits: u32, mantissa_bits: u32, name: &str) -> Type {
+    Type::new(Kind::Float(FloatType { exponent_bits, mantissa_bits, infinity: true, nan: true, ..FloatType::default() })).named(name)
+}
+
+/// The earliest and latest dates, as Postgres stores them.
+const DATE_MIN: &str = "-4713-11-24";
+const DATE_MAX: &str = "+5874897-12-31";
+
+/// A base type, or a type the catalog gives no structure of its own (an extension's, a
+/// pseudo-type), by its name: the kind and fields of what every value is. A type the table does
+/// not name is opaque, which says nothing of what a value is but its name.
+fn base_type(t: &PgType) -> Type {
+    let name = t.qualified();
+    let point = || Type::record(vec![Field::new("x", pg_float(11, 52, "float8"), false), Field::new("y", pg_float(11, 52, "float8"), false)]).named("point");
+    let points = |min: u64| Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size { min: Some(min), ..Size::default() }), any_depth: false }));
+    let float8 = || pg_float(11, 52, "float8");
+    let bits = || Type::array(Position::non_null(Type::boolean()));
+    let vector = |exponent_bits, mantissa_bits| Type::array(Position::non_null(Type::float(exponent_bits, mantissa_bits)));
+    let address = |bytes: u64, prefix: u32| {
+        Type::record(vec![
+            Field::new("address", Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(bytes)) })), false),
+            Field::new("prefix", Type::new(Kind::Integer(IntegerType { bits: 8, unsigned: true, bounds: Bounds { max: Some(prefix.to_string()), ..Bounds::default() }, ..IntegerType::default() })), false),
+        ])
+    };
+    let builtin = t.namespace.as_deref().is_none_or(|n| n == "pg_catalog");
+    let ty = match (builtin, t.name.as_str()) {
+        (true, "bool") => Type::boolean(),
+        (true, "int2") => Type::integer(16),
+        (true, "int4") => Type::integer(32),
+        (true, "int8") => Type::integer(64),
+        (true, "oid") => Type::unsigned(32),
+        (true, "float4") => return pg_float(8, 23, "float4"),
+        (true, "float8") => return float8(),
+        // With no type modifier: a scale of 0 to 16,383 and below 10^131072 in magnitude.
+        (true, "numeric") => Type::decimal(DecimalType {
+            min_scale: Some(0),
+            max_scale: Some(16383),
+            bounds: Bounds { exclusive_min: Some("-1e131072".into()), exclusive_max: Some("1e131072".into()), ..Bounds::default() },
+            infinity: true,
+            nan: true,
+            ..DecimalType::default()
+        }),
+        (true, "text" | "varchar" | "bpchar" | "name" | "char" | "unknown") => Type::text(),
+        (true, "bytea") => Type::bytes(),
+        (true, "uuid") => Type::uuid(),
+        (true, "date") => Type::new(Kind::Date(DateType { bounds: Bounds::between(DATE_MIN, DATE_MAX), infinity: true })),
+        (true, "timestamp") => Type::new(Kind::DateTime(DateTimeType { tick: MICROSECOND.into(), bounds: Bounds::between("-4713-11-24T00:00:00", "+294276-12-31T23:59:59.999999"), infinity: true })),
+        (true, "timestamptz") => Type::new(Kind::Instant(InstantType { tick: MICROSECOND.into(), zone: None, bounds: Bounds::between("-4713-11-24T00:00:00Z", "+294276-12-31T23:59:59.999999Z"), infinity: true })),
+        (true, "time") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), zone: None, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
+        (true, "timetz") => Type::new(Kind::Time(TimeType { tick: MICROSECOND.into(), zone: Some(Zone::Offset), bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } })),
+        // Infinite intervals came with version 17, which the engine does not tell apart: an
+        // interval may be infinite.
+        (true, "interval") => Type::new(Kind::Duration(DurationType {
+            months: Some(Part { max: Some("P2147483648M".into()) }),
+            days: Some(Part { max: Some("P2147483648D".into()) }),
+            time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT2562047788H54.775808S".into()) }),
+            infinity: true,
+        })),
+        (true, "json" | "jsonb") => Type::json(),
+        (true, "xml") => Type::new(Kind::Xml(XmlType { fragment: true, schemas: None })),
+        (true, "bit" | "varbit") => bits(),
+        (true, "inet" | "cidr") => Type::union(vec![address(4, 32), address(16, 128)], Per::Value),
+        (true, "macaddr") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(6)) })),
+        (true, "macaddr8") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(8)) })),
+        (true, "point") => return point(),
+        (true, "line") => Type::record(vec![Field::new("a", float8(), false), Field::new("b", float8(), false), Field::new("c", float8(), false)]),
+        (true, "lseg") => Type::new(Kind::Array(ArrayType { element: Box::new(Position::non_null(point())), size: Some(Size::exact(2)), any_depth: false })),
+        (true, "box") => Type::record(vec![Field::new("high", point(), false), Field::new("low", point(), false)]),
+        (true, "path") => Type::record(vec![Field::new("closed", Type::boolean(), false), Field::new("points", points(1), false)]),
+        (true, "polygon") => points(1),
+        (true, "circle") => Type::record(vec![Field::new("center", point(), false), Field::new("radius", float8(), false)]),
+        // An extension's types, in whatever schema it was created in.
+        (_, "hstore") => Type::new(Kind::Map(MapType { key: Box::new(Type::text()), value: Box::new(Position::nullable(Type::text())) })),
+        (_, "vector" | "sparsevec") => vector(8, 23),
+        (_, "halfvec") => vector(5, 10),
+        (_, "citext") => Type::text(),
+        (_, "geometry") => Type::new(Kind::Geometry(GeometryType { model: Some(GeometryModel::Planar), ..GeometryType::default() })),
+        (_, "geography") => Type::new(Kind::Geometry(GeometryType { model: Some(GeometryModel::Geodetic), ..GeometryType::default() })),
+        _ => return Type::opaque(name),
+    };
+    ty.named(name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Field, Type};
     use serde_json::json;
 
     /// A `TYPE_QUERY` row for a composite, its columns as a driver hands them back: one decodes
     /// `int8[]` as numbers, another as digit strings.
     fn users_row(oids: Value) -> Vec<Value> {
         vec![json!(90001), json!("users"), json!("c"), json!(0), json!(0), Value::Null, json!("users"), json!(["id", "name", "tags"]), oids, json!([true, false, false])]
+    }
+
+    /// The fifteen columns of TYPE_QUERY for a type with no composite columns.
+    fn row(oid: u32, name: &str, typtype: &str, elem: u32, base: u32, delimiter: &str, namespace: &str, subtype: u32) -> Vec<Value> {
+        vec![json!(oid), json!(name), json!(typtype), json!(elem), json!(base), Value::Null, json!(name), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, json!(delimiter), json!(namespace), json!(subtype)]
     }
 
     #[test]
@@ -482,19 +663,10 @@ mod tests {
                     Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0 },
                 ]
             );
-            let users = Type::Composite {
-                name: "users".into(),
-                fields: vec![
-                    Field { name: "id".into(), ty: Type::Scalar { name: "int8".into() }, nullable: false },
-                    Field { name: "name".into(), ty: Type::Scalar { name: "text".into() }, nullable: true },
-                    Field { name: "tags".into(), ty: Type::Array { of: Box::new(Type::Scalar { name: "text".into() }), nullable_items: None, delimiter: None }, nullable: true },
-                ],
-            };
-            // A stored row of the table holds its NOT NULL; a row value of its type need not.
-            assert_eq!(registry.render_row(90001), users);
-            let Type::Composite { name, fields } = users else { unreachable!() };
-            let built = Type::Composite { name, fields: fields.into_iter().map(|f| Field { nullable: true, ..f }).collect() };
-            assert_eq!(registry.render(90001), built);
+            // A stored row of the table holds its NOT NULL; a row value of its type need not. A
+            // host that does not say the schema leaves the name bare.
+            assert_eq!(registry.render_row(90001).short(), "users{ id: int8, name: text?, tags: text?[]? }");
+            assert_eq!(registry.render(90001).short(), "users{ id: int8?, name: text?, tags: text?[]? }");
         }
     }
 
@@ -504,55 +676,86 @@ mod tests {
         // The seven columns a host that predates the composite columns answers with.
         registry.insert_rows(&[vec![json!(90001), json!("users"), json!("c"), json!(0), json!(0), Value::Null, json!("users")]]);
         assert!(registry.get(90001).unwrap().fields.is_empty());
-        assert_eq!(registry.render(90001), Type::Scalar { name: "record".into() });
+        assert_eq!(registry.render(90001), Type::opaque("record"));
         // `record` itself is a pseudo-type with no columns.
-        assert_eq!(registry.render(2249), Type::Scalar { name: "record".into() });
+        assert_eq!(registry.render(2249), Type::opaque("record"));
     }
 
     #[test]
     fn missing_follows_a_composites_columns() {
         let mut registry = TypeRegistry::with_builtins();
         // `id` is a domain the registry has not seen, `tags` an array of an enum it has not seen.
-        let row = vec![json!(90001), json!("users"), json!("c"), json!(0), json!(0), Value::Null, json!("users"), json!(["id", "tags"]), json!([90002, 90003]), json!([true, false])];
-        registry.insert_rows(&[row]);
+        let users = vec![json!(90001), json!("users"), json!("c"), json!(0), json!(0), Value::Null, json!("users"), json!(["id", "tags"]), json!([90002, 90003]), json!([true, false])];
+        registry.insert_rows(&[users]);
         let mut out = Vec::new();
         registry.missing(90001, &mut out);
         assert_eq!(out, vec![90002, 90003]);
-        registry.insert_rows(&[
-            vec![json!(90002), json!("user_id"), json!("d"), json!(0), json!(20), Value::Null, json!("user_id")],
-            vec![json!(90003), json!("_mood"), json!("b"), json!(90004), json!(0), Value::Null, json!("mood[]")],
-        ]);
+        registry.insert_rows(&[row(90002, "user_id", "d", 0, 20, ",", "public", 0), row(90003, "_mood", "b", 90004, 0, ",", "public", 0)]);
         let mut out = Vec::new();
         registry.missing(90001, &mut out);
         assert_eq!(out, vec![90004]);
-        registry.insert_rows(&[vec![json!(90004), json!("mood"), json!("e"), json!(0), json!(0), json!(["ok", "sad"]), json!("mood")]]);
+        let mut mood = row(90004, "mood", "e", 0, 0, ",", "public", 0);
+        mood[5] = json!(["ok", "sad"]);
+        registry.insert_rows(&[mood]);
         let mut out = Vec::new();
         registry.missing(90001, &mut out);
         assert!(out.is_empty());
-        let Type::Composite { fields, .. } = registry.render(90001) else { panic!("a composite") };
-        assert_eq!(fields[0].ty, Type::Scalar { name: "int8".into() });
-        assert_eq!(fields[1].ty, Type::Array { of: Box::new(Type::Enum { name: "mood".into(), labels: vec!["ok".into(), "sad".into()] }), nullable_items: None, delimiter: None });
+        // A domain is its base type's values under its own name, and an enum is its labels.
+        assert_eq!(registry.render(90001).short(), "users{ id: public.user_id?, tags: (public.mood('ok' | 'sad')?)[]? }");
+        assert_eq!(registry.render(90002), Type::integer(64).named("public.user_id"));
+        assert_eq!(registry.domain_bases(&["public.user_id".to_string(), "public.mood".to_string()]), [("public.user_id".to_string(), "int8".to_string())].into_iter().collect());
     }
 
     #[test]
     fn an_array_carries_its_elements_delimiter_where_it_is_not_a_comma() {
         let mut registry = TypeRegistry::with_builtins();
-        // The thirteen columns of TYPE_QUERY: PostGIS's geometry, its array, a domain over it and
-        // the domain's array. A domain has its base type's delimiter.
-        let row = |oid: u32, name: &str, typtype: &str, elem: u32, base: u32, delimiter: &str| {
-            vec![json!(oid), json!(name), json!(typtype), json!(elem), json!(base), Value::Null, json!(name), Value::Null, Value::Null, Value::Null, Value::Null, Value::Null, json!(delimiter)]
-        };
+        // PostGIS's geometry, its array, a domain over it and the domain's array. A domain has
+        // its base type's delimiter.
         registry.insert_rows(&[
-            row(90001, "geometry", "b", 0, 0, ":"),
-            row(90002, "_geometry", "b", 90001, 0, ","),
-            row(90003, "place", "d", 0, 90001, ":"),
-            row(90004, "_place", "b", 90003, 0, ","),
+            row(90001, "geometry", "b", 0, 0, ":", "public", 0),
+            row(90002, "_geometry", "b", 90001, 0, ",", "public", 0),
+            row(90003, "place", "d", 0, 90001, ":", "public", 0),
+            row(90004, "_place", "b", 90003, 0, ",", "public", 0),
         ]);
-        let geometry = Box::new(Type::Scalar { name: "geometry".into() });
-        assert_eq!(registry.render(90002), Type::Array { of: geometry.clone(), nullable_items: None, delimiter: Some(":".into()) });
-        assert_eq!(registry.render(90004), Type::Array { of: geometry, nullable_items: None, delimiter: Some(":".into()) });
+        assert_eq!(registry.delimiter(90002).as_deref(), Some(":"));
+        assert_eq!(registry.delimiter(90004).as_deref(), Some(":"));
+        assert_eq!(registry.render(90002).short(), "public.geometry?[]");
+        assert_eq!(registry.render(90004).short(), "public.place?[]");
         // A comma, and a host that predates the column, leave it out.
-        assert_eq!(registry.render(1009), Type::Array { of: Box::new(Type::Scalar { name: "text".into() }), nullable_items: None, delimiter: None });
+        assert_eq!(registry.delimiter(1009), None);
+    }
+
+    #[test]
+    fn each_base_type_is_its_values() {
+        let registry = TypeRegistry::with_builtins();
+        let json = |oid: u32| serde_json::to_value(registry.render(oid)).unwrap();
+        assert_eq!(json(oid::INT4), json!({"kind": "integer", "bits": 32, "name": "int4"}));
+        assert_eq!(json(26), json!({"kind": "integer", "bits": 32, "unsigned": true, "name": "oid"}));
+        assert_eq!(json(oid::FLOAT8), json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "name": "float8"}));
+        assert_eq!(json(oid::NUMERIC), json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "name": "numeric"}));
+        assert_eq!(json(oid::DATE), json!({"kind": "date", "min": "-4713-11-24", "max": "+5874897-12-31", "infinity": true, "name": "date"}));
+        assert_eq!(json(oid::TIMESTAMPTZ), json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "name": "timestamptz"}));
+        assert_eq!(json(oid::TIME), json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
+        assert_eq!(registry.render(1560).short(), "bit(boolean[])");
+        assert_eq!(registry.render(869).short(), "inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })");
+        assert_eq!(registry.render(829).short(), "macaddr(=6)");
+        assert_eq!(registry.render(3910), Type::new(Kind::Range(RangeType { subtype: Box::new(registry.render(oid::TIMESTAMPTZ)) })).named("tstzrange"));
+        assert_eq!(registry.render(3615), Type::opaque("tsquery"));
+        assert_eq!(registry.render(oid::JSONB), Type::json().named("jsonb"));
+        for oid in registry.types.keys() {
+            registry.render(*oid).check().unwrap_or_else(|e| panic!("{oid}: {e}"));
+        }
+    }
+
+    #[test]
+    fn an_extensions_types_are_named_with_their_schema() {
+        let mut registry = TypeRegistry::with_builtins();
+        registry.insert_rows(&[row(90001, "vector", "b", 0, 0, ",", "extensions", 0), row(90002, "hstore", "b", 0, 0, ",", "public", 0), row(90003, "ltree", "b", 0, 0, ",", "public", 0), row(90004, "Odd Range", "r", 0, 0, ",", "My Schema", 23)]);
+        assert_eq!(registry.render(90001).short(), "extensions.vector(float(8,23)[])");
+        assert_eq!(serde_json::to_value(registry.render(90001)).unwrap(), json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 8, "mantissa_bits": 23}}, "name": "extensions.vector"}));
+        assert_eq!(registry.render(90002).short(), "public.hstore(text => text?)");
+        assert_eq!(registry.render(90003), Type::opaque("public.ltree"));
+        assert_eq!(registry.render(90004).name.as_deref(), Some("\"My Schema\".\"Odd Range\""));
     }
 
     #[test]

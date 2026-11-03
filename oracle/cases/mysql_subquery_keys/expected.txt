@@ -1,73 +1,73 @@
-alias_column_list.sql: maybeOne (id: int8) -> { pid: int8, t: text }
-alias_column_list_swapped.sql: many (t: text) -> { title: int8, id: text }
-bare_name.sql: maybeOne (id: int8) -> { id: int8, title: text }
-comma_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
-compared_as_number.sql: many () -> { email: text }
-cross_join.sql: many (id: int8) -> { id: int8 }
-distinct.sql: maybeOne (a: int8) -> { author_id: int8 }
-distinct_expression.sql: many (a: int8) -> { author_id: int8, t: text? }
-double_key_exact_literal.sql: maybeOne () -> { id: int8 }
-except_left_keys.sql: maybeOne (id: int8) -> { id: int8, title: text }
-expression.sql: many (id: int4) -> { id: int8, title: text }
-filtered_inside.sql: maybeOne (a: int8, id: int8) -> { id: int8, title: text }
-group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
-group_by_ordinal.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
-group_key_hidden.sql: many (n: int4) -> { author_id: int8, n: int8 }
-intersect_left_keys.sql: maybeOne (id: int8) -> { id: int8, title: text }
-join_double_column.sql: many (id: int8) -> { name: text }
-join_many.sql: many (id: int8) -> { id: int8, tag: text }
-join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
-join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
-join_text_column.sql: many (id: int8) -> { title: text, name: text }
-join_unpinned.sql: many (id: int8) -> { title: text, name: text }
-joined_on_key.sql: maybeOne (id: int8) -> { title: text, name: text }
-key_double_arithmetic.sql: many (x: float8) -> { id: int8 }
-key_double_cast.sql: many (x: float8) -> { id: int8 }
-key_double_constant_cast.sql: maybeOne () -> { id: int8 }
-key_double_function.sql: many (x: float8) -> { id: int8 }
-key_double_literal.sql: maybeOne () -> { id: int8 }
+alias_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text }
+alias_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text }
+bare_name.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+comma_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+compared_as_number.sql: many () -> { email: varchar }
+cross_join.sql: many (id: bigint) -> { id: bigint }
+distinct.sql: at_most_one (a: bigint) -> { author_id: bigint }
+distinct_expression.sql: many (a: bigint) -> { author_id: bigint, t: text? }
+double_key_exact_literal.sql: at_most_one () -> { id: bigint }
+except_left_keys.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+expression.sql: many (id: int32) -> { id: bigint, title: text }
+filtered_inside.sql: at_most_one (a: bigint, id: bigint) -> { id: bigint, title: text }
+group_by.sql: at_most_one (a: bigint) -> { author_id: bigint, n: bigint }
+group_by_ordinal.sql: at_most_one (a: bigint) -> { author_id: bigint, n: bigint }
+group_key_hidden.sql: many (n: int32) -> { author_id: bigint, n: bigint }
+intersect_left_keys.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+join_double_column.sql: many (id: bigint) -> { name: varchar }
+join_many.sql: many (id: bigint) -> { id: bigint, tag: varchar }
+join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text, name: varchar }
+join_text_column.sql: many (id: bigint) -> { title: text, name: varchar }
+join_unpinned.sql: many (id: bigint) -> { title: text, name: varchar }
+joined_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+key_double_arithmetic.sql: many (x: double) -> { id: bigint }
+key_double_cast.sql: many (x: double) -> { id: bigint }
+key_double_constant_cast.sql: at_most_one () -> { id: bigint }
+key_double_function.sql: many (x: double) -> { id: bigint }
+key_double_literal.sql: at_most_one () -> { id: bigint }
 key_dropped.sql: many (t: text) -> { title: text }
-key_exact_function.sql: maybeOne (x: int4) -> { id: int8 }
-key_fixed_inside.sql: maybeOne (p: int8, t: text) -> { tag: text }
-key_inside.sql: maybeOne (id: int8) -> { id: int8, title: text }
-key_not_fixed_inside.sql: many (p: int8, t: text) -> { tag: text }
-lateral_pinned.sql: maybeOne (u: int8, p: int4) -> { name: text, title: text }
-lateral_source.sql: many (id: int4) -> { id: int8 }
-left_join_many.sql: many (id: int8) -> { id: int8 }
-left_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text? }
-left_join_pinned.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text? }
-limit_inside.sql: maybeOne (id: int8) -> { id: int8, title: text }
-nested.sql: maybeOne (id: int8) -> { id: int8, title: text }
-not_a_key.sql: many (e: text) -> { id: int8, email: text }
-null_extended_side.sql: many (id: int8) -> { id: int8?, name: text }
-recursive.sql: many (id: int4) -> { id: int8 }
-renamed.sql: maybeOne (id: int8) -> { post_id: int8, title: text }
-right_join_on_key.sql: maybeOne (id: int8) -> { title: text, name: text? }
-rollup.sql: many (a: int8) -> { author_id: int8?, n: int8 }
-second_key.sql: maybeOne (e: text) -> { id: int8, email: text }
-self_join_nonkey.sql: many (id: int8) -> { id: int8 }
-star.sql: maybeOne (id: int8) -> { id: int8, author_id: int8, title: text }
-straight_join.sql: maybeOne (id: int8) -> { title: text, name: text }
-subquery.sql: maybeOne (id: int8) -> { id: int8, title: text }
-two_subqueries.sql: maybeOne (id: int8) -> { title: text, name: text }
-two_withs.sql: maybeOne (id: int8) -> { id: int8, title: text }
-union_all.sql: many (id: int8) -> { id: int8 }
-union_distinct.sql: maybeOne (id: int8) -> { id: int8 }
-union_text.sql: many (k: text) -> { k: text }
-view.sql: maybeOne (id: int8) -> { id: int8, title: text }
-view_column_list.sql: maybeOne (id: int8) -> { post_id: int8, headline: text }
-view_group_by.sql: maybeOne (a: int8) -> { author_id: int8, n: int8 }
-view_join.sql: maybeOne (id: int8) -> { id: int8, title: text, name: text }
-view_join_many.sql: many (id: int8) -> { id: int8, tag: text }
-view_merged.sql: maybeOne (id: int8) -> { id: int8, title: text }
-view_of_view.sql: maybeOne (id: int8) -> { id: int8, title: text }
-view_swapped_columns.sql: many (id: text) -> { title: int8, id: text }
-view_swapped_key.sql: maybeOne (id: int8) -> { title: int8, id: text }
-view_temptable.sql: maybeOne (id: int8) -> { id: int8, title: text }
-window_inside.sql: maybeOne (id: int8) -> { id: int8, rn: int8 }
-with_column_list.sql: maybeOne (id: int8) -> { pid: int8, t: text }
-with_column_list_swapped.sql: many (t: text) -> { title: int8, id: text }
-with_joined.sql: maybeOne (u: int8, id: int8) -> { title: text, name: text }
-with_query.sql: maybeOne (id: int8) -> { id: int8, title: text }
-with_shadows_table.sql: maybeOne (id: int8) -> { id: int8, title: text }
-with_sibling_shadow.sql: maybeOne (id: int8) -> { id: int8 }
+key_exact_function.sql: at_most_one (x: int32) -> { id: bigint }
+key_fixed_inside.sql: at_most_one (p: bigint, t: varchar) -> { tag: varchar }
+key_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+key_not_fixed_inside.sql: many (p: bigint, t: varchar) -> { tag: varchar }
+lateral_pinned.sql: at_most_one (u: bigint, p: int32) -> { name: varchar, title: text }
+lateral_source.sql: many (id: int32) -> { id: bigint }
+left_join_many.sql: many (id: bigint) -> { id: bigint }
+left_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar? }
+left_join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text, name: varchar? }
+limit_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+nested.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+not_a_key.sql: many (e: varchar) -> { id: bigint, email: varchar }
+null_extended_side.sql: many (id: bigint) -> { id: bigint?, name: varchar }
+recursive.sql: many (id: int32) -> { id: bigint }
+renamed.sql: at_most_one (id: bigint) -> { post_id: bigint, title: text }
+right_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar? }
+rollup.sql: many (a: bigint) -> { author_id: bigint?, n: bigint }
+second_key.sql: at_most_one (e: varchar) -> { id: bigint, email: varchar }
+self_join_nonkey.sql: many (id: bigint) -> { id: bigint }
+star.sql: at_most_one (id: bigint) -> { id: bigint, author_id: bigint, title: text }
+straight_join.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+subquery.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+two_subqueries.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+two_withs.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+union_all.sql: many (id: bigint) -> { id: bigint }
+union_distinct.sql: at_most_one (id: bigint) -> { id: bigint }
+union_text.sql: many (k: varchar) -> { k: varchar }
+view.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+view_column_list.sql: at_most_one (id: bigint) -> { post_id: bigint, headline: text }
+view_group_by.sql: at_most_one (a: bigint) -> { author_id: bigint, n: bigint }
+view_join.sql: at_most_one (id: bigint) -> { id: bigint, title: text, name: varchar }
+view_join_many.sql: many (id: bigint) -> { id: bigint, tag: varchar }
+view_merged.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+view_of_view.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+view_swapped_columns.sql: many (id: text) -> { title: bigint, id: text }
+view_swapped_key.sql: at_most_one (id: bigint) -> { title: bigint, id: text }
+view_temptable.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+window_inside.sql: at_most_one (id: bigint) -> { id: bigint, rn: bigint }
+with_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text }
+with_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text }
+with_joined.sql: at_most_one (u: bigint, id: bigint) -> { title: text, name: varchar }
+with_query.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+with_shadows_table.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+with_sibling_shadow.sql: at_most_one (id: bigint) -> { id: bigint }

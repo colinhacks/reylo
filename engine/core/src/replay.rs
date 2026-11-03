@@ -230,7 +230,7 @@ mod tests {
             let (described, version) = (described?, version?);
             let described = described.unwrap_or_else(|e| e.message);
             let version = version.map(|rows| rows[0][0].to_string()).unwrap_or_else(|e| e.message);
-            Some(crate::analysis::bare_of(sql, Dialect::Postgres, vec![Diagnostic { message: format!("{described} | {version}"), start: 0, length: 0, code: 0 }]))
+            Some(crate::analysis::bare_of(sql, Dialect::Postgres, vec![Diagnostic { message: format!("{described} | {version}"), start: 0, length: 0, code: 0, server_code: None }]))
         }
     }
 

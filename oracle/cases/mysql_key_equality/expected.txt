@@ -1,172 +1,172 @@
-bigint_arithmetic.sql: maybeOne (id: int4) -> { id: int8 }
-bigint_float_literal.sql: maybeOne () -> { id: int8 }
-bigint_param.sql: maybeOne (id: int8) -> { id: int8 }
-bigint_param_scan.sql: maybeOne (id: int8) -> { id: int8 }
-bigint_unsigned.sql: maybeOne (u: int8) -> { u: int8 }
-bigint_unsigned_scan.sql: maybeOne (u: int8) -> { u: int8 }
-binary_param.sql: maybeOne (fixed: bytea) -> { fixed: bytea }
-bit64_arithmetic.sql: maybeOne (n: int4) -> { bits64: bytea }
-bit64_float.sql: maybeOne () -> { bits64: bytea }
-bit64_param.sql: maybeOne (bits: bytea) -> { bits64: bytea }
-bit64_scan.sql: maybeOne (bits: bytea) -> { bits64: bytea }
-bit_literal.sql: many () -> { bits: bytea }
-bit_number.sql: maybeOne () -> { bits: bytea }
-bit_param.sql: maybeOne (bits: bytea) -> { bits: bytea }
-bit_scan.sql: maybeOne (bits: bytea) -> { bits: bytea }
-char_padded.sql: maybeOne (v: text) -> { c: text }
-char_padded_scan.sql: maybeOne (v: text) -> { c: text }
-collation_bin.sql: maybeOne (v: text) -> { bin: text }
-collation_bin_convert.sql: many (v: text) -> { bin: text }
-collation_bin_explicit.sql: many (v: text) -> { bin: text }
-collation_bin_introducer.sql: many () -> { bin: text }
-collation_bin_lower.sql: maybeOne (v: text) -> { bin: text }
-collation_bin_scan.sql: maybeOne (v: text) -> { bin: text }
-collation_ci.sql: maybeOne (v: text) -> { ci: text }
-collation_ci_scan.sql: maybeOne (v: text) -> { ci: text }
-collation_cs.sql: maybeOne (v: text) -> { cs: text }
-collation_cs_scan.sql: maybeOne (v: text) -> { cs: text }
-collation_cs_user.sql: many () -> { cs: text }
-collation_latin.sql: maybeOne (v: text) -> { latin: text }
-collation_latin_scan.sql: maybeOne (v: text) -> { latin: text }
-collation_pad.sql: maybeOne (v: text) -> { pad: text }
-collation_pad_scan.sql: maybeOne (v: text) -> { pad: text }
-composite_both.sql: maybeOne (tenant: int4, slug: text) -> { id: int4 }
-composite_first.sql: many (tenant: int4) -> { id: int4 }
-composite_mixed_class.sql: many (tenant: int4) -> { id: int4 }
-composite_second.sql: many (slug: text) -> { id: int4 }
-date_number.sql: maybeOne () -> { day: date }
-date_param.sql: maybeOne (day: date) -> { day: date }
-date_scan.sql: maybeOne (day: date) -> { day: date }
-date_zero.sql: maybeOne () -> { day: date }
-datetime_arithmetic.sql: maybeOne (n: int4) -> { at: timestamp }
-datetime_concat.sql: maybeOne (a: text, b: text) -> { at: timestamp }
-datetime_micro.sql: maybeOne (at: timestamp) -> { at6: timestamp }
-datetime_micro_decimal.sql: maybeOne () -> { at6: timestamp }
-datetime_micro_double.sql: maybeOne () -> { at6: timestamp }
-datetime_micro_number.sql: maybeOne (n: int4) -> { at6: timestamp }
-datetime_micro_scan.sql: maybeOne (at: timestamp) -> { at6: timestamp }
-datetime_now.sql: many () -> { at: timestamp }
-datetime_number.sql: maybeOne () -> { at: timestamp }
-datetime_number_scan.sql: maybeOne () -> { at: timestamp }
-datetime_param.sql: maybeOne (at: timestamp) -> { at: timestamp }
-datetime_param_scan.sql: maybeOne (at: timestamp) -> { at: timestamp }
-datetime_pipes.sql: many (at: timestamp) -> { at: timestamp }
-datetime_string.sql: maybeOne () -> { at: timestamp }
-datetime_sysdate.sql: many () -> { at: timestamp }
-datetime_text_function.sql: maybeOne (s: text) -> { at: timestamp }
-decimal_arithmetic.sql: maybeOne (amount: int4) -> { amount: numeric }
-decimal_float_literal.sql: maybeOne () -> { amount: numeric }
-decimal_float_small.sql: maybeOne () -> { amount: numeric }
-decimal_param.sql: maybeOne (amount: numeric) -> { amount: numeric }
-decimal_param_scan.sql: maybeOne (amount: numeric) -> { amount: numeric }
-decimal_string_literal.sql: many () -> { amount: numeric }
-decimal_whole.sql: maybeOne (whole: numeric) -> { whole: numeric }
-decimal_whole_float.sql: maybeOne () -> { whole: numeric }
-decimal_whole_scan.sql: maybeOne (whole: numeric) -> { whole: numeric }
-double_decimal_literal.sql: maybeOne () -> { d: float8 }
-double_param.sql: maybeOne (d: float8) -> { d: float8 }
-double_string_literal.sql: many () -> { d: float8 }
-enum_literal.sql: maybeOne () -> { kind: text }
-enum_number.sql: many () -> { kind: text }
-enum_param.sql: maybeOne (kind: text) -> { kind: text }
-enum_scan.sql: maybeOne (kind: text) -> { kind: text }
-float_decimal_literal.sql: maybeOne () -> { f: float4 }
-float_param.sql: maybeOne (f: float8) -> { f: float4 }
-float_scan.sql: maybeOne (f: float8) -> { f: float4 }
-functional_key.sql: many (email: text) -> { id: int4 }
-functional_key_column.sql: many (email: text) -> { id: int4 }
-int_abs.sql: maybeOne (id: int4) -> { id: int4 }
-int_alias.sql: maybeOne (id: int4) -> { id: int4 }
-int_and_more.sql: maybeOne (id: int4, skip: text) -> { id: int4, name: text }
-int_arithmetic.sql: maybeOne (id: int4) -> { id: int4 }
-int_between.sql: many (lo: int4, hi: int4) -> { id: int4 }
-int_cast_char.sql: many (id: text) -> { id: int4 }
-int_cast_signed.sql: maybeOne (id: int4) -> { id: int4 }
-int_coalesce.sql: many (a: int4, b: int4) -> { id: int4 }
-int_date_literal.sql: many () -> { id: int4 }
-int_decimal_literal.sql: maybeOne () -> { id: int4 }
-int_distinct.sql: maybeOne (id: int4) -> { name: text }
-int_div.sql: maybeOne (a: int4, b: int4) -> { id: int4 }
-int_division.sql: maybeOne (a: int4, b: int4) -> { id: int4 }
-int_double_ampersand.sql: many (id: int4) -> { id: int4 }
-int_float_literal.sql: maybeOne () -> { id: int4 }
-int_for_update.sql: maybeOne (id: int4) -> { id: int4 }
-int_hex_literal.sql: many () -> { id: int4 }
-int_in.sql: many (id: int4) -> { id: int4 }
-int_in_two.sql: many (a: int4, b: int4) -> { id: int4 }
-int_invisible_key.sql: maybeOne (id: int4) -> { id: int4, at: timestamp }
-int_is_true.sql: many (id: int4) -> { id: int4 }
-int_length.sql: maybeOne (s: text) -> { id: int4 }
-int_literal.sql: maybeOne () -> { id: int4 }
-int_lower.sql: many (s: text) -> { id: int4 }
-int_negated.sql: maybeOne (id: int4) -> { id: int4 }
-int_nested.sql: maybeOne (id: int4) -> { id: int4 }
-int_not.sql: many (id: int4) -> { id: int4 }
-int_null_safe.sql: many (id: int4) -> { id: int4 }
-int_or.sql: many (id: int4, name: text) -> { id: int4 }
-int_param.sql: maybeOne (id: int4) -> { id: int4, name: text }
-int_param_reversed.sql: maybeOne (id: int4) -> { id: int4, name: text }
-int_param_scan.sql: maybeOne (id: int4) -> { id: int4, name: text }
-int_pipes.sql: many (id: int4) -> { id: int4 }
-int_product.sql: maybeOne (id: numeric) -> { id: int4 }
-int_rand.sql: many () -> { id: int4 }
-int_round.sql: maybeOne (x: numeric) -> { id: int4 }
-int_string_literal.sql: many () -> { id: int4 }
-int_table_name.sql: maybeOne (id: int4) -> { id: int4 }
-int_true.sql: maybeOne () -> { id: int4 }
-int_twice.sql: maybeOne (a: int4, b: int4) -> { id: int4 }
-int_view.sql: maybeOne (id: int4) -> { id: int4|int8 }
-int_xor.sql: many (id: int4) -> { id: int4 }
-prefix_key.sql: maybeOne (name: text) -> { name: text }
-prefix_key_scan.sql: maybeOne (name: text) -> { name: text }
-set_param.sql: maybeOne (flags: text) -> { flags: text }
-set_scan.sql: maybeOne (flags: text) -> { flags: text }
-system_variable_key.sql: many () -> { id: int4 }
-text_abs.sql: many (n: text) -> { id: int4 }
-text_arithmetic.sql: many (n: int4) -> { id: int4 }
-text_cast_binary.sql: maybeOne (e: bytea) -> { id: int4 }
+bigint_arithmetic.sql: at_most_one (id: int32) -> { id: bigint }
+bigint_float_literal.sql: at_most_one () -> { id: bigint }
+bigint_param.sql: at_most_one (id: bigint) -> { id: bigint }
+bigint_param_scan.sql: at_most_one (id: bigint) -> { id: bigint }
+bigint_unsigned.sql: at_most_one (u: bigint) -> { u: bigint }
+bigint_unsigned_scan.sql: at_most_one (u: bigint) -> { u: bigint }
+binary_param.sql: at_most_one (fixed: varbinary) -> { fixed: binary }
+bit64_arithmetic.sql: at_most_one (n: int32) -> { bits64: bit(boolean[64]) }
+bit64_float.sql: at_most_one () -> { bits64: bit(boolean[64]) }
+bit64_param.sql: at_most_one (bits: bit(boolean[64])) -> { bits64: bit(boolean[64]) }
+bit64_scan.sql: at_most_one (bits: bit(boolean[64])) -> { bits64: bit(boolean[64]) }
+bit_literal.sql: many () -> { bits: bit(boolean[8]) }
+bit_number.sql: at_most_one () -> { bits: bit(boolean[8]) }
+bit_param.sql: at_most_one (bits: bit(boolean[8])) -> { bits: bit(boolean[8]) }
+bit_scan.sql: at_most_one (bits: bit(boolean[8])) -> { bits: bit(boolean[8]) }
+char_padded.sql: at_most_one (v: varchar) -> { c: char }
+char_padded_scan.sql: at_most_one (v: varchar) -> { c: char }
+collation_bin.sql: at_most_one (v: varchar) -> { bin: varchar }
+collation_bin_convert.sql: many (v: varchar) -> { bin: varchar }
+collation_bin_explicit.sql: many (v: varchar) -> { bin: varchar }
+collation_bin_introducer.sql: many () -> { bin: varchar }
+collation_bin_lower.sql: at_most_one (v: varchar) -> { bin: varchar }
+collation_bin_scan.sql: at_most_one (v: varchar) -> { bin: varchar }
+collation_ci.sql: at_most_one (v: varchar) -> { ci: varchar }
+collation_ci_scan.sql: at_most_one (v: varchar) -> { ci: varchar }
+collation_cs.sql: at_most_one (v: varchar) -> { cs: varchar }
+collation_cs_scan.sql: at_most_one (v: varchar) -> { cs: varchar }
+collation_cs_user.sql: many () -> { cs: varchar }
+collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar }
+collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar }
+collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar }
+collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar }
+composite_both.sql: at_most_one (tenant: int32, slug: varchar) -> { id: int }
+composite_first.sql: many (tenant: int32) -> { id: int }
+composite_mixed_class.sql: many (tenant: int32) -> { id: int }
+composite_second.sql: many (slug: varchar) -> { id: int }
+date_number.sql: at_most_one () -> { day: date }
+date_param.sql: at_most_one (day: date) -> { day: date }
+date_scan.sql: at_most_one (day: date) -> { day: date }
+date_zero.sql: at_most_one () -> { day: date }
+datetime_arithmetic.sql: at_most_one (n: int32) -> { at: datetime }
+datetime_concat.sql: at_most_one (a: varchar, b: varchar) -> { at: datetime }
+datetime_micro.sql: at_most_one (at: datetime) -> { at6: datetime }
+datetime_micro_decimal.sql: at_most_one () -> { at6: datetime }
+datetime_micro_double.sql: at_most_one () -> { at6: datetime }
+datetime_micro_number.sql: at_most_one (n: int32) -> { at6: datetime }
+datetime_micro_scan.sql: at_most_one (at: datetime) -> { at6: datetime }
+datetime_now.sql: many () -> { at: datetime }
+datetime_number.sql: at_most_one () -> { at: datetime }
+datetime_number_scan.sql: at_most_one () -> { at: datetime }
+datetime_param.sql: at_most_one (at: datetime) -> { at: datetime }
+datetime_param_scan.sql: at_most_one (at: datetime) -> { at: datetime }
+datetime_pipes.sql: many (at: datetime) -> { at: datetime }
+datetime_string.sql: at_most_one () -> { at: datetime }
+datetime_sysdate.sql: many () -> { at: datetime }
+datetime_text_function.sql: at_most_one (s: varchar) -> { at: datetime }
+decimal_arithmetic.sql: at_most_one (amount: int32) -> { amount: decimal }
+decimal_float_literal.sql: at_most_one () -> { amount: decimal }
+decimal_float_small.sql: at_most_one () -> { amount: decimal }
+decimal_param.sql: at_most_one (amount: decimal) -> { amount: decimal }
+decimal_param_scan.sql: at_most_one (amount: decimal) -> { amount: decimal }
+decimal_string_literal.sql: many () -> { amount: decimal }
+decimal_whole.sql: at_most_one (whole: decimal) -> { whole: decimal }
+decimal_whole_float.sql: at_most_one () -> { whole: decimal }
+decimal_whole_scan.sql: at_most_one (whole: decimal) -> { whole: decimal }
+double_decimal_literal.sql: at_most_one () -> { d: double }
+double_param.sql: at_most_one (d: double) -> { d: double }
+double_string_literal.sql: many () -> { d: double }
+enum_literal.sql: at_most_one () -> { kind: enum }
+enum_number.sql: many () -> { kind: enum }
+enum_param.sql: at_most_one (kind: varchar) -> { kind: enum }
+enum_scan.sql: at_most_one (kind: varchar) -> { kind: enum }
+float_decimal_literal.sql: at_most_one () -> { f: float }
+float_param.sql: at_most_one (f: double) -> { f: float }
+float_scan.sql: at_most_one (f: double) -> { f: float }
+functional_key.sql: many (email: varchar) -> { id: int }
+functional_key_column.sql: many (email: varchar) -> { id: int }
+int_abs.sql: at_most_one (id: int32) -> { id: int }
+int_alias.sql: at_most_one (id: int32) -> { id: int }
+int_and_more.sql: at_most_one (id: int32, skip: varchar) -> { id: int, name: varchar }
+int_arithmetic.sql: at_most_one (id: int32) -> { id: int }
+int_between.sql: many (lo: int32, hi: int32) -> { id: int }
+int_cast_char.sql: many (id: varchar) -> { id: int }
+int_cast_signed.sql: at_most_one (id: int32) -> { id: int }
+int_coalesce.sql: many (a: int32, b: int32) -> { id: int }
+int_date_literal.sql: many () -> { id: int }
+int_decimal_literal.sql: at_most_one () -> { id: int }
+int_distinct.sql: at_most_one (id: int32) -> { name: varchar }
+int_div.sql: at_most_one (a: int32, b: int32) -> { id: int }
+int_division.sql: at_most_one (a: int32, b: int32) -> { id: int }
+int_double_ampersand.sql: many (id: int32) -> { id: int }
+int_float_literal.sql: at_most_one () -> { id: int }
+int_for_update.sql: at_most_one (id: int32) -> { id: int }
+int_hex_literal.sql: many () -> { id: int }
+int_in.sql: many (id: int32) -> { id: int }
+int_in_two.sql: many (a: int32, b: int32) -> { id: int }
+int_invisible_key.sql: at_most_one (id: int32) -> { id: int, at: timestamp }
+int_is_true.sql: many (id: int32) -> { id: int }
+int_length.sql: at_most_one (s: varchar) -> { id: int }
+int_literal.sql: at_most_one () -> { id: int }
+int_lower.sql: many (s: varchar) -> { id: int }
+int_negated.sql: at_most_one (id: int32) -> { id: int }
+int_nested.sql: at_most_one (id: int32) -> { id: int }
+int_not.sql: many (id: int32) -> { id: int }
+int_null_safe.sql: many (id: int32) -> { id: int }
+int_or.sql: many (id: int32, name: varchar) -> { id: int }
+int_param.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+int_param_reversed.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+int_param_scan.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+int_pipes.sql: many (id: int32) -> { id: int }
+int_product.sql: at_most_one (id: decimal) -> { id: int }
+int_rand.sql: many () -> { id: int }
+int_round.sql: at_most_one (x: decimal) -> { id: int }
+int_string_literal.sql: many () -> { id: int }
+int_table_name.sql: at_most_one (id: int32) -> { id: int }
+int_true.sql: at_most_one () -> { id: int }
+int_twice.sql: at_most_one (a: int32, b: int32) -> { id: int }
+int_view.sql: at_most_one (id: int32) -> { id: either(int, bigint) }
+int_xor.sql: many (id: int32) -> { id: int }
+prefix_key.sql: at_most_one (name: varchar) -> { name: varchar }
+prefix_key_scan.sql: at_most_one (name: varchar) -> { name: varchar }
+set_param.sql: at_most_one (flags: varchar) -> { flags: set{text} }
+set_scan.sql: at_most_one (flags: varchar) -> { flags: set{text} }
+system_variable_key.sql: many () -> { id: int }
+text_abs.sql: many (n: varchar) -> { id: int }
+text_arithmetic.sql: many (n: int32) -> { id: int }
+text_cast_binary.sql: at_most_one (e: varbinary) -> { id: int }
 text_cast_char.sql: many (e: unknown) -> {  } !! reylo6: Illegal mix of collations (utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_unicode_ci,IMPLICIT) for operation '=' (ER_CANT_AGGREGATE_2COLLATIONS)
-text_cast_signed.sql: many (e: int4) -> { id: int4 }
-text_collate.sql: many (e: text) -> { id: int4 }
-text_concat.sql: maybeOne (a: text, b: text) -> { id: int4 }
-text_from_base64.sql: maybeOne (e: text) -> { id: int4 }
-text_hex_literal.sql: maybeOne () -> { id: int4 }
-text_literal.sql: maybeOne () -> { id: int4 }
-text_lower.sql: maybeOne (e: text) -> { id: int4 }
-text_md5.sql: many (e: text) -> { id: int4 }
-text_nullable_key.sql: maybeOne (nick: text) -> { id: int4 }
-text_nullable_key_is_null.sql: many () -> { id: int4 }
-text_nullable_key_null_safe.sql: many (nick: text) -> { id: int4 }
-text_number_literal.sql: many () -> { id: int4 }
-text_param.sql: maybeOne (email: text) -> { id: int4 }
-text_param_scan.sql: maybeOne (email: text) -> { id: int4 }
-text_substring.sql: many (e: text) -> { id: int4 }
-text_trim.sql: many (e: text) -> { id: int4 }
-text_true.sql: many () -> { id: int4 }
-text_user.sql: many () -> { id: int4 }
-text_uuid.sql: many () -> { id: int4 }
-text_zero_literal.sql: many () -> { id: int4 }
-time_micro_double.sql: maybeOne () -> { t6: time }
-time_micro_scan.sql: maybeOne (t: time) -> { t6: time }
-time_number.sql: maybeOne () -> { t: time }
-time_param.sql: maybeOne (t: time) -> { t: time }
-time_scan.sql: maybeOne (t: time) -> { t: time }
-timestamp_in_composite.sql: many (tenant: int4, at: timestamp) -> { tenant: int4, at: timestamp }
-timestamp_in_composite_scan.sql: many (tenant: int4, at: timestamp) -> { tenant: int4, at: timestamp }
-timestamp_invisible_key.sql: many (at: timestamp) -> { id: int4, at: timestamp }
-timestamp_param.sql: many (ts: timestamp) -> { ts: timestamp }
-timestamp_param_scan.sql: many (ts: timestamp) -> { ts: timestamp }
+text_cast_signed.sql: many (e: int32) -> { id: int }
+text_collate.sql: many (e: varchar) -> { id: int }
+text_concat.sql: at_most_one (a: varchar, b: varchar) -> { id: int }
+text_from_base64.sql: at_most_one (e: varchar) -> { id: int }
+text_hex_literal.sql: at_most_one () -> { id: int }
+text_literal.sql: at_most_one () -> { id: int }
+text_lower.sql: at_most_one (e: varchar) -> { id: int }
+text_md5.sql: many (e: varchar) -> { id: int }
+text_nullable_key.sql: at_most_one (nick: varchar) -> { id: int }
+text_nullable_key_is_null.sql: many () -> { id: int }
+text_nullable_key_null_safe.sql: many (nick: varchar) -> { id: int }
+text_number_literal.sql: many () -> { id: int }
+text_param.sql: at_most_one (email: varchar) -> { id: int }
+text_param_scan.sql: at_most_one (email: varchar) -> { id: int }
+text_substring.sql: many (e: varchar) -> { id: int }
+text_trim.sql: many (e: varchar) -> { id: int }
+text_true.sql: many () -> { id: int }
+text_user.sql: many () -> { id: int }
+text_uuid.sql: many () -> { id: int }
+text_zero_literal.sql: many () -> { id: int }
+time_micro_double.sql: at_most_one () -> { t6: time }
+time_micro_scan.sql: at_most_one (t: time) -> { t6: time }
+time_number.sql: at_most_one () -> { t: time }
+time_param.sql: at_most_one (t: time) -> { t: time }
+time_scan.sql: at_most_one (t: time) -> { t: time }
+timestamp_in_composite.sql: many (tenant: int32, at: datetime) -> { tenant: int, at: timestamp }
+timestamp_in_composite_scan.sql: many (tenant: int32, at: datetime) -> { tenant: int, at: timestamp }
+timestamp_invisible_key.sql: many (at: datetime) -> { id: int, at: timestamp }
+timestamp_param.sql: many (ts: datetime) -> { ts: timestamp }
+timestamp_param_scan.sql: many (ts: datetime) -> { ts: timestamp }
 timestamp_string.sql: many () -> { ts: timestamp }
 timestamp_string_scan.sql: many () -> { ts: timestamp }
-varbinary_literal.sql: maybeOne () -> { raw: bytea }
-varbinary_number.sql: many () -> { raw: bytea }
-varbinary_param.sql: maybeOne (raw: bytea) -> { raw: bytea }
-varbinary_scan.sql: maybeOne (raw: bytea) -> { raw: bytea }
-variable_integer_key.sql: many () -> { id: int4 }
-variable_quoted_text_key.sql: many () -> { id: int4 }
-variable_text_key.sql: many () -> { id: int4 }
-variable_unset.sql: many () -> { id: int4 }
-year_param.sql: maybeOne (y: int4) -> { y: int2 }
-year_scan.sql: maybeOne (y: int4) -> { y: int2 }
-year_string.sql: many () -> { y: int2 }
-year_two_digits.sql: maybeOne () -> { y: int2 }
+varbinary_literal.sql: at_most_one () -> { raw: varbinary }
+varbinary_number.sql: many () -> { raw: varbinary }
+varbinary_param.sql: at_most_one (raw: varbinary) -> { raw: varbinary }
+varbinary_scan.sql: at_most_one (raw: varbinary) -> { raw: varbinary }
+variable_integer_key.sql: many () -> { id: int }
+variable_quoted_text_key.sql: many () -> { id: int }
+variable_text_key.sql: many () -> { id: int }
+variable_unset.sql: many () -> { id: int }
+year_param.sql: at_most_one (y: int32) -> { y: year(0..2155) }
+year_scan.sql: at_most_one (y: int32) -> { y: year(0..2155) }
+year_string.sql: many () -> { y: year(0..2155) }
+year_two_digits.sql: at_most_one () -> { y: year(0..2155) }

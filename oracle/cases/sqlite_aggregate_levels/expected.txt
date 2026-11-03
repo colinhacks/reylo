@@ -1,24 +1,24 @@
-bare_middle_nested.sql: many () -> { n: integer? }
-bare_outer.sql: many () -> { n: integer? }
-bare_outer_derived.sql: many () -> { n: integer? }
-bare_outer_derived_item.sql: many () -> { n: integer? }
-bare_outer_expression.sql: many () -> { n: integer? }
-bare_outer_filter.sql: many () -> { n: integer? }
-bare_outer_json.sql: many () -> { names: [text]? }
-bare_outer_json_object.sql: many () -> { names: [{ name: text }]? }
-bare_outer_limit.sql: many () -> { n: integer? }
-bare_outer_nested.sql: many () -> { n: integer? }
-bare_outer_total.sql: many () -> { n: real? }
-bare_outer_using.sql: many () -> { n: integer? }
-bare_outer_with.sql: many () -> { n: integer? }
-bare_own.sql: many () -> { n: integer }
-bare_own_derived.sql: many () -> { n: integer }
-bare_own_json.sql: many () -> { titles: [text] }
-bare_own_key.sql: many () -> { id: integer, n: integer }
-bare_own_limit.sql: many () -> { n: integer }
-bare_own_mixed.sql: many () -> { n: integer }
-bare_own_total.sql: many () -> { n: real }
-bare_own_using.sql: many () -> { n: integer }
-bare_own_with.sql: many () -> { n: integer }
-no_column.sql: many () -> { n: integer }
-qualified_outer_json.sql: many () -> { names: [text]? }
+bare_middle_nested.sql: many () -> { n: int64? }
+bare_outer.sql: many () -> { n: int64? }
+bare_outer_derived.sql: many () -> { n: int64? }
+bare_outer_derived_item.sql: many () -> { n: int64? }
+bare_outer_expression.sql: many () -> { n: int64? }
+bare_outer_filter.sql: many () -> { n: int64? }
+bare_outer_json.sql: many () -> { names: json text(utf8)[]? }
+bare_outer_json_object.sql: many () -> { names: json ({ name: text(utf8) })[]? }
+bare_outer_limit.sql: many () -> { n: int64? }
+bare_outer_nested.sql: many () -> { n: int64? }
+bare_outer_total.sql: many () -> { n: float(11,52)? }
+bare_outer_using.sql: many () -> { n: int64? }
+bare_outer_with.sql: many () -> { n: int64? }
+bare_own.sql: many () -> { n: int64 }
+bare_own_derived.sql: many () -> { n: int64 }
+bare_own_json.sql: many () -> { titles: json text(utf8)[] }
+bare_own_key.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+bare_own_limit.sql: many () -> { n: int64 }
+bare_own_mixed.sql: many () -> { n: int64 }
+bare_own_total.sql: many () -> { n: float(11,52) }
+bare_own_using.sql: many () -> { n: int64 }
+bare_own_with.sql: many () -> { n: int64 }
+no_column.sql: many () -> { n: int64 }
+qualified_outer_json.sql: many () -> { names: json text(utf8)[]? }

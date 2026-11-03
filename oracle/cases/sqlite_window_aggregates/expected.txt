@@ -1,23 +1,23 @@
-aggregate_family.sql: many () -> { first_title: text, titles: text?, joined: text?, notes: text?, note_list: [text?], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
-around_current.sql: many () -> { rows_around: integer, groups_back: integer, rest: integer, running: integer }
-chained_windows.sql: many () -> { top: integer }
-copied_window.sql: many () -> { around: integer, before_row: integer? }
-count_window.sql: many () -> { n: integer, t: real }
-exclusions.sql: many () -> { without_row: integer?, without_group: integer?, without_ties: integer, with_all: integer }
-filtered.sql: many () -> { top: integer?, plain_top: integer? }
-following_frame.sql: many () -> { ahead: integer? }
-left_joined.sql: many () -> { name: text, top: integer? }
-monthly_running.sql: many () -> { month: text?, busiest: integer, running: integer? }
-named_window.sql: many () -> { top: integer, titles: text? }
-named_window_framed.sql: many () -> { ahead: integer? }
-nullable_argument.sql: many () -> { top: real?, first_note: text? }
-param_offsets.sql: many (back: unknown, ahead: unknown) -> { around: integer }
-partition_max.sql: many () -> { last_title: text }
-plain_max.sql: one () -> { top: integer? }
-preceding_end.sql: many () -> { before_row: integer? }
-range_offsets.sql: many () -> { by_score: integer, by_rank: integer, by_text: integer }
-running_max.sql: many () -> { running: text }
-subquery_window.sql: many () -> { name: text, own: integer? }
-sums.sql: many () -> { total: integer?, mean: real? }
-where_tested.sql: many () -> { last_note: text }
-whole_min.sql: many () -> { least: integer }
+aggregate_family.sql: many () -> { first_title: text(utf8), titles: text(utf8)?, joined: text(utf8)?, notes: text(utf8)?, note_list: json text(utf8)?[], by_title: json {"type":"object","additionalProperties":{"type":["string","null"]}} }
+around_current.sql: many () -> { rows_around: int64, groups_back: int64, rest: int64, running: int64 }
+chained_windows.sql: many () -> { top: int64 }
+copied_window.sql: many () -> { around: int64, before_row: int64? }
+count_window.sql: many () -> { n: int64, t: float(11,52) }
+exclusions.sql: many () -> { without_row: int64?, without_group: int64?, without_ties: int64, with_all: int64 }
+filtered.sql: many () -> { top: int64?, plain_top: int64? }
+following_frame.sql: many () -> { ahead: int64? }
+left_joined.sql: many () -> { name: TEXT(text(utf8) | bytes), top: int64? }
+monthly_running.sql: many () -> { month: text(utf8)?, busiest: int64, running: int64? }
+named_window.sql: many () -> { top: int64, titles: text(utf8)? }
+named_window_framed.sql: many () -> { ahead: int64? }
+nullable_argument.sql: many () -> { top: float(11,52)?, first_note: text(utf8)? }
+param_offsets.sql: many (back: unknown, ahead: unknown) -> { around: int64 }
+partition_max.sql: many () -> { last_title: text(utf8) }
+plain_max.sql: one () -> { top: int64? }
+preceding_end.sql: many () -> { before_row: int64? }
+range_offsets.sql: many () -> { by_score: int64, by_rank: int64, by_text: int64 }
+running_max.sql: many () -> { running: text(utf8) }
+subquery_window.sql: many () -> { name: TEXT(text(utf8) | bytes), own: int64? }
+sums.sql: many () -> { total: int64?, mean: float(11,52)? }
+where_tested.sql: many () -> { last_note: text(utf8) }
+whole_min.sql: many () -> { least: int64 }

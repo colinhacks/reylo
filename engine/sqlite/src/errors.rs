@@ -5,6 +5,7 @@
 //! table and the indexes of expressions of the tables it writes. A CHECK's name is not in the
 //! catalog, so a CHECK's error is not narrowed.
 
+use reylo_engine_core::types::StatementKind;
 use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
@@ -50,11 +51,11 @@ fn literal(s: &str) -> String {
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
     let written: Vec<String> = tables.write.iter().map(|t| literal(t.rsplit('.').next().unwrap_or(t))).collect();
-    if analysis.kind != "select" && written.is_empty() {
+    if analysis.kind != Some(StatementKind::Select) && written.is_empty() {
         return Some(None);
     }
     // An INSERT changes no key but as a REPLACE, which deletes, or through an upsert that updates.
-    let cascades = !written.is_empty() && (analysis.kind != "insert" || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]));
+    let cascades = !written.is_empty() && (analysis.kind != Some(StatementKind::Insert) || has_word(&analysis.rewritten.sql, Dialect::Sqlite, &["update", "replace"]));
     let query = ERRORS_QUERY.replace("{written}", &if written.is_empty() { "null".to_string() } else { written.join(", ") }).replace("{cascades}", if cascades { "1" } else { "0" });
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };

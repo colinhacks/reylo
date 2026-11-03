@@ -11,7 +11,7 @@ use crate::host::{Host, Lazy};
 use crate::nulls::{self, Ctx, Out};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
-use reylo_engine_core::types::Type;
+use reylo_engine_core::types::{Cardinality, StatementKind, Type};
 use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
@@ -38,7 +38,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         Ok(lexed) => lexed,
         Err(bare) => return Some(bare),
     };
-    let whole = |message: String, code: u32| Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code }]));
+    let whole = |message: String, code: u32| Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, vec![Diagnostic { message, start: 0, length: sql.trim_end().len().max(1), code, server_code: None }]));
     let statement = match lex::one_statement(sql, &lexed, KINDS) {
         Ok(statement) => statement,
         Err(message) => return whole(message, 10),
@@ -48,7 +48,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         if let Some(k) = lexed.params.iter().enumerate().position(|(k, name)| name.parse::<usize>() != Ok(k + 1)) {
             let at = lexed.placeholders.iter().find(|p| p.name == lexed.params[k]).map_or((0, sql.trim_end().len()), |p| (p.start, p.end - p.start));
             let message = format!("DuckDB numbers parameters from 1 without a gap, and this statement has no ${}: number them in order", k + 1);
-            return Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, vec![Diagnostic { message, start: at.0, length: at.1.max(1), code: 1 }]));
+            return Some(reylo_engine_core::analysis::bare(sql, &lexed, Dialect::Duckdb, vec![Diagnostic { message, start: at.0, length: at.1.max(1), code: 1, server_code: None }]));
         }
     }
     let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
@@ -74,7 +74,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .map(|p| {
                 let written = &sql[p.start..p.end];
                 let message = format!("DuckDB cannot tell the type of {written} from where it stands, and describes none of the statement's columns until it can: cast it, as in {written}::integer");
-                Diagnostic { message, start: p.start, length: p.end - p.start, code: 6 }
+                Diagnostic { message, start: p.start, length: p.end - p.start, code: 6, server_code: None }
             })
             .collect::<Vec<_>>();
         if !diagnostics.is_empty() {
@@ -112,7 +112,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { name: c.name.clone(), ty: crate::types::of(&c.ty), nullable: !out.is_some_and(|o| o.not_null), type_name: crate::types::name(&c.ty), comment: out.and_then(|o| o.comment.clone()) }
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), crate::types::of(&c.ty), !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
@@ -125,11 +125,8 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         .map(|(i, name)| {
             let n = (i + 1).to_string();
             let described = raw.params.iter().find(|p| p.name == n).or_else(|| raw.params.get(i));
-            let (ty, type_name) = match described.and_then(|p| p.ty.as_ref()) {
-                Some(t) => (crate::types::of(t), crate::types::name(t)),
-                None => (Type::Unknown, String::new()),
-            };
-            Param { name: name.clone(), ty, type_name, nullable: nullable.contains(&n), schema: None, cast: None, comment: None }
+            let ty = described.and_then(|p| p.ty.as_ref()).map_or_else(Type::unknown, crate::types::of);
+            Param { nullable: nullable.contains(&n), ..Param::new(name.clone(), ty) }
         })
         .collect();
     let kind = match (shaped.as_deref(), &statement) {
@@ -144,18 +141,26 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         },
     };
     let (cardinality, reason) = if !rows {
-        ("none", None)
+        (Cardinality::None, None)
     } else {
         match shaped.as_deref() {
-            Some(statement) => cardinality(statement, &ctx),
-            None => ("many", Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
+            Some(statement) => {
+                let (rows, reason) = cardinality(statement, &ctx);
+                (match rows {
+                    "one" => Cardinality::One,
+                    "maybeOne" => Cardinality::AtMostOne,
+                    _ => Cardinality::Many,
+                }, reason)
+            }
+            None => (Cardinality::Many, Some("the engine does not read this statement's syntax, so nothing bounds its rows".to_string())),
         }
     };
     let mut analysis = Analysis {
-        kind,
+        kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
+        comment: None,
         params,
         columns,
-        cardinality: cardinality.to_string(),
+        cardinality,
         cardinality_reason: reason,
         key: None,
         rewritten,
@@ -166,6 +171,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         fresh: None,
         errors: None,
         tables: parsed.as_ref().map(tables),
+        domains: Default::default(),
     };
     reylo_engine_core::analysis::clashes(sql, &mut analysis, &|_| None);
     Some(analysis)
@@ -445,7 +451,7 @@ fn refused(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, e: &DbError, co
         }
         None => (0, sql.trim_end().len().max(1)),
     };
-    reylo_engine_core::analysis::bare(sql, lexed, Dialect::Duckdb, vec![Diagnostic { message, start, length, code: 6 }])
+    reylo_engine_core::analysis::bare(sql, lexed, Dialect::Duckdb, vec![Diagnostic { message, start, length, code: 6, server_code: None }])
 }
 
 /// DuckDB's error message without the context it prints under it, and the byte offset in `text`

@@ -6,32 +6,32 @@ filtered.sql: many () -> { name: text }
 full_join_nulled.sql: many () -> { n: int8?, m: int8? }
 grouped_inside.sql: many () -> { n: int8 }
 inner_left_join.sql: many () -> { label: text? }
-key_inside.sql: maybeOne (id: int8) -> { id: int8 }
-lateral.sql: maybeOne (id: int8) -> { id: int8, n: int8 }
-left_join_nulled.sql: maybeOne (id: int8) -> { id: int8, n: int8? }
+key_inside.sql: at_most_one (id: int8) -> { id: int8 }
+lateral.sql: at_most_one (id: int8) -> { id: int8, n: int8 }
+left_join_nulled.sql: at_most_one (id: int8) -> { id: int8, n: int8? }
 nested.sql: one () -> { n: int8 }
-nested_join_nulled.sql: maybeOne (id: int8) -> { id: int8, n: int8?, m: int8? }
+nested_join_nulled.sql: at_most_one (id: int8) -> { id: int8, n: int8?, m: int8? }
 nextval.sql: one () -> { pk: int8 }
 nullable_inside.sql: one () -> { top: text?, n: int8 }
-offset_inside.sql: maybeOne () -> { n: int8 }
+offset_inside.sql: at_most_one () -> { n: int8 }
 outer_aggregate_derived.sql: many () -> { n: int8? }
 outer_aggregate_scalar.sql: many () -> { n: int8? }
-own_aggregate_scalar.sql: many () -> { id: int8, n: int8 } key (id)
-passthrough.sql: maybeOne (id: int8) -> { name: text?, score: int4 }
+own_aggregate_scalar.sql: many () -> { id: int8, n: int8 }
+passthrough.sql: at_most_one (id: int8) -> { name: text?, score: int4 }
 renamed.sql: one () -> { a: text?, b: int8 }
-right_join_nulled.sql: many () -> { n: int8?, id: int8 } key (id)
+right_join_nulled.sql: many () -> { n: int8?, id: int8 }
 rollup_over.sql: many () -> { n: int8? }
-schema_qualified.sql: many () -> { id: int8, score: int4 } key (id)
+schema_qualified.sql: many () -> { id: int8, score: int4 }
 set_inside.sql: many () -> { g: int4 }
 star_between.sql: one () -> { one: int4, n: int8, top: text?, two: int4 }
 two_stars.sql: one () -> { n: int8?, top: text? }
 union_null.sql: many () -> { n: int8? }
 values_inside.sql: many () -> { a: int4? }
-where_over.sql: maybeOne (min: int8) -> { n: int8 }
+where_over.sql: at_most_one (min: int8) -> { n: int8 }
 whole_row.sql: one () -> { s: record? }
 with_insert_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, id: int8?, label: text? } !! reylo14: Columns 1 and 4 are both named "id", and a row keeps only the last of them. Give one of them another name with `as`.
 with_renamed.sql: one () -> { a: text?, b: int8 }
-with_schema_qualified.sql: many () -> { id: int8, score: int4 } key (id)
+with_schema_qualified.sql: many () -> { id: int8, score: int4 }
 with_shadows_table.sql: one () -> { label: text? }
 with_star.sql: one () -> { n: int8 }
 with_star_left_join_nulled.sql: many () -> { id: int8, name: text?, score: int4, tag_id: int8?, label: text? }

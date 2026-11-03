@@ -1,4 +1,4 @@
 error_alone.sql: many () -> {  } !! reylo6: no such column: nope
-schema.sql: many () -> { name: text?, sql: text? }
+schema.sql: many () -> { name: TEXT(text(utf8) | bytes)?, sql: TEXT(text(utf8) | bytes)? }
 sequence.sql: many (name: unknown) -> { name: unknown, seq: unknown? }
 statistics.sql: many () -> { tbl: unknown?, idx: unknown?, stat: unknown? }

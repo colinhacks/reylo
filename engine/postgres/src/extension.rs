@@ -72,10 +72,11 @@ pub fn server(host: &Host) -> Lazy<Server> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Remote {
-    kind: String,
+    #[serde(default)]
+    kind: Option<reylo_engine_core::types::StatementKind>,
     params: Vec<Param>,
     columns: Vec<Column>,
-    cardinality: String,
+    cardinality: reylo_engine_core::types::Cardinality,
     #[serde(default)]
     cardinality_reason: Option<String>,
     #[serde(default)]
@@ -95,6 +96,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
     let Ok(remote) = serde_json::from_value::<Remote>(json_value(value)) else { return Some(None) };
     Some(Some(Analysis {
         kind: remote.kind,
+        comment: None,
         params: remote.params,
         columns: remote.columns,
         cardinality: remote.cardinality,
@@ -108,6 +110,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         fresh: None,
         errors: None,
         tables: None,
+        domains: Default::default(),
     }))
 }
 

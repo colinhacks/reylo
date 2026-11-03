@@ -58,7 +58,7 @@ use crate::api::{Analysis, Describe, Diagnostic, Scope};
 use crate::dialect::Dialect;
 use crate::host::{as_bool, as_str, Host, Lazy};
 use crate::lex;
-use crate::types::{RowField, Type};
+use crate::types::{Field, Kind, Position, Type};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -1636,7 +1636,7 @@ pub const CODE: u32 = 20;
 /// cast to `nullable(…)`, which the caller may pass null for; `bare` is the analysis of the
 /// author's statement that only reports the diagnostics it is given.
 pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inner: &dyn Fn(&str, &[String]) -> Lazy<Analysis>, bare: &dyn Fn(Vec<Diagnostic>) -> Analysis) -> Lazy<Analysis> {
-    let refused = |e: DescriptorError| Some(bare(vec![Diagnostic { message: e.message, start: e.start, length: e.end - e.start, code: CODE }]));
+    let refused = |e: DescriptorError| Some(bare(vec![Diagnostic { message: e.message, start: e.start, length: e.end - e.start, code: CODE, server_code: None }]));
     let found = match find(sql, dialect, &Server::default()) {
         Ok(found) => found,
         Err(e) => return refused(e),
@@ -1728,23 +1728,23 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
                 // A text cast on MySQL is the bare placeholder, which MySQL types as a string
                 // and MariaDB does not type at all: the cast says it is text.
                 let base = cast.written.split('(').next().unwrap_or(&cast.written);
-                if dialect == Dialect::Mysql && cast.around.is_none() && mysql_text(base) && matches!(p.ty, Type::Unknown) {
-                    p.ty = Type::Scalar { name: "text".to_string() };
+                if dialect == Dialect::Mysql && cast.around.is_none() && mysql_text(base) && p.ty.is_unknown() {
+                    p.ty = Type::text();
                 }
                 // SQLite's `json(?)` takes JSON text, and the parameter is a JSON value, written
                 // as its text as every MySQL and SQLite JSON parameter is.
                 // MariaDB's JSON_COMPACT(?) takes it as text too.
                 if (dialect == Dialect::Sqlite || server.mariadb) && matches!(cast.written.as_str(), "json" | "jsonb") {
-                    p.ty = Type::Json { schema: None };
-                    p.type_name = cast.written.clone();
+                    p.ty = Type::json();
                 }
             }
             continue;
         }
         if let Some(cast) = &f.json {
             if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
-                p.ty = Type::Json { schema: Some(crate::schema_type::type_schema(&input_view(&cast.schema), &crate::schema_type::REYLO)) };
-                p.type_name = if cast.jsonb { "jsonb" } else { "json" }.to_string();
+                p.ty = Type::json_schema_of(crate::schema_type::type_schema(&input_view(&cast.schema), &crate::schema_type::REYLO)).named(if cast.jsonb { "jsonb" } else { "json" });
+                // A schema with a `default` at its root fills a value the caller leaves out.
+                p.optional = cast.schema.get("default").is_some();
                 p.schema = Some(cast.schema.clone());
             }
             continue;
@@ -1760,25 +1760,23 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
             // The statement reports the same refusal at the member: the probe's place, the type,
             // is the more exact, so it is kept alone.
             analysis.diagnostics.retain(|other| !(other.message == d.message && other.start >= f.region.0 && other.start < f.region.1));
-            analysis.diagnostics.push(Diagnostic { message: d.message.clone(), start, length: end - start, code: d.code });
+            analysis.diagnostics.push(Diagnostic { message: d.message.clone(), start, length: end - start, code: d.code, server_code: None });
         }
-        let fields: Vec<RowField> = f
+        let fields: Vec<Field> = f
             .members
             .iter()
             .enumerate()
-            .map(|(k, m)| RowField {
+            .map(|(k, m)| Field {
                 name: m.name.clone(),
                 ty: match &m.schema {
-                    Some(schema) => Type::Json { schema: Some(crate::schema_type::type_schema(&input_view(schema), &crate::schema_type::REYLO)) },
+                    Some(schema) => Type::json_schema_of(crate::schema_type::type_schema(&input_view(schema), &crate::schema_type::REYLO)),
                     // Binary data, whatever the reader's unhex() is typed: SQLite's analysis types
-                    // no such call, and MySQL's binary types are the engine's `bytea`.
-                    None if binary(m, dialect) => Type::Scalar { name: if dialect == Dialect::Sqlite { "blob" } else { "bytea" }.to_string() },
-                    None => probe.columns.get(k).map(|c| c.ty.clone()).unwrap_or(Type::Unknown),
+                    // no such call.
+                    None if binary(m, dialect) => Type::bytes().named(m.ty.split('(').next().unwrap_or(&m.ty).trim()),
+                    None => probe.columns.get(k).map(|c| c.ty.clone()).unwrap_or_else(Type::unknown),
                 },
-                written: m.ty.clone(),
                 nullable: !m.not_null,
                 optional: m.omittable(),
-                schema: m.schema.clone(),
             })
             .collect();
         // The column list against the table: only once the database took every type.
@@ -1786,8 +1784,9 @@ pub fn analyze<D: Describe>(sql: &str, dialect: Dialect, host: &Host<'_, D>, inn
             analysis.diagnostics.extend(check_table(f, sql, &fields, table, dialect));
         }
         if let Some(p) = analysis.params.iter_mut().find(|p| p.name == f.name) {
-            p.ty = Type::Rows { one: f.one, fields };
-            p.type_name = if f.one { "row" } else { "rows" }.to_string();
+            p.members = f.members.iter().map(|m| crate::api::Member { written: m.ty.clone(), schema: m.schema.clone() }).collect();
+            let row = Type::record(fields);
+            p.ty = if f.one { row } else { Type::array(Position::non_null(row)) };
             p.nullable = false;
         }
     }
@@ -2180,7 +2179,7 @@ fn column_of<'a>(columns: &'a [TableColumn], name: &str, dialect: Dialect) -> Op
 /// that may hold NULL, a key the caller may leave out to a column with a default, every column
 /// that needs a value is in the list, and each member's type is its column's, so that the run
 /// time's checks are the column's own (the descriptor is explicit and checked against the table).
-fn check_table(f: &Found, sql: &str, fields: &[RowField], columns: &[TableColumn], dialect: Dialect) -> Vec<Diagnostic> {
+fn check_table(f: &Found, sql: &str, fields: &[Field], columns: &[TableColumn], dialect: Dialect) -> Vec<Diagnostic> {
     let Some((ts, te)) = f.table else { return Vec::new() };
     if columns.is_empty() {
         return Vec::new();
@@ -2188,7 +2187,7 @@ fn check_table(f: &Found, sql: &str, fields: &[RowField], columns: &[TableColumn
     let table = &sql[ts..te];
     let same = |a: &str, b: &str| if dialect == Dialect::Postgres { a == b } else { a.eq_ignore_ascii_case(b) };
     let mut out = Vec::new();
-    let mut at = |span: (usize, usize), message: String| out.push(Diagnostic { message, start: span.0, length: span.1 - span.0, code: TABLE_CODE });
+    let mut at = |span: (usize, usize), message: String| out.push(Diagnostic { message, start: span.0, length: span.1 - span.0, code: TABLE_CODE, server_code: None });
     for (m, field) in f.members.iter().zip(fields) {
         let Some(c) = columns.iter().find(|c| same(&c.name, &m.name)) else { continue };
         if c.generated {
@@ -2223,18 +2222,15 @@ fn check_table(f: &Found, sql: &str, fields: &[RowField], columns: &[TableColumn
 }
 
 /// Why a member's type is not its column's, if it is not.
-fn type_differs(m: &Member, field: &RowField, c: &TableColumn, dialect: Dialect) -> Option<String> {
+fn type_differs(m: &Member, field: &Field, c: &TableColumn, dialect: Dialect) -> Option<String> {
     let advice = "a column list writes each column's own type, so that the checks the run time makes are the column's.";
     match dialect {
         Dialect::Postgres => {
-            let base = match &field.ty {
-                Type::Scalar { name } | Type::Enum { name, .. } => name.clone(),
-                Type::Array { of, .. } => match of.as_ref() {
-                    Type::Scalar { name } | Type::Enum { name, .. } => format!("_{name}"),
-                    _ => return None,
-                },
-                Type::Json { .. } => m.ty.clone(),
-                _ => return None,
+            // The catalog's own name for the type, which the table's column names unqualified.
+            let base = match (&field.ty.kind, &field.ty.name) {
+                (Kind::Json(_), _) => m.ty.clone(),
+                (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
+                (_, Some(name)) => name.rsplit('.').next().unwrap_or(name).to_string(),
             };
             (base != c.base || modifiers(&m.ty) != modifiers(&c.written)).then(|| advice.to_string())
         }
@@ -2840,7 +2836,7 @@ mod tests {
             .iter()
             .map(|r| TableColumn { name: r[0].as_str().unwrap().into(), base: "text".into(), written: "text".into(), not_null: r[3] == true, has_default: false, generated: false, always: false, default: None, inherited: r[9] == true })
             .collect();
-        let fields: Vec<RowField> = found[0].members.iter().map(|m| RowField { name: m.name.clone(), ty: Type::Scalar { name: "text".into() }, written: m.ty.clone(), nullable: !m.not_null, optional: m.omittable(), schema: None }).collect();
+        let fields: Vec<Field> = found[0].members.iter().map(|m| Field { name: m.name.clone(), ty: Type::text().named("text"), nullable: !m.not_null, optional: m.omittable() }).collect();
         let d = check_table(&found[0], sql, &fields, &columns, Dialect::Postgres);
         assert_eq!(d.len(), 1, "{d:?}");
         assert!(d[0].message.starts_with("v.note is a column of a view with no default of its own"), "{}", d[0].message);

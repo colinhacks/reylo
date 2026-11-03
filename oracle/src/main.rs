@@ -55,6 +55,7 @@ mod mysql;
 mod replay;
 mod seed;
 
+use reylo_engine_core::types::Type;
 use reylo_engine::AnswerCache;
 use serde_json::{Map, Value};
 use std::fs;
@@ -466,7 +467,8 @@ fn analyze_sqlite(db: &rusqlite::Connection, sql: &str) -> Result<Value, String>
 // The printed form
 // ---------------------------------------------------------------------------------------------
 
-/// `many (id: int4) -> { id: int4, title: text, author: text? } key (id)`, then any diagnostics.
+/// `many (id: int4) -> { id: int4, title: text, author: text? } key (id)`, then any diagnostics:
+/// each type as [`Type::short`] prints it.
 fn line(analysis: &Value) -> String {
     let field = |v: &Value| format!("{}: {}{}", v["name"].as_str().unwrap_or("?"), render(&v["type"]), if v["nullable"].as_bool().unwrap_or(false) { "?" } else { "" });
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
@@ -482,44 +484,11 @@ fn line(analysis: &Value) -> String {
     out
 }
 
-/// A type in one short line: `int4`, `'a' | 'b'`, `text[]`, `{ id: int4 }`, `[{ … }?]`,
-/// `json {"type":"string"}`. An array
-/// the statement builds says what it knows of its elements: `(text?)[]` when one may be NULL,
-/// `(text!)[]` when none can be.
+/// A type in one short line ([`Type::short`]), or the JSON it is where it is no type the engine
+/// writes.
 fn render(ty: &Value) -> String {
-    let fields = |v: &Value| -> String {
-        let parts: Vec<String> = v.as_array().into_iter().flatten().map(|f| format!("{}: {}{}", f["name"].as_str().unwrap_or("?"), render(&f["type"]), if f["nullable"].as_bool().unwrap_or(false) { "?" } else { "" })).collect();
-        format!("{{ {} }}", parts.join(", "))
-    };
-    match ty["kind"].as_str() {
-        Some("scalar") => ty["name"].as_str().unwrap_or("?").to_string(),
-        Some("enum") => {
-            let labels: Vec<String> = ty["labels"].as_array().into_iter().flatten().map(|l| format!("'{}'", l.as_str().unwrap_or(""))).collect();
-            if labels.is_empty() { ty["name"].as_str().unwrap_or("enum").to_string() } else { labels.join(" | ") }
-        }
-        Some("array") => {
-            let inner = render(&ty["of"]);
-            match ty["nullable_items"].as_bool() {
-                Some(true) => format!("({inner}?)[]"),
-                Some(false) => format!("({inner}!)[]"),
-                None => format!("{inner}[]"),
-            }
-        }
-        Some("object") => fields(&ty["fields"]),
-        Some("composite") => format!("{}{}", ty["name"].as_str().unwrap_or("record"), fields(&ty["fields"])),
-        Some("list") => format!("[{}{}]", render(&ty["of"]), if ty["nullable_items"].as_bool().unwrap_or(false) { "?" } else { "" }),
-        // A JSON column a CHECK holds to a JSON Schema: `json` and the canonical schema of the
-        // values it admits.
-        Some("json") => match ty.get("schema") {
-            Some(schema) => format!("json {schema}"),
-            None => "json".into(),
-        },
-        // DuckDB's: a struct's fields each may be NULL, a map's key and value, a union's members.
-        Some("struct") => format!("struct{}", fields(&ty["fields"])),
-        Some("map") => format!("map({}, {})", render(&ty["key"]), render(&ty["value"])),
-        Some("union") => format!("union{}", fields(&ty["members"])),
-        Some("tuple") => format!("({})", ty["items"].as_array().into_iter().flatten().map(|t| format!("{}?", render(t))).collect::<Vec<_>>().join(", ")),
-        Some("unknown") => "unknown".into(),
-        _ => ty.to_string(),
+    match serde_json::from_value::<Type>(ty.clone()) {
+        Ok(t) => t.short(),
+        Err(_) => ty.to_string(),
     }
 }

@@ -8,9 +8,9 @@ inner_on_range.sql: many () -> { author_id: int8 }
 inner_on_star.sql: many () -> { id: int8, parent_id: int8, author_id: int8?, body: text } key (id)
 inner_under_left.sql: many () -> { id: int8, author_id: int8? } key (id)
 left_on.sql: many () -> { author_id: int8?, nickname: text? }
-recursive_cycle.sql: many () -> { id: int8, manager_id: int8?, name: text?, is_cycle: bool?, path: record[]? }
+recursive_cycle.sql: many () -> { id: int8, manager_id: int8?, name: text?, is_cycle: bool?, path: record?[]? }
 recursive_search.sql: many () -> { id: int8, manager_id: int8? }
-recursive_search_star.sql: many () -> { id: int8, manager_id: int8?, ordercol: record[]? }
+recursive_search_star.sql: many () -> { id: int8, manager_id: int8?, ordercol: record?[]? }
 recursive_star.sql: many (id: int8) -> { id: int8, parent_id: int8?, author_id: int8?, body: text }
 recursive_star_named.sql: many () -> { id: int8, name: text? }
 right_on.sql: many () -> { author_id: int8?, uid: int8 }

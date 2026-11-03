@@ -1,4 +1,4 @@
-sum_all.sql: one () -> { cents: integer? }
-sum_grouped.sql: many () -> { customer: integer, cents: integer?, weight: real? }
-sum_one.sql: one (customer: integer) -> { cents: integer? }
-total.sql: one () -> { cents: real, top: integer? }
+sum_all.sql: one () -> { cents: int64? }
+sum_grouped.sql: many () -> { customer: INTEGER(int64 | float(11,52) | text(utf8) | bytes), cents: int64?, weight: float(11,52)? }
+sum_one.sql: one (customer: int64) -> { cents: int64? }
+total.sql: one () -> { cents: float(11,52), top: int64? }

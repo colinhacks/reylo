@@ -1,9 +1,9 @@
-backslash_before_placeholder.sql: maybeOne (id: int4) -> { id: int4 }
-backslash_ends_nothing.sql: many (id: int4) -> { id: int4 }
-backslash_in_double_quotes.sql: maybeOne (id: int4) -> { id: int4 }
-backslash_in_json.sql: maybeOne (id: int4) -> { o: { path: text, k\: int4, name: text } }
-backslash_in_json_list.sql: one () -> { l: [{ dir: text?, id: int4 }]? }
-backslash_key.sql: maybeOne (e: text) -> { id: int4, name: text }
-backslash_then_quote_and_placeholder.sql: many (x: int4) -> { id: int4 }
-doubled_quote.sql: maybeOne (id: int4) -> { id: int4 }
-plain_string.sql: maybeOne (id: int4) -> { id: int4 }
+backslash_before_placeholder.sql: at_most_one (id: int32) -> { id: int }
+backslash_ends_nothing.sql: many (id: int32) -> { id: int }
+backslash_in_double_quotes.sql: at_most_one (id: int32) -> { id: int }
+backslash_in_json.sql: at_most_one (id: int32) -> { o: json { path: varchar, k\: int, name: varchar } }
+backslash_in_json_list.sql: one () -> { l: json ({ dir: varchar?, id: int })[]? }
+backslash_key.sql: at_most_one (e: varchar) -> { id: int, name: varchar }
+backslash_then_quote_and_placeholder.sql: many (x: int32) -> { id: int }
+doubled_quote.sql: at_most_one (id: int32) -> { id: int }
+plain_string.sql: at_most_one (id: int32) -> { id: int }
