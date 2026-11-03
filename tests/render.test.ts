@@ -288,6 +288,17 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
     { type: "object", properties: { kind: { enum: ["b"] } }, required: ["kind"], additionalProperties: false },
   ] };
   assert.equal(renderType(json(tagged)), `{ kind: "a"; x: number } | { kind: "b" }`);
+  // An open object among a union's objects keeps its signature: `"x" in v` would otherwise drop
+  // the `b` member, which may hold an `x` of any type, and narrow `v.x` to a number.
+  const openTagged = { anyOf: tagged.anyOf.map((s) => ({ ...s, additionalProperties: true })) };
+  assert.equal(renderType(json(openTagged)), `{ kind: "a"; x: number; [key: string]: Json | undefined } | { kind: "b"; [key: string]: Json | undefined }`);
+  assert.equal(renderParamType(json(openTagged), "postgres"), `{ kind: "a"; x: number; [key: string]: Json | undefined } | { kind: "b"; [key: string]: Json | undefined }`);
+  assert.equal(renderType(json({ anyOf: [{ anyOf: [open, { type: "string" }] }, { enum: [{ name: "x" }] }] })), `{ name: string; age?: number | null; [key: string]: Json | undefined } | string | { name: "x" }`);
+  // One object in a union, beside other types, has no other object to narrow to.
+  assert.equal(renderType(json({ anyOf: [open, { type: "string" }] })), "{ name: string; age?: number | null } | string");
+  assert.equal(renderType(json({ ...open, type: ["object", "null"] })), "{ name: string; age?: number | null } | null");
+  // A property's own schema is no member of the union around its object.
+  assert.equal(renderType(json({ anyOf: [{ type: "object", properties: { inner: open }, required: ["inner"], additionalProperties: false }, { type: "object", properties: { other: { type: "string" } }, additionalProperties: false }] })), "{ inner: { name: string; age?: number | null } } | { other?: string }");
   assert.equal(renderType(json({ enum: [{ a: 1, "b-c": [true, null] }, "x", 2, null] })), `{ a: 1; "b-c": [true, null] } | "x" | 2 | null`);
   assert.equal(renderType(json({ type: "array", prefixItems: [{ type: "string" }, { type: ["number", "null"] }], items: { type: "boolean" }, minItems: 1 })), "[string, (number | null)?, ...boolean[]]");
   assert.equal(renderType(json({ type: "array", prefixItems: [{ type: "string" }], items: false, minItems: 1 })), "[string]");

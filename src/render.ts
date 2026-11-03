@@ -153,27 +153,45 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
  * admits other keys already, and one with no index signature flags a misspelled key, in a read or
  * in an object literal. One whose schema types its other keys, or that names none, says so with an
  * index signature, `Json | undefined` beside named keys, since TypeScript requires every named key's
- * type, `undefined` included for an optional one, to fit the signature.
+ * type, `undefined` included for an optional one, to fit the signature. So does an open object that
+ * is one of a union's objects (`besideObjects`): `"k" in v` narrows a union to the members that name
+ * `k` or have a signature, and an open member that names no `k` may still hold one of any type.
  */
-export function schemaType(schema: unknown): string {
+export function schemaType(schema: unknown, besideObjects = false): string {
   if (schema === false) return "never";
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return JSON_TYPE;
   const m = schema as Record<string, unknown>;
-  if (Array.isArray(m.anyOf)) return union(m.anyOf.map(schemaType));
+  if (Array.isArray(m.anyOf)) {
+    const shared = besideObjects || objectAlternatives(m) > 1;
+    return union(m.anyOf.map((s) => schemaType(s, shared)));
+  }
   if (Array.isArray(m.enum)) return union(m.enum.map(literalType));
   if (m.not !== undefined) return "never";
-  const kinds = typeof m.type === "string" ? [m.type] : Array.isArray(m.type) ? m.type.filter((k): k is string => typeof k === "string") : [];
-  return kinds.length ? union(kinds.map((kind) => kindType(kind, m))) : JSON_TYPE;
+  const kinds = kindsOf(m);
+  return kinds.length ? union(kinds.map((kind) => kindType(kind, m, besideObjects))) : JSON_TYPE;
 }
 
-function kindType(kind: string, m: Record<string, unknown>): string {
+function kindsOf(m: Record<string, unknown>): string[] {
+  return typeof m.type === "string" ? [m.type] : Array.isArray(m.type) ? m.type.filter((k): k is string => typeof k === "string") : [];
+}
+
+/** How many object types a schema's union holds: its object members, nested unions' and literal objects included. */
+function objectAlternatives(schema: unknown): number {
+  if (schema === null || typeof schema !== "object" || Array.isArray(schema)) return 0;
+  const m = schema as Record<string, unknown>;
+  if (Array.isArray(m.anyOf)) return m.anyOf.reduce((n: number, s) => n + objectAlternatives(s), 0);
+  if (Array.isArray(m.enum)) return m.enum.filter((v) => v !== null && typeof v === "object" && !Array.isArray(v)).length;
+  return kindsOf(m).includes("object") ? 1 : 0;
+}
+
+function kindType(kind: string, m: Record<string, unknown>, besideObjects: boolean): string {
   switch (kind) {
     case "string": return "string";
     case "integer": case "number": return "number";
     case "boolean": return "boolean";
     case "null": return "null";
     case "array": {
-      const prefix = Array.isArray(m.prefixItems) ? m.prefixItems.map(schemaType) : [];
+      const prefix = Array.isArray(m.prefixItems) ? m.prefixItems.map((s) => schemaType(s)) : [];
       const rest = m.items === undefined ? JSON_TYPE : schemaType(m.items);
       if (!prefix.length) return rest === "never" ? "[]" : `${grouped(rest)}[]`;
       const min = typeof m.minItems === "number" ? m.minItems : 0;
@@ -186,7 +204,9 @@ function kindType(kind: string, m: Record<string, unknown>): string {
       const required = Array.isArray(m.required) ? m.required : [];
       const fields = Object.entries(properties).map(([key, value]) => `${ident(key)}${required.includes(key) ? "" : "?"}: ${schemaType(value)}`);
       const rest = m.additionalProperties === undefined || m.additionalProperties === false ? "never" : schemaType(m.additionalProperties);
-      if (rest !== "never" && !(fields.length && rest === JSON_TYPE)) fields.push(`[key: string]: ${fields.length ? `${JSON_TYPE} | undefined` : rest}`);
+      const open = m.additionalProperties === undefined || rest === JSON_TYPE;
+      const signature = fields.length ? (rest !== "never" && rest !== JSON_TYPE) || (open && besideObjects) : rest !== "never";
+      if (signature) fields.push(`[key: string]: ${fields.length ? `${JSON_TYPE} | undefined` : rest}`);
       if (fields.length) return `{ ${fields.join("; ")} }`;
       return m.additionalProperties === undefined ? `Record<string, ${JSON_TYPE}>` : "Record<never, never>";
     }
