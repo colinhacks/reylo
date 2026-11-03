@@ -111,10 +111,10 @@ impl Program for Mysql {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
                 match connect(url, bridge.as_deref()).await {
-                    Ok((conn, _)) => {
+                    Ok((conn, version)) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { conn, url: url.to_string(), bridge, answers: AnswerCache::default() });
-                        json!({ "status": "opened", "conn": self.next })
+                        json!({ "status": "opened", "conn": self.next, "version": version })
                     }
                     Err(failure) => failure,
                 }

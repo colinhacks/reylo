@@ -1,4 +1,6 @@
-/** The result of introspecting one SQL statement (`StatementDescriptor`, below) and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. The TypeScript is notation: a descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans. This file holds types alone; `examples.ts` beside it shows descriptors from each database.
+/** Reylo Type Defs (RTD), version 0.1, experimental: the result of introspecting one SQL statement (`StatementDescriptor`, below) and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. The TypeScript is notation: a descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans. This file holds types alone; `examples.ts` beside it shows descriptors from each database.
+ *
+ * A version is a major and a minor number, and every statement descriptor states the one it is written in as `rtd`. While the format is experimental, before 1.0, a new version may change anything in it; from 1.0, rule 1 says what a minor version may add and what takes a major one.
  *
  * The spec is a living document, and every part of it was weighed against the databases it covers. A change to it is a design decision: agree it with a maintainer before writing it, and where implementing it shows a limitation, raise the limitation rather than working around it. */
 export type Type =
@@ -354,6 +356,8 @@ export interface Alternative extends Position {
 
 /** What introspecting one statement returns. */
 export interface StatementDescriptor {
+  /** The version of Reylo Type Defs the descriptor is written in. */
+  rtd: "0.1";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;

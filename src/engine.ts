@@ -98,10 +98,12 @@ export async function anyEngine(): Promise<Engine | MissingEngine> {
   return engine("postgres").catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
 }
 
-type Answer = { status: string; id?: number; message?: string; code?: string; conn?: number; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
+type Answer = { status: string; id?: number; message?: string; code?: string; conn?: number; version?: string; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
 
 /** What a session asks of a connection the engine holds. */
 export interface Connection {
+  /** The server's version, as the engine read it when the connection opened: `18.1`, `8.4.11`, and on SQLite the engine's own SQLite's, `3.50.2`. */
+  readonly version: string;
   analyze(sql: string): Promise<Analysis>;
   /** A query, its parameters bound and its rows read as the engine's catalog queries are. */
   query(sql: string, params: unknown[]): Promise<unknown[][]>;
@@ -183,8 +185,11 @@ export class Engine extends EngineCore {
     const channel = new Channel(this.binary, this.dialect);
     const ask = async (request: object) => settled(await channel.ask(request));
     let conn: number;
+    let version: string;
     try {
-      conn = (await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) })).conn!;
+      const opened = await ask({ op: "open", url: target.url, ...(target.bridge && { bridge: target.bridge }) });
+      conn = opened.conn!;
+      version = opened.version ?? "";
     } catch (e) {
       channel.end();
       target.close();
@@ -193,6 +198,7 @@ export class Engine extends EngineCore {
       throw failure ? new Unreachable(failure) : e;
     }
     return {
+      version,
       analyze: async (sql) => (await ask({ op: "run", conn, sql })).analysis!,
       query: async (sql, params) => (await ask({ op: "query", conn, sql, params })).rows!,
       describe: async (sql) => {

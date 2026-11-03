@@ -74,7 +74,12 @@ impl Connection {
 /// trip: its number alone, `18.1` of `18.1 (Homebrew)`.
 pub async fn open(url: &str) -> Result<(Client, String), Failure> {
     let (client, version) = connect(url, None).await.map_err(|answer| Failure::of(&answer))?;
-    Ok((client, version.split_whitespace().next().unwrap_or_default().to_string()))
+    Ok((client, server_version(&version)))
+}
+
+/// The number of a `server_version`: `18.1` of `18.1 (Homebrew)`.
+fn server_version(reported: &str) -> String {
+    reported.split_whitespace().next().unwrap_or_default().to_string()
 }
 
 /// The statements of one command line's run, analyzed over one connection, which keeps the engine's
@@ -110,10 +115,10 @@ impl Program for Postgres {
                 let url = request["url"].as_str().unwrap_or_default();
                 let bridge = request["bridge"].as_str().map(String::from);
                 match connect(url, bridge.as_deref()).await {
-                    Ok((client, _)) => {
+                    Ok((client, version)) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { client, url: url.to_string(), bridge, answers: AnswerCache::default() });
-                        json!({ "status": "opened", "conn": self.next })
+                        json!({ "status": "opened", "conn": self.next, "version": server_version(&version) })
                     }
                     Err(failure) => failure,
                 }
