@@ -99,10 +99,10 @@ macro_rules! base_type {
 /// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them, `$3` how many:
 /// one row per validated, enforced CHECK on such a column, the table's on that column alone (and
 /// inherited by any child a scan reads) or the column's domain's, where the column holds `text`
-/// or `varchar` under a deterministic collation, or `json` or `jsonb`: `(relation, attnum, the
-/// column's name, the CHECK as the server prints it, and per function the CHECK calls, its name,
-/// its extension's name and that extension's version, in three arrays, then the column's type and
-/// that type's base type)`. A CHECK `NOT ENFORCED` (PostgreSQL 18) is never validated, so
+/// or `varchar` under a deterministic collation, `json` or `jsonb`, or an array: `(relation,
+/// attnum, the column's name, the CHECK as the server prints it, and per function the CHECK calls,
+/// its name, its extension's name and that extension's version, in three arrays, then the column's
+/// type and that type's base type)`. A CHECK `NOT ENFORCED` (PostgreSQL 18) is never validated, so
 /// `convalidated` leaves it out. A table's CHECK says nothing where the table, or a partition or
 /// child a scan reads, is a foreign table, whose rows the server never checks; a domain's input
 /// function checks every value. Nothing is read under `standard_conforming_strings` off, where the
@@ -1469,13 +1469,11 @@ impl<'a> Engine<'a> {
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
             }
-            if checks.items.contains(&(raw.table, raw.attnum)) {
-                col.nullable_items = Some(false);
-            }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
         *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
+        with_check_items(sql, parsed, &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed, &raw, &mut described);
         Some(Ok((raw, described)))
     }
@@ -1500,12 +1498,13 @@ impl<'a> Engine<'a> {
 
     /// Per result column that reads a table's column as it is, and per column of `written`, what
     /// its CHECKs say of its values: the strings they keep it to ([`check_values`]; the caller
-    /// takes them only where `=` is the built-in one a CHECK resolved to), and the JSON Schema
-    /// they hold it to ([`check_documents`]). The describe names a column's table and attribute
-    /// only for a bare reference (through a view or a subquery too), so an expression over the
-    /// column is never one. Nothing read through a set operation, whose provenance names the
-    /// leftmost arm only ([`own_provenance`]). With `checked_only`, only the JSON and string
-    /// columns, the ones a CHECK says something of.
+    /// takes them only where `=` is the built-in one a CHECK resolved to), the JSON Schema they
+    /// hold it to ([`check_documents`]), and whether they keep an array's elements non-null
+    /// ([`check_items`]). The describe names a column's table and attribute only for a bare
+    /// reference (through a view or a subquery too), so an expression over the column is never
+    /// one. Nothing read through a set operation, whose provenance names the leftmost arm only
+    /// ([`own_provenance`]). With `checked_only`, only the JSON, string and array columns, the
+    /// ones a CHECK says something of.
     fn checks(&self, sql: &str, raw: &RawDescribe, parsed: Option<&Parsed>, written: &[(u32, i32)], checked_only: bool, trust: &Trust) -> Lazy<Checks> {
         let own = own_provenance(sql, parsed, raw.columns.len());
         let json = |oid: u32| {
@@ -1615,8 +1614,9 @@ impl<'a> Engine<'a> {
                 _ => Vec::new(),
             };
             // A built-in function is pinned, so the catalog records no dependency on it: a call of
-            // `array_position` that resolved to a user's function lists it among the calls.
-            if check_items(text, name) && !calls.iter().any(|(n, _, _)| n == "array_position") {
+            // `array_position` that resolved to a user's function lists it among the calls, and so
+            // does a cast that runs one, which may turn NULL into a value.
+            if check_items(text, name, calls.is_empty()) && !calls.iter().any(|(n, _, _)| n == "array_position") {
                 out.items.insert(key);
             }
             for (function, args) in check_documents(text, name) {
@@ -2134,11 +2134,9 @@ impl<'a> Engine<'a> {
             if let Some(document) = checks.documents.get(&(raw.table, raw.attnum)) {
                 col.document = Some(document.clone());
             }
-            if checks.items.contains(&(raw.table, raw.attnum)) {
-                col.nullable_items = Some(false);
-            }
         }
         self.refine(sql, &mut described, trust)?;
+        with_check_items(sql, parsed.as_ref(), &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed.as_ref(), &raw, &mut described);
         Some(Some(described))
     }
@@ -2469,6 +2467,17 @@ fn own_provenance(sql: &str, parsed: Option<&Parsed>, count: usize) -> Vec<bool>
         .collect()
 }
 
+/// Mark the arrays of `described` whose elements a CHECK keeps non-null ([`check_items`]): a bare
+/// read of the column, by its own provenance ([`own_provenance`]). After [`Engine::refine`], which
+/// says what the statement's SQL says of an array's elements, and knows nothing of a CHECK.
+fn with_check_items(sql: &str, parsed: Option<&Parsed>, raw: &RawDescribe, checks: &Checks, described: &mut DescribedStatement) {
+    for ((col, raw), own) in described.columns.iter_mut().zip(&raw.columns).zip(own_provenance(sql, parsed, raw.columns.len())) {
+        if own && checks.items.contains(&(raw.table, raw.attnum)) {
+            col.nullable_items = Some(false);
+        }
+    }
+}
+
 /// The targets of a SELECT that are a scalar or `ARRAY` subquery returning the whole rows of one
 /// of its own FROM's tables (`(select c from child c …)`, `array(select c from child c …)`), or an
 /// `array_agg` of the whole row of one of the SELECT's own (`array_agg(e)`, `array_agg(e.*)`) or
@@ -2731,23 +2740,29 @@ fn refuses_null(text: &str, column: &str) -> bool {
 
 /// Whether a CHECK on array column `column` (`VALUE` in a domain's) keeps every element non-null:
 /// one of its conjuncts is `array_position(column, NULL) IS NULL`, which holds only where no
-/// element is NULL. The caller makes sure the call is the built-in `array_position`.
-fn check_items(text: &str, column: &str) -> bool {
+/// element is NULL. The caller makes sure the call is the built-in `array_position`, and says
+/// whether a NULL under casts of casts stays NULL (`casts`, where the CHECK calls no user's
+/// function): a NULL cast once from a literal always does.
+fn check_items(text: &str, column: &str, casts: bool) -> bool {
     use pg_query::protobuf::node::Node as N;
     use pg_query::protobuf::{BoolExprType, NullTestType};
     let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return false };
     let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return false };
     let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return false };
-    fn null(node: &pg_query::protobuf::Node) -> bool {
+    fn null(node: &pg_query::protobuf::Node, casts: bool) -> bool {
         match node.node.as_ref() {
-            Some(N::TypeCast(t)) => t.arg.as_deref().is_some_and(null),
+            Some(N::TypeCast(t)) => match t.arg.as_deref() {
+                Some(a) if matches!(a.node.as_ref(), Some(N::AConst(_))) => null(a, casts),
+                Some(a) => casts && null(a, casts),
+                None => false,
+            },
             Some(N::AConst(c)) => c.isnull,
             _ => false,
         }
     }
-    fn conjunct(node: &pg_query::protobuf::Node, column: &str) -> bool {
+    fn conjunct(node: &pg_query::protobuf::Node, column: &str, casts: bool) -> bool {
         match node.node.as_ref() {
-            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column)),
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().any(|a| conjunct(a, column, casts)),
             Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 => match t.arg.as_deref().and_then(|a| a.node.as_ref()) {
                 Some(N::FuncCall(f)) => {
                     let name: Vec<&str> = f.funcname.iter().filter_map(|n| match n.node.as_ref() {
@@ -2755,14 +2770,14 @@ fn check_items(text: &str, column: &str) -> bool {
                         _ => None,
                     }).collect();
                     matches!(name.as_slice(), ["array_position"] | ["pg_catalog", "array_position"])
-                        && matches!(f.args.as_slice(), [array, element] if null(element) && matches!(array.node.as_ref(), Some(N::ColumnRef(c)) if matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value"))))
+                        && matches!(f.args.as_slice(), [array, element] if null(element, casts) && matches!(array.node.as_ref(), Some(N::ColumnRef(c)) if matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value"))))
                 }
                 _ => false,
             },
             _ => false,
         }
     }
-    target.val.as_deref().is_some_and(|v| conjunct(v, column))
+    target.val.as_deref().is_some_and(|v| conjunct(v, column, casts))
 }
 
 /// The strings of [`check_values`]'s CHECK on `column`, whose type and base type `types` names,
@@ -3653,16 +3668,19 @@ mod tests {
 
     #[test]
     fn a_check_keeps_null_out_of_an_array_column() {
-        assert!(check_items("array_position(tags, NULL::text) IS NULL", "tags"));
-        assert!(check_items("array_position(VALUE, NULL::text) IS NULL", "labels"));
-        assert!(check_items("pg_catalog.array_position(tags, NULL::text) IS NULL", "tags"));
-        assert!(check_items("array_position(scores, NULL::integer) IS NULL AND cardinality(scores) > 0", "scores"));
+        assert!(check_items("array_position(tags, NULL::text) IS NULL", "tags", false));
+        assert!(check_items("array_position(VALUE, NULL::text) IS NULL", "labels", false));
+        assert!(check_items("pg_catalog.array_position(tags, NULL::text) IS NULL", "tags", false));
+        assert!(check_items("array_position(scores, NULL::integer) IS NULL AND cardinality(scores) > 0", "scores", false));
         // An OR lets a NULL element through, and another column's elements say nothing of this one.
-        assert!(!check_items("array_position(tags, NULL::text) IS NULL OR cardinality(tags) = 0", "tags"));
-        assert!(!check_items("array_position(other, NULL::text) IS NULL", "tags"));
-        assert!(!check_items("array_position(tags, 'x'::text) IS NULL", "tags"));
-        assert!(!check_items("array_position(tags, NULL::text) IS NOT NULL", "tags"));
-        assert!(!check_items("NOT (NULL::text = ANY (tags))", "tags"));
+        assert!(!check_items("array_position(tags, NULL::text) IS NULL OR cardinality(tags) = 0", "tags", false));
+        assert!(!check_items("array_position(other, NULL::text) IS NULL", "tags", false));
+        assert!(!check_items("array_position(tags, 'x'::text) IS NULL", "tags", false));
+        assert!(!check_items("array_position(tags, NULL::text) IS NOT NULL", "tags", false));
+        assert!(!check_items("NOT (NULL::text = ANY (tags))", "tags", false));
+        // A NULL under two casts is NULL only where neither runs a user's function.
+        assert!(check_items("array_position(words, NULL::text::word) IS NULL", "words", true));
+        assert!(!check_items("array_position(words, NULL::text::word) IS NULL", "words", false));
     }
 
     #[test]
