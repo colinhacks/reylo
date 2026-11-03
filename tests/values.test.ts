@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, postgresInterval, postgresYear, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, postgresInterval, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { array, either, lite, my, pg } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
@@ -648,4 +648,12 @@ test("the text Postgres writes inside JSON for a non-finite float or decimal is 
   assert.deepEqual(numbersInJson({ xs: "NaN" }, at), { xs: "NaN" });
   // A Postgres array of JSON arrays reads each array as an element.
   assert.deepEqual(numbersInJson([["NaN"]], { items: { items: true }, deep: true }), [[NaN]]);
+});
+
+test("a row converts each name's last column by that column's own mask, by position beside the columns", () => {
+  const n = { keys: [["n", true]] } as const;
+  const columns: Columns = [["x", "json"], ["x", "json"], ["y", "json"], ["y", "json"], ["constructor", "json"], ["__proto__", "json"], ["id", "int4"]];
+  // The first `x` has a mask and the last none; the first `y` none and the last one.
+  assert.deepEqual(rowMasks(columns, [n, null, null, n, null, n, null]), [["y", n], ["__proto__", n]]);
+  assert.deepEqual(rowMasks(columns, []), []);
 });

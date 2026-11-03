@@ -43,6 +43,16 @@ export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: 
 export type JsonNumbers = true | { readonly items: JsonNumbers; readonly deep?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
 
 /**
+ * The JSON columns of a row whose non-finite numbers `.run()` gives as numbers: each name's last
+ * column, the one a row keeps (src/row.ts), where its mask, by position beside `columns`, has any.
+ */
+export function rowMasks(columns: Columns, nonFinite: readonly (JsonNumbers | null)[]): (readonly [name: string, at: JsonNumbers])[] {
+  const last = new Map<string, JsonNumbers | null>();
+  columns.forEach(([name], i) => last.set(name, nonFinite[i] ?? null));
+  return [...last].flatMap(([name, at]) => (at === null ? [] : [[name, at] as const]));
+}
+
+/**
  * A parsed JSON value with the text Postgres writes for each non-finite float or decimal at
  * `at`, `"NaN"`, `"Infinity"` or `"-Infinity"`, as that number, in place: JSON has no number for
  * one, and a float outside a document is one already.

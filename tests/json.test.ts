@@ -167,7 +167,7 @@ test("Postgres: a float or a numeric inside JSON is a number, NaN and the infini
     await closeSessions();
     // The module names the fields that may hold one, and leaves out the ones a CHECK keeps clear.
     const { code } = await sqlModule(join(root, "built.sql"), built_);
-    assert.match(code, /nonFinite: \{"doc":\{"keys":\[\["rate",true\],\["amount",true\],\["total",true\],\["pair",\{"items":true,"deep":true\}\]\]\}\}/);
+    assert.match(code, /nonFinite: \[null,\{"keys":\[\["rate",true\],\["amount",true\],\["total",true\],\["pair",\{"items":true,"deep":true\}\]\]\}\]/);
     const read = await built(root, "built", built_);
     const expected = [
       { id: 1, doc: { rate: NaN, amount: Infinity, total: NaN, ratio: 0.5, score: 1, pair: [NaN, NaN] } },
@@ -178,6 +178,18 @@ test("Postgres: a float or a numeric inside JSON is a number, NaN and the infini
     const rows = await built(root, "whole", whole);
     for (const db of [own.sql, client]) {
       assert.deepEqual({ ...((await rows.run(db)) as object) }, { rows: expected.map(({ id, doc: { pair: _, ...doc } }) => ({ id, ...doc })) });
+    }
+    // A row keeps the last column of each name, and converts by that column's type alone; a
+    // column named `__proto__` or `constructor` is one like any other.
+    const shadowed = `select json_build_object('n', 'NaN'::float8) as x, json_build_object('n', 'NaN'::text) as x, json_build_object('n', 'NaN'::text) as y, json_build_object('n', 'NaN'::float8) as y, json_build_object('n', 'NaN'::float8) as "__proto__", json_build_object('n', 'NaN'::text) as "constructor"\n`;
+    // The module holds a mask by position, one for each column, which the module's own JSON writes
+    // with no key of a name, `__proto__` included.
+    assert.match((await sqlModule(join(root, "shadowed.sql"), shadowed)).code, /nonFinite: \[\{"keys":\[\["n",true\]\]\},null,null,\{"keys":\[\["n",true\]\]\},\{"keys":\[\["n",true\]\]\},null\]/);
+    const same = await built(root, "shadowed", shadowed);
+    for (const db of [own.sql, client]) {
+      const row = { ...((await same.run(db)) as object) };
+      assert.deepEqual(row, { x: { n: "NaN" }, y: { n: NaN }, ["__proto__"]: { n: NaN }, constructor: { n: "NaN" } });
+      assert.ok(Object.hasOwn(row, "__proto__"));
     }
   } finally {
     await client.end();

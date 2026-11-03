@@ -399,7 +399,7 @@ export function queries(d: Dialect, typed = true) {
       `select json_build_object('nan', 'NaN'::float8, 'inf', 'Infinity'::numeric, 'neg', '-Infinity'::float4, 'n', 1.5::numeric, 'xs', array['NaN'::float8, 2]) as doc, jsonb_build_object('s', 'NaN') as raw`,
       [],
       "one",
-      { columns: [["doc", "json"], ["raw", "json"]], nonFinite: { doc: { keys: [["nan", true], ["inf", true], ["neg", true], ["n", true], ["xs", { items: true, deep: true }]] } } },
+      { columns: [["doc", "json"], ["raw", "json"]], nonFinite: [{ keys: [["nan", true], ["inf", true], ["neg", true], ["n", true], ["xs", { items: true, deep: true }]] }, null] },
     ),
     dup: q(`insert into ${t("uniq")} (k) values (:k)`, ["k"], "none"),
   };

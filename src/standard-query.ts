@@ -141,7 +141,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // is `.run()`'s own reading, its refusals of a storage class the column's type does not allow
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
-  const decoders = module.columns?.map(([name, kind, delim]): ((v: never) => unknown) => (dialect === "postgres" ? postgresDecoder(kind, delim, module.nonFinite?.[name]) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
+  const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => (dialect === "postgres" ? postgresDecoder(kind, delim, module.nonFinite?.[i] ?? undefined) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
   const columns = module.columns?.map(([name], i) => Object.freeze({ name, decode: decoders![i]! }) as StandardQueryV1.Column<D>);
   // A closure, not `this`: a driver may take `encode` off the object.
   // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.
