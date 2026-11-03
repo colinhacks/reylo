@@ -39,7 +39,7 @@ function sqliteFile(setup: string): string {
 
 test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as reylo analyze prints it", async () => {
   const url = `file:${sqliteFile("create table users (id integer primary key, name text not null, email text)")}`;
-  const [user, count, broken] = await same(url, ["-- One user, by id\nselect id, name, email from users where id = :id", "select count(*) as n from users", "select 'é🙂' as x, nope from users"]);
+  const [user, count, broken, untyped] = await same(url, ["-- One user, by id\nselect id, name, email from users where id = :id", "select count(*) as n from users", "select 'é🙂' as x, nope from users", "select 'é🙂' as x, :v as v, :w as w"]);
   assert.equal(RTD_VERSION, "0.1");
   const { columns, ...rest } = user!;
   assert.deepEqual(rest, {
@@ -59,6 +59,9 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
   // to four bytes.
   assert.deepEqual(broken!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, nope from users".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
   assert.deepEqual(broken!.columns, []);
+  // A parameter nothing types is an error at its first use, as under the project file's default,
+  // `strict_params: true`.
+  assert.deepEqual(untyped!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, :v as v, :w as w".slice(d.start, d.end)]), ["v", "w"].map((n) => [`Nothing in the statement gives the parameter :${n} a type; cast it, as in :${n}::text, or set strict_params: false in .reylo.yaml.`, `:${n}`]));
   // Plain data: JSON carries all of it.
   assert.deepEqual(JSON.parse(JSON.stringify(user)), user);
 });

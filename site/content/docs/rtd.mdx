@@ -73,7 +73,7 @@ It returns the statement's descriptor, which is plain data. On the [example sche
 }
 ```
 
-A statement the database refuses comes back with its diagnostics, each at its place in the statement, and no columns. The call rejects only when it cannot analyze at all: a URL of no database it reads, or a database it cannot reach. Calls with the same URL share one connection, and each reads the schema as it stands, so a migration between two calls shows in the second.
+A statement the database refuses comes back with its diagnostics, each at its place in the statement, and no columns. A parameter nothing in the statement gives a type is a diagnostic too, at its first use, as the type check reports it. The call rejects only when it cannot analyze at all: a URL of no database it reads, or a database it cannot reach. Calls with the same URL share one connection, and each reads the schema as it stands, so a migration between two calls shows in the second.
 
 ## `reylo analyze`
 

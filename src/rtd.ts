@@ -2,11 +2,13 @@
 // (spec/type-descriptor.ts, `StatementDescriptor`), read from a live database by the engine, as
 // plain data that serializes to JSON; `reylo analyze` prints the same descriptors on the command
 // line (engine/cli/src/analyze.rs). It reads no project file and no `.reylo/` cache: the URL names
-// the database, and every call reads it afresh.
+// the database, every call reads it afresh, and a parameter nothing types is an error, as under the
+// project file's default, `strict_params: true`.
 import type { StatementDescriptor } from "../spec/type-descriptor.ts";
 import { NotMysql, reason } from "./connection.ts";
 import { duckdbDatabase } from "./duckdb.ts";
-import { AnswerCache, engine, Unreachable, type Analysis, type Connection } from "./engine.ts";
+import { AnswerCache, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
+import { placeholdersOf, untypedParams } from "./module-types.ts";
 import { dialectOf, duckdbPath, sqlitePath, type Dialect as Database } from "./project.ts";
 
 export type * from "../spec/type-descriptor.ts";
@@ -63,7 +65,8 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
       // dropped before each call, so that calls made together share them and a later call reads a
       // schema that changed since.
       await c.forget();
-      return descriptor(sql, dialect, c.version, await c.analyze(sql));
+      const analysis = await c.analyze(sql);
+      return descriptor(sql, dialect, c.version, analysis, await untyped(await engine(dialect), sql, dialect, analysis));
     } catch (e) {
       if (e instanceof Unreachable || e instanceof NotMysql) {
         drop(key, entry);
@@ -120,7 +123,8 @@ async function analyzeDuckdb(url: string, sql: string): Promise<StatementDescrip
   return db.run(async (io) => {
     const [[version]] = (await io.query("select version()", [])) as [[string]];
     try {
-      return descriptor(sql, "duckdb", version.replace(/^v/, ""), await duckdb.analyze(sql, "duckdb", io, new AnswerCache()));
+      const analysis = await duckdb.analyze(sql, "duckdb", io, new AnswerCache());
+      return descriptor(sql, "duckdb", version.replace(/^v/, ""), analysis, await untyped(duckdb, sql, "duckdb", analysis));
     } catch (e) {
       if (e instanceof Unreachable) throw failure(e);
       return refused(sql, "duckdb", version.replace(/^v/, ""), (e as Error).message);
@@ -136,11 +140,23 @@ function failure(e: unknown): Error {
 }
 
 /**
+ * An error at the first use of each parameter nothing in the statement types, as `reylo analyze`
+ * and the type check give it under the project file's default, `strict_params: true`, in UTF-8
+ * bytes (`untypedParams` in src/module-types.ts). The engine's own lexer finds the placeholders; a
+ * statement it cannot read has none, and each error is then at the statement's start.
+ */
+async function untyped(e: Engine, sql: string, dialect: Database, analysis: Analysis): Promise<Analysis["diagnostics"]> {
+  if (analysis.diagnostics.length || !analysis.params.some((p) => p.type.kind === "unknown")) return [];
+  const lexed = dialect === "mysql" ? undefined : await e.lexAsync(sql, dialect).catch(() => undefined);
+  return untypedParams(sql, analysis, placeholdersOf(analysis, dialect, lexed));
+}
+
+/**
  * The engine's analysis as the format writes it: the format's fields alone, a diagnostic's place
  * in UTF-16 units of the statement as written, and the database's own code (`Analysis::descriptor`
  * in engine/core/src/api.rs, which `reylo analyze` prints).
  */
-function descriptor(sql: string, dialect: Database, version: string, a: Analysis): StatementDescriptor {
+function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
   return {
     rtd: RTD_VERSION,
     dialect: { name: dialect, version },
@@ -150,7 +166,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
     params: a.params.map((p) => ({ name: p.name, type: p.type, ...(p.nullable && { nullable: true }), ...(p.optional && { optional: true }), ...(p.comment !== undefined && { comment: p.comment }) })),
     columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
     cardinality: a.cardinality,
-    diagnostics: a.diagnostics.map((d) => {
+    diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);
       return { message: d.message, start, end: Math.max(utf16(sql, d.start + d.length), start), ...(d.server_code !== undefined && { code: d.server_code }) };
     }),
