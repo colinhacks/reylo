@@ -55,4 +55,7 @@ insert into pairs values (1, '[]');
 create table maybes (id int primary key, m jsonb not null check (jsonb_matches_schema('{"type": ["string", "null"]}', m)), old jsonb);
 insert into maybes values (1, 'null', '"before"'), (2, '"s"', null);
 alter table maybes add constraint old_schema check (jsonb_matches_schema('{"type": "number"}', old)) not valid;
+-- A union of a literal, an object and null, which the type lists in that order.
+create table sizes (id int primary key, s jsonb not null check (jsonb_matches_schema('{"anyOf": [{"type": "object", "properties": {"w": {"type": "integer"}, "h": {"type": "integer"}}, "required": ["w", "h"], "additionalProperties": false}, {"enum": ["auto", null]}]}', s)));
+insert into sizes values (1, '"auto"'), (2, '{"w": 2, "h": 3}'), (3, 'null');
 create view doc_view as select id, doc from docs;
