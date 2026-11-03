@@ -872,6 +872,27 @@ impl Type {
         }
     }
 
+    /// The type with each name inside it, its own included, that `rename` answers for replaced
+    /// by the answer: a domain read as its base type, where a rule keys on the base's name.
+    pub fn renamed(mut self, rename: &impl Fn(&str) -> Option<String>) -> Type {
+        if let Some(name) = self.name.as_deref().and_then(rename) {
+            self.name = Some(name);
+        }
+        let position = |p: Position| Position { ty: p.ty.renamed(rename), ..p };
+        self.kind = match self.kind {
+            Kind::Array(a) => Kind::Array(ArrayType { element: Box::new(position(*a.element)), ..a }),
+            Kind::Set(s) => Kind::Set(SetType { element: Box::new(position(*s.element)), ..s }),
+            Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), ..r }),
+            Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
+            Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect(), ..u }),
+            Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
+            Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
+            Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
+            other => other,
+        };
+        self
+    }
+
     /// The union's members, or the type alone.
     pub fn members(&self) -> &[Type] {
         match &self.kind {

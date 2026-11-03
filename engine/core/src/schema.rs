@@ -130,6 +130,8 @@ impl Type {
             Kind::Bytes(_) => json!({"type": "string", "format": "byte", "contentEncoding": "base64"}),
             // A bit string and pgvector's vectors are their text to a client.
             Kind::Array(_) if matches!(bare_name(self), "bit" | "varbit" | "vector" | "halfvec" | "sparsevec") => text_of(self),
+            // Postgres has no cast of a geometric type to JSON, so a document holds its text.
+            Kind::Array(_) | Kind::Record(_) if opts.in_json && matches!(bare_name(self), "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle") => text_of(self),
             Kind::Array(a) => {
                 let items = a.element.ty.json_schema(opts);
                 // A parameter's elements are strict; a result's may be NULL unless the statement

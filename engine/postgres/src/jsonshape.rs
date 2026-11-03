@@ -1430,7 +1430,15 @@ impl ResolveCtx<'_> {
             // the places shift: an array of any of the items, as many at most.
             Shape::Tuple { items, non_null, skips_nulls } => {
                 use reylo_engine_core::schema::{nullable, SchemaOptions};
-                let items: Vec<(Type, bool)> = items.iter().map(|item| self.node(item, &join(path, "[]"), unresolved)).collect();
+                // A domain is written as its base type, whose name the schema's rules key on.
+                let items: Vec<(Type, bool)> = items
+                    .iter()
+                    .map(|item| {
+                        let (ty, non_null) = self.node(item, &join(path, "[]"), unresolved);
+                        let bases = self.registry.domain_bases(&ty.names());
+                        (ty.renamed(&|name| bases.get(name).cloned()), non_null)
+                    })
+                    .collect();
                 let schema = if *skips_nulls && items.iter().any(|(_, non_null)| !non_null) {
                     let mut members: Vec<Value> = Vec::new();
                     for (ty, _) in &items {
