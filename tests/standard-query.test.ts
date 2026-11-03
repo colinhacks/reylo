@@ -11,7 +11,9 @@ import { defineQuery } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
 import { ParameterError } from "../src/values.ts";
-import { DRIVERS, PG, pgLive, INDEX } from "./helpers.ts";
+import type { StandardQueryV1 } from "../src/standard-query.ts";
+import type { Dialect } from "../src/execute.ts";
+import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX } from "./helpers.ts";
 
 // Every import is a Standard Query: `~standard.query` holds the statement, its database, and the
 // two mappings a driver calls, `encode` (the input to the values it binds, each in the database's
@@ -95,6 +97,86 @@ test("a row has the columns' names: one named __proto__ is an own property, and 
   }
   // A driver that hands a value in another form than text is refused, naming the column.
   assert.throws(() => defineQuery(def)["~standard"].query.decode([[1 as unknown as string, null, null]]), /Column "id" is not in Postgres's text form/);
+});
+
+/** Each raw row through the query's `columns`, as a driver that decodes each value once as it reads it builds it: NULL as null, never decoded. */
+function throughColumns(sq: { columns?: readonly { name: string; decode(v: never): unknown }[] }, raw: readonly (readonly unknown[])[]): Record<string, unknown>[] {
+  return raw.map((r) => {
+    const row: Record<string, unknown> = {};
+    sq.columns!.forEach((c, i) => {
+      const v = r[i];
+      Object.defineProperty(row, c.name, { value: v === null || v === undefined ? null : c.decode(v as never), writable: true, enumerable: true, configurable: true });
+    });
+    return row;
+  });
+}
+/** What a call gives: its value, or its error's message. */
+function outcome(f: () => unknown): { value?: unknown; error?: string } {
+  try {
+    return { value: f() };
+  } catch (e) {
+    return { error: `${(e as Error).constructor.name}: ${(e as Error).message}` };
+  }
+}
+
+// Every kind and its array, each with a raw value of its database's form, and a row of NULLs.
+const KINDS = {
+  postgres: [
+    ["bool", "t"], ["int", "42"], ["float", "-1.5e-7"], ["int8", "9007199254740993"], ["decimal", "12345678901234567890.50"], ["text", "héllo"], ["date", "0002-06-01 BC"],
+    ["timestamp", "12345-01-01 00:00:00.5"], ["timestamptz", "2026-10-22 14:46:00.123456-07:52:58"], ["interval", "-1 years -2 mons +3 days 04:05:06.5"], ["json", '{"a":[1,null,"x"]}'],
+    ["bytes", "\\x00ff"], ["vector", "[1,2.5,-3,1e-07]"], ["hstore", String.raw`"a"=>"1", "b c"=>NULL, "q\""=>"\\"`], ["unknown", "(1,x)"],
+    ["bool[]", "{t,f,NULL}"], ["int[]", "{1,NULL,-3}"], ["float[]", "{1.5,NaN,Infinity}"], ["int8[]", "{9007199254740993,NULL}"], ["decimal[]", "{1.50,NaN}"], ["text[]", '{a,"b,c",NULL,"NULL",""}'],
+    ["date[]", '{2026-10-22,"0002-06-01 BC"}'], ["timestamp[]", '{"2026-10-22 14:46:00",infinity}'], ["timestamptz[]", '{"2026-10-22 14:46:00+00","1883-11-18 12:00:00-07:52:58"}'],
+    ["interval[]", '{"1 day","-02:00:00"}'], ["json[]", String.raw`{"{\"a\":1}",NULL}`], ["bytes[]", String.raw`{"\\x00ff",NULL}`], ["vector[]", '{"[1,2]",NULL,"[3]"}'],
+    ["hstore[]", String.raw`{"\"a\"=>\"1\"",NULL,""}`], ["text[]:", "{0101:NULL:0102}"], ["text[];", "{(1,1),(0,0);(2,2),(1,1)}"],
+  ],
+  mysql: [
+    ["int8", "9007199254740993"], ["int8", 9007199254740993n], ["timestamp", "2026-10-22 14:46:00.000000"], ["date", "2026-10-22"], ["decimal", "1.50"], ["bool", 1], ["bool", "0"], ["json", '{"a":1}'],
+    ["json", { a: 1 }], ["timestamp|date", "2026-10-22 14:46:00"], ["bytes", new Uint8Array([0, 255])], ["int", 7], ["float", 1.5], ["text", "x"], ["int8|int", "5"],
+  ],
+  sqlite: [
+    ["int", 7], ["int", 7n], ["int8", 9007199254740993n], ["int8", "9007199254740993"], ["float", 1.5], ["text", "x"], ["text", 5n], ["bytes", new Uint8Array([1])], ["bool", 1n], ["bool", 0], ["json", '{"a":[1]}'],
+    ["int|float|text", 2.5], ["int|float|text", "abc"], ["unknown", 3n], ["unknown", "x"],
+  ],
+  duckdb: [["int8", 9007199254740993n], ["int", 7], ["decimal", "1.50"], ["bool", true], ["text", "x"], ["timestamptz", "2026-10-22T14:46:00Z"]],
+} as const;
+
+test("columns and output: decode(raw) is output(raw through columns), for every kind and array, every cardinality and every refusal", () => {
+  for (const [dialect, kinds] of Object.entries(KINDS) as [Dialect, readonly (readonly [string, unknown])[]][]) {
+    // A delimiter after the brackets (`text[]:`) is the array's own; each column a name of its own.
+    const columns = kinds.map(([kind], i) => {
+      const delim = /\[\]([:;])$/.exec(kind)?.[1];
+      return delim ? ([`c${i}`, kind.slice(0, -1), delim] as const) : ([`c${i}`, kind] as const);
+    });
+    const full = kinds.map(([, v]) => v);
+    const nulls = kinds.map(() => null);
+    // Two rows of every value and one of NULLs, then each cardinality's edges: no row, one, two.
+    for (const cardinality of ["many", "one", "maybeOne", "none"] as const) {
+      const q = defineQuery({ dialect, sql: "select 1", params: [], columns, cardinality } as never) as { "~standard": { query: StandardQueryV1.Query<unknown, Dialect> & { output(rows: readonly Record<string, unknown>[]): unknown } } };
+      const sq = q["~standard"].query;
+      assert.deepEqual(sq.columns!.map((c) => c.name), columns.map(([name]) => name));
+      for (const raw of [[], [full], [nulls], [full, nulls], [full, full, nulls]]) {
+        const decoded = outcome(() => sq.decode(raw as never));
+        assert.deepStrictEqual(outcome(() => sq.output(throughColumns(sq, raw))), decoded, `${dialect} ${cardinality} ${raw.length} rows`);
+      }
+      // Each value alone: the column's decoder gives what decode puts in the row, a refusal included.
+      if (cardinality === "many")
+        kinds.forEach(([kind, v], i) => {
+          const row = outcome(() => (sq.decode([kinds.map((_, j) => (j === i ? v : null))] as never) as Record<string, unknown>[])[0]![`c${i}`]);
+          assert.deepStrictEqual(outcome(() => sq.columns![i]!.decode(v as never)), row, `${dialect} ${kind}`);
+        });
+    }
+  }
+  // A value its column's type does not allow is refused alike both ways: SQLite's text in an INTEGER column.
+  const loose = defineQuery({ dialect: "sqlite", sql: "select n from t", params: [], columns: [["n", "int"]] })["~standard"].query;
+  const refused = outcome(() => loose.decode([["abc"]]));
+  assert.match(refused.error!, /DecodeError: .*"n"/);
+  assert.deepStrictEqual(outcome(() => loose.output(throughColumns(loose, [["abc"]]))), refused);
+  // A query defined by hand without its columns has no `columns`; its `output` applies the cardinality alone.
+  const bare = defineQuery({ dialect: "postgres", sql: "select 1", params: [], cardinality: "maybeOne" })["~standard"].query;
+  assert.equal("columns" in bare, false);
+  assert.deepEqual(bare.output([{ a: 1 }]), { a: 1 });
+  assert.throws(() => bare.output([{ a: 1 }, { a: 2 }]), /Expected at most one row, got 2/);
 });
 
 test("mysql and sqlite: each value as a driver binds it, and decode takes every form a driver reads", () => {
@@ -236,6 +318,54 @@ test("postgres: pg runs a built import as a Standard Query, with every parser of
     pg.types.setTypeParser(20, (x: string) => x);
     pg.types.setTypeParser(1184, pg.types.getTypeParser(1114));
     for (const session of Session.opened()) await session.close();
+    await pool.end();
+    await admin.query(`drop database if exists ${name}`);
+    await admin.end();
+  }
+});
+
+test("postgres: a built import's columns decode the types the database created as decode does, and its declaration types each column", { skip: pgLive }, async () => {
+  const require = createRequire(join(DRIVERS, "pg", "package.json"));
+  const pg = require("pg");
+  const admin = new pg.Client({ connectionString: PG });
+  await admin.connect();
+  const name = `reylo_columns_${process.pid}`;
+  await admin.query(`drop database if exists ${name}`);
+  await admin.query(`create database ${name}`);
+  const url = new URL(PG!);
+  url.pathname = `/${name}`;
+  const pool = new pg.Pool({ connectionString: url.href });
+  const root = mkdtempSync(join(tmpdir(), "reylo-columns-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".env"), `DATABASE_URL=${url.href}\n`);
+  try {
+    await pool.query("create extension hstore");
+    await pool.query("create type mood as enum ('happy', 'sad')");
+    await pool.query("create table notes (id int4 primary key, mood mood not null, moods mood[], prefs hstore, history hstore[], at timestamptz not null, big int8)");
+    await pool.query(String.raw`insert into notes values (1, 'happy', '{happy,NULL,sad}', '"a"=>"1", "b c"=>NULL', array['"x"=>"y"'::hstore, NULL], '2026-10-22 14:46:00.5+02', 9007199254740993), (2, 'sad', NULL, NULL, NULL, '1883-11-18 12:00:00-07:52:58', NULL)`);
+    const sql = "select id, mood, moods, prefs, history, at, big from notes order by id";
+    const query = await built(root, "notes", sql);
+    const sq = query["~standard"].query;
+    assert.deepEqual(sq.columns.map((c: { name: string }) => c.name), ["id", "mood", "moods", "prefs", "history", "at", "big"]);
+    // The server's own text, every parser off: decode, and the same rows through each column's decoder.
+    const raw = (await pool.query({ text: sq.text, values: sq.encode({}), rowMode: "array", types: { getTypeParser: () => (x: string) => x } })).rows;
+    const decoded = sq.decode(raw);
+    assert.deepStrictEqual(sq.output(throughColumns(sq, raw)), decoded);
+    assert.deepEqual(decoded, await query.run(pool));
+    assert.deepEqual(decoded, [
+      { id: 1, mood: "happy", moods: ["happy", null, "sad"], prefs: { a: "1", "b c": null }, history: [{ x: "y" }, null], at: "2026-10-22T12:46:00.5Z", big: 9007199254740993n },
+      { id: 2, mood: "sad", moods: null, prefs: null, history: null, at: "1883-11-18T19:52:58Z", big: null },
+    ]);
+    // The declaration types each column's decoder by the column's type, without null.
+    await closeSessions();
+    const declared = (await declarations(root, { "notes.sql": sql }))["notes.sql"]!;
+    const line = declared.split("\n").find((l) => l.includes(`readonly "~standard"`));
+    assert.equal(
+      line,
+      `  readonly "~standard": { readonly query: { readonly columns: readonly [{ readonly name: "id"; decode(value: string): number }, { readonly name: "mood"; decode(value: string): "happy" | "sad" }, { readonly name: "moods"; decode(value: string): ("happy" | "sad" | null)[] }, { readonly name: "prefs"; decode(value: string): Record<string, string | null> }, { readonly name: "history"; decode(value: string): (Record<string, string | null> | null)[] }, { readonly name: "at"; decode(value: string): string }, { readonly name: "big"; decode(value: string): bigint }] } };`,
+    );
+  } finally {
+    await closeSessions();
     await pool.end();
     await admin.query(`drop database if exists ${name}`);
     await admin.end();

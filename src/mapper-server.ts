@@ -107,7 +107,7 @@ export function mapperHandlers(): MapperHandlers {
       // statement as written. `sql` and `raw` are declared as their own texts, which a hover over
       // either shows once, with no doc comment to repeat it.
       const leading = leadingComment(sql, dialect);
-      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined)) => {
+      const emit = (compiled: string | undefined, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(dialect, undefined), columns?: string) => {
         const written = statementAfter(sql, leading);
         const text = [
           reyloImport(paramsType, rowType),
@@ -128,6 +128,9 @@ export function mapperHandlers(): MapperHandlers {
           // missing. Its text is not given: the build reads the root from the file's own project,
           // which may not be the project the type check opened.
           `  readonly source: string;`,
+          // Each output column's name and decoder, which a driver that decodes each value once as it
+          // reads it calls: typed column by column, so it knows what each gives.
+          ...(columns === undefined ? [] : [`  readonly "~standard": { readonly query: { readonly columns: ${columns} } };`]),
           `};`,
           `export default query;`,
           ``,
@@ -146,7 +149,7 @@ export function mapperHandlers(): MapperHandlers {
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The compiled statement, without the comment naming its file, which the run time adds where
       // it sends the statement (src/sqlcommenter.ts).
-      return emit(analysis.rewritten.sql.trimEnd(), types.params, types.row, types.cardinality, types.names, types.queryError);
+      return emit(analysis.rewritten.sql.trimEnd(), types.params, types.row, types.cardinality, types.names, types.queryError, types.columns);
     },
     async closeProject(params) {
       const handle = (params as { projectHandle: string }).projectHandle;

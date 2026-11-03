@@ -13,11 +13,11 @@
 // TIME's fraction digits as the driver read them, which are the column's own over the text
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
-import { normalize } from "./decode-sqlite.ts";
+import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, textDecoder, type Decoder } from "./values.ts";
+import { coerce, DecodeError, textDecoder } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -60,6 +60,30 @@ export declare namespace StandardQueryV1 {
      * row at most, which its cardinality says, and where no key is known.
      */
     readonly key?: readonly string[];
+    /**
+     * Each output column, in the order the statement selects them: its name, and `decode`, which
+     * maps one raw value of the column, never NULL, to the value `decode` puts in the row. With
+     * `output`, it lets a driver that reads a result value by value decode each value once, as it
+     * reads it, rather than hand `decode` the raw rows. NULL is null in the row, and a driver
+     * never calls a column's `decode` for it. Absent where the columns are not known.
+     */
+    readonly columns?: readonly Column<D>[];
+    /**
+     * Maps rows already decoded through `columns`, each an object keyed by the columns' names, to
+     * the output, as `decode` does once it has decoded them: `decode(rows)` equals `output` of the
+     * same rows with each value through its column's `decode`. Throws as `decode` does for a result
+     * that does not fit the output (a second row where at most one is expected, say). Present
+     * wherever `columns` is.
+     */
+    output?(rows: readonly Record<string, unknown>[]): Output;
+  }
+
+  /** One output column of a query: its name, and the decoder of its raw values. */
+  export interface Column<D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect> {
+    /** The column's name, as the output's rows are keyed by it. */
+    readonly name: string;
+    /** Maps one raw value of the column, never NULL, to its value in the output's rows. */
+    decode(value: Exclude<RawValue<D>, null>): unknown;
   }
 
   /** The database a statement is written for. */
@@ -85,7 +109,7 @@ export declare namespace StandardQueryV1 {
     : [input: StandardTypedV1.InferInput<Q>];
 }
 
-/** A column's raw value as its kind, on MySQL from whatever form the driver read. Postgres's are its text's decoders; SQLite's rows go through `normalize` whole. */
+/** A column's raw value as its kind, on MySQL from whatever form the driver read. Postgres's are its text's decoders, SQLite's `.run()`'s own (`sqliteDecoder`). */
 function decoder(name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
   // column that may be one included (src/decode-mysql.ts, `mariadb`).
@@ -103,17 +127,24 @@ const columnCount = (columns: number, got: number) => new DecodeError(`The state
  * The query members of a module: `encode` through `.run()`'s own binding, `decode` through its
  * decoders, then `materialize`, which applies the cardinality as `.run()` does.
  */
-export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>, materialize: (rows: Record<string, unknown>[]) => Output): StandardQueryV1.Query<Output, D> {
+export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>, materialize: (rows: Record<string, unknown>[]) => Output): StandardQueryV1.Query<Output, D> & { output(rows: readonly Record<string, unknown>[]): Output } {
   let text: string | undefined;
-  let decoders: ((v: unknown) => unknown)[] | undefined;
-  let textDecoders: Decoder[] | undefined;
   let build: RowBuilder | undefined;
+  const dialect: Dialect = module.dialect;
+  // Each column's decoder, which `decode` runs on every value and `columns` hands a driver. SQLite's
+  // is `.run()`'s own reading, its refusals of a storage class the column's type does not allow
+  // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
+  // a number past 2^53 in an INTEGER column is refused as a rounded one.
+  const decoders = module.columns?.map(([name, kind, delim]): ((v: never) => unknown) => (dialect === "postgres" ? textDecoder(kind, delim) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
+  const columns = module.columns?.map(([name], i) => Object.freeze({ name, decode: decoders![i]! }) as StandardQueryV1.Column<D>);
   // A closure, not `this`: a driver may take `encode` off the object.
   // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.
   const statementText = () => (text ??= sentText(module, compile(module).text));
   return {
     dialect: module.dialect,
     ...(module.key === undefined ? {} : { key: module.key }),
+    ...(columns === undefined ? {} : { columns: Object.freeze(columns) }),
+    output: (rows) => materialize(rows as Record<string, unknown>[]),
     get text() {
       return statementText();
     },
@@ -125,43 +156,26 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
       return bound.values as StandardQueryV1.RawValue<D>[];
     },
     decode(rows) {
-      const columns = module.columns;
-      if (columns === undefined) throw new TypeError("A query defined by hand without its columns cannot map rows to its output: a module a build step writes carries them.");
-      const n = columns.length;
+      const names = module.columns;
+      if (names === undefined || decoders === undefined) throw new TypeError("A query defined by hand without its columns cannot map rows to its output: a module a build step writes carries them.");
+      const n = names.length;
+      const fns = decoders as ((v: unknown) => unknown)[];
       // Each row's values, decoded into one array the builder copies from.
       const values = new Array<unknown>(n);
-      build ??= module.row ?? rowOf(columns.map(([name]) => name));
+      build ??= module.row ?? rowOf(names.map(([name]) => name));
       const out = new Array<Record<string, unknown>>(rows.length);
-      if (module.dialect === "postgres") {
-        // Postgres's text decoders, each value checked for text where the decoder takes it.
-        const text = (textDecoders ??= columns.map(([, kind, delim]) => textDecoder(kind, delim)));
-        for (let r = 0; r < rows.length; r++) {
-          const raw = rows[r]!;
-          if (raw.length !== n) throw columnCount(n, raw.length);
-          for (let i = 0; i < n; i++) {
-            const v = raw[i];
-            values[i] = v === null || v === undefined ? null : typeof v === "string" ? text[i]!(v) : notText(columns[i]![0]);
-          }
-          out[r] = build(values);
-        }
-        return materialize(out);
-      }
-      // SQLite's values go through `.run()`'s own `normalize`, its refusals of a storage class the
-      // column's type does not allow included. Its default reading suits a driver whose integer
-      // mode is unknown: a BigInt is read exact, and a number past 2^53 in an INTEGER column is
-      // refused as a rounded one.
-      const sqlite = module.dialect === "sqlite";
-      if (!sqlite) decoders ??= columns.map(([name, kind, delim]) => decoder(name, kind, delim));
+      // Postgres's values are text, each checked where its decoder takes it.
+      const text = dialect === "postgres";
       for (let r = 0; r < rows.length; r++) {
         const raw = rows[r]!;
         if (raw.length !== n) throw columnCount(n, raw.length);
         for (let i = 0; i < n; i++) {
           const v = raw[i];
-          values[i] = v === null || v === undefined ? null : sqlite ? v : decoders![i]!(v);
+          values[i] = v === null || v === undefined ? null : text && typeof v !== "string" ? notText(names[i]![0]) : fns[i]!(v);
         }
         out[r] = build(values);
       }
-      return materialize(sqlite ? (normalize(out, columns) as Record<string, unknown>[]) : out);
+      return materialize(out);
     },
   };
 }

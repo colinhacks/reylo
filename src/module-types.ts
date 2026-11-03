@@ -22,6 +22,8 @@ export type ModuleTypes = {
   names: string[];
   /** The type of the error `.try()` gives: the module's `QueryError`. */
   queryError: string;
+  /** The Standard Query's `columns`, one entry per output column in order: `readonly [{ readonly name: "id"; decode(value: string): number }]`; undefined where the statement failed. */
+  columns?: string;
 };
 
 /**
@@ -129,6 +131,9 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
   }
   const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
+  // Each column's decoder takes its raw value, never NULL, and gives the column's type without null.
+  const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
+  const standardColumns = `readonly [${analysis.columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect)} }`).join(", ")}]`;
   const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
@@ -144,5 +149,6 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),
+    columns: standardColumns,
   };
 }
