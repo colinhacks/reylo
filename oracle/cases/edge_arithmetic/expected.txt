@@ -1,5 +1,5 @@
 date_span.sql: one () -> { days: int4? }
-days.sql: maybeOne (id: int4) -> { id: int4, days: int4? }
+days.sql: at_most_one (id: int4) -> { id: int4, days: int4? }
 numeric_to_int.sql: many () -> { id: int4, whole: int4 } key (id)
 sums.sql: one (least: int4) -> { total: int4?, doubled: int8?, took: interval? }
 timestamp_gap.sql: many () -> { id: int4, gap: interval? } key (id)

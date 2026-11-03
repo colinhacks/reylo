@@ -9,13 +9,13 @@ import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./deco
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
-import { describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
-import type { EngineType } from "./engine-type.ts";
+import { columnKind, describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
+import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
 import type { JsonSchema } from "./engine-type.ts";
 import type { Checks } from "./checks.ts";
-import type { Structured } from "./rows.ts";
+import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
 
@@ -190,7 +190,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
  * then refuses, given or left out, except that a JSON parameter's null there is JSON's null; a
  * query defined by hand without it binds what it is given.
  */
-export type Inputs = Readonly<Record<string, { readonly type: EngineType; readonly schema?: JsonSchema; readonly cast?: string; readonly nullable?: boolean }>>;
+export type Inputs = Readonly<Record<string, { readonly type: EngineType; readonly schema?: JsonSchema; readonly cast?: string; readonly members?: Members; readonly delimiter?: string; readonly nullable?: boolean }>>;
 
 type AnyClient = Record<string, any> & ((...args: any[]) => any);
 
@@ -344,7 +344,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // left the connection out of step. Each element of a `jsonb[]` is a JSON value.
       const bound = values.map((v, i) => {
         const t = type(i);
-        return Array.isArray(v) && t?.kind === "array" ? arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, t.delimiter) : v;
+        return Array.isArray(v) && t?.kind === "array" && !isJsonParam(v, i) ? arrayLiteral(t.element.type.kind === "json" ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, query.inputs?.[names[i]!]?.delimiter) : v;
       });
       // A JSON parameter goes to pg's family, PGlite and Neon as its JSON text, and to postgres.js
       // as its JSON text declared `unknown` (below). Bun.sql serializes a value for a JSON
@@ -370,7 +370,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
         // transaction shows neither. Bun.sql serializes the value itself.
         const bun = typeof c.commitDistributed === "function";
         const asText = typeof c.typed === "function" && !bun;
-        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i)) ? c.typed(v, 705) : v));
+        const mapped = bound.map((v, i) => (isJsonParam(v, i) ? (asText ? c.typed(jsonText(v), 705) : { toJSON: () => jsonValue(v) }) : asText && typeof v === "string" && isTime(type(i), query.dialect) ? c.typed(v, 705) : v));
         return bun ? bunRows(await c.unsafe(text, mapped), query.columns) : await postgresJs(c, text, mapped, query.columns, query.row);
       }
       if (typeof c === "function") return await neonCallable(c, text, json().map(asByteaHex), query.columns);
@@ -465,12 +465,13 @@ function statement(query: QueryModule, params: ParamsInput) {
     // A structured parameter is checked against its column list and written as the JSON the
     // statement reads; in an insert, its lists name only the keys the call carries. It refuses
     // null itself, saying what to pass.
-    if (type?.kind === "rows") {
+    if (type !== undefined && input?.members !== undefined) {
       const structured = query.structured?.find((s) => s.name === name);
-      const { prepareRows, variant } = checksFor(query, name);
-      const prepared = prepareRows(name, type, bound.values[i], query.dialect, structured !== undefined);
+      const { prepareRows, rowsOf, variant } = checksFor(query, name);
+      const rows = rowsOf(type, input.members);
+      const prepared = prepareRows(name, rows, bound.values[i], query.dialect, structured !== undefined);
       bound.values[i] = prepared.value;
-      if (structured) bound.text = variant(bound.text, structured, type.fields, prepared.present);
+      if (structured) bound.text = variant(bound.text, structured, rows.fields, prepared.present);
       return;
     }
     // A parameter the statement takes no null for, which its types rely on (a column it alone
@@ -495,13 +496,13 @@ function statement(query: QueryModule, params: ParamsInput) {
     // NULL: the value is checked against the type as written.
     const cast = query.inputs?.[name]?.cast;
     if (cast !== undefined && type !== undefined) checksFor(query, name).checkCast(name, cast, type, bound.values[i], query.dialect);
-    checkTime(type, name, bound.values[i]);
-    checkBinary(type, name, bound.values[i]);
+    checkTime(type, name, bound.values[i], query.dialect);
+    checkBinary(type, name, bound.values[i], query.dialect);
     bound.values[i] = jsonNull ? JSON_NULL : encode(type, bound.values[i], query.dialect, name);
   });
   // Every MySQL and SQLite driver binds JSON text as text, which the database reads as JSON (a
   // structured parameter's is written already).
-  if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.type.kind !== "rows" ? jsonText(v) : v));
+  if (query.dialect !== "postgres") bound.values = bound.values.map((v, i) => (isJsonValue(query, bound.names[i]!, v) && query.inputs?.[bound.names[i]!]?.members === undefined ? jsonText(v) : v));
   // The comment naming the file goes on last, after a structured parameter's lists are written.
   bound.text = sentText(query, bound.text);
   return bound;
@@ -529,8 +530,8 @@ export function rawStatement(query: QueryModule, params: unknown): { text: strin
 function postgresText(query: QueryModule, name: string, v: unknown): string | null {
   if (v == null) return null;
   const t = query.inputs?.[name]?.type;
-  if (Array.isArray(v) && t?.kind === "array") return arrayLiteral(isJson(t.of.kind) ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, t.delimiter);
   if (isJsonValue(query, name, v)) return jsonText(v);
+  if (Array.isArray(v) && t?.kind === "array") return arrayLiteral(t.element.type.kind === "json" ? v.map((e) => (e == null ? e : JSON.stringify(e))) : v, query.inputs?.[name]?.delimiter);
   if (Array.isArray(v)) return arrayLiteral(v);
   if (v instanceof Uint8Array) return asByteaHex(v) as string;
   if (typeof v === "boolean") return v ? "t" : "f";
@@ -562,7 +563,8 @@ function nullElement(array: readonly unknown[], path = ""): string | undefined {
 function refusesNull(query: QueryModule, type: EngineType | undefined): boolean {
   if (type === undefined || type.kind === "unknown") return false;
   if (type.kind !== "json") return true;
-  return type.schema !== undefined && query.checks !== undefined && query.checks.validate(type.schema, null) !== undefined;
+  const schema = schemaOf(type);
+  return schema !== undefined && query.checks !== undefined && query.checks.validate(schema, null) !== undefined;
 }
 
 /** A parameter the statement takes no null for, given null or left out. */
@@ -587,7 +589,6 @@ function asBuffer(v: unknown) {
   return v instanceof Uint8Array && NodeBuffer !== undefined && !NodeBuffer.isBuffer(v) ? NodeBuffer.from(v.buffer, v.byteOffset, v.byteLength) : v;
 }
 
-const isJson = (kind: EngineType["kind"] | undefined) => kind === "json" || kind === "object" || kind === "list" || kind === "rows";
 
 // A JSON parameter's value is a JavaScript value, which reaches the database as its JSON text
 // (JSON.stringify), so a string is a JSON string on every driver; null is SQL NULL where the
@@ -596,7 +597,8 @@ const isJson = (kind: EngineType["kind"] | undefined) => kind === "json" || kind
 // an array literal and a string as raw JSON text, mariadb expanded an array into a list, the
 // SQLite drivers refused an object, and mysql2 bound 5 as 5.0.
 function isJsonValue(query: QueryModule, name: string, v: unknown): boolean {
-  return v != null && isJson(query.inputs?.[name]?.type.kind);
+  const input = query.inputs?.[name];
+  return v != null && (input?.type.kind === "json" || input?.members !== undefined);
 }
 
 /**
@@ -625,24 +627,24 @@ const jsonText = (v: unknown) => JSON.stringify(jsonValue(v));
 // server sets, and a Date is refused too, as every other type's value is but a string,
 // with the call that writes it as one.
 
-const isTime = (type: EngineType | undefined) => type?.kind === "scalar" && type.name.split("|").every((part) => part === "timestamp" || part === "timestamptz" || part === "date");
+const isTime = (type: EngineType | undefined, dialect: Dialect) => type !== undefined && columnKind(type, dialect).split("|").every((part) => part === "timestamp" || part === "timestamptz" || part === "date");
 
-function checkTime(type: EngineType | undefined, name: string, v: unknown): void {
+function checkTime(type: EngineType | undefined, name: string, v: unknown, dialect: Dialect): void {
   if (type === undefined || v == null) return;
   if (type.kind === "array") {
-    if (Array.isArray(v)) for (const e of v) checkTime(Array.isArray(e) ? type : type.of, name, e);
+    if (Array.isArray(v)) for (const e of v) checkTime(Array.isArray(e) ? type : type.element.type, name, e, dialect);
     return;
   }
-  if (type.kind !== "scalar") return;
-  if (type.name === "timestamptz") {
+  const kind = columnKind(type, dialect);
+  if (kind === "timestamptz") {
     if (v instanceof Date) {
       throw new ParameterError(`Parameter "${name}" is a timestamptz, which takes the instant as a string that names its zone, as \`.run()\` returns one, not a Date: pass date.toISOString() ("2026-10-12T19:06:48.282Z").`);
     }
     if (typeof v === "string" && !zoned.test(v.trim())) {
       throw new ParameterError(`Parameter "${name}" is a timestamptz, an instant, so a string for it names its zone ("2026-10-12T19:06:48.282Z", "2026-10-12 19:06:48+09", "2026-10-12 19:06:48 America/Los_Angeles"); got ${JSON.stringify(v)}, which the server would read in the session's time zone.`);
     }
-  } else if (v instanceof Date && type.name.split("|").every((part) => part === "timestamp" || part === "date")) {
-    throw new ParameterError(`Parameter "${name}" is a ${type.name === "date" ? "date" : "timestamp"} without a time zone, so it takes the wall-clock text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones (the app's, the server's or UTC).`);
+  } else if (v instanceof Date && kind.split("|").every((part) => part === "timestamp" || part === "date")) {
+    throw new ParameterError(`Parameter "${name}" is a ${kind === "date" ? "date" : "timestamp"} without a time zone, so it takes the wall-clock text ("2026-10-12 19:06:48.282", "2026-10-12"), not a Date: drivers write a Date's time in different zones (the app's, the server's or UTC).`);
   }
 }
 
@@ -651,13 +653,13 @@ function checkTime(type: EngineType | undefined, name: string, v: unknown): void
 // driver as it is, and a string means something different on each database: Postgres reads it
 // as bytea's hex or escape text, MySQL stores the bytes of its UTF-8, and SQLite stores it as
 // TEXT, which comes back a string. So base64 text was stored as its own letters.
-function checkBinary(type: EngineType | undefined, name: string, v: unknown): void {
+function checkBinary(type: EngineType | undefined, name: string, v: unknown, dialect: Dialect): void {
   if (type === undefined || v == null) return;
-  if (type.kind === "array") {
-    if (Array.isArray(v)) for (const e of v) checkBinary(Array.isArray(e) ? type : type.of, name, e);
+  if (type.kind === "array" && columnKind(type, dialect).endsWith("[]")) {
+    if (Array.isArray(v)) for (const e of v) checkBinary(Array.isArray(e) ? type : type.element.type, name, e, dialect);
     return;
   }
-  if (type.kind !== "scalar" || (type.name !== "bytea" && type.name !== "blob") || v instanceof Uint8Array) return;
+  if (columnKind(type, dialect) !== "bytes" || v instanceof Uint8Array) return;
   throw new ParameterError(`Parameter "${name}" is binary data, so it takes a Uint8Array (a Buffer is one), as \`.run()\` returns one; got ${describe(v)}. ${v instanceof ArrayBuffer ? "Wrap an ArrayBuffer in one: new Uint8Array(buffer)." : "Decode base64 or hex text into one first."}`);
 }
 
@@ -676,22 +678,20 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (type === undefined || v == null) return v;
   if (dialect === "duckdb") return encodeDuckdb(type, v, name);
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
-  if (dialect === "mysql") return type.kind === "array" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
-  if (type.kind === "array") return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !isVector(type.of) ? type : type.of, e, dialect, name)) : v;
-  if (isVector(type) && Array.isArray(v)) {
-    if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${type.name}, which has one dimension at least; got an empty array.`);
-    return vectorText(v, name, `a pgvector ${type.name}`);
+  if (dialect === "mysql") return type.kind === "array" && bareName(type) === "vector" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
+  const kind = columnKind(type, dialect);
+  if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && columnKind(type.element.type, dialect) !== "vector" ? type : type.element.type, e, dialect, name)) : v;
+  if (kind === "vector" && Array.isArray(v)) {
+    if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${bareName(type)}, which has one dimension at least; got an empty array.`);
+    return vectorText(v, name, `a pgvector ${bareName(type)}`);
   }
-  if (type.kind === "scalar" && type.name === "hstore" && typeof v === "object") return hstoreText(v, (message) => {
+  if (kind === "hstore" && typeof v === "object") return hstoreText(v, (message) => {
     throw new ParameterError(`Parameter "${name}" ${message}`);
   });
   if (typeof v !== "string") return v;
-  if (isTime(type)) return postgresYear(v);
-  return type.kind === "scalar" && type.name === "interval" ? postgresInterval(v) : v;
+  if (isTime(type, dialect)) return postgresYear(v);
+  return kind === "interval" ? postgresInterval(v) : v;
 }
-
-/** Whether `type` is one of pgvector's dense vectors, which `.run()` returns as an array of numbers. */
-const isVector = (type: EngineType): type is EngineType & { kind: "scalar" } => type.kind === "scalar" && (type.name === "vector" || type.name === "halfvec");
 
 /** A vector's floats as the text a VECTOR's `to_vector` and pgvector's input read; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
 function vectorText(v: readonly unknown[], name: string, what: string): string {
@@ -712,7 +712,7 @@ function vectorText(v: readonly unknown[], name: string, what: string): string {
 function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object"): unknown {
   if (typeof v !== "bigint") return v;
   if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
-  if (type?.kind === "scalar" && type.name === "int8") return String(v);
+  if (type !== undefined && columnKind(type, "sqlite") === "int8") return String(v);
   const digits = "pass it as a string of digits, which SQLite stores as that integer in an INTEGER column";
   if (driver === "durable-object") throw new ParameterError(`A Durable Object's SQL storage binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
   throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);

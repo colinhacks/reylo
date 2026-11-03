@@ -1,66 +1,66 @@
-aggregates.sql: one () -> { a: int8, b: int8, c: int8, d: numeric?, e: numeric?, f: int4|int8?, g: text?, h: date?, i: text?, j: int8, k: int8, l: int8, m: float8?, o: float8?, p: [int4]?, q: json?, r: numeric?, s: int8|int4?, u: int4|int8?, v: int8, w: numeric, x: bool, z: timestamp?, aa: numeric?, ab: float8?, ac: json?, ad: text?, ae: text?, af: bytea?, ag: int2?, ah: int2?, ai: time?, aj: float8?, ak: float8? }
-aggregates_grouped.sql: many () -> { n: int4, a: int8, b: numeric, c: text, d: int4|int8?, e: text?, f: text, g: int8, h: numeric, i: int8, j: date, k: [int2] }
-aggregates_no_rows.sql: one () -> { a: int8, b: numeric?, c: int4|int8?, d: int8, e: int8, f: int8, g: int8, h: numeric?, i: float8?, j: text?, k: [int4]?, l: numeric?, m: int4|int8?, o: int4|int8?, p: bool }
-aggregates_rollup.sql: many () -> { n: int4|int8?, small: int2?, a: int8, b: numeric?, c: int8?, d: text? }
-bit_and_enum.sql: many () -> { a: bytea, b: int8|int4, c: text?, d: text, e: float8, f: text, g: float8, h: bool, i: bool, j: int2, k: int8|int4, l: bool, m: int8|int4, o: int8, p: text?, q: text?, r: text?, s: text?, u: text?, v: int8, w: int8, x: int8 }
-casts.sql: many () -> { a: text?, b: int8, c: int8, d: numeric, e: float8, f: int8, g: int8, h: numeric, i: float8, j: date?, k: timestamp?, l: time?, m: date?, o: text?, p: int8, q: timestamp?, r: json?, s: int8, u: int8, v: numeric, w: bytea?, x: int2?, z: text?, aa: text?, ab: int8, ac: int8, ad: int8, ae: float4, af: numeric, ag: float4, ah: text? }
-columns.sql: many () -> { id: int4, n: int4, big: int8, u: int8, small: int2, price: numeric, ratio: float8, name: text, body: text, raw: bytea, day: date, at: timestamp, ts: timestamp, tm: time, y: int2, kind: text, tags: text, doc: json, bits: bytea, flag: bool, maybe_n: int4?, maybe_name: text?, maybe_day: date?, maybe_doc: json? }
-conditionals.sql: many () -> { a: text, b: text, c: int8, d: text?, e: text?, f: text?, g: text, h: text, i: text, j: text?, k: text, l: int4|int8?, m: int4|int8?, o: int8, p: int4|int8?, q: text, r: int4|int8, s: text, u: text?, v: int8?, w: int8, x: int8?, z: text?, aa: date, ab: json, ac: int8|int4, ad: unknown?, ae: timestamp, af: int8|int4?, ag: text, ah: int4|int8? }
-cross_join.sql: many () -> { id: int4, label: text }
-date_functions.sql: many () -> { a: date?, b: time?, c: int2?, d: int8|int4?, e: int8|int4?, f: int8|int4?, g: int8|int4?, h: int8|int4?, i: int8|int4?, j: int8|int4?, k: int8|int4?, l: int8|int4?, m: int8|int4?, o: text?, p: text?, q: date?, r: int8|int4?, s: date?, u: int8, v: int8, w: timestamp?, x: date?, z: timestamp?, aa: timestamp?, ab: int8|int4?, ac: time?, ad: int8?, ae: text?, af: text?, ag: date?, ah: date?, ai: time?, aj: time?, ak: int8?, al: time?, am: timestamp?, an: int8|int4?, ao: int8?, ap: int8|int4?, aq: int8?, at2: timestamp?, au: timestamp?, av: timestamp?, aw: date?, ax: int8|int4, ay: int8|int4?, az: int8, ba: int8, bb: int8|int4, bc: int8, bd: bool, be: bool }
-decimal_and_float.sql: many () -> { a: numeric, b: numeric, c: numeric, d: numeric, e: int8, f: int8, g: numeric, h: float8, i: float8, j: float8, k: float8, l: numeric, m: numeric, o: float8, p: numeric, q: int8, r: text? }
-derived_aggregate.sql: maybeOne () -> { total: numeric?, top: int4|int8? }
-derived_table.sql: many () -> { name: text, maybe_name: text?, up: text?, c: text }
-distinct_and_order.sql: many () -> { name: text, n: int4 }
-division.sql: many () -> { a: numeric?, b: numeric?, c: int8?, d: int8?, e: int8?, f: int8?, g: int8?, h: numeric?, i: float8?, j: numeric?, k: numeric?, l: float8?, m: float8?, o: float8?, p: float8?, q: float8?, r: float8? }
-except.sql: many () -> { a: int4|int8 }
-float_overflow.sql: many () -> { a: float8, b: float8, c: float8, d: float8?, e: float8? }
-for_update.sql: maybeOne (id: int4) -> { id: int4, name: text }
-from_days.sql: many () -> { id: int4, d: date?, far: date? }
-from_days_derived.sql: many () -> { id: int4?, d: date? }
-from_days_view.sql: many () -> { id: int4|int8?, d: date?, far: date? }
-from_days_where.sql: many () -> { id: int4, n: int4 }
-generated_always.sql: many () -> { id: int4, n: int8, name: text, shout: text?, maybe_name: text? }
-group_by_expression.sql: many () -> { shout: text?, c: int8 }
-having.sql: many () -> { n: int4, c: int8 }
-inner_join.sql: many () -> { id: int4, name: text, other_id: int4, label: text, maybe_label: text? }
-insert_values_used.sql: many (a: int4, b: int4, name: text, flag: int4) -> { n: int4 }
-integer_arithmetic.sql: many () -> { a: int8, b: int8, c: int8, d: int8, e: int8, f: int8, g: int8, h: int8, i: int8, j: int8, k: int8, l: int8, m: int8, o: int8|int4 }
-integer_near_overflow.sql: many () -> { a: int8, b: int8, c: int8, d: int8, e: int8, f: int8, g: int8, h: int8|int4 }
-integer_overflow.sql: many () -> { a: int8, b: int8, c: int8, d: int8, e: int8, f: int8, g: int8, h: int8|int4 }
-intersect.sql: many () -> { a: int4|int8 }
-json_values.sql: many () -> { a: json, b: json?, c: text?, d: json?, e: text?, f: int8?, g: int8?, h: { n: int4 }, i: json?, j: text?, k: int8?, l: json?, m: int8?, o: json?, p: text?, q: text?, r: int8?, s: int8|int4, u: json?, v: text?, w: int8?, x: int8|int4, z: json?, aa: bool?, ab: json?, ac: json?, ad: json?, ae: int8? }
-left_join.sql: many () -> { id: int4, name: text, other_id: int4?, label: text?, maybe_label: text?, shown: text, missing: bool, next: int8?, loud: text?, len: int8?, zero: int8 }
-left_join_chain.sql: many () -> { id: int4, label: text?, second: text? }
-left_join_derived.sql: many () -> { id: int4, c: int8?, m: text? }
-left_join_lateral.sql: many () -> { id: int4, c: int8?, m: text? }
-left_join_then_inner.sql: many () -> { id: int4, label: text, second: text }
-left_join_using.sql: many () -> { id: int4, name: text, label: text? }
-left_join_where_not_null.sql: many () -> { id: int4, other_id: int4, label: text }
-literals.sql: one () -> { a: int8|int4, b: numeric, c: float8, d: text, e: unknown?, f: bool, g: bytea, h: date, i: timestamp, j: time, k: bytea, l: bytea, m: text, o: text, p: int8|int4, q: text }
-natural_left_join.sql: many () -> { id: int4, name: text, label: text? }
-now_functions.sql: one () -> { a: timestamp, b: date, c: time, d: timestamp, e: timestamp, f: int8, g: text?, h: text?, i: text, j: int8, k: int8, l: int8, m: int8, o: text?, p: float8, q: float8, r: text?, s: text?, u: text?, v: text?, w: int8, x: text?, z: text?, aa: unknown?, ab: int8, ac: text? }
-plain_columns_beside_parameter.sql: many (n: int4) -> { id: int4, n: int4, big: int8, u: int8, small: int2, price: numeric, ratio: float8, name: text, body: text, raw: bytea, day: date, at: timestamp, ts: timestamp, tm: time, y: int2, kind: text, tags: text, doc: json, bits: bytea, flag: bool, maybe_n: int4?, maybe_name: text?, maybe_day: date?, maybe_doc: json?, next: int8|float8|numeric? }
-predicates.sql: many () -> { a: bool, b: bool, c: bool, d: bool, e: bool, f: bool, g: bool?, h: bool, i: bool, j: bool?, k: bool, l: bool, m: bool, o: int8|int4, p: bool, q: bool?, r: int8|int4?, s: bool, u: bool?, v: bool?, w: bool, x: bool, z: bool, aa: int8|int4, ab: int8|int4?, ac: bool?, ad: int8|int4, ae: bool, af: bool? }
-recursive.sql: many () -> { n: int8|int4?, s: text? }
-removed_hashes.sql: many () -> { p: text?, q: text? }
-right_join.sql: many () -> { id: int4?, name: text?, other_id: int4, label: text, len: int8?, next: int8? }
-scalar_subqueries.sql: one (id: int4) -> { a: text?, b: int8, c: text?, d: int8|int4, e: int4|int8?, f: int4|int8? }
-straight_join.sql: many () -> { id: int4, label: text }
-string_functions.sql: many () -> { a: text?, b: text?, c: text?, d: text?, e: text?, f: text?, g: text?, h: text?, i: text?, j: text?, k: text?, l: int8, m: int8, o: text?, r: text?, s: text?, u: text?, v: text?, w: text?, x: text?, z: int8|int4 }
-string_functions_more.sql: many () -> { a: int8, b: int8, c: int8, d: int8|int4, e: int8, f: int8, g: int8, h: int8|int4, i: bool, j: bool, k: int8|int4, l: text?, m: text?, o: int8, p: text?, q: text?, r: int8|int4, s: text, u: text?, v: bytea?, w: bytea?, x: bytea?, z: text?, aa: text?, ab: text?, ac: bytea?, ad: int8, ae: int8?, af: text?, ag: bytea?, ah: int8|int4, ak: int8|int4?, al: int8, am: text?, an: text?, ao: text?, ap: bytea?, aq: bytea? }
-subquery_all_any.sql: many () -> { id: int4 }
-system_variable.sql: one () -> { packet: int8?, mode: text?, connections: int8?, autocommit: int8|int4? }
-union_all.sql: many () -> { a: text?, b: int4|int8 }
-union_both_not_null.sql: many () -> { a: text, b: int4|int8 }
-union_distinct.sql: many () -> { a: text? }
+aggregates.sql: one () -> { a: bigint, b: bigint, c: bigint, d: decimal?, e: decimal?, f: either(int, bigint)?, g: varchar?, h: date?, i: text?, j: bigint, k: bigint, l: bigint, m: double?, o: double?, p: json int[]?, q: json?, r: decimal?, s: either(bigint, int)?, u: either(int, bigint)?, v: bigint, w: decimal, x: boolean, z: datetime?, aa: decimal?, ab: double?, ac: json?, ad: char?, ae: char?, af: bit(boolean[8])?, ag: tinyint?, ah: year(0..2155)?, ai: time?, aj: double?, ak: double? }
+aggregates_grouped.sql: many () -> { n: int, a: bigint, b: decimal, c: varchar, d: either(int, bigint)?, e: text?, f: varchar, g: bigint, h: decimal, i: bigint, j: date, k: json tinyint[] }
+aggregates_no_rows.sql: one () -> { a: bigint, b: decimal?, c: either(int, bigint)?, d: bigint, e: bigint, f: bigint, g: bigint, h: decimal?, i: double?, j: text?, k: json int[]?, l: decimal?, m: either(int, bigint)?, o: either(int, bigint)?, p: boolean }
+aggregates_rollup.sql: many () -> { n: either(int, bigint)?, small: tinyint?, a: bigint, b: decimal?, c: bigint?, d: varchar? }
+bit_and_enum.sql: many () -> { a: bit(boolean[8]), b: either(bigint, int), c: varchar?, d: enum, e: double, f: set{text}, g: double, h: tinyint(1), i: boolean, j: year(0..2155), k: either(bigint, int), l: boolean, m: either(bigint, int), o: bigint, p: varchar?, q: varchar?, r: varchar?, s: varchar?, u: varchar?, v: bigint, w: bigint, x: bigint }
+casts.sql: many () -> { a: varchar?, b: bigint, c: bigint, d: decimal, e: double, f: bigint, g: bigint, h: decimal, i: double, j: date?, k: datetime?, l: time?, m: date?, o: varchar?, p: bigint, q: datetime?, r: json?, s: bigint, u: bigint, v: decimal, w: varbinary?, x: year(0..2155)?, z: varchar?, aa: text?, ab: bigint, ac: bigint, ad: bigint, ae: float, af: decimal, ag: float, ah: varchar? }
+columns.sql: many () -> { id: int, n: int, big: bigint, u: bigint, small: tinyint, price: decimal, ratio: double, name: varchar, body: text, raw: varbinary, day: date, at: datetime, ts: timestamp, tm: time, y: year(0..2155), kind: enum, tags: set{text}, doc: json, bits: bit(boolean[8]), flag: tinyint(1), maybe_n: int?, maybe_name: varchar?, maybe_day: date?, maybe_doc: json? }
+conditionals.sql: many () -> { a: varchar, b: varchar, c: bigint, d: varchar?, e: varchar?, f: varchar?, g: varchar, h: varchar, i: varchar, j: varchar?, k: text, l: either(int, bigint)?, m: either(int, bigint)?, o: bigint, p: either(int, bigint)?, q: varchar, r: either(int, bigint), s: varchar, u: varchar?, v: bigint?, w: bigint, x: bigint?, z: varchar?, aa: date, ab: json, ac: either(bigint, int), ad: unknown?, ae: datetime, af: either(bigint, int)?, ag: varchar, ah: either(int, bigint)? }
+cross_join.sql: many () -> { id: int, label: varchar }
+date_functions.sql: many () -> { a: date?, b: time?, c: year(0..2155)?, d: either(bigint, int)?, e: either(bigint, int)?, f: either(bigint, int)?, g: either(bigint, int)?, h: either(bigint, int)?, i: either(bigint, int)?, j: either(bigint, int)?, k: either(bigint, int)?, l: either(bigint, int)?, m: either(bigint, int)?, o: varchar?, p: varchar?, q: date?, r: either(bigint, int)?, s: date?, u: bigint, v: bigint, w: datetime?, x: date?, z: datetime?, aa: datetime?, ab: either(bigint, int)?, ac: time?, ad: bigint?, ae: varchar?, af: varchar?, ag: date?, ah: date?, ai: time?, aj: time?, ak: bigint?, al: time?, am: datetime?, an: either(bigint, int)?, ao: bigint?, ap: either(bigint, int)?, aq: bigint?, at2: datetime?, au: datetime?, av: datetime?, aw: date?, ax: either(bigint, int), ay: either(bigint, int)?, az: bigint, ba: bigint, bb: either(bigint, int), bc: bigint, bd: boolean, be: boolean }
+decimal_and_float.sql: many () -> { a: decimal, b: decimal, c: decimal, d: decimal, e: bigint, f: bigint, g: decimal, h: double, i: double, j: double, k: double, l: decimal, m: decimal, o: double, p: decimal, q: bigint, r: varchar? }
+derived_aggregate.sql: at_most_one () -> { total: decimal?, top: either(int, bigint)? }
+derived_table.sql: many () -> { name: varchar, maybe_name: varchar?, up: varchar?, c: varchar }
+distinct_and_order.sql: many () -> { name: varchar, n: int }
+division.sql: many () -> { a: decimal?, b: decimal?, c: bigint?, d: bigint?, e: bigint?, f: bigint?, g: bigint?, h: decimal?, i: double?, j: decimal?, k: decimal?, l: double?, m: double?, o: double?, p: double?, q: double?, r: double? }
+except.sql: many () -> { a: either(int, bigint) }
+float_overflow.sql: many () -> { a: double, b: double, c: double, d: double?, e: double? }
+for_update.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+from_days.sql: many () -> { id: int, d: date?, far: date? }
+from_days_derived.sql: many () -> { id: int?, d: date? }
+from_days_view.sql: many () -> { id: either(int, bigint)?, d: date?, far: date? }
+from_days_where.sql: many () -> { id: int, n: int }
+generated_always.sql: many () -> { id: int, n: bigint, name: varchar, shout: varchar?, maybe_name: varchar? }
+group_by_expression.sql: many () -> { shout: varchar?, c: bigint }
+having.sql: many () -> { n: int, c: bigint }
+inner_join.sql: many () -> { id: int, name: varchar, other_id: int, label: varchar, maybe_label: varchar? }
+insert_values_used.sql: many (a: int32, b: int32, name: varchar, flag: int32) -> { n: int }
+integer_arithmetic.sql: many () -> { a: bigint, b: bigint, c: bigint, d: bigint, e: bigint, f: bigint, g: bigint, h: bigint, i: bigint, j: bigint, k: bigint, l: bigint, m: bigint, o: either(bigint, int) }
+integer_near_overflow.sql: many () -> { a: bigint, b: bigint, c: bigint, d: bigint, e: bigint, f: bigint, g: bigint, h: either(bigint, int) }
+integer_overflow.sql: many () -> { a: bigint, b: bigint, c: bigint, d: bigint, e: bigint, f: bigint, g: bigint, h: either(bigint, int) }
+intersect.sql: many () -> { a: either(int, bigint) }
+json_values.sql: many () -> { a: json, b: json?, c: text?, d: json?, e: varchar?, f: bigint?, g: bigint?, h: json { n: int }, i: json?, j: varchar?, k: bigint?, l: json?, m: bigint?, o: json?, p: text?, q: text?, r: bigint?, s: either(bigint, int), u: json?, v: varchar?, w: bigint?, x: either(bigint, int), z: json?, aa: boolean?, ab: json?, ac: json?, ad: json?, ae: bigint? }
+left_join.sql: many () -> { id: int, name: varchar, other_id: int?, label: varchar?, maybe_label: varchar?, shown: varchar, missing: boolean, next: bigint?, loud: varchar?, len: bigint?, zero: bigint }
+left_join_chain.sql: many () -> { id: int, label: varchar?, second: varchar? }
+left_join_derived.sql: many () -> { id: int, c: bigint?, m: varchar? }
+left_join_lateral.sql: many () -> { id: int, c: bigint?, m: varchar? }
+left_join_then_inner.sql: many () -> { id: int, label: varchar, second: varchar }
+left_join_using.sql: many () -> { id: int, name: varchar, label: varchar? }
+left_join_where_not_null.sql: many () -> { id: int, other_id: int, label: varchar }
+literals.sql: one () -> { a: either(bigint, int), b: decimal, c: double, d: varchar, e: unknown?, f: boolean, g: varbinary, h: date, i: datetime, j: time, k: varbinary, l: varbinary, m: varchar, o: varchar, p: either(bigint, int), q: varchar }
+natural_left_join.sql: many () -> { id: int, name: varchar, label: varchar? }
+now_functions.sql: one () -> { a: datetime, b: date, c: time, d: datetime, e: datetime, f: bigint, g: varchar?, h: varchar?, i: varchar, j: bigint, k: bigint, l: bigint, m: bigint, o: varchar?, p: double, q: double, r: varchar?, s: varchar?, u: varchar?, v: varchar?, w: bigint, x: varchar?, z: varchar?, aa: unknown?, ab: bigint, ac: text? }
+plain_columns_beside_parameter.sql: many (n: int32) -> { id: int, n: int, big: bigint, u: bigint, small: tinyint, price: decimal, ratio: double, name: varchar, body: text, raw: varbinary, day: date, at: datetime, ts: timestamp, tm: time, y: year(0..2155), kind: enum, tags: set{text}, doc: json, bits: bit(boolean[8]), flag: tinyint(1), maybe_n: int?, maybe_name: varchar?, maybe_day: date?, maybe_doc: json?, next: either(bigint, double, decimal)? }
+predicates.sql: many () -> { a: boolean, b: boolean, c: boolean, d: boolean, e: boolean, f: boolean, g: boolean?, h: boolean, i: boolean, j: boolean?, k: boolean, l: boolean, m: boolean, o: either(bigint, int), p: boolean, q: boolean?, r: either(bigint, int)?, s: boolean, u: boolean?, v: boolean?, w: boolean, x: boolean, z: boolean, aa: either(bigint, int), ab: either(bigint, int)?, ac: boolean?, ad: either(bigint, int), ae: boolean, af: boolean? }
+recursive.sql: many () -> { n: either(bigint, int)?, s: varchar? }
+removed_hashes.sql: many () -> { p: varchar?, q: varchar? }
+right_join.sql: many () -> { id: int?, name: varchar?, other_id: int, label: varchar, len: bigint?, next: bigint? }
+scalar_subqueries.sql: one (id: int32) -> { a: varchar?, b: bigint, c: varchar?, d: either(bigint, int), e: either(int, bigint)?, f: either(int, bigint)? }
+straight_join.sql: many () -> { id: int, label: varchar }
+string_functions.sql: many () -> { a: varchar?, b: varchar?, c: varchar?, d: text?, e: varchar?, f: varchar?, g: varchar?, h: varchar?, i: varchar?, j: varchar?, k: varchar?, l: bigint, m: bigint, o: varchar?, r: varchar?, s: varchar?, u: varchar?, v: text?, w: varchar?, x: varchar?, z: either(bigint, int) }
+string_functions_more.sql: many () -> { a: bigint, b: bigint, c: bigint, d: either(bigint, int), e: bigint, f: bigint, g: bigint, h: either(bigint, int), i: boolean, j: boolean, k: either(bigint, int), l: text?, m: varchar?, o: bigint, p: varchar?, q: varchar?, r: either(bigint, int), s: varchar, u: varchar?, v: varbinary?, w: varbinary?, x: varbinary?, z: varchar?, aa: varchar?, ab: varchar?, ac: blob?, ad: bigint, ae: bigint?, af: varchar?, ag: varbinary?, ah: either(bigint, int), ak: either(bigint, int)?, al: bigint, am: varchar?, an: varchar?, ao: varchar?, ap: varbinary?, aq: varbinary? }
+subquery_all_any.sql: many () -> { id: int }
+system_variable.sql: one () -> { packet: bigint?, mode: varchar?, connections: bigint?, autocommit: either(bigint, int)? }
+union_all.sql: many () -> { a: varchar?, b: either(int, bigint) }
+union_both_not_null.sql: many () -> { a: varchar, b: either(int, bigint) }
+union_distinct.sql: many () -> { a: varchar? }
 user_variable.sql: many () -> { seen: unknown, nothing: unknown? }
 user_variable_derived.sql: many () -> { seen: unknown, label: unknown }
-user_variable_quoted.sql: many () -> { seen: unknown, nothing: unknown?, n: int4 }
-view_columns.sql: many () -> { id: int4|int8, n: int4|int8, more: int8|int4, m: int8, small: int2, q: int8|int4?, big: int8 }
-view_columns_ordered.sql: many () -> { id: int4|int8, n: int4|int8, more: int8|int4, m: int8, small: int2, q: int8|int4?, big: int8 }
-view_expression_alone.sql: many () -> { more: int8|int4, q: int8|int4? }
-where_narrows.sql: many () -> { maybe_name: text, maybe_n: int4 }
-window_functions.sql: many () -> { a: int8, b: int8, c: int8, d: int8, e: numeric, f: int4|int8?, g: text?, h: text?, i: int4|int8?, j: int4|int8?, k: int8, l: float8, m: float8, o: int4|int8, p: int8, q: text, r: numeric, s: int8, u: numeric?, v: int4|int8?, w: int8, x: [int4] }
-with_query.sql: many () -> { name: text, maybe_name: text?, next: int8 }
-zero_dates.sql: many () -> { a: date, b: date?, c: int2?, d: int8|int4?, e: int8, f: int8, g: text?, i: text?, j: text?, k: date?, l: text, m: date, o: bool, p: bool, q: int8|int4, r: text, s: timestamp, u: date?, v: timestamp?, w: timestamp, x: date, z: bool, aa: int8|int4?, ab: int8|int4?, ac: int8|int4?, ad: int8|int4?, ae: text?, af: date?, ag: date?, ah: date?, ai: date?, aj: int8|int4?, ak: int8? }
+user_variable_quoted.sql: many () -> { seen: unknown, nothing: unknown?, n: int }
+view_columns.sql: many () -> { id: either(int, bigint), n: either(int, bigint), more: either(bigint, int), m: bigint, small: tinyint, q: either(bigint, int)?, big: bigint }
+view_columns_ordered.sql: many () -> { id: either(int, bigint), n: either(int, bigint), more: either(bigint, int), m: bigint, small: tinyint, q: either(bigint, int)?, big: bigint }
+view_expression_alone.sql: many () -> { more: either(bigint, int), q: either(bigint, int)? }
+where_narrows.sql: many () -> { maybe_name: varchar, maybe_n: int }
+window_functions.sql: many () -> { a: bigint, b: bigint, c: bigint, d: bigint, e: decimal, f: either(int, bigint)?, g: varchar?, h: varchar?, i: either(int, bigint)?, j: either(int, bigint)?, k: bigint, l: double, m: double, o: either(int, bigint), p: bigint, q: varchar, r: decimal, s: bigint, u: decimal?, v: either(int, bigint)?, w: bigint, x: json int[] }
+with_query.sql: many () -> { name: varchar, maybe_name: varchar?, next: bigint }
+zero_dates.sql: many () -> { a: date, b: date?, c: year(0..2155)?, d: either(bigint, int)?, e: bigint, f: bigint, g: varchar?, i: varchar?, j: varchar?, k: date?, l: varchar, m: date, o: boolean, p: boolean, q: either(bigint, int), r: varchar, s: datetime, u: date?, v: datetime?, w: datetime, x: date, z: boolean, aa: either(bigint, int)?, ab: either(bigint, int)?, ac: either(bigint, int)?, ad: either(bigint, int)?, ae: varchar?, af: date?, ag: date?, ah: date?, ai: date?, aj: either(bigint, int)?, ak: bigint? }

@@ -1,12 +1,12 @@
-aggregates.sql: one () -> { n: integer, e: integer, names: text?, t: real?, m: real?, first: text?, mean: real? }
-dates.sql: one () -> { d: text, y: text, u: integer, jd: real, zero: text }
-json.sql: many () -> { a: unknown?, l: integer?, v: integer?, o: { n: text }, items: integer }
-math.sql: many () -> { id: integer, a: real? }
-math_in_where.sql: many (s: real) -> { id: integer }
+aggregates.sql: one () -> { n: int64, e: int64, names: text(utf8)?, t: float(11,52)?, m: float(11,52)?, first: text(utf8)?, mean: float(11,52)? }
+dates.sql: one () -> { d: text(utf8), y: text(utf8), u: int64, jd: float(11,52), zero: text(utf8) }
+json.sql: many () -> { a: unknown?, l: int64?, v: int64?, o: json { n: text(utf8) }, items: int64 }
+math.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), a: float(11,52)? }
+math_in_where.sql: many (s: float(11,52)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
 offset_missing.sql: many () -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
 offset_missing_in_where.sql: many (s: unknown) -> {  } !! reylo6: no such function: sqlite_offset on this database's SQLite
-operators.sql: many (p: text, a: integer, b: integer) -> { l: bool, g: bool, j: unknown?, k: unknown?, c: text, t: text, i: integer, e: text, ty: text, n: integer }
-soundex.sql: many (x: text) -> { s: text, e: text }
-strings.sql: many () -> { u: text, l: integer, s: text, r: text, t: text, i: integer, h: text, q: text, p: text, a: real?, rd: real?, nu: text?, em: text, ch: text, un: integer?, rn: integer, lk: bool }
-view.sql: maybeOne (id: integer) -> { name: text, sound: text }
-windows.sql: many () -> { name: text, r: integer, prev: text?, s: real?, positive: integer }
+operators.sql: many (p: text(utf8), a: int64, b: int64) -> { l: boolean, g: boolean, j: unknown?, k: unknown?, c: text(utf8), t: text(utf8), i: int64, e: text(utf8), ty: text(utf8), n: int64 }
+soundex.sql: many (x: text(utf8)) -> { s: text(utf8), e: text(utf8) }
+strings.sql: many () -> { u: text(utf8), l: int64, s: text(utf8), r: text(utf8), t: text(utf8), i: int64, h: text(utf8), q: text(utf8), p: text(utf8), a: float(11,52)?, rd: float(11,52)?, nu: text(utf8)?, em: text(utf8), ch: text(utf8), un: int64?, rn: int64, lk: boolean }
+view.sql: at_most_one (id: int64) -> { name: text(utf8), sound: text(utf8) }
+windows.sql: many () -> { name: TEXT(text(utf8) | bytes), r: int64, prev: text(utf8)?, s: float(11,52)?, positive: int64 }

@@ -1,9 +1,9 @@
-agg_limit.sql: many () -> { id: integer, comments: [{ id: integer, body: text }] }
-agg_no_limit.sql: many () -> { id: integer, comments: [{ id: integer, body: text }] }
-agg_uncorrelated.sql: many () -> { id: integer, comments: [{ id: integer, body: text }] }
-derived_join_person.sql: many () -> { id: integer, comments: [{ id: integer, author: text?, deleted: text? }] }
-join_on_correlated.sql: many () -> { id: integer, comments: [{ id: integer, author: text }] }
-nested_subqueries.sql: many () -> { id: integer, posts: [{ title: text, comments: unknown }] }
-object_limit_one.sql: many () -> { id: integer, latest: { id: integer, body: text }? }
-two_levels.sql: many () -> { id: integer, comments: [{ id: integer, body: text }] }
-with_correlated.sql: many () -> { id: integer, comments: [{ id: integer, body: text }] }
+agg_limit.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, body: text(utf8) })[] }
+agg_no_limit.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, body: text(utf8) })[] }
+agg_uncorrelated.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, body: text(utf8) })[] }
+derived_join_person.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, author: text(utf8)?, deleted: text(utf8)? })[] }
+join_on_correlated.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, author: text(utf8) })[] }
+nested_subqueries.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), posts: json ({ title: text(utf8), comments: unknown })[] }
+object_limit_one.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), latest: json { id: int64, body: text(utf8) }? }
+two_levels.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, body: text(utf8) })[] }
+with_correlated.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), comments: json ({ id: int64, body: text(utf8) })[] }

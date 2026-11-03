@@ -1,63 +1,131 @@
-//! A DuckDB logical type as the engine's [`Type`]: a scalar by DuckDB's own name for it, lowercased
-//! (`integer`, `hugeint`, `timestamptz`), which the loader's table of representations reads
-//! (src/values.ts); a `LIST` or an `ARRAY` as an array whose elements may be NULL; a `STRUCT`, a
-//! `MAP` and a `UNION` as themselves; an `ENUM` as its labels; a `VARCHAR` with the alias `JSON`
-//! as JSON. A type the table does not name (`GEOMETRY`, a type an extension adds) is unknown.
+//! A DuckDB logical type as the format's type (`spec/type-descriptor.ts`), under DuckDB's own name
+//! for it, lowercased (`integer`, `hugeint`, `timestamptz`): a `LIST` or an `ARRAY` as an array
+//! whose elements may be NULL, a `STRUCT` as a record whose fields may each be NULL (DuckDB has no
+//! NOT NULL inside one; a struct whose fields have no names, a tuple, is no type the format has,
+//! and the analysis refuses it, [`unnamed`]), a
+//! `MAP` as a map, a `UNION` as a union of one-field records, each named by its tag, an `ENUM` as
+//! its labels, and a `VARCHAR` with the alias `JSON` as JSON. A type DuckDB has and the format does
+//! not structure (`GEOMETRY`, a type an extension adds) is opaque.
 
 use crate::api::LogicalType;
-use reylo_engine_core::types::{Field, Type};
+use reylo_engine_core::types::{
+    ArrayType, Bounds, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, Size, TimePart, TimeType, Type, UnionType, Zone, MICROSECOND,
+};
 
-/// The engine's type of a DuckDB logical type.
+/// DuckDB's earliest and latest dates and timestamps, the latter at microseconds (a
+/// nanosecond's range is narrower, and inside it).
+const DATE_MIN: &str = "-5877641-06-25";
+const DATE_MAX: &str = "+5881580-07-10";
+const STAMP_MIN: &str = "-290308-12-22T00:00:00";
+const STAMP_MAX: &str = "+294247-01-10T04:00:54.775806";
+
+fn integer(bits: u32, unsigned: bool) -> Type {
+    Type::new(Kind::Integer(IntegerType { bits, unsigned, ..IntegerType::default() }))
+}
+
+/// DuckDB's floats hold infinity, -infinity and NaN.
+fn float(exponent_bits: u32, mantissa_bits: u32) -> Type {
+    Type::new(Kind::Float(FloatType { exponent_bits, mantissa_bits, infinity: true, nan: true, ..FloatType::default() }))
+}
+
+fn datetime(tick: &str) -> Type {
+    Type::new(Kind::DateTime(DateTimeType { tick: tick.into(), bounds: Bounds::between(STAMP_MIN, STAMP_MAX), infinity: true }))
+}
+
+fn instant(tick: &str) -> Type {
+    Type::new(Kind::Instant(InstantType { tick: tick.into(), zone: None, bounds: Bounds::between(format!("{STAMP_MIN}Z"), format!("{STAMP_MAX}Z")), infinity: true }))
+}
+
+fn time(tick: &str, zone: Option<Zone>) -> Type {
+    Type::new(Kind::Time(TimeType { tick: tick.into(), zone, bounds: Bounds { max: Some("24:00:00".into()), ..Bounds::default() } }))
+}
+
+/// The format's type of a DuckDB logical type.
 pub fn of(t: &LogicalType) -> Type {
     if t.alias.as_deref().is_some_and(|a| a.eq_ignore_ascii_case("json")) {
-        return Type::Json { schema: None };
+        return Type::json().named("json");
     }
-    let scalar = |name: &str| Type::Scalar { name: name.to_string() };
-    match t.id.as_str() {
-        "BOOLEAN" => scalar("boolean"),
-        "TINYINT" => scalar("tinyint"),
-        "SMALLINT" => scalar("smallint"),
-        "INTEGER" => scalar("integer"),
-        "BIGINT" => scalar("bigint"),
-        "HUGEINT" => scalar("hugeint"),
-        "UTINYINT" => scalar("utinyint"),
-        "USMALLINT" => scalar("usmallint"),
-        "UINTEGER" => scalar("uinteger"),
-        "UBIGINT" => scalar("ubigint"),
-        "UHUGEINT" => scalar("uhugeint"),
-        "BIGNUM" | "VARINT" => scalar("bignum"),
-        "FLOAT" => scalar("float"),
-        "DOUBLE" => scalar("double"),
-        "DECIMAL" => scalar("decimal"),
-        "VARCHAR" => scalar("varchar"),
-        "BLOB" => scalar("blob"),
-        "BIT" => scalar("bit"),
-        "UUID" => scalar("uuid"),
-        "DATE" => scalar("date"),
-        "TIME" => scalar("time"),
-        "TIME_NS" => scalar("time_ns"),
-        "TIME_TZ" => scalar("timetz"),
-        "TIMESTAMP" => scalar("timestamp"),
-        "TIMESTAMP_S" => scalar("timestamp_s"),
-        "TIMESTAMP_MS" => scalar("timestamp_ms"),
-        "TIMESTAMP_NS" => scalar("timestamp_ns"),
-        "TIMESTAMP_TZ" => scalar("timestamptz"),
-        "TIMESTAMP_TZ_NS" => scalar("timestamptz_ns"),
-        "INTERVAL" => scalar("interval"),
-        "ENUM" => Type::Enum { name: t.text.clone(), labels: t.values.clone() },
-        "LIST" | "ARRAY" => match &t.child {
-            Some(child) => Type::Array { of: Box::new(of(child)), nullable_items: None, delimiter: None },
-            None => Type::Unknown,
+    let ty = match t.id.as_str() {
+        "BOOLEAN" => Type::boolean(),
+        "TINYINT" => integer(8, false),
+        "SMALLINT" => integer(16, false),
+        "INTEGER" => integer(32, false),
+        "BIGINT" => integer(64, false),
+        "HUGEINT" => integer(128, false),
+        "UTINYINT" => integer(8, true),
+        "USMALLINT" => integer(16, true),
+        "UINTEGER" => integer(32, true),
+        "UBIGINT" => integer(64, true),
+        "UHUGEINT" => integer(128, true),
+        // An integer of no fixed width.
+        "BIGNUM" | "VARINT" => Type::decimal(DecimalType { max_scale: Some(0), ..DecimalType::default() }).named("bignum"),
+        "FLOAT" => float(8, 23),
+        "DOUBLE" => float(11, 52),
+        "DECIMAL" => {
+            let scale = t.scale.map(|s| s as i32);
+            Type::decimal(DecimalType { precision: t.width.map(u32::from), min_scale: scale, max_scale: scale, ..DecimalType::default() })
+        }
+        "VARCHAR" => Type::text(),
+        "BLOB" => Type::bytes(),
+        "BIT" => Type::array(Position::non_null(Type::boolean())),
+        "UUID" => Type::uuid(),
+        "DATE" => Type::new(Kind::Date(DateType { bounds: Bounds::between(DATE_MIN, DATE_MAX), infinity: true })),
+        "TIME" => time(MICROSECOND, None),
+        "TIME_NS" => time("1/1000000000", None),
+        "TIME_TZ" => time(MICROSECOND, Some(Zone::Offset)),
+        "TIMESTAMP" => datetime(MICROSECOND),
+        "TIMESTAMP_S" => datetime("1"),
+        "TIMESTAMP_MS" => datetime("1/1000"),
+        "TIMESTAMP_NS" => datetime("1/1000000000"),
+        "TIMESTAMP_TZ" => instant(MICROSECOND),
+        "TIMESTAMP_TZ_NS" => instant("1/1000000000"),
+        // Months, days and microseconds, each its own signed integer.
+        "INTERVAL" => Type::new(Kind::Duration(DurationType {
+            months: Some(Part { max: Some("P2147483648M".into()) }),
+            days: Some(Part { max: Some("P2147483648D".into()) }),
+            time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT2562047788H54.775808S".into()) }),
+            infinity: false,
+        })),
+        "ENUM" => Type::text_of(t.values.clone()),
+        "LIST" => match &t.child {
+            Some(child) => return Type::array(Position::nullable(of(child))),
+            None => return Type::unknown(),
         },
-        // A struct whose fields have no names is a tuple.
-        "STRUCT" if !t.fields.is_empty() && t.fields.iter().all(|f| f.name.is_empty()) => Type::Tuple { items: t.fields.iter().map(|f| of(&f.ty)).collect() },
-        "STRUCT" => Type::Struct { fields: t.fields.iter().map(|f| Field { name: f.name.clone(), ty: of(&f.ty), nullable: true }).collect() },
+        "ARRAY" => match &t.child {
+            Some(child) => return Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(of(child))), size: t.size.map(|n| Size::exact(n.into())), any_depth: false })),
+            None => return Type::unknown(),
+        },
+        "STRUCT" if t.fields.iter().any(|f| f.name.is_empty()) => return Type::unknown(),
+        "STRUCT" => return Type::record(t.fields.iter().map(|f| Field::new(f.name.clone(), of(&f.ty), true)).collect()),
         "MAP" => match (&t.key, &t.value) {
-            (Some(key), Some(value)) => Type::Map { key: Box::new(of(key)), value: Box::new(of(value)) },
-            _ => Type::Unknown,
+            (Some(key), Some(value)) => return Type::new(Kind::Map(MapType { key: Box::new(of(key)), value: Box::new(Position::nullable(of(value))) })),
+            _ => return Type::unknown(),
         },
-        "UNION" => Type::Union { members: t.fields.iter().map(|f| Field { name: f.name.clone(), ty: of(&f.ty), nullable: true }).collect() },
-        _ => Type::Unknown,
+        // One of its members, by tag: a record of the one field the tag names, whose value may be
+        // NULL. A union of one member stays a union, since its value carries the tag all the same.
+        "UNION" => return Type::new(Kind::Union(UnionType { members: t.fields.iter().map(|f| Type::record(vec![Field::new(f.name.clone(), of(&f.ty), true)])).collect(), per: Per::Value })).named("union"),
+        "" => return Type::unknown(),
+        other => return Type::opaque(other.to_ascii_lowercase()),
+    };
+    ty.named(lowercase_name(&t.id))
+}
+
+/// Whether a type is or holds a struct whose fields have no names, as `(1, 'a')` and `row(…)`
+/// build: a record's fields are read by their names, so the format has no type for one.
+pub fn unnamed(t: &LogicalType) -> bool {
+    (t.id == "STRUCT" && t.fields.iter().any(|f| f.name.is_empty()))
+        || t.fields.iter().any(|f| unnamed(&f.ty))
+        || [&t.child, &t.key, &t.value].into_iter().any(|inner| inner.as_deref().is_some_and(unnamed))
+}
+
+/// DuckDB's name for a type, lowercased, as its id writes it (`timestamptz` for `TIMESTAMP_TZ`).
+fn lowercase_name(id: &str) -> String {
+    match id {
+        "TIME_TZ" => "timetz".into(),
+        "TIMESTAMP_TZ" => "timestamptz".into(),
+        "TIMESTAMP_TZ_NS" => "timestamptz_ns".into(),
+        "VARINT" => "bignum".into(),
+        other => other.to_ascii_lowercase(),
     }
 }
 
@@ -83,13 +151,24 @@ mod tests {
 
     #[test]
     fn each_kind_of_type() {
-        assert_eq!(of(&t(r#"{"id":"HUGEINT"}"#)), Type::Scalar { name: "hugeint".into() });
-        assert_eq!(of(&t(r#"{"id":"VARCHAR","alias":"JSON"}"#)), Type::Json { schema: None });
-        assert_eq!(of(&t(r#"{"id":"LIST","child":{"id":"VARCHAR"}}"#)), Type::Array { of: Box::new(Type::Scalar { name: "varchar".into() }), nullable_items: None, delimiter: None });
-        let s = of(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}},{"name":"pid","type":{"id":"INTEGER"}}]}"#));
-        assert!(matches!(&s, Type::Struct { fields } if fields.len() == 2 && fields.iter().all(|f| f.nullable)));
-        assert_eq!(of(&t(r#"{"id":"ENUM","text":"ENUM('a', 'b')","values":["a","b"]}"#)), Type::Enum { name: "ENUM('a', 'b')".into(), labels: vec!["a".into(), "b".into()] });
-        assert_eq!(of(&t(r#"{"id":"GEOMETRY"}"#)), Type::Unknown);
-        assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#)), Type::Tuple { items: vec![Type::Scalar { name: "integer".into() }, Type::Scalar { name: "varchar".into() }] });
+        assert_eq!(of(&t(r#"{"id":"HUGEINT"}"#)).short(), "hugeint");
+        assert_eq!(serde_json::to_value(of(&t(r#"{"id":"UINTEGER"}"#))).unwrap(), serde_json::json!({"kind": "integer", "bits": 32, "unsigned": true, "name": "uinteger"}));
+        assert_eq!(of(&t(r#"{"id":"DECIMAL","width":10,"scale":2}"#)).short(), "decimal(10,2)");
+        assert_eq!(of(&t(r#"{"id":"VARCHAR","alias":"JSON"}"#)), Type::json().named("json"));
+        assert_eq!(of(&t(r#"{"id":"LIST","child":{"id":"VARCHAR"}}"#)).short(), "varchar?[]");
+        assert_eq!(of(&t(r#"{"id":"ARRAY","size":3,"child":{"id":"INTEGER"}}"#)).short(), "integer?[3]");
+        assert_eq!(of(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}},{"name":"pid","type":{"id":"INTEGER"}}]}"#)).short(), "{ host: varchar?, pid: integer? }");
+        assert_eq!(of(&t(r#"{"id":"ENUM","text":"ENUM('a', 'b')","values":["a","b"]}"#)).short(), "enum('a' | 'b')");
+        assert_eq!(of(&t(r#"{"id":"GEOMETRY"}"#)), Type::opaque("geometry"));
+        // A tuple's fields have no names, which no type of the format describes, inside a list too.
+        let tuple = r#"{"id":"STRUCT","fields":[{"name":"","type":{"id":"INTEGER"}},{"name":"","type":{"id":"VARCHAR"}}]}"#;
+        assert!(of(&t(tuple)).is_unknown());
+        assert!(unnamed(&t(tuple)) && unnamed(&t(&format!(r#"{{"id":"LIST","child":{tuple}}}"#))));
+        assert!(!unnamed(&t(r#"{"id":"STRUCT","fields":[{"name":"host","type":{"id":"VARCHAR"}}]}"#)));
+        assert_eq!(of(&t(r#"{"id":"UNION","fields":[{"name":"num","type":{"id":"INTEGER"}},{"name":"str","type":{"id":"VARCHAR"}}]}"#)).short(), "union({ num: integer? } | { str: varchar? })");
+        assert_eq!(of(&t(r#"{"id":"MAP","key":{"id":"VARCHAR"},"value":{"id":"INTEGER"}}"#)).short(), "map(varchar => integer?)");
+        for id in ["BOOLEAN", "BIGNUM", "FLOAT", "DOUBLE", "DATE", "TIME", "TIME_NS", "TIME_TZ", "TIMESTAMP", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_TZ", "TIMESTAMP_TZ_NS", "INTERVAL", "UUID", "BIT", "BLOB"] {
+            of(&t(&format!(r#"{{"id":"{id}"}}"#))).check().unwrap_or_else(|e| panic!("{id}: {e}"));
+        }
     }
 }

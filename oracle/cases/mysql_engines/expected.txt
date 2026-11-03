@@ -1,11 +1,11 @@
-cache_get.sql: maybeOne (k: text) -> { v: text? }
-cache_put.sql: none (k: text, v: text?) -> {  }
-count_hits.sql: one () -> { n: int8 }
-count_users.sql: one () -> { n: int8, top: int4|int8? }
+cache_get.sql: at_most_one (k: varchar) -> { v: varchar? }
+cache_put.sql: none (k: varchar, v: varchar?) -> {  }
+count_hits.sql: one () -> { n: bigint }
+count_users.sql: one () -> { n: bigint, top: either(int, bigint)? }
 counter.sql: one () -> { seen: unknown }
-delete_hits.sql: none (page: text) -> {  }
-insert_hit.sql: none (page: text) -> {  }
-insert_user.sql: none (name: text) -> {  }
-insert_user_with_key.sql: none (id: int4, name: text) -> {  }
-read_hit.sql: maybeOne (id: int4) -> { id: int4, page: text, n: int4 }
-update_hits.sql: none (page: text) -> {  }
+delete_hits.sql: none (page: varchar) -> {  }
+insert_hit.sql: none (page: varchar) -> {  }
+insert_user.sql: none (name: varchar) -> {  }
+insert_user_with_key.sql: none (id: int32, name: varchar) -> {  }
+read_hit.sql: at_most_one (id: int32) -> { id: int, page: varchar, n: int }
+update_hits.sql: none (page: varchar) -> {  }

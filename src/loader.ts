@@ -10,7 +10,8 @@ import { Session } from "./analyze.ts";
 import { sourceName } from "./project.ts";
 import { rowSource } from "./row.ts";
 import { querySchemas } from "./schema.ts";
-import { arrayDelimiter, columnKind } from "./values.ts";
+import { columnKind } from "./values.ts";
+import { analysisWithBases } from "./engine-type.ts";
 
 export type SqlModule = {
   code: string;
@@ -28,7 +29,8 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // replays it): it is analyzed again when the schema has changed since.
   if (outcome.ok && outcome.analysis.diagnostics.some((d) => d.code === 6) && (await session.recheck())) outcome = await session.analyze(sql);
   if (!outcome.ok) throw new Error(`${path}: ${outcome.message}`);
-  const { analysis } = outcome;
+  // Each domain written as its base type, which the run time decodes its values by.
+  const analysis = analysisWithBases(outcome.analysis);
   // A statement whose placeholders break a rule fails the build: one the engine could not read
   // (1), named and positional mixed (2), or a parameter written more than once (3), since each
   // parameter appears once so that one place types it.
@@ -57,13 +59,17 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   if (refused) throw new Error(`${path}:${place(sql, refused.start)}: ${refused.message}`);
   // Each parameter's type, for the drivers that bind an array or a JSON value wrong, and whether it
   // takes null, which the run time refuses for one that does not (src/execute.ts).
-  const inputs = Object.fromEntries(analysis.params.map((p) => [p.name, { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }), nullable: p.nullable }]));
+  const inputs = Object.fromEntries(
+    analysis.params.map((p) => [
+      p.name,
+      { type: p.type, ...(p.schema === undefined ? {} : { schema: p.schema }), ...(p.cast === undefined ? {} : { cast: p.cast }), ...(p.members === undefined ? {} : { members: p.members }), ...(p.delimiter === undefined ? {} : { delimiter: p.delimiter }), nullable: p.nullable === true },
+    ]),
+  );
   // Each output column's name and kind, from the table the declared types come from: what the run
   // time gives each value (src/values.ts); and an array's delimiter where it is not a comma.
   const columns = analysis.columns.map((c) => {
     const kind = columnKind(c.type, session.project.dialect);
-    const delimiter = arrayDelimiter(c.type);
-    return delimiter === undefined ? [c.name, kind] : [c.name, kind, delimiter];
+    return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
   const source = sourceName(path);
   // The compiled statement without the file's trailing blank lines; the comment naming the file
@@ -76,7 +82,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // the statement has one, so that an app none of whose statements has one bundles none of them
   // (src/checks.ts). A non-null JSON parameter whose type alone carries a schema needs them too,
   // to learn whether that schema allows null.
-  const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.type.kind === "rows" || (p.type.kind === "json" && p.type.schema !== undefined && !p.nullable));
+  const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.members !== undefined || (p.type.kind === "json" && p.type.schema !== undefined && !p.nullable));
   const code = [
     `import { defineQuery${checked ? ", checks" : ""} } from "reylo";`,
     // `sql` is the compiled statement and `raw` the file as written; the definition's own `sql` is
@@ -85,7 +91,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };

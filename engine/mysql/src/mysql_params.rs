@@ -124,7 +124,7 @@ fn typed_targets(statement: &Statement, names: &Names) -> Vec<(String, String, T
 #[derive(Debug, Default)]
 pub(crate) struct Typed {
     /// Per parameter, the type its columns give it where it differs from the prepare's.
-    pub types: HashMap<String, &'static str>,
+    pub types: HashMap<String, crate::types::Type>,
     /// Per parameter, the comment of the columns it is written to or compared with, where they
     /// share one.
     pub comments: HashMap<String, String>,
@@ -150,16 +150,19 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
     let rows = host.query(TYPES_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
     let mut out = Typed::default();
     // Per table as the server names it: each column in lower case, its type, whether it is INVISIBLE, and its comment.
-    let mut columns: HashMap<String, Vec<(String, Option<&'static str>, bool, Option<String>)>> = HashMap::new();
+    let mut columns: HashMap<String, Vec<(String, Option<crate::types::Type>, bool, Option<String>)>> = HashMap::new();
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(column), Some(data_type), Some(column_type)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { continue };
         let invisible = row.get(4).and_then(as_str).is_some_and(|extra| extra.to_ascii_uppercase().contains("INVISIBLE"));
         let column_type = column_type.to_ascii_lowercase();
+        // The column's own type: a BIGINT's is 64 bits, a TINYINT(1)'s the integer a client reads
+        // as a truth value, and a BIT's its width in bits.
+        let unsigned = if column_type.contains("unsigned") { 32 } else { 0 };
+        let width = column_type.split_once('(').and_then(|(_, rest)| rest.split(')').next()).and_then(|n| n.trim().parse::<u32>().ok());
         let ty = match data_type.to_ascii_lowercase().as_str() {
-            "bigint" => Some("int8"),
-            "tinyint" if column_type.starts_with("tinyint(1)") => Some("bool|int4"),
-            "bit" if column_type.starts_with("bit(1)") => Some("bool|int4"),
-            "bit" => Some("bytea"),
+            "bigint" => Some(crate::mysql_types::of(8, unsigned, 0, None)),
+            "tinyint" if column_type.starts_with("tinyint(1)") => Some(crate::mysql_types::of(1, unsigned, 0, Some(1))),
+            "bit" => Some(crate::mysql_types::bits(width)),
             _ => None,
         };
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
@@ -168,7 +171,7 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
         }
         columns.entry(table.to_string()).or_default().push((column.to_ascii_lowercase(), ty, invisible, comment));
     }
-    let mut found: HashMap<String, Option<&'static str>> = HashMap::new();
+    let mut found: HashMap<String, Option<crate::types::Type>> = HashMap::new();
     let mut noted: HashMap<String, Option<String>> = HashMap::new();
     for (param, table, target) in targets {
         let known = match columns.get(&table) {
@@ -186,7 +189,7 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
             Target::Position(i) => known.iter().filter(|(_, _, invisible, _)| !invisible).nth(*i),
         });
         // A column nothing narrows, or one the statement names that the table lacks, keeps the prepare's type.
-        let ty = column.and_then(|(_, ty, _, _)| *ty);
+        let ty = column.and_then(|(_, ty, _, _)| ty.clone());
         let comment = column.and_then(|(_, _, _, comment)| comment.clone());
         found.entry(param.clone()).and_modify(|seen| if *seen != ty { *seen = None }).or_insert(ty);
         noted.entry(param).and_modify(|seen| if *seen != comment { *seen = None }).or_insert(comment);
@@ -919,6 +922,7 @@ pub(crate) fn arg_expr(a: &FunctionArg) -> Option<&Expr> {
 
 #[cfg(test)]
 mod tests {
+
     use crate::api::{Answer, Need};
     use crate::host::Host;
     use serde_json::json;
@@ -983,7 +987,7 @@ mod tests {
             let host = Host::new(&answers);
             if let Some(analysis) = crate::mysql::analyze_text(sql, &host) {
                 assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
-                return analysis.params.iter().map(|p| (p.name.clone(), match &p.ty { crate::types::Type::Scalar { name } => name.clone(), other => format!("{other:?}") })).collect();
+                return analysis.params.iter().map(|p| (p.name.clone(), p.ty.short())).collect();
             }
             for need in host.needs() {
                 let (id, answer) = match need {
@@ -1006,20 +1010,20 @@ mod tests {
     fn a_parameter_written_to_or_compared_with_a_column_takes_the_values_its_rows_return() {
         let p = |name: &str, ty: &str| (name.to_string(), ty.to_string());
         // A BIGINT column's rows are BigInts, a TINYINT(1)'s and a BIT(1)'s truth values, a wider BIT's bytes.
-        assert_eq!(param_types("select id from t where big = :b and flag = :f and id = :i and small = :s", 8), [p("b", "int8"), p("f", "bool|int4"), p("i", "int4"), p("s", "int4")]);
-        assert_eq!(param_types("select id from t where bit1 = :one and bits = :eight", 16), [p("one", "bool|int4"), p("eight", "bytea")]);
+        assert_eq!(param_types("select id from t where big = :b and flag = :f and id = :i and small = :s", 8), [p("b", "bigint"), p("f", "tinyint(1)"), p("i", "int32"), p("s", "int32")]);
+        assert_eq!(param_types("select id from t where bit1 = :one and bits = :eight", 16), [p("one", "bit(boolean[1])"), p("eight", "bit(boolean[8])")]);
         // Either side of a comparison, IN, BETWEEN, under NOT and OR, and a qualified column of a join.
-        assert_eq!(param_types("select t.id from t join u on u.id = t.id where :b < t.big or not (u.id in (:x, :y)) and t.big between :lo and :hi", 8), [p("b", "int8"), p("x", "int8"), p("y", "int8"), p("lo", "int8"), p("hi", "int8")]);
+        assert_eq!(param_types("select t.id from t join u on u.id = t.id where :b < t.big or not (u.id in (:x, :y)) and t.big between :lo and :hi", 8), [p("b", "bigint"), p("x", "bigint"), p("y", "bigint"), p("lo", "bigint"), p("hi", "bigint")]);
         // A bare column of a join is ambiguous, and a column whose two uses disagree keeps the prepare's type.
-        assert_eq!(param_types("select t.id from t join u on u.id = t.id where big = :b", 8), [p("b", "int4")]);
-        assert_eq!(param_types("select t.id from t, u where t.big = :b and u.big = :b2 and t.id = :c and u.id = :c2", 8), [p("b", "int8"), p("b2", "int4"), p("c", "int4"), p("c2", "int8")]);
+        assert_eq!(param_types("select t.id from t join u on u.id = t.id where big = :b", 8), [p("b", "int32")]);
+        assert_eq!(param_types("select t.id from t, u where t.big = :b and u.big = :b2 and t.id = :c and u.id = :c2", 8), [p("b", "bigint"), p("b2", "int32"), p("c", "int32"), p("c2", "bigint")]);
         // Written whole: VALUES by name and by place (the INVISIBLE column is no place), and an UPDATE's SET and WHERE.
-        assert_eq!(param_types("insert into t (big, flag) values (:b, :f)", 8), [p("b", "int8"), p("f", "bool|int4")]);
-        assert_eq!(param_types("insert into t values (:i, :b, :f, :s, :one, :eight)", 8), [p("i", "int4"), p("b", "int8"), p("f", "bool|int4"), p("s", "int4"), p("one", "bool|int4"), p("eight", "bytea")]);
-        assert_eq!(param_types("update t set flag = :f where big = :b", 8), [p("f", "bool|int4"), p("b", "int8")]);
-        assert_eq!(param_types("delete from t where big = :b", 8), [p("b", "int8")]);
+        assert_eq!(param_types("insert into t (big, flag) values (:b, :f)", 8), [p("b", "bigint"), p("f", "tinyint(1)")]);
+        assert_eq!(param_types("insert into t values (:i, :b, :f, :s, :one, :eight)", 8), [p("i", "int32"), p("b", "bigint"), p("f", "tinyint(1)"), p("s", "int32"), p("one", "bit(boolean[1])"), p("eight", "bit(boolean[8])")]);
+        assert_eq!(param_types("update t set flag = :f where big = :b", 8), [p("f", "tinyint(1)"), p("b", "bigint")]);
+        assert_eq!(param_types("delete from t where big = :b", 8), [p("b", "bigint")]);
         // An expression of the column is not the column: `big + 1` is the prepare's.
-        assert_eq!(param_types("select id from t where big + 1 = :b limit :n", 8), [p("b", "int4"), p("n", "int4")]);
+        assert_eq!(param_types("select id from t where big + 1 = :b limit :n", 8), [p("b", "int32"), p("n", "int32")]);
     }
 
     /// The tables `sql` reads and writes, as the freshness facts name them.

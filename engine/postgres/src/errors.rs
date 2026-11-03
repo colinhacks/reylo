@@ -256,7 +256,7 @@ pub fn prefetch(rewritten: &str, host: &Host) {
 /// The names each error the statement may raise can carry: `Some(None)` where it may run code the
 /// server does not define, or names nothing the parse can read.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
-    if analysis.kind.is_empty() {
+    if analysis.kind.is_none() {
         return Some(None);
     }
     let Some(params) = request(&analysis.rewritten.sql) else { return Some(None) };

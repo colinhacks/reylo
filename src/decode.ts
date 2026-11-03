@@ -117,7 +117,7 @@ async function learn(key: object, oids: Iterable<number>, load: Load): Promise<v
   // An array oid takes its element's kind, never the text its own row as a type would give it.
   const arrays = new Set<number>();
   for (const [array, base, isText, delim, oid, name] of rows) {
-    const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name, "postgres") : "text"));
+    const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name) : "text"));
     if (missing.has(Number(array))) {
       arrays.add(Number(array));
       known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });

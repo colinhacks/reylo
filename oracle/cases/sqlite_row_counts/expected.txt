@@ -1,43 +1,43 @@
-count_limit_0.sql: maybeOne () -> { n: integer }
-count_limit_5.sql: one () -> { n: integer }
-count_limit_negative.sql: maybeOne () -> { n: integer }
-count_limit_param.sql: maybeOne (n: integer) -> { n: integer }
-count_offset_0.sql: one () -> { n: integer }
-count_offset_1.sql: maybeOne () -> { n: integer }
-cross_join.sql: one () -> { n: integer, m: integer }
-cross_join_keyword.sql: one () -> { n: integer, m: integer }
-derived_count.sql: one () -> { n: integer }
-derived_key.sql: maybeOne (id: integer) -> { name: text }
-derived_limit_param.sql: maybeOne (n: integer) -> { n: integer }
-derived_named.sql: one () -> { n: integer }
-derived_nullable.sql: one () -> { top: text?, n: integer }
-derived_where.sql: maybeOne (min: integer) -> { n: integer }
-full_join.sql: many () -> { n: integer?, m: integer? }
-inner_join_never.sql: maybeOne () -> { n: integer, m: integer }
-intersect_limit.sql: maybeOne (id: integer) -> { id: integer }
-join_on_condition.sql: maybeOne () -> { n: integer, m: integer }
-join_on_equal.sql: one () -> { n: integer, m: integer }
-join_on_false.sql: maybeOne () -> { n: integer, m: integer }
-json_each.sql: many () -> { n: integer, value: unknown? }
-key_limit_5.sql: maybeOne (id: integer) -> { id: integer, name: text, email: text? }
-key_limit_comma.sql: maybeOne (id: integer) -> { id: integer, name: text, email: text? }
-key_limit_offset.sql: maybeOne (id: integer, n: integer, skip: integer) -> { id: integer, name: text, email: text? }
-key_limit_param.sql: maybeOne (id: integer, n: integer) -> { id: integer, name: text, email: text? }
-left_join.sql: one (id: integer) -> { n: integer, name: text? }
-left_join_one_row.sql: maybeOne (id: integer) -> { n: integer?, name: text }
-left_join_table_first.sql: maybeOne (id: integer) -> { n: integer?, name: text }
-left_join_unpinned.sql: many (name: text) -> { n: integer, name: text? }
-many_side.sql: many () -> { n: integer, name: text }
-outer_aggregate_derived.sql: many () -> { n: integer? }
-outer_aggregate_limit.sql: many () -> { n: integer? }
-outer_aggregate_scalar.sql: many () -> { n: integer? }
-own_aggregate_derived.sql: many () -> { id: integer, n: integer }
-own_aggregate_limit.sql: many () -> { id: integer, n: integer }
-own_aggregate_limited.sql: many () -> { n: integer }
-scan_limit_1.sql: maybeOne () -> { id: integer, name: text, email: text? }
-scan_limit_5.sql: many () -> { id: integer, name: text, email: text? }
-scan_limit_negative.sql: many () -> { id: integer, name: text, email: text? }
-values.sql: many () -> { column1: integer }
-values_joined.sql: many () -> { n: integer, column1: integer }
-values_rows.sql: many () -> { column1: integer }
-with_count.sql: one () -> { n: integer }
+count_limit_0.sql: at_most_one () -> { n: int64 }
+count_limit_5.sql: one () -> { n: int64 }
+count_limit_negative.sql: at_most_one () -> { n: int64 }
+count_limit_param.sql: at_most_one (n: int64) -> { n: int64 }
+count_offset_0.sql: one () -> { n: int64 }
+count_offset_1.sql: at_most_one () -> { n: int64 }
+cross_join.sql: one () -> { n: int64, m: int64 }
+cross_join_keyword.sql: one () -> { n: int64, m: int64 }
+derived_count.sql: one () -> { n: int64 }
+derived_key.sql: at_most_one (id: int64) -> { name: TEXT(text(utf8) | bytes) }
+derived_limit_param.sql: at_most_one (n: int64) -> { n: int64 }
+derived_named.sql: one () -> { n: int64 }
+derived_nullable.sql: one () -> { top: text(utf8)?, n: int64 }
+derived_where.sql: at_most_one (min: int64) -> { n: int64 }
+full_join.sql: many () -> { n: int64?, m: int64? }
+inner_join_never.sql: at_most_one () -> { n: int64, m: int64 }
+intersect_limit.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+join_on_condition.sql: at_most_one () -> { n: int64, m: int64 }
+join_on_equal.sql: one () -> { n: int64, m: int64 }
+join_on_false.sql: at_most_one () -> { n: int64, m: int64 }
+json_each.sql: many () -> { n: int64, value: unknown? }
+key_limit_5.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_comma.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_offset.sql: at_most_one (id: int64, n: int64, skip: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_param.sql: at_most_one (id: int64, n: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+left_join.sql: one (id: int64) -> { n: int64, name: TEXT(text(utf8) | bytes)? }
+left_join_one_row.sql: at_most_one (id: int64) -> { n: int64?, name: TEXT(text(utf8) | bytes) }
+left_join_table_first.sql: at_most_one (id: int64) -> { n: int64?, name: TEXT(text(utf8) | bytes) }
+left_join_unpinned.sql: many (name: text(utf8)) -> { n: int64, name: TEXT(text(utf8) | bytes)? }
+many_side.sql: many () -> { n: int64, name: TEXT(text(utf8) | bytes) }
+outer_aggregate_derived.sql: many () -> { n: int64? }
+outer_aggregate_limit.sql: many () -> { n: int64? }
+outer_aggregate_scalar.sql: many () -> { n: int64? }
+own_aggregate_derived.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+own_aggregate_limit.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+own_aggregate_limited.sql: many () -> { n: int64 }
+scan_limit_1.sql: at_most_one () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+scan_limit_5.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+scan_limit_negative.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+values.sql: many () -> { column1: int64 }
+values_joined.sql: many () -> { n: int64, column1: int64 }
+values_rows.sql: many () -> { column1: int64 }
+with_count.sql: one () -> { n: int64 }

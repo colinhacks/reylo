@@ -16,6 +16,7 @@ pub mod mysql_keys;
 pub mod mysql_nulls;
 pub mod mysql_params;
 pub mod mysql_shape;
+pub mod mysql_types;
 
 use reylo_engine_core::{analysis, dialect, fresh, lex, schema_type, shape, stack, structured, types};
 

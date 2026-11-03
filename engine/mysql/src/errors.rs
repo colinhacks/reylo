@@ -4,6 +4,7 @@
 //! checks and columns of the tables it writes and reads, which is all the run time reads from a
 //! MySQL message (src/query-error.ts).
 
+use reylo_engine_core::types::StatementKind;
 use crate::host::Host;
 use reylo_engine_core::api::{Analysis, Scope};
 use reylo_engine_core::dialect::Dialect;
@@ -59,16 +60,16 @@ fn list<'a>(names: impl Iterator<Item = &'a str>) -> String {
 /// [`ERRORS_QUERY`] for a statement of `kind` that reads and writes `tables`, or `None` where it is
 /// neither a query nor a write (a CALL), or writes what the parse cannot name (a table of another
 /// schema).
-fn request(kind: &str, tables: &Tables, sql: &str) -> Option<String> {
+fn request(kind: Option<StatementKind>, tables: &Tables, sql: &str) -> Option<String> {
     let unqualified = |t: &String| t.rsplit('.').next().unwrap_or(t).to_string();
     let written: Vec<String> = tables.write.iter().map(unqualified).collect();
     let read: Vec<String> = tables.read.iter().map(unqualified).collect();
-    if (kind != "select" && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
+    if (kind != Some(StatementKind::Select) && written.is_empty()) || written.iter().chain(&read).any(|t| t.contains('\\')) {
         return None;
     }
     let called = called(sql, Dialect::Mysql);
     // An INSERT changes no key but through ON DUPLICATE KEY UPDATE or as a REPLACE, which deletes.
-    let cascades = !written.is_empty() && (kind != "insert" || has_word(sql, Dialect::Mysql, &["update", "replace"]));
+    let cascades = !written.is_empty() && (kind != Some(StatementKind::Insert) || has_word(sql, Dialect::Mysql, &["update", "replace"]));
     Some(
         ERRORS_QUERY
             .replace("{written}", &list(written.iter().map(String::as_str)))
@@ -80,7 +81,7 @@ fn request(kind: &str, tables: &Tables, sql: &str) -> Option<String> {
 
 /// Asks [`ERRORS_QUERY`] in the statement's first round, beside its other needs, since it waits on
 /// nothing but the parse: asked only once the analysis is done, it would take a round of its own.
-pub fn prefetch(kind: &str, tables: &Tables, sql: &str, host: &Host) {
+pub fn prefetch(kind: Option<StatementKind>, tables: &Tables, sql: &str, host: &Host) {
     if let Some(query) = request(kind, tables, sql) {
         let _ = host.query(&query, Vec::new(), Scope::Statement);
     }
@@ -90,7 +91,7 @@ pub fn prefetch(kind: &str, tables: &Tables, sql: &str, host: &Host) {
 /// or a stored function, or where [`request`] has no query to ask.
 pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     let Some(tables) = &analysis.tables else { return Some(None) };
-    let Some(query) = request(&analysis.kind, tables, &analysis.rewritten.sql) else { return Some(None) };
+    let Some(query) = request(analysis.kind, tables, &analysis.rewritten.sql) else { return Some(None) };
     let rows = host.query(&query, Vec::new(), Scope::Statement)?;
     let Ok(rows) = rows else { return Some(None) };
     Some(narrowed(&rows))

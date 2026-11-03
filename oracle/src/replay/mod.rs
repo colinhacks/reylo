@@ -72,16 +72,16 @@ impl Tally {
         }
         self.columns += columns.len();
         for (c, null) in columns.iter().zip(&returned.nulls) {
-            let non_null = !c["nullable"].as_bool().unwrap_or(true);
+            let non_null = !c["nullable"].as_bool().unwrap_or(false);
             self.non_null += usize::from(non_null);
             if non_null && *null {
                 self.contradictions.push(format!("{} -- column {} is typed non-null and held NULL", shown(), c["name"].as_str().unwrap_or("?")));
             }
         }
         let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
-        self.bounded += usize::from(matches!(cardinality, "one" | "maybeOne"));
+        self.bounded += usize::from(matches!(cardinality, "one" | "at_most_one"));
         let rows = returned.rows;
-        if (cardinality == "one" && rows != 1) || (cardinality == "maybeOne" && rows > 1) {
+        if (cardinality == "one" && rows != 1) || (cardinality == "at_most_one" && rows > 1) {
             self.contradictions.push(format!("{} -- inferred {cardinality}, returned {rows} rows", shown()));
         }
     }
@@ -90,7 +90,7 @@ impl Tally {
     pub fn report(&self) -> bool {
         println!("{} file(s), {} skipped (a feature the server or the runner lacks)", self.files, self.files_skipped);
         println!("{} statement(s) the engine reads: {} ran, {} failed on the database, {} take parameters (not run), {} the engine could not analyze", self.statements, self.ran, self.failed, self.with_params, self.analysis_failed);
-        println!("{} of {} columns of the statements that ran inferred non-null; {} statements inferred one or maybeOne", self.non_null, self.columns, self.bounded);
+        println!("{} of {} columns of the statements that ran inferred non-null; {} statements inferred one or at_most_one", self.non_null, self.columns, self.bounded);
         println!("{} of the statements that ran were typed from the describe alone, their syntax beyond the engine's parser", self.unread);
         println!("{} refused by Reylo's own rule that no two columns share a name", self.by_rule);
         println!("{} other statement(s) the engine refused and the database ran:", self.refused.len());

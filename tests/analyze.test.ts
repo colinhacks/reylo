@@ -48,7 +48,7 @@ test("a statement is analyzed against the database once, and read from .reylo/ b
   const first = await analyze(root, env, SELECT);
   assert.ok(first.ok);
   assert.equal(first.source, "database");
-  assert.equal(first.analysis.cardinality, "maybeOne");
+  assert.equal(first.analysis.cardinality, "at_most_one");
   assert.ok(first.entry.startsWith(join(root, ".reylo", "queries")));
   assert.ok(existsSync(first.entry));
   // The directory keeps itself out of git.
@@ -159,7 +159,7 @@ test("the module a build step emits carries the analysis and reads nothing at ru
       `export const sql = "select id, name from users where id = ?";`,
       `export const raw = ${JSON.stringify(SELECT)};`,
       `export const params = ["id"];`,
-      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"scalar","name":"integer"},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
+      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
       ``,
     ].join("\n"));
     // A statement that relies on no catalog fact carries its file too, written with `/`.
@@ -184,10 +184,10 @@ test("one statement of another kind is a command: DDL resolves to nothing and ru
   const created = await analyze(root, env, ddl);
   assert.ok(created.ok);
   const { kind, cardinality, columns, params, diagnostics } = created.analysis;
-  assert.deepEqual({ kind, cardinality, columns, params, diagnostics }, { kind: "create", cardinality: "none", columns: [], params: [], diagnostics: [] });
+  assert.deepEqual({ kind, cardinality, columns, params, diagnostics }, { kind: "other", cardinality: "none", columns: [], params: [], diagnostics: [] });
   const db = new DatabaseSync(join(root, "app.db"));
   try {
-    assert.equal(await defineQuery({ dialect: "sqlite", sql: ddl, params: [], cardinality }).run(db), undefined);
+    assert.equal(await defineQuery({ dialect: "sqlite", sql: ddl, params: [], cardinality: cardinality === "at_most_one" ? "maybeOne" : cardinality }).run(db), undefined);
     // A command that returns rows has the columns SQLite names, of no known type and nullable.
     const listed = await analyze(root, env, "pragma index_list(users)");
     assert.ok(listed.ok);

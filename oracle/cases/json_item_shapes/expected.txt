@@ -1,20 +1,20 @@
-derived_nested.sql: one () -> { j: { stats: { count: int8 } } }
-derived_object.sql: one () -> { stats: { count: int8, latest: timestamptz? } }
-derived_renamed.sql: many () -> { k: { id: int8 } }
-direct_param.sql: many (p: text) -> { j: { id: int8, p: text? } }
-lateral.sql: many () -> { j: { id: int8 } }
-with_aggregated.sql: many () -> { id: int8, posts: [{ id: int8, title: text }] } key (id)
-with_chain.sql: many () -> { doc: { id: int8, user_id: int8, title: text, published_at: timestamptz? } }
-with_chain_nested.sql: many () -> { k: { js: [{ id: int8 }] } }
-with_coalesced.sql: many () -> { name: text, posts: [{ id: int8, title: text }] }
-with_coalesced_object.sql: many () -> { j: json }
-with_grouped_left_join.sql: many () -> { name: text, posts: [{ id: int8, title: text }]? }
-with_nested.sql: many () -> { author: { name: text, posts: [{ id: int8, title: text }]? } }
-with_nested_coalesced.sql: many () -> { author: { name: text, posts: [{ id: int8, title: text }] } }
-with_object.sql: many () -> { post: { id: int8, title: text } }
-with_param.sql: many (p: text) -> { j: { id: int8, p: text? } }
-with_probe_budget.sql: many () -> { a: { posts: [{ id: int8, title: text }]? }, b1: { id: int8 }?, b2: { id: int8 }?, b3: { id: int8 }?, b4: { id: int8 }?, b5: { id: int8 }?, b6: { id: int8 }? }
-with_renamed.sql: many () -> { j: { id: int8 } }
-with_star.sql: many () -> { j: json }
-with_ungrouped_agg.sql: one () -> { titles: [text]? }
-with_union.sql: many () -> { j: json }
+derived_nested.sql: one () -> { j: jsonb { stats: { count: int8 } } }
+derived_object.sql: one () -> { stats: jsonb { count: int8, latest: timestamptz? } }
+derived_renamed.sql: many () -> { k: jsonb { id: int8 } }
+direct_param.sql: many (p: text) -> { j: jsonb { id: int8, p: text? } }
+lateral.sql: many () -> { j: jsonb { id: int8 } }
+with_aggregated.sql: many () -> { id: int8, posts: jsonb ({ id: int8, title: text })[] } key (id)
+with_chain.sql: many () -> { doc: jsonb { id: int8, user_id: int8, title: text, published_at: timestamptz? } }
+with_chain_nested.sql: many () -> { k: jsonb { js: ({ id: int8 })[] } }
+with_coalesced.sql: many () -> { name: text, posts: jsonb ({ id: int8, title: text })[] }
+with_coalesced_object.sql: many () -> { j: jsonb }
+with_grouped_left_join.sql: many () -> { name: text, posts: jsonb ({ id: int8, title: text })[]? }
+with_nested.sql: many () -> { author: jsonb { name: text, posts: ({ id: int8, title: text })[]? } }
+with_nested_coalesced.sql: many () -> { author: jsonb { name: text, posts: ({ id: int8, title: text })[] } }
+with_object.sql: many () -> { post: jsonb { id: int8, title: text } }
+with_param.sql: many (p: text) -> { j: jsonb { id: int8, p: text? } }
+with_probe_budget.sql: many () -> { a: jsonb { posts: ({ id: int8, title: text })[]? }, b1: jsonb { id: int8 }?, b2: jsonb { id: int8 }?, b3: jsonb { id: int8 }?, b4: jsonb { id: int8 }?, b5: jsonb { id: int8 }?, b6: jsonb { id: int8 }? }
+with_renamed.sql: many () -> { j: jsonb { id: int8 } }
+with_star.sql: many () -> { j: jsonb }
+with_ungrouped_agg.sql: one () -> { titles: jsonb text[]? }
+with_union.sql: many () -> { j: jsonb }

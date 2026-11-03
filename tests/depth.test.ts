@@ -55,12 +55,12 @@ test("a Postgres statement nested to the bound is read whole, one level past it 
     assert.equal(at.kind, "select", `${shape} at ${n}`);
     assert.notEqual(at.cardinalityReason, "the statement did not parse locally", `${shape} at ${n}`);
     const past = await engine.analyze(nested(shape, n + 1), "postgres", io);
-    assert.deepEqual([past.kind, past.cardinality, past.cardinalityReason], ["", "many", "the statement did not parse locally"], `${shape} at ${n + 1}`);
+    assert.deepEqual([past.kind, past.cardinality, past.cardinalityReason], [undefined, "many", "the statement did not parse locally"], `${shape} at ${n + 1}`);
     assert.ok(past.columns.every((c) => c.nullable) && past.diagnostics.length === 0, `${shape} at ${n + 1}`);
   }
   // Far past the bound, and long lists that do not nest at all.
-  assert.equal((await engine.analyze(nested("sum", 100_000), "postgres", io)).kind, "");
-  assert.equal((await engine.analyze(nested("parens", 20_000), "postgres", io)).kind, "");
+  assert.equal((await engine.analyze(nested("sum", 100_000), "postgres", io)).kind, undefined);
+  assert.equal((await engine.analyze(nested("parens", 20_000), "postgres", io)).kind, undefined);
   assert.equal((await engine.analyze(nested("or", 10_000), "postgres", io)).kind, "select");
   assert.equal((await engine.analyze(nested("parens", 5_000), "postgres", io)).kind, "select");
   // The same instance answers a plain statement after all of that.
@@ -84,7 +84,7 @@ test("a SQLite statement nested to the engine's bound is typed, and one level pa
       assert.deepEqual(past.ok && past.analysis.diagnostics.map((d) => d.message), ["Expression tree is too large (maximum depth 350)"], `${shape} at ${n + 1}`);
     }
     const plain = await session.analyze("select id, name from users where id = :id", { force: true });
-    assert.ok(plain.ok && plain.analysis.cardinality === "maybeOne");
+    assert.ok(plain.ok && plain.analysis.cardinality === "at_most_one");
   } finally {
     await session.close();
   }

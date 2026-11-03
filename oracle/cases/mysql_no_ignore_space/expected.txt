@@ -1,8 +1,8 @@
-spaced_count.sql: many () -> { n: int8? }
-spaced_count_comment.sql: many () -> { n: int8? }
-spaced_count_newline.sql: many () -> { n: int8? }
+spaced_count.sql: many () -> { n: bigint? }
+spaced_count_comment.sql: many () -> { n: bigint? }
+spaced_count_newline.sql: many () -> { n: bigint? }
 spaced_count_star.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '*) as n from users' at line 1 (ER_PARSE_ERROR)
-spaced_count_subquery.sql: many () -> { id: int8, n: int8? }
-spaced_count_subquery_limit.sql: many () -> { id: int8, n: int8? }
-spaced_max.sql: many () -> { n: int8? }
-unqualified_count.sql: one () -> { n: int8 }
+spaced_count_subquery.sql: many () -> { id: bigint, n: bigint? }
+spaced_count_subquery_limit.sql: many () -> { id: bigint, n: bigint? }
+spaced_max.sql: many () -> { n: bigint? }
+unqualified_count.sql: one () -> { n: bigint }

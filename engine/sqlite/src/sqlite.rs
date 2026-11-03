@@ -17,7 +17,28 @@ use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, Target};
 use crate::sqlite_tree::{self as tree, From, Node, Sel, Tree};
-use crate::types::{Field, Type};
+use crate::types::{Cardinality, Field, FloatType, IllFormed, Kind, Per, Position, StatementKind, TextType, Type};
+
+/// What the analysis reasons in: a value's storage class by the affinity name SQLite gives it
+/// (`integer`, `real`, `text`, `blob`, `numeric`; `int8` for a value a column declared 64 bits wide
+/// holds, `bool` for a truth value or a column declared BOOLEAN), the JSON a constructor builds,
+/// or nothing known. The analysis hands each result column and parameter on as the format's type
+/// ([`descriptor`]).
+#[derive(Debug, Clone, PartialEq)]
+enum Ty {
+    Scalar { name: String },
+    Object { fields: Vec<TyField> },
+    List { of: Box<Ty>, nullable_items: bool },
+    Json { schema: Option<serde_json::Value> },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct TyField {
+    name: String,
+    ty: Ty,
+    nullable: bool,
+}
 use std::collections::{HashMap, HashSet};
 
 /// The schema, as SQLite stores it: its `sql` column is the DDL the engine replays into its
@@ -240,13 +261,14 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // says what it takes and returns, and nothing says where a column comes from, so each is of
     // no known type and may be NULL. One that returns no rows runs as a write does.
     if let lex::Statement::Command(kind) = statement {
-        let columns: Vec<Column> = t.columns.iter().map(|c| Column { name: c.name.clone(), ty: Type::Unknown, nullable: true, type_name: c.declared.clone().unwrap_or_default(), comment: None }).collect();
-        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        let columns: Vec<Column> = t.columns.iter().map(|c| Column::new(c.name.clone(), Type::unknown(), true)).collect();
+        let cardinality = if columns.is_empty() { Cardinality::None } else { Cardinality::Many };
         let analysis = Analysis {
-            kind,
+            kind: Some(StatementKind::of(&kind)),
+            comment: None,
             params: a.params(lexed).0,
             columns,
-            cardinality: cardinality.into(),
+            cardinality,
             cardinality_reason: None,
             key: None,
             rewritten: lex::rewrite(sql, lexed, Target::Question),
@@ -257,23 +279,25 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             fresh: None,
             errors: None,
             tables: None,
+            domains: Default::default(),
         };
         return SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys: HashMap::new(), booleans: vec![false; t.columns.len()] };
     }
-    let (mut columns, kind) = a.columns();
+    let (facts, kind) = a.columns();
     let booleans = a.booleans();
-    // A truth value, and a column declared BOOLEAN, are booleans to the loader's run time, which
-    // reads 0 and 1 and refuses any other value (src/values.ts). A truth value SQLite computes is
-    // named `bool`, which the oracle holds to 0 and 1; a column keeps its affinity's name, since it
-    // holds whatever was stored in it.
-    for ((column, flag), computed) in columns.iter_mut().zip(a.flags()).zip(&booleans) {
-        if flag {
-            column.ty = Type::Scalar { name: "bool".into() };
-            if *computed {
-                column.type_name = "bool".into();
-            }
-        }
-    }
+    // A truth value SQLite computes is a boolean, which the oracle holds to 0 and 1; a column
+    // declared BOOLEAN, read or passed through, holds whatever was stored in it, and the loader's
+    // run time reads it as a truth value by its name, refusing any other value (src/values.ts).
+    let columns: Vec<Column> = facts
+        .into_iter()
+        .zip(a.flags())
+        .zip(&booleans)
+        .zip(&t.columns)
+        .map(|((((name, fact), flag), computed), public)| {
+            let ty = if flag { Ty::Scalar { name: "bool".into() } } else { fact.ty };
+            Column::new(name, descriptor(&ty, public.declared.as_deref(), *computed), !fact.non_null)
+        })
+        .collect();
     let (params, refused) = a.params(lexed);
     // A parameter cast to `nullable(…)` and written whole to a column that refuses null would be
     // refused at run time for the null its type allows: an error at the parameter.
@@ -285,7 +309,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     }
     let (cardinality, reason) = a.cardinality();
     let mut analysis = Analysis {
-        kind,
+        kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
+        comment: None,
         params,
         columns,
         cardinality,
@@ -299,6 +324,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         fresh: None,
         errors: None,
         tables: Some(tables(&t)),
+        domains: Default::default(),
     };
     crate::analysis::clashes(sql, &mut analysis, &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
@@ -500,7 +526,7 @@ fn token_len(rest: &str) -> usize {
 /// What an expression is: its affinity as the type model, and whether it can be NULL.
 #[derive(Debug, Clone)]
 struct Fact {
-    ty: Type,
+    ty: Ty,
     non_null: bool,
 }
 
@@ -509,7 +535,74 @@ impl Fact {
         Fact { ty: affinity_type(aff), non_null }
     }
     fn unknown() -> Fact {
-        Fact { ty: Type::Unknown, non_null: false }
+        Fact { ty: Ty::Unknown, non_null: false }
+    }
+}
+
+/// SQLite's storage classes as the format's types: a 64-bit integer, a double that holds the
+/// infinities (a NaN is stored as NULL), text that is never validated as UTF-8, and bytes.
+fn int64() -> Type {
+    Type::integer(64)
+}
+fn real() -> Type {
+    Type::new(Kind::Float(FloatType { exponent_bits: 11, mantissa_bits: 52, infinity: true, ..FloatType::default() }))
+}
+fn text() -> Type {
+    Type::new(Kind::Text(TextType { ill_formed: Some(IllFormed::Utf8), ..TextType::default() }))
+}
+
+/// What a column of an affinity holds outside a STRICT table: an INTEGER, NUMERIC or untyped one
+/// any storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
+fn stored(aff: &str) -> Type {
+    let members = match aff {
+        "real" => vec![real(), text(), Type::bytes()],
+        "text" => vec![text(), Type::bytes()],
+        _ => vec![int64(), real(), text(), Type::bytes()],
+    };
+    Type::union(members, Per::Value)
+}
+
+/// The format's type of a value the analysis typed `ty` ([`Ty`]). A column read as it is
+/// (`declared`, the type its table declares, through subqueries and views) holds what its affinity
+/// stores, under that name: SQLite keeps what it cannot convert as it is. A value the statement
+/// computes is the storage class the analysis gives it, a 64-bit column's under `BIGINT` and a
+/// column declared BOOLEAN's under `BOOLEAN`, the names a client reads it by; a truth value SQLite
+/// computes (`computed`) is a boolean, delivered as 1 or 0.
+fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool) -> Type {
+    // SQLite gives a compound's column the first arm's declared type: it names the value only
+    // where the value is what a column of that type holds.
+    let declared = declared.map(str::trim).filter(|d| !d.is_empty()).filter(|d| match ty {
+        Ty::Scalar { name } if name == "bool" => is_boolean_declared(d),
+        Ty::Scalar { .. } => !is_boolean_declared(d) && column_type(d, affinity(d), false) == *ty,
+        _ => false,
+    });
+    match ty {
+        Ty::Scalar { name } if name == "bool" && computed => Type::boolean(),
+        Ty::Scalar { name } if name == "bool" => stored("numeric").named(declared.unwrap_or("BOOLEAN")),
+        Ty::Scalar { name } => match (declared, name.as_str()) {
+            (Some(d), aff) => stored(if aff == "int8" { "integer" } else { aff }).named(d),
+            (None, "integer") => int64(),
+            (None, "int8") => int64().named("BIGINT"),
+            (None, "real") => real(),
+            (None, "text") => text(),
+            (None, "blob") => Type::bytes(),
+            (None, "numeric") => stored("numeric").named("NUMERIC"),
+            _ => Type::unknown(),
+        },
+        Ty::Object { .. } | Ty::List { .. } => Type::json_of(Position::non_null(content(ty))),
+        Ty::Json { schema: Some(schema) } => Type::json_schema_of(schema.clone()),
+        Ty::Json { schema: None } => Type::json(),
+        Ty::Unknown => Type::unknown(),
+    }
+}
+
+/// A value inside a document SQLite built: an object's fields and an array's items, each the
+/// value SQLite wrote there.
+fn content(ty: &Ty) -> Type {
+    match ty {
+        Ty::Object { fields } => Type::record(fields.iter().map(|f| Field::new(f.name.clone(), content(&f.ty), f.nullable)).collect()),
+        Ty::List { of, nullable_items } => Type::array(Position::new(content(of), *nullable_items)),
+        other => descriptor(other, None, false),
     }
 }
 
@@ -518,12 +611,12 @@ impl Fact {
 /// a 64-bit integer's name ([`is_int8_declared`]) is `int8`, the type Postgres's `int8` and MySQL's
 /// `BIGINT` are: the declared width decides, on every database (wiki/driver-decoding.md). (`ANY` in
 /// a table that is not STRICT is a declared type like any other, with NUMERIC affinity.)
-fn column_type(declared: &str, aff: &str, strict: bool) -> Type {
+fn column_type(declared: &str, aff: &str, strict: bool) -> Ty {
     let declared = declared.trim();
     if declared.is_empty() || (strict && declared.eq_ignore_ascii_case("any")) {
-        Type::Unknown
+        Ty::Unknown
     } else if aff == "integer" && is_int8_declared(declared) {
-        Type::Scalar { name: "int8".into() }
+        Ty::Scalar { name: "int8".into() }
     } else {
         affinity_type(aff)
     }
@@ -540,26 +633,26 @@ fn is_int8_declared(declared: &str) -> bool {
 }
 
 /// An affinity name as the type model; `none` is unknown.
-fn affinity_type(aff: &str) -> Type {
+fn affinity_type(aff: &str) -> Ty {
     match aff {
-        "integer" | "real" | "text" | "blob" | "numeric" => Type::Scalar { name: aff.to_string() },
-        _ => Type::Unknown,
+        "integer" | "real" | "text" | "blob" | "numeric" => Ty::Scalar { name: aff.to_string() },
+        _ => Ty::Unknown,
     }
 }
 
-fn scalar_name(t: &Type) -> Option<&str> {
+fn scalar_name(t: &Ty) -> Option<&str> {
     match t {
-        Type::Scalar { name } => Some(name.as_str()),
+        Ty::Scalar { name } => Some(name.as_str()),
         _ => None,
     }
 }
 
-fn is_numeric(t: &Type) -> bool {
+fn is_numeric(t: &Ty) -> bool {
     matches!(scalar_name(t), Some("integer" | "int8" | "real" | "numeric"))
 }
 
 /// Whether a type is an integer's: SQLite's INTEGER, or a column declared 64 bits wide.
-fn is_integral(t: &Type) -> bool {
+fn is_integral(t: &Ty) -> bool {
     matches!(scalar_name(t), Some("integer" | "int8"))
 }
 
@@ -567,9 +660,9 @@ fn is_integral(t: &Type) -> bool {
 /// unchanged only as itself (a column, a subquery's or view's column, `min`, `max`, `coalesce`, a
 /// `CASE` arm, a window's `lag`), and what SQLite computes from it (`-id`, `abs(id)`, `sum(id)`,
 /// `id + 1`) is SQLite's INTEGER, as `count(*)` is.
-fn computed(t: Type) -> Type {
+fn computed(t: Ty) -> Ty {
     if scalar_name(&t) == Some("int8") {
-        Type::Scalar { name: "integer".into() }
+        Ty::Scalar { name: "integer".into() }
     } else {
         t
     }
@@ -578,13 +671,13 @@ fn computed(t: Type) -> Type {
 /// The type several arms share: one type when they agree, `int8` for a mix of integers of which
 /// one is a 64-bit column's (`coalesce(user_id, 0)`: any integer is exact as a BigInt), `real` for
 /// another mix of numbers, unknown otherwise.
-fn shared(facts: &[&Fact]) -> Type {
-    let known: Vec<&Type> = facts.iter().map(|f| &f.ty).filter(|t| !matches!(t, Type::Unknown)).collect();
-    let Some(first) = known.first() else { return Type::Unknown };
+fn shared(facts: &[&Fact]) -> Ty {
+    let known: Vec<&Ty> = facts.iter().map(|f| &f.ty).filter(|t| !matches!(t, Ty::Unknown)).collect();
+    let Some(first) = known.first() else { return Ty::Unknown };
     // Built JSON is text to SQLite: beside a value of no known type (a parameter:
     // `coalesce(:doc, json_array())`), or another type, it is the text it is.
     if known.len() < facts.len() && known.iter().any(|t| is_built(t)) {
-        return Type::Scalar { name: "text".into() };
+        return Ty::Scalar { name: "text".into() };
     }
     if known.iter().all(|t| t == first) {
         return (*first).clone();
@@ -592,19 +685,19 @@ fn shared(facts: &[&Fact]) -> Type {
     if let Some(ty) = same_json(&known) {
         return ty;
     }
-    let known: Vec<Type> = known.iter().map(|t| textual(t)).collect();
-    let known: Vec<&Type> = known.iter().collect();
+    let known: Vec<Ty> = known.iter().map(|t| textual(t)).collect();
+    let known: Vec<&Ty> = known.iter().collect();
     let first = known[0];
     if known.iter().all(|t| *t == first) {
         return first.clone();
     }
     if known.iter().all(|t| is_integral(t)) {
-        return Type::Scalar { name: "int8".into() };
+        return Ty::Scalar { name: "int8".into() };
     }
     if known.iter().all(|t| is_numeric(t)) {
-        return Type::Scalar { name: "real".into() };
+        return Ty::Scalar { name: "real".into() };
     }
-    Type::Unknown
+    Ty::Unknown
 }
 
 /// The arguments of `coalesce` or `ifnull` it can hand back: each up to the first that is never
@@ -619,31 +712,31 @@ fn reached(args: &[Fact]) -> &[Fact] {
 /// parameter, such as a column declared without a type or `json_extract`, may be of any storage
 /// class, so the result is unknown too; a parameter takes the others' type, and a NULL literal says
 /// nothing of the type.
-fn values_type(values: &[(&Node, &Fact)]) -> Type {
+fn values_type(values: &[(&Node, &Fact)]) -> Ty {
     let valued: Vec<&Fact> = values.iter().filter(|(e, _)| e.op != "null").map(|(_, f)| *f).collect();
-    if values.iter().any(|(e, f)| matches!(f.ty, Type::Unknown) && e.op != "null" && e.op != "variable") {
-        return Type::Unknown;
+    if values.iter().any(|(e, f)| matches!(f.ty, Ty::Unknown) && e.op != "null" && e.op != "variable") {
+        return Ty::Unknown;
     }
     shared(&valued)
 }
 
 /// Whether a type is JSON a constructor built, which SQLite returns as text.
-fn is_built(t: &Type) -> bool {
-    matches!(t, Type::Object { .. } | Type::List { .. } | Type::Json { .. })
+fn is_built(t: &Ty) -> bool {
+    matches!(t, Ty::Object { .. } | Ty::List { .. } | Ty::Json { .. })
 }
 
 /// A type as SQLite's storage class: built JSON is text.
-fn textual(t: &Type) -> Type {
-    if is_built(t) { Type::Scalar { name: "text".into() } } else { t.clone() }
+fn textual(t: &Ty) -> Ty {
+    if is_built(t) { Ty::Scalar { name: "text".into() } } else { t.clone() }
 }
 
 /// The one JSON shape several types are, where they differ only in that one is an empty array
 /// (`json_array()`) and the others one list: the list.
-fn same_json(types: &[&Type]) -> Option<Type> {
-    let empty = |t: &Type| matches!(t, Type::Json { schema: Some(s) } if s.get("prefixItems").is_none() && s["type"] == "array" && s["items"] == false);
-    let lists: Vec<&Type> = types.iter().copied().filter(|t| !empty(t)).collect();
+fn same_json(types: &[&Ty]) -> Option<Ty> {
+    let empty = |t: &Ty| matches!(t, Ty::Json { schema: Some(s) } if s.get("prefixItems").is_none() && s["type"] == "array" && s["items"] == false);
+    let lists: Vec<&Ty> = types.iter().copied().filter(|t| !empty(t)).collect();
     let first = lists.first()?;
-    (matches!(first, Type::List { .. }) && lists.iter().all(|t| t == first)).then(|| (*first).clone())
+    (matches!(first, Ty::List { .. }) && lists.iter().all(|t| t == first)).then(|| (*first).clone())
 }
 
 /// Whether a value carries SQLite's JSON subtype, which makes a JSON function that reads it nest
@@ -676,7 +769,7 @@ fn combine(carries: &[Carry]) -> Carry {
 
 /// A value as a JSON function reads it ([`Analyzer::json_fact`]).
 struct JsonFact {
-    ty: Type,
+    ty: Ty,
     non_null: bool,
     carry: Carry,
 }
@@ -711,43 +804,43 @@ const PLAIN: &[&str] = &[
 /// as a number, a REAL as a number (an infinity as `9.0e+999`, which JSON.parse reads as one), a
 /// TEXT as a string, and a NUMERIC as either. A BLOB is read as JSONB (`x'01'` is `true`,
 /// `x'00'` null) or is an error, and a value of no known storage class may be one: any JSON.
-fn in_json(t: &Type) -> Type {
+fn in_json(t: &Ty) -> Ty {
     match scalar_name(t) {
         Some("integer" | "int8" | "real" | "text" | "numeric") => t.clone(),
-        _ => Type::Unknown,
+        _ => Ty::Unknown,
     }
 }
 
 /// Whether a type already admits a JSON null, so a field of it needs no `| null`.
-fn admits_null(t: &Type) -> bool {
-    matches!(t, Type::Unknown | Type::Json { schema: None })
+fn admits_null(t: &Ty) -> bool {
+    matches!(t, Ty::Unknown | Ty::Json { schema: None })
 }
 
 /// The JSON Schema of a value inside a document SQLite built, as src/schema.ts spells SQLite's
 /// values there, for a tuple's items and an object's values of any key.
-fn value_schema(t: &Type, nullable: bool) -> serde_json::Value {
+fn value_schema(t: &Ty, nullable: bool) -> serde_json::Value {
     use serde_json::json;
     let schema = match t {
-        Type::Scalar { name } => match name.as_str() {
+        Ty::Scalar { name } => match name.as_str() {
             "integer" | "int8" => json!({"type": "integer", "format": "int64"}),
             "real" => json!({"type": "number", "format": "double"}),
             "text" => json!({"type": "string"}),
             "numeric" => json!({"type": ["number", "string"]}),
             _ => json!({}),
         },
-        Type::Object { fields } => {
+        Ty::Object { fields } => {
             let properties: serde_json::Map<String, serde_json::Value> = fields.iter().map(|f| (f.name.clone(), value_schema(&f.ty, f.nullable))).collect();
             json!({"type": "object", "properties": properties, "required": fields.iter().map(|f| f.name.clone()).collect::<Vec<_>>(), "additionalProperties": false})
         }
-        Type::List { of, nullable_items } => json!({"type": "array", "items": value_schema(of, *nullable_items)}),
-        Type::Json { schema: Some(schema) } => schema.clone(),
+        Ty::List { of, nullable_items } => json!({"type": "array", "items": value_schema(of, *nullable_items)}),
+        Ty::Json { schema: Some(schema) } => schema.clone(),
         _ => json!({}),
     };
     if nullable { reylo_engine_core::schema::nullable(schema) } else { schema }
 }
 
 /// An object of any keys whose values are each one of `values`.
-fn record(values: Vec<serde_json::Value>) -> Type {
+fn record(values: Vec<serde_json::Value>) -> Ty {
     let mut distinct: Vec<serde_json::Value> = Vec::new();
     for v in values {
         if !distinct.contains(&v) {
@@ -755,7 +848,7 @@ fn record(values: Vec<serde_json::Value>) -> Type {
         }
     }
     let rest = if distinct.len() == 1 { distinct.pop().unwrap_or_default() } else { serde_json::json!({"anyOf": distinct}) };
-    Type::Json { schema: Some(serde_json::json!({"type": "object", "additionalProperties": rest})) }
+    Ty::Json { schema: Some(serde_json::json!({"type": "object", "additionalProperties": rest})) }
 }
 
 /// The FROM lists in scope, innermost last: a column reference names a cursor of one of them.
@@ -774,7 +867,7 @@ struct Analyzer<'a> {
     /// What the WHERE and the grouping of the SELECT arm whose columns are being typed prove.
     level: std::cell::RefCell<Level>,
     /// The JSON each constructor builds, by its node ([`Analyzer::shape`]).
-    shapes: std::cell::RefCell<HashMap<usize, Option<Type>>>,
+    shapes: std::cell::RefCell<HashMap<usize, Option<Ty>>>,
     /// The recursive WITH queries being settled, innermost last: each one's name and what its reads
     /// of itself are taken to be ([`Analyzer::recursive_column`]).
     recursion: std::cell::RefCell<Vec<(String, Vec<Fact>)>>,
@@ -1006,7 +1099,7 @@ enum Nulls {
 impl Analyzer<'_> {
     // ---- result columns ---------------------------------------------------------------------
 
-    fn columns(&self) -> (Vec<Column>, String) {
+    fn columns(&self) -> (Vec<(String, Fact)>, String) {
         let t = self.tree;
         let kind = t.dml.as_ref().map(|d| if d.kind == "upsert" { "insert".to_string() } else { d.kind.clone() }).unwrap_or_else(|| if t.statement.is_some() { "select".into() } else { String::new() });
         let facts: Vec<Fact> = if let Some(returning) = &t.returning {
@@ -1021,10 +1114,7 @@ impl Analyzer<'_> {
             .iter()
             .enumerate()
             .map(|(i, public)| {
-                let fact = facts.get(i).cloned().unwrap_or_else(Fact::unknown);
-                // Built JSON is the text SQLite returns, which the run time parses.
-                let type_name = if is_built(&fact.ty) { "text".to_string() } else { scalar_name(&fact.ty).unwrap_or("").to_string() };
-                Column { name: public.name.clone(), ty: fact.ty, nullable: !fact.non_null, type_name, comment: None }
+                (public.name.clone(), facts.get(i).cloned().unwrap_or_else(Fact::unknown))
             })
             .collect();
         (columns, kind)
@@ -1148,7 +1238,7 @@ impl Analyzer<'_> {
         let ty = match values {
             _ if facts.iter().all(|(_, f)| f.ty == first.ty) => first.ty.clone(),
             Some(values) => values_type(&values),
-            None => Type::Unknown,
+            None => Ty::Unknown,
         };
         Fact { ty, non_null: facts.iter().all(|(_, f)| f.non_null) }
     }
@@ -1248,7 +1338,7 @@ impl Analyzer<'_> {
             "blob" => Fact::new("blob", true),
             "null" => Fact::unknown(),
             // A parameter is a non-null value unless the statement means to take NULL for it.
-            "variable" => Fact { ty: Type::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
+            "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
                 // The JSON a `json_*` constructor builds, which SQLite returns as its text.
                 if let Some(ty) = self.built_text(n, scope) {
@@ -1290,7 +1380,7 @@ impl Analyzer<'_> {
             }
             "neg" => {
                 let l = arg(&n.left);
-                Fact { ty: if is_numeric(&l.ty) { computed(l.ty) } else { Type::Scalar { name: "real".into() } }, non_null: l.non_null }
+                Fact { ty: if is_numeric(&l.ty) { computed(l.ty) } else { Ty::Scalar { name: "real".into() } }, non_null: l.non_null }
             }
             // Unary plus does nothing to any storage class: `+name` is the text 'bob'. SQLite's
             // parser also writes a one-element `x IN (e)` as `x = +e`.
@@ -1336,7 +1426,7 @@ impl Analyzer<'_> {
             };
             Fact::new(aff, non_null)
         };
-        let typed = |ty: Type, nulls: Nulls| Fact { ty, non_null: matches!(nulls, Nulls::Never) || (matches!(nulls, Nulls::IfArgs) && all_non_null) };
+        let typed = |ty: Ty, nulls: Nulls| Fact { ty, non_null: matches!(nulls, Nulls::Never) || (matches!(nulls, Nulls::IfArgs) && all_non_null) };
         if !n.agg && !n.window {
             if let Some(f) = self.extras.function(name, args.len()) {
                 return done(f.returns.name(), Nulls::IfArgs);
@@ -1353,7 +1443,7 @@ impl Analyzer<'_> {
                 "percent_rank" | "cume_dist" => done("real", Nulls::Never),
                 "count" => done("integer", Nulls::Never),
                 "total" => done("real", total_nulls(&first)),
-                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
+                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
                 // `lag` and `lead` hand back their default where the row they read is missing.
                 "lag" | "lead" if args.len() >= 3 => typed(values_type(&[(&n.args[0], &args[0]), (&n.args[2], &args[2])]), Nulls::Always),
@@ -1372,7 +1462,7 @@ impl Analyzer<'_> {
             return match name {
                 "count" => done("integer", Nulls::Never),
                 "total" => done("real", total_nulls(&first)),
-                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::Always),
+                "sum" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::Always),
                 "avg" => done("real", Nulls::Always),
                 "min" | "max" => typed(first.ty.clone(), if grouped { Nulls::IfArgs } else { Nulls::Always }),
                 "group_concat" | "string_agg" => done("text", if grouped { Nulls::IfArgs } else { Nulls::Always }),
@@ -1398,7 +1488,7 @@ impl Analyzer<'_> {
             }
             "min" | "max" => Fact { ty: values_type(&n.args.iter().zip(args).collect::<Vec<_>>()), non_null: all_non_null },
             // `abs` of the least integer is an error, not NULL; of text, 0.0.
-            "abs" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Type::Scalar { name: "real".into() } }, Nulls::IfArgs),
+            "abs" => typed(if is_numeric(&first.ty) { computed(first.ty.clone()) } else { Ty::Scalar { name: "real".into() } }, Nulls::IfArgs),
             "round" => done("real", Nulls::IfArgs),
             "length" | "instr" | "json_valid" | "octet_length" => done("integer", Nulls::IfArgs),
             // A path that finds nothing is NULL: `json_array_length('{}', '$.a')`, `json_type('{}', '$.a')`.
@@ -1419,8 +1509,8 @@ impl Analyzer<'_> {
             // non-null only over text. A parameter there is typed text ([`Analyzer::argument`]).
             "substr" | "substring" => {
                 let blob = matches!(scalar_name(&first.ty), Some("blob"));
-                let any = matches!(first.ty, Type::Unknown) && n.args.first().is_some_and(|a| a.op != "variable");
-                let ty = if blob { first.ty.clone() } else if any { Type::Unknown } else { Type::Scalar { name: "text".into() } };
+                let any = matches!(first.ty, Ty::Unknown) && n.args.first().is_some_and(|a| a.op != "variable");
+                let ty = if blob { first.ty.clone() } else if any { Ty::Unknown } else { Ty::Scalar { name: "text".into() } };
                 Fact { ty, non_null: all_non_null && !blob && !any }
             }
             // NULL where it writes nothing, as for an empty format or one that stops at a
@@ -1487,7 +1577,7 @@ impl Analyzer<'_> {
     /// The JSON a call that SQLite answers with text builds: a `json_object`, `json_array`,
     /// `json_group_array` or `json_group_object` call, or `json()` of one of those or of a
     /// `jsonb_*` constructor. A `jsonb_*` call is a blob, which stays one.
-    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn built_text(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         match self.builtin_name(n)? {
             "json_object" | "json_array" | "json_group_array" | "json_group_object" => self.shape(n, scope),
             "json" if n.args.len() == 1 && !n.agg && !n.window => self.shape(&n.args[0], scope).or_else(|| self.subquery_shape(&n.args[0], scope)),
@@ -1498,7 +1588,7 @@ impl Analyzer<'_> {
     /// The JSON a scalar subquery's one column builds, which `json()` of the subquery marks as
     /// JSON again whether or not the subquery's value kept SQLite's subtype ([`Analyzer::carry`]).
     /// None for a compound or a `VALUES` list, whose rows the first arm's column does not type.
-    fn subquery_shape(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn subquery_shape(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         if n.op != "select" {
             return None;
         }
@@ -1520,7 +1610,7 @@ impl Analyzer<'_> {
     /// The JSON a constructor builds, `json_*` or `jsonb_*`, each value as SQLite writes it
     /// there ([`Analyzer::json_fact`]); `json()` and `jsonb()` of one build the same. Each node's
     /// shape is worked out once: a constructor's nullability and its parent's shape both read it.
-    fn shape(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn shape(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let key = n as *const Node as usize;
         if let Some(found) = self.shapes.borrow().get(&key) {
             return found.clone();
@@ -1530,7 +1620,7 @@ impl Analyzer<'_> {
         shape
     }
 
-    fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Type> {
+    fn shape_here(&self, n: &Node, scope: &ScopeStack) -> Option<Ty> {
         let name = self.builtin_name(n)?;
         let aggregate = n.agg || n.window;
         // What a JSON function reads an argument as: a value that may be NULL is a null there,
@@ -1544,9 +1634,9 @@ impl Analyzer<'_> {
             "json_object" | "jsonb_object" if !aggregate => {
                 // An odd count of arguments is an error, and so is a key that is no text.
                 if n.args.len() % 2 != 0 {
-                    return Some(Type::Json { schema: None });
+                    return Some(Ty::Json { schema: None });
                 }
-                let mut fields: Vec<Field> = Vec::new();
+                let mut fields: Vec<TyField> = Vec::new();
                 let mut dynamic = false;
                 for pair in n.args.chunks(2) {
                     let (ty, nullable) = value(&pair[1]);
@@ -1557,11 +1647,11 @@ impl Analyzer<'_> {
                                 f.ty = ty;
                                 f.nullable = nullable;
                             }
-                            None => fields.push(Field { name: key.to_string(), ty, nullable }),
+                            None => fields.push(TyField { name: key.to_string(), ty, nullable }),
                         },
                         None => {
                             dynamic = true;
-                            fields.push(Field { name: String::new(), ty, nullable });
+                            fields.push(TyField { name: String::new(), ty, nullable });
                         }
                     }
                 }
@@ -1569,7 +1659,7 @@ impl Analyzer<'_> {
                 if dynamic {
                     return Some(record(fields.iter().map(|f| value_schema(&f.ty, f.nullable)).collect()));
                 }
-                Some(Type::Object { fields })
+                Some(Ty::Object { fields })
             }
             // A JSON array of exactly these values, in this order: a tuple.
             "json_array" | "jsonb_array" if !aggregate => {
@@ -1582,12 +1672,12 @@ impl Analyzer<'_> {
                     schema["minItems"] = serde_json::json!(items.len());
                     schema["prefixItems"] = serde_json::Value::Array(items);
                 }
-                Some(Type::Json { schema: Some(schema) })
+                Some(Ty::Json { schema: Some(schema) })
             }
             // `[]` over no rows, never NULL; a FILTER and a window frame alike.
             "json_group_array" | "jsonb_group_array" if aggregate && n.args.len() == 1 => {
                 let (ty, nullable) = value(&n.args[0]);
-                Some(Type::List { of: Box::new(ty), nullable_items: nullable })
+                Some(Ty::List { of: Box::new(ty), nullable_items: nullable })
             }
             // `{}` over no rows; a key aggregated twice is in the text twice.
             "json_group_object" | "jsonb_group_object" if aggregate && n.args.len() == 2 => {
@@ -1608,7 +1698,7 @@ impl Analyzer<'_> {
             let f = self.type_of(n, scope);
             JsonFact { ty: in_json(&f.ty), non_null: f.non_null, carry: Carry::No }
         };
-        let any = JsonFact { ty: Type::Unknown, non_null: false, carry: Carry::Maybe };
+        let any = JsonFact { ty: Ty::Unknown, non_null: false, carry: Carry::Maybe };
         match n.op.as_str() {
             "function" => {
                 // A function the host registers may set the subtype on what it returns.
@@ -1636,7 +1726,7 @@ impl Analyzer<'_> {
                     }
                     // The aggregate hands back one of its values.
                     "min" | "max" if n.args.len() == 1 && !n.window => self.json_arms(first, false, scope).map(|f| JsonFact { non_null: non_null(), ..f }).unwrap_or_else(plain),
-                    _ if is_json_result(name) => JsonFact { ty: Type::Json { schema: None }, non_null: non_null(), carry: Carry::Yes },
+                    _ if is_json_result(name) => JsonFact { ty: Ty::Json { schema: None }, non_null: non_null(), carry: Carry::Yes },
                     // `max(a, b)` and `lag(x)` hand back one of their arguments: `max` kept the
                     // subtype on 3.53.4 and `lag` dropped it.
                     _ if PASSING.contains(&name) => {
@@ -1682,10 +1772,10 @@ impl Analyzer<'_> {
         }
         let non_null = facts.iter().any(|f| f.non_null);
         if !facts.iter().all(|f| f.carry == Carry::Yes) {
-            return Some(JsonFact { ty: Type::Unknown, non_null, carry: Carry::Maybe });
+            return Some(JsonFact { ty: Ty::Unknown, non_null, carry: Carry::Maybe });
         }
-        let types: Vec<&Type> = facts.iter().map(|f| &f.ty).collect();
-        let ty = if types.iter().all(|t| *t == types[0]) { types[0].clone() } else { same_json(&types).unwrap_or(Type::Unknown) };
+        let types: Vec<&Ty> = facts.iter().map(|f| &f.ty).collect();
+        let ty = if types.iter().all(|t| *t == types[0]) { types[0].clone() } else { same_json(&types).unwrap_or(Ty::Unknown) };
         Some(JsonFact { ty, non_null, carry: Carry::Yes })
     }
 
@@ -1851,7 +1941,7 @@ impl Analyzer<'_> {
         // The tree was prepared over the `?n` rewrite (see `analyze`): SQLite's `?k` is the lexer's
         // k-th parameter, whatever the author wrote.
         let mut typed: HashMap<&str, &Fact> = HashMap::new();
-        for (name, fact) in found.iter().filter(|(_, f)| !matches!(f.ty, Type::Unknown)) {
+        for (name, fact) in found.iter().filter(|(_, f)| !matches!(f.ty, Ty::Unknown)) {
             typed.entry(name.as_str()).or_insert(fact);
         }
         let params = lexed
@@ -1863,9 +1953,8 @@ impl Analyzer<'_> {
                 let fact = typed.get(numbered.as_str()).map(|f| (*f).clone()).unwrap_or_else(Fact::unknown);
                 // A parameter compared with built JSON is bound as the text it is compared with.
                 let fact = Fact { ty: textual(&fact.ty), ..fact };
-                let type_name = scalar_name(&fact.ty).unwrap_or("").to_string();
                 let nullable = fills.get(&numbered).copied().unwrap_or(false) || self.nullable_params.contains(&numbered);
-                Param { name: name.clone(), ty: fact.ty, type_name, nullable, schema: None, cast: None, comment: None }
+                Param { nullable, ..Param::new(name.clone(), descriptor(&fact.ty, None, false)) }
             })
             .collect();
         (params, refused)
@@ -1892,7 +1981,7 @@ impl Analyzer<'_> {
             compound = (0..sel.columns.len())
                 .map(|i| {
                     let ty = self.select_column(sel, i, scope).ty;
-                    (!matches!(ty, Type::Unknown)).then_some(Fact { ty, non_null: true })
+                    (!matches!(ty, Ty::Unknown)).then_some(Fact { ty, non_null: true })
                 })
                 .collect();
             compound.as_slice()
@@ -2027,7 +2116,7 @@ impl Analyzer<'_> {
                         let refs: Vec<&Fact> = others.iter().collect();
                         let ty = shared(&refs);
                         match ty {
-                            Type::Unknown => outer_type(&ctx),
+                            Ty::Unknown => outer_type(&ctx),
                             ty => Ctx::Typed(Some(Fact { ty, non_null: true })),
                         }
                     }
@@ -2042,7 +2131,7 @@ impl Analyzer<'_> {
                         let values: Vec<Fact> = n.list.iter().enumerate().filter(|(j, _)| j % 2 == 0 && j + 1 < n.list.len()).map(|(_, x)| self.type_of(x, scope)).collect();
                         let refs: Vec<&Fact> = values.iter().collect();
                         match shared(&refs) {
-                            Type::Unknown => Ctx::None,
+                            Ty::Unknown => Ctx::None,
                             ty => Ctx::Typed(Some(Fact { ty, non_null: true })),
                         }
                     }
@@ -2110,7 +2199,7 @@ impl Analyzer<'_> {
                 if i >= out.len() {
                     out.push(None);
                 }
-                if out[i].as_ref().is_none_or(|known| matches!(known.ty, Type::Unknown)) {
+                if out[i].as_ref().is_none_or(|known| matches!(known.ty, Ty::Unknown)) {
                     out[i] = f;
                 }
             }
@@ -2131,7 +2220,7 @@ impl Analyzer<'_> {
             let facts: Vec<Fact> = n.args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, a)| self.type_of(a, scope)).collect();
             let refs: Vec<&Fact> = facts.iter().collect();
             let ty = shared(&refs);
-            Ctx::Typed(if matches!(ty, Type::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
+            Ctx::Typed(if matches!(ty, Ty::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
         };
         match name {
             "like" | "glob" | "regexp" | "match" | "upper" | "lower" | "trim" | "ltrim" | "rtrim" | "length" | "hex" | "unicode" | "quote" | "instr" | "replace" | "soundex"
@@ -2149,7 +2238,7 @@ impl Analyzer<'_> {
             // value and the default each take the other's type.
             "lag" | "lead" if n.args.len() >= 3 && (i == 0 || i == 2) => {
                 let other = self.type_of(&n.args[2 - i], scope);
-                Ctx::Typed(if matches!(other.ty, Type::Unknown) { None } else { Some(Fact { ty: other.ty, non_null: true }) })
+                Ctx::Typed(if matches!(other.ty, Ty::Unknown) { None } else { Some(Fact { ty: other.ty, non_null: true }) })
             }
             // A condition is a truth value; a value shares the other values' type.
             "iif" | "if" => {
@@ -2159,7 +2248,7 @@ impl Analyzer<'_> {
                 } else {
                     let facts: Vec<Fact> = values.iter().filter(|j| **j != i).filter_map(|j| n.args.get(*j)).map(|a| self.type_of(a, scope)).collect();
                     let ty = shared(&facts.iter().collect::<Vec<_>>());
-                    Ctx::Typed(if matches!(ty, Type::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
+                    Ctx::Typed(if matches!(ty, Ty::Unknown) { None } else { Some(Fact { ty, non_null: true }) })
                 }
             }
             "sum" | "avg" | "total" => real(),
@@ -2174,11 +2263,11 @@ impl Analyzer<'_> {
 
     // ---- the row count -----------------------------------------------------------------------
 
-    fn cardinality(&self) -> (String, Option<String>) {
+    fn cardinality(&self) -> (Cardinality, Option<String>) {
         let t = self.tree;
         if let Some(dml) = &t.dml {
             if t.returning.is_none() {
-                return ("none".into(), None);
+                return (Cardinality::None, None);
             }
             return match dml.kind.as_str() {
                 "insert" => {
@@ -2187,28 +2276,28 @@ impl Analyzer<'_> {
                         let can_skip = dml.on_error == "ignore"
                             || dml.upsert.as_ref().is_some_and(|u| !u.do_update || u.where_.is_some() || triggered(TRIGGER_ROW_UPDATE))
                             || triggered(TRIGGER_ROW_INSERT);
-                        if can_skip { ("maybeOne".into(), Some("ON CONFLICT DO NOTHING, OR IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { ("one".into(), None) }
+                        if can_skip { (Cardinality::AtMostOne, Some("ON CONFLICT DO NOTHING, OR IGNORE, a DO UPDATE with a WHERE, or a BEFORE trigger's RAISE(IGNORE) can insert no row".into())) } else { (Cardinality::One, None) }
                     } else if dml.rows > 1 {
-                        ("many".into(), Some(format!("a VALUES list of {} rows returns {} rows", dml.rows, dml.rows)))
+                        (Cardinality::Many, Some(format!("a VALUES list of {} rows returns {} rows", dml.rows, dml.rows)))
                     } else {
-                        ("many".into(), Some("an INSERT ... SELECT returns a row per row it reads".into()))
+                        (Cardinality::Many, Some("an INSERT ... SELECT returns a row per row it reads".into()))
                     }
                 }
                 _ => {
                     // UPDATE or DELETE: the WHERE pins a unique key of the target, or any number.
                     match self.pinned_by_name(&dml.table, dml.where_.as_ref()) {
-                        Ok(()) => ("maybeOne".into(), None),
-                        Err(why) => ("many".into(), Some(why)),
+                        Ok(()) => (Cardinality::AtMostOne, None),
+                        Err(why) => (Cardinality::Many, Some(why)),
                     }
                 }
             };
         }
-        let Some(sel) = &t.statement else { return ("none".into(), None) };
+        let Some(sel) = &t.statement else { return (Cardinality::None, None) };
         match self.exactly_one(sel) {
-            Ok(()) => ("one".into(), None),
+            Ok(()) => (Cardinality::One, None),
             Err(one_why) => match self.at_most_one(sel) {
-                Ok(()) => ("maybeOne".into(), Some(one_why)),
-                Err(why) => ("many".into(), Some(why)),
+                Ok(()) => (Cardinality::AtMostOne, Some(one_why)),
+                Err(why) => (Cardinality::Many, Some(why)),
             },
         }
     }
@@ -2892,10 +2981,10 @@ fn cursors(n: &Node) -> Option<Vec<i64>> {
 }
 
 /// The type of `a op b` for `+`, `-`, `*`, `/`, `%`: integer stays integer, anything else is real.
-fn arithmetic(l: &Type, r: &Type) -> Type {
+fn arithmetic(l: &Ty, r: &Ty) -> Ty {
     match (scalar_name(l), scalar_name(r)) {
-        (Some("integer" | "int8"), Some("integer" | "int8")) => Type::Scalar { name: "integer".into() },
-        _ => Type::Scalar { name: "real".into() },
+        (Some("integer" | "int8"), Some("integer" | "int8")) => Ty::Scalar { name: "integer".into() },
+        _ => Ty::Scalar { name: "real".into() },
     }
 }
 
@@ -3067,7 +3156,7 @@ mod tests {
         // SQLite's own bound is 1,000; the engine's SQLite takes 350 (`csrc/reylo_sqlite.c`).
         for (shape, n) in [("sum", 350), ("and_or", 348), ("case", 348), ("coalesce", 349), ("subquery", 23)] {
             let at = small(crate::stack::nested(shape, n));
-            assert!(at.diagnostics.is_empty() && at.kind == "select", "{shape} at {n}: {:?}", at.diagnostics);
+            assert!(at.diagnostics.is_empty() && at.kind == Some(StatementKind::Select), "{shape} at {n}: {:?}", at.diagnostics);
             let past = small(crate::stack::nested(shape, n + 1));
             assert_eq!(past.diagnostics.iter().map(|d| d.message.as_str()).collect::<Vec<_>>(), ["Expression tree is too large (maximum depth 350)"], "{shape} at {}", n + 1);
         }
@@ -3078,12 +3167,12 @@ mod tests {
 
     fn col(a: &Analysis, name: &str) -> (String, bool) {
         let c = a.columns.iter().find(|c| c.name == name).unwrap_or_else(|| panic!("no column {name}"));
-        (scalar_name(&c.ty).unwrap_or("unknown").to_string(), c.nullable)
+        (affinity_of(&c.ty).unwrap_or("unknown").to_string(), c.nullable)
     }
 
     fn param(a: &Analysis, name: &str) -> String {
         let p = a.params.iter().find(|p| p.name == name).unwrap_or_else(|| panic!("no param {name}"));
-        scalar_name(&p.ty).unwrap_or("unknown").to_string()
+        affinity_of(&p.ty).unwrap_or("unknown").to_string()
     }
 
     #[test]
@@ -3326,9 +3415,9 @@ mod tests {
         // SQLite moves the ON terms into the WHERE: `u.id = :id` restricts which user a post
         // meets, and the posts that meet none have NULL there, a second group.
         assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = :id and u.id = p.user_id group by u.name").cardinality, "many");
-        assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = p.user_id where u.id = :id group by u.name").cardinality, "maybeOne");
+        assert_eq!(analysis("select u.name, count(*) as n from posts p left join users u on u.id = p.user_id where u.id = :id group by u.name").cardinality, "at_most_one");
         // The ON term still pins the right side against a pinned left one.
-        assert_eq!(analysis("select p.title, u.name from posts p left join users u on u.id = :u where p.id = :id").cardinality, "maybeOne");
+        assert_eq!(analysis("select p.title, u.name from posts p left join users u on u.id = :u where p.id = :id").cardinality, "at_most_one");
     }
 
     #[test]
@@ -3341,11 +3430,11 @@ mod tests {
         let insert = "insert into users (name) values (:n) returning id";
         assert_eq!(count(insert, &[]), "one");
         // A BEFORE trigger's RAISE(IGNORE) skips the row; an AFTER trigger cannot.
-        assert_eq!(count(insert, &["create trigger skip before insert on users begin select raise(ignore) where new.name = 'x'; end"]), "maybeOne");
-        assert_eq!(count(insert, &["create trigger untimed insert on users begin select 1; end"]), "maybeOne", "BEFORE is the default");
+        assert_eq!(count(insert, &["create trigger skip before insert on users begin select raise(ignore) where new.name = 'x'; end"]), "at_most_one");
+        assert_eq!(count(insert, &["create trigger untimed insert on users begin select 1; end"]), "at_most_one", "BEFORE is the default");
         assert_eq!(count(insert, &["create trigger later after insert on users begin select 1; end"]), "one");
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
-        assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name where users.score > 1 returning id", &[]), "maybeOne");
+        assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name where users.score > 1 returning id", &[]), "at_most_one");
         assert_eq!(count("insert into users (id, name) values (:id, :n) on conflict (id) do update set name = excluded.name returning id", &[]), "one");
     }
 
@@ -3359,9 +3448,9 @@ mod tests {
         };
         // `e` compares under NOCASE, and its unique index tells 'A' from 'a'.
         assert_eq!(count("select id from c where e = :e"), "many");
-        assert_eq!(count("select id from c where b = :b"), "maybeOne");
+        assert_eq!(count("select id from c where b = :b"), "at_most_one");
         assert_eq!(count("select id from c where b = :b collate nocase"), "many");
-        assert_eq!(count("select e from c where id = :id"), "maybeOne");
+        assert_eq!(count("select e from c where id = :id"), "at_most_one");
     }
 
     #[test]
@@ -3436,7 +3525,7 @@ mod tests {
         assert_eq!(param(&a, "name"), "text");
         assert_eq!(param(&a, "score"), "real");
         assert_eq!(param(&a, "id"), "integer");
-        assert_eq!(a.cardinality, "maybeOne");
+        assert_eq!(a.cardinality, "at_most_one");
     }
 
     #[test]
@@ -3460,13 +3549,13 @@ mod tests {
 
     #[test]
     fn cardinality_by_keys() {
-        assert_eq!(analysis("select id from users where email = :email").cardinality, "maybeOne");
+        assert_eq!(analysis("select id from users where email = :email").cardinality, "at_most_one");
         assert_eq!(analysis("select id from users where name = :name").cardinality, "many");
-        assert_eq!(analysis("select u.id, count(p.id) as n from users u left join posts p on p.user_id = u.id where u.id = :id group by u.id").cardinality, "maybeOne");
-        assert_eq!(analysis("select id from users limit 1").cardinality, "maybeOne");
-        assert_eq!(analysis("insert or ignore into users (email, name) values (:e, :n) returning id").cardinality, "maybeOne");
+        assert_eq!(analysis("select u.id, count(p.id) as n from users u left join posts p on p.user_id = u.id where u.id = :id group by u.id").cardinality, "at_most_one");
+        assert_eq!(analysis("select id from users limit 1").cardinality, "at_most_one");
+        assert_eq!(analysis("insert or ignore into users (email, name) values (:e, :n) returning id").cardinality, "at_most_one");
         assert_eq!(analysis("insert into users (email, name) values (:e, :n)").cardinality, "none");
-        assert_eq!(analysis("delete from users where id = :id returning id").cardinality, "maybeOne");
+        assert_eq!(analysis("delete from users where id = :id returning id").cardinality, "at_most_one");
         assert_eq!(analysis("select id from users union all select user_id from posts").cardinality, "many");
     }
 
@@ -3530,7 +3619,7 @@ mod tests {
         ] {
             let got = a(sql);
             assert!(got.diagnostics.is_empty(), "{sql}: {:?}", got.diagnostics);
-            assert_eq!(got.cardinality, "maybeOne", "{sql}: {:?}", got.cardinality_reason);
+            assert_eq!(got.cardinality, "at_most_one", "{sql}: {:?}", got.cardinality_reason);
         }
         // A declared column named rowid in any case hides the rowid, and a table without a rowid
         // has none to name.
@@ -3545,14 +3634,14 @@ mod tests {
         assert_eq!(param(&a("insert into books (ROWID, title) values (:r, :t)"), "r"), "integer");
         assert_eq!(param(&a("insert into rt (_rowid_, v) values (:r, :v)"), "r"), "unknown");
         // SQLite folds ASCII alone: `été` is another name than `Été`, and no table.
-        assert_eq!(a("select v from \"\u{c9}t\u{e9}\" where id = :id").cardinality, "maybeOne");
+        assert_eq!(a("select v from \"\u{c9}t\u{e9}\" where id = :id").cardinality, "at_most_one");
         assert_eq!(a("select v from \"\u{e9}t\u{e9}\" where id = :id").diagnostics[0].message, "no such table: \u{e9}t\u{e9}");
         // A table-valued function in any case is the function.
         assert_eq!(param(&a("select value from JSON_EACH(:ids)"), "ids"), "text");
         // A trigger's table is read as SQLite reads it, quoted and in another case, and so is a
         // trigger whose name or column list holds a keyword.
-        assert_eq!(a("insert into books (title) values (:t) returning id").cardinality, "maybeOne");
-        assert_eq!(a("insert into \"My Table\" (v) values (:v) returning id").cardinality, "maybeOne");
+        assert_eq!(a("insert into books (title) values (:t) returning id").cardinality, "at_most_one");
+        assert_eq!(a("insert into \"My Table\" (v) values (:v) returning id").cardinality, "at_most_one");
         assert_eq!(trigger_header(&schema[5]), Some(("before".into(), "insert".into(), "books".into())));
         assert_eq!(trigger_header(&schema[7]), Some(("after".into(), "update".into(), "my table".into())));
         assert_eq!(trigger_header("CREATE TRIGGER main.\"before\" /* on x */ INSTEAD OF DELETE ON v -- on y\n BEGIN SELECT 1; END"), Some(("instead".into(), "delete".into(), "v".into())));
@@ -3563,7 +3652,7 @@ mod tests {
     fn every_row_of_a_values_list_types_its_parameters() {
         let a = analysis("insert into users (id, name, email) values (:a, :b, :e), (:c, :d, :e2), (:f, upper(:g), 'x') returning id");
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        let got: Vec<(String, String, bool)> = a.params.iter().map(|p| (p.name.clone(), scalar_name(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect();
+        let got: Vec<(String, String, bool)> = a.params.iter().map(|p| (p.name.clone(), affinity_of(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect();
         let want = [("a", "integer", false), ("b", "text", false), ("e", "text", true), ("c", "integer", false), ("d", "text", false), ("e2", "text", true), ("f", "integer", false), ("g", "text", false)];
         assert_eq!(got, want.map(|(n, t, null)| (n.to_string(), t.to_string(), null)));
         assert_eq!((a.cardinality.as_str(), a.cardinality_reason.as_deref()), ("many", Some("a VALUES list of 3 rows returns 3 rows")));
@@ -3576,7 +3665,7 @@ mod tests {
         assert_eq!(a.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [3]);
         // Without a column list the rows fill the columns in order; under a WITH too.
         let a = analysis("with w as (select 1) insert into posts values (:id, :u, :t, :b), (:id2, :u2, :t2, :b2)");
-        assert_eq!(a.params.iter().map(|p| (scalar_name(&p.ty).unwrap_or("unknown"), p.nullable)).collect::<Vec<_>>(), [("integer", false), ("integer", false), ("text", false), ("text", true)].repeat(2));
+        assert_eq!(a.params.iter().map(|p| (affinity_of(&p.ty).unwrap_or("unknown"), p.nullable)).collect::<Vec<_>>(), [("integer", false), ("integer", false), ("text", false), ("text", true)].repeat(2));
         // A list of any length: SQLite keeps a row per arm, and the tree nests none of them.
         let rows: Vec<String> = (0..3000).map(|i| format!("(:n{i}, :e{i}, {i})")).collect();
         let a = analysis(&format!("insert into users (name, email, score) values {}", rows.join(", ")));
@@ -3602,13 +3691,13 @@ mod tests {
             assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
             a
         };
-        let params = |a: &Analysis| a.params.iter().map(|p| (scalar_name(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect::<Vec<_>>();
+        let params = |a: &Analysis| a.params.iter().map(|p| (affinity_of(&p.ty).unwrap_or("unknown").to_string(), p.nullable)).collect::<Vec<_>>();
         let typed = |types: &[&str]| types.iter().map(|t| (t.to_string(), false)).collect::<Vec<_>>();
         // A select-list parameter takes its target column's type; one the WHERE compares, the
         // column's: `bool` is a declared type of NUMERIC affinity, a number or a text.
         // A bare one written to a column that may hold NULL takes NULL, as in a VALUES row.
         let got = a("insert into foo (name, meta) select name, ? from bar where ready = ?");
-        assert_eq!((got.kind.as_str(), got.cardinality.as_str()), ("insert", "none"));
+        assert_eq!((got.kind.map_or("", StatementKind::as_str), got.cardinality.as_str()), ("insert", "none"));
         assert_eq!(params(&got), [("text".to_string(), true), ("numeric".to_string(), false)]);
         assert_eq!(params(&a("select name from bar where ready = ?")), typed(&["numeric"]));
         // Without a column list, through an expression, in every arm of a compound, and under a
@@ -3626,7 +3715,7 @@ mod tests {
         assert_eq!(params(&a("insert into foo (name, k) values ('a', (select :p))")), typed(&["integer"]));
         // A whole-table copy, which SQLite runs without a SELECT, is still an INSERT.
         let copy = a("insert into foo2 select * from foo");
-        assert_eq!((copy.kind.as_str(), copy.cardinality.as_str()), ("insert", "none"));
+        assert_eq!((copy.kind.map_or("", StatementKind::as_str), copy.cardinality.as_str()), ("insert", "none"));
     }
 
     #[test]
@@ -3677,7 +3766,7 @@ mod tests {
         let extra = [("host_only", 2, 's'), ("host_only", 3, 's'), ("host_agg", 1, 'a'), ("host_win", -1, 'w')];
         let a = on_host("select host_only(name, 1) as two, host_only(name, 1, 2) as three from users where id = :id", &ddl(), &extra, Vec::new());
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        assert_eq!((col(&a, "two"), col(&a, "three"), a.cardinality.as_str()), (("unknown".into(), true), ("unknown".into(), true), "maybeOne"));
+        assert_eq!((col(&a, "two"), col(&a, "three"), a.cardinality.as_str()), (("unknown".into(), true), ("unknown".into(), true), "at_most_one"));
         // It may change from row to row, so it pins no key.
         assert_eq!(on_host("select name from users where id = host_only(1, 2)", &ddl(), &extra, Vec::new()).cardinality, "many");
         let a = on_host("select host_agg(score) as total from users", &ddl(), &extra, Vec::new());
@@ -3880,7 +3969,7 @@ mod tests {
         // The rest of the statement is typed all the same.
         let a = full("select id from users order by :sort::text");
         assert_eq!(a.columns.len(), 1);
-        assert_eq!(a.params[0].type_name, "text");
+        assert_eq!(affinity_of(&a.params[0].ty), Some("text"));
     }
 
     #[test]
@@ -3929,7 +4018,7 @@ mod tests {
         let r = analyze_ddl(sql, &ddl, &Extras::default());
         let a = &r.analysis;
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        assert_eq!(a.kind, "select");
+        assert_eq!(a.kind, Some(StatementKind::Select));
         assert!(r.readonly);
         assert_eq!(col(a, "id"), ("numeric".into(), false));
         assert_eq!(col(a, "title"), ("text".into(), false));
@@ -3938,13 +4027,13 @@ mod tests {
         assert_eq!(r.declared, [Some("uuid".to_string()), Some("varchar(200)".into()), Some("uuid".into()), Some("boolean".into()), None]);
         assert_eq!(param(a, "auth.user_id"), "text");
         assert_eq!(param(a, "title"), "text");
-        assert_eq!(a.cardinality, "maybeOne");
+        assert_eq!(a.cardinality, "at_most_one");
         assert_eq!(a.rewritten.sql, "SELECT t.id, t.title, t.org_id, t.done, count(*) OVER () AS n FROM todos t WHERE t.owner_id = ? AND t.title = ?");
         // A write: not read-only, and its RETURNING typed from the target.
         let r = analyze_ddl("INSERT INTO todos (id, owner_id, title) VALUES (:id, :owner, :title) RETURNING id, done", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
         assert!(!r.readonly);
-        assert_eq!((r.analysis.kind.as_str(), r.analysis.cardinality.as_str()), ("insert", "one"));
+        assert_eq!((r.analysis.kind.map_or("", StatementKind::as_str), r.analysis.cardinality.as_str()), ("insert", "one"));
         // A column declared BOOLEAN is a boolean to the loader's run time, which refuses a value
         // other than 0 or 1 in it.
         assert_eq!(col(&r.analysis, "done"), ("bool".into(), false));
@@ -4057,7 +4146,7 @@ mod tests {
         let ddl = vec!["CREATE TABLE flags (id INTEGER PRIMARY KEY, done BOOLEAN NOT NULL, b bool, n INTEGER, t TINYINT(1))".to_string(), "CREATE VIEW v AS SELECT done FROM flags".to_string()];
         let r = analyze_ddl("select f.done, b, n, t, f.done + 0 as plus, coalesce(b, f.done) as either, coalesce(b, 0) as zero, case when n > 0 then f.done end as c, (select done from flags limit 1) as sub, x.done as derived from flags f, (select done from flags) x", &ddl, &Extras::default());
         assert!(r.analysis.diagnostics.is_empty(), "{:?}", r.analysis.diagnostics);
-        let types: Vec<String> = r.analysis.columns.iter().map(|c| scalar_name(&c.ty).unwrap_or("?").to_string()).collect();
+        let types: Vec<String> = r.analysis.columns.iter().map(|c| affinity_of(&c.ty).unwrap_or("?").to_string()).collect();
         assert_eq!(types, ["bool", "bool", "integer", "integer", "real", "bool", "real", "bool", "bool", "bool"]);
         // The truth values are the ones SQLite computes alone.
         assert_eq!(r.booleans, [false; 10]);
@@ -4065,9 +4154,9 @@ mod tests {
         let r = analyze_ddl("select done from v", &ddl, &Extras::default());
         assert_eq!(col(&r.analysis, "done"), ("bool".into(), false));
         let r = analyze_ddl("select done from flags union all select 5", &ddl, &Extras::default());
-        assert_ne!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
+        assert_ne!(affinity_of(&r.analysis.columns[0].ty), Some("bool"));
         let r = analyze_ddl("select done from flags union all select id > 1 from flags", &ddl, &Extras::default());
-        assert_eq!(scalar_name(&r.analysis.columns[0].ty), Some("bool"));
+        assert_eq!(affinity_of(&r.analysis.columns[0].ty), Some("bool"));
     }
 
     /// A type as src/render.ts writes a SQLite one, compactly: the value `.run()` returns at the
@@ -4075,8 +4164,15 @@ mod tests {
     fn ts(t: &Type, in_json: bool) -> String {
         let null = |s: String, nullable: bool| if nullable { format!("{s} | null") } else { s };
         let list = |s: String| if s.contains('|') { format!("({s})[]") } else { format!("{s}[]") };
-        match t {
-            Type::Scalar { name } => match (name.as_str(), in_json) {
+        match &t.kind {
+            Kind::Json(crate::types::JsonType { content: Some(c), .. }) => ts(&c.ty, true),
+            Kind::Record(r) => {
+                let fields: Vec<String> = r.fields.iter().map(|f| format!("{}: {}", f.name, null(ts(&f.ty, true), f.nullable))).collect();
+                if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
+            }
+            Kind::Array(a) => list(null(ts(&a.element.ty, true), a.element.nullable)),
+            Kind::Json(crate::types::JsonType { schema: Some(_), .. }) => schema_ts(&t.schema().unwrap_or(serde_json::Value::Bool(true))),
+            _ => match (affinity_of(t).unwrap_or("?"), in_json) {
                 ("integer" | "real", _) | ("int8", true) => "number".into(),
                 ("int8", false) => "bigint".into(),
                 ("text", _) => "string".into(),
@@ -4085,13 +4181,25 @@ mod tests {
                 ("bool", _) => "boolean".into(),
                 _ => "unknown".into(),
             },
-            Type::Object { fields } => {
-                let fields: Vec<String> = fields.iter().map(|f| format!("{}: {}", f.name, null(ts(&f.ty, true), f.nullable))).collect();
-                if fields.is_empty() { "Record<never, never>".into() } else { format!("{{ {} }}", fields.join("; ")) }
-            }
-            Type::List { of, nullable_items } => list(null(ts(of, true), *nullable_items)),
-            Type::Json { schema: Some(schema) } => schema_ts(schema),
-            _ => "unknown".into(),
+        }
+    }
+
+    /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
+    fn affinity_of(t: &Type) -> Option<&'static str> {
+        let name = t.name.as_deref().unwrap_or("");
+        match &t.kind {
+            Kind::Boolean => Some("bool"),
+            Kind::Integer(_) if name == "BIGINT" => Some("int8"),
+            Kind::Integer(_) => Some("integer"),
+            Kind::Float(_) => Some("real"),
+            Kind::Text(_) => Some("text"),
+            Kind::Bytes(_) => Some("blob"),
+            Kind::Union(_) if is_boolean_declared(name) => Some("bool"),
+            Kind::Union(u) if u.members.len() == 2 => Some("text"),
+            Kind::Union(u) if u.members.len() == 3 => Some("real"),
+            Kind::Union(_) if affinity(name) == "integer" && is_int8_declared(name) => Some("int8"),
+            Kind::Union(_) => Some(affinity(name)),
+            _ => None,
         }
     }
 
@@ -4158,7 +4266,7 @@ mod tests {
         assert_eq!(json_typed("select json((select json_object('n', name) from users where id = 1)) as u"), "u: { n: string } | null");
         assert_eq!(json_typed("select json_array((select name from users where id = 1)) as a, json_group_array((select name from users where id = 1)) as g, json_group_object((select name from users where id = 1), id) as o from users"), "a: [string | null]; g: (string | null)[]; o: { [key: string]: number }");
         let a = analyze_ddl(profile, &json_ddl(), &Extras::default()).analysis;
-        assert_eq!((a.columns[0].type_name.as_str(), a.cardinality.as_str()), ("text", "maybeOne"));
+        assert_eq!((a.columns[0].ty.kind.name(), a.cardinality.as_str()), ("json", "at_most_one"));
         // Each value as SQLite writes it there: an INTEGER, a BIGINT column's too, as a number
         // (which JSON.parse rounds past 2^53), a REAL, a TEXT, a NUMERIC as either, NULL as null,
         // a truth value as 1 or 0 and a BOOLEAN column as what it holds. A BLOB is read as JSONB
@@ -4288,7 +4396,7 @@ mod tests {
         // json_array())` is that text, and the parameter is a string.
         let a = marked("select coalesce(CAST(:doc AS TEXT), json_array()) as d, json_object('a', :a) as o from users where json_array(id) = :j", &json_ddl(), &["doc"]);
         assert_eq!(shown(&a), "d: string; o: { a: unknown }");
-        assert_eq!(a.params.iter().map(|p| format!("{} {} {}", p.name, ts(&p.ty, false), p.type_name)).collect::<Vec<_>>(), ["doc string text", "a unknown ", "j string text"]);
+        assert_eq!(a.params.iter().map(|p| format!("{} {} {}", p.name, ts(&p.ty, false), affinity_of(&p.ty).unwrap_or(""))).collect::<Vec<_>>(), ["doc string text", "a unknown ", "j string text"]);
     }
 
     #[test]

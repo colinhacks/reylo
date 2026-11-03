@@ -13,7 +13,7 @@
 use crate::database::Database;
 use crate::dialect::Dialect;
 use crate::lex;
-use crate::types::Type;
+use crate::types::{self, Cardinality, DialectVersion, StatementDescriptor, StatementKind, Type};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,6 +91,8 @@ pub enum Scope {
     Statement,
 }
 
+/// A diagnostic as Reylo's own tools read it: its place in UTF-8 bytes and Reylo's code for it
+/// ([`types::Diagnostic`] is the format's, in UTF-16 units and with the database's code).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Diagnostic {
     pub message: String,
@@ -98,19 +100,31 @@ pub struct Diagnostic {
     pub start: usize,
     pub length: usize,
     pub code: u32,
+    /// The database's own code for the error the diagnostic reports (Postgres's SQLSTATE `42703`,
+    /// MySQL's `1054`), where the database raised it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_code: Option<String>,
 }
 
+/// A statement's parameter: the format's ([`types::Param`]) and what Reylo's run time reads
+/// beside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Param {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
-    /// The catalog's name for the type, for messages.
-    pub type_name: String,
     /// Whether the caller may pass null: the statement tests the parameter for null or
     /// coalesces it, or it is the whole value written to a nullable column.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nullable: bool,
+    /// Whether the caller may leave the parameter out: a typed JSON parameter whose schema has a
+    /// `default`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub optional: bool,
+    /// The comment the database keeps on the column the parameter is written to (or, on MySQL,
+    /// compared with), for the parameter's doc comment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     /// A typed JSON parameter's JSON Schema as its cast writes it (`:p::jsonb('…')`), which the
     /// run time checks a value against; its type is the schema as the engine reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,35 +133,84 @@ pub struct Param {
     /// cannot read into 0, so the run time checks the parameter's value against its type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cast: Option<String>,
-    /// The comment the database keeps on the column the parameter is written to (or, on MySQL,
-    /// compared with), for the parameter's doc comment.
+    /// What separates the elements of an array parameter's text, where the element type's
+    /// `typdelim` is not a comma (`:` for PostGIS's `geometry`, `;` for `box`): the run time
+    /// writes the array's text with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub comment: Option<String>,
+    pub delimiter: Option<String>,
+    /// A structured parameter's members as its column list writes them, in the order of its
+    /// record's fields ([`crate::structured`]), which the run time checks each value against.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<Member>,
 }
 
+/// A structured parameter's member as its column list writes it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Member {
+    /// The type as the column list writes it (`varchar(32)`, `numeric(12,2)`), for the run time's
+    /// messages and the modifiers it checks.
+    pub written: String,
+    /// A `json('…')` member's JSON Schema as written, which the run time checks a value against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Value>,
+}
+
+impl Param {
+    /// A parameter of `ty`, with nothing else known of it.
+    pub fn new(name: impl Into<String>, ty: Type) -> Param {
+        Param { name: name.into(), ty, nullable: false, optional: false, comment: None, schema: None, cast: None, delimiter: None, members: Vec::new() }
+    }
+
+    /// The parameter as the format writes it.
+    pub fn descriptor(&self) -> types::Param {
+        types::Param { name: self.name.clone(), ty: self.ty.clone(), nullable: self.nullable, optional: self.optional, comment: self.comment.clone() }
+    }
+}
+
+/// A result column: the format's ([`types::Column`]) and what Reylo's run time reads beside it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     #[serde(rename = "type")]
     pub ty: Type,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub nullable: bool,
-    pub type_name: String,
     /// The comment the database keeps on the table column the result column reads as it is
     /// (`COMMENT ON COLUMN`, MySQL's `COMMENT '…'`), for the field's doc comment; none for an
     /// expression.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
+    /// What separates the elements of an array column's text, where it is not a comma, which the
+    /// run time reads the array's text with ([`Param::delimiter`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delimiter: Option<String>,
+}
+
+impl Column {
+    /// A column of `ty`, with nothing else known of it.
+    pub fn new(name: impl Into<String>, ty: Type, nullable: bool) -> Column {
+        Column { name: name.into(), ty, nullable, comment: None, delimiter: None }
+    }
+
+    /// The column as the format writes it.
+    pub fn descriptor(&self) -> types::Column {
+        types::Column { name: self.name.clone(), ty: self.ty.clone(), nullable: self.nullable, comment: self.comment.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Analysis {
-    /// `select`, `insert`, `update`, `delete`, `merge`; empty when the statement did not parse.
-    pub kind: String,
+    /// The statement's kind: one of the five, `other` for any other, absent when it did not parse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<StatementKind>,
+    /// The prose written in comments before the statement ([`crate::comment::leading`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
     pub params: Vec<Param>,
     pub columns: Vec<Column>,
-    /// `one`, `maybeOne`, `many`, or `none` for a statement that returns no rows.
-    pub cardinality: String,
+    /// How many rows the statement returns.
+    pub cardinality: Cardinality,
     /// Why the proof stopped short of `one`, when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cardinality_reason: Option<String>,
@@ -175,10 +238,46 @@ pub struct Analysis {
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<crate::errors::Errors>,
+    /// Each domain a type of the statement is named by, with the name of the base type it is made
+    /// from: a client decodes a domain's values as its base type's (a Postgres domain over
+    /// pgvector's `vector` comes as the vector's text), which the format leaves to the catalog.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub domains: std::collections::BTreeMap<String, String>,
     /// The tables the statement reads and writes, as its database's own parse names them, which
     /// the facts are read for ([`Database::tables`]). Not on the wire.
     #[serde(skip)]
     pub tables: Option<crate::fresh::Tables>,
+}
+
+impl Analysis {
+    /// The statement as the format describes it ([`StatementDescriptor`]): `sql` is the statement
+    /// as it was written, which the diagnostics' offsets index, and `dialect` the database and
+    /// version the analysis read.
+    pub fn descriptor(&self, sql: &str, dialect: DialectVersion) -> StatementDescriptor {
+        StatementDescriptor {
+            dialect,
+            sql: self.rewritten.sql.clone(),
+            kind: self.kind,
+            comment: self.comment.clone(),
+            params: self.params.iter().map(Param::descriptor).collect(),
+            columns: self.columns.iter().map(Column::descriptor).collect(),
+            cardinality: self.cardinality,
+            diagnostics: self.diagnostics.iter().map(|d| {
+                let start = utf16_offset(sql, d.start);
+                types::Diagnostic { message: d.message.clone(), start, end: utf16_offset(sql, d.start + d.length).max(start), code: d.server_code.clone() }
+            }).collect(),
+        }
+    }
+}
+
+/// The UTF-16 offset of the UTF-8 byte offset `byte` of `text`, as the format counts: a byte
+/// inside a character counts from the character's start, and one past the end at the end.
+pub fn utf16_offset(text: &str, byte: usize) -> usize {
+    let mut at = byte.min(text.len());
+    while !text.is_char_boundary(at) {
+        at -= 1;
+    }
+    text[..at].encode_utf16().count()
 }
 
 #[derive(Debug, Serialize)]
@@ -238,7 +337,14 @@ fn call_here<D: Database>(request: &str) -> String {
             },
             Ok(Request::Analyze { sql, mut answers, .. }) => {
                 D::unbundle(&mut answers);
-                D::round(&sql, &answers)
+                match D::round(&sql, &answers) {
+                    Response::Analysis { mut analysis } => {
+                        let prose = crate::comment::leading(&sql, D::DIALECT).prose;
+                        analysis.comment = (!prose.is_empty()).then_some(prose);
+                        Response::Analysis { analysis }
+                    }
+                    other => other,
+                }
             }
             Err(e) => Response::Error { message: format!("bad request: {e}") },
         },

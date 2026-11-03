@@ -1,12 +1,12 @@
-add.sql: maybeOne (id: int4, embedding: vector, draft: vector?, sparse: sparsevec?) -> { id: int4, embedding: vector, draft: vector?, sparse: sparsevec? }
-aggregates.sql: one () -> { mean: vector?, total: vector?, embeddings: (vector!)[]?, drafts: (vector!)[]? }
-any_vector.sql: many (qs: vector[]) -> { id: int4 } key (id)
-by_vector.sql: many (q: vector) -> { id: int4, dims: int4?, norm: float8?, parts: float4[]?, unit: vector? } key (id)
-cosine.sql: many (q: vector) -> { id: int4, distance: float8?, draft_distance: float8? } key (id)
-half_nearest.sql: many (h: halfvec, s: sparsevec) -> { id: int4, distance: float8?, cosine: float8?, sparse_distance: float8? } key (id)
-inner_product.sql: many (q: vector, threshold: float8) -> { id: int4, score: float8? } key (id)
-json_agg.sql: one () -> { embeddings: [vector]?, halves: [{ half: halfvec? }]? }
-json_object.sql: many () -> { doc: { id: int4, embedding: vector, draft: vector?, sparse: sparsevec?, history: vector[]? } }
-nearest.sql: many (q: vector) -> { id: int4, distance: float8? } key (id)
-plain.sql: many () -> { id: int4, embedding: vector, draft: vector?, half: halfvec?, sparse: sparsevec?, history: vector[]?, halves: halfvec[] } key (id)
-whole_row.sql: many () -> { doc: { id: int4, embedding: vector, draft: vector?, half: halfvec?, sparse: sparsevec?, history: vector[]?, halves: halfvec[] } }
+add.sql: at_most_one (id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])?) -> { id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])? }
+aggregates.sql: one () -> { mean: public.vector(float(8,23)[])?, total: public.vector(float(8,23)[])?, embeddings: public.vector(float(8,23)[])[]?, drafts: public.vector(float(8,23)[])[]? }
+any_vector.sql: many (qs: public.vector(float(8,23)[])?[]) -> { id: int4 } key (id)
+by_vector.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, dims: int4?, norm: float8?, parts: float4?[]?, unit: public.vector(float(8,23)[])? } key (id)
+cosine.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, distance: float8?, draft_distance: float8? } key (id)
+half_nearest.sql: many (h: public.halfvec(float(5,10)[]), s: public.sparsevec(float(8,23)[])) -> { id: int4, distance: float8?, cosine: float8?, sparse_distance: float8? } key (id)
+inner_product.sql: many (q: public.vector(float(8,23)[]), threshold: float8) -> { id: int4, score: float8? } key (id)
+json_agg.sql: one () -> { embeddings: jsonb public.vector(float(8,23)[])[]?, halves: jsonb ({ half: public.halfvec(float(5,10)[])? })[]? }
+json_object.sql: many () -> { doc: json { id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[])?[]? } }
+nearest.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, distance: float8? } key (id)
+plain.sql: many () -> { id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, half: public.halfvec(float(5,10)[])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[])?[]?, halves: public.halfvec(float(5,10)[])?[] } key (id)
+whole_row.sql: many () -> { doc: jsonb { id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, half: public.halfvec(float(5,10)[])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[])?[]?, halves: public.halfvec(float(5,10)[])?[] } }

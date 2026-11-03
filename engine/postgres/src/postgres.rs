@@ -20,7 +20,7 @@ use crate::levels::Columns;
 use crate::lex::{self, Lexed, Rewritten, Target};
 use crate::pgtypes::{not_null_rows, TypeRegistry, RELATION_TYPES_QUERY, TYPE_QUERY};
 use crate::returning::Rows;
-use crate::types::{DescribedColumn, DescribedStatement, Type};
+use crate::types::{Cardinality, DescribedColumn, DescribedStatement, Kind as TyKind, StatementKind, Type};
 use pg_query::protobuf::node::Node as NodeEnum;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -821,21 +821,24 @@ impl<'a> Engine<'a> {
                     shapes_used.insert(i);
                     let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (resolved.ty, !resolved.non_null)
+                    // The document under the column's own type's name, `json` or `jsonb`.
+                    let ty = Type { name: registry.render(col.type_oid).name, ..resolved.ty };
+                    (ty, !resolved.non_null)
                 }
                 // The item's own result settled whether the column is NULL, an outer join here
                 // included; what it builds is its document.
                 (None, Some(built)) => {
                     unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (built.ty.clone(), col.nullable || !built.non_null)
+                    (Type { name: registry.render(col.type_oid).name, ..built.ty.clone() }, col.nullable || !built.non_null)
                 }
                 _ => {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render(col.type_oid) };
-                    (with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref()), col.nullable)
+                    (with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref()), col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
-            columns.push(Column { name: col.name.clone(), ty, nullable, type_name: col.type_name.clone(), comment });
+            let delimiter = registry.delimiter(col.type_oid);
+            columns.push(Column { name: col.name.clone(), ty, nullable, comment, delimiter });
         }
         let params = lexed
             .params
@@ -867,7 +870,7 @@ impl<'a> Engine<'a> {
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { name: name.clone(), ty: with_document(with_values(registry.render(o), values.as_deref()), document.as_ref()), type_name: registry.name(o), nullable, schema: None, cast: None, comment }
+                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(registry.render(o), values.as_deref(), registry.is_string(o)), document.as_ref())) }
             })
             .collect();
 
@@ -877,7 +880,8 @@ impl<'a> Engine<'a> {
 
         let spans = column_spans(sql, &rewritten);
         let mut analysis = Analysis {
-            kind: parsed.as_ref().map(|p| p.statement.to_string()).unwrap_or_default(),
+            kind: parsed.as_ref().map(|p| StatementKind::of(p.statement)),
+            comment: None,
             params,
             columns,
             cardinality,
@@ -891,7 +895,11 @@ impl<'a> Engine<'a> {
             fresh: None,
             errors: None,
             tables: None,
+            domains: Default::default(),
         };
+        // The domains its types name, with the base type each is made from.
+        let names: Vec<String> = analysis.params.iter().map(|p| &p.ty).chain(analysis.columns.iter().map(|c| &c.ty)).flat_map(Type::names).collect();
+        analysis.domains = registry.domain_bases(&names);
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
     }
@@ -960,19 +968,15 @@ impl<'a> Engine<'a> {
             return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
         }
         let registry = self.registry.borrow();
-        let columns: Vec<Column> = raw.columns.iter().map(|c| Column { name: c.name.clone(), ty: registry.render(c.oid), nullable: true, type_name: registry.name(c.oid), comment: None }).collect();
-        let params = lexed
-            .params
-            .iter()
-            .zip(&raw.params)
-            .map(|(name, &o)| Param { name: name.clone(), ty: registry.render(o), type_name: registry.name(o), nullable: false, schema: None, cast: None, comment: None })
-            .collect();
-        let cardinality = if columns.is_empty() { "none" } else { "many" };
+        let columns: Vec<Column> = raw.columns.iter().map(|c| Column { delimiter: registry.delimiter(c.oid), ..Column::new(c.name.clone(), registry.render(c.oid), true) }).collect();
+        let params = lexed.params.iter().zip(&raw.params).map(|(name, &o)| Param { delimiter: registry.delimiter(o), ..Param::new(name.clone(), registry.render(o)) }).collect();
+        let cardinality = if columns.is_empty() { Cardinality::None } else { Cardinality::Many };
         Some(Analysis {
-            kind,
+            kind: Some(StatementKind::of(&kind)),
+            comment: None,
             params,
             columns,
-            cardinality: cardinality.into(),
+            cardinality,
             cardinality_reason: None,
             key: None,
             rewritten,
@@ -983,29 +987,30 @@ impl<'a> Engine<'a> {
             fresh: None,
             errors: None,
             tables: None,
+            domains: Default::default(),
         })
     }
 
-    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (String, Option<String>) {
-        let Some(parsed) = parsed else { return ("many".into(), Some("the statement did not parse locally".into())) };
+    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
+        let Some(parsed) = parsed else { return (Cardinality::Many, Some("the statement did not parse locally".into())) };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
         if parsed.statement != "select" {
             if !parsed.has_returning || described.columns.is_empty() {
-                return ("none".into(), None);
+                return (Cardinality::None, None);
             }
             return match cardinality::dml(sql, catalog) {
-                Some(Ok(cardinality::Cardinality::One)) => ("one".into(), None),
-                Some(Ok(cardinality::Cardinality::AtMostOne)) => ("maybeOne".into(), None),
-                Some(Err(why)) => ("many".into(), Some(why)),
-                None => ("many".into(), None),
+                Some(Ok(cardinality::Cardinality::One)) => (Cardinality::One, None),
+                Some(Ok(cardinality::Cardinality::AtMostOne)) => (Cardinality::AtMostOne, None),
+                Some(Err(why)) => (Cardinality::Many, Some(why)),
+                None => (Cardinality::Many, None),
             };
         }
         match cardinality::exactly_one(sql, Dialect::Postgres, trust, catalog) {
-            Ok(()) => ("one".into(), None),
+            Ok(()) => (Cardinality::One, None),
             Err(_) => match cardinality::at_most_one(sql, Dialect::Postgres, trust, catalog) {
-                Ok(()) => ("maybeOne".into(), None),
-                Err(why) => ("many".into(), Some(why)),
+                Ok(()) => (Cardinality::AtMostOne, None),
+                Err(why) => (Cardinality::Many, Some(why)),
             },
         }
     }
@@ -1269,7 +1274,7 @@ impl<'a> Engine<'a> {
             match self.item_built(&queries[item], &column, trust, columns, params, depth) {
                 Some(found) => out.push(found.and_then(|b| match defaulted {
                     false => Some(b),
-                    true => matches!(b.ty, Type::List { .. }).then_some(jsonshape::Built { non_null: true, ..b }),
+                    true => jsonshape::is_list(&b.ty).then_some(jsonshape::Built { non_null: true, ..b }),
                 })),
                 None => {
                     pending = true;
@@ -2603,9 +2608,9 @@ struct ItemColumn {
 /// `ty` as the values `document` admits, when it is a JSON value a CHECK holds to a JSON Schema
 /// ([`crate::schema_type`]).
 pub fn with_document(ty: Type, document: Option<&Value>) -> Type {
-    match (ty, document) {
-        (Type::Json { schema: None }, Some(schema)) => Type::Json { schema: Some(schema.clone()) },
-        (ty, _) => ty,
+    match document {
+        Some(schema) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema.clone()).kind, ..ty },
+        _ => ty,
     }
 }
 
@@ -2689,10 +2694,10 @@ fn check_documents(text: &str, column: &str) -> Vec<(String, Vec<CheckArg>)> {
 
 /// `ty` as the union of `values` when it is a string a CHECK keeps to them; the labels of an enum
 /// say the same of a column whose type is one.
-pub fn with_values(ty: Type, values: Option<&[String]>) -> Type {
-    match (ty, values) {
-        (Type::Scalar { name }, Some(values)) if (name == "text" || name == "varchar") && !values.is_empty() => Type::Enum { name, labels: values.to_vec() },
-        (ty, _) => ty,
+pub fn with_values(ty: Type, values: Option<&[String]>, string: bool) -> Type {
+    match values {
+        Some(values) if string => crate::pgtypes::with_values(ty, values),
+        _ => ty,
     }
 }
 
@@ -2883,11 +2888,11 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
 }
 
 /// `ty` with what the statement says of its elements, when it is an array.
-pub fn with_items(ty: Type, nullable_items: Option<bool>) -> Type {
-    match ty {
-        Type::Array { of, delimiter, .. } => Type::Array { of, nullable_items, delimiter },
-        other => other,
+pub fn with_items(mut ty: Type, nullable_items: Option<bool>) -> Type {
+    if let (TyKind::Array(a), Some(nullable)) = (&mut ty.kind, nullable_items) {
+        a.element.nullable = nullable;
     }
+    ty
 }
 
 /// Whether a strict test that reduced an outer join on `relation` holds of NULL nowhere: every cast
@@ -3369,7 +3374,7 @@ fn db_diagnostic(sql: &str, rewritten: &Rewritten, e: &DbError) -> Diagnostic {
         Some(code) => format!("{} ({code})", e.message),
         None => e.message.clone(),
     };
-    diag(message, start, length, 6)
+    Diagnostic { server_code: e.code.clone(), ..diag(message, start, length, 6) }
 }
 
 /// Whitespace as Postgres's scanner reads it: space, tab, newline, carriage return, form feed and
@@ -3382,16 +3387,28 @@ fn is_space(c: char) -> bool {
 /// row, the columns [`cardinality::result_key`] proves identify its rows. None where the
 /// cardinality already says the result holds one row at most or none, and none for the rows of a
 /// write's RETURNING.
-fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &str, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
-    if cardinality != "many" || !parsed.is_some_and(|p| p.statement == "select") {
+fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
         return None;
     }
-    // A value read whole as a number, a string or an enum's label stays as distinct as the database
-    // keeps it; an array (`{1}` and `[0:0]={1}` read alike), a JSON document (two large numbers
-    // read alike) or a composite may not, so no key holds one.
-    let identifies: Vec<bool> = columns.iter().map(|c| matches!(c.ty, Type::Scalar { .. } | Type::Enum { .. }) && !matches!(&c.ty, Type::Scalar { name } if name == "record")).collect();
+    let identifies: Vec<bool> = columns.iter().map(|c| identifies(&c.ty)).collect();
     let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
     cardinality::result_key(sql, trust, catalog, &named, &identifies).filter(|key| !key.is_empty())
+}
+
+/// Whether a value of `ty` is read whole as a number, a string or an enum's label, and so stays as
+/// distinct as the database keeps it: a bit string, a vector, a built-in geometric value and an
+/// extension's own type are each read from their text. A SQL array (`{1}` and `[0:0]={1}` read
+/// alike), a JSON document (two large numbers read alike) or a row value may not be, so no key
+/// holds one.
+fn identifies(ty: &Type) -> bool {
+    match &ty.kind {
+        TyKind::Json(_) | TyKind::Unknown | TyKind::Any => false,
+        TyKind::Array(array) => !array.any_depth,
+        TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
+        TyKind::Opaque => ty.name.as_deref() != Some("record"),
+        _ => true,
+    }
 }
 
 #[cfg(test)]
@@ -3467,7 +3484,7 @@ mod tests {
         let second = sql.find(":q or nick").unwrap();
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(3, second, 2), (3, sql.rfind(":q").unwrap(), 2)]);
         assert!(a.diagnostics[0].message.starts_with("The parameter :q appears more than once; use each parameter once"));
-        assert_eq!(a.params.iter().map(|p| (p.name.as_str(), &p.ty)).collect::<Vec<_>>(), [("q", &Type::Unknown)]);
+        assert_eq!(a.params.iter().map(|p| (p.name.as_str(), &p.ty)).collect::<Vec<_>>(), [("q", &Type::unknown())]);
         let a = analyze("select $1::int + $1", &host).unwrap();
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start)).collect::<Vec<_>>(), [(3, 17)]);
     }
@@ -3558,7 +3575,7 @@ mod tests {
         // One statement of another kind is a command, typed from the describe: no rows here.
         let a = replay("/* the tags */ CREATE TABLE tags (id integer primary key)");
         assert!(a.diagnostics.is_empty(), "{:?}", a.diagnostics);
-        assert_eq!((a.kind.as_str(), a.cardinality.as_str(), a.columns.len(), a.params.len()), ("create", "none", 0, 0));
+        assert_eq!((a.kind, a.cardinality, a.columns.len(), a.params.len()), (Some(StatementKind::Other), Cardinality::None, 0, 0));
         // A placeholder the server does not bind in it is an error at the placeholder.
         let sql = "alter table tags alter id set default :id";
         let a = replay(sql);
@@ -3669,7 +3686,7 @@ mod tests {
         ] {
             assert_eq!(check_values(other, "status"), None, "{other}");
         }
-        assert_eq!(with_values(Type::Scalar { name: "text".into() }, Some(&["a".to_string()])), Type::Enum { name: "text".into(), labels: vec!["a".into()] });
+        assert_eq!(with_values(Type::text().named("text"), Some(&["a".to_string()]), true), Type::text_of(vec!["a".into()]).named("text"));
     }
 
     #[test]
@@ -3723,7 +3740,7 @@ mod tests {
         // Shadowed with nothing said of its overloads, `=` proves nothing.
         let shadowed = Trust { shadowed: ["=".to_string()].into_iter().collect(), ..Default::default() };
         assert_eq!(check_values("status = 'a'::text", "status", text, &shadowed), None);
-        assert_eq!(with_values(Type::Scalar { name: "bpchar".into() }, Some(&["a".to_string()])), Type::Scalar { name: "bpchar".into() });
+        assert_eq!(with_values(Type::text().named("bpchar"), Some(&["a".to_string()]), false), Type::text().named("bpchar"));
     }
 
     #[test]
@@ -3961,10 +3978,10 @@ mod tests {
             let at = small(if keyed { format!("{sql} where name = :name and id = :id") } else { sql });
             // The key proves at most one row, but for `json_build_object`, which this replay's
             // catalog does not hold.
-            let rows = if keyed && shape != "json" { "maybeOne" } else { "many" };
-            assert_eq!((at.kind.as_str(), at.cardinality.as_str()), ("select", rows), "{shape} at {n}: {:?}", at.cardinality_reason);
+            let rows = if keyed && shape != "json" { "at_most_one" } else { "many" };
+            assert_eq!((at.kind, at.cardinality.as_str()), (Some(StatementKind::Select), rows), "{shape} at {n}: {:?}", at.cardinality_reason);
             let past = small(crate::stack::nested(shape, n + 1));
-            assert_eq!((past.kind.as_str(), past.cardinality.as_str()), ("", "many"), "{shape} at {}", n + 1);
+            assert_eq!((past.kind, past.cardinality), (None, Cardinality::Many), "{shape} at {}", n + 1);
             assert_eq!(past.cardinality_reason.as_deref(), Some("the statement did not parse locally"));
             assert!(past.columns.iter().all(|c| c.nullable), "{shape} at {}", n + 1);
             assert!(past.diagnostics.is_empty(), "{:?}", past.diagnostics);
@@ -4192,17 +4209,17 @@ mod tests {
         };
         let items = |sql: &str| -> (Type, bool) {
             let a = replay_docs(sql, &describe);
-            match &a.columns[0].ty {
-                Type::List { of, nullable_items } => ((**of).clone(), *nullable_items),
+            match jsonshape::content(a.columns[0].ty.clone()).kind {
+                TyKind::Array(array) => (array.element.ty, array.element.nullable),
                 other => panic!("{sql}: {other:?}"),
             }
         };
         // A row of a table no outer join nulls is never NULL, and keeps its CHECK's union.
         let (row, nullable) = items("SELECT jsonb_agg(e ORDER BY e.id) AS rows FROM events e");
         assert!(!nullable);
-        let Type::Composite { fields, .. } = row else { panic!("{row:?}") };
-        assert_eq!(fields[1].ty, Type::Enum { name: "text".into(), labels: vec!["click".into(), "key".into()] });
-        assert!(!fields[1].nullable && fields[2].nullable);
+        let TyKind::Record(record) = row.kind else { panic!("{row:?}") };
+        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+        assert!(!record.fields[1].nullable && record.fields[2].nullable);
         // The preserved side of an outer join is a row; the nulled side is NULL where nothing matched,
         // unless a strict test of the WHERE rejects those rows.
         assert!(!items("SELECT jsonb_agg(u) AS rows FROM users u LEFT JOIN posts p ON p.user_id = u.id").1);
@@ -4213,8 +4230,8 @@ mod tests {
         // A bare read of the row keeps the union too.
         let a = replay_docs("SELECT e FROM events e", &describe);
         assert!(!a.columns[0].nullable);
-        let Type::Composite { fields, .. } = &a.columns[0].ty else { panic!("{:?}", a.columns[0].ty) };
-        assert_eq!(fields[1].ty, Type::Enum { name: "text".into(), labels: vec!["click".into(), "key".into()] });
+        let TyKind::Record(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
+        assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
     }
 
     #[test]
@@ -4269,8 +4286,8 @@ mod tests {
             }
             panic!("the replay did not converge");
         };
-        let int = |name: &str, nullable: bool| (name.to_string(), Type::Scalar { name: "int4".into() }, nullable);
-        let text = |name: &str, nullable: bool| (name.to_string(), Type::Scalar { name: "text".into() }, nullable);
+        let int = |name: &str, nullable: bool| (name.to_string(), Type::integer(32).named("int4"), nullable);
+        let text = |name: &str, nullable: bool| (name.to_string(), Type::text().named("text"), nullable);
         assert_eq!(analyzed("select s.id, s.note from (select id, note from app.accounts) s"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("with a as (select id, note from app.accounts) select id, note from a"), [int("id", false), text("note", true)]);
         assert_eq!(analyzed("select s.id, s.name from (select id, name from users) s"), [int("id", false), text("name", false)]);

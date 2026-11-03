@@ -25,7 +25,7 @@ use crate::infer::Trust;
 use crate::levels::{Columns, Level, Withs};
 use crate::pgtypes::{oid, TypeRegistry};
 use crate::returning::Rows;
-use crate::types::{DescribedColumn, Field, Type};
+use crate::types::{DescribedColumn, Field, JsonType, Kind, Position, Type};
 use pg_query::protobuf::{self, node::Node as NodeEnum, AStar, ColumnRef, Node, ParseResult, RawStmt, ResTarget, SelectStmt};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -244,7 +244,31 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
     let mut unresolved = Vec::new();
     let ctx = ResolveCtx { probes, registry, param_oids };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
-    Resolved { ty, non_null, unresolved }
+    Resolved { ty: document(ty), non_null, unresolved }
+}
+
+/// A JSON document of `content`, what a shape resolves to inside one: a document as it is, and
+/// anything else, an object, an array or a SQL value, the content of a document that holds it.
+pub fn document(content: Type) -> Type {
+    if content.is_json() {
+        content
+    } else {
+        Type::json_of(Position::non_null(content))
+    }
+}
+
+/// What a document holds, as a value inside another document: the content a statement built, or
+/// the document itself (any JSON, or the values a schema admits).
+pub fn content(ty: Type) -> Type {
+    match ty.kind {
+        Kind::Json(JsonType { content: Some(content), .. }) => content.ty,
+        kind => Type { kind, ..ty },
+    }
+}
+
+/// Whether a type is a JSON array a statement built (`json_agg`).
+pub fn is_list(ty: &Type) -> bool {
+    matches!(&ty.kind, Kind::Json(JsonType { content: Some(c), .. }) if matches!(c.ty.kind, Kind::Array(_)))
 }
 
 /// Every oid a resolved shape reads, so the host can be asked for the ones the registry lacks.
@@ -1381,7 +1405,7 @@ impl ResolveCtx<'_> {
     /// values and the document a CHECK keeps it to, as a result column gets them.
     fn column(&self, col: &DescribedColumn) -> Type {
         let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
-        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref()), col.document.as_ref())
+        crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref())
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -1392,21 +1416,29 @@ impl ResolveCtx<'_> {
                     .iter()
                     .map(|(key, value)| {
                         let (ty, non_null) = self.node(value, &join(path, key), unresolved);
-                        Field { name: key.clone(), ty, nullable: !non_null }
+                        Field::new(key.clone(), ty, !non_null)
                     })
                     .collect();
-                (Type::Object { fields }, *non_null)
+                (Type::record(fields), *non_null)
             }
             Shape::Array { items, non_null } => {
                 let (of, items_non_null) = self.node(items, &join(path, "[]"), unresolved);
-                (Type::List { of: Box::new(of), nullable_items: !items_non_null }, *non_null)
+                (Type::array(Position::new(of, !items_non_null)), *non_null)
             }
             // A tuple is the JSON Schema of an array of exactly its items, each as the database
             // writes it inside a document. Where NULL items are left out and one may be NULL,
             // the places shift: an array of any of the items, as many at most.
             Shape::Tuple { items, non_null, skips_nulls } => {
                 use reylo_engine_core::schema::{nullable, SchemaOptions};
-                let items: Vec<(Type, bool)> = items.iter().map(|item| self.node(item, &join(path, "[]"), unresolved)).collect();
+                // A domain is written as its base type, whose name the schema's rules key on.
+                let items: Vec<(Type, bool)> = items
+                    .iter()
+                    .map(|item| {
+                        let (ty, non_null) = self.node(item, &join(path, "[]"), unresolved);
+                        let bases = self.registry.domain_bases(&ty.names());
+                        (ty.renamed(&|name| bases.get(name).cloned()), non_null)
+                    })
+                    .collect();
                 let schema = if *skips_nulls && items.iter().any(|(_, non_null)| !non_null) {
                     let mut members: Vec<Value> = Vec::new();
                     for (ty, _) in &items {
@@ -1424,7 +1456,7 @@ impl ResolveCtx<'_> {
                     }).collect();
                     serde_json::json!({ "type": "array", "prefixItems": prefix, "items": false, "minItems": items.len() })
                 };
-                (Type::Json { schema: Some(schema) }, *non_null)
+                (Type::json_schema_of(schema), *non_null)
             }
             Shape::Column { probe, index } => match self.probes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| Some((o.columns.get(*index)?, o.built.get(*index).and_then(Option::as_ref)))) {
                 // JSON a WITH query or a derived table builds, NULL where the item's row has it so
@@ -1436,12 +1468,12 @@ impl ResolveCtx<'_> {
                         p if p.starts_with("[]") => display_path(&format!("{path}{p}")),
                         p => display_path(&join(path, p)),
                     }));
-                    (built.ty.clone(), built.non_null && !col.nullable)
+                    (content(built.ty.clone()), built.non_null && !col.nullable)
                 }
                 Some((col, None)) if col.type_oid != oid::UNKNOWN => (self.column(col), !col.nullable),
                 _ => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
                 }
             },
             Shape::Row { probe } => match self.probes.get(*probe).and_then(|o| o.as_ref()) {
@@ -1453,23 +1485,23 @@ impl ResolveCtx<'_> {
                         .map(|(i, col)| {
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));
-                                Type::Unknown
+                                Type::unknown()
                             } else {
                                 self.column(col)
                             };
                             // A field is as the read with the row there has it: the outer join that
                             // nulls the object nulls none of a row that exists.
                             let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
-                            Field { name: col.name.clone(), ty, nullable: col.nullable && present }
+                            Field::new(col.name.clone(), ty, col.nullable && present)
                         })
                         .collect();
                     // An outer join can null the whole row, which is then every column NULL: a
                     // column the probe proved non-null says the row is there.
-                    (Type::Object { fields }, !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
+                    (Type::record(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
                 }
                 None => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
                 }
             },
             // A placeholder carries the type the statement's own describe gave it; whether it
@@ -1479,12 +1511,12 @@ impl ResolveCtx<'_> {
                 Some(o) => (self.registry.render(*o), false),
                 None => {
                     unresolved.push(display_path(path));
-                    (Type::Unknown, false)
+                    (Type::unknown(), false)
                 }
             },
             Shape::Unknown => {
                 unresolved.push(display_path(path));
-                (Type::Unknown, false)
+                (Type::unknown(), false)
             }
         }
     }
@@ -1994,8 +2026,8 @@ mod tests {
         let resolved = |sql: &str| resolve(&shapes(sql).columns[0].1, &[Some(Outcome { columns: found.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         // Whether the column is nullable, and whether the first field of the object it is.
         let whole = |sql: &str| !resolved(sql).non_null;
-        let field = |sql: &str| match resolved(sql).ty {
-            Type::Object { fields } => fields[0].nullable,
+        let field = |sql: &str| match content(resolved(sql).ty).kind {
+            Kind::Record(r) => r.fields[0].nullable,
             other => panic!("{other:?}"),
         };
         // A column, a whole row and an aggregate of the query around the subquery.
@@ -2259,14 +2291,6 @@ mod tests {
         DescribedColumn { name: name.into(), type_oid, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, whole_row: false }
     }
 
-    fn scalar(name: &str) -> Type {
-        Type::Scalar { name: name.into() }
-    }
-
-    fn field(name: &str, ty: Type, nullable: bool) -> Field {
-        Field { name: name.into(), ty, nullable }
-    }
-
     #[test]
     fn resolution_maps_described_columns_back_onto_the_shape() {
         let registry = TypeRegistry::with_builtins();
@@ -2287,15 +2311,7 @@ mod tests {
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.non_null);
         assert!(r.unresolved.is_empty());
-        assert_eq!(
-            r.ty,
-            Type::List {
-                of: Box::new(Type::Object {
-                    fields: vec![field("id", scalar("uuid"), false), field("body", scalar("text"), false), field("score", scalar("int4"), true)],
-                }),
-                nullable_items: false,
-            }
-        );
+        assert_eq!(r.ty.short(), "json ({ id: uuid, body: text, score: int4? })[]");
     }
 
     #[test]
@@ -2304,7 +2320,7 @@ mod tests {
         let p = shapes("SELECT jsonb_build_object('id', p.id, 'title', p.title) AS post FROM posts p");
         let r = resolve(&p.columns[0].1, &[None], &registry, &[]);
         assert_eq!(r.unresolved, vec!["id", "title"]);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", Type::Unknown, true), field("title", Type::Unknown, true)] });
+        assert_eq!(r.ty.short(), "json { id: unknown?, title: unknown? }");
         // The keys are still the SQL's own, and the object is still never null.
         assert!(r.non_null);
     }
@@ -2321,9 +2337,7 @@ mod tests {
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert_eq!(r.unresolved, vec!["n"]);
-        let Type::Object { fields } = &r.ty else { panic!("{:?}", r.ty) };
-        assert_eq!(fields[1], field("n", Type::Unknown, true));
-        assert_eq!(fields[0], field("id", scalar("uuid"), false));
+        assert_eq!(r.ty.short(), "json { id: uuid, n: unknown? }");
     }
 
     /// A value the database wrote into the JSON document is still the column's own type here; how
@@ -2341,12 +2355,7 @@ mod tests {
         };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);
         assert!(r.unresolved.is_empty());
-        assert_eq!(
-            r.ty,
-            Type::Object {
-                fields: vec![field("n", scalar("int8"), false), field("amount", scalar("numeric"), false), field("blob", scalar("bytea"), false)],
-            }
-        );
+        assert_eq!(r.ty.short(), "json { n: int8, amount: numeric, blob: bytea }");
     }
 
     #[test]
@@ -2356,7 +2365,7 @@ mod tests {
         let columns = vec![column("id", oid::UUID, "uuid", false), column("name", oid::TEXT, "text", true)];
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: false, present: None, built: Vec::new() })], &registry, &[]);
         assert!(r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
         // An outer join in the probe's own analysis is what can null the whole row, unless a
         // column it proved non-null says the row is there (an unmatched row is every column NULL).
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: columns.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
@@ -2364,11 +2373,11 @@ mod tests {
         let nullable: Vec<_> = columns.into_iter().map(|c| DescribedColumn { nullable: true, ..c }).collect();
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable.clone(), outer_join: true, present: None, built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), true), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid?, name: text? }");
         // The read with the row there gives the fields of an object that exists their own.
         let r = resolve(&p.columns[0].1, &[Some(Outcome { columns: nullable, outer_join: true, present: Some(vec![false, true]), built: Vec::new() })], &registry, &[]);
         assert!(!r.non_null);
-        assert_eq!(r.ty, Type::Object { fields: vec![field("id", scalar("uuid"), false), field("name", scalar("text"), true)] });
+        assert_eq!(r.ty.short(), "json { id: uuid, name: text? }");
     }
 
     #[test]
@@ -2417,7 +2426,7 @@ mod tests {
     fn a_path_an_item_could_not_type_goes_under_the_path_that_reads_it() {
         let registry = TypeRegistry::with_builtins();
         let p = shapes("SELECT jsonb_build_object('posts', ps.posts) AS author FROM ps");
-        let item = Type::List { of: Box::new(Type::Object { fields: vec![field("tags", Type::Unknown, true)] }), nullable_items: false };
+        let item = Type::json_of(Position::non_null(Type::array(Position::non_null(Type::record(vec![Field::new("tags", Type::unknown(), true)])))));
         let built = Built { ty: item, non_null: true, unresolved: vec!["[].tags".into(), "[]".into(), WHOLE.into()] };
         let outcome = Outcome { columns: vec![column("a0", oid::JSONB, "jsonb", false)], outer_join: false, present: None, built: vec![Some(built)] };
         let r = resolve(&p.columns[0].1, &[Some(outcome)], &registry, &[]);

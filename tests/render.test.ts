@@ -3,51 +3,34 @@ import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
 import { orNull, renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-
-const scalar = (name: string): EngineType => ({ kind: "scalar", name });
-const field = (name: string, type: EngineType, nullable: boolean) => ({ name, type, nullable });
+import { array, checked, doc, either, enumOf, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 
 // A table's row type as the engine renders it once the catalog gave its columns.
-const users: EngineType = {
-  kind: "composite",
-  name: "users",
-  fields: [
-    field("id", scalar("int8"), false),
-    field("seen", scalar("timestamptz"), true),
-    field("tags", { kind: "array", of: scalar("text") }, true),
-    field("mood", { kind: "enum", name: "mood", labels: ["ok", "sad"] }, false),
-  ],
-};
+const users: EngineType = record([field("id", pg("int8")), field("seen", pg("timestamptz"), true), field("tags", array(pg("text")), true), field("mood", enumOf("public.mood", ["ok", "sad"]))], "public.users");
 // `json_build_object('author', u, 'posts', json_agg(p), 'n', count(*))`: a composite inside a document.
-const doc: EngineType = {
-  kind: "object",
-  fields: [
-    field("author", users, false),
-    field("posts", { kind: "list", of: users, nullable_items: true }, true),
-    field("n", scalar("int8"), false),
-  ],
-};
+const object: EngineType = record([field("author", users), field("posts", { kind: "array", element: { type: users, nullable: true } }, true), field("n", pg("int8"))]);
+const built = doc(object);
 
 const inJson = `{ id: number; seen: string | null; tags: (string | null)[] | null; mood: "ok" | "sad" }`;
 
 test("a composite is its row's text on the wire", () => {
   assert.equal(renderType(users, false, "postgres"), "string");
-  assert.equal(renderType({ kind: "array", of: users }, false, "postgres"), "string");
+  assert.equal(renderType(array(users), false, "postgres"), "string");
   assert.equal(renderParamType(users, "postgres"), "string");
 });
 
 test("inside a JSON document a composite is an object of its JSON-encoded fields", () => {
   assert.equal(renderType(users, true, "postgres"), inJson);
   // The renderer parenthesizes an element whose text holds a `|` anywhere, as it does for an object.
-  assert.equal(renderType({ kind: "array", of: users }, true, "postgres"), `(${inJson} | null)[]`);
+  assert.equal(renderType(array(users), true, "postgres"), `(${inJson} | null)[]`);
   // A constructor's fields are inside the document, at the top level too.
   const expected = `{ author: ${inJson}; posts: (${inJson} | null)[] | null; n: number }`;
-  assert.equal(renderType(doc, false, "postgres"), expected);
-  assert.equal(renderType(doc, true, "postgres"), expected);
+  assert.equal(renderType(built, false, "postgres"), expected);
+  assert.equal(renderType(object, true, "postgres"), expected);
 });
 
 test("one type per SQL type, on every driver: what the run time returns (src/values.ts)", () => {
-  const wire = (name: string, dialect: "postgres" | "mysql" = "postgres") => renderType(scalar(name), false, dialect);
+  const wire = (name: string) => renderType(pg(name), false, "postgres");
   assert.deepEqual(["bool", "int2", "int4", "oid", "float4", "float8"].map((n) => wire(n)), ["boolean", "number", "number", "number", "number", "number"]);
   assert.equal(wire("int8"), "bigint");
   assert.deepEqual(["numeric", "money", "date", "timestamp", "timestamptz", "time", "timetz", "interval", "uuid", "text"].map((n) => wire(n)), Array(10).fill("string"));
@@ -56,85 +39,94 @@ test("one type per SQL type, on every driver: what the run time returns (src/val
   // Every other type is its text: Reylo owns every oid, so no driver parses one.
   assert.deepEqual(["point", "xid", "int4range", "void", "record", "tsvector", "citext"].map((n) => wire(n)), Array(7).fill("string"));
   // An array of each, an enum's labels, a row value's array its text.
-  assert.equal(renderType({ kind: "array", of: scalar("timestamptz") }), "(string | null)[]");
-  assert.equal(renderType({ kind: "array", of: scalar("int8") }), "(bigint | null)[]");
-  assert.equal(renderType({ kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] } }), `("ok" | "sad" | null)[]`);
-  // MySQL's types are the same names: a BIGINT a BigInt, a DECIMAL its text, a DATETIME its text, a
-  // BIT its bytes, and a truth value (a TINYINT(1), a BIT(1), a comparison) a boolean.
-  assert.equal(wire("int8", "mysql"), "bigint");
-  assert.deepEqual(["numeric", "timestamp", "date", "time", "text"].map((n) => wire(n, "mysql")), Array(5).fill("string"));
-  assert.equal(wire("bytea", "mysql"), "Uint8Array");
-  assert.equal(wire("bool", "mysql"), "boolean");
+  assert.equal(renderType(array(pg("timestamptz"))), "(string | null)[]");
+  assert.equal(renderType(array(pg("int8"))), "(bigint | null)[]");
+  assert.equal(renderType(array(enumOf("public.mood", ["ok", "sad"]))), `("ok" | "sad" | null)[]`);
+  // MySQL's: a BIGINT a BigInt, a DECIMAL its text, a DATETIME, a TIMESTAMP, a DATE and a TIME
+  // their text, a BIT its bytes, and a truth value (a TINYINT(1), a BIT(1), a comparison) a boolean.
+  const mysql = (t: EngineType) => renderType(t, false, "mysql");
+  assert.equal(mysql(my("bigint")), "bigint");
+  assert.deepEqual(["decimal", "datetime", "timestamp", "date", "time", "varchar"].map((n) => mysql(my(n))), Array(6).fill("string"));
+  assert.equal(mysql(my("bit", 8)), "Uint8Array");
+  assert.equal(mysql(my("tinyint(1)")), "boolean");
+  assert.equal(mysql(my("bit", 1)), "boolean");
+  assert.equal(mysql({ kind: "boolean" }), "boolean");
 });
 
-test("a scalar that names two types is either", () => {
+test("a union is either", () => {
   // What MySQL answers with by what is bound for a placeholder: a BIGINT is a BigInt, a DOUBLE a
   // number; an INT a temporary table may widen to a BIGINT is a BigInt either way.
-  assert.equal(renderType(scalar("int8|float8"), false, "mysql"), "bigint | number");
-  assert.equal(renderType(scalar("int8|int4"), false, "mysql"), "bigint");
-  assert.equal(renderType(scalar("numeric|float8"), false, "mysql"), "string | number");
-  assert.equal(renderType(scalar("date|timestamp"), false, "mysql"), "string");
-  assert.equal(renderType({ kind: "array", of: scalar("numeric|float8") }, false, "mysql"), "(string | number | null)[]");
+  assert.equal(renderType(either(my("bigint"), my("double")), false, "mysql"), "bigint | number");
+  assert.equal(renderType(either(my("bigint"), my("int")), false, "mysql"), "bigint");
+  assert.equal(renderType(either(my("double"), my("decimal")), false, "mysql"), "number | string");
+  assert.equal(renderType(either(my("date"), my("datetime")), false, "mysql"), "string");
+  assert.equal(renderType(array(either(my("double"), my("decimal"))), false, "mysql"), "(number | string | null)[]");
   // A truth value a document may hold as `true` or as 1.
-  assert.equal(renderType(scalar("bool|int8"), true, "mysql"), "boolean | number");
-  assert.equal(renderType({ kind: "list", of: scalar("bool|int8"), nullable_items: true }, false, "mysql"), "(boolean | number | null)[]");
-  // A part no table spells is nothing known inside a document.
-  assert.equal(renderType(scalar("int8|mystery"), true, "mysql"), "Json");
+  assert.equal(renderType(oneOf({ kind: "boolean" }, my("bigint")), true, "mysql"), "boolean | number");
+  assert.equal(renderType(doc({ kind: "array", element: { type: oneOf({ kind: "boolean" }, my("bigint")), nullable: true } }), false, "mysql"), "(boolean | number | null)[]");
+  // A member whose JSON form is unknown is nothing known inside a document.
+  assert.equal(renderType(either(my("bigint"), { kind: "opaque", name: "mystery" }), true, "mysql"), "Json");
 });
 
 test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
   for (const name of ["vector", "halfvec"]) {
-    assert.equal(renderType(scalar(name), false, "postgres"), "number[]");
-    assert.equal(renderType(scalar(name), true, "postgres"), "string");
-    assert.equal(renderParamType(scalar(name), "postgres"), "number[]");
-    assert.equal(renderType({ kind: "array", of: scalar(name) }, false, "postgres"), "(number[] | null)[]");
-    assert.equal(renderParamType({ kind: "array", of: scalar(name) }, "postgres"), "number[][]");
-    assert.deepEqual(typeSchema(scalar(name), "postgres"), { type: "array", items: { type: "number", format: "float" } });
-    assert.deepEqual(typeSchema(scalar(name), "postgres", false, true), { type: "string" });
+    assert.equal(renderType(pg(name), false, "postgres"), "number[]");
+    assert.equal(renderType(pg(name), true, "postgres"), "string");
+    assert.equal(renderParamType(pg(name), "postgres"), "number[]");
+    assert.equal(renderType(array(pg(name)), false, "postgres"), "(number[] | null)[]");
+    assert.equal(renderParamType(array(pg(name)), "postgres"), "number[][]");
+    assert.deepEqual(typeSchema(pg(name), "postgres"), { type: "array", items: { type: "number", format: "float" } });
+    assert.deepEqual(typeSchema(pg(name), "postgres", false, true), { type: "string" });
   }
   // A sparsevec stays its text.
-  assert.equal(renderType(scalar("sparsevec"), false, "postgres"), "string");
+  assert.equal(renderType(pg("sparsevec"), false, "postgres"), "string");
 });
 
 test("an hstore is an object of nullable text, as a column, a parameter and inside a document", () => {
-  assert.equal(renderType(scalar("hstore"), false, "postgres"), "Record<string, string | null>");
-  assert.equal(renderParamType(scalar("hstore"), "postgres"), "Record<string, string | null>");
-  assert.equal(renderType({ kind: "array", of: scalar("hstore") }, false, "postgres"), "(Record<string, string | null> | null)[]");
-  assert.deepEqual(typeSchema(scalar("hstore"), "postgres"), { type: "object", additionalProperties: { type: ["string", "null"] } });
-  assert.equal(renderType(scalar("hstore"), true, "postgres"), "Record<string, string | null>");
-  assert.equal(renderType({ kind: "list", of: scalar("hstore"), nullable_items: false }, false, "postgres"), "(Record<string, string | null>)[]");
-  assert.deepEqual(typeSchema(scalar("hstore"), "postgres", false, true), { type: "object", additionalProperties: { type: ["string", "null"] } });
+  assert.equal(renderType(pg("hstore"), false, "postgres"), "Record<string, string | null>");
+  assert.equal(renderParamType(pg("hstore"), "postgres"), "Record<string, string | null>");
+  assert.equal(renderType(array(pg("hstore")), false, "postgres"), "(Record<string, string | null> | null)[]");
+  assert.deepEqual(typeSchema(pg("hstore"), "postgres"), { type: "object", additionalProperties: { type: ["string", "null"] } });
+  assert.equal(renderType(pg("hstore"), true, "postgres"), "Record<string, string | null>");
+  assert.equal(renderType(doc({ kind: "array", element: { type: pg("hstore") } }), false, "postgres"), "(Record<string, string | null>)[]");
+  assert.deepEqual(typeSchema(pg("hstore"), "postgres", false, true), { type: "object", additionalProperties: { type: ["string", "null"] } });
 });
 
 test("inside a document an oid is its text, a geometry its GeoJSON, and an extension's type with no cast to JSON its text", () => {
   // Postgres writes JSON numbers only for the integers, the floats and numeric: `{"o" : "7"}`.
-  assert.equal(renderType(scalar("oid"), false, "postgres"), "number");
-  assert.equal(renderType(scalar("oid"), true, "postgres"), "string");
-  assert.deepEqual(typeSchema(scalar("oid"), "postgres", false, true), { type: "string" });
+  assert.equal(renderType(pg("oid"), false, "postgres"), "number");
+  assert.equal(renderType(pg("oid"), true, "postgres"), "string");
+  assert.deepEqual(typeSchema(pg("oid"), "postgres", false, true), { type: "string" });
   // PostGIS's cast to JSON writes GeoJSON: `{"type":"Point","coordinates":[1,2]}`.
-  assert.equal(renderType(scalar("geometry"), false, "postgres"), "string");
-  assert.equal(renderType(scalar("geometry"), true, "postgres"), "{ type: string; [key: string]: Json | undefined }");
-  assert.deepEqual(typeSchema(scalar("geometry"), "postgres", false, true), { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" });
+  assert.equal(renderType(pg("geometry"), false, "postgres"), "string");
+  assert.equal(renderType(pg("geometry"), true, "postgres"), "{ type: string; [key: string]: Json | undefined }");
+  assert.deepEqual(typeSchema(pg("geometry"), "postgres", false, true), { type: "object", properties: { type: { type: "string" } }, required: ["type"], description: "a GeoJSON geometry" });
   // A pgvector vector, a geography, a cube or an isbn inside a document is the JSON string of its text: `{"v" : "[1,2,3]"}`.
-  for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(scalar(name), true, "postgres"), "string", name);
+  for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(pg(name), true, "postgres"), "string", name);
 });
 
 test("a composite with no columns inside a document is an empty object", () => {
-  assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, true), "Record<never, never>");
-  assert.equal(renderType({ kind: "composite", name: "empty", fields: [] }, false), "string");
+  assert.equal(renderType(record([], "public.empty"), true), "Record<never, never>");
+  assert.equal(renderType(record([], "public.empty"), false), "string");
 });
 
 test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the row stored; a column with no type unknown", () => {
-  assert.equal(renderType(scalar("integer"), false, "sqlite"), "number");
-  assert.equal(renderType(scalar("numeric"), false, "sqlite"), "number | string");
-  assert.equal(renderType(scalar("real"), false, "sqlite"), "number");
-  assert.equal(renderType(scalar("text"), false, "sqlite"), "string");
-  assert.equal(renderType(scalar("blob"), false, "sqlite"), "Uint8Array");
-  assert.equal(renderType(scalar("bool"), false, "sqlite"), "boolean");
+  assert.equal(renderType(lite("integer"), false, "sqlite"), "number");
+  assert.equal(renderType(lite("numeric"), false, "sqlite"), "number | string");
+  assert.equal(renderType(lite("real"), false, "sqlite"), "number");
+  assert.equal(renderType(lite("text"), false, "sqlite"), "string");
+  assert.equal(renderType(lite("blob"), false, "sqlite"), "Uint8Array");
+  assert.equal(renderType(lite("bool"), false, "sqlite"), "boolean");
+  assert.equal(renderType({ kind: "boolean" }, false, "sqlite"), "boolean");
+  assert.equal(renderType(lite("int8"), false, "sqlite"), "bigint");
   assert.equal(renderType({ kind: "unknown" }, false, "sqlite"), "unknown");
+  // A column read as it is holds what its affinity stores, under the name its table declares.
+  assert.equal(renderType({ ...lite("numeric"), name: "DECIMAL(10,2)" } as EngineType, false, "sqlite"), "number | string");
+  assert.equal(renderType({ ...lite("numeric"), name: "bigint(20)" } as EngineType, false, "sqlite"), "bigint");
+  assert.equal(renderType({ kind: "union", per: "value", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
   // The driver binds a number for an INTEGER, and the run time a truth value as 1 or 0.
-  assert.equal(renderParamType(scalar("integer"), "sqlite"), "number");
-  assert.equal(renderParamType(scalar("numeric"), "sqlite"), "number | string | boolean");
+  assert.equal(renderParamType(lite("integer"), "sqlite"), "number");
+  assert.equal(renderParamType(lite("numeric"), "sqlite"), "number | string | boolean");
 });
 
 // Each column type beside the type the engine gives a parameter compared with that column, as
@@ -144,35 +136,35 @@ test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the
 // parameter by the column it is compared with (engine/mysql `column_types`), and keeps the
 // prepare's (`int4`, `bool|bytea`) for an expression; SQLite types a parameter by the column's
 // affinity, a BOOLEAN column's being NUMERIC.
-const array = (of: EngineType): EngineType => ({ kind: "array", of });
-const composite: EngineType = { kind: "composite", name: "user_in", fields: [{ name: "name", type: scalar("text"), nullable: true }] };
+const composite: EngineType = record([field("name", pg("text"), true)], "public.user_in");
+const mood = enumOf("public.mood", ["ok", "sad"]);
 const ROUND_TRIPS: Record<"postgres" | "mysql" | "sqlite", [column: EngineType, param: EngineType][]> = {
   postgres: [
-    ...["int2", "int4", "int8", "float4", "float8", "numeric", "bool", "text", "uuid", "interval", "time", "money", "date", "timestamp", "timestamptz", "bytea"].map((n): [EngineType, EngineType] => [scalar(n), scalar(n)]),
-    [{ kind: "json" }, { kind: "json" }],
-    [{ kind: "enum", name: "mood", labels: ["ok", "sad"] }, { kind: "enum", name: "mood", labels: ["ok", "sad"] }],
-    ...["int4", "int8", "text", "bool", "timestamptz", "date", "bytea", "numeric"].map((n): [EngineType, EngineType] => [array(scalar(n)), array(scalar(n))]),
-    [array({ kind: "enum", name: "mood", labels: ["ok", "sad"] }), array({ kind: "enum", name: "mood", labels: ["ok", "sad"] })],
+    ...["int2", "int4", "int8", "float4", "float8", "numeric", "bool", "text", "uuid", "interval", "time", "money", "date", "timestamp", "timestamptz", "bytea"].map((n): [EngineType, EngineType] => [pg(n), pg(n)]),
+    [pg("jsonb"), pg("jsonb")],
+    [mood, mood],
+    ...["int4", "int8", "text", "bool", "timestamptz", "date", "bytea", "numeric"].map((n): [EngineType, EngineType] => [array(pg(n)), array(pg(n))]),
+    [array(mood), array(mood)],
     [array(composite), array(composite)],
-    [array(scalar("record")), array(scalar("record"))],
+    [array(pg("record")), array(pg("record"))],
     // An array the statement builds from values that may be NULL (`array_agg` over a left join)
     // goes back into a structured member alone: a top-level array parameter takes no NULL
     // element, tested below.
   ],
   mysql: [
-    [scalar("int8"), scalar("int8")],
-    [scalar("int4"), scalar("int4")],
-    [scalar("int2"), scalar("int4")],
-    [scalar("bool"), scalar("bool|int4")],
-    [scalar("bool"), scalar("bool|bytea")],
-    [scalar("bytea"), scalar("bool|bytea")],
-    [scalar("bytea"), scalar("bytea")],
-    ...["numeric", "float8", "text", "date", "timestamp", "time"].map((n): [EngineType, EngineType] => [scalar(n), scalar(n)]),
-    [{ kind: "json" }, { kind: "json" }],
+    [my("bigint"), my("bigint")],
+    [my("int"), { kind: "integer", bits: 32 }],
+    [my("smallint"), { kind: "integer", bits: 32 }],
+    [my("tinyint(1)"), my("tinyint(1)")],
+    [my("bit", 1), oneOf({ kind: "boolean" }, my("bit"))],
+    [my("bit", 8), oneOf({ kind: "boolean" }, my("bit"))],
+    [my("bit", 8), my("bit", 8)],
+    ...["decimal", "double", "varchar", "date", "datetime", "timestamp", "time"].map((n): [EngineType, EngineType] => [my(n), my(n)]),
+    [my("json"), my("json")],
   ],
   sqlite: [
-    ...["integer", "int8", "real", "text", "blob", "numeric"].map((n): [EngineType, EngineType] => [scalar(n), scalar(n)]),
-    [scalar("bool"), scalar("numeric")],
+    ...["integer", "int8", "real", "text", "blob", "numeric"].map((n): [EngineType, EngineType] => [lite(n), lite(n)]),
+    [lite("bool"), lite("numeric")],
     [{ kind: "unknown" }, { kind: "unknown" }],
   ],
 };
@@ -204,64 +196,62 @@ test("a parameter takes every value run returns for the column it is compared wi
 });
 
 test("parameters take what every driver binds, whatever Reylo returns", () => {
-  assert.equal(renderParamType(scalar("numeric"), "postgres"), "string");
-  assert.equal(renderParamType(scalar("int8"), "postgres"), "number | bigint | string");
-  assert.equal(renderParamType(scalar("blob"), "sqlite"), "Uint8Array");
-  assert.equal(renderParamType(scalar("bytea"), "mysql"), "Uint8Array");
+  assert.equal(renderParamType(pg("numeric"), "postgres"), "string");
+  assert.equal(renderParamType(pg("int8"), "postgres"), "number | bigint | string");
+  assert.equal(renderParamType(lite("blob"), "sqlite"), "Uint8Array");
+  assert.equal(renderParamType(my("varbinary"), "mysql"), "Uint8Array");
   // A JSON value, built by the statement or read from a column, is parsed.
-  const built: EngineType = { kind: "object", fields: [{ name: "id", type: scalar("int4"), nullable: false }] };
-  assert.equal(renderType(built, false, "mysql"), "{ id: number }");
-  // Inside a JSON value the database wrote the bytes and the number already.
-  const inner: EngineType = { kind: "object", fields: [{ name: "b", type: scalar("bytea"), nullable: false }, { name: "n", type: scalar("numeric"), nullable: false }] };
-  // A non-finite decimal or float is the text Postgres writes inside a document (`{"n": "NaN"}`);
-  // MySQL stores none.
-  assert.equal(renderType(inner, false, "postgres"), '{ b: string; n: number | "NaN" | "Infinity" | "-Infinity" }');
-  assert.equal(renderType(inner, false, "mysql"), "{ b: string; n: number }");
+  assert.equal(renderType(doc(record([field("id", my("int"))])), false, "mysql"), "{ id: number }");
+  // Inside a JSON value the database wrote the bytes and the number already. A non-finite decimal
+  // or float is the text Postgres writes inside a document (`{"n": "NaN"}`); MySQL stores none.
+  assert.equal(renderType(doc(record([field("b", pg("bytea")), field("n", pg("numeric"))])), false, "postgres"), '{ b: string; n: number | "NaN" | "Infinity" | "-Infinity" }');
+  assert.equal(renderType(doc(record([field("b", my("varbinary")), field("n", my("decimal"))])), false, "mysql"), "{ b: string; n: number }");
+  // A `numeric(10,2)` holds NaN and no infinity, which its type says.
+  assert.equal(renderType(doc(record([field("n", { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" })])), false, "postgres"), '{ n: number | "NaN" }');
 });
 
 test("two columns or keys of one name keep the last, as a row object and JSON.parse do", () => {
-  const object: EngineType = { kind: "object", fields: [{ name: "x", type: scalar("text"), nullable: false }, { name: "x", type: scalar("int4"), nullable: true }] };
-  assert.equal(renderType(object, false, "postgres"), "{ x: number | null }");
+  assert.equal(renderType(doc(record([field("x", pg("text")), field("x", pg("int4"), true)])), false, "postgres"), "{ x: number | null }");
   // A row whose columns were not read (a subquery's) is an object of them inside a document.
-  assert.equal(renderType({ kind: "list", of: scalar("record"), nullable_items: false }, false, "postgres"), "Record<string, Json>[]");
+  assert.equal(renderType(doc({ kind: "array", element: { type: pg("record") } }), false, "postgres"), "Record<string, Json>[]");
 });
 
 test("every date and time parameter takes a string: a timestamptz one the text that names its zone, which run returns, and no Date", () => {
-  assert.equal(renderParamType(scalar("timestamptz"), "postgres"), "string");
-  assert.equal(renderParamType({ kind: "array", of: scalar("timestamptz") }, "postgres"), "string[]");
+  assert.equal(renderParamType(pg("timestamptz"), "postgres"), "string");
+  assert.equal(renderParamType(array(pg("timestamptz")), "postgres"), "string[]");
   for (const name of ["timestamp", "date"]) {
-    assert.equal(renderParamType(scalar(name), "postgres"), "string");
-    assert.equal(renderParamType(scalar(name), "mysql"), "string");
-    assert.equal(renderParamType({ kind: "array", of: scalar(name) }, "postgres"), "string[]");
+    assert.equal(renderParamType(pg(name), "postgres"), "string");
+    assert.equal(renderParamType(array(pg(name)), "postgres"), "string[]");
   }
+  for (const name of ["datetime", "timestamp", "date"]) assert.equal(renderParamType(my(name), "mysql"), "string");
   // What MySQL answers by what is bound for a placeholder compared with a DATE and a DATETIME.
-  assert.equal(renderParamType(scalar("date|timestamp"), "mysql"), "string");
+  assert.equal(renderParamType(either(my("date"), my("datetime")), "mysql"), "string");
 });
 
 test("a returned array's elements may be NULL unless the statement shows they are not; a parameter's are strict", () => {
   // Postgres lets any array hold NULL elements, whatever a column's NOT NULL says: a table's array
   // column is `(T | null)[]`, and so is `array_agg(u.email)` over a LEFT JOIN, `{NULL}` for a team
   // with no users. An array the statement builds from values it shows are not NULL is `T[]`.
-  const texts = (nullable_items?: boolean): EngineType => (nullable_items === undefined ? { kind: "array", of: scalar("text") } : { kind: "array", of: scalar("text"), nullable_items });
+  const texts = (nullable = true): EngineType => array(pg("text"), nullable);
   assert.equal(renderType(texts()), "(string | null)[]");
   assert.equal(renderType(texts(false)), "string[]");
-  assert.equal(renderType(texts(true)), "(string | null)[]");
-  assert.equal(renderType(texts(true), true), "(string | null)[]");
-  assert.equal(renderType({ kind: "array", of: { kind: "enum", name: "mood", labels: ["ok", "sad"] }, nullable_items: true }), `("ok" | "sad" | null)[]`);
+  assert.equal(renderType(texts(), true), "(string | null)[]");
+  assert.equal(renderType(array(enumOf("public.mood", ["ok", "sad"]))), `("ok" | "sad" | null)[]`);
   // A top-level array parameter's elements take no NULL, as the parameter itself takes NULL only
   // when cast to `nullable(…)` or written bare to a nullable column: a NULL in `= any(:ids)`
   // matches nothing. An array inside a
   // structured parameter's member keeps NULL elements, so a built array goes back into a row.
   assert.equal(renderParamType(texts()), "string[]");
-  assert.equal(renderParamType({ kind: "array", of: scalar("int8") }), "(number | bigint | string)[]");
-  assert.equal(renderParamType({ kind: "array", of: scalar("int4") }), "number[]");
-  const member: EngineType = { kind: "rows", one: true, fields: [{ name: "tags", type: texts(), written: "text[]", nullable: false, optional: false }] };
-  assert.equal(renderParamType(member), "{ tags: (string | null)[] }");
+  assert.equal(renderParamType(array(pg("int8"))), "(number | bigint | string)[]");
+  assert.equal(renderParamType(array(pg("int4"))), "number[]");
+  const member = record([field("tags", texts())]);
+  const members = [{ written: "text[]" }];
+  assert.equal(renderParamType(member, "postgres", false, members), "{ tags: (string | null)[] }");
   // The JSON Schemas say the same.
   assert.deepEqual(typeSchema(texts(), "postgres"), { type: "array", items: { type: ["string", "null"] } });
   assert.deepEqual(typeSchema(texts(false), "postgres"), { type: "array", items: { type: "string" } });
   assert.deepEqual(typeSchema(texts(), "postgres", true), { type: "array", items: { type: "string" } });
-  assert.deepEqual(typeSchema(member, "postgres", true), { type: "object", properties: { tags: { type: "array", items: { type: ["string", "null"] } } }, required: ["tags"], additionalProperties: false });
+  assert.deepEqual(typeSchema(member, "postgres", true, false, false, members), { type: "object", properties: { tags: { type: "array", items: { type: ["string", "null"] } } }, required: ["tags"], additionalProperties: false });
 });
 
 test("a JSON value nothing constrains is any JSON value, Json, and so is a value nothing types inside JSON the statement builds", () => {
@@ -272,17 +262,17 @@ test("a JSON value nothing constrains is any JSON value, Json, and so is a value
   // Json admits null, which a NOT NULL jsonb column can hold, so a nullable one reads the same.
   assert.equal(orNull("Json"), "Json");
   assert.equal(orNull("string"), "string | null");
-  assert.equal(renderType({ kind: "array", of: { kind: "json" } }), "Json[]");
-  assert.equal(renderType({ kind: "list", of: { kind: "unknown" }, nullable_items: true }), "Json[]");
-  assert.equal(renderType({ kind: "object", fields: [{ name: "k", type: { kind: "unknown" }, nullable: true }, { name: "n", type: { kind: "json" }, nullable: false }, { name: "s", type: scalar("text"), nullable: true }] }), "{ k: Json; n: Json; s: string | null }");
-  assert.equal(renderType(scalar("mystery"), true, "postgres"), "Json");
+  assert.equal(renderType(array(pg("jsonb"))), "Json[]");
+  assert.equal(renderType(doc({ kind: "array", element: { type: { kind: "unknown" }, nullable: true } })), "Json[]");
+  assert.equal(renderType(doc(record([field("k", { kind: "unknown" }, true), field("n", pg("jsonb")), field("s", pg("text"), true)]))), "{ k: Json; n: Json; s: string | null }");
+  assert.equal(renderType(pg("mystery"), true, "postgres"), "Json");
   // Outside JSON, a value nothing types may be any value: SQLite's json_extract, a column with no declared type.
   assert.equal(renderType({ kind: "unknown" }, false, "sqlite"), "unknown");
-  assert.equal(renderType({ kind: "struct", fields: [{ name: "j", type: { kind: "json" }, nullable: true }, { name: "u", type: { kind: "unknown" }, nullable: true }] }, false, "duckdb"), "{ j: Json; u: unknown | null }");
+  assert.equal(renderType(record([field("j", { kind: "json" }, true), field("u", { kind: "unknown" }, true)]), false, "duckdb"), "{ j: Json; u: unknown | null }");
 });
 
 test("a JSON column a CHECK holds to a JSON Schema is the type of the values the schema admits", () => {
-  const json = (schema: unknown): EngineType => ({ kind: "json", schema: schema as never });
+  const json = checked;
   const open = { type: "object", properties: { name: { type: "string" }, age: { type: ["integer", "null"] } }, required: ["name"], additionalProperties: true };
   assert.equal(renderType(json(open)), "{ name: string; age?: number | null; [key: string]: Json | undefined }");
   assert.equal(renderType(json({ ...open, additionalProperties: false })), "{ name: string; age?: number | null }");

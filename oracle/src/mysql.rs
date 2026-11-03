@@ -64,6 +64,7 @@
 //! a second time with SQL_BUFFER_RESULT, which puts the whole result in a temporary table and
 //! changes nothing else; a problem found there says so.
 
+use reylo_engine_core::types::{JsonType, Kind, Type};
 use crate::seed::{report, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
@@ -541,13 +542,15 @@ enum Js {
 /// JSON. The last of each is a value no seeded row holds, so an INSERT of a new key runs at all.
 fn admitted(ty: &Value) -> Vec<Js> {
     use Js::{Bytes, Date, Number, Text};
-    match (ty["kind"].as_str(), ty["name"].as_str()) {
+    let ty: Option<Type> = serde_json::from_value(ty.clone()).ok();
+    let kind = ty.as_ref().map(|t| (&t.kind, t.name.as_deref()));
+    match kind {
         // 2^53 and 2^64 are numbers and no safe integers.
-        (Some("scalar"), Some("int2" | "int4" | "int8")) => vec![Number(1.0), Number(2.0), Number(0.0), Number(-1.0), Number(1.5), Number(9007199254740991.0), Number(9007199254740992.0), Number(18446744073709551616.0), Number(900000.0)],
-        (Some("scalar"), Some("float4" | "float8")) => vec![Number(1.5), Number(1.0), Number(2.0), Number(0.0), Number(-0.0), Number(0.1), Number(-1.0), Number(1e308), Number(900000.5)],
-        (Some("scalar"), Some("numeric")) => vec![Text("1"), Text("2"), Text("0"), Text("1.50"), Text("0.1"), Text("0.10000000000000000001"), Text("9007199254740993"), Text("1e0"), Text("x"), Text("900000")],
+        Some((Kind::Integer(_), name)) if name != Some("tinyint(1)") => vec![Number(1.0), Number(2.0), Number(0.0), Number(-1.0), Number(1.5), Number(9007199254740991.0), Number(9007199254740992.0), Number(18446744073709551616.0), Number(900000.0)],
+        Some((Kind::Float(_), _)) => vec![Number(1.5), Number(1.0), Number(2.0), Number(0.0), Number(-0.0), Number(0.1), Number(-1.0), Number(1e308), Number(900000.5)],
+        Some((Kind::Decimal(_), _)) => vec![Text("1"), Text("2"), Text("0"), Text("1.50"), Text("0.1"), Text("0.10000000000000000001"), Text("9007199254740993"), Text("1e0"), Text("x"), Text("900000")],
         // With the wall-clock times of the hours the clocks repeat ([`REPEATED_HOURS`]).
-        (Some("scalar"), Some("timestamp" | "date")) => vec![
+        Some((Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_), _)) => vec![
             Date(2026, 1, 1, 0),
             Date(2026, 1, 1, 12),
             Text("2026-01-01"),
@@ -561,9 +564,9 @@ fn admitted(ty: &Value) -> Vec<Js> {
             Text("x"),
             Text("2001-02-03"),
         ],
-        (Some("scalar"), Some("time")) => vec![Text("12:00:00"), Text("00:00:00"), Text("12:00:00.000001"), Text("-838:59:59"), Text("x"), Text("01:02:04")],
-        (Some("scalar"), Some("bytea")) => vec![Bytes(b"a"), Bytes(b"A"), Bytes(b""), Bytes(b"\0"), Bytes(b"a\0"), Bytes(b"\xff"), Bytes(b"k900000")],
-        (Some("scalar"), Some("text")) => vec![Text("a"), Text("A"), Text("b"), Text(""), Text("a "), Text("1"), Text("01"), Text("1x"), Text("á"), Text("2026-01-01 12:00:00"), Text("$.a"), Text("k900000")],
+        Some((Kind::Duration(_), _)) => vec![Text("12:00:00"), Text("00:00:00"), Text("12:00:00.000001"), Text("-838:59:59"), Text("x"), Text("01:02:04")],
+        Some((Kind::Bytes(_), _)) | Some((Kind::Array(_), Some("bit"))) => vec![Bytes(b"a"), Bytes(b"A"), Bytes(b""), Bytes(b"\0"), Bytes(b"a\0"), Bytes(b"\xff"), Bytes(b"k900000")],
+        Some((Kind::Text(_), _)) => vec![Text("a"), Text("A"), Text("b"), Text(""), Text("a "), Text("1"), Text("01"), Text("1x"), Text("á"), Text("2026-01-01 12:00:00"), Text("$.a"), Text("k900000")],
         _ => vec![Text("{\"a\": 1}"), Text("[]"), Text("null"), Text("1"), Text("a"), Number(1.0), Number(1.5), Text("k900000")],
     }
 }
@@ -883,13 +886,13 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         for (i, col) in columns.iter().enumerate() {
                             let name = col["name"].as_str().unwrap_or("?");
                             match row.get(i) {
-                                Some(My::NULL) if !col["nullable"].as_bool().unwrap_or(true) => found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})")),
+                                Some(My::NULL) if !col["nullable"].as_bool().unwrap_or(false) => found.push(format!("{file}: column {name} typed non-null is NULL with ({shown})")),
                                 // A truth value the statement computes is 1 or 0; a TINYINT(1) or
                                 // BIT(1) column holds what was stored, which the run time refuses
                                 // unless it is one of them.
-                                Some(value) if col["type_name"] == "boolean" && !matches!(value, My::NULL) && !is_truth(value) => found.push(format!("{file}: column {name} typed bool holds {value:?} with ({shown})")),
+                                Some(value) if col["type"]["kind"] == "boolean" && !matches!(value, My::NULL) && !is_truth(value) => found.push(format!("{file}: column {name} typed bool holds {value:?} with ({shown})")),
                                 Some(My::Bytes(bytes)) if returned.get(i).is_some_and(|c| c.code == 245) => {
-                                    if let Some(why) = serde_json::from_slice::<Value>(bytes).ok().and_then(|document| json_contradiction(&col["type"], &document, col["nullable"].as_bool().unwrap_or(true), "")) {
+                                    if let Some(why) = serde_json::from_slice::<Value>(bytes).ok().and_then(|document| json_contradiction(&col["type"], &document, col["nullable"].as_bool().unwrap_or(false), "")) {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -924,7 +927,7 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                         _ if killed => tally.timed_out += 1,
                         Ok((returned, rows)) => {
                             tally.ran += 1;
-                            if (cardinality == "maybeOne" && rows > 1) || (cardinality == "one" && rows != 1) || (cardinality == "none" && rows > 0) {
+                            if (cardinality == "at_most_one" && rows > 1) || (cardinality == "one" && rows != 1) || (cardinality == "none" && rows > 0) {
                                 problems.push(format!("{file}: proven {cardinality}, returned {rows} rows with ({shown})"));
                             }
                             if returned.len() != columns.len() {
@@ -1104,36 +1107,80 @@ fn is_truth(value: &My) -> bool {
     }
 }
 
-/// Why the type the execution gave a column contradicts the engine's, if it does. The integers
-/// below 64 bits and the floats are one type, a number in every driver; a 64-bit integer is not,
-/// being a BigInt. A scalar typed as either of several types (`int8|float8`) may come back as any
-/// of them. A truth value is an integer of any width to the protocol, or a BIT(1)'s byte.
+/// What a driver decodes a value of the engine's type by, as [`returned_type`] names the protocol's:
+/// the integers below 64 bits and the floats are one class, a number in every driver; a 64-bit
+/// integer is not, being a BigInt. A truth value is an integer of any width to the protocol, or a
+/// BIT(1)'s byte, and a union may come back as any of its members. `None` where the type says
+/// nothing of it.
+fn classes(ty: &Type) -> Option<Vec<&'static str>> {
+    let mut out = Vec::new();
+    for m in ty.members() {
+        out.extend(match &m.kind {
+            Kind::Boolean => vec!["number", "int8", "bytea"],
+            Kind::Integer(i) if i.bits >= 64 => vec!["int8"],
+            Kind::Integer(_) | Kind::Float(_) => vec!["number"],
+            Kind::Decimal(_) => vec!["numeric"],
+            Kind::DateTime(_) | Kind::Instant(_) => vec!["timestamp"],
+            Kind::Date(_) => vec!["date"],
+            Kind::Duration(_) => vec!["time"],
+            Kind::Json(_) => vec!["json"],
+            Kind::Array(_) if m.name.as_deref() == Some("bit") => vec!["bytea"],
+            Kind::Bytes(_) => vec!["bytea"],
+            Kind::Text(_) | Kind::Set(_) => vec!["text"],
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
+/// The class of a protocol type ([`classes`]).
+fn class(name: &str) -> &'static str {
+    match name {
+        "int2" | "int4" | "float4" | "float8" => "number",
+        "int8" => "int8",
+        "numeric" => "numeric",
+        "timestamp" => "timestamp",
+        "date" => "date",
+        "time" => "time",
+        "json" => "json",
+        "bytea" => "bytea",
+        "text" => "text",
+        _ => "unknown",
+    }
+}
+
+/// Why the type the execution gave a column contradicts the engine's, if it does.
 fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
-    let class = |name: &str| match name {
-        "int2" | "int4" | "float4" | "float8" => vec!["number".to_string()],
-        "bool" => vec!["number".to_string(), "int8".to_string(), "bytea".to_string()],
-        other => vec![other.to_string()],
-    };
-    let typed: Vec<String> = match ty["kind"].as_str() {
-        Some("scalar") => ty["name"].as_str().unwrap_or("?").split('|').flat_map(class).collect(),
-        Some("json" | "object" | "list") => vec!["json".to_string()],
-        _ => return None,
-    };
-    let returned = class(returned_type(code, charset)?).remove(0);
+    let ty: Type = serde_json::from_value(ty.clone()).ok()?;
+    let typed = classes(&ty)?;
+    let returned = class(returned_type(code, charset)?);
     (!typed.contains(&returned)).then(|| format!("typed {} came back as {returned} (protocol type {code})", typed.join(" or ")))
 }
 
-/// Why a JSON document contradicts the shape the engine typed, if it does: a null where the type
+/// Why a JSON document contradicts the type the engine gave it, if it does: a null where the type
 /// has none, a missing key, or a value of another JSON type than its field's.
 fn json_contradiction(ty: &Value, json: &Value, nullable: bool, path: &str) -> Option<String> {
+    let ty: Type = serde_json::from_value(ty.clone()).ok()?;
+    document_contradiction(&ty, json, nullable, path)
+}
+
+fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -> Option<String> {
     let at = if path.is_empty() { "the top".to_string() } else { path.to_string() };
-    // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema admits,
-    // a JSON null included, unless the place may hold SQL's NULL, which a document writes alike.
-    if let (Some("json"), Some(schema)) = (ty["kind"].as_str(), ty.get("schema")) {
-        return (!(json.is_null() && nullable) && !reylo_engine_core::schema_type::admits(schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"));
+    match &ty.kind {
+        // A JSON column a CHECK holds to a JSON Schema: the value is one the engine's schema
+        // admits, a JSON null included, unless the place may hold SQL's NULL, which a document
+        // writes alike.
+        Kind::Json(JsonType { schema: Some(_), .. }) => {
+            let schema = ty.schema().unwrap_or(Value::Bool(true));
+            return (!(json.is_null() && nullable) && !reylo_engine_core::schema_type::admits(&schema, json)).then(|| format!("holds {json} at {at}, which the schema {schema} does not admit"));
+        }
+        // What a statement built: its content, at the top of the document.
+        Kind::Json(JsonType { content: Some(content), .. }) => return document_contradiction(&content.ty, json, nullable || content.nullable, path),
+        Kind::Json(_) | Kind::Unknown => return None,
+        _ => {}
     }
     if json.is_null() {
-        return (!nullable && matches!(ty["kind"].as_str(), Some("object" | "list" | "scalar"))).then(|| format!("has a null at {at}, typed non-null"));
+        return (!nullable).then(|| format!("has a null at {at}, typed non-null"));
     }
     let kind = match json {
         Value::Bool(_) => "a boolean",
@@ -1142,37 +1189,37 @@ fn json_contradiction(ty: &Value, json: &Value, nullable: bool, path: &str) -> O
         Value::Array(_) => "a list",
         _ => "an object",
     };
-    match ty["kind"].as_str() {
-        Some("object") => {
+    match &ty.kind {
+        Kind::Record(record) => {
             let Some(object) = json.as_object() else { return Some(format!("holds {kind} at {at}, typed an object")) };
-            for f in ty["fields"].as_array()? {
-                let name = f["name"].as_str()?;
-                let Some(value) = object.get(name) else { return Some(format!("has no key {path}.{name}")) };
-                if let Some(why) = json_contradiction(&f["type"], value, f["nullable"].as_bool().unwrap_or(true), &format!("{path}.{name}")) {
+            for f in &record.fields {
+                let Some(value) = object.get(&f.name) else { return Some(format!("has no key {path}.{}", f.name)) };
+                if let Some(why) = document_contradiction(&f.ty, value, f.nullable, &format!("{path}.{}", f.name)) {
                     return Some(why);
                 }
             }
             None
         }
-        Some("list") => {
+        // A BIT is written inside a document as its bytes, `"base64:type16:…"` (the spec's facts).
+        Kind::Array(array) if ty.name.as_deref() != Some("bit") => {
             let Some(items) = json.as_array() else { return Some(format!("holds {kind} at {at}, typed a list")) };
-            items.iter().enumerate().find_map(|(i, item)| json_contradiction(&ty["of"], item, ty["nullable_items"].as_bool().unwrap_or(true), &format!("{path}[{i}]")))
+            items.iter().enumerate().find_map(|(i, item)| document_contradiction(&array.element.ty, item, array.element.nullable, &format!("{path}[{i}]")))
         }
-        // What a driver finds in the parsed document, by `json` in `src/render.ts`.
-        Some("scalar") => {
-            let name = ty["name"].as_str()?;
+        // What a driver finds in the parsed document: MySQL writes a number for its numbers, a
+        // string for its text, dates, times and bytes, and true or false for a truth value.
+        _ => {
             let mut wanted = Vec::new();
-            for part in name.split('|') {
-                wanted.push(match part {
-                    "bool" => "a boolean",
-                    "int2" | "int4" | "int8" | "float4" | "float8" | "numeric" => "a number",
-                    "text" | "date" | "timestamp" | "time" | "bytea" => "a string",
+            for m in ty.members() {
+                wanted.push(match &m.kind {
+                    Kind::Boolean => "a boolean",
+                    Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) => "a number",
+                    Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Set(_) => "a string",
+                    Kind::Array(_) if m.name.as_deref() == Some("bit") => "a string",
                     _ => return None,
                 });
             }
-            (!wanted.contains(&kind)).then(|| format!("holds {kind} at {at}, typed {name}"))
+            (!wanted.contains(&kind)).then(|| format!("holds {kind} at {at}, typed {}", ty.short()))
         }
-        _ => None,
     }
 }
 
@@ -1210,7 +1257,7 @@ mod tests {
 
     #[test]
     fn a_number_is_bound_as_mysql2_binds_it() {
-        let int = json!({ "kind": "scalar", "name": "int4" });
+        let int = json!({ "kind": "integer", "bits": 32, "name": "int" });
         // A safe integer inside the placeholder's type goes as that integer, anything else as a DOUBLE.
         assert_eq!(bound(&Js::Number(1.0), Some((8, false)), true).value, My::Int(1));
         assert_eq!(bound(&Js::Number(1.0), Some((8, true)), true).value, My::UInt(1));
@@ -1222,7 +1269,7 @@ mod tests {
         assert_eq!(bound(&Js::Number(1.0), Some((8, false)), false).value, My::Double(1.0));
         let all = bindings(&int, Some((8, false)));
         assert!(all.iter().any(|b| b.value == My::Int(1)) && all.iter().any(|b| b.value == My::Double(1.0)), "{all:?}");
-        assert_eq!(bindings(&json!({ "kind": "scalar", "name": "text" }), Some((253, false)))[0], Bound { value: My::Bytes(b"a".to_vec()), literal: "'a'".into(), shown: "'a'".into() });
+        assert_eq!(bindings(&json!({ "kind": "text", "name": "varchar" }), Some((253, false)))[0], Bound { value: My::Bytes(b"a".to_vec()), literal: "'a'".into(), shown: "'a'".into() });
         // What a driver that binds nothing writes into the text.
         let literal = |js: Js| bound(&js, None, true).literal;
         assert_eq!(literal(Js::Number(1.0)), "1");
@@ -1246,47 +1293,54 @@ mod tests {
 
     #[test]
     fn a_returned_type_is_held_against_the_engines() {
-        let scalar = |name: &str| json!({ "kind": "scalar", "name": name });
-        assert_eq!(type_contradiction(&scalar("int4"), 3, 63), None);
-        assert_eq!(type_contradiction(&scalar("int4"), 5, 63), None);
-        assert_eq!(type_contradiction(&scalar("int8"), 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
-        assert_eq!(type_contradiction(&scalar("text"), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
-        assert_eq!(type_contradiction(&scalar("date"), 12, 63).as_deref(), Some("typed date came back as timestamp (protocol type 12)"));
-        assert_eq!(type_contradiction(&json!({ "kind": "object", "fields": [] }), 245, 63), None);
+        let int = json!({ "kind": "integer", "bits": 32, "name": "int" });
+        let bigint = json!({ "kind": "integer", "bits": 64, "name": "bigint" });
+        let double = json!({ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "name": "double" });
+        let date = json!({ "kind": "date", "name": "date" });
+        let datetime = json!({ "kind": "datetime", "tick": "1/1000000", "name": "datetime" });
+        let either = |members: Vec<Value>| json!({ "kind": "union", "per": "execution", "members": members });
+        assert_eq!(type_contradiction(&int, 3, 63), None);
+        assert_eq!(type_contradiction(&int, 5, 63), None);
+        assert_eq!(type_contradiction(&bigint, 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
+        assert_eq!(type_contradiction(&json!({ "kind": "text", "name": "varchar" }), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
+        assert_eq!(type_contradiction(&date, 12, 63).as_deref(), Some("typed date came back as timestamp (protocol type 12)"));
+        assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "record", "fields": [] } } }), 245, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "json" }), 251, 63).as_deref(), Some("typed json came back as bytea (protocol type 251)"));
         // Either of two types.
-        assert_eq!(type_contradiction(&scalar("int8|float8"), 5, 63), None);
-        assert_eq!(type_contradiction(&scalar("int8|float8"), 8, 63), None);
-        assert_eq!(type_contradiction(&scalar("int8|float8"), 246, 63).as_deref(), Some("typed int8 or number came back as numeric (protocol type 246)"));
-        assert_eq!(type_contradiction(&scalar("date|timestamp"), 12, 63), None);
-        // A truth value: a TINYINT(1), a BIT(1), or a comparison the server computes as a BIGINT.
+        assert_eq!(type_contradiction(&either(vec![bigint.clone(), double.clone()]), 5, 63), None);
+        assert_eq!(type_contradiction(&either(vec![bigint.clone(), double.clone()]), 8, 63), None);
+        assert_eq!(type_contradiction(&either(vec![bigint.clone(), double]), 246, 63).as_deref(), Some("typed int8 or number came back as numeric (protocol type 246)"));
+        assert_eq!(type_contradiction(&either(vec![date, datetime]), 12, 63), None);
+        // A truth value the server computes as a BIGINT, a TINYINT(1)'s or a BIT(1)'s.
         for code in [1, 16, 8, 3] {
-            assert_eq!(type_contradiction(&scalar("bool"), code, 63), None);
+            assert_eq!(type_contradiction(&json!({ "kind": "boolean" }), code, 63), None);
         }
-        assert_eq!(type_contradiction(&scalar("bool"), 253, 33).as_deref(), Some("typed number or int8 or bytea came back as text (protocol type 253)"));
+        assert_eq!(type_contradiction(&json!({ "kind": "integer", "bits": 8, "name": "tinyint(1)" }), 1, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "array", "size": { "exact": 1 }, "name": "bit", "element": { "type": { "kind": "boolean" } } }), 16, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "boolean" }), 253, 33).as_deref(), Some("typed number or int8 or bytea came back as text (protocol type 253)"));
         assert!(is_truth(&My::Int(1)) && is_truth(&My::UInt(0)) && is_truth(&My::Bytes(b"1".to_vec())));
         assert!(!is_truth(&My::Int(2)) && !is_truth(&My::Bytes(b"-1".to_vec())));
         // The NULL type carries no value, and an unknown type claims nothing.
-        assert_eq!(type_contradiction(&scalar("int8"), 6, 63), None);
+        assert_eq!(type_contradiction(&bigint, 6, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "unknown" }), 8, 63), None);
     }
 
     #[test]
     fn a_json_document_is_held_against_its_shape() {
-        let shape = json!({ "kind": "object", "fields": [
-            { "name": "id", "type": { "kind": "scalar", "name": "int4" }, "nullable": false },
-            { "name": "ok", "type": { "kind": "scalar", "name": "bool" }, "nullable": true },
-            { "name": "tags", "type": { "kind": "list", "of": { "kind": "scalar", "name": "text" }, "nullable_items": false }, "nullable": false },
-        ] });
+        let shape = json!({ "kind": "json", "name": "json", "content": { "type": { "kind": "record", "fields": [
+            { "name": "id", "type": { "kind": "integer", "bits": 32, "name": "int" } },
+            { "name": "ok", "type": { "kind": "boolean" }, "nullable": true },
+            { "name": "tags", "type": { "kind": "array", "element": { "type": { "kind": "text", "name": "varchar" } } } },
+        ] } } });
         let check = |document: Value| json_contradiction(&shape, &document, false, "");
         assert_eq!(check(json!({ "id": 1, "ok": null, "tags": ["a"] })), None);
         assert_eq!(check(json!({ "id": null, "ok": true, "tags": [] })).as_deref(), Some("has a null at .id, typed non-null"));
-        assert_eq!(check(json!({ "id": "1", "ok": true, "tags": [] })).as_deref(), Some("holds a string at .id, typed int4"));
-        assert_eq!(check(json!({ "id": 1, "ok": 1, "tags": [] })).as_deref(), Some("holds a number at .ok, typed bool"));
-        let either = json!({ "kind": "scalar", "name": "bool|int8" });
+        assert_eq!(check(json!({ "id": "1", "ok": true, "tags": [] })).as_deref(), Some("holds a string at .id, typed int"));
+        assert_eq!(check(json!({ "id": 1, "ok": 1, "tags": [] })).as_deref(), Some("holds a number at .ok, typed boolean"));
+        let either = json!({ "kind": "union", "per": "value", "members": [{ "kind": "boolean" }, { "kind": "integer", "bits": 64, "name": "bigint" }] });
         assert_eq!(json_contradiction(&either, &json!(true), false, ".ok"), None);
         assert_eq!(json_contradiction(&either, &json!(1), false, ".ok"), None);
-        assert_eq!(json_contradiction(&either, &json!("1"), false, ".ok").as_deref(), Some("holds a string at .ok, typed bool|int8"));
+        assert_eq!(json_contradiction(&either, &json!("1"), false, ".ok").as_deref(), Some("holds a string at .ok, typed boolean | bigint"));
         assert_eq!(check(json!({ "id": 1, "ok": true, "tags": [null] })).as_deref(), Some("has a null at .tags[0], typed non-null"));
         assert_eq!(check(json!({ "id": 1, "ok": true })).as_deref(), Some("has no key .tags"));
         assert_eq!(check(json!([1])).as_deref(), Some("holds a list at the top, typed an object"));
