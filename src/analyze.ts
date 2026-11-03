@@ -229,7 +229,7 @@ export class Session {
     const engine = this.#engine;
     if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
     const file = this.entryFile(sql);
-    const schema = await this.schema();
+    let schema = await this.schema();
     if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
@@ -237,6 +237,16 @@ export class Session {
       return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
+    // An entry for another fingerprint, written since this session read its own, is another
+    // process's analysis of a schema that changed since (the type check's after a migration, while
+    // a build step still trusts the fingerprint it read): the fingerprint is read again before
+    // either is used, so the build step neither builds from the old schema nor writes it back.
+    if (entry && entry.schema !== schema.value && entry.at >= this.#schema!.at) {
+      await this.recheck();
+      schema = await this.schema();
+      if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
+    }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
     const io = this.#connection();

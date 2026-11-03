@@ -73,6 +73,31 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
+test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
+  const { root, env } = project();
+  const sql = "select id from users where name = :name";
+  // A build step's session, kept open, which read the fingerprint moments ago.
+  const build = await Session.open(root, env);
+  try {
+    const before = await build.analyze(sql);
+    assert.ok(before.ok);
+    assert.equal(before.analysis.cardinality, "many");
+    const db = new DatabaseSync(join(root, "app.db"));
+    db.exec("create unique index users_name on users (name)");
+    db.close();
+    // The type check, a process of its own, analyzes the statement on the new schema.
+    const checked = await analyze(root, env, sql);
+    assert.ok(checked.ok);
+    assert.deepEqual([checked.source, checked.analysis.cardinality], ["database", "at_most_one"]);
+    const after = await build.analyze(sql);
+    assert.ok(after.ok);
+    assert.deepEqual([after.source, after.analysis.cardinality], ["cache", "at_most_one"]);
+    assert.equal((JSON.parse(readFileSync(after.entry, "utf8")) as { analysis: { cardinality: string } }).analysis.cardinality, "at_most_one");
+  } finally {
+    await build.close();
+  }
+});
+
 test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
   const { root, env } = project();
   assert.ok((await analyze(root, env, SELECT)).ok);
