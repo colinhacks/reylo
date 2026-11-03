@@ -11,6 +11,7 @@ import { sourceName } from "./project.ts";
 import { rowSource } from "./row.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
+import { jsonNumbers } from "./render.ts";
 import { analysisWithBases } from "./engine-type.ts";
 
 export type SqlModule = {
@@ -71,6 +72,12 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     const kind = columnKind(c.type, session.project.dialect);
     return c.delimiter === undefined ? [c.name, kind] : [c.name, kind, c.delimiter];
   });
+  // Where each Postgres JSON column holds a float or a decimal that may be NaN or an infinity,
+  // which the run time gives as that number (src/render.ts, `jsonNumbers`).
+  const nonFinite = session.project.dialect === "postgres" ? Object.fromEntries(analysis.columns.flatMap((c) => {
+    const at = jsonNumbers(c.type);
+    return at === undefined ? [] : [[c.name, at]];
+  })) : {};
   const source = sourceName(path);
   // The compiled statement without the file's trailing blank lines; the comment naming the file
   // is added where the statement is sent (src/execute.ts, `sentText`).
@@ -91,7 +98,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${Object.keys(nonFinite).length ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, session.project.dialect))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };

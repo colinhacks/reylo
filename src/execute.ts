@@ -9,7 +9,7 @@ import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./deco
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
-import { columnKind, describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned, type Columns } from "./values.ts";
+import { columnKind, describe, hstoreText, numbersInJson, ParameterError, postgresInterval, postgresYear, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
@@ -164,6 +164,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly inputs?: Inputs | undefined;
   /** Each output column's name and kind (src/values.ts), in order: what the run time gives each value (every build step puts it in the module). */
   readonly columns?: Columns | undefined;
+  /** Where each Postgres JSON column, by name, holds a float or a decimal that may be NaN or an infinity, which the run time gives as that number (src/values.ts, `numbersInJson`); a column that holds none is left out. */
+  readonly nonFinite?: Readonly<Record<string, JsonNumbers>> | undefined;
   /** Each row as an object of the columns' names, one shape for every row (src/row.ts): every build step puts it in the module, beside `columns`. */
   readonly row?: RowBuilder | undefined;
   /** The result key: output columns, by name, that identify each row of the result, where the analysis proves one. */
@@ -213,7 +215,13 @@ export function execute<D extends Dialect>(
 ): unknown[] | Promise<unknown[]> {
   const c = underneath(client as AnyClient);
   if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return executeSyncSqlite(c, query, params);
-  return executeAsync(c, query, params);
+  const nonFinite = query.dialect === "postgres" && query.nonFinite !== undefined ? Object.entries(query.nonFinite) : [];
+  if (!nonFinite.length) return executeAsync(c, query, params);
+  // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
+  return executeAsync(c, query, params).then((rows) => {
+    for (const row of rows as Record<string, unknown>[]) for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
+    return rows;
+  });
 }
 
 /**

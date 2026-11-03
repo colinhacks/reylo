@@ -392,6 +392,15 @@ export function queries(d: Dialect, typed = true) {
       "one",
       { columns: [["profile", "json"], ["pair", "json"], ["glued", "text"], ["doc", "text"]] },
     ),
+    // Postgres: JSON a statement builds holding floats and decimals that are not finite, which
+    // Postgres writes there as text, with the `nonFinite` the loader writes for it (src/render.ts,
+    // `jsonNumbers`), beside JSON whose text is only text.
+    nonFiniteJson: q(
+      `select json_build_object('nan', 'NaN'::float8, 'inf', 'Infinity'::numeric, 'neg', '-Infinity'::float4, 'n', 1.5::numeric, 'xs', array['NaN'::float8, 2]) as doc, jsonb_build_object('s', 'NaN') as raw`,
+      [],
+      "one",
+      { columns: [["doc", "json"], ["raw", "json"]], nonFinite: { doc: { keys: [["nan", true], ["inf", true], ["neg", true], ["n", true], ["xs", { items: true, deep: true }]] } } },
+    ),
     dup: q(`insert into ${t("uniq")} (k) values (:k)`, ["k"], "none"),
   };
 }
@@ -1024,6 +1033,15 @@ export const SCENARIOS: Scenario[] = [
         { profile: { user: { id: 1, name: "ada" }, scores: [{ id: 1, score: 10 }, { id: 3, score: 30 }], none: [] }, pair: [1, "ada", 10], glued: '{"n":"ada"}', doc: '{"a":[1,2]}' },
         "row",
       );
+    },
+  },
+  {
+    id: "S10k non-finite JSON: Postgres's text for a float or a numeric that is not finite, inside JSON a statement builds, is that number; other JSON text stays a string",
+    on: "client",
+    params: false,
+    dialects: ["postgres"],
+    async run(ctx, client, q) {
+      typedEq(await call(ctx, q.nonFiniteJson, client), { doc: { nan: NaN, inf: Infinity, neg: -Infinity, n: 1.5, xs: [NaN, 2] }, raw: { s: "NaN" } }, "row");
     },
   },
   {

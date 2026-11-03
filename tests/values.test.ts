@@ -4,7 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, postgresInterval, postgresYear, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, postgresInterval, postgresYear, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
 import { array, either, lite, my, pg } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
@@ -280,8 +280,9 @@ test("SQLite: a column declared BIGINT, INT8 or UNSIGNED BIG INT (the engine's i
   assert.equal(renderParamType(lite("int8"), "sqlite"), "number | bigint");
   assert.deepEqual(typeSchema(lite("int8"), "sqlite"), { type: "integer", format: "int64" }, "the BigInt, as the JSON integer it is");
   assert.deepEqual(typeSchema(lite("int8"), "sqlite"), typeSchema(pg("int8"), "postgres"));
-  // Inside a document a non-finite float or decimal is the text Postgres writes; MySQL stores none.
-  assert.deepEqual(typeSchema(pg("float8"), "postgres", false, true), { anyOf: [{ type: "number", format: "double" }, { enum: ["NaN", "Infinity", "-Infinity"] }] });
+  // Inside a document a non-finite float or decimal is the text Postgres writes, which the run time
+  // gives as the number it is; MySQL stores none.
+  assert.deepEqual(typeSchema(pg("float8"), "postgres", false, true), { type: "number", format: "double" });
   assert.deepEqual(typeSchema(my("decimal"), "mysql", false, true), { type: "number", format: "decimal" });
   assert.deepEqual(typeSchema(pg("interval"), "postgres", false, true), { type: "string", description: "pg type interval" }, "inside a document, Postgres's own text");
   assert.deepEqual(typeSchema(lite("int8"), "sqlite", true), { type: "integer", format: "int64" }, "a parameter");
@@ -630,4 +631,21 @@ test("an hstore's text is an object of its keys, and an object goes back in as t
   assert.throws(() => hstoreText(new Map([["a", "1"]]), fail), /got a Map\./);
   assert.throws(() => hstoreText(new (class Prefs {})(), fail), /got a Prefs\./);
   assert.equal(hstoreText(Object.assign(Object.create(null), { a: "1" }), fail), String.raw`"a"=>"1"`);
+});
+
+test("the text Postgres writes inside JSON for a non-finite float or decimal is that number, where the type says one may stand", () => {
+  const at = { keys: [["n", true], ["xs", { items: true, deep: true }], ["rows", { items: { keys: [["v", true]] } }], ["__proto__", true]] } as const;
+  const v = JSON.parse(`{"n": "NaN", "s": "NaN", "xs": [["Infinity", 1], ["-Infinity", "NaN"]], "rows": [{"v": "Infinity", "w": "NaN"}, {"v": 2.5}], "__proto__": "-Infinity"}`);
+  assert.equal(numbersInJson(v, at), v, "in place");
+  assert.deepEqual(v.n, NaN);
+  assert.equal(v.s, "NaN", "a key the type names no number at keeps its text");
+  assert.deepEqual(v.xs, [[Infinity, 1], [-Infinity, NaN]]);
+  assert.deepEqual(v.rows, [{ v: Infinity, w: "NaN" }, { v: 2.5 }]);
+  assert.equal(Object.getOwnPropertyDescriptor(v, "__proto__")?.value, -Infinity);
+  // Any other text, a number, null and a value of another shape stay as they are.
+  assert.equal(numbersInJson("nan", true), "nan");
+  assert.equal(numbersInJson(null, at), null);
+  assert.deepEqual(numbersInJson({ xs: "NaN" }, at), { xs: "NaN" });
+  // A Postgres array of JSON arrays reads each array as an element.
+  assert.deepEqual(numbersInJson([["NaN"]], { items: { items: true }, deep: true }), [[NaN]]);
 });

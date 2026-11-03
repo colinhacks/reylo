@@ -17,7 +17,7 @@ import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, textDecoder } from "./values.ts";
+import { coerce, DecodeError, numbersInJson, textDecoder, type JsonNumbers } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -117,6 +117,12 @@ function decoder(name: string, kind: string, delim: string | undefined): (v: unk
   return (v) => coerce(kind, v, name, delim);
 }
 
+/** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers, as `.run()` gives them (src/execute.ts). */
+function postgresDecoder(kind: string, delim: string | undefined, nonFinite: JsonNumbers | undefined): (v: string) => unknown {
+  const decode = textDecoder(kind, delim);
+  return nonFinite === undefined ? decode : (v) => numbersInJson(decode(v), nonFinite);
+}
+
 const notText = (name: string): never => {
   throw new DecodeError(`Column "${name}" is not in Postgres's text form: a driver hands a Standard Query each value's text.`);
 };
@@ -135,7 +141,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // is `.run()`'s own reading, its refusals of a storage class the column's type does not allow
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
-  const decoders = module.columns?.map(([name, kind, delim]): ((v: never) => unknown) => (dialect === "postgres" ? textDecoder(kind, delim) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
+  const decoders = module.columns?.map(([name, kind, delim]): ((v: never) => unknown) => (dialect === "postgres" ? postgresDecoder(kind, delim, module.nonFinite?.[name]) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
   const columns = module.columns?.map(([name], i) => Object.freeze({ name, decode: decoders![i]! }) as StandardQueryV1.Column<D>);
   // A closure, not `this`: a driver may take `encode` off the object.
   // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.

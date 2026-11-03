@@ -179,6 +179,14 @@ test("columns and output: decode(raw) is output(raw through columns), for every 
   assert.throws(() => bare.output([{ a: 1 }, { a: 2 }]), /Expected at most one row, got 2/);
 });
 
+test("postgres: a float or a decimal inside JSON that Postgres writes as text is the number it is, through decode and through its column's decoder, as .run() gives it", () => {
+  const q = defineQuery({ dialect: "postgres", sql: "select doc, raw from t", params: [], columns: [["doc", "json"], ["raw", "json"]], nonFinite: { doc: { keys: [["n", true]] } } })["~standard"].query;
+  const text = '{"n": "NaN", "s": "Infinity"}';
+  assert.deepStrictEqual(q.decode([[text, text]]), [{ doc: { n: NaN, s: "Infinity" }, raw: { n: "NaN", s: "Infinity" } }]);
+  assert.deepStrictEqual(q.columns![0]!.decode(text as never), { n: NaN, s: "Infinity" });
+  assert.equal(q.columns![0]!.decode(null as never), null);
+});
+
 test("mysql and sqlite: each value as a driver binds it, and decode takes every form a driver reads", () => {
   const my = defineQuery<{ id: bigint; doc: unknown }, { id: bigint; at: string; amount: string; ok: boolean }, "maybeOne", "mysql">({
     dialect: "mysql",

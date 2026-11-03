@@ -34,6 +34,41 @@ export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
 
+/**
+ * Where a JSON value holds a float or a decimal that may be NaN or an infinity, which Postgres
+ * writes inside a document as text (src/render.ts, `jsonNumbers`): `true` for such a value,
+ * `items` for an array's elements, through nested arrays where `deep`, and `keys` for an object's
+ * fields.
+ */
+export type JsonNumbers = true | { readonly items: JsonNumbers; readonly deep?: true } | { readonly keys: readonly (readonly [key: string, at: JsonNumbers])[] };
+
+/**
+ * A parsed JSON value with the text Postgres writes for each non-finite float or decimal at
+ * `at`, `"NaN"`, `"Infinity"` or `"-Infinity"`, as that number, in place: JSON has no number for
+ * one, and a float outside a document is one already.
+ */
+export function numbersInJson(v: unknown, at: JsonNumbers): unknown {
+  if (at === true) return v === "NaN" ? NaN : v === "Infinity" ? Infinity : v === "-Infinity" ? -Infinity : v;
+  if (v === null || typeof v !== "object") return v;
+  if ("items" in at) {
+    if (!Array.isArray(v)) return v;
+    // A Postgres array nests to any depth, each level an array; where its element is a JSON array
+    // as well, an array is read as the element, since the two cannot be told apart.
+    const nested = at.deep === true && !(typeof at.items === "object" && "items" in at.items);
+    for (let i = 0; i < v.length; i++) v[i] = nested && Array.isArray(v[i]) ? numbersInJson(v[i], at) : numbersInJson(v[i], at.items);
+    return v;
+  }
+  const o = v as Record<string, unknown>;
+  for (const [key, inner] of at.keys) {
+    if (!Object.prototype.hasOwnProperty.call(o, key)) continue;
+    const value = numbersInJson(o[key], inner);
+    // `__proto__` is an own key JSON.parse made, which an assignment would not reach.
+    if (key === "__proto__") Object.defineProperty(o, key, { value, writable: true, enumerable: true, configurable: true });
+    else o[key] = value;
+  }
+  return v;
+}
+
 /** The TypeScript type of each scalar kind: what a value of that kind is at run time. */
 export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   bool: "boolean",
