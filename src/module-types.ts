@@ -22,6 +22,8 @@ export type ModuleTypes = {
   names: string[];
   /** The type of the error `.try()` gives: the module's `QueryError`. */
   queryError: string;
+  /** The Standard Query's `columns`, one entry per output column in order: `readonly [{ readonly name: "id"; decode(value: string): number }]`; undefined where the statement failed. */
+  columns?: string;
 };
 
 /**
@@ -144,5 +146,15 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),
+    columns: standardColumnsType(analysis.columns, dialect),
   };
+}
+
+/**
+ * The type of a module's Standard Query `columns`: one entry per output column, in order, whose
+ * decoder takes the column's raw value, never NULL, and gives the column's type without null.
+ */
+export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect): string {
+  const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
+  return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect)} }`).join(", ")}]`;
 }

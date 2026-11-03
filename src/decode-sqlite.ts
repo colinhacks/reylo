@@ -250,23 +250,34 @@ export function normalize(rows: unknown[], columns: Columns | undefined, { exact
       const p = plans[i]!;
       const v = row[p.name];
       if (v === null || v === undefined) continue;
-      switch (typeof v) {
-        case "bigint":
-          row[p.name] = p.big(v);
-          break;
-        case "number":
-          if (p.num) row[p.name] = p.num(v);
-          break;
-        case "string":
-          if (p.str) row[p.name] = p.str(v);
-          break;
-        case "object":
-          if (p.blob) p.blob(v);
-          // libSQL's ArrayBuffer, D1's array of numbers.
-          if (!(v instanceof Uint8Array) && (v instanceof ArrayBuffer || (d1 && Array.isArray(v)))) row[p.name] = coerce("bytes", v, p.name);
-          break;
-      }
+      const w = normalized(p, v, d1);
+      if (w !== v) row[p.name] = w;
     }
   }
   return rows;
+}
+
+/** One non-null value as `normalize` leaves it: converted by the column's plan, refused, or as the driver gave it. */
+function normalized(p: Plan, v: unknown, d1: boolean): unknown {
+  if (v === null) return v;
+  switch (typeof v) {
+    case "bigint":
+      return p.big(v);
+    case "number":
+      return p.num ? p.num(v) : v;
+    case "string":
+      return p.str ? p.str(v) : v;
+    case "object":
+      if (p.blob) p.blob(v);
+      // libSQL's ArrayBuffer, D1's array of numbers.
+      if (!(v instanceof Uint8Array) && (v instanceof ArrayBuffer || (d1 && Array.isArray(v)))) return coerce("bytes", v, p.name);
+      return v;
+  }
+  return v;
+}
+
+/** One column's non-null value as `normalize` gives it, with `normalize`'s default reading. */
+export function sqliteDecoder(name: string, kind: Kind): (v: unknown) => unknown {
+  const p = plan(name, kind, false);
+  return (v) => normalized(p, v, false);
 }
