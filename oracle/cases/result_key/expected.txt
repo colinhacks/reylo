@@ -1,6 +1,6 @@
 aggregate.sql: one () -> { n: int8 }
-array_unique.sql: many () -> { items: int4[] }
-by_key_lookup.sql: maybeOne (id: int8) -> { id: int8, title: text? }
+array_unique.sql: many () -> { items: int4?[] }
+by_key_lookup.sql: at_most_one (id: int8) -> { id: int8, title: text? }
 by_primary_key.sql: many () -> { id: int8, name: text? } key (id)
 by_unique.sql: many () -> { email: text, name: text? } key (email)
 composite_part.sql: many () -> { slug: text, title: text? }

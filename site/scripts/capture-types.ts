@@ -31,6 +31,7 @@ import { ident, orNull, renderParamType, renderType } from '../../src/render.ts'
 import { docComment, leadingComment, statementAfter } from '../../src/doc-comment.ts';
 import { queryErrorType, reyloImport } from '../../src/module-types.ts';
 import type { Analysis } from '../../src/engine.ts';
+import { analysisWithBases } from '../../src/engine-type.ts';
 import { collectFiles, plan, isStatement, DIALECT_NAME, SCHEMA_FILE, type Block, type Dialect, type Modules } from '../lib/remark-mapper.ts';
 import { sitePages } from '../lib/page-files.ts';
 import { isErrorExample, type Errors } from '../lib/sql-errors.ts';
@@ -157,7 +158,7 @@ async function render(session: Session, source: string, written: string, sql: st
   } catch {}
   const outcome = await session.analyze(sql);
   if (!outcome.ok) return { error: outcome.message };
-  const { analysis } = outcome;
+  const analysis = analysisWithBases(outcome.analysis);
   const dialect = project.dialect;
   if (dialect === 'mysql') names = analysis.params.map((q) => q.name);
   // The mapper places these in the file as errors; a statement on the page must have none.
@@ -166,13 +167,13 @@ async function render(session: Session, source: string, written: string, sql: st
     const untyped = analysis.params.filter((q) => q.type.kind === 'unknown' && !json.has(q.name));
     if (untyped.length) return { error: `strict_params: nothing types ${untyped.map((q) => `:${q.name}`).join(', ')}` };
   }
-  const inferred = analysis.cardinality;
+  const inferred = analysis.cardinality === 'at_most_one' ? 'maybeOne' : analysis.cardinality;
   const order = names;
-  if (dialect === 'postgres' && analysis.kind === '') return { error: 'the statement is empty' };
+  if (dialect === 'postgres' && analysis.kind === undefined) return { error: 'the statement is empty' };
   const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
-  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect))] as const);
+  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members))] as const);
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
-  const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === 'object' && 'default' in q.schema)).map((q) => q.name));
+  const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
   return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors)), analysis };
 }

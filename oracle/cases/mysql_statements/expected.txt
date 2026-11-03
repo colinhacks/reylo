@@ -1,64 +1,64 @@
 alter_table.sql: none () -> {  }
 ambiguous.sql: many () -> {  } !! reylo6: Column 'id' in field list is ambiguous (ER_NON_UNIQ_ERROR)
-backslash_quote.sql: maybeOne (id: int4) -> { id: int4, said: text }
-backslash_quote_filter.sql: maybeOne (id: int4) -> { id: int4 }
-backticks.sql: maybeOne (id: int4) -> { id: int4, the name: text }
+backslash_quote.sql: at_most_one (id: int32) -> { id: int, said: varchar }
+backslash_quote_filter.sql: at_most_one (id: int32) -> { id: int }
+backticks.sql: at_most_one (id: int32) -> { id: int, the name: varchar }
 begin.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-block_comment.sql: maybeOne (id: int4) -> { id: int4 }
+block_comment.sql: at_most_one (id: int32) -> { id: int }
 call_procedure.sql: many () -> {  } !! reylo10: A CALL returns the result sets its procedure makes, which MySQL does not describe before the procedure runs, so its rows cannot be typed: select from a function or a view instead
 create_table.sql: none () -> {  }
 delete_all.sql: none () -> {  }
-describe.sql: many () -> { Field: text?, Type: text?, Null: text?, Key: text?, Default: text?, Extra: text? }
+describe.sql: many () -> { Field: varchar?, Type: text?, Null: varchar?, Key: enum?, Default: text?, Extra: varchar? }
 do_statement.sql: none () -> {  }
-double_quoted_key.sql: many () -> { o: { id: int4, name: text } }
-double_quoted_string.sql: maybeOne () -> { id: int4 }
+double_quoted_key.sql: many () -> { o: json { id: int, name: varchar } }
+double_quoted_string.sql: at_most_one () -> { id: int }
 drop_table.sql: none () -> {  }
-empty_second.sql: maybeOne (id: int4) -> { id: int4 }
+empty_second.sql: at_most_one (id: int32) -> { id: int }
 executable_comment_ddl.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_filter.sql: many (id: unknown) -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_future.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_versioned.sql: many (id: unknown) -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 executable_comment_whole.sql: many () -> {  } !! reylo10: MySQL runs the text of a /*! … */ comment as SQL where the server's version allows it, so the statement is not the one written outside it: write it as plain SQL
 explain.sql: many () -> {  } !! reylo10: MySQL does not describe the rows of EXPLAIN before it runs, so they cannot be typed
-hash_comment.sql: maybeOne (id: int4) -> { id: int4 }
-insert_fires_trigger.sql: none (id: int4, name: text) -> {  }
+hash_comment.sql: at_most_one (id: int32) -> { id: int }
+insert_fires_trigger.sql: none (id: int32, name: varchar) -> {  }
 insert_select_same_table.sql: none () -> {  }
-interval_syntax.sql: maybeOne (n: int4, id: int4) -> { id: int4, later: timestamp? }
-json_table_statement.sql: many () -> { a: int4? }
-leading_comment.sql: maybeOne (id: int4) -> { id: int4 }
+interval_syntax.sql: at_most_one (n: int32, id: int32) -> { id: int, later: datetime? }
+json_table_statement.sql: many () -> { a: int? }
+leading_comment.sql: at_most_one (id: int32) -> { id: int }
 lock_tables.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-match_against.sql: many (q: text) -> { id: int4 }
-match_against_score.sql: many (q: text) -> { id: int4, score: float8 }
-member_of.sql: many () -> { id: int4 }
-optimizer_hint.sql: maybeOne (id: int4) -> { id: int4 }
-optimizer_hint_set_var.sql: many () -> { id: int4 }
-parenthesized.sql: many (id: int4) -> { id: int4 }
-partition_and_hint.sql: maybeOne (id: int4) -> { id: int4 }
-placeholder_at.sql: many () -> { name: text }
-placeholder_cast_like.sql: maybeOne (id: int4, name: text) -> { id: int4 }
-placeholder_colon_equals.sql: maybeOne (id: int4) -> { n: unknown }
+match_against.sql: many (q: varchar) -> { id: int }
+match_against_score.sql: many (q: varchar) -> { id: int, score: double }
+member_of.sql: many () -> { id: int }
+optimizer_hint.sql: at_most_one (id: int32) -> { id: int }
+optimizer_hint_set_var.sql: many () -> { id: int }
+parenthesized.sql: many (id: int32) -> { id: int }
+partition_and_hint.sql: at_most_one (id: int32) -> { id: int }
+placeholder_at.sql: many () -> { name: varchar }
+placeholder_cast_like.sql: at_most_one (id: int32, name: varchar) -> { id: int }
+placeholder_colon_equals.sql: at_most_one (id: int32) -> { n: unknown }
 placeholder_dollar.sql: many () -> {  } !! reylo6: Unknown column '$1' in 'where clause' (ER_BAD_FIELD_ERROR)
-placeholder_in_limit.sql: many (n: int4) -> { id: int4 }
-placeholder_in_string.sql: maybeOne (id: int4) -> { text: text, mark: text, id: int4 }
+placeholder_in_limit.sql: many (n: int32) -> { id: int }
+placeholder_in_string.sql: at_most_one (id: int32) -> { text: varchar, mark: varchar, id: int }
 placeholder_mixed.sql: many (1: unknown, name: unknown) -> {  } !! reylo2: Named and positional parameters cannot be mixed in one statement.
 placeholder_numbered.sql: many () -> {  } !! reylo1: MySQL has no numbered placeholder ?1; write ? for each value, or :name
-placeholder_question.sql: maybeOne (1: int4, 2: text) -> { name: text }
-replace_statement.sql: none (id: int4, name: text) -> {  }
-select_distinctrow.sql: many () -> { name: text }
-select_for_share.sql: maybeOne (id: int4) -> { id: int4 }
-select_function_writes.sql: maybeOne (id: int4) -> { id: int4, n: int4|int8? }
-select_high_priority.sql: maybeOne (id: int4) -> { id: int4 }
+placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar }
+replace_statement.sql: none (id: int32, name: varchar) -> {  }
+select_distinctrow.sql: many () -> { name: varchar }
+select_for_share.sql: at_most_one (id: int32) -> { id: int }
+select_function_writes.sql: at_most_one (id: int32) -> { id: int, n: either(int, bigint)? }
+select_high_priority.sql: at_most_one (id: int32) -> { id: int }
 select_into_outfile.sql: none () -> {  }
-select_into_variable.sql: none (id: int4) -> {  }
-select_one.sql: maybeOne (id: int4) -> { id: int4, name: text }
-select_sql_calc.sql: maybeOne () -> { id: int4 }
-select_stored_function.sql: one () -> { n: int4|int8? }
+select_into_variable.sql: none (id: int32) -> {  }
+select_one.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+select_sql_calc.sql: at_most_one () -> { id: int }
+select_stored_function.sql: one () -> { n: either(int, bigint)? }
 set_variable.sql: none () -> {  }
-show_tables.sql: many () -> { Tables_in_reylo_oracle_mysql_statements: text? }
+show_tables.sql: many () -> { Tables_in_reylo_oracle_mysql_statements: varchar? }
 syntax_error.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '' at line 1 (ER_PARSE_ERROR)
-table_statement.sql: many () -> { id: int4, name: text, email: text?, doc: json? }
-trailing_comment.sql: maybeOne (id: int4) -> { id: int4 }
-trailing_semicolon.sql: maybeOne (id: int4) -> { id: int4 }
+table_statement.sql: many () -> { id: int, name: varchar, email: varchar?, doc: json? }
+trailing_comment.sql: at_most_one (id: int32) -> { id: int }
+trailing_semicolon.sql: at_most_one (id: int32) -> { id: int }
 truncate.sql: none () -> {  }
 two_statements.sql: many () -> {  } !! reylo10: A typed .sql file holds one statement and this one holds several, so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 unknown_column.sql: many () -> {  } !! reylo6: Unknown column 'nope' in 'field list' (ER_BAD_FIELD_ERROR)
@@ -67,9 +67,9 @@ unknown_keyword.sql: many () -> {  } !! reylo6: You have an error in your SQL sy
 unknown_table.sql: many () -> {  } !! reylo6: Table 'reylo_oracle_mysql_statements.nowhere' doesn't exist (ER_NO_SUCH_TABLE)
 update_all.sql: none () -> {  }
 use_database.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
-user_variable_read.sql: maybeOne (id: int4) -> { x: unknown?, id: int4 }
-values_statement.sql: many () -> { column_0: int8|int4, column_1: text }
-window_named.sql: many () -> { id: int4, r: int8 }
-with_recursive_cte.sql: many () -> { i: int8|int4? }
-with_statement.sql: many () -> { id: int4 }
+user_variable_read.sql: at_most_one (id: int32) -> { x: unknown?, id: int }
+values_statement.sql: many () -> { column_0: either(bigint, int), column_1: varchar }
+window_named.sql: many () -> { id: int, r: bigint }
+with_recursive_cte.sql: many () -> { i: either(bigint, int)? }
+with_statement.sql: many () -> { id: int }
 wrong_group.sql: many () -> {  } !! reylo6: In aggregated query without GROUP BY, expression #1 of SELECT list contains nonaggregated column 'reylo_oracle_mysql_statements.users.id'; this is incompatible with sql_mode=only_full_group_by (ER_MIX_OF_GROUP_FUNC_AND_FIELDS)

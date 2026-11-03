@@ -1,15 +1,15 @@
-aggregates.sql: one () -> { most: int8|int4?, total: numeric?, some: bool }
-buffered_and_sorted.sql: many () -> { done: bool, eq: bool? }
-columns.sql: many () -> { done: bool, maybe: bool?, unsigned_flag: bool?, small: int2?, four: int2?, bit_flag: bool?, eight: bytea? }
-comparisons.sql: many () -> { eq: bool?, ne: bool?, lt: bool?, nse: bool, isnull: bool, nottrue: bool, inl: bool?, btw: bool?, lk: bool?, re: bool?, nota: bool?, andab: bool?, orab: bool?, xorab: bool?, t: bool, f: bool }
-expressions_over_flags.sql: many () -> { zero: int8|int4, most: int2, plus: int8|int4?, either: int2? }
-not_truth_values.sql: many () -> { one: int8|int4, five: int8|int4, cs: int8|int4, mixed: int8|int4?, plus: int8|int4? }
-passed_through.sql: many () -> { co: bool, ifn: bool?, iff: bool?, cs: bool?, ni: bool?, sub: bool?, ex: bool }
-placeholders.sql: many (n: int4, m: int4, s: text, p: int4) -> { eq: bool?, listed: bool?, lk: bool?, co: bool? }
-rollup.sql: many () -> { same: bool?, n: int8 }
-through_derived.sql: many () -> { x: bool?, y: int8|int4? }
-through_view.sql: many () -> { done: int2, same: int8|int4? }
-through_with.sql: many () -> { done: bool, bit_flag: bool? }
-union_arms.sql: many () -> { x: bool? }
-union_with_number.sql: many () -> { x: int8|int4? }
-with_wildcard.sql: many () -> { before_star: bool?, id: int4, done: bool, maybe: bool?, unsigned_flag: bool?, small: int2?, four: int2?, bit_flag: bool?, eight: bytea?, a: int4?, b: int4?, label: text?, after_star: bool? }
+aggregates.sql: one () -> { most: either(bigint, int)?, total: decimal?, some: boolean }
+buffered_and_sorted.sql: many () -> { done: tinyint(1), eq: boolean? }
+columns.sql: many () -> { done: tinyint(1), maybe: tinyint(1)?, unsigned_flag: tinyint(1)?, small: tinyint?, four: tinyint?, bit_flag: bit(boolean[1])?, eight: bit(boolean[8])? }
+comparisons.sql: many () -> { eq: boolean?, ne: boolean?, lt: boolean?, nse: boolean, isnull: boolean, nottrue: boolean, inl: boolean?, btw: boolean?, lk: boolean?, re: boolean?, nota: boolean?, andab: boolean?, orab: boolean?, xorab: boolean?, t: boolean, f: boolean }
+expressions_over_flags.sql: many () -> { zero: either(bigint, int), most: tinyint, plus: either(bigint, int)?, either: tinyint? }
+not_truth_values.sql: many () -> { one: either(bigint, int), five: either(bigint, int), cs: either(bigint, int), mixed: either(bigint, int)?, plus: either(bigint, int)? }
+passed_through.sql: many () -> { co: boolean, ifn: boolean?, iff: boolean?, cs: boolean?, ni: boolean?, sub: boolean?, ex: boolean }
+placeholders.sql: many (n: int32, m: int32, s: varchar, p: int32) -> { eq: boolean?, listed: boolean?, lk: boolean?, co: boolean? }
+rollup.sql: many () -> { same: boolean?, n: bigint }
+through_derived.sql: many () -> { x: tinyint(1)?, y: either(bigint, int)? }
+through_view.sql: many () -> { done: tinyint, same: either(bigint, int)? }
+through_with.sql: many () -> { done: tinyint(1), bit_flag: bit(boolean[1])? }
+union_arms.sql: many () -> { x: boolean? }
+union_with_number.sql: many () -> { x: either(bigint, int)? }
+with_wildcard.sql: many () -> { before_star: boolean?, id: int, done: tinyint(1), maybe: tinyint(1)?, unsigned_flag: tinyint(1)?, small: tinyint?, four: tinyint?, bit_flag: bit(boolean[1])?, eight: bit(boolean[8])?, a: int?, b: int?, label: varchar?, after_star: boolean? }

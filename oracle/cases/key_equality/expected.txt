@@ -1,10 +1,10 @@
 expression_collation.sql: many (e: text) -> { id: int8 } key (id)
 pinned_collation_distinct.sql: many () -> { email: text? } key (email)
 pinned_collation_group.sql: many () -> { email: text?, n: int8 } key (email)
-pinned_identity.sql: maybeOne () -> { email: text? }
+pinned_identity.sql: at_most_one () -> { email: text? }
 pinned_numeric.sql: many () -> { email: text? } key (email)
 timestamp_key.sql: many () -> { id: int8 } key (id)
-timestamptz_key.sql: maybeOne () -> { id: int8 }
+timestamptz_key.sql: at_most_one () -> { id: int8 }
 using_merged.sql: many () -> { id: int8, bid: int8 } key (id, bid)
 volatile_operator.sql: many () -> { id: int4 } key (id)
 volatile_operator_cast.sql: many () -> { id: int4 } key (id)

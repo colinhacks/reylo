@@ -11,14 +11,24 @@ export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
 export type Diagnostic = { message: string; start: number; length: number; code: number };
 
+/**
+ * What the engine answers for a statement: the format's statement descriptor (spec/type-descriptor.ts,
+ * `StatementDescriptor`) less its dialect and with Reylo's diagnostics, and what Reylo's own tools
+ * read beside it.
+ */
 export type Analysis = {
-  kind: string;
-  /** `nullable`: the statement lets the caller pass null, or leave the parameter out (it casts the parameter to `nullable(…)`, or writes it whole and bare, with no cast, to a column that may hold null). */
-  /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). */
+  /** Absent when the statement did not parse; `other` for a statement none of the five. */
+  kind?: "select" | "insert" | "update" | "delete" | "merge" | "other";
+  /** The prose written in comments before the statement. */
+  comment?: string;
+  /** `nullable`: the statement lets the caller pass null. `optional`: the caller may leave the parameter out (a typed JSON parameter whose schema has a `default`). */
+  /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). `members`: a structured parameter's column list as written, by field. `delimiter`: what separates an array's elements in its text, where it is not a comma. */
   /** `comment`: the comment the database keeps on the column a parameter is written to (or, on MySQL, compared with), and on the table column a result column reads as it is; the declaration prints it as the field's doc comment. */
-  params: { name: string; type: EngineType; type_name: string; nullable: boolean; schema?: import("./engine-type.ts").JsonSchema; cast?: string; comment?: string }[];
-  columns: { name: string; type: EngineType; nullable: boolean; type_name: string; comment?: string }[];
-  cardinality: "one" | "maybeOne" | "many" | "none";
+  params: { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: import("./engine-type.ts").JsonSchema; cast?: string; delimiter?: string; members?: { written: string; schema?: import("./engine-type.ts").JsonSchema }[] }[];
+  columns: { name: string; type: EngineType; nullable?: boolean; comment?: string; delimiter?: string }[];
+  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** Each domain a type names, with the base type it is made from, which a client decodes its values by (src/engine-type.ts, `withBases`). */
+  domains?: Record<string, string>;
   cardinalityReason?: string;
   /** The result key: output columns, by name, no two rows of the result agree on all of (a NULL equal to another NULL). Only for a result that can hold more than one row: absent where the cardinality is `one` or `maybeOne`, and where no key is proven (engine/core/src/api.rs). */
   key?: string[];

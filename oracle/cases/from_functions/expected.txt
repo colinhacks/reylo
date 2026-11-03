@@ -1,16 +1,16 @@
 alias.sql: one () -> { t: timestamptz }
 alias_column.sql: one () -> { at: timestamptz }
-beside_key.sql: maybeOne (id: int8) -> { email: text, t: timestamptz }
+beside_key.sql: at_most_one (id: int8) -> { email: text, t: timestamptz }
 column_list.sql: one () -> { a: int4?, b: text? }
 current_date.sql: one () -> { current_date: date }
 distinct.sql: many () -> { v: int8? } key (v)
 full_join.sql: many () -> { a: timestamptz?, b: timestamptz? }
-lateral.sql: maybeOne (id: int8) -> { id: int8, l: text? }
+lateral.sql: at_most_one (id: int8) -> { id: int8, l: text? }
 lateral_many.sql: many () -> { id: int8, l: text? } key (id)
-left_join_nulled.sql: maybeOne (id: int8) -> { id: int8, t: timestamptz? }
-limit_zero.sql: maybeOne () -> { now: timestamptz }
+left_join_nulled.sql: at_most_one (id: int8) -> { id: int8, t: timestamptz? }
+limit_zero.sql: at_most_one () -> { now: timestamptz }
 lower_cast.sql: one (s: text) -> { lower: text }
-nested_join_nulled.sql: maybeOne (s: text, id: int8) -> { id: int8, a: timestamptz?, b: text? }
+nested_join_nulled.sql: at_most_one (s: text, id: int8) -> { id: int8, a: timestamptz?, b: text? }
 now.sql: one () -> { now: timestamptz }
 null_composite.sql: one () -> { a: int4? }
 null_or_raise.sql: one (p: int4) -> { null_or_raise: int4? }
@@ -30,4 +30,4 @@ setof.sql: many (p: text) -> { many_text: text? }
 strict_null.sql: one () -> { a: int4?, b: text? }
 two.sql: one (p: text) -> { a: timestamptz, b: text? }
 volatile_pins_nothing.sql: many () -> { name: text? }
-where.sql: maybeOne (flag: bool) -> { t: timestamptz }
+where.sql: at_most_one (flag: bool) -> { t: timestamptz }

@@ -4,6 +4,7 @@
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
+import { analysisWithBases } from "./engine-type.ts";
 import { declaredType, ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
@@ -15,7 +16,8 @@ export type ModuleTypes = {
   params: string;
   /** `{ id: number; name: string }` (a field per line, after its doc comment, where a column's comment documents one), `never` for no columns, or `unknown` where the statement failed. */
   row: string;
-  cardinality: Analysis["cardinality"];
+  /** How many rows the statement returns, as a module's `Query` names it. */
+  cardinality: "one" | "maybeOne" | "many" | "none";
   /** The parameters' names in order of first use: the module's `params` at run time. */
   names: string[];
   /** The type of the error `.try()` gives: the module's `QueryError`. */
@@ -96,7 +98,8 @@ export function withinFile(start: number, length: number, size: number): { start
  * the project file's `strict_params`, and `projectFile` the file the error about it names: the
  * project's own file, which may be `.reylo.yml` or another path REYLO_CONFIG names.
  */
-export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
+export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
+  const analysis = analysisWithBases(written);
   let names = lexed?.params ?? [];
   let placeholders = lexed?.placeholders ?? [];
   // A MySQL session reads its strings by its sql_mode, which the analysis asked for and the
@@ -124,15 +127,15 @@ export function moduleTypes(sql: string, analysis: Analysis, dialect: Dialect, l
       diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
     }
   }
-  const cardinality = analysis.cardinality;
-  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === "")) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
+  const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
+  if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
   const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
-  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect)), q.comment] as const);
-  // A parameter that takes null may be left out, which binds NULL; so may a typed JSON parameter
-  // whose schema has a `default` (wiki/typed-json-params.md).
-  const optional = new Set(analysis.params.filter((q) => q.nullable || (q.schema !== null && typeof q.schema === "object" && "default" in q.schema)).map((q) => q.name));
+  const typed = analysis.params.map((q) => [q.name, paramType(q, declaredType(q.type, q.schema) ?? renderParamType(q.type, dialect, false, q.members)), q.comment] as const);
+  // A parameter that takes null may be left out, which binds NULL; so may one the engine says the
+  // caller may leave out, a typed JSON parameter whose schema has a `default`.
+  const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type, comment]) => [`${ident(name)}${optional.has(name) ? "?" : ""}: ${type}`, comment] as const);
   return {
     diagnostics,

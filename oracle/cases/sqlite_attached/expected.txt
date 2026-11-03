@@ -1,4 +1,4 @@
 attached.sql: many (id: unknown) -> {  } !! reylo6: no such table: baz.users: the database has no schema `baz`. A database the application attaches at run time (ATTACH ... AS baz) is not in the file the type check reads, so a table in it cannot be typed
 attached_insert.sql: many (body: unknown) -> {  } !! reylo6: no such table: baz.notes: the database has no schema `baz`. A database the application attaches at run time (ATTACH ... AS baz) is not in the file the type check reads, so a table in it cannot be typed
-main.sql: maybeOne (id: integer) -> { id: integer, name: text }
+main.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
 missing_in_main.sql: many () -> {  } !! reylo6: no such table: main.notes

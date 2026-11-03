@@ -4,8 +4,8 @@
 // only when its statement has such a parameter (src/loader.ts), and the run time reads them from
 // the query. So a bundler leaves them out of an app none of whose statements has one.
 import { cloneJson, validate, withDefaults } from "./json-schema.ts";
-import { checkCast, prepareRows, variant } from "./rows.ts";
+import { checkCast, prepareRows, rowsOf, variant } from "./rows.ts";
 
-export const checks = { cloneJson, validate, withDefaults, checkCast, prepareRows, variant };
+export const checks = { cloneJson, validate, withDefaults, checkCast, prepareRows, rowsOf, variant };
 
 export type Checks = typeof checks;

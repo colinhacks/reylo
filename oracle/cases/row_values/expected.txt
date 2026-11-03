@@ -1,13 +1,13 @@
-array.sql: one () -> { rows: docs{ id: int4, title: text, note: text? }[] }
-built.sql: one () -> { built: [docs{ id: int4?, title: text?, note: text? }]? }
-built_in_subquery.sql: one () -> { o: { x: docs{ id: int4?, title: text?, note: text? }? } }
-correlated.sql: many () -> { id: int4, rows: docs{ id: int4, title: text, note: text? }[], one: docs{ id: int4, title: text, note: text? }? } key (id)
-derived.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }
-function.sql: one () -> { o: { made: docs{ id: int4?, title: text?, note: text? }? } }
-held.sql: one () -> { held: [docs{ id: int4?, title: text?, note: text? }?]? }
-held_array.sql: one () -> { held_rows: docs{ id: int4?, title: text?, note: text? }[], held_values: docs{ id: int4?, title: text?, note: text? }[] }
-scalar.sql: one () -> { o: { first: docs{ id: int4, title: text, note: text? }? } }
-shadowed_name.sql: one () -> { o: { x: docs{ id: int4?, title: text?, note: text? }? } }
-stored.sql: one () -> { stored: [docs{ id: int4, title: text, note: text? }]? }
-view.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }
-with_query.sql: one () -> { rows: [docs{ id: int4, title: text, note: text? }]? }
+array.sql: one () -> { rows: (public.docs{ id: int4, title: text, note: text? }?)[] }
+built.sql: one () -> { built: jsonb (public.docs{ id: int4?, title: text?, note: text? })[]? }
+built_in_subquery.sql: one () -> { o: json { x: public.docs{ id: int4?, title: text?, note: text? }? } }
+correlated.sql: many () -> { id: int4, rows: (public.docs{ id: int4, title: text, note: text? }?)[], one: public.docs{ id: int4, title: text, note: text? }? } key (id)
+derived.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text, note: text? })[]? }
+function.sql: one () -> { o: json { made: public.docs{ id: int4?, title: text?, note: text? }? } }
+held.sql: one () -> { held: jsonb (public.docs{ id: int4?, title: text?, note: text? }?)[]? }
+held_array.sql: one () -> { held_rows: (public.docs{ id: int4?, title: text?, note: text? }?)[], held_values: (public.docs{ id: int4?, title: text?, note: text? }?)[] }
+scalar.sql: one () -> { o: json { first: public.docs{ id: int4, title: text, note: text? }? } }
+shadowed_name.sql: one () -> { o: json { x: public.docs{ id: int4?, title: text?, note: text? }? } }
+stored.sql: one () -> { stored: jsonb (public.docs{ id: int4, title: text, note: text? })[]? }
+view.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text, note: text? })[]? }
+with_query.sql: one () -> { rows: jsonb (public.docs{ id: int4, title: text, note: text? })[]? }

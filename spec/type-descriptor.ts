@@ -183,7 +183,7 @@ export interface RecordType extends Base {
 /**
  * A JSON value: `json`, `jsonb`, MySQL `JSON`.
  *   - `content`: what the statement built (`json_build_object`, `json_agg`), described with the same types. Each leaf is typed by the SQL value the database wrote it from: inside a `json_build_object`, an `int8` may pass 2^53, which a JSON Schema could not say.
- *   - `schema`: a JSON Schema every value satisfies, from a CHECK or a parameter's typed cast, with the draft it is read by: MySQL's `JSON_SCHEMA_VALID` reads draft 4, and Postgres's validator extensions differ.
+ *   - `schema`: a JSON Schema every value satisfies, from a CHECK or a parameter's typed cast, whose `$schema` names the draft it is read by: MySQL's `JSON_SCHEMA_VALID` reads draft 4, and Postgres's validator extensions differ.
  *   - Neither: any JSON, whose numbers may have any length (`jsonb` keeps them as `numeric`), never only doubles.
  *
  * What each database writes for each type is in "Facts about each database".
@@ -191,7 +191,7 @@ export interface RecordType extends Base {
 export interface JsonType extends Base {
   kind: "json";
   content?: Position;
-  schema?: { dialect: string; source: object };
+  schema?: { $schema: string; [keyword: string]: unknown };
 }
 
 // Dates and times ----------------------------------------------------------------------------

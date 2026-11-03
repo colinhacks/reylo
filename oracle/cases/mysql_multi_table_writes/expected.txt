@@ -1,6 +1,6 @@
-delete_one_table.sql: none (id: int4) -> {  }
-delete_star.sql: none (id: int4) -> {  }
-delete_two_tables.sql: none (id: int4) -> {  }
-delete_using.sql: none (id: int4) -> {  }
-update_join.sql: none (email: text, id: int4) -> {  }
-update_two_tables.sql: none (name: text, email: text, id: int4) -> {  }
+delete_one_table.sql: none (id: int32) -> {  }
+delete_star.sql: none (id: int32) -> {  }
+delete_two_tables.sql: none (id: int32) -> {  }
+delete_using.sql: none (id: int32) -> {  }
+update_join.sql: none (email: varchar, id: int32) -> {  }
+update_two_tables.sql: none (name: varchar, email: varchar, id: int32) -> {  }

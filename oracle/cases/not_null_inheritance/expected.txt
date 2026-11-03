@@ -1,5 +1,5 @@
 insert_parent.sql: none (id: int4?, x: int4) -> {  }
 parent.sql: many () -> { x: int4? }
-parent_row.sql: many () -> { r: { id: int4?, x: int4? } }
+parent_row.sql: many () -> { r: jsonb { id: int4?, x: int4? } }
 partitioned.sql: many (k: int4) -> { x: int4 }
-plain.sql: maybeOne (id: int4) -> { x: int4 }
+plain.sql: at_most_one (id: int4) -> { x: int4 }

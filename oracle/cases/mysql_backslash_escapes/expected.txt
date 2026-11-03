@@ -1,17 +1,17 @@
-backquoted_backslash.sql: maybeOne (id: int4) -> { a\: int4, name: text }
-block_comment_unnested.sql: maybeOne (x: int4) -> { id: int4 }
-dash_with_space.sql: maybeOne (a: int4) -> { id: int4 }
-dash_with_tab.sql: maybeOne (a: int4) -> { id: int4 }
-dash_without_space.sql: maybeOne (a: int4, b: int4) -> { id: int4 }
-double_quoted_doubled.sql: maybeOne (id: int4) -> { id: int4 }
-double_quoted_escape.sql: many (id: int4) -> { id: int4 }
-escaped_backslash.sql: maybeOne (x: int4) -> { id: int4 }
-escaped_backslash_twice.sql: many (x: int4) -> { id: int4 }
-escaped_in_comment_and_string.sql: maybeOne (id: int4) -> { id: int4 }
-escaped_json_key.sql: maybeOne (id: int4) -> { o: { it's: int4, say "hi": text } }
-escaped_like.sql: maybeOne (id: int4) -> { id: int4 }
-escaped_newline.sql: maybeOne (id: int4) -> { s: text, n: int8, t: text, id: int4 }
-escaped_quote.sql: many (id: int4) -> { id: int4 }
-escaped_quote_key.sql: maybeOne () -> { id: int4, name: text }
-hash_comment.sql: maybeOne (id: int4) -> { id: int4 }
-hash_comment_lines.sql: maybeOne (id: int4) -> { id: int4 }
+backquoted_backslash.sql: at_most_one (id: int32) -> { a\: int, name: varchar }
+block_comment_unnested.sql: at_most_one (x: int32) -> { id: int }
+dash_with_space.sql: at_most_one (a: int32) -> { id: int }
+dash_with_tab.sql: at_most_one (a: int32) -> { id: int }
+dash_without_space.sql: at_most_one (a: int32, b: int32) -> { id: int }
+double_quoted_doubled.sql: at_most_one (id: int32) -> { id: int }
+double_quoted_escape.sql: many (id: int32) -> { id: int }
+escaped_backslash.sql: at_most_one (x: int32) -> { id: int }
+escaped_backslash_twice.sql: many (x: int32) -> { id: int }
+escaped_in_comment_and_string.sql: at_most_one (id: int32) -> { id: int }
+escaped_json_key.sql: at_most_one (id: int32) -> { o: json { it's: int, say "hi": varchar } }
+escaped_like.sql: at_most_one (id: int32) -> { id: int }
+escaped_newline.sql: at_most_one (id: int32) -> { s: varchar, n: bigint, t: varchar, id: int }
+escaped_quote.sql: many (id: int32) -> { id: int }
+escaped_quote_key.sql: at_most_one () -> { id: int, name: varchar }
+hash_comment.sql: at_most_one (id: int32) -> { id: int }
+hash_comment_lines.sql: at_most_one (id: int32) -> { id: int }

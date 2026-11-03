@@ -1,4 +1,4 @@
-aggregate_family.sql: many () -> { mean: numeric, first_title: text, all_positive: bool, bits: int4, titles: text, title_list: (text!)[], note_list: (text?)[], notes: [text?], by_title: json }
+aggregate_family.sql: many () -> { mean: numeric, first_title: text, all_positive: bool, bits: int4, titles: text, title_list: text[], note_list: text?[], notes: jsonb text?[], by_title: json }
 around_current.sql: many () -> { rows_around: int8, groups_back: int8, rest: int8, running: int8 }
 chained_windows.sql: many () -> { total: int8 }
 copied_window.sql: many () -> { around: int8, before: int8? }

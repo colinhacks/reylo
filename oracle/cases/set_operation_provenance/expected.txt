@@ -5,7 +5,7 @@ recursive_parent.sql: many () -> { n: int8, parent: int8? }
 where_union.sql: many () -> { name: text }
 with_union.sql: many () -> { id: int8, text: text }
 with_union_beside_table.sql: many () -> { name: text, email: text?, id: int8 }
-with_union_check.sql: many () -> { kind: 'click' | 'key' }
+with_union_check.sql: many () -> { kind: text('click' | 'key') }
 with_union_filtered.sql: many (user_id: int8) -> { kind: text, id: int8, text: text }
 with_union_null_literal.sql: many () -> { at: timestamptz? }
 with_union_nullable_arm.sql: many () -> { t: text? }

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import type { EngineType } from "../src/engine-type.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
@@ -56,35 +57,43 @@ async function analyze(root: string, sql: string): Promise<Extract<Outcome, { ok
   }
 }
 
-/** Each column as `name: TYPE`, with `?` where it may be NULL. */
-const columns = (a: { columns: { name: string; type_name: string; nullable: boolean }[] }) => a.columns.map((c) => `${c.name}: ${c.type_name}${c.nullable ? "?" : ""}`);
+/** A type as DuckDB names it, lowercased: an array its element's and `[]`, a struct its fields, an enum its labels. */
+function shown(t: EngineType): string {
+  if (t.kind === "array") return `${shown(t.element.type)}[]`;
+  if (t.kind === "record") return `struct(${t.fields.map((f) => `${f.name} ${shown(f.type)}`).join(", ")})`;
+  if (t.kind === "text" && t.enum !== undefined) return `enum(${t.enum.join(", ")})`;
+  return "name" in t && t.name !== undefined ? t.name : t.kind;
+}
+
+/** Each column as `name: type`, with `?` where it may be NULL. */
+const columns = (a: { columns: { name: string; type: EngineType; nullable?: boolean }[] }) => a.columns.map((c) => `${c.name}: ${shown(c.type)}${c.nullable ? "?" : ""}`);
 
 test("DuckDB: each column is typed by the prepared statement, and may be NULL unless the engine shows it is not", { skip }, async () => {
   const root = await project();
   const one = await analyze(root, "select id, msg, level, tags, meta, m from logs where id = :id");
-  assert.deepEqual(columns(one), ["id: INTEGER", "msg: VARCHAR", "level: VARCHAR?", "tags: VARCHAR[]?", 'meta: STRUCT("host" VARCHAR, "pid" INTEGER)?', "m: ENUM('happy', 'sad')?"]);
-  assert.equal(one.cardinality, "maybeOne");
+  assert.deepEqual(columns(one), ["id: integer", "msg: varchar", "level: varchar?", "tags: varchar[]?", "meta: struct(host varchar, pid integer)?", "m: enum(happy, sad)?"]);
+  assert.equal(one.cardinality, "at_most_one");
   assert.equal(one.kind, "select");
   assert.equal(one.columns[1]!.comment, "What happened");
-  assert.deepEqual(one.columns[4]!.type, { kind: "struct", fields: [{ name: "host", type: { kind: "scalar", name: "varchar" }, nullable: true }, { name: "pid", type: { kind: "scalar", name: "integer" }, nullable: true }] });
-  assert.deepEqual(one.columns[5]!.type, { kind: "enum", name: "ENUM('happy', 'sad')", labels: ["happy", "sad"] });
+  assert.deepEqual(one.columns[4]!.type, { kind: "record", fields: [{ name: "host", type: { kind: "text", name: "varchar" }, nullable: true }, { name: "pid", type: { kind: "integer", bits: 32, name: "integer" }, nullable: true }] });
+  assert.deepEqual(one.columns[5]!.type, { kind: "text", enum: ["happy", "sad"], name: "enum" });
   // An outer join pads its other side with NULL, unless a filter shows the row was matched.
-  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id")), ["id: INTEGER", "name: VARCHAR?"]);
-  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id where t.id is not null")), ["id: INTEGER", "name: VARCHAR"]);
-  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from teams t right join logs l on t.id = l.team_id")), ["id: INTEGER", "name: VARCHAR?"]);
+  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id")), ["id: integer", "name: varchar?"]);
+  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id where t.id is not null")), ["id: integer", "name: varchar"]);
+  assert.deepEqual(columns(await analyze(root, "select l.id, t.name from teams t right join logs l on t.id = l.team_id")), ["id: integer", "name: varchar?"]);
   // A count is never NULL; another aggregate is, over no rows, but not over a group of them.
   const totals = await analyze(root, "select count(*) as n, max(id) as top from logs");
-  assert.deepEqual([columns(totals), totals.cardinality], [["n: BIGINT", "top: INTEGER?"], "one"]);
+  assert.deepEqual([columns(totals), totals.cardinality], [["n: bigint", "top: integer?"], "one"]);
   const grouped = await analyze(root, "select level, count(*) as n, max(id) as top from logs group by level");
-  assert.deepEqual([columns(grouped), grouped.cardinality], [["level: VARCHAR?", "n: BIGINT", "top: INTEGER"], "many"]);
-  assert.deepEqual(columns(await analyze(root, "select level, count(*) as n from logs group by rollup (level)")), ["level: VARCHAR?", "n: BIGINT"]);
+  assert.deepEqual([columns(grouped), grouped.cardinality], [["level: varchar?", "n: bigint", "top: integer"], "many"]);
+  assert.deepEqual(columns(await analyze(root, "select level, count(*) as n from logs group by rollup (level)")), ["level: varchar?", "n: bigint"]);
   // DuckDB's own syntax: FROM first, EXCLUDE, QUALIFY.
-  assert.deepEqual(columns(await analyze(root, "from logs select msg, level")), ["msg: VARCHAR", "level: VARCHAR?"]);
-  assert.deepEqual(columns(await analyze(root, "select * exclude (tags, meta, m, seen) from logs qualify row_number() over (partition by level order by id) = 1")), ["id: INTEGER", "msg: VARCHAR", "level: VARCHAR?", "team_id: INTEGER?"]);
+  assert.deepEqual(columns(await analyze(root, "from logs select msg, level")), ["msg: varchar", "level: varchar?"]);
+  assert.deepEqual(columns(await analyze(root, "select * exclude (tags, meta, m, seen) from logs qualify row_number() over (partition by level order by id) = 1")), ["id: integer", "msg: varchar", "level: varchar?", "team_id: integer?"]);
   // A division by zero is NULL where the session says so (`error_on_division_by_zero`).
-  assert.deepEqual(columns(await analyze(root, "select id + 1 as next, id / 2 as half, coalesce(level, 'none') as level, msg || '!' as loud from logs")), ["next: INTEGER", "half: DOUBLE?", "level: VARCHAR", "loud: VARCHAR"]);
-  assert.deepEqual(columns(await analyze(root, "with recent as (select id, msg from logs where id > :n) select * from recent")), ["id: INTEGER", "msg: VARCHAR"]);
-  assert.deepEqual(columns(await analyze(root, "select id from logs union all select id from teams")), ["id: INTEGER"]);
+  assert.deepEqual(columns(await analyze(root, "select id + 1 as next, id / 2 as half, coalesce(level, 'none') as level, msg || '!' as loud from logs")), ["next: integer", "half: double?", "level: varchar", "loud: varchar"]);
+  assert.deepEqual(columns(await analyze(root, "with recent as (select id, msg from logs where id > :n) select * from recent")), ["id: integer", "msg: varchar"]);
+  assert.deepEqual(columns(await analyze(root, "select id from logs union all select id from teams")), ["id: integer"]);
   // A statement the engine's parser does not read is typed from the describe alone.
   const summary = await analyze(root, "summarize logs");
   assert.ok(summary.columns.length > 0 && summary.columns.every((c) => c.nullable));
@@ -97,48 +106,48 @@ test("DuckDB: how many rows a statement returns", { skip }, async () => {
   const root = await project();
   const card = async (sql: string) => (await analyze(root, sql)).cardinality;
   assert.equal(await card("select 1 as one"), "one");
-  assert.equal(await card("select 1 as one where :b::boolean"), "maybeOne");
-  assert.equal(await card("select * from logs limit 1"), "maybeOne");
-  assert.equal(await card("select * from logs where id = :id and level = 'x'"), "maybeOne");
+  assert.equal(await card("select 1 as one where :b::boolean"), "at_most_one");
+  assert.equal(await card("select * from logs limit 1"), "at_most_one");
+  assert.equal(await card("select * from logs where id = :id and level = 'x'"), "at_most_one");
   assert.equal(await card("select * from logs where team_id = :id"), "many");
   assert.equal(await card("select unnest(tags) as tag from logs where id = :id"), "many");
   assert.equal(await card("insert into teams (id, name) values (:id, :name) returning id"), "one");
-  assert.equal(await card("insert into teams (id, name) values (:id, :name) on conflict do nothing returning id"), "maybeOne");
+  assert.equal(await card("insert into teams (id, name) values (:id, :name) on conflict do nothing returning id"), "at_most_one");
   assert.equal(await card("insert into teams (id, name) values (1, 'a'), (2, 'b') returning id"), "many");
   assert.equal(await card("insert into teams (id, name) values (:id, :name)"), "none");
-  assert.equal(await card("update logs set msg = :msg where id = :id returning msg"), "maybeOne");
+  assert.equal(await card("update logs set msg = :msg where id = :id returning msg"), "at_most_one");
   assert.equal(await card("update logs set msg = :msg where level = :level"), "none");
   assert.equal(await card("delete from logs where level = :level returning id"), "many");
   // A LIMIT that may be 0 bounds the rows to at most one, not exactly one.
-  assert.equal(await card("select count(*) as n from logs limit :n"), "maybeOne");
+  assert.equal(await card("select count(*) as n from logs limit :n"), "at_most_one");
   // A write WITH queries feed is that write.
   const fed = await analyze(root, "with x as (select 9 as id, 'x' as name) insert into teams select * from x");
   assert.deepEqual([fed.kind, fed.cardinality, fed.columns, fed.fresh?.inserts], ["insert", "none", [], ["teams"]]);
   const returned = await analyze(root, "with x as (select 9 as id, 'x' as name) insert into teams select * from x returning id, name");
-  assert.deepEqual([returned.kind, returned.cardinality, columns(returned)], ["insert", "many", ["id: INTEGER", "name: VARCHAR"]]);
+  assert.deepEqual([returned.kind, returned.cardinality, columns(returned)], ["insert", "many", ["id: integer", "name: varchar"]]);
   const create = await analyze(root, "create table other (a integer)");
-  assert.deepEqual([create.kind, create.cardinality, create.columns], ["create", "none", []]);
+  assert.deepEqual([create.kind, create.cardinality, create.columns], ["other", "none", []]);
   // What a write's RETURNING returns is the row it wrote.
-  assert.deepEqual(columns(await analyze(root, "insert into logs (id, msg) values (:id, :msg) returning id, msg, level, seen")), ["id: INTEGER", "msg: VARCHAR", "level: VARCHAR?", "seen: TIMESTAMP WITH TIME ZONE"]);
+  assert.deepEqual(columns(await analyze(root, "insert into logs (id, msg) values (:id, :msg) returning id, msg, level, seen")), ["id: integer", "msg: varchar", "level: varchar?", "seen: timestamptz"]);
 });
 
 test("DuckDB: each parameter is typed where it stands, and may be NULL where the statement lets it", { skip }, async () => {
   const root = await project();
-  const params = (a: { params: { name: string; type_name: string; nullable: boolean }[] }) => a.params.map((p) => `${p.name}: ${p.type_name}${p.nullable ? "?" : ""}`);
-  assert.deepEqual(params(await analyze(root, "select id from logs where level = :level and id > :after")), ["level: VARCHAR", "after: INTEGER"]);
-  assert.deepEqual(params(await analyze(root, "select :n::bigint * 2 as twice")), ["n: BIGINT"]);
+  const params = (a: { params: { name: string; type: EngineType; nullable?: boolean }[] }) => a.params.map((p) => `${p.name}: ${shown(p.type)}${p.nullable ? "?" : ""}`);
+  assert.deepEqual(params(await analyze(root, "select id from logs where level = :level and id > :after")), ["level: varchar", "after: integer"]);
+  assert.deepEqual(params(await analyze(root, "select :n::bigint * 2 as twice")), ["n: bigint"]);
   // A parameter the statement tests for NULL, coalesces, or writes bare to a column that may hold
   // NULL, and one cast to nullable(…), takes NULL.
-  assert.deepEqual(params(await analyze(root, "select id from logs where coalesce(:level, level) = level")), ["level: VARCHAR?"]);
-  assert.deepEqual(params(await analyze(root, "select id from logs where level is not distinct from :level")), ["level: VARCHAR?"]);
-  assert.deepEqual(params(await analyze(root, "insert into logs (id, msg, level) values (:id, :msg, :level)")), ["id: INTEGER", "msg: VARCHAR", "level: VARCHAR?"]);
-  assert.deepEqual(params(await analyze(root, "update logs set level = :level where id = :id")), ["level: VARCHAR?", "id: INTEGER"]);
+  assert.deepEqual(params(await analyze(root, "select id from logs where coalesce(:level, level) = level")), ["level: varchar?"]);
+  assert.deepEqual(params(await analyze(root, "select id from logs where level is not distinct from :level")), ["level: varchar?"]);
+  assert.deepEqual(params(await analyze(root, "insert into logs (id, msg, level) values (:id, :msg, :level)")), ["id: integer", "msg: varchar", "level: varchar?"]);
+  assert.deepEqual(params(await analyze(root, "update logs set level = :level where id = :id")), ["level: varchar?", "id: integer"]);
   const nullable = await analyze(root, "select :v::nullable(varchar) as v");
-  assert.deepEqual([params(nullable), columns(nullable)], [["v: VARCHAR?"], ["v: VARCHAR?"]]);
+  assert.deepEqual([params(nullable), columns(nullable)], [["v: varchar?"], ["v: varchar?"]]);
   // A parameter that takes no NULL is never NULL where it is selected.
-  assert.deepEqual(columns(await analyze(root, "select :v::varchar as v")), ["v: VARCHAR"]);
+  assert.deepEqual(columns(await analyze(root, "select :v::varchar as v")), ["v: varchar"]);
   // DuckDB's own positional placeholders, and its `$name`, which Reylo does not bind.
-  assert.deepEqual(params(await analyze(root, "select id from logs where level = ? and id > ?")), ["1: VARCHAR", "2: INTEGER"]);
+  assert.deepEqual(params(await analyze(root, "select id from logs where level = ? and id > ?")), ["1: varchar", "2: integer"]);
   assert.equal((await analyze(root, "select id from logs where id = $1")).rewritten.sql, "select id from logs where id = $1");
   assert.deepEqual((await analyze(root, "select id from logs where id = $id")).diagnostics.map((d) => d.message), ["DuckDB reads $id as a parameter that Reylo does not bind; write :id"]);
   const gap = "select id from logs where id = $1 or team_id = $3";
@@ -152,6 +161,13 @@ test("DuckDB: each parameter is typed where it stands, and may be NULL where the
   }
   // A rows(…) parameter is Postgres's, SQLite's and MySQL's for now.
   assert.match((await analyze(root, "insert into teams :rows::rows(id integer not null, name varchar not null)")).diagnostics[0]!.message, /DuckDB statements take no rows\(…\) or row\(…\) parameter yet/);
+  // A struct whose fields have no names, as (1, 'a') and row(…) build, is refused where a column
+  // or a parameter holds one, inside a list too: a value's fields are read by their names.
+  const tuples = await analyze(root, "select (id, msg) as pair, [row(id)] as singles, {'id': id} as named from logs where (id, msg) = :p");
+  assert.deepEqual(tuples.diagnostics.map((d) => d.code), [22, 22, 22]);
+  assert.equal(tuples.diagnostics[0]!.message, `Column "pair" holds a struct whose fields have no names, as (1, 'a') and row(…) build, and a value's fields are read by their names: name them, as in {'a': 1, 'b': 'x'} or struct_pack(a := 1, b := 'x')`);
+  assert.equal(tuples.diagnostics[2]!.message, ":p takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in :p::struct(a integer, b varchar)");
+  assert.deepEqual(columns(tuples), ["pair: unknown", "singles: unknown[]", "named: struct(id integer)"]);
 });
 
 test("DuckDB: an error DuckDB raises is placed where its caret points", { skip }, async () => {
@@ -203,7 +219,7 @@ test("DuckDB: a database file another process holds for writing is typed from a 
       child.once("exit", (code) => reject(new Error(`the holder exited with ${code}`)));
     });
     if (process.platform !== "win32") {
-      assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: INTEGER", "note: VARCHAR"]);
+      assert.deepEqual(columns(await analyze(root, "select id, note from later")), ["id: integer", "note: varchar"]);
     } else {
       // On Windows, DuckDB shares no file it writes, so there is no copy to read: the refusal names the holder.
       const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });
@@ -300,7 +316,8 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   // DuckDB's own test_all_types(): each type's extremes, which .run() decodes and a parameter
   // writes back, each column into a table of its own; DuckDB then compares each with the original.
   // An array that holds NULL is not written: an array parameter takes no NULL element.
-  const root = await project("create table t as select row_number() over () as k, * exclude (geometry) from test_all_types()");
+  // A struct whose fields have no names, the `tuple` column, is refused (tested above).
+  const root = await project("create table t as select row_number() over () as k, * exclude (geometry, \"tuple\") from test_all_types()");
   const db0 = await api().DuckDBInstance.create(join(root, "app.duckdb"));
   const c0 = await db0.connect();
   const names = ((await c0.runAndReadAll("select column_name from duckdb_columns() where table_name = 't' and column_name <> 'k' order by column_index")) as { getRowsJson(): string[][] }).getRowsJson().map((r) => r[0]!);
@@ -390,6 +407,26 @@ test("DuckDB: a list binds through a subclass of DuckDBConnection, and through a
     const wrapped = { runAndReadAll: c.runAndReadAll.bind(c), prepare: c.prepare.bind(c), run: c.run.bind(c) };
     const tags = defineQuery({ dialect: "duckdb", sql: "select :tags::varchar[] as tags", params: ["tags"], text: "select $1::varchar[] as tags", order: ["tags"], cardinality: "one" });
     for (const client of [c, wrapped]) assert.deepEqual({ ...((await tags.run(client as never, { tags: ["a", "b"] })) as object) }, { tags: ["a", "b"] });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: a UNION of one member is a union, declared, returned and bound as its tag and value", { skip }, async () => {
+  const root = await project("create table single (id integer primary key, u union(k integer) not null);");
+  const sql = "select u from single where id = :id\n";
+  const declared = (await declarations(root, { "one.sql": sql }))["one.sql"]!;
+  const line = declared.split("\n").find((l) => l.startsWith("declare const query:"))!;
+  assert.match(line, /^declare const query: Query<\{ id: number \}, \{ u: \{ tag: "k"; value: number \| null \} \}, "maybeOne", "duckdb", QueryError> & /, line);
+  const insert = await built(root, "insert", "insert into single values (:id, :u) returning u");
+  const get = await built(root, "get", sql);
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    assert.deepEqual({ ...(await insert.run(c, { id: 1, u: { tag: "k", value: 5 } })) }, { u: { tag: "k", value: 5 } });
+    assert.deepEqual({ ...(await get.run(c, { id: 1 })) }, { u: { tag: "k", value: 5 } });
   } finally {
     c.closeSync();
     db.closeSync();

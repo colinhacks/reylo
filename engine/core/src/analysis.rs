@@ -4,7 +4,7 @@
 use crate::api::{Analysis, Diagnostic, Param};
 use crate::dialect::Dialect;
 use crate::lex::{self, Lexed, Style};
-use crate::types::Type;
+use crate::types::{Cardinality, Type};
 
 /// The statement's placeholders, or the bare analysis that reports why they cannot be read: a
 /// lex error, named and positional parameters mixed, or a parameter used more than once.
@@ -168,7 +168,7 @@ pub fn constant_key(sql: &str, start: usize, end: usize, clause: KeyClause, alon
 
 /// A diagnostic at least one byte long.
 pub fn diag(message: impl Into<String>, start: usize, length: usize, code: u32) -> Diagnostic {
-    Diagnostic { message: message.into(), start, length: length.max(1), code }
+    Diagnostic { message: message.into(), start, length: length.max(1), code, server_code: None }
 }
 
 /// A statement with no placeholders read.
@@ -181,10 +181,11 @@ pub fn none() -> Lexed {
 pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnostic>) -> Analysis {
     let rewritten = lex::rewrite(sql, lexed, dialect.binds());
     Analysis {
-        kind: String::new(),
-        params: lexed.params.iter().map(|n| Param { name: n.clone(), ty: Type::Unknown, type_name: String::new(), nullable: false, schema: None, cast: None, comment: None }).collect(),
+        kind: None,
+        comment: None,
+        params: lexed.params.iter().map(|n| Param::new(n.clone(), Type::unknown())).collect(),
         columns: Vec::new(),
-        cardinality: "many".to_string(),
+        cardinality: Cardinality::Many,
         cardinality_reason: None,
         key: None,
         rewritten,
@@ -195,6 +196,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         fresh: None,
         errors: None,
         tables: None,
+        domains: Default::default(),
     }
 }
 
@@ -244,13 +246,13 @@ mod tests {
     #[test]
     fn two_columns_of_one_name_are_an_error_at_the_later() {
         let mut a = bare_of("select a.x, b.x, a.x from a, b", Dialect::Postgres, Vec::new());
-        a.columns = ["x", "x", "x"].iter().map(|n| Column { name: n.to_string(), ty: Type::Unknown, nullable: true, type_name: String::new(), comment: None }).collect();
+        a.columns = ["x", "x", "x"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
         clashes("  select a.x, b.x, a.x from a, b", &mut a, &|i| (i == 1).then_some((14, 1)));
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(14, 14, 1), (14, 2, 6)]);
         assert_eq!(a.diagnostics[0].message, "Columns 1 and 2 are both named \"x\", and a row keeps only the last of them. Give one of them another name with `as`.");
         assert!(a.diagnostics[1].message.starts_with("Columns 1 and 3 are both named"));
         let mut b = bare_of("select 1 as x, 2 as y", Dialect::Postgres, Vec::new());
-        b.columns = ["x", "y"].iter().map(|n| Column { name: n.to_string(), ty: Type::Unknown, nullable: true, type_name: String::new(), comment: None }).collect();
+        b.columns = ["x", "y"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
         clashes("select 1 as x, 2 as y", &mut b, &|_| None);
         assert!(b.diagnostics.is_empty());
     }

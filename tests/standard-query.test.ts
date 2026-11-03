@@ -25,11 +25,11 @@ const users = defineQuery<{ id: number; tags: number[]; doc: unknown; bytes: Uin
   text: "select id, at, big from users where id = $1 and tags @> $2 and doc @> $3 and bytes = $4 and flag = $5",
   order: ["id", "tags", "doc", "bytes", "flag"],
   inputs: {
-    id: { type: { kind: "scalar", name: "int4" }, nullable: false },
-    tags: { type: { kind: "array", of: { kind: "scalar", name: "int4" } } },
-    doc: { type: { kind: "json" } },
-    bytes: { type: { kind: "scalar", name: "bytea" } },
-    flag: { type: { kind: "scalar", name: "bool" } },
+    id: { type: { kind: "integer", bits: 32, name: "int4" }, nullable: false },
+    tags: { type: { kind: "array", element: { type: { kind: "integer", bits: 32, name: "int4" } }, name: "_int4" } },
+    doc: { type: { kind: "json", name: "jsonb" } },
+    bytes: { type: { kind: "bytes", name: "bytea" } },
+    flag: { type: { kind: "boolean", name: "bool" } },
   },
   columns: [
     ["id", "int"],
@@ -104,7 +104,7 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
     params: ["id", "doc"],
     text: "select id, at, amount, ok from t where id = ? and json_contains(doc, ?)",
     order: ["id", "doc"],
-    inputs: { id: { type: { kind: "scalar", name: "int8" } }, doc: { type: { kind: "json" } } },
+    inputs: { id: { type: { kind: "integer", bits: 64, name: "bigint" } }, doc: { type: { kind: "json", name: "json" } } },
     columns: [
       ["id", "int8"],
       ["at", "timestamp"],
@@ -127,7 +127,7 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
     params: ["ok"],
     text: "select id, ok from t where ok = ?",
     order: ["ok"],
-    inputs: { ok: { type: { kind: "scalar", name: "bool" } } },
+    inputs: { ok: { type: { kind: "integer", bits: 8, name: "tinyint(1)" } } },
     columns: [
       ["id", "int8"],
       ["ok", "bool"],

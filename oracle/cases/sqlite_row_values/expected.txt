@@ -1,12 +1,12 @@
-keyset_page.sql: many (created_at: text, id: integer) -> { id: integer, name: text, created_at: text }
-loose_table.sql: many (at: text, n: integer) -> { id: integer }
-row_between.sql: many (from_at: text, from_id: integer, to_at: text, to_id: integer) -> { id: integer }
-row_case.sql: many (created_at: text, id: integer) -> { id: integer, tag: text }
-row_in_list.sql: many (at1: text, id1: integer, at2: text, id2: integer) -> { id: integer }
-row_in_select.sql: many (created_at: text, id: integer) -> { id: integer }
-row_in_select_reversed.sql: many (created_at: text, id: integer) -> { id: integer }
-row_is_not.sql: many (created_at: text, id: integer) -> { id: integer }
-row_reversed.sql: many (created_at: text, id: integer) -> { id: integer }
-row_subquery.sql: many (created_at: text, id: integer) -> { id: integer, name: text }
-scalar_subquery.sql: many (id: integer) -> { id: integer }
-update_row_subquery.sql: maybeOne (name: text, created_at: text, id: integer) -> { id: integer, name: text }
+keyset_page.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), created_at: TEXT(text(utf8) | bytes) }
+loose_table.sql: many (at: text(utf8), n: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_between.sql: many (from_at: text(utf8), from_id: int64, to_at: text(utf8), to_id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_case.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), tag: text(utf8) }
+row_in_list.sql: many (at1: text(utf8), id1: int64, at2: text(utf8), id2: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_in_select.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_in_select_reversed.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_is_not.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_reversed.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_subquery.sql: many (created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+scalar_subquery.sql: many (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+update_row_subquery.sql: at_most_one (name: text(utf8), created_at: text(utf8), id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }

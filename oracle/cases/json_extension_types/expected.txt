@@ -1,3 +1,3 @@
-contrib.sql: many () -> { j: { c: cube, e: cube?, s: seg?, i: isbn?, q: query_int? }, row: { id: int8, c: cube, e: cube?, s: seg?, i: isbn?, q: query_int? } }
-oid_lists.sql: one () -> { os: [oid]?, ls: [oid]? }
-oids.sql: many () -> { j: { l: oid, o: oid }, row: { id: int8, l: oid, o: oid } }
+contrib.sql: many () -> { j: json { c: public.cube, e: public.cube?, s: public.seg?, i: public.isbn?, q: public.query_int? }, row: jsonb { id: int8, c: public.cube, e: public.cube?, s: public.seg?, i: public.isbn?, q: public.query_int? } }
+oid_lists.sql: one () -> { os: json oid[]?, ls: jsonb oid[]? }
+oids.sql: many () -> { j: json { l: oid, o: oid }, row: jsonb { id: int8, l: oid, o: oid } }

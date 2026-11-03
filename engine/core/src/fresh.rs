@@ -132,7 +132,7 @@ pub fn facts<D: Describe>(analysis: &Analysis, dialect: Dialect, tables: Option<
         return Some(None);
     }
     let names: Vec<String> = tables.iter().map(|t| if dialect == Dialect::Postgres { quoted(t) } else { t.rsplit('.').next().unwrap_or(t).to_string() }).collect();
-    let inserts: Vec<String> = if analysis.kind == "insert" { parsed.write.iter().map(|t| names[tables.iter().position(|x| x == t).unwrap_or(0)].clone()).collect() } else { Vec::new() };
+    let inserts: Vec<String> = if analysis.kind == Some(crate::types::StatementKind::Insert) { parsed.write.iter().map(|t| names[tables.iter().position(|x| x == t).unwrap_or(0)].clone()).collect() } else { Vec::new() };
     if dialect == Dialect::Mysql && names.iter().any(|n| n.contains('\\')) {
         return Some(None);
     }

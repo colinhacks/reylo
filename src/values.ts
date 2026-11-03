@@ -23,7 +23,7 @@
 //
 // This module runs in every generated module's process, so it names no Node type: a Buffer is
 // reached through `globalThis` where one exists.
-import type { EngineType } from "./engine-type.ts";
+import { bareName, type EngineType } from "./engine-type.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
@@ -55,9 +55,9 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
 };
 
 /**
- * The kind of a Postgres or MySQL base type, by the engine's name for it (MySQL's are the Postgres
- * names: a DATETIME is `timestamp`, a BIT `bytea`, a YEAR `int2`). Every type not named here is
- * its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
+ * The kind of a Postgres base type by its catalog name, for a value whose type a driver names
+ * (src/decode.ts; a value the engine typed takes its kind from its descriptor, `columnKind`). Every
+ * type not named here is its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
  * `uuid`, `money`, `point`, `xml`, a row value). pgvector's `vector` and `halfvec`, and an
  * `hstore`, are extensions' types, named by their names as every created type is.
  */
@@ -83,97 +83,126 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
 };
 
 /**
- * SQLite's: the engine names a column by its affinity, and a column declared BIGINT, INT8 or
- * UNSIGNED BIG INT `int8`, since the declared width decides on every database.
- * An INTEGER is a number, exact or an error; an `int8` a BigInt on every SQLite
- * driver (src/decode-sqlite.ts reads either); a NUMERIC holds whichever storage class the row
- * stored; `bool` is a truth value or a column declared BOOLEAN; a column with no declared type,
- * or ANY in a STRICT table, is whatever the driver gives.
+ * The kind of a Postgres type by its catalog name, which the run time decodes an array's elements
+ * by where a driver names their type (src/decode.ts): every type not named above is its text.
  */
-const SQLITE_KINDS: Readonly<Record<string, Kind>> = {
-  integer: "int",
-  int8: "int8",
-  real: "float",
-  text: "text",
-  blob: "bytes",
-  numeric: "int|float|text",
-  bool: "bool",
-};
+export function scalarKind(name: string): Kind {
+  return SQL_KINDS[name] ?? "text";
+}
+
+/** Whether a SQLite declared type names a 64-bit integer: `BIGINT`, `INT8` or `UNSIGNED BIG INT`, a size after it ignored (engine/sqlite `is_int8_declared`). */
+export function sqliteWide(declared: string): boolean {
+  const base = declared.split("(")[0]!.trim().toLowerCase().split(/\s+/).join(" ");
+  return base === "bigint" || base === "int8" || base === "unsigned big int";
+}
+
+/** SQLite's affinity of a declared type, by its five rules (engine/sqlite `affinity`). */
+export function sqliteAffinity(declared: string): "integer" | "text" | "blob" | "real" | "numeric" {
+  const d = declared.toUpperCase();
+  if (d.includes("INT")) return "integer";
+  if (d.includes("CHAR") || d.includes("CLOB") || d.includes("TEXT")) return "text";
+  if (d.includes("BLOB") || d === "") return "blob";
+  if (d.includes("REAL") || d.includes("FLOA") || d.includes("DOUB")) return "real";
+  return "numeric";
+}
 
 /**
- * DuckDB's, by its own lowercased name: its narrow integers are numbers, its 64-bit and wider ones
- * (BIGINT, UBIGINT, HUGEINT, UHUGEINT, BIGNUM) BigInts, a DECIMAL its exact text, every TIMESTAMP
- * but TIMESTAMPTZ a wall-clock text, and a UUID, a TIME, a BIT and anything not named here its
- * text.
+ * The kind of a SQLite value the engine traced to a column's declared type, by that type's name:
+ * a BOOLEAN's a truth value, an integer's a number or, declared 64 bits wide, a BigInt, and a
+ * NUMERIC's whichever storage class the row stored. A client reads SQLite's declared type, which
+ * the store does not enforce, and refuses a value it does not admit (src/decode-sqlite.ts).
  */
-const DUCKDB_KINDS: Readonly<Record<string, ScalarKind>> = {
-  boolean: "bool",
-  tinyint: "int",
-  smallint: "int",
-  integer: "int",
-  utinyint: "int",
-  usmallint: "int",
-  uinteger: "int",
-  bigint: "int8",
-  ubigint: "int8",
-  hugeint: "int8",
-  uhugeint: "int8",
-  bignum: "int8",
-  float: "float",
-  double: "float",
-  decimal: "decimal",
-  blob: "bytes",
-  date: "date",
-  timestamp: "timestamp",
-  timestamp_s: "timestamp",
-  timestamp_ms: "timestamp",
-  timestamp_ns: "timestamp",
-  timestamptz: "timestamptz",
-  timestamptz_ns: "timestamptz",
-  interval: "interval",
-};
+function sqliteDeclaredKind(declared: string): Kind {
+  const d = declared.trim();
+  if (/^bool(ean)?$/i.test(d)) return "bool";
+  switch (sqliteAffinity(d)) {
+    case "integer": return sqliteWide(d) ? "int8" : "int";
+    case "real": return "float";
+    case "text": return "text";
+    case "blob": return "bytes";
+    case "numeric": return "int|float|text";
+  }
+}
 
-/**
- * The kind of a base type by its engine name, `a|b` naming either. An integer that may be a BIGINT
- * or a narrower integer (a MySQL expression a temporary table may widen, `int8|int4`) is a BIGINT's,
- * a BigInt either way, where no float shares the column: there a number may be either.
- */
-export function scalarKind(name: string, dialect: Dialect): Kind {
-  const kinds = [...new Set(name.split("|").flatMap((part) => (dialect === "sqlite" ? (SQLITE_KINDS[part] ?? "unknown") : dialect === "duckdb" ? (DUCKDB_KINDS[part] ?? "text") : (SQL_KINDS[part] ?? "text")).split("|")))];
-  const wide = kinds.includes("int8") && !kinds.includes("float") ? kinds.filter((k) => k !== "int") : kinds;
+/** Postgres's built-in geometric types the format structures as records, which no driver parses either: each is its text. */
+const GEOMETRIC = new Set(["point", "line", "box", "path", "circle"]);
+
+/** Kinds that may each be the value's, one `a|b` kind: a BigInt absorbs a narrower integer, a BigInt either way, where no float shares the column. */
+function either(kinds: Kind[]): Kind {
+  const parts = [...new Set(kinds.flatMap((k) => k.split("|")))];
+  const wide = parts.includes("int8") && !parts.includes("float") ? parts.filter((k) => k !== "int") : parts;
   return wide.join("|");
 }
 
-/** The delimiter of an array's text, where the element type's is not a comma: a column carries it beside its kind. */
-export function arrayDelimiter(t: EngineType): string | undefined {
-  return t.kind === "array" ? t.delimiter : undefined;
-}
-
-/** The kind of a value of the engine's type `t`, standing in a result row (not inside a JSON document). */
+/**
+ * The kind of a value of the engine's type `t`, standing in a result row (not inside a JSON
+ * document): its one representation (the table above). An integer is a number up to 32 bits and a
+ * BigInt past them, a time of day, an enum's label, a range and every type the run time does not
+ * convert the server's text, and a structured type a driver hands over as text (a Postgres row
+ * value, a bit string, an `inet`) that text. A name decides where the type is a client's
+ * convention: MySQL's `tinyint(1)` and a SQLite column declared BOOLEAN are truth values, a SQLite
+ * column declared BIGINT a BigInt, and pgvector's vectors and an hstore their own kinds.
+ */
 export function columnKind(t: EngineType, dialect: Dialect): Kind {
+  const name = bareName(t);
   switch (t.kind) {
-    case "scalar":
-      return scalarKind(t.name, dialect);
-    case "enum":
-      return "text";
-    case "array":
-      // A row value's array is the text Postgres prints, as a row value is.
-      if ((t.of.kind === "scalar" && t.of.name === "record") || t.of.kind === "composite") return "text";
-      return `${columnKind(t.of, dialect)}[]`;
-    case "object":
-    case "list":
+    case "boolean":
+      return "bool";
+    case "integer":
+      if (dialect === "sqlite") return sqliteWide(name) ? "int8" : "int";
+      if (dialect === "mysql" && name === "tinyint(1)") return "bool";
+      return t.bits > 32 ? "int8" : "int";
+    case "float":
+      return "float";
+    case "decimal":
+      // DuckDB's BIGNUM, an integer of no fixed width, is a BigInt.
+      return dialect === "duckdb" && name === "bignum" ? "int8" : "decimal";
+    case "bytes":
+      return dialect === "postgres" && (name === "macaddr" || name === "macaddr8") ? "text" : "bytes";
+    case "array": {
+      if (dialect === "postgres") {
+        if (name === "vector" || name === "halfvec") return "vector";
+        if (name === "bit" || name === "varbit" || name === "sparsevec" || name === "lseg" || name === "polygon") return "text";
+        // A row value's array is the text Postgres prints, as a row value is; a built-in geometric
+        // type's elements are each their text.
+        const element = t.element.type;
+        if ((element.kind === "record" && !GEOMETRIC.has(bareName(element))) || (element.kind === "opaque" && bareName(element) === "record")) return "text";
+      }
+      if (dialect === "mysql" && name === "bit") return t.size?.exact === 1 ? "bool" : "bytes";
+      if (dialect === "duckdb" && name === "bit") return "text";
+      return `${columnKind(t.element.type, dialect)}[]`;
+    }
     case "json":
-    case "rows":
       return "json";
-    case "composite":
-      return "text";
-    // Decoded by the result's own types (src/decode-duckdb.ts).
-    case "struct":
+    case "date":
+      return "date";
+    case "datetime":
+      return "timestamp";
+    case "instant":
+      // A MySQL TIMESTAMP reaches the client as the session's wall-clock time.
+      return dialect === "mysql" ? "timestamp" : "timestamptz";
+    case "duration":
+      // MySQL's TIME is its text.
+      return dialect === "mysql" ? "text" : "interval";
     case "map":
+      return dialect === "postgres" && name === "hstore" ? "hstore" : "unknown";
     case "union":
-    case "tuple":
+      if (dialect === "sqlite") return "name" in t && t.name !== undefined ? sqliteDeclaredKind(t.name) : "unknown";
+      if (dialect === "postgres" && (name === "inet" || name === "cidr")) return "text";
+      if (dialect === "duckdb") return "unknown";
+      return either(t.members.map((m) => columnKind(m, dialect)));
+    case "record":
+      // A Postgres row value is the text the server prints; a DuckDB struct is decoded by the
+      // result's own types (src/decode-duckdb.ts).
+      return dialect === "postgres" ? "text" : "unknown";
+    case "geometry":
+    case "opaque":
+      return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
+    case "any":
       return "unknown";
+    default:
+      return "text";
   }
 }
 
