@@ -55,7 +55,8 @@ type RowsRow = {
   pair_typed: string;
   // Right: to_jsonb(t) gets the whole row's shape, with the JSON twin of every scalar
   // (numeric and int8 as numbers, bytea as text, timestamptz as text). A numeric's NaN and
-  // infinities have no JSON number, so to_jsonb writes them as strings.
+  // infinities have no JSON number, so to_jsonb writes them as strings, which the run time gives
+  // as the numbers they are.
   whole_json: {
     id: number;
     uid: string;
@@ -65,7 +66,7 @@ type RowsRow = {
     role: "admin" | "member";
     tags: (string | null)[];
     meta: Json;
-    score: number | "-Infinity" | "Infinity" | "NaN" | null;
+    score: number | null;
     big: number;
     blob: string | null;
     created_at: string;
