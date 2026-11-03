@@ -191,6 +191,9 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       if (dialect === "postgres" && (name === "inet" || name === "cidr")) return "text";
       if (dialect === "duckdb") return "unknown";
       return either(t.members.map((m) => columnKind(m, dialect)));
+    case "tagged_union":
+      // A DuckDB union is decoded by the result's own types (src/decode-duckdb.ts).
+      return "unknown";
     case "record":
       // A Postgres row value is the text the server prints; a DuckDB struct is decoded by the
       // result's own types (src/decode-duckdb.ts).

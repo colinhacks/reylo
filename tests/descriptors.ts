@@ -68,7 +68,7 @@ export function my(name: string, length?: number): EngineType {
 /** A SQLite value by the analysis's affinity name for it, as the engine hands it on (engine/sqlite `descriptor`): a computed storage class, a column declared BIGINT's or BOOLEAN's under that name, a NUMERIC's union under its own. */
 export function lite(name: string): EngineType {
   const text: EngineType = { kind: "text", ill_formed: "utf8" };
-  const stored = (n: string): EngineType => ({ kind: "union", per: "value", name: n, members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, text, { kind: "bytes" }] });
+  const stored = (n: string): EngineType => ({ kind: "union", name: n, members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, text, { kind: "bytes" }] });
   switch (name) {
     case "integer": return { kind: "integer", bits: 64 };
     case "int8": return { kind: "integer", bits: 64, name: "BIGINT" };
@@ -98,6 +98,6 @@ export const doc = (content: EngineType, nullable = false): EngineType => ({ kin
 /** JSON every value of which the engine's canonical JSON Schema `source` admits, carrying its draft as the engine writes it. */
 export const checked = (source: unknown): EngineType => ({ kind: "json", schema: { ...(source === false ? { not: {} } : typeof source === "object" && source !== null ? source : {}), $schema: "https://json-schema.org/draft/2020-12/schema" } });
 
-/** One of several types the execution chooses among (`per: "execution"`), or each value one of (`per: "value"`). */
+/** One of several types the execution chooses among (`per: "execution"`), or each value one of. */
 export const either = (...members: EngineType[]): EngineType => ({ kind: "union", per: "execution", members });
-export const oneOf = (...members: EngineType[]): EngineType => ({ kind: "union", per: "value", members });
+export const oneOf = (...members: EngineType[]): EngineType => ({ kind: "union", members });

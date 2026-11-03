@@ -206,10 +206,9 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       // A DuckDB map as its entries, each a key and its value, in order.
       if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value.type, dialect, input)))) };
       break;
-    case "union":
-      // A DuckDB union as its tag and its value.
-      if (dialect === "duckdb") return { anyOf: t.members.flatMap((m) => (m.kind === "record" && m.fields.length === 1 ? [object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: m.fields[0]!.name } : nullable(typeSchema(m.fields[0]!.type, dialect, input))))] : [])) };
-      break;
+    case "tagged_union":
+      // A tagged union as its tag and its value.
+      return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input))))) };
     case "unknown":
       return {};
   }

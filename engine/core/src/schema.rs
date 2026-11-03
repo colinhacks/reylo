@@ -167,11 +167,10 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
-            // A DuckDB union as its tag and its value: each member a record of the one field its
-            // tag names.
-            Kind::Union(u) if !u.members.is_empty() && u.members.iter().all(|m| matches!(&m.kind, Kind::Record(r) if r.fields.len() == 1)) => json!({"anyOf": u.members.iter().filter_map(|m| match &m.kind {
-                Kind::Record(r) => r.fields.first().map(|f| json!({"type": "object", "properties": {"tag": {"const": f.name}, "value": nullable(f.ty.json_schema(opts))}, "required": ["tag", "value"]})),
-                _ => None,
+            // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
+            Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
+                let value = a.ty.json_schema(opts);
+                json!({"type": "object", "properties": {"tag": {"const": a.tag}, "value": if a.nullable { nullable(value) } else { value }}, "required": ["tag", "value"]})
             }).collect::<Vec<_>>()}),
             Kind::Union(_) if matches!(bare_name(self), "inet" | "cidr") => text_of(self),
             // One of several types, the execution's or each value's.

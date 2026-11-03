@@ -123,7 +123,7 @@ test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the
   // A column read as it is holds what its affinity stores, under the name its table declares.
   assert.equal(renderType({ ...lite("numeric"), name: "DECIMAL(10,2)" } as EngineType, false, "sqlite"), "number | string");
   assert.equal(renderType({ ...lite("numeric"), name: "bigint(20)" } as EngineType, false, "sqlite"), "bigint");
-  assert.equal(renderType({ kind: "union", per: "value", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
+  assert.equal(renderType({ kind: "union", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
   // The driver binds a number for an INTEGER, and the run time a truth value as 1 or 0.
   assert.equal(renderParamType(lite("integer"), "sqlite"), "number");
   assert.equal(renderParamType(lite("numeric"), "sqlite"), "number | string | boolean");

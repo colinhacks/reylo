@@ -65,6 +65,9 @@ pub enum Kind {
     Any,
     /// Nothing is known about the values.
     Unknown,
+    /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
+    /// Appended, as a new kind is, so the order of the kinds never changes.
+    TaggedUnion(TaggedUnionType),
 }
 
 /// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
@@ -343,19 +346,51 @@ pub struct TimePart {
     pub max: Option<String>,
 }
 
-/// One of several types, each value one of them (`per: "value"`) or every value of one execution
-/// the same one (`per: "execution"`). Flat, its members in kind order ([`Type::union`]).
+/// One of several types, each value one of them, or with `per: "execution"` every value of one
+/// execution the same one. Flat, its members in kind order ([`Type::union`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnionType {
     pub members: Vec<Type>,
+    /// Written only for `execution`: a union is per value unless it says so.
+    #[serde(default, skip_serializing_if = "Per::is_value")]
     pub per: Per,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Per {
+    #[default]
     Value,
     Execution,
+}
+
+impl Per {
+    fn is_value(&self) -> bool {
+        *self == Per::Value
+    }
+}
+
+/// One of several alternatives, each named by the tag every value carries, in the order the type
+/// declares them: two may hold one type, and a value says which it is, even holding NULL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaggedUnionType {
+    pub alternatives: Vec<Alternative>,
+}
+
+/// An alternative of a tagged union: its tag, unique in the type, and the value it holds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Alternative {
+    pub tag: String,
+    #[serde(rename = "type")]
+    pub ty: Type,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub nullable: bool,
+}
+
+impl Alternative {
+    pub fn position(&self) -> Position {
+        Position { ty: self.ty.clone(), nullable: self.nullable }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -656,6 +691,7 @@ impl Kind {
             Kind::Opaque => 22,
             Kind::Any => 23,
             Kind::Unknown => 24,
+            Kind::TaggedUnion(_) => 25,
         }
     }
 
@@ -687,6 +723,7 @@ impl Kind {
             Kind::Opaque => "opaque",
             Kind::Any => "any",
             Kind::Unknown => "unknown",
+            Kind::TaggedUnion(_) => "tagged_union",
         }
     }
 }
@@ -844,6 +881,11 @@ impl Type {
         Kind::Union(UnionType { members: flat, per }).into()
     }
 
+    /// A tagged union of `alternatives`, in the order the type declares them.
+    pub fn tagged_union(alternatives: Vec<Alternative>) -> Type {
+        Kind::TaggedUnion(TaggedUnionType { alternatives }).into()
+    }
+
     /// Every name the type and the types inside it carry, each once, outermost first.
     pub fn names(&self) -> Vec<String> {
         let mut out = Vec::new();
@@ -863,6 +905,7 @@ impl Type {
             Kind::Record(r) => r.fields.iter().for_each(|f| f.ty.collect_names(out)),
             Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
             Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
+            Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
             Kind::Map(m) => {
                 m.key.collect_names(out);
                 m.value.ty.collect_names(out);
@@ -885,6 +928,7 @@ impl Type {
             Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), ..r }),
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect(), ..u }),
+            Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
             Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
             Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
             Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
@@ -985,6 +1029,10 @@ impl Type {
                     Some(name) => format!("{name}({inner})"),
                     None => inner,
                 }
+            }
+            Kind::TaggedUnion(t) => {
+                let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
+                format!("{}<{}>", self.name.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
             }
             Kind::Set(set) => format!("{}{{{}}}", label(), position_short(&set.element)),
             Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
@@ -1108,6 +1156,15 @@ impl Type {
                     m.check_at(&format!("{at}|{i}"))?;
                 }
             }
+            Kind::TaggedUnion(t) => {
+                let mut tags = std::collections::HashSet::new();
+                for a in &t.alternatives {
+                    if !tags.insert(a.tag.as_str()) {
+                        return fail(format!("tag {:?} names two alternatives", a.tag));
+                    }
+                    a.ty.check_at(&format!("{at}<{}>", a.tag))?;
+                }
+            }
             Kind::Map(m) => {
                 m.key.check_at(&format!("{at}<key>"))?;
                 position(&m.value, "<value>")?;
@@ -1201,6 +1258,9 @@ mod tests {
     fn every_kind_reads_and_writes_as_the_spec_spells_it() {
         round_trip(json!({"kind": "integer", "bits": 64, "name": "int8"}));
         round_trip(json!({"kind": "integer", "bits": 8, "unsigned": true, "max": "32"}));
+        let tagged = round_trip(json!({"kind": "tagged_union", "name": "union", "alternatives": [{"tag": "num", "nullable": true, "type": {"kind": "integer", "bits": 32}}, {"tag": "str", "type": {"kind": "text"}}]}));
+        assert_eq!(tagged.short(), "union<num: int32? | str: text>");
+        assert!(serde_json::from_value::<Type>(json!({"kind": "tagged_union", "alternatives": [{"tag": "a", "type": {"kind": "text"}}, {"tag": "a", "type": {"kind": "text"}}]})).unwrap().check().is_err());
         round_trip(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "name": "float8"}));
         round_trip(json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "name": "numeric"}));
         round_trip(json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "name": "text"}));
@@ -1237,9 +1297,12 @@ mod tests {
         let text = Type::text();
         let nested = Type::union(vec![Type::bytes(), text.clone()], Per::Value);
         let u = Type::union(vec![nested, Type::integer(64), text.clone()], Per::Value);
-        assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "per": "value", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
+        assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
         assert_eq!(Type::union(vec![text.clone(), text.clone()], Per::Value), text);
         // A union of another `per` stays a member.
+        // A union is per value unless it says otherwise, and writes `per` only for an execution.
+        assert_eq!(serde_json::to_value(Type::union(vec![Type::integer(64), Type::text()], Per::Value)).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}]}));
+        assert_eq!(serde_json::from_value::<Type>(json!({"kind": "union", "per": "value", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}]})).unwrap(), Type::union(vec![Type::integer(64), Type::text()], Per::Value));
         let per_execution = Type::union(vec![Type::integer(64), Type::double()], Per::Execution);
         assert_eq!(Type::union(vec![per_execution.clone(), Type::text()], Per::Value).members().len(), 2);
     }

@@ -4,7 +4,7 @@
 // type from a module's `inputs`.
 import type { Type } from "../spec/type-descriptor.ts";
 
-export type { ArrayType, Field, JsonType, Position, RecordType, Type, UnionType } from "../spec/type-descriptor.ts";
+export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, Type, UnionType } from "../spec/type-descriptor.ts";
 
 /** A parameter's or a column's type as the engine writes it. */
 export type EngineType = Type;
@@ -58,6 +58,7 @@ export function withBases(t: Type, domains: Readonly<Record<string, string>> | u
     case "record": return { ...named, fields: named.fields.map((f) => ({ ...f, type: withBases(f.type, domains) })) };
     case "json": return named.content === undefined ? named : { ...named, content: { ...named.content, type: withBases(named.content.type, domains) } };
     case "union": return { ...named, members: named.members.map((m) => withBases(m, domains)) };
+    case "tagged_union": return { ...named, alternatives: named.alternatives.map((a) => ({ ...a, type: withBases(a.type, domains) })) };
     case "map": return { ...named, key: withBases(named.key, domains), value: { ...named.value, type: withBases(named.value.type, domains) } };
     case "range": case "multirange": return { ...named, subtype: withBases(named.subtype, domains) as typeof named.subtype };
     default: return named;
