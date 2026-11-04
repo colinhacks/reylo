@@ -23,6 +23,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
      - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
      - `months`, `days` and `time` on a duration, each a part its values may carry;
      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
+
    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
 
 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums.
