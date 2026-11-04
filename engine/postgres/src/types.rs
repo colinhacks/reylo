@@ -19,6 +19,10 @@ pub struct DescribedColumn {
     /// column and a function's array result among them ([`Type::Array`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nullable_items: Option<bool>,
+    /// For an array column the statement builds of arrays (`array_agg(tags)`), the dimensions it
+    /// adds over the type the describe reports ([`crate::infer::Nesting`]); `None` for every other.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nested: Option<crate::infer::Nesting>,
     /// For a bare read of a string column a CHECK keeps to a list (`status IN ('active',
     /// 'banned')`), those strings: its values are a union of literals, as an enum's labels are.
     #[serde(default, skip_serializing_if = "Option::is_none")]

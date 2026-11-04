@@ -454,11 +454,11 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 
 **Several dimensions**
 
-Postgres doesn't track an array's dimensions, so a two-dimensional `int[]` is still typed `(number | null)[]`, though it comes back as nested arrays.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
 
 <Pairs>
 
-- `'{{1,2},{3,4}}'::int[]` → `[ [ 1, 2 ], [ 3, 4 ] ]`
+- `array[array[1, 2], array[3, 4]]` → `[ [ 1, 2 ], [ 3, 4 ] ]`
 
 </Pairs>
 
@@ -1112,7 +1112,8 @@ What Reylo can't type on Postgres, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
-| An array's dimensions, and whether its elements are `null` | Keep arrays one-dimensional, and remove `null` elements before passing an array back in |
+| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more | Select `to_jsonb(column)` to read such a column as JSON |
+| Whether an array's elements are `null` | Remove `null` elements before passing an array back in |
 | A row value outside JSON, which comes back as text | Select its fields as columns, or build an object with `to_jsonb` |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |

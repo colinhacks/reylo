@@ -657,3 +657,10 @@ test("a row converts each name's last column by that column's own mask, by posit
   assert.deepEqual(rowMasks(columns, [n, null, null, n, null, n, null]), [["y", n], ["__proto__", n]]);
   assert.deepEqual(rowMasks(columns, []), []);
 });
+
+test("an array of arrays decodes its innermost elements by their kind, from text or a driver's arrays", () => {
+  // The kind of array_agg over an int8[] column: two levels, whose text nests them itself.
+  assert.deepEqual(textDecoder("int8[][]")("{{1,2},{3,NULL}}"), [[1n, 2n], [3n, null]]);
+  assert.deepEqual(coerce("int8[][]", "{{1,2}}", "c"), [[1n, 2n]]);
+  assert.deepEqual(coerce("int8[][]", [["1", "2"], ["3", null]], "c"), [[1n, 2n], [3n, null]]);
+});

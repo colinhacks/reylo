@@ -850,8 +850,10 @@ impl<'a> Engine<'a> {
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
                 _ => {
-                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render_typmod(col.type_oid, col.typmod) };
-                    (col.non_finite.apply(with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
+                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
+                    // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
+                    let items = if col.nested.is_some() { None } else { col.nullable_items };
+                    (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
@@ -1871,7 +1873,7 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, values: None, document, non_finite: Default::default(), whole_row }
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, nested: None, values: None, document, non_finite: Default::default(), whole_row }
             })
             .collect();
         let columns = columns
@@ -2152,7 +2154,7 @@ impl<'a> Engine<'a> {
         let plan = infer::plan(sql, Dialect::Postgres, trust, &columns);
         // Per column: whether it is non-null, and what the statement says of an array's elements.
         let mut reads: Vec<Option<infer::JsonRead>> = Vec::new();
-        let facts: Vec<Option<(bool, Option<bool>)>> = match &plan.set_op {
+        let facts: Vec<Option<(bool, Option<bool>, Option<infer::Nesting>)>> = match &plan.set_op {
             Some(set) => {
                 let left = self.probe(&set.left, trust);
                 let right = self.probe(&set.right, trust);
@@ -2173,7 +2175,13 @@ impl<'a> Engine<'a> {
                     },
                     infer::SetKind::Except => l.nullable_items,
                 });
-                facts.into_iter().zip(items).map(|(f, items)| Some((f.non_null, items))).collect()
+                // An arm's nesting holds where both arms' agree, and an EXCEPT's is its left arm's.
+                let nested = left.columns.iter().zip(&right.columns).map(|(l, r)| match set.kind {
+                    infer::SetKind::Except => l.nested,
+                    _ if l.nested == r.nested => l.nested,
+                    _ => None,
+                });
+                facts.into_iter().zip(items).zip(nested).map(|((f, items), nested)| Some((f.non_null, items, nested))).collect()
             }
             None => {
                 let claims = plan.claims(described.columns.len());
@@ -2194,19 +2202,22 @@ impl<'a> Engine<'a> {
                 // A type the registry has not read may be an array, whose elements say nothing.
                 let registry = self.registry.borrow();
                 let is_array = |o: u32| registry.get(o).is_none_or(|t| t.kind == crate::pgtypes::TypeKind::Array);
+                // Elements nest only where their type is read: one not read says nothing.
+                let surely_array = |o: u32| registry.get(o).map(|t| t.kind == crate::pgtypes::TypeKind::Array);
                 reads = claims.iter().map(|claim| claim.and_then(|e| infer::json_read(e, leaves.as_deref()))).collect();
-                claims.iter().map(|claim| claim.map(|e| (infer::resolve(e, leaves.as_deref()).non_null, infer::items_nullable(e, leaves.as_deref(), &is_array)))).collect()
+                claims.iter().map(|claim| claim.map(|e| (infer::resolve(e, leaves.as_deref()).non_null, infer::items_nullable(e, leaves.as_deref(), &is_array), infer::nesting(e, leaves.as_deref(), &surely_array)))).collect()
             }
         };
         if facts.len() != described.columns.len() {
             return Some(());
         }
         for (col, fact) in described.columns.iter_mut().zip(facts) {
-            if let Some((non_null, items)) = fact {
+            if let Some((non_null, items, nested)) = fact {
                 if non_null {
                     col.nullable = false;
                 }
                 col.nullable_items = items;
+                col.nested = nested;
             }
         }
         // A read of a JSON column at literal keys holds what the column's schema says is there:
@@ -3157,6 +3168,31 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
     let mut kept_out = |value| eval(check, value, &column_type, &mut compared) == Some(false);
     let out = NonFinite { nan: kept_out(Value::NaN), infinity: kept_out(Value::Infinity), minus_infinity: kept_out(Value::MinusInfinity) };
     compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
+}
+
+/// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
+/// result's name: its levels of rows over the innermost arrays, each of which collects arrays of
+/// the element type, of any depth as a column's array is, or else holds the result's elements, as
+/// `nullable_items` says ([`with_items`]), and no arrays. Each level is non-null, and of the depth
+/// it shows. The column's type modifier is its elements', which the arrays it collects share,
+/// since Postgres reports one only where every element has it.
+pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
+    let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
+    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
+    match (col.nested, kind) {
+        (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
+            let mut inner = match element {
+                Some(oid) => named(TyKind::Array(level(registry.render_typmod(oid, col.typmod)))),
+                None => with_items(named(TyKind::Array(crate::types::ArrayType { any_depth: false, ..array })), col.nullable_items),
+            };
+            for _ in 0..rows {
+                inner = named(TyKind::Array(level(inner)));
+            }
+            inner
+        }
+        (_, kind) => named(kind),
+    }
 }
 
 /// `ty` with what the statement says of its elements, when it is an array.
