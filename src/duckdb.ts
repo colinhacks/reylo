@@ -123,7 +123,7 @@ async function describe(api: NodeApi, c: DbConnection, sql: string): Promise<Duc
   }
 }
 
-/** A database DuckDB cannot open (no such file, one it cannot read) is one that cannot be reached: a build runs on `.reylo/`. */
+/** A database DuckDB cannot open (no such file, one it cannot read) is one that cannot be reached: a build runs on `reylo/.cache/`. */
 function opened(e: unknown): never {
   throw new Unreachable(e instanceof Error ? e : new Error(String(e)));
 }

@@ -44,7 +44,7 @@ export default function reylo() {
     // 5.0.5), keyed by its file's text, and in watch mode keeps its key until that file changes. A
     // `.sql` module changes with the analysis (a migration), the project file and `.env` as well,
     // and a key generator is synchronous where the module may wait on the database, so Vitest
-    // keeps none: `load` makes each one again, from `.reylo/` while the schema is unchanged.
+    // keeps none: `load` makes each one again, from `reylo/.cache/` while the schema is unchanged.
     configureVitest(context: VitestContext) {
       const key = ({ id }: { id: string }) => (id.endsWith(".sql") ? false : undefined);
       // Vitest 4 has only the experimental name, which Vitest 5 keeps as a deprecated one.

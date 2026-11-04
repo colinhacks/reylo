@@ -1,6 +1,6 @@
 // The content mapper, in reylo's build-time half (src/tooling.ts), which src/mapper.ts starts:
 // the type check's view of a `.sql` file. The analysis itself (the
-// database, the engine, the `.reylo/` cache shared with the bundler plugins)
+// database, the engine, the cache in `reylo/.cache/`, shared with the bundler plugins)
 // is `src/analyze.ts`; this file renders it as types and places its diagnostics in the file.
 import { createHash } from "node:crypto";
 import { dirname, relative, sep } from "node:path";

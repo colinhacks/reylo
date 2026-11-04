@@ -64,10 +64,10 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   assert.notEqual(reylo(root, ["migrate", "sideways"]).status, 0);
 });
 
-test("reylo generate is gone, and says what fills .reylo/ instead", () => {
+test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
   const gone = reylo(project(), ["generate"]);
   assert.equal(gone.status, 2);
-  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill .reylo/ where the database can be reached, and reylo analyze prints each statement's types.\n");
+  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.\n");
 });
 
 test("reylo play is the playground's server, in JavaScript", () => {

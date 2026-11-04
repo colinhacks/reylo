@@ -1,5 +1,5 @@
 // One analysis path for every consumer of a `.sql` file — the type check, the bundler plugins and
-// the runtime hook — and one cache they share: `.reylo/` beside the project
+// the runtime hook — and one cache they share: `reylo/.cache/` in the project
 // file, one entry per statement. The cache is only for speed. An entry records the schema it was
 // analyzed against; while the database answers, an entry for another schema is analyzed again,
 // and while it does not, or no URL names it, the entries are used as they are, so a build that
@@ -13,13 +13,13 @@ import { duckdbDatabase } from "./duckdb.ts";
 import { NotMysql, refusedLogin } from "./connection.ts";
 import { openProjectDrivers, placeRefusal, type SqliteDriver } from "./sqlite-drivers.ts";
 
-/** What `.reylo/` holds for one statement. */
+/** What `reylo/.cache/` holds for one statement. */
 export type Entry = {
   version: 1;
   dialect: ResolvedProject["dialect"];
   schema: string;
   analysis: Analysis;
-  /** When it was written, in milliseconds since 1970: a copy of `.reylo/` keeps it where it may not keep the file's time. */
+  /** When it was written, in milliseconds since 1970: a copy of `reylo/.cache/` keeps it where it may not keep the file's time. */
   at: number;
 };
 
@@ -62,7 +62,7 @@ async function openProject(dir: string, env: Record<string, string | undefined>)
 export class Session {
   /** The project as resolved when the session opened, or again once a failed `direct_url` command succeeds (`#reread`). */
   project!: ResolvedProject;
-  /** The project's directory, which holds `.reylo/`. */
+  /** The project's directory. */
   readonly root: string;
   /** The engine of the project's database, or why there is none, which an analysis reports. */
   #engine!: Engine | MissingEngine;
@@ -144,7 +144,7 @@ export class Session {
    * statement where it has none of its own (`#offlineEntry`).
    */
   entryFile(sql: string): string {
-    return join(this.root, ".reylo", "queries", `${this.#statementKey(sql)}-${sha256(this.#server()).slice(0, 16)}.json`);
+    return join(this.project.cache, "queries", `${this.#statementKey(sql)}-${sha256(this.#server()).slice(0, 16)}.json`);
   }
 
   #statementKey(sql: string): string {
@@ -156,7 +156,7 @@ export class Session {
     const own = this.entryFile(sql);
     const entry = readEntry(own);
     if (entry) return { file: own, entry };
-    const dir = join(this.root, ".reylo", "queries");
+    const dir = join(this.project.cache, "queries");
     const prefix = `${this.#statementKey(sql)}-`;
     let names: string[];
     try {
@@ -175,8 +175,8 @@ export class Session {
   }
 
   /**
-   * The statement's analysis: from `.reylo/` when the entry matches the schema, else from the
-   * database. `store: false` neither reads nor writes `.reylo/`, for a statement that is no file of
+   * The statement's analysis: from `reylo/.cache/` when the entry matches the schema, else from the
+   * database. `store: false` neither reads nor writes `reylo/.cache/`, for a statement that is no file of
    * the project (`reylo play`'s, analyzed at each keystroke).
    */
   async analyze(sql: string, options: { force?: boolean; store?: boolean } = {}): Promise<Outcome> {
@@ -199,9 +199,9 @@ export class Session {
   /**
    * A SQLite statement prepared on the app's own drivers too, whose SQLite may be older than the
    * engine's: the first that refuses it is an error at the place SQLite names. Not kept in
-   * `.reylo/`, since the drivers are the project's and not the database's; a session that cannot
+   * `reylo/.cache/`, since the drivers are the project's and not the database's; a session that cannot
    * open the database checks nothing. One whose connection was released while its schema is still
-   * trusted opens it again, so a `.reylo/` hit is checked however long the session sat idle.
+   * trusted opens it again, so a `reylo/.cache/` hit is checked however long the session sat idle.
    */
   async #onDrivers(sql: string, outcome: Extract<Outcome, { ok: true }>): Promise<Outcome> {
     const { analysis } = outcome;
@@ -219,7 +219,7 @@ export class Session {
 
   async #analyze(sql: string, options: { force?: boolean; store?: boolean }): Promise<Outcome> {
     if (this.project.error) return { ok: false, message: this.project.error, code: 11 };
-    // With no URL, `.reylo/` answers as it does where the database cannot be reached (the dialect
+    // With no URL, `reylo/.cache/` answers as it does where the database cannot be reached (the dialect
     // is the one its entries record, src/project.ts), and a statement it lacks needs a URL.
     if (!this.project.url) {
       const hit = this.#engine instanceof MissingEngine || options.force ? undefined : this.#offlineEntry(sql);
@@ -234,7 +234,7 @@ export class Session {
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; reylo/.cache has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
     // An entry for another fingerprint, written since this session read its own, is another
@@ -266,7 +266,7 @@ export class Session {
       }
       return { ok: false, message: (e as Error).message, code: 5 };
     }
-    if (options.store !== false) writeEntry(this.root, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
+    if (options.store !== false) writeEntry(this.project.cache, file, { version: ENTRY_VERSION, dialect: this.project.dialect, schema: schema.value, analysis, at: Date.now() });
     return { ok: true, analysis, source: "database", entry: file };
   }
 
@@ -503,18 +503,18 @@ function readEntry(file: string): Entry | undefined {
   }
 }
 
-// Several processes write `.reylo/` at once (an editor's type check, a dev server, a build), so an
+// Several processes write the cache at once (an editor's type check, a dev server, a build), so an
 // entry is written to a file of its own and renamed into place: a reader sees a whole entry or
-// none. `.reylo/.gitignore` keeps the directory out of git, as pytest's and ruff's caches do. The
-// cache is only for speed, so a directory that cannot be written (a read-only checkout) is not an
-// error.
-function writeEntry(root: string, file: string, entry: Entry): void {
-  const dir = join(root, ".reylo");
+// none. Its own `.gitignore` keeps the cache out of git, as pytest's and ruff's caches do, in the
+// `reylo/` directory whose other files are committed. The cache is only for speed, so a directory
+// that cannot be written (a read-only checkout) is not an error.
+function writeEntry(cache: string, file: string, entry: Entry): void {
+  const dir = cache;
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
   try {
     mkdirSync(join(dir, "queries"), { recursive: true });
     const ignore = join(dir, ".gitignore");
-    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check and the build steps; never committed.\n*\n");
+    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check, the build steps and reylo migrate; never committed.\n*\n");
     writeFileSync(tmp, JSON.stringify(entry) + "\n");
     renameSync(tmp, file);
   } catch {

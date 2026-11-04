@@ -1,7 +1,7 @@
 // What every build step emits for a `.sql` file: a module that carries everything the query needs
 // at run time (the dialect, the statement as the engine rewrote it for the database, the binding
 // order, each parameter's type, the row count the analysis proved), so that the running code reads no file and asks no
-// database. The analysis comes from `src/analyze.ts`: `.reylo/` when it holds the statement for the
+// database. The analysis comes from `src/analyze.ts`: `reylo/.cache/` when it holds the statement for the
 // current schema, else the database. A build that has neither fails, because a module built
 // without the analysis would not do what its types say.
 import { existsSync } from "node:fs";
@@ -16,7 +16,7 @@ import { analysisWithBases } from "./engine-type.ts";
 
 export type SqlModule = {
   code: string;
-  /** The `.reylo/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
+  /** The `reylo/.cache/` entry the module was built from. A bundler watches it, so that the module is built again when the type check analyzes the statement anew (after a migration). */
   entry: string;
   /** The project file and the `.env` files that exist: the module's text depends on them too (`sqlcommenter`, the URL), so a bundler watches them as well. */
   watched: string[];

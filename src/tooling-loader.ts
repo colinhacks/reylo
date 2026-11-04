@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 /** What the build-time half offers reylo's entry points. */
 export type Tooling = {
-  /** The module a build step writes for a `.sql` file, and what the build watches: the `.reylo/` entry it was built from, and the project's files its text reads. */
+  /** The module a build step writes for a `.sql` file, and what the build watches: the `reylo/.cache/` entry it was built from, and the project's files its text reads. */
   sqlModule(path: string, source: string): Promise<{ code: string; entry: string; watched: string[] }>;
   /** Closes every build step's connection, for a build that has ended. */
   releaseConnections(): Promise<void>;
