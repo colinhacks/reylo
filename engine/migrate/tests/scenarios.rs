@@ -230,8 +230,11 @@ impl P {
         self.try_rows(sql).await.unwrap_or_else(|e| panic!("{sql}: {e}"))
     }
 
+    /// The applied migrations, in the order Reylo reads them: by time, and on SQLite, whose clock has
+    /// milliseconds, a tie by the order the rows were written.
     async fn history(&self) -> Vec<String> {
-        self.try_rows("select name from __reylo_migrations where applied_at is not null order by applied_at, case when name = 'init.sql' then '' else name end")
+        let tie = if self.d == Dialect::Sqlite { "rowid, " } else { "" };
+        self.try_rows(&format!("select name from __reylo_migrations where applied_at is not null order by applied_at, {tie}case when name = 'init.sql' then '' else name end"))
             .await
             .unwrap_or_default()
             .iter()
