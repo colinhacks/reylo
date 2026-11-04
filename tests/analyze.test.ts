@@ -320,7 +320,7 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     }
   };
   try {
-    await db.unsafe(`create table a (x int, s text); create table b (x int, s text);
+    await db.unsafe(`create table a (x int, s text); create table b (x int, s text); create table m (v varchar(20), n numeric);
       create function skip() returns trigger language plpgsql as 'begin return null; end';
       create function to_one(boolean) returns int8 language sql as 'select 1::int8';
       create function plus(int, int) returns int language sql as 'select $1 + $2'`);
@@ -340,7 +340,8 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     // Each change touches only a catalog the row count or the trust check reads: rows of b are read
     // by a scan of a, a BEFORE ROW trigger can skip an INSERT's row and a rule can replace it, a
     // key holds only under the index's collation, and a user's operator, cast, default argument,
-    // volatility or strictness decides which call the server makes and what it may answer.
+    // volatility or strictness decides which call the server makes and what it may answer, and a
+    // column's type modifier is the size, precision or scale its type carries.
     let last = hostile;
     for (const change of [
       "alter table b inherit a",
@@ -354,6 +355,8 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
       "alter function plus(int, int) immutable",
       "alter function plus(int, int) strict",
+      "alter table m alter column v type varchar(50)",
+      "alter table m alter column n type numeric(10,2)",
     ]) {
       await db.unsafe(change);
       const next = await fingerprint();
