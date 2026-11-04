@@ -263,12 +263,14 @@ jobs:
           cargo build --workspace --all-targets 2>&1 | tee "$RUNNER_TEMP/build.log"
           ! grep -E '^warning' "$RUNNER_TEMP/build.log"
       # The migrations' init writes its baseline with pg_dump, which refuses a server newer than itself, and
-      # the runner's own is older than the service's Postgres 18.
+      # the runner's own is older than the service's Postgres 18. Its directory goes first on the PATH, since
+      # the runner's pg_dump wrapper picks the version of the runner's own Postgres cluster.
       - name: Install pg_dump 18
         run: |
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y --no-install-recommends postgresql-client-18
-          pg_dump --version
+          /usr/lib/postgresql/18/bin/pg_dump --version
+          echo /usr/lib/postgresql/18/bin >> "$GITHUB_PATH"
       - run: cargo test ${{ needs.scope.outputs.tests }}
       - if: always()
         run: sccache --show-stats
