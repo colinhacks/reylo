@@ -39,7 +39,7 @@
 //! A statement with no run that succeeded is in the report's `unchecked`, with its first error:
 //! nothing about it was checked.
 
-use reylo_engine_core::types::{DecimalType, FloatType, JsonType, Kind, TextType, Type};
+use reylo_engine_core::types::{ArrayType, DecimalType, DurationType, FloatType, JsonType, Kind, Size, TextType, Type};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -743,8 +743,10 @@ fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item
 }
 
 /// Why a non-NULL value contradicts its type, if it does: a value outside the strings a text is
-/// kept to, a NaN or an infinity in a float or a decimal typed without one, a NULL element in an
-/// array typed without one, its elements separated by
+/// kept to, a text longer or shorter than its size, a NaN or an infinity in a float or a decimal
+/// typed without one, a decimal of more digits than its precision and scale, a time, timestamp or
+/// interval finer than its tick or with a part its type leaves out, a bit string or a vector of
+/// another length, a NULL element in an array typed without one, its elements separated by
 /// `delimiter`, or a null where JSON a statement built typed a value. A JSON `null` at the top is
 /// the column's null to the run time, so it contradicts a column typed non-null.
 fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
@@ -752,12 +754,29 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
     match &ty.kind {
         // A union of literals, from an enum or a CHECK list: the value is one of them.
         Kind::Text(TextType { values: Some(values), .. }) => (!values.is_empty() && !values.iter().any(|v| v == text)).then(|| format!("typed as one of {values:?} holds {text:?}")),
+        // A type modifier's length, in code points: `varchar(20)` at most, `char(5)` exactly, as
+        // it pads what it stores.
+        Kind::Text(TextType { size: Some(size), ill_formed: None, .. }) if size.unit.is_none() => {
+            let size = if ty.name.as_deref() == Some("bpchar") { size.clone() } else { Size { exact: None, ..size.clone() } };
+            length_contradiction(&size, text.chars().count() as u64, "code points")
+        }
         // Postgres prints a float's or a `numeric`'s non-finite values so.
-        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) => match text {
+        Kind::Float(FloatType { nan, infinity, .. }) | Kind::Decimal(DecimalType { nan, infinity, .. }) if matches!(text, "NaN" | "Infinity" | "-Infinity") => match text {
             "NaN" if !nan => Some("typed without NaN holds NaN".to_string()),
             "Infinity" | "-Infinity" if !infinity => Some(format!("typed without the infinities holds {text}")),
             _ => None,
         },
+        Kind::Decimal(decimal) => decimal_contradiction(decimal, text),
+        Kind::Time(time) => fraction_contradiction(&time.tick, text),
+        Kind::DateTime(dt) => fraction_contradiction(&dt.tick, text),
+        Kind::Instant(instant) => fraction_contradiction(&instant.tick, text),
+        Kind::Duration(duration) => interval_contradiction(duration, text),
+        // A bit string's length is its bits (`bit(7)`, `varbit(5)`), and a vector's its elements.
+        Kind::Array(ArrayType { size: Some(size), .. }) if matches!(ty.name.as_deref(), Some("bit" | "varbit")) => length_contradiction(size, text.chars().count() as u64, "bits"),
+        Kind::Array(ArrayType { size: Some(size), .. }) if ty.name.as_deref().is_some_and(|n| n.ends_with("vector") || n.ends_with("halfvec")) => {
+            let inner = text.trim_start_matches('[').trim_end_matches(']').trim();
+            length_contradiction(size, if inner.is_empty() { 0 } else { inner.split(',').count() as u64 }, "elements")
+        }
         // A Postgres array, as its text shows it: a type that is structured as an array but
         // written otherwise (`bit`, `vector`) is not one here.
         Kind::Array(array) if !array.element.nullable && ty.name.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_')) => {
@@ -776,6 +795,86 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
         }
         _ => None,
     }
+}
+
+/// Why a length breaks a size, if it does.
+fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
+    let ok = size.exact.is_none_or(|e| n == e) && size.min.is_none_or(|m| n >= m) && size.max.is_none_or(|m| n <= m);
+    (!ok).then(|| format!("sized {size:?} holds {n} {unit}"))
+}
+
+/// Why a decimal's text breaks its precision and scale, if it does: more digits after the point
+/// than its scale, or more digits than its precision. A negative scale rounds to tens or hundreds,
+/// whose zeros the precision does not count, and a scale above the precision leaves zeros after the
+/// point (`0.000123` in a `numeric(3,6)`), which it does not count either.
+fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
+    let digits = text.trim_start_matches(['-', '+']);
+    let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
+    if whole.is_empty() && fraction.is_empty() || !whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    if decimal.max_scale.is_some_and(|max| fraction.len() as i32 > max.max(0)) {
+        return Some(format!("typed with a scale of at most {:?} holds {text}", decimal.max_scale));
+    }
+    let precision = decimal.precision?;
+    let whole = whole.trim_start_matches('0');
+    let zeros = (-decimal.min_scale.unwrap_or(0)).max(0) as usize;
+    if zeros > 0 && !whole.is_empty() && !whole.ends_with(&"0".repeat(zeros)) {
+        return Some(format!("typed with a scale of {:?} holds {text}", decimal.min_scale));
+    }
+    let significant = format!("{whole}{fraction}").trim_start_matches('0').len().saturating_sub(zeros);
+    (significant > precision as usize).then(|| format!("typed with a precision of {precision} holds {text}"))
+}
+
+/// The fractional digits a tick allows: 3 for `"1/1000"`, 0 for `"1"`, none for a coarser one.
+fn tick_digits(tick: &str) -> Option<usize> {
+    match tick.split_once('/') {
+        Some(("1", denominator)) if denominator.starts_with('1') && denominator[1..].chars().all(|c| c == '0') => Some(denominator.len() - 1),
+        None if tick == "1" => Some(0),
+        _ => None,
+    }
+}
+
+/// The `HH:MM:SS[.f]` a time, a timestamp's or an interval's text holds, as its three parts.
+fn clock(text: &str) -> Option<(&str, &str, &str)> {
+    let at = text.find(':')?;
+    let start = text[..at].rfind(|c: char| !c.is_ascii_digit()).map_or(0, |i| i + 1);
+    let rest = &text[start..];
+    let hours = &rest[..rest.find(':')?];
+    let rest = &rest[hours.len() + 1..];
+    let minutes = rest.get(..2)?;
+    let rest = rest.get(3..)?;
+    let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+    Some((hours, minutes, &rest[..end]))
+}
+
+/// Why a time's or a timestamp's text is finer than its tick, if it is.
+fn fraction_contradiction(tick: &str, text: &str) -> Option<String> {
+    let allowed = tick_digits(tick)?;
+    let (_, _, seconds) = clock(text)?;
+    let digits = seconds.split_once('.').map_or(0, |(_, f)| f.len());
+    (digits > allowed).then(|| format!("ticking by {tick} holds {text}"))
+}
+
+/// Why an interval's text has a part its type leaves out, or is finer than its tick, if it does.
+fn interval_contradiction(duration: &DurationType, text: &str) -> Option<String> {
+    if duration.days.is_none() && text.contains("day") {
+        return Some(format!("typed without days holds {text}"));
+    }
+    let Some((hours, minutes, seconds)) = clock(text) else { return None };
+    // Postgres prints a zero interval as `00:00:00`, whatever its fields.
+    let zero = hours.trim_start_matches('-').chars().all(|c| c == '0') && minutes == "00" && seconds.chars().all(|c| c == '0' || c == '.');
+    let Some(time) = &duration.time else {
+        return (!zero).then(|| format!("typed without a time holds {text}"));
+    };
+    let fraction = seconds.split_once('.').map_or(0, |(_, f)| f.len());
+    let whole_seconds = seconds.split('.').next().unwrap_or("");
+    let coarse = match time.tick.as_str() {
+        "3600" => minutes != "00" || whole_seconds != "00" || fraction > 0,
+        "60" => whole_seconds != "00" || fraction > 0,
+        tick => tick_digits(tick).is_some_and(|allowed| fraction > allowed),
+    };
+    coarse.then(|| format!("ticking by {} holds {text}", time.tick))
 }
 
 fn array_has_null(text: &str, delimiter: char) -> bool {
@@ -1603,6 +1702,20 @@ mod tests {
         assert!(!array_has_null("{NULL:x}", ','));
         assert!(array_has_null("{a,NULL}", ','));
         assert!(!array_has_null(r#"{"NULL",b}"#, ','));
+    }
+
+    #[test]
+    fn a_decimal_counts_the_digits_its_precision_holds() {
+        let decimal = |precision: u32, scale: i32| DecimalType { precision: Some(precision), min_scale: Some(scale), max_scale: Some(scale), ..Default::default() };
+        // A scale above the precision leaves zeros after the point that are no significant digits.
+        assert_eq!(decimal_contradiction(&decimal(3, 6), "0.000123"), None);
+        assert!(decimal_contradiction(&decimal(3, 6), "0.001230").is_some());
+        assert_eq!(decimal_contradiction(&decimal(10, 2), "-99999999.99"), None);
+        assert!(decimal_contradiction(&decimal(10, 2), "999999999.99").is_some());
+        assert_eq!(decimal_contradiction(&decimal(5, 2), "0.50"), None);
+        // A negative scale's zeros before the point are not counted either.
+        assert_eq!(decimal_contradiction(&decimal(5, -2), "9999900"), None);
+        assert!(decimal_contradiction(&decimal(5, -2), "99999900").is_some());
     }
 
     #[test]
