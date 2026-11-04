@@ -21,8 +21,20 @@ const literal = /\$schema: "(https:\/\/reylo\.dev\/typedefs\/(\d+\.\d+\.\d+))";/
 if (!literal) throw new Error(`${spec} names no $schema of the form https://reylo.dev/typedefs/<version>`);
 const [, url, version] = literal;
 
-const generated = createGenerator({ path: spec, type: 'StatementDescriptor', expose: 'export', jsDoc: 'extended', additionalProperties: false, skipTypeCheck: true }).createSchema('StatementDescriptor');
+const generated = createGenerator({ path: spec, type: 'StatementDescriptor', expose: 'export', jsDoc: 'extended', markdownDescription: true, additionalProperties: false, skipTypeCheck: true }).createSchema('StatementDescriptor');
 const definitions = generated.definitions as Record<string, Record<string, unknown>>;
+// The generator's `description` joins a comment's lines with spaces, so the spec's indented list items run together; its `markdownDescription` keeps the comment as written, and becomes the one `description`.
+const keepLines = (node: unknown): void => {
+  if (Array.isArray(node)) return node.forEach(keepLines);
+  if (!node || typeof node !== 'object') return;
+  const record = node as Record<string, unknown>;
+  if (typeof record.markdownDescription === 'string') {
+    record.description = record.markdownDescription;
+    delete record.markdownDescription;
+  }
+  Object.values(record).forEach(keepLines);
+};
+keepLines(definitions);
 delete definitions.StatementDescriptor!.additionalProperties;
 // The comment above `Type` opens the spec file and describes the file, not the type.
 delete definitions.Type!.description;
