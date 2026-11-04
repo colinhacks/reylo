@@ -17,8 +17,7 @@ const USAGE: &str = "Usage: reylo <command>
 
   analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
                             statement, read from the project's database
-  migrate <command>         Check and apply migrations (reylo migrate --help)
-  sync                      Take a development database to schema.sql, through the migrations
+  migrate <command>         Write, check and apply migrations (reylo migrate --help)
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
@@ -28,14 +27,6 @@ const USAGE: &str = "Usage: reylo <command>
                             answer the one request on standard input
   --version                 Print the version";
 
-const SYNC_USAGE: &str = "Usage: reylo sync
-
-Takes a development database to schema.sql, through the migrations. Its history is kept as far as
-it agrees with the migration files; past that (a migration edited after it ran, another branch's,
-changes made by hand) the database is rewound, losing what that drops. The migrations after it run,
-and whatever schema.sql has that no migration makes is made too, unrecorded, until
-reylo migrate create writes it. Refuses when CI is set.";
-
 const RUN_USAGE: &str = "Usage: reylo run \"<sql>\"… [--file <path>]…
 
 Runs SQL on the database as written, outside any migration's history: inline text, and the files
@@ -44,32 +35,29 @@ connection; --url names another.";
 
 const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
 
-  init [--schema <name>…]   Write schema.sql and migrations/init.sql from the database's schema
-                            (Postgres: the public schema unless named), and record init.sql
-  create <name> [--drop <tables, columns>] [--rename <table>.<column>=<new name>]
+  create <name> [--drop <tables, columns>] [--rename <old>=<new>]
                             Write the migration that takes the migrations to schema.sql, checked in
                             a shadow database, named with the current UTC time. Every table or
-                            column it drops, with its rows, is named in --drop; a column that
-                            disappears while one of the same definition appears in its table is
-                            renamed, unless --drop names it; --rename states any other rename
-  apply [--record <file>…]  Check the database against the migrations in shadow databases, then
-                            apply the pending ones. Refuses on any disagreement and runs nothing
-                            then. --record records a migration without running it, where the
-                            database already has its change and it changes no data (a fix made
-                            by hand, written down afterwards)
+                            column it drops, or changes in a way that loses values, is named in
+                            --drop. A table or column that goes while one like it comes is renamed;
+                            --rename settles a tie
+  apply                     Check the database against the migrations, then apply the pending ones.
+                            Refuses on any disagreement, and runs nothing then
+  apply --dev               Take a development database to its migrations: rewind what no longer
+                            agrees with them, then apply the rest
   apply --reset             Drop everything, apply every migration, then run migrate.post (loses
                             data)
+  sync [--watch]            Make what schema.sql adds on a development database that is at its
+                            migrations, unrecorded, for create to write next; --watch does it
+                            again each time schema.sql changes
   check                     What apply checks, and the migrations against schema.sql; runs nothing
+  sync-history              Rewrite the history to the migrations the database's schema has,
+                            proven in a shadow database; runs nothing
   restore <file>            Write the text this database ran for a migration back to its file
   wipe                      Delete every row of the project's tables, keeping the schema and the
                             history, then run migrate.post (loses data)
-  repair                    When the database, schema.sql and the migrations agree, rewrite the
-                            history to the migration files; never touches the schema or data
-  rebase [files…] [--base <branch>]
-                            Rename this branch's migrations to times after the newest. Bare, with
-                            a linear history, it puts them in the order of migrations/lock.yaml,
-                            resolving a merge conflict in it; otherwise it takes the ones the base
-                            branch (migrate.main_branch, else git's origin/HEAD) does not have
+  init [--schema <name>…]   Write schema.sql and migrations/init.sql from the database's schema
+                            (Postgres: the public schema unless named), and record init.sql
 
 reylo run \"<sql>\"…          Run SQL on the database as written; --file <path> for a file (a seed)
 
@@ -82,10 +70,10 @@ Settings, in .reylo.yaml:
     history: loose           # default; linear refuses a migration older than one applied, and
                              # keeps migrations/lock.yaml, the order they run in
     strict_comments: true    # default; false leaves comments out of the comparison
-    main_branch: main        # for a bare rebase; default: git's origin/HEAD
-    post: reylo run --file seed.sql   # run after apply --reset
+    post: reylo run --file seed.sql   # run after apply --reset and wipe
 
-Flags override them for a run: --url, --dir, --schema-file, --base.";
+Flags override them for a run: --url, --dir, --schema-file. The development commands (apply --dev,
+apply --reset, sync, wipe) refuse to run where CI is set.";
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
 #[derive(Default)]
@@ -93,7 +81,6 @@ struct Args {
     values: HashMap<String, String>,
     schemas: Vec<String>,
     files: Vec<String>,
-    records: Vec<String>,
     drops: Vec<String>,
     renames: Vec<(String, String)>,
     switches: Vec<String>,
@@ -110,13 +97,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
             args.get(k).cloned().ok_or_else(|| format!("{a} needs a value"))
         };
         match a.as_str() {
-            "--url" | "--dir" | "--schema-file" | "--base" => {
+            "--url" | "--dir" | "--schema-file" => {
                 let v = value()?;
                 out.values.insert(a[2..].to_string(), v);
             }
             "--schema" => out.schemas.push(value()?),
             "--file" | "-f" => out.files.push(value()?),
-            "--record" => out.records.push(value()?),
             "--drop" => out.drops.extend(value()?.split(',').map(str::trim).filter(|n| !n.is_empty()).map(String::from)),
             "--rename" => {
                 let v = value()?;
@@ -165,7 +151,7 @@ fn settings(args: &Args, require: bool) -> Result<Options, String> {
         schema: place("schema-file", &m.schema, "schema.sql"),
         linear: m.history == Some(reylo_engine_core::config::History::Linear),
         comments: m.strict_comments != Some(false),
-        main_branch: args.values.get("base").cloned().or(m.main_branch.clone()),
+        main_branch: None,
         post: m.post.clone(),
         root: project.root.clone(),
     })
@@ -191,15 +177,19 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
     let parsed = parse(&args[1..])?;
     let opts = settings(&parsed, true)?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
+    // The development commands change a database in ways no deploy wants.
+    let in_ci = std::env::var_os("CI").is_some();
     let mut log = print;
     let rt = runtime();
     let result = rt.block_on(async {
         match command.as_str() {
+            "apply" if has("reset") && in_ci => Ok(reylo_migrate::commands::refused_in_ci("reylo migrate apply --reset", &mut log)),
             "apply" if has("reset") => reylo_migrate::reset(&opts, &mut log).await,
-            // `--dry-run` was the check's flag before it was a command of its own.
+            "apply" if has("dev") => reylo_migrate::apply_dev(&opts, in_ci, &mut log).await,
+            "apply" => reylo_migrate::apply(&opts, &mut log).await,
+            "sync" => reylo_migrate::sync(&opts, in_ci, &mut log).await,
             "check" => reylo_migrate::check_command(&opts, &mut log).await,
-            "apply" if has("dry-run") => reylo_migrate::check_command(&opts, &mut log).await,
-            "apply" => reylo_migrate::migrate(&opts, &parsed.records, &mut log).await,
+            "sync-history" => reylo_migrate::sync_history(&opts, &mut log).await,
             "restore" => match parsed.rest.first() {
                 Some(name) => reylo_migrate::restore(&opts, name, &mut log).await,
                 None => Err(reylo_migrate::Error("name the migration to restore: reylo migrate restore <file>".into())),
@@ -209,8 +199,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
             }
-            "rebase" => reylo_migrate::rebase(&opts, &parsed.rest, &mut log).await,
-            "repair" => reylo_migrate::repair(&opts, &mut log).await,
+            "wipe" if in_ci => Ok(reylo_migrate::commands::refused_in_ci("reylo migrate wipe", &mut log)),
             "wipe" => reylo_migrate::wipe_rows(&opts, &mut log).await,
             other => {
                 eprintln!("reylo migrate: unknown command {other}\n\n{MIGRATE_USAGE}");
@@ -219,17 +208,6 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
         }
     });
     result.map_err(|e| e.0)
-}
-
-fn sync_command(args: &[String]) -> Result<i32, String> {
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!("{SYNC_USAGE}");
-        return Ok(0);
-    }
-    let parsed = parse(args)?;
-    let opts = settings(&parsed, true)?;
-    let mut log = print;
-    runtime().block_on(reylo_migrate::sync(&opts, std::env::var_os("CI").is_some(), &mut log)).map_err(|e| e.0)
 }
 
 fn run_command(args: &[String]) -> Result<i32, String> {
@@ -291,10 +269,6 @@ fn main() {
         }
         Some("migrate") => migrate_command(&args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo migrate: {e}");
-            1
-        }),
-        Some("sync") => sync_command(&args[1..]).unwrap_or_else(|e| {
-            eprintln!("reylo sync: {e}");
             1
         }),
         Some("run") => run_command(&args[1..]).unwrap_or_else(|e| {
