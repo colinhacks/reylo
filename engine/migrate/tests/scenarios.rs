@@ -110,6 +110,10 @@ impl P {
         self.run(async |o, log| reylo_migrate::migrate(o, &names, log).await).await
     }
 
+    async fn sync(&mut self) -> i32 {
+        self.run(async |o, log| reylo_migrate::sync(o, false, log).await).await
+    }
+
     /// `check`: what apply checks, and the migrations against schema.sql.
     async fn dry_run(&mut self) -> i32 {
         self.run(async |o, log| reylo_migrate::check_command(o, log).await).await
@@ -262,6 +266,10 @@ for_each_dialect!(
     a_linear_history_keeps_its_lock,
     two_applies_at_once_apply_each_migration_once,
     create_states_what_it_drops_and_renames,
+    wipe_deletes_rows_and_keeps_the_schema,
+    sync_takes_a_development_database_to_schema_sql,
+    sync_rewinds_what_no_longer_agrees,
+    sync_runs_a_late_migration_only_where_apply_would,
 );
 
 async fn applies_pending_migrations_once(mut p: P) {
@@ -757,6 +765,109 @@ async fn an_edited_migration_misses_the_cache(mut p: P) {
     p.output();
     let (code, _) = p.check_every_way().await;
     assert_eq!(code, 0);
+}
+
+async fn sync_takes_a_development_database_to_schema_sql(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    p.schema(&format!("create table users (id {id}, name {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ Applied 20261027100000_users\.sql");
+    // schema.sql moves first: sync makes the change, unrecorded, and says what to write.
+    p.schema(&format!("create table users (id {id}, name {text}, bio {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Brought this database to schema\.sql, unrecorded:\n\n    alter table users add column bio [^\n]+;\n\n  schema\.sql has changes not reflected in any migration file\. Write them as a migration:\n    reylo migrate create <name>");
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    p.exec("insert into users (name, bio) values ('ada', 'hi')").await;
+    // The migration written for it is recorded, not run, and the rows stay.
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "bio", &Default::default(), log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Recorded \d{14}_bio\.sql without running it");
+    assert_eq!(p.rows("select bio from users").await[0].text("bio"), "hi");
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "This database matches schema.sql and its migrations");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "Up to date");
+    // Never in CI.
+    assert_eq!(p.run(async |o, log| reylo_migrate::sync(o, true, log).await).await, 1);
+    assert_has!(p.output(), "reylo sync changes a development database, and CI is set");
+}
+
+async fn sync_rewinds_what_no_longer_agrees(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    p.file("20261027110000_tags.sql", &format!("create table tags (id {int});"));
+    p.schema(&format!("create table users (id {id}, name {text}); create table tags (id {int});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into users (name) values ('ada')").await;
+    p.output();
+    // An applied migration edited: rewound, then run as it reads now.
+    p.file("20261027110000_tags.sql", &format!("create table tags (id {int}, label {text});"));
+    p.schema(&format!("create table users (id {id}, name {text}); create table tags (id {int}, label {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Rewound 20261027110000_tags\.sql: it changed after this database applied it");
+    assert_has!(&out, r"✓ Applied 20261027110000_tags\.sql");
+    assert_eq!(p.rows("select name from users").await.len(), 1, "what agrees keeps its rows");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    // Switched to a branch without it: rewound away.
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_tags.sql")).unwrap();
+    p.schema(&format!("create table users (id {id}, name {text});"));
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"↺ Rewound 20261027110000_tags\.sql: it isn't in the migrations");
+    assert!(p.try_rows("select 1 from tags").await.is_err());
+    assert_eq!(p.history().await, ["20261027100000_users.sql"]);
+    // A change made by hand, which nothing declares: undone.
+    p.exec(&format!("alter table users add column hotfix {int}")).await;
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"↺ Undid changes no migration made");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+}
+
+async fn sync_runs_a_late_migration_only_where_apply_would(mut p: P) {
+    let int = p.t.int;
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    p.file("20261027120000_c.sql", &format!("create table c (id {int});"));
+    p.schema(&format!("create table a (id {int}); create table c (id {int});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into c values (1)").await;
+    // main brings an older migration, independent of c: it runs, and c keeps its rows.
+    p.file("20261027110000_b.sql", &format!("create table b (id {int});"));
+    p.schema(&format!("create table a (id {int}); create table b (id {int}); create table c (id {int});"));
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert!(!out.contains("Rewound"), "{out}");
+    assert_eq!(p.rows("select * from c").await.len(), 1);
+    // One that changes data is never run out of order: c is rewound, and both run in name order.
+    p.file("20261027115000_seed.sql", "insert into b values (7);");
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Rewound 20261027120000_c\.sql: a migration before it came in later");
+    assert_has!(&out, r"✓ Applied 20261027115000_seed\.sql[\s\S]*✓ Applied 20261027120000_c\.sql");
+    assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027110000_b.sql", "20261027115000_seed.sql", "20261027120000_c.sql"]);
+}
+
+async fn wipe_deletes_rows_and_keeps_the_schema(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    // MySQL commits each DDL statement on its own, so each is a file of its own.
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, name {text});"));
+    p.file("20261027110000_posts.sql", &format!("create table posts (id {int}, user_id {int} references users (id));"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users (name) values ('a'), ('b'); insert into posts values (1, 1)").await;
+    p.output();
+    assert_eq!(p.run(async |o, log| reylo_migrate::wipe_rows(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Deleted every row of 2 tables; the schema and the history stay");
+    assert!(p.rows("select * from users").await.is_empty() && p.rows("select * from posts").await.is_empty());
+    assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_posts.sql"]);
+    // Identities start again.
+    p.exec("insert into users (name) values ('c')").await;
+    assert_eq!(p.rows("select id from users").await[0].text("id"), "1");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "Up to date");
 }
 
 async fn create_states_what_it_drops_and_renames(mut p: P) {

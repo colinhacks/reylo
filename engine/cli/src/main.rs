@@ -18,6 +18,7 @@ const USAGE: &str = "Usage: reylo <command>
   analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
                             statement, read from the project's database
   migrate <command>         Check and apply migrations (reylo migrate --help)
+  sync                      Take a development database to schema.sql, through the migrations
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
@@ -26,6 +27,14 @@ const USAGE: &str = "Usage: reylo <command>
                             standard input and output, one JSON request per line; with call,
                             answer the one request on standard input
   --version                 Print the version";
+
+const SYNC_USAGE: &str = "Usage: reylo sync
+
+Takes a development database to schema.sql, through the migrations. Its history is kept as far as
+it agrees with the migration files; past that (a migration edited after it ran, another branch's,
+changes made by hand) the database is rewound, losing what that drops. The migrations after it run,
+and whatever schema.sql has that no migration makes is made too, unrecorded, until
+reylo migrate create writes it. Refuses when CI is set.";
 
 const RUN_USAGE: &str = "Usage: reylo run \"<sql>\"… [--file <path>]…
 
@@ -52,6 +61,8 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
                             data)
   check                     What apply checks, and the migrations against schema.sql; runs nothing
   restore <file>            Write the text this database ran for a migration back to its file
+  wipe                      Delete every row of the project's tables, keeping the schema and the
+                            history, then run migrate.post (loses data)
   repair                    When the database, schema.sql and the migrations agree, rewrite the
                             history to the migration files; never touches the schema or data
   rebase [files…] [--base <branch>]
@@ -200,6 +211,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
             }
             "rebase" => reylo_migrate::rebase(&opts, &parsed.rest, &mut log).await,
             "repair" => reylo_migrate::repair(&opts, &mut log).await,
+            "wipe" => reylo_migrate::wipe_rows(&opts, &mut log).await,
             other => {
                 eprintln!("reylo migrate: unknown command {other}\n\n{MIGRATE_USAGE}");
                 Ok(2)
@@ -207,6 +219,17 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
         }
     });
     result.map_err(|e| e.0)
+}
+
+fn sync_command(args: &[String]) -> Result<i32, String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{SYNC_USAGE}");
+        return Ok(0);
+    }
+    let parsed = parse(args)?;
+    let opts = settings(&parsed, true)?;
+    let mut log = print;
+    runtime().block_on(reylo_migrate::sync(&opts, std::env::var_os("CI").is_some(), &mut log)).map_err(|e| e.0)
 }
 
 fn run_command(args: &[String]) -> Result<i32, String> {
@@ -268,6 +291,10 @@ fn main() {
         }
         Some("migrate") => migrate_command(&args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo migrate: {e}");
+            1
+        }),
+        Some("sync") => sync_command(&args[1..]).unwrap_or_else(|e| {
+            eprintln!("reylo sync: {e}");
             1
         }),
         Some("run") => run_command(&args[1..]).unwrap_or_else(|e| {

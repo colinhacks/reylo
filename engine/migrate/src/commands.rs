@@ -959,7 +959,15 @@ pub async fn reset(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     wiped?;
     log(&paint("dim", "dropped everything in the database"));
     let code = migrate(opts, &[], log).await?;
-    let Some(post) = opts.post.as_deref().filter(|_| code == 0) else { return Ok(code) };
+    if code != 0 {
+        return Ok(code);
+    }
+    run_post(opts, log)
+}
+
+/// Runs `migrate.post` (a seed) in the project's directory, with `DATABASE_URL` set to the database.
+fn run_post(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    let Some(post) = opts.post.as_deref() else { return Ok(0) };
     log(&paint("dim", &format!("post: {post}")));
     let mut command = if cfg!(windows) {
         let mut c = std::process::Command::new("cmd");
@@ -976,6 +984,71 @@ pub async fn reset(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         return Ok(1);
     }
     Ok(0)
+}
+
+/// `reylo migrate wipe`: deletes every row of the project's tables, and nothing else: the schema and
+/// the history stay, identities and sequences start again, and `post` (a seed) runs after. The
+/// tables are those the comparison reads, so a platform's own (Supabase's auth.users) keep theirs.
+pub async fn wipe_rows(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let result = wipe_rows_on(&mut db).await;
+    db.close().await;
+    let tables = result?;
+    log(&format!("{} Deleted every row of {} table{}; the schema and the history stay", paint("green", "✓"), tables, if tables == 1 { "" } else { "s" }));
+    run_post(opts, log)
+}
+
+async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
+    let d = db.dialect();
+    let names: Vec<String> = match d {
+        Dialect::Postgres => {
+            let schema = crate::diff::read(db).await?;
+            schema.objects.values().filter(|o| o.kind == Some(crate::diff::Kind::Table) && !o.extra.iter().any(|l| l.starts_with("shape foreign"))).filter_map(|o| o.id.strip_prefix("table ").map(String::from)).collect()
+        }
+        Dialect::Mysql => db
+            .rows(&format!("select table_name as n from information_schema.tables where table_schema = database() and table_type = 'BASE TABLE' and table_name <> '{HISTORY_TABLE}'"))
+            .await?
+            .iter()
+            .map(|r| format!("`{}`", r.text("n").replace('`', "``")))
+            .collect(),
+        Dialect::Sqlite => db
+            .rows(&format!("select name as n from sqlite_schema where type = 'table' and name not like 'sqlite_%' and name <> '{HISTORY_TABLE}'"))
+            .await?
+            .iter()
+            .map(|r| format!("\"{}\"", r.text("n").replace('"', "\"\"")))
+            .collect(),
+    };
+    if names.is_empty() {
+        return Ok(0);
+    }
+    match d {
+        Dialect::Postgres => db.exec(&format!("truncate table {} restart identity", names.join(", "))).await?,
+        Dialect::Mysql => {
+            db.exec("set foreign_key_checks = 0").await?;
+            let mut result = Ok(());
+            for n in &names {
+                result = db.exec(&format!("truncate table {n}")).await;
+                if result.is_err() {
+                    break;
+                }
+            }
+            db.exec("set foreign_key_checks = 1").await?;
+            result?
+        }
+        Dialect::Sqlite => {
+            db.exec("pragma foreign_keys = off").await?;
+            let sql = names.iter().map(|n| format!("delete from {n};")).collect::<String>();
+            let has_sequence = db.rows("select count(*) > 0 as ok from sqlite_schema where name = 'sqlite_sequence'").await?.first().is_some_and(|r| r.flag("ok"));
+            let reset = if has_sequence { "delete from sqlite_sequence;" } else { "" };
+            let result = db.script(&format!("begin; {sql} {reset} commit;")).await;
+            if result.is_err() {
+                let _ = db.exec("rollback").await;
+            }
+            db.exec("pragma foreign_keys = on").await?;
+            result?
+        }
+    }
+    Ok(names.len())
 }
 
 /// `reylo migrate repair`: when the live database, `schema.sql` and every migration replayed by time
@@ -1580,6 +1653,249 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     log(&format!("wrote {} and {}", shown(&opts.schema), shown(&init)));
     // The database already has init.sql's schema, which holds no data statements: recorded.
     migrate(opts, &[INIT.to_string()], log).await
+}
+
+// ---------------------------------------------------------------------------------------------
+// `reylo sync`: a development database taken to schema.sql, through the migrations.
+
+/// Runs a plan the diff engine wrote on the database itself, recording nothing: as one transaction
+/// where the database has transactional DDL, statement by statement on MySQL, which commits each.
+async fn run_plan(db: &mut Db, plan: &crate::diff::Plan) -> Result<(), Error> {
+    let statements: Vec<String> = plan.runnable().map(|s| format!("{};", s.trim_end())).collect();
+    if statements.is_empty() {
+        return Ok(());
+    }
+    if db.dialect() == Dialect::Mysql {
+        for s in &statements {
+            db.script(s).await?;
+        }
+        return Ok(());
+    }
+    run(db, &Migration { name: "sync".into(), time: String::new(), path: PathBuf::new(), sql: statements.join("\n") }, false).await
+}
+
+/// The plan from the database `from` to the database `to`, as `create` would write it (from
+/// `declared`, the text that built `to`), styled as schema.sql is.
+async fn plan_between(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Result<crate::diff::Plan, Error> {
+    let mut target = crate::diff::read(to).await?;
+    if let (Some(sql), Dialect::Postgres) = (declared, to.dialect()) {
+        crate::diff::postgres::declare(to, &mut target, sql).await?;
+    }
+    let current = crate::diff::read(from).await?;
+    let alterer = crate::diff::alterer(from).await?;
+    let mut plan = crate::diff::plan(&current, &target, alterer.as_ref());
+    style(from, &mut plan, &target).await?;
+    Ok(plan)
+}
+
+fn losses_note(plan: &crate::diff::Plan) -> String {
+    if plan.losses.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", paint("yellow", &format!("(drops {}, and the data in {})", plan.losses.iter().map(|l| l.trim_start_matches("column ").trim_start_matches("table ")).collect::<Vec<_>>().join(", "), if plan.losses.len() == 1 { "it" } else { "them" })))
+    }
+}
+
+/// `reylo sync`: takes a development database to schema.sql, through the migrations. Its history is
+/// kept as far as it agrees with the migration files: where a migration it applied was edited or
+/// is gone (another branch's), or the database has changes no migration made, the database is
+/// rewound to that point by the diff engine's plan, losing what it drops. The migrations after it
+/// then run for real, their data statements included; one with no data statements whose change the
+/// database already has is recorded instead. Last, whatever schema.sql has that no migration makes
+/// is made, unrecorded, for `create` to write next. Never in CI (`in_ci`, from the `CI` variable),
+/// where nothing it does is wanted, and the lock it would write would go uncommitted.
+pub async fn sync(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    if in_ci {
+        log(&paint("bold red", "✗ reylo sync changes a development database, and CI is set"));
+        log("  In CI, check the migrations, or apply them:");
+        log(&format!("    {}", paint("cyan", "reylo migrate check")));
+        return Ok(1);
+    }
+    let (mut db, mut server, swept) = open(opts).await?;
+    let result = sync_on(&mut db, &mut server, swept, opts, log).await;
+    db.close().await;
+    server.close().await;
+    result
+}
+
+async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    swept_note(swept, log);
+    let _held = lock(db, opts).await?;
+    let d = db.dialect();
+    let scope = opts.scope();
+    log(&paint("dim", &format!("Syncing {}", crate::redact(&opts.url))));
+    let (files, strays) = read_migrations(&opts.dir)?;
+    let mut problems = Vec::new();
+    for s in &strays {
+        problems.push(Problem::new(format!("{s} isn't a migration")).note(format!("A file in {} is init.sql or <YYYYMMDDHHMMSS>_<name>.sql, the name in a-z, 0-9 and _.", shown(&opts.dir))));
+    }
+    let schema_sql = match std::fs::read_to_string(&opts.schema) {
+        Ok(text) => text,
+        Err(_) => {
+            problems.push(Problem::new(format!("{} doesn't exist", shown(&opts.schema))).note("sync takes the database to it."));
+            String::new()
+        }
+    };
+    for f in files.iter().filter(|f| f.name != INIT) {
+        if let Some(why) = atomicity_problem(&f.sql, d) {
+            problems.push(Problem::new(format!("{} can't run atomically", f.name)).note(why));
+        }
+    }
+    for (name, sql) in files.iter().map(|f| (f.name.as_str(), f.sql.as_str())).chain([("schema.sql", schema_sql.as_str())]) {
+        if let Some(why) = shadow_problem(sql, d) {
+            problems.push(Problem::new(format!("{name} can't be replayed in a shadow database")).note(why));
+        }
+    }
+    if !problems.is_empty() {
+        print_problems(&problems, log);
+        log("");
+        log(&paint("dim", "Nothing was changed."));
+        return Ok(1);
+    }
+    let history = read_history(db).await?;
+    let applied: Vec<&HistoryRow> = history.iter().filter(|r| r.applied).collect();
+    // The history as far as it agrees with the files: each row's file there, with the text it ran.
+    let agree = applied.iter().take_while(|r| files.iter().any(|f| f.name == r.name && same_statements(&f.sql, &r.sql, d))).count();
+    let live = catalog(db, scope).await?;
+    let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain([schema_sql.as_str()]).collect();
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
+    let result = sync_in_shadows(&mut shadows, db, opts, &files, &applied, agree, &live, &schema_sql, log).await;
+    shadows.finish().await;
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &[Migration], applied: &[&HistoryRow], agree: usize, live: &[String], schema_sql: &str, log: Log<'_>) -> Result<i32, Error> {
+    let d = db.dialect();
+    let scope = opts.scope();
+    let fail = |m: &str, error: String, log: Log<'_>| {
+        print_problems(&[Problem::new(m.to_string()).note(error)], log);
+        Ok(1)
+    };
+    let kept_of = |n: usize| -> Vec<Migration> { applied[..n].iter().filter_map(|r| files.iter().find(|f| f.name == r.name).cloned()).collect() };
+    let mut keep = agree;
+    // A migration older than one this database applied (main's, pulled in after it) runs out of
+    // order only where apply would run it so: it and every migration it passes change no data, and
+    // both orders end the same. Otherwise the database is rewound to before it.
+    let kept = kept_of(keep);
+    let newest = kept.iter().filter(|f| f.name != INIT).map(|f| f.time.clone()).max().unwrap_or_default();
+    let late: Vec<&Migration> = files.iter().filter(|f| f.name != INIT && !kept.iter().any(|k| k.name == f.name) && f.time < newest).collect();
+    if let Some(first) = late.iter().map(|f| f.time.clone()).min() {
+        let passed: Vec<&Migration> = kept.iter().filter(|k| k.time > first).collect();
+        let quiet = late.iter().copied().chain(passed.iter().copied()).all(|m| data_statements(&m.sql, d).is_empty());
+        let mut commute = false;
+        if quiet {
+            let ours = shadows.lane();
+            shadows.push(ours, kept.iter().chain(files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name))).map(Step::of));
+            let by_name = shadows.lane();
+            shadows.push(by_name, files.iter().map(Step::of));
+            if let (Ok(Ok(a)), Ok(Ok(b))) = (shadows.lines(ours).await, shadows.lines(by_name).await) {
+                commute = a == b;
+            }
+        }
+        if !commute {
+            keep = kept.iter().take_while(|k| k.name == INIT || k.time < first).count();
+        }
+    }
+    let kept = &kept_of(keep)[..];
+    let k_lane = shadows.lane();
+    shadows.push(k_lane, kept.iter().map(Step::of));
+    let at_kept = match shadows.lines(k_lane).await? {
+        Ok(lines) => lines,
+        Err((m, e)) => return fail(&format!("{m} fails when replayed in a shadow database"), e, log),
+    };
+    let mut pending: Vec<Migration> = files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name)).cloned().collect();
+    let rewind_rows: Vec<&&HistoryRow> = applied[keep..].iter().collect();
+    let mut records: Vec<Migration> = Vec::new();
+    if rewind_rows.is_empty() && at_kept != live {
+        // Changes no migration made: where the next migrations, none of which changes data, make
+        // exactly them (sync, then create, then sync), they are recorded rather than run again.
+        for j in (1..=pending.len()).rev() {
+            if !pending[..j].iter().all(|m| data_statements(&m.sql, d).is_empty()) {
+                continue;
+            }
+            let lane = shadows.lane();
+            shadows.push(lane, kept.iter().chain(&pending[..j]).map(Step::of));
+            if let Ok(Ok(lines)) = shadows.lines(lane).await {
+                if lines == live {
+                    records = pending.drain(..j).collect();
+                    break;
+                }
+            }
+        }
+    }
+    if !rewind_rows.is_empty() || (records.is_empty() && at_kept != live) {
+        // Rewound to the history as far as it agrees: the plan from the database to its replay.
+        if let Err((_, e)) = shadows.open(k_lane).await? {
+            return fail("The history fails when replayed in a shadow database", e, log);
+        }
+        shadows.taint(k_lane);
+        let plan = plan_between(db, shadows.db(k_lane), None).await?;
+        if let Err(e) = run_plan(db, &plan).await {
+            return fail("Rewinding this database failed", e.0, log);
+        }
+        ensure_history(db).await?;
+        for r in &rewind_rows {
+            db.exec_with(&format!("delete from {HISTORY_TABLE} where name = {}", db.param(1)), &[&r.name]).await?;
+            let data = data_statements(&r.sql, d);
+            if !data.is_empty() {
+                log(&format!("{} {} changes data ({}): rewinding undoes its schema, not the rows it wrote. For a database with no rows but the seed's:", paint("yellow", "!"), r.name, data.join(", ")));
+                log(&format!("    {}", paint("cyan", "reylo migrate apply --reset")));
+            }
+            let why = match files.iter().find(|f| f.name == r.name) {
+                Some(f) if !same_statements(&f.sql, &r.sql, d) => "it changed after this database applied it",
+                Some(_) => "a migration before it came in later, and the two can't run in this order",
+                None => "it isn't in the migrations",
+            };
+            log(&format!("{} Rewound {}: {why}", paint("yellow", "↺"), r.name));
+        }
+        db.exec(&format!("delete from {HISTORY_TABLE} where applied_at is null")).await?;
+        if rewind_rows.is_empty() {
+            log(&format!("{} Undid changes no migration made{}", paint("yellow", "↺"), losses_note(&plan)));
+        } else if !plan.losses.is_empty() {
+            log(&format!("  {}", losses_note(&plan).trim_start()));
+        }
+    }
+    if !records.is_empty() || !pending.is_empty() {
+        ensure_history(db).await?;
+    }
+    for m in &records {
+        insert_row(db, m, true).await?;
+        log(&format!("{} Recorded {} without running it: this database already had its change", paint("yellow", "!"), m.name));
+    }
+    for m in &pending {
+        let started = std::time::Instant::now();
+        if let Err(e) = run(db, m, true).await {
+            return fail(&format!("{} failed, and nothing of it was applied", m.name), e.0, log);
+        }
+        log(&format!("{} Applied {} {}", paint("green", "✓"), m.name, paint("dim", &format!("· {} ms", started.elapsed().as_millis()))));
+    }
+    // What schema.sql has that no migration makes: made, unrecorded.
+    let s_lane = shadows.lane();
+    shadows.push(s_lane, [Step::script("schema.sql", schema_sql)]);
+    match shadows.open(s_lane).await? {
+        Err((_, e)) => return fail("schema.sql fails on an empty database", e, log),
+        Ok(()) => shadows.taint(s_lane),
+    }
+    let wanted = catalog(shadows.db(s_lane), scope).await?;
+    let now = catalog(db, scope).await?;
+    if now != wanted {
+        let plan = plan_between(db, shadows.db(s_lane), Some(schema_sql)).await?;
+        if let Err(e) = run_plan(db, &plan).await {
+            return fail("Taking this database to schema.sql failed", e.0, log);
+        }
+        log(&format!("{} Brought this database to schema.sql, unrecorded{}:", paint("green", "✓"), losses_note(&plan)));
+        log("");
+        for line in plan.sql().trim_end().lines().filter(|l| !l.starts_with("-- loses data")) {
+            log(&format!("    {line}"));
+        }
+        log("");
+        log("  schema.sql has changes not reflected in any migration file. Write them as a migration:");
+        log(&format!("    {}", paint("cyan", "reylo migrate create <name>")));
+    } else if records.is_empty() && pending.is_empty() && applied.len() == kept.len() && at_kept == live {
+        log(&format!("{} This database matches schema.sql and its migrations", paint("green", "✓")));
+    }
+    Ok(0)
 }
 
 /// `reylo run "<sql>"` and `reylo run --file <path>`: runs SQL on the database as written, inline
