@@ -1090,7 +1090,17 @@ pub async fn restore(opts: &Options, name: &str, log: Log<'_>) -> Result<i32, Er
 
 /// `reylo migrate create <name>`: a migration named with the current UTC time, refused while any
 /// migration is unapplied, so that its time comes after theirs.
-pub async fn create(opts: &Options, name: &str, log: Log<'_>) -> Result<i32, Error> {
+/// What the person writing a migration states about it: the tables and columns it may drop, with
+/// their rows, and the columns it renames.
+#[derive(Clone, Debug, Default)]
+pub struct Choices {
+    /// Names as written: `users.nickname`, `audit_log`, `billing.invoices`, a schema's name.
+    pub drop: Vec<String>,
+    /// Each a column's old name, `users.full_name`, and its new one, `name`.
+    pub rename: Vec<(String, String)>,
+}
+
+pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>) -> Result<i32, Error> {
     static VALID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9_]+$").expect("a valid pattern"));
     if !VALID.is_match(name) {
         return Err(Error(format!("a migration's name is a-z, 0-9 and _: {name}")));
@@ -1105,24 +1115,18 @@ pub async fn create(opts: &Options, name: &str, log: Log<'_>) -> Result<i32, Err
             return Ok(1);
         }
     }
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let history = read_history(&mut db).await;
-    db.close().await;
-    let history = history?;
-    let unapplied: Vec<&str> = files.iter().filter(|f| !history.iter().any(|r| r.name == f.name)).map(|f| f.name.as_str()).collect();
-    if !unapplied.is_empty() {
-        let one = unapplied.len() == 1;
-        log(&format!(
-            "{} {} {} not applied to this database yet: apply {} first (reylo migrate apply), so the new migration's time comes after.",
-            paint("red", "✗"),
-            unapplied.join(", "),
-            if one { "is" } else { "are" },
-            if one { "it" } else { "them" }
-        ));
-        return Ok(1);
-    }
+    // The plan starts from every migration file, drafts not yet applied anywhere included, and is
+    // named after the newest of them.
     let schema_sql = std::fs::read_to_string(&opts.schema).map_err(|e| Error(format!("cannot read {}: {e}", shown(&opts.schema))))?;
-    let (texts, code) = draft(opts, &files, &schema_sql, log).await?;
+    let (texts, code) = match draft(opts, &files, &schema_sql, name, choices, log).await? {
+        Ok(drafted) => drafted,
+        Err(problems) => {
+            print_problems(&problems, log);
+            log("");
+            log(&paint("dim", "No migration was written."));
+            return Ok(1);
+        }
+    };
     std::fs::create_dir_all(&opts.dir)?;
     // After the newest migration, should one share this second; on MySQL a plan of several DDL
     // statements is several files, a second apart, `<name>`, `<name>_2`, ….
@@ -1177,7 +1181,69 @@ fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
 /// The new migration's text: the diff engine's plan from the migrations replayed by time to
 /// `schema.sql`, run on the replay and compared with `schema.sql` before it is written. A plan that
 /// does not reach it is written all the same, with what remains, for the person (or agent) to finish.
-async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, log: Log<'_>) -> Result<(Vec<String>, i32), Error> {
+/// Whether an object's id (`column public.users.nick`, `table users`) is what a name written on the
+/// command line names: the object's own name, or its table's or schema's, quotes aside.
+fn names(id: &str, written: &str) -> bool {
+    let bare = id.split_once(' ').map_or(id, |(_, rest)| rest).replace('"', "");
+    let written = written.replace(['"', '`'], "");
+    bare == written || bare.ends_with(&format!(".{written}")) || bare.starts_with(&format!("{written}."))
+}
+
+/// The problems with what `choices` states about `plan`: every table or column it drops must be
+/// named in `--drop`, and every name in `--drop` must be one it drops.
+fn drop_problems(plan: &crate::diff::Plan, choices: &Choices, migration: &str) -> Vec<Problem> {
+    let shown_loss = |l: &str| l.trim_start_matches("column ").trim_start_matches("table ").to_string();
+    let mut problems = Vec::new();
+    let unstated: Vec<&String> = plan.losses.iter().filter(|l| !choices.drop.iter().any(|w| names(l, w))).collect();
+    if !unstated.is_empty() {
+        let list = unstated.iter().map(|l| shown_loss(l)).collect::<Vec<_>>();
+        let columns: Vec<&String> = unstated.iter().copied().filter(|l| l.starts_with("column ")).collect();
+        let mut problem = Problem::new(format!("This migration would drop {}, and {} data", list.join(", "), if list.len() == 1 { "its" } else { "their" }))
+            .fix(if list.len() == 1 { "To drop it" } else { "To drop them" }, &[&format!("reylo migrate create {migration} --drop {}", list.join(","))]);
+        if let Some(c) = columns.first() {
+            problem = problem.fix("If a column was renamed instead", &[&format!("reylo migrate create {migration} --rename {}=<new name>", shown_loss(c))]);
+        }
+        problems.push(problem);
+    }
+    for w in &choices.drop {
+        let hits: Vec<&String> = plan.losses.iter().filter(|l| names(l, w)).collect();
+        if hits.is_empty() {
+            problems.push(Problem::new(format!("--drop names {w}, which this migration doesn't drop")).note(if plan.losses.is_empty() {
+                "It drops no table or column.".to_string()
+            } else {
+                format!("It drops {}.", plan.losses.iter().map(|l| shown_loss(l)).collect::<Vec<_>>().join(", "))
+            }));
+        }
+    }
+    problems
+}
+
+/// The columns `choices` renames, as (old, new) ids of `from` and `to`; or why one cannot be.
+fn stated_renames(from: &crate::diff::Schema, to: &crate::diff::Schema, choices: &Choices) -> Result<Vec<(String, String)>, Vec<Problem>> {
+    let mut out = Vec::new();
+    let mut problems = Vec::new();
+    for (old, new) in &choices.rename {
+        let olds: Vec<&String> = from.objects.keys().filter(|id| id.starts_with("column ") && names(id, old) && !to.objects.contains_key(*id)).collect();
+        let Some(old_id) = (olds.len() == 1).then(|| olds[0].clone()) else {
+            problems.push(match olds.len() {
+                0 => Problem::new(format!("--rename names {old}, which isn't a column this migration removes")).note("A table is renamed by hand in the migration: alter table … rename to …, which apply then checks."),
+                _ => Problem::new(format!("--rename names {old}, which could be any of {}", olds.iter().map(|o| o.trim_start_matches("column ")).collect::<Vec<_>>().join(", "))).note("Name it with its schema."),
+            });
+            continue;
+        };
+        let table = old_id.rsplit_once('.').map(|(t, _)| t.to_string()).unwrap_or_default();
+        let new_id = format!("{table}.{new}");
+        if !to.objects.contains_key(&new_id) || from.objects.contains_key(&new_id) {
+            problems.push(Problem::new(format!("--rename gives {old} the name {new}, which isn't a column this migration adds to its table")));
+            continue;
+        }
+        out.push((old_id, new_id));
+    }
+    if problems.is_empty() { Ok(out) } else { Err(problems) }
+}
+
+#[allow(clippy::type_complexity)]
+async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration: &str, choices: &Choices, log: Log<'_>) -> Result<Result<(Vec<String>, i32), Vec<Problem>>, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
@@ -1204,7 +1270,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, log: Log<'
             Ok(schema) => schema,
             Err(e) => {
                 log(&paint("yellow", &format!("{e}: the migration is empty, for the change to {} to be written by hand", shown(&opts.schema))));
-                return Ok((vec![String::new()], 0));
+                return Ok(Ok((vec![String::new()], 0)));
             }
         };
         let mut current = crate::diff::read(shadows.db(c)).await?;
@@ -1223,11 +1289,20 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, log: Log<'
             }
         }
         let alterer = crate::diff::alterer(shadows.db(c)).await?;
-        let mut plan = crate::diff::plan(&current, &target, alterer.as_ref());
+        let renames = match stated_renames(&current, &target, choices) {
+            Ok(renames) => renames,
+            Err(problems) => return Ok(Err(problems)),
+        };
+        let dropped: std::collections::BTreeSet<String> = current.objects.keys().filter(|id| id.starts_with("column ") && !target.objects.contains_key(*id) && choices.drop.iter().any(|w| names(id, w))).cloned().collect();
+        let mut plan = crate::diff::plan_with(&current, &target, alterer.as_ref(), &renames, &dropped);
         style(shadows.db(c), &mut plan, &target).await?;
+        let problems = drop_problems(&plan, choices, migration);
+        if !problems.is_empty() {
+            return Ok(Err(problems));
+        }
         if plan.statements.is_empty() && moves.is_empty() {
             log(&paint("dim", &format!("the migrations already make {}: the migration is empty, for a change of data", shown(&opts.schema))));
-            return Ok((vec![String::new()], 0));
+            return Ok(Ok((vec![String::new()], 0)));
         }
         // The plan runs on the replay as `apply` will run its files: one file in one transaction (on
         // SQLite with foreign keys off until it is checked), or on MySQL a file per statement.
@@ -1253,13 +1328,13 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, log: Log<'
         plan.statements.splice(0..0, moves);
         let mut texts = plan_files(&plan, d);
         for loss in &plan.losses {
-            log(&paint("yellow", &format!("loses data: {}", loss.trim_start_matches("column ").trim_start_matches("table "))));
+            log(&format!("{} Drops {}, and its data", paint("yellow", "!"), loss.trim_start_matches("column ").trim_start_matches("table ")));
         }
         for (old, new) in &plan.renames {
-            log(&paint("yellow", &format!("{} is renamed {new}, keeping its rows; if they are two columns, write a drop and an add instead (the file's comment has them)", old.trim_start_matches("column "))));
+            log(&format!("{} Renames {} to {new}, keeping its rows: no other column of its definition came or went in its table. If they are two columns, state it: --drop {}", paint("yellow", "!"), old.trim_start_matches("column "), old.trim_start_matches("column ")));
         }
         if failed.is_none() && reached == wanted {
-            return Ok((texts, 0));
+            return Ok(Ok((texts, 0)));
         }
         let mut remaining = Vec::new();
         if let Some(f) = &failed {
@@ -1273,7 +1348,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, log: Log<'
             log(&format!("  {r}"));
         }
         texts[0] = format!("-- This plan does not reach schema.sql yet. What remains:\n{}\n{}", remaining.iter().map(|r| format!("--   {}", r.replace('\n', " "))).collect::<Vec<_>>().join("\n"), texts[0]);
-        Ok((texts, 1))
+        Ok(Ok((texts, 1)))
     }
     .await;
     shadows.finish().await;

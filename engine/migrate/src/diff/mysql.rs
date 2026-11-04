@@ -1001,8 +1001,8 @@ fn renamed_parts(text: &str, map: &BTreeMap<String, String>) -> String {
 
 /// The statements that take a table from one body to the other: one `alter table` with a clause
 /// per change, and the change of its partitioning, which MySQL takes only as a statement of its own.
-fn alter_table(from: &Body, to: &Body) -> Vec<String> {
-    let pairs = renames(from, to);
+fn alter_table(from: &Body, to: &Body, pairs: &[(String, String)]) -> Vec<String> {
+    let pairs = pairs.to_vec();
     let map: BTreeMap<String, String> = pairs.iter().map(|(old, new)| (old.clone(), to.column(new).map(|c| c.q.clone()).unwrap_or_default())).collect();
     let old_of: BTreeMap<&str, &str> = pairs.iter().map(|(o, n)| (n.as_str(), o.as_str())).collect();
     let mut clauses = Vec::new();
@@ -1026,12 +1026,18 @@ fn alter_table(from: &Body, to: &Body) -> Vec<String> {
             clauses.push(format!("drop column {}", c.q));
         }
     }
-    for (old, new) in &pairs {
-        clauses.push(format!("rename column {} to {}", from.column(old).map(|c| c.q.as_str()).unwrap_or(old), to.column(new).map(|c| c.q.as_str()).unwrap_or(new)));
-    }
     // A column is written without its collation where it takes the table's default, unless the
     // default changes in this statement, which MySQL applies before the columns.
     let collation = (from.option("collate") == to.option("collate")).then(|| to.option("collate").unwrap_or_default());
+    // A renamed column whose definition changes too is renamed and redefined by one `change column`:
+    // a later clause of the same statement cannot name it by its new name.
+    for (old, new) in &pairs {
+        let (was, now) = (from.column(old), to.column(new));
+        match (was, now) {
+            (Some(was), Some(now)) if was.def() != now.def() => clauses.push(format!("change column {} {}", was.q, now.written(collation))),
+            _ => clauses.push(format!("rename column {} to {}", was.map(|c| c.q.as_str()).unwrap_or(old), now.map(|c| c.q.as_str()).unwrap_or(new))),
+        }
+    }
     for c in &to.columns {
         match from.column(old_of.get(c.name.as_str()).copied().unwrap_or(&c.name)) {
             Some(was) if old_of.contains_key(c.name.as_str()) || was.def() == c.def() => {}
@@ -1075,30 +1081,47 @@ fn alter_table(from: &Body, to: &Body) -> Vec<String> {
     out
 }
 
-pub struct MysqlAlterer;
+#[derive(Default)]
+pub struct MysqlAlterer {
+    decided: super::Decided,
+}
+
+impl MysqlAlterer {
+    /// The columns of a table renamed between two of its bodies: the planner's decision where it
+    /// made one, else its rule.
+    fn pairs(&self, table: &str, from: &Body, to: &Body) -> Vec<(String, String)> {
+        self.decided.of(table).unwrap_or_else(|| renames(from, to))
+    }
+}
 
 impl Alterer for MysqlAlterer {
+    fn decide(&self, renames: &[(String, String)]) {
+        self.decided.set(renames);
+    }
+
     /// A column renamed: the table's whole statement, with the rename among its clauses, which
     /// keeps every other change after the rename in one statement. Where a table renames several
     /// columns, the last rename carries it (the planner takes them in the order of their names),
     /// and the others none.
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let (a, b) = (Body::from_json(from.extra.first()?)?, Body::from_json(to.extra.first()?)?);
-        let new = to.id.strip_prefix(&format!("column {}.", to.owner.as_deref()?.strip_prefix("table ")?))?;
-        let pairs = renames(&a, &b);
+        let table = to.owner.as_deref()?.strip_prefix("table ")?;
+        let new = to.id.strip_prefix(&format!("column {table}."))?;
+        let pairs = self.pairs(table, &a, &b);
         if !pairs.iter().any(|(_, n)| n == new) {
             return None;
         }
         let last = pairs.iter().map(|(_, n)| n.as_str()).max()?;
-        Some(if new == last { alter_table(&a, &b) } else { Vec::new() })
+        Some(if new == last { alter_table(&a, &b, &pairs) } else { Vec::new() })
     }
 
     fn alter(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         match to.kind? {
             Kind::Table => {
                 let (a, b) = (Body::from_json(&from.def)?, Body::from_json(&to.def)?);
+                let pairs = self.pairs(to.id.strip_prefix("table ")?, &a, &b);
                 // Where a column is renamed, the rename writes the table's statement.
-                Some(if renames(&a, &b).is_empty() { alter_table(&a, &b) } else { Vec::new() })
+                Some(if pairs.is_empty() { alter_table(&a, &b, &pairs) } else { Vec::new() })
             }
             // The table's statement changes the column.
             Kind::Column => Some(Vec::new()),

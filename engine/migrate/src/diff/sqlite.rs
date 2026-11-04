@@ -528,9 +528,16 @@ pub async fn read(db: &mut Db) -> Result<Schema, Error> {
     Ok(s)
 }
 
-pub struct SqliteAlterer;
+#[derive(Default)]
+pub struct SqliteAlterer {
+    decided: super::Decided,
+}
 
 impl Alterer for SqliteAlterer {
+    fn decide(&self, renames: &[(String, String)]) {
+        self.decided.set(renames);
+    }
+
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let (table, old, new) = (from.extra.first()?, from.extra.get(1)?, to.extra.get(1)?);
         Some(vec![format!("alter table {table} rename column {old} to {new}")])
@@ -540,7 +547,7 @@ impl Alterer for SqliteAlterer {
         match to.kind? {
             // A column changes with its table, whose alter sees the whole of both.
             Kind::Column => Some(vec![]),
-            Kind::Table => alter_table(from, to),
+            Kind::Table => alter_table(from, to, self.decided.of(to.id.strip_prefix("table ")?)),
             _ => None,
         }
     }
@@ -548,7 +555,7 @@ impl Alterer for SqliteAlterer {
 
 /// The statements that take table `from` to `to`: `alter table` where SQLite can, else a rebuild.
 /// A column the planner renames is renamed after this, so the statements write it by its old name.
-fn alter_table(from: &Object, to: &Object) -> Option<Vec<String>> {
+fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>>) -> Option<Vec<String>> {
     let (a, b) = (Info::of(from), Info::of(to));
     if a.virtual_table || b.virtual_table {
         return None;
@@ -563,10 +570,16 @@ fn alter_table(from: &Object, to: &Object) -> Option<Vec<String>> {
     let gone: Vec<&(String, String)> = old_columns.iter().filter(|(c, _)| !new_columns.iter().any(|(n, _)| n == c)).collect();
     let come: Vec<&(String, String)> = new_columns.iter().filter(|(c, _)| !old_columns.iter().any(|(n, _)| n == c)).collect();
     let mut renamed: BTreeMap<String, String> = BTreeMap::new();
-    for (old, def) in &gone {
-        let same: Vec<&String> = come.iter().filter(|(_, d)| d == def).map(|(c, _)| c).collect();
-        if same.len() == 1 && gone.iter().filter(|(_, d)| d == def).count() == 1 {
-            renamed.insert(same[0].clone(), old.clone());
+    match decided {
+        // The planner's decision, which may rename what its rule alone would not.
+        Some(pairs) => renamed.extend(pairs.into_iter().map(|(old, new)| (new, old))),
+        None => {
+            for (old, def) in &gone {
+                let same: Vec<&String> = come.iter().filter(|(_, d)| d == def).map(|(c, _)| c).collect();
+                if same.len() == 1 && gone.iter().filter(|(_, d)| d == def).count() == 1 {
+                    renamed.insert(same[0].clone(), old.clone());
+                }
+            }
         }
     }
     let written_as: BTreeMap<String, String> = old_parts.iter().filter_map(|p| Some((p.column.clone()?, p.tokens[0].text.clone()))).collect();

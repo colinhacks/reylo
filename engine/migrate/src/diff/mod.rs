@@ -31,8 +31,8 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
             let version = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             Box::new(postgres::PostgresAlterer::read(db, version).await?)
         }
-        Dialect::Mysql => Box::new(mysql::MysqlAlterer),
-        Dialect::Sqlite => Box::new(sqlite::SqliteAlterer),
+        Dialect::Mysql => Box::new(mysql::MysqlAlterer::default()),
+        Dialect::Sqlite => Box::new(sqlite::SqliteAlterer::default()),
     })
 }
 
@@ -127,6 +127,29 @@ pub trait Alterer {
         let _ = (from, to);
         None
     }
+    /// The columns the planner renames, each an old column's id and a new one's, given before it asks
+    /// for any statement: an alterer whose table statements write a table's renames (MySQL's alter
+    /// table, SQLite's rebuild) writes these, and no others.
+    fn decide(&self, renames: &[(String, String)]) {
+        let _ = renames;
+    }
+}
+
+/// The renames the planner decided, which an alterer that writes them in a table's statement keeps.
+#[derive(Debug, Default)]
+pub struct Decided(std::cell::RefCell<Option<Vec<(String, String)>>>);
+
+impl Decided {
+    pub fn set(&self, renames: &[(String, String)]) {
+        *self.0.borrow_mut() = Some(renames.to_vec());
+    }
+
+    /// The columns of the table named `table` (as its id writes it) renamed, each its old name and
+    /// its new one; None where no planner decided, and the alterer decides as the planner would.
+    pub fn of(&self, table: &str) -> Option<Vec<(String, String)>> {
+        let prefix = format!("column {table}.");
+        self.0.borrow().as_ref().map(|all| all.iter().filter_map(|(old, new)| Some((old.strip_prefix(&prefix)?.to_string(), new.strip_prefix(&prefix)?.to_string()))).collect())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -198,6 +221,47 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
 
 /// The plan from `from` to `to`.
 pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
+    plan_with(from, to, alterer, &[], &BTreeSet::new())
+}
+
+/// The plan from `from` to `to`, with the columns `renames` names (each an old column's id and a new
+/// one's, in one table) renamed whatever their definitions: a rename the person writing the
+/// migration states, which may change the column's type as well; and the columns `dropped` names
+/// dropped, never guessed renamed.
+pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stated: &[(String, String)], dropped: &BTreeSet<String>) -> Plan {
+    // The renames are decided first, once, for this planner and for the alterer, whose table
+    // statements (MySQL's alter table, SQLite's rebuild) write them. A column that goes while one of
+    // the same definition comes, alone in its table with that definition, is renamed, keeping its
+    // rows, and the file says so above the rename; a rename the person states is renamed whatever
+    // the definitions; a column the person drops is never guessed renamed.
+    let column_of = |schema: &Schema, id: &String| -> Option<(String, String)> {
+        let o = &schema.objects[id];
+        (o.kind == Some(Kind::Column)).then(|| (o.owner.clone().unwrap_or_default(), o.def.clone()))
+    };
+    let gone: Vec<(String, (String, String))> = from.objects.keys().filter(|id| !to.objects.contains_key(*id)).filter_map(|id| column_of(from, id).map(|c| (id.clone(), c))).collect();
+    let come: Vec<(String, (String, String))> = to.objects.keys().filter(|id| !from.objects.contains_key(*id)).filter_map(|id| column_of(to, id).map(|c| (id.clone(), c))).collect();
+    // (new id, old id), and whether it was stated.
+    let mut decided: BTreeMap<String, (String, bool)> = BTreeMap::new();
+    for (old_id, new_id) in renames_stated {
+        let (Some(a), Some(b)) = (gone.iter().find(|(id, _)| id == old_id), come.iter().find(|(id, _)| id == new_id)) else { continue };
+        if a.1 .0 == b.1 .0 {
+            decided.insert(new_id.clone(), (old_id.clone(), true));
+        }
+    }
+    let stated: BTreeSet<String> = decided.values().map(|(old, _)| old.clone()).collect();
+    let taken: BTreeSet<String> = decided.keys().cloned().collect();
+    for (old_id, (table, def)) in gone.iter().filter(|(id, _)| !stated.contains(id) && !dropped.contains(id)) {
+        if !to.objects.contains_key(table) {
+            continue;
+        }
+        let same: Vec<&String> = come.iter().filter(|(id, (t, d))| t == table && d == def && !taken.contains(id)).map(|(id, _)| id).collect();
+        let rivals = gone.iter().filter(|(id, (t, d))| t == table && d == def && !dropped.contains(id) && !stated.contains(id)).count();
+        if same.len() == 1 && rivals == 1 {
+            decided.insert(same[0].clone(), (old_id.clone(), false));
+        }
+    }
+    alterer.decide(&decided.iter().map(|(new, (old, _))| (old.clone(), new.clone())).collect::<Vec<_>>());
+
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -229,27 +293,22 @@ pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
         }
     }
 
-    // A column that goes while one of the same definition comes, alone in its table, is renamed,
-    // keeping its rows; the file says so above the rename.
+    // Each rename's statements, where its table stays; a stated one then changes the column, under
+    // its new name, as any column changes.
     let mut renames: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
-    let column_of = |schema: &Schema, id: &String| -> Option<(String, String)> {
-        let o = &schema.objects[id];
-        (o.kind == Some(Kind::Column)).then(|| (o.owner.clone().unwrap_or_default(), o.def.clone()))
-    };
-    let gone: Vec<(String, (String, String))> = drops.iter().filter(|id| !creates.contains(*id)).filter_map(|id| column_of(from, id).map(|c| (id.clone(), c))).collect();
-    let come: Vec<(String, (String, String))> = creates.iter().filter(|id| !drops.contains(*id)).filter_map(|id| column_of(to, id).map(|c| (id.clone(), c))).collect();
-    for (old_id, (table, def)) in &gone {
-        if !to.objects.contains_key(table) || drops.contains(table) {
+    for (new_id, (old_id, was_stated)) in &decided {
+        let table = from.objects[old_id].owner.clone().unwrap_or_default();
+        if drops.contains(&table) {
             continue;
         }
-        let same: Vec<&String> = come.iter().filter(|(_, (t, d))| t == table && d == def).map(|(id, _)| id).collect();
-        let rivals = gone.iter().filter(|(_, (t, d))| t == table && d == def).count();
-        if same.len() != 1 || rivals != 1 {
-            continue;
+        let Some(mut statements) = alterer.rename(&from.objects[old_id], &to.objects[new_id]) else { continue };
+        if *was_stated && from.objects[old_id].def != to.objects[new_id].def {
+            match alterer.alter(&from.objects[old_id], &to.objects[new_id]) {
+                Some(more) => statements.extend(more),
+                None => continue,
+            }
         }
-        if let Some(statements) = alterer.rename(&from.objects[old_id], &to.objects[same[0]]) {
-            renames.insert(same[0].clone(), (old_id.clone(), statements));
-        }
+        renames.insert(new_id.clone(), (old_id.clone(), statements));
     }
     for (new_id, (old_id, _)) in &renames {
         drops.remove(old_id);
@@ -447,7 +506,7 @@ pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
                 plan.statements.extend(o.drop.iter().cloned());
             }
             Op::Alter(id) => {
-                if let Some((old_id, _)) = renames.get(id) {
+                if let Some((old_id, _)) = renames.get(id).filter(|(old_id, _)| !stated.contains(old_id)) {
                     // The guess is written down with what to write instead, should the two columns
                     // be two: the old one's drop and the new one's add.
                     let new_name = id.rsplit('.').next().unwrap_or_default().to_string();

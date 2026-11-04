@@ -28,7 +28,7 @@ async fn memory() -> Db {
 }
 
 async fn plan(from: &mut Db, to: &mut Db) -> Plan {
-    diff::plan(&diff::sqlite::read(from).await.unwrap(), &diff::sqlite::read(to).await.unwrap(), &diff::sqlite::SqliteAlterer)
+    diff::plan(&diff::sqlite::read(from).await.unwrap(), &diff::sqlite::read(to).await.unwrap(), &diff::sqlite::SqliteAlterer::default())
 }
 
 /// Runs the plan as `reylo migrate` runs a file: the statement that failed, if one did.

@@ -261,6 +261,7 @@ for_each_dialect!(
     create_drafts_one_migration_cached_or_not,
     a_linear_history_keeps_its_lock,
     two_applies_at_once_apply_each_migration_once,
+    create_states_what_it_drops_and_renames,
 );
 
 async fn applies_pending_migrations_once(mut p: P) {
@@ -758,6 +759,54 @@ async fn an_edited_migration_misses_the_cache(mut p: P) {
     assert_eq!(code, 0);
 }
 
+async fn create_states_what_it_drops_and_renames(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, middle_name {text}, legacy {text});"));
+    p.schema(&format!("create table users (id {id}, middle_name {text}, legacy {text});"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users (middle_name, legacy) values ('m', 'l')").await;
+    p.schema(&format!("create table users (id {id}, nickname {text});"));
+    let create = |drop: &[&str], rename: &[(&str, &str)]| reylo_migrate::Choices { drop: drop.iter().map(|d| d.to_string()).collect(), rename: rename.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect() };
+    let made = |p: &P| p.files().into_iter().filter(|f| f.contains("_tidy")).collect::<Vec<_>>();
+    let take_back = |p: &P| {
+        for f in made(p) {
+            std::fs::remove_file(p.dir.join("migrations").join(f)).unwrap();
+        }
+    };
+    // Two text columns go and one comes: no rename is guessed, and nothing is dropped unstated.
+    let choices = create(&[], &[]);
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 1);
+    let out = p.output();
+    assert_has!(&out, r"This migration would drop users\.legacy, users\.middle_name, and their data\n\n  To drop them:\n    reylo migrate create tidy --drop users\.legacy,users\.middle_name\n  If a column was renamed instead:\n    reylo migrate create tidy --rename users\.legacy=<new name>");
+    assert!(made(&p).is_empty(), "nothing is written");
+    // Dropping one leaves the other alone with its definition: renamed, keeping its rows.
+    let choices = create(&["users.legacy"], &[]);
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Renames users\.middle_name to nickname, keeping its rows");
+    let sql = made(&p).iter().map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
+    assert!(sql.contains("rename column middle_name to nickname") && sql.contains("drop column legacy"), "{sql}");
+    take_back(&p);
+    // Both named: both dropped, nickname added.
+    let choices = create(&["users.legacy", "users.middle_name"], &[]);
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 0, "{}", p.peek());
+    let sql = made(&p).iter().map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
+    assert!(!sql.contains("rename") && sql.contains("drop column middle_name"), "{sql}");
+    take_back(&p);
+    p.output();
+    // A name --drop gives that the change does not drop is refused, as a typo would be.
+    let choices = create(&["users.legacy", "users.middle_nam"], &[]);
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 1);
+    assert_has!(p.output(), r"--drop names users\.middle_nam, which this migration doesn't drop");
+    // A stated rename, with a type change, keeps the rows; the data moves by assignment.
+    let narrow = if p.d == Dialect::Sqlite { "text" } else { "varchar(40)" };
+    p.schema(&format!("create table users (id {id}, nickname {narrow});"));
+    let choices = create(&["users.legacy"], &[("users.middle_name", "nickname")]);
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.rows("select nickname from users").await[0].text("nickname"), "m");
+}
+
 async fn two_applies_at_once_apply_each_migration_once(mut p: P) {
     let (int, text) = (p.t.int, p.t.text);
     for k in 0..5u64 {
@@ -844,7 +893,7 @@ async fn create_drafts_one_migration_cached_or_not(mut p: P) {
     let mut drafts = Vec::new();
     for cache in [false, true, true] {
         reylo_migrate::cache::set_enabled(Some(cache));
-        let code = p.run(async |o, log| reylo_migrate::create(o, "more", log).await).await;
+        let code = p.run(async |o, log| reylo_migrate::create(o, "more", &Default::default(), log).await).await;
         reylo_migrate::cache::set_enabled(None);
         let made: Vec<String> = p.files().into_iter().filter(|f| has(f, r"_more(_\d+)?\.sql$")).collect();
         let texts: Vec<String> = made.iter().map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect();
@@ -859,7 +908,7 @@ async fn create_drafts_one_migration_cached_or_not(mut p: P) {
     assert_eq!(drafts[2], drafts[0], "a warm cache changed the draft");
     // The draft, written, checks out, from what `create` kept.
     reylo_migrate::cache::set_enabled(Some(true));
-    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "more", log).await).await, 0, "{}", p.peek());
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "more", &Default::default(), log).await).await, 0, "{}", p.peek());
     p.output();
     reylo_migrate::cache::set_enabled(None);
     let (code, out) = p.check_every_way().await;
@@ -878,7 +927,7 @@ async fn a_linear_history_keeps_its_lock(mut p: P) {
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     // `create` appends its migration to the lock.
     p.schema(&format!("create table users (id {id}, email {text}, nick {text});"));
-    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "nick", log).await).await, 0, "{}", p.peek());
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "nick", &Default::default(), log).await).await, 0, "{}", p.peek());
     let lock = std::fs::read_to_string(p.dir.join("migrations").join("lock.yaml")).unwrap();
     let created = p.files().into_iter().filter(|f| f.ends_with(".sql")).collect::<Vec<_>>();
     assert_eq!(lock, reylo_migrate::lock::render(&created));
@@ -891,7 +940,7 @@ async fn a_linear_history_keeps_its_lock(mut p: P) {
     let out = p.output();
     assert_has!(&out, r"20261027090000_bio\.sql isn't in it");
     assert_has!(&out, r"20261027090000_bio\.sql is older than \d{14}_\w+\.sql, which this database already applied");
-    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "more", log).await).await, 1, "create refuses a lock out of order");
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "more", &Default::default(), log).await).await, 1, "create refuses a lock out of order");
     assert_has!(p.output(), "isn't in it");
     // A bare rebase moves it after the newest and lists it last.
     assert_eq!(p.run(async |o, log| reylo_migrate::rebase(o, &[], log).await).await, 0, "{}", p.peek());
@@ -1118,7 +1167,7 @@ mod adversarial {
         // create writes the change as the server's assignment conversion, which refuses a value
         // the new type cannot hold; an explicit cast to varchar(3) would cut it to 'abc'.
         p.schema("create table t (code varchar(3));");
-        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "narrow", log).await).await, 0, "{}", p.peek());
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "narrow", &Default::default(), log).await).await, 0, "{}", p.peek());
         let made = p.files().into_iter().find(|f| f.ends_with("_narrow.sql")).unwrap();
         let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
         assert!(!sql.contains("using"), "{sql}");

@@ -77,7 +77,7 @@ async fn mysql() {
     };
     let here = std::env::temp_dir();
     let mut admin = Db::connect(&base, &here).await.unwrap();
-    let alterer = diff::mysql::MysqlAlterer;
+    let alterer = diff::mysql::MysqlAlterer::default();
     let bless = std::env::var("REYLO_BLESS").is_ok();
     let mut failures = Vec::new();
     for (n, case) in cases().into_iter().enumerate() {
@@ -179,7 +179,7 @@ async fn mysql_oracle_schemas() {
     };
     let here = std::env::temp_dir();
     let mut admin = Db::connect(&base, &here).await.unwrap();
-    let alterer = diff::mysql::MysqlAlterer;
+    let alterer = diff::mysql::MysqlAlterer::default();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/cases");
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && read(&p.join("dialect")).trim() == "mysql").collect();
     cases.sort();

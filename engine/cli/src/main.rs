@@ -37,8 +37,12 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
 
   init [--schema <name>…]   Write schema.sql and migrations/init.sql from the database's schema
                             (Postgres: the public schema unless named), and record init.sql
-  create <name>             Write the migration that takes the migrations to schema.sql, checked in
-                            a shadow database, named with the current UTC time
+  create <name> [--drop <tables, columns>] [--rename <table>.<column>=<new name>]
+                            Write the migration that takes the migrations to schema.sql, checked in
+                            a shadow database, named with the current UTC time. Every table or
+                            column it drops, with its rows, is named in --drop; a column that
+                            disappears while one of the same definition appears in its table is
+                            renamed, unless --drop names it; --rename states any other rename
   apply [--record <file>…]  Check the database against the migrations in shadow databases, then
                             apply the pending ones. Refuses on any disagreement and runs nothing
                             then. --record records a migration without running it, where the
@@ -79,6 +83,8 @@ struct Args {
     schemas: Vec<String>,
     files: Vec<String>,
     records: Vec<String>,
+    drops: Vec<String>,
+    renames: Vec<(String, String)>,
     switches: Vec<String>,
     rest: Vec<String>,
 }
@@ -100,6 +106,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--schema" => out.schemas.push(value()?),
             "--file" | "-f" => out.files.push(value()?),
             "--record" => out.records.push(value()?),
+            "--drop" => out.drops.extend(value()?.split(',').map(str::trim).filter(|n| !n.is_empty()).map(String::from)),
+            "--rename" => {
+                let v = value()?;
+                let (old, new) = v.split_once('=').ok_or_else(|| format!("--rename takes <table>.<column>=<new name>, not {v}"))?;
+                out.renames.push((old.trim().to_string(), new.trim().to_string()));
+            }
             s if s.starts_with("--") => out.switches.push(s[2..].to_string()),
             _ => out.rest.push(a.clone()),
         }
@@ -182,7 +194,10 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 None => Err(reylo_migrate::Error("name the migration to restore: reylo migrate restore <file>".into())),
             },
             "init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
-            "create" => reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &mut log).await,
+            "create" => {
+                let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
+                reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
+            }
             "rebase" => reylo_migrate::rebase(&opts, &parsed.rest, &mut log).await,
             "repair" => reylo_migrate::repair(&opts, &mut log).await,
             other => {

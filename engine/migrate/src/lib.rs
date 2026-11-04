@@ -21,7 +21,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{check_command, create, init, migrate, rebase, repair, reset, restore, run_sql, Mode, Options};
+pub use commands::{check_command, create, Choices, init, migrate, rebase, repair, reset, restore, run_sql, Mode, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
