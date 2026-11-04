@@ -11,7 +11,7 @@ use project::Project;
 use reylo_migrate::Options;
 use std::collections::HashMap;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 const USAGE: &str = "Usage: reylo <command>
 
@@ -41,8 +41,13 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
                             column it drops, or changes in a way that loses values, is named in
                             --drop. A table or column that goes while one like it comes is renamed;
                             --rename settles a tie
-  apply                     Check the database against the migrations, then apply the pending ones.
-                            Refuses on any disagreement, and runs nothing then
+  apply [--shadows | --no-shadows]
+                            Check the database against the migrations, then apply the pending ones.
+                            Refuses on any disagreement, and runs nothing then. With nothing
+                            pending and the database as Reylo's last run left it, nothing is
+                            replayed; otherwise shadow databases check it first. --shadows always
+                            replays; --no-shadows never does, running what is pending unchecked
+                            and refusing what only a replay could check
   apply --dev               Take a development database to its migrations: rewind what no longer
                             agrees with them, then apply the rest
   apply --reset             Drop everything, apply every migration, then run migrate.post (loses
@@ -66,10 +71,10 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
 
 reylo run \"<sql>\"…          Run SQL on the database as written; --file <path> for a file (a seed)
 
-Settings, in .reylo.yaml:
+The files are in reylo/ beside .reylo.yaml: schema.sql, migrations/, reylo-lock.yaml, and the
+cache in .cache/. Settings, in .reylo.yaml:
+  dir: reylo                 # default: the directory of those files
   migrate:
-    dir: migrations          # default
-    schema: schema.sql       # default
     url: ${DATABASE_URL}     # default: the type check's connection
     shadow_url: ${SHADOW_URL}  # a server for shadow databases, where the target's refuses create database
     history: loose           # unlocked: no reylo-lock.yaml; migrations run by name, one older than
@@ -77,7 +82,7 @@ Settings, in .reylo.yaml:
     strict_comments: true    # default; false leaves comments out of the comparison
     post: reylo run --file seed.sql   # run after apply --reset and wipe
 
-Flags override them for a run: --url, --dir, --schema-file. The development commands (apply --dev,
+Flags override them for a run: --url, and --dir for the directory. The development commands (apply --dev,
 apply --reset, sync, wipe) refuse to run where CI is set.";
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
@@ -102,7 +107,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             args.get(k).cloned().ok_or_else(|| format!("{a} needs a value"))
         };
         match a.as_str() {
-            "--url" | "--dir" | "--schema-file" => {
+            "--url" | "--dir" => {
                 let v = value()?;
                 out.values.insert(a[2..].to_string(), v);
             }
@@ -150,23 +155,27 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
         reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
     }
     let shadow_url = m.shadow_url.as_deref().map(|u| project.expand("migrate.shadow_url", u)).transpose()?;
-    let place = |flag: &str, key: &Option<String>, default: &str| -> PathBuf {
-        match args.values.get(flag) {
-            Some(v) => cwd.join(v),
-            None => project.root.join(key.as_deref().unwrap_or(default)),
-        }
+    // The project's own files, in the directory `dir` names (`reylo`), or --dir for a run.
+    let home = match args.values.get("dir") {
+        Some(v) => cwd.join(v),
+        None => project.root.join(project.config.dir.as_deref().unwrap_or("reylo")),
     };
-    let dir = place("dir", &m.dir, "migrations");
-    // The lock sits beside the migrations' directory.
-    let lock = dir.parent().unwrap_or(&project.root).join(reylo_migrate::lock::LOCK);
     Ok(Options {
         url,
         shadow_url,
-        dir,
-        schema: place("schema-file", &m.schema, "schema.sql"),
+        dir: home.join("migrations"),
+        schema: home.join("schema.sql"),
         locked: m.history != Some(reylo_engine_core::config::History::Loose),
-        lock,
+        lock: home.join(reylo_migrate::lock::LOCK),
+        cache: home.join(".cache"),
         comments: m.strict_comments != Some(false),
+        shadows: if args.switches.iter().any(|x| x == "shadows") {
+            reylo_migrate::ShadowUse::Always
+        } else if args.switches.iter().any(|x| x == "no-shadows") {
+            reylo_migrate::ShadowUse::Never
+        } else {
+            reylo_migrate::ShadowUse::Auto
+        },
         post: m.post.clone(),
         root: project.root.clone(),
     })
@@ -209,6 +218,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
             "apply" if has("reset") => reylo_migrate::reset(&opts, &mut log).await,
             "apply" if has("dev") => reylo_migrate::apply_dev(&opts, in_ci, &mut log).await,
             "apply" => reylo_migrate::apply(&opts, &mut log).await,
+            "sync" if has("watch") => reylo_migrate::sync_watch(&opts, in_ci, None, &mut log).await,
             "sync" => reylo_migrate::sync(&opts, in_ci, &mut log).await,
             "check" => reylo_migrate::check_command(&opts, &mut log).await,
             "sync-history" => reylo_migrate::sync_history(&opts, &mut log).await,
@@ -255,7 +265,14 @@ fn unlock(opts: &Options) -> Result<i32, String> {
 fn set_history(root: &Path, loose: bool) -> Result<(), String> {
     let file = [".reylo.yaml", ".reylo.yml"].iter().map(|n| root.join(n)).find(|p| p.exists()).ok_or("no .reylo.yaml in the project")?;
     let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-    let edited = with_history(&text, loose).ok_or_else(|| format!("couldn't find the migrate section of {} to edit: set migrate.history{} by hand", file.display(), if loose { ": loose" } else { " to linear" }))?;
+    let by_hand = || format!("couldn't edit the migrate section of {}: set migrate.history{} by hand", file.display(), if loose { ": loose" } else { " to linear" });
+    let edited = with_history(&text, loose).ok_or_else(by_hand)?;
+    // The edit stands only where the file then reads as asked.
+    let history = reylo_engine_core::config::parse(&edited).ok().and_then(|p| p.migrate).map(|m| m.history);
+    let wanted = if loose { Some(Some(reylo_engine_core::config::History::Loose)) } else { Some(None) };
+    if history != wanted {
+        return Err(by_hand());
+    }
     if edited != text {
         std::fs::write(&file, edited).map_err(|e| e.to_string())?;
     }
@@ -270,12 +287,17 @@ fn with_history(text: &str, loose: bool) -> Option<String> {
     let header = regex::Regex::new(r"^migrate:\s*(\{\s*\})?\s*(#.*)?$").unwrap();
     let at = lines.iter().position(|l| header.is_match(l))?;
     if lines[at].contains('{') {
-        lines[at] = "migrate:".into();
+        lines[at] = match lines[at].find('#') {
+            Some(c) => format!("migrate: {}", &lines[at][c..]),
+            None => "migrate:".into(),
+        };
     }
-    let end = (at + 1..lines.len()).find(|&k| !lines[k].trim().is_empty() && !lines[k].starts_with([' ', '\t'])).unwrap_or(lines.len());
+    // The section's lines: indented ones, and blank lines and comments between them.
+    let inside = |l: &str| l.trim().is_empty() || l.starts_with([' ', '\t']) || l.trim_start().starts_with('#');
+    let end = (at + 1..lines.len()).find(|&k| !inside(&lines[k])).unwrap_or(lines.len());
     let key = regex::Regex::new(r"^(\s+)history:").unwrap();
     let found = (at + 1..end).find(|&k| key.is_match(&lines[k]));
-    let indent = (at + 1..end).find(|&k| !lines[k].trim().is_empty()).map(|k| lines[k][..lines[k].len() - lines[k].trim_start().len()].to_string()).unwrap_or_else(|| "  ".into());
+    let indent = (at + 1..end).find(|&k| lines[k].starts_with([' ', '\t']) && !lines[k].trim().is_empty() && !lines[k].trim_start().starts_with('#')).map(|k| lines[k][..lines[k].len() - lines[k].trim_start().len()].to_string()).unwrap_or_else(|| "  ".into());
     match (found, loose) {
         (Some(k), true) => lines[k] = format!("{indent}history: loose"),
         (Some(k), false) => {
@@ -285,8 +307,10 @@ fn with_history(text: &str, loose: bool) -> Option<String> {
         (None, false) => {}
     }
     // A section left with no keys stays a section.
-    if !loose && !(at + 1..lines.len()).take_while(|&k| lines[k].trim().is_empty() || lines[k].starts_with([' ', '\t'])).any(|k| !lines[k].trim().is_empty()) {
-        lines[at] = "migrate: {}".into();
+    let keys = (at + 1..lines.len()).take_while(|&k| inside(&lines[k])).any(|k| lines[k].starts_with([' ', '\t']) && !lines[k].trim().is_empty() && !lines[k].trim_start().starts_with('#'));
+    if !loose && !keys {
+        let comment = lines[at].find('#').map(|c| format!(" {}", &lines[at][c..])).unwrap_or_default();
+        lines[at] = format!("migrate: {{}}{comment}");
     }
     let mut out = lines.join(newline);
     if text.ends_with('\n') {
@@ -349,7 +373,7 @@ fn main() {
             2
         }
         Some("generate") => {
-            eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill .reylo/ where the database can be reached, and reylo analyze prints each statement's types.");
+            eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
             2
         }
         Some("migrate") => migrate_command(&args[1..]).unwrap_or_else(|e| {
@@ -383,5 +407,10 @@ mod tests {
         assert_eq!(with_history("migrate:\n  history: loose\n", false).unwrap(), "migrate: {}\n");
         assert_eq!(with_history("migrate:\n    history: linear\n", true).unwrap(), "migrate:\n    history: loose\n");
         assert_eq!(with_history("queries: src\n", true), None);
+        // A comment at the start of a line inside the section is the section's.
+        assert_eq!(with_history("migrate:\n# the shadow server\n  shadow_url: x\n  history: loose\n", false).unwrap(), "migrate:\n# the shadow server\n  shadow_url: x\n");
+        assert_eq!(with_history("migrate:\n  url: x\n# loose for now\n  history: loose\n", true).unwrap(), "migrate:\n  url: x\n# loose for now\n  history: loose\n");
+        assert_eq!(with_history("migrate: {} # opt in\n", true).unwrap(), "migrate: # opt in\n  history: loose\n");
+        assert_eq!(with_history("migrate: # opt in\n  history: loose\n", false).unwrap(), "migrate: {} # opt in\n");
     }
 }

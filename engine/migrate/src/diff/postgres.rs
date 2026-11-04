@@ -7,7 +7,7 @@
 //! creates an object with is then the text `schema.sql` declared it with, where `declare` can match
 //! the two, since the server's rendering of an expression is not always one it reads back to itself.
 
-use super::{Alterer, Change, Kind, Object, Schema};
+use super::{Alterer, Change, Kind, Object, Schema, TypeClass};
 use crate::catalog::{not_extension, not_platform, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
@@ -57,7 +57,7 @@ pub async fn style(db: &mut Db, plan: &mut super::Plan, verbatim: &BTreeSet<Stri
         return Ok(());
     }
     let qualified = format!(" {first}.");
-    for loss in plan.losses.iter_mut().chain(plan.renames.iter_mut().map(|(old, _)| old)) {
+    for loss in plan.losses.iter_mut().chain(plan.renames.iter_mut().map(|(old, _)| old)).chain(plan.narrowings.iter_mut().map(|(id, _)| id)) {
         *loss = loss.replacen(&qualified, " ", 1);
     }
     // A comment holding SQL (what to write instead of a guessed rename) is written as SQL is.
@@ -1653,7 +1653,41 @@ impl PostgresAlterer {
     }
 }
 
+/// A Postgres column type, as format_type writes it, for a change that may lose values.
+fn type_class(ty: &str) -> TypeClass {
+    static PARAMS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(([0-9]+)(?:,\s*([0-9]+))?\)").expect("a valid pattern"));
+    let ty = ty.trim().to_lowercase();
+    if ty.ends_with("[]") {
+        return TypeClass::Other;
+    }
+    let params = PARAMS.captures(&ty).map(|c| (c[1].parse::<u32>().unwrap_or(0), c.get(2).and_then(|s| s.as_str().parse::<u32>().ok())));
+    let base = PARAMS.replace(&ty, "").to_string();
+    match base.as_str() {
+        "smallint" => TypeClass::Int(16),
+        "integer" => TypeClass::Int(32),
+        "bigint" => TypeClass::Int(64),
+        "real" => TypeClass::Float(6),
+        "double precision" => TypeClass::Float(15),
+        "numeric" => TypeClass::Numeric(params.map(|(_, s)| s.unwrap_or(0))),
+        "date" => TypeClass::Date,
+        "timestamp with time zone" | "timestamp without time zone" => TypeClass::Timestamp { zone: base.ends_with("with time zone"), precision: params.map_or(6, |(p, _)| p) },
+        "time with time zone" | "time without time zone" => TypeClass::Time { precision: params.map_or(6, |(p, _)| p) },
+        "text" | "character varying" | "character" | "name" | "citext" | "\"char\"" => TypeClass::Text,
+        "json" => TypeClass::Json,
+        "jsonb" => TypeClass::Jsonb,
+        "interval" => TypeClass::Interval(None),
+        b if b.starts_with("interval ") => TypeClass::Interval(Some(b["interval ".len()..].trim().to_string())),
+        _ => TypeClass::Other,
+    }
+}
+
 impl Alterer for PostgresAlterer {
+    fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
+        let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
+        let why = super::narrowing(&type_class(&a), &type_class(&b))?;
+        Some(format!("changes from {a} to {b}, which {why}"))
+    }
+
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let table = to.owner.as_deref()?.strip_prefix("table ")?;
         let old = from.id.rsplit('.').next()?;

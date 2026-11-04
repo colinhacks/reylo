@@ -43,6 +43,11 @@ pub struct Project {
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
+    /// The directory of the project's own files, beside the project file (`reylo` when absent):
+    /// `schema.sql`, the migrations in `migrations/`, the lock `reylo-lock.yaml`, and the cache in
+    /// `.cache/`, which the type check and the migrations keep there, out of git.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
     /// `reylo migrate`'s settings; the section's presence opts the project in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrate: Option<Migrate>,
@@ -53,18 +58,13 @@ pub struct Project {
     pub api: Option<serde_yaml::Value>,
 }
 
-/// `reylo migrate`'s settings: where the migrations and the declared schema are (`migrations` and
-/// `schema.sql` beside the project file when absent), the database (the type check's connection
-/// when absent), a server to make shadow databases on where the target's refuses `create database`,
-/// whether the project is locked, the strictness flags, and `post`, a shell command run after
-/// `apply --reset` replays every migration, and after `wipe` (a seed).
+/// `reylo migrate`'s settings: the database (the type check's connection when absent), a server to
+/// make shadow databases on where the target's refuses `create database`, whether the project is
+/// locked, the strictness flags, and `post`, a shell command run after `apply --reset` replays every
+/// migration, and after `wipe` (a seed). Where the files are is the top-level `dir`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migrate {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub dir: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub schema: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -129,8 +129,9 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
+        project.dir = project.dir.as_deref().map(unmask_placeholders);
         if let Some(m) = project.migrate.as_mut() {
-            for value in [&mut m.dir, &mut m.schema, &mut m.url, &mut m.shadow_url, &mut m.post].into_iter().flatten() {
+            for value in [&mut m.url, &mut m.shadow_url, &mut m.post].into_iter().flatten() {
                 *value = unmask_placeholders(value);
             }
         }
@@ -201,8 +202,9 @@ mod tests {
 
     #[test]
     fn reads_the_migrate_section() {
-        let p = parse("migrate:\n  dir: db/migrations\n  url: ${MIGRATE_URL}\n  history: linear\n  post: reylo run --file seed.sql\n").unwrap();
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "migrate": { "dir": "db/migrations", "url": "${MIGRATE_URL}", "history": "linear", "post": "reylo run --file seed.sql" } }));
+        let p = parse("dir: db\nmigrate:\n  url: ${MIGRATE_URL}\n  history: loose\n  post: reylo run --file seed.sql\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "url": "${MIGRATE_URL}", "history": "loose", "post": "reylo run --file seed.sql" } }));
+        assert!(parse("migrate:\n  dir: db/migrations\n").is_err(), "the migrations' place is the top-level dir's");
         assert_eq!(parse("migrate:\n  history: loose\n").unwrap().migrate.and_then(|m| m.history), Some(History::Loose));
         assert_eq!(parse("migrate: {}\n").unwrap().migrate, Some(Migrate::default()));
         assert!(parse("migrate:\n  folder: x\n").is_err());

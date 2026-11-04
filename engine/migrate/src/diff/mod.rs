@@ -110,6 +110,9 @@ pub struct Schema {
     pub objects: BTreeMap<String, Object>,
     /// Statements taken as written from the file that declared the schema, which keep its text.
     pub verbatim: BTreeSet<String>,
+    /// Read from the database a command changes, not from a replay: its partitions that no
+    /// migration made (made at run time) are its data, which no plan from it drops.
+    pub live: bool,
 }
 
 impl Schema {
@@ -132,6 +135,62 @@ pub trait Alterer {
     /// table, SQLite's rebuild) writes these, and no others.
     fn decide(&self, renames: &[(String, String)]) {
         let _ = renames;
+    }
+    /// Where a column's change of type keeps it but can lose what its values hold without failing
+    /// (a timestamp to a date, a smaller scale), what it loses, as the end of a sentence: "changes
+    /// from timestamptz to date, which keeps only the date".
+    fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
+        let _ = (from, to);
+        None
+    }
+}
+
+/// A column type, as far as a change between two of them can lose values without failing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TypeClass {
+    /// An integer of this many bits.
+    Int(u32),
+    /// A float of about this many significant digits.
+    Float(u32),
+    /// A decimal of this scale, or any.
+    Numeric(Option<u32>),
+    Date,
+    Timestamp { zone: bool, precision: u32 },
+    Time { precision: u32 },
+    /// An interval, with the fields it keeps (`day`, `hour to minute`), or all of them.
+    Interval(Option<String>),
+    /// Text: a string type, or SQLite's text or no affinity, for which numbers are kept as written.
+    Text,
+    /// JSON kept as written (Postgres's `json`).
+    Json,
+    /// JSON kept as parsed (Postgres's `jsonb`, MySQL's `json`): duplicate keys, key order and spacing go.
+    Jsonb,
+    Other,
+}
+
+/// What a change of a column's values from one type to another loses without failing, written
+/// after "which": None where every value is kept or the change fails on one it can't hold.
+pub fn narrowing(from: &TypeClass, to: &TypeClass) -> Option<String> {
+    use TypeClass::*;
+    let digits = |n: u32| format!("keeps about {n} significant digits");
+    let places = |p: u32| if p == 0 { "rounds to whole seconds".to_string() } else { format!("rounds to {p} decimal places of a second") };
+    match (from, to) {
+        (Timestamp { .. }, Date) => Some("keeps only the date".into()),
+        (Timestamp { .. }, Time { .. }) => Some("keeps only the time of day".into()),
+        (Timestamp { zone: true, .. }, Timestamp { zone: false, .. }) => Some("keeps the local time, not the moment".into()),
+        (Timestamp { precision: a, .. }, Timestamp { precision: b, .. }) | (Time { precision: a }, Time { precision: b }) if b < a => Some(places(*b)),
+        (Numeric(a), Numeric(Some(b))) if a.is_none_or(|a| *b < a) => Some(if *b == 0 { "rounds to whole numbers".into() } else { format!("rounds to {b} decimal places") }),
+        (Float(_), Numeric(Some(b))) => Some(if *b == 0 { "rounds to whole numbers".into() } else { format!("rounds to {b} decimal places") }),
+        (Numeric(s), Int(_)) if *s != Some(0) => Some("rounds to whole numbers".into()),
+        (Float(_), Int(_)) => Some("rounds to whole numbers".into()),
+        (Float(a), Float(b)) if b < a => Some(digits(*b)),
+        (Numeric(_), Float(b)) => Some(digits(*b)),
+        (Int(bits), Float(b)) if (*b <= 6 && *bits > 16) || (*b <= 15 && *bits > 32) => Some(digits(*b)),
+        (Interval(a), Interval(Some(b))) if a.as_deref() != Some(b.as_str()) => Some(format!("keeps only the {b} of each interval")),
+        (Text, Int(_) | Float(_) | Numeric(_)) => Some("stores text that reads as a number as that number ('007' becomes 7)".into()),
+        (Text, Date | Timestamp { .. } | Time { .. }) => Some("stores text that reads as a time as that time ('2026-1-2' becomes 2026-01-02)".into()),
+        (Text | Json, Jsonb) => Some("keeps the JSON's values, not its duplicate keys, key order or spacing".into()),
+        _ => None,
     }
 }
 
@@ -169,6 +228,9 @@ pub struct Plan {
     /// Columns it renames rather than dropping one and adding the other, each the old column's id
     /// and the new name, for the person running `create` to be told.
     pub renames: Vec<(String, String)>,
+    /// Columns kept whose change of type can lose what their values hold without failing, each the
+    /// column's id and what it loses ("changes from … to …, which …"), for `--drop` to accept.
+    pub narrowings: Vec<(String, String)>,
 }
 
 impl Plan {
@@ -177,6 +239,9 @@ impl Plan {
         let mut out = String::new();
         for loss in &self.losses {
             out.push_str(&format!("-- loses data: {}\n", loss.trim_start_matches("column ").trim_start_matches("table ")));
+        }
+        for (column, why) in &self.narrowings {
+            out.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
         }
         for s in &self.statements {
             out.push_str(s.trim_end());
@@ -247,6 +312,41 @@ pub fn swap_name(text: &str, old: &str, new: &str) -> String {
     out
 }
 
+/// The family of a column's type, from the first word of its definition, in any database's
+/// spelling: numbers, strings, times, and so on; a type of none of them is its own.
+fn family(def: &str) -> String {
+    let first = def.trim_start().split(|c: char| c.is_whitespace() || c == '(').next().unwrap_or_default().to_lowercase();
+    let of = |words: &[&str]| words.contains(&first.as_str());
+    if of(&["smallint", "integer", "int", "int2", "int4", "int8", "bigint", "tinyint", "mediumint", "serial", "bigserial", "smallserial", "numeric", "decimal", "real", "double", "float", "float4", "float8", "number", "money"]) {
+        "number".into()
+    } else if of(&["text", "varchar", "char", "character", "nchar", "nvarchar", "citext", "name", "string", "clob", "tinytext", "mediumtext", "longtext"]) {
+        "string".into()
+    } else if of(&["date", "time", "timestamp", "timestamptz", "timetz", "datetime", "year"]) {
+        "time".into()
+    } else if of(&["blob", "bytea", "binary", "varbinary", "tinyblob", "mediumblob", "longblob"]) {
+        "binary".into()
+    } else {
+        first
+    }
+}
+
+/// The table a partition, or a table that inherits another, belongs to, by id.
+fn parent_of(o: &Object) -> Option<String> {
+    o.extra.iter().find_map(|l| l.strip_prefix("partition of ").or_else(|| l.strip_prefix("inherits ")).map(|p| format!("table {}", p.split(' ').next().unwrap_or_default())))
+}
+
+/// `schema` without its partitions (and inheriting children) of a table `reference` has that
+/// `reference` lacks, and what they own: children made at run time, which are data.
+pub fn without_extra_children(schema: &mut Schema, reference: &Schema) {
+    let extra: Vec<String> = schema.objects.values().filter(|o| o.kind == Some(Kind::Table) && !reference.objects.contains_key(&o.id) && parent_of(o).is_some_and(|p| reference.objects.contains_key(&p))).map(|o| o.id.clone()).collect();
+    for id in extra {
+        let owned: Vec<String> = with_owned(schema, &id).into_iter().map(String::from).collect();
+        for o in owned {
+            schema.objects.remove(&o);
+        }
+    }
+}
+
 /// A table's id's parts (`table public.users` is public, users), unquoted.
 fn table_parts(id: &str) -> Vec<String> {
     let rest = id.split_once(' ').map_or(id, |(_, r)| r);
@@ -271,7 +371,11 @@ fn table_parts(id: &str) -> Vec<String> {
 /// `dropped` names. A partition is renamed with its table.
 pub fn table_renames(from: &Schema, to: &Schema, stated: &[(String, String)], dropped: &BTreeSet<String>) -> Vec<(String, String, bool)> {
     let tables = |a: &Schema, b: &Schema| -> Vec<String> { a.objects.values().filter(|o| o.kind == Some(Kind::Table) && !b.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect() };
-    let (gone, come) = (tables(from, to), tables(to, from));
+    let (mut gone, come) = (tables(from, to), tables(to, from));
+    if from.live {
+        let kept_parent = |id: &String| from.objects[id].extra.iter().any(|l| l.strip_prefix("partition of ").or_else(|| l.strip_prefix("inherits ")).is_some_and(|p| to.objects.contains_key(&format!("table {}", p.split(' ').next().unwrap_or_default()))));
+        gone.retain(|id| !kept_parent(id));
+    }
     let stays: Vec<String> = from.objects.values().filter(|o| o.kind == Some(Kind::Table) && to.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect();
     let mut out: Vec<(String, String, bool)> = stated.iter().filter(|(o, n)| gone.contains(o) && come.contains(n)).map(|(o, n)| (o.clone(), n.clone(), true)).collect();
     let bare = |id: &str| table_parts(id).pop().unwrap_or_default();
@@ -308,7 +412,26 @@ pub fn table_renames(from: &Schema, to: &Schema, stated: &[(String, String)], dr
             found.push(((*old).clone(), (*same[0]).clone(), false));
         }
         if found.is_empty() {
-            break;
+            // Last, a table that goes while one comes in its schema, alone both ways, with most of
+            // the new one's columns by name: renamed, its columns then changed as any table's.
+            // Columns most tables have (a key, timestamps) say nothing of which table it is.
+            const COMMON: [&str; 5] = ["id", "created_at", "updated_at", "inserted_at", "deleted_at"];
+            let names = |schema: &Schema, id: &str| -> BTreeSet<String> { schema.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(id)).map(|o| table_parts(&o.id).pop().unwrap_or_default().to_lowercase()).filter(|n| !COMMON.contains(&n.as_str())).collect() };
+            for old in &free_gone {
+                let peers: Vec<&&String> = free_gone.iter().filter(|g| same_schema(g, old)).collect();
+                let candidates: Vec<&&String> = free_come.iter().filter(|c| same_schema(c, old) && !stays.iter().any(|t| same_schema(t, c) && shape(to, t, &[(bare(t), bare(c))]) == shape(to, c, &[]))).collect();
+                if peers.len() != 1 || candidates.len() != 1 {
+                    continue;
+                }
+                let (theirs, ours) = (names(to, candidates[0]), names(from, old));
+                let shared = theirs.intersection(&ours).count();
+                if shared > 0 && shared * 2 > theirs.len() && shared * 2 > ours.len() {
+                    found.push(((*old).clone(), (*candidates[0]).clone(), false));
+                }
+            }
+            if found.is_empty() {
+                break;
+            }
         }
         out.extend(found);
     }
@@ -356,8 +479,28 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             decided.insert(same[0].clone(), (old_id.clone(), false));
         }
     }
+    // Then a table where one column goes and one comes, of one family of types (numbers, strings,
+    // times…): renamed, its type changed as the new one's (a change that loses values still needs
+    // --drop). Across families (text to a date), they are two columns unless --rename says so.
+    let tables: BTreeSet<&String> = gone.iter().map(|(_, (t, _))| t).filter(|t| to.objects.contains_key(*t)).collect();
+    for table in tables {
+        let paired_old: BTreeSet<&String> = decided.values().map(|(old, _)| old).collect();
+        let left: Vec<&String> = gone.iter().filter(|(id, (t, _))| t == table && !dropped.contains(id) && !stated.contains(id) && !paired_old.contains(id)).map(|(id, _)| id).collect();
+        let came: Vec<&String> = come.iter().filter(|(id, (t, _))| t == table && !decided.contains_key(id)).map(|(id, _)| id).collect();
+        if left.len() == 1 && came.len() == 1 && family(&from.objects[left[0]].def) == family(&to.objects[came[0]].def) {
+            decided.insert(came[0].clone(), (left[0].clone(), false));
+        }
+    }
     alterer.decide(&decided.iter().map(|(new, (old, _))| (old.clone(), new.clone())).collect::<Vec<_>>());
 
+    // A partition, or a table inheriting another, of a table the target keeps, which the target
+    // doesn't name, was made at run time (pg_partman's, TimescaleDB's chunks): data, left as it is.
+    let mut left: BTreeSet<String> = BTreeSet::new();
+    for o in from.objects.values().filter(|o| from.live && o.kind == Some(Kind::Table) && !to.objects.contains_key(&o.id)) {
+        if parent_of(o).is_some_and(|p| to.objects.contains_key(&p)) {
+            left.extend(with_owned(from, &o.id).into_iter().map(String::from));
+        }
+    }
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -365,6 +508,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     let mut blocking: BTreeSet<String> = BTreeSet::new();
     for (id, a) in &from.objects {
         match to.objects.get(id) {
+            None if left.contains(id) => {}
             None => {
                 drops.insert(id.clone());
             }
@@ -398,7 +542,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             continue;
         }
         let Some(mut statements) = alterer.rename(&from.objects[old_id], &to.objects[new_id]) else { continue };
-        if *was_stated && from.objects[old_id].def != to.objects[new_id].def {
+        let _ = was_stated;
+        if from.objects[old_id].def != to.objects[new_id].def {
             match alterer.alter(&from.objects[old_id], &to.objects[new_id]) {
                 Some(more) => statements.extend(more),
                 None => continue,
@@ -592,6 +737,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     }
 
     let mut plan = Plan::default();
+    // A column kept, or renamed, whose type changes so that values are lost without failing.
+    for (id, a) in from.objects.iter().filter(|(_, o)| o.kind == Some(Kind::Column)) {
+        let to_id = renames.iter().find(|(_, (old, _))| old == id).map(|(new, _)| new).unwrap_or(id);
+        let Some(b) = to.objects.get(to_id) else { continue };
+        if a.def != b.def && !(drops.contains(id) && creates.contains(id)) {
+            if let Some(why) = alterer.narrows(a, b) {
+                plan.narrowings.push((id.clone(), why));
+            }
+        }
+    }
     for k in order {
         match &ops[k] {
             Op::Drop(id) => {

@@ -26,8 +26,13 @@ pub struct Options {
     /// branches that add migrations conflict on it. Unlocked, migrations run by name, and one that
     /// lands older than one already applied runs only where both orders end the same.
     pub locked: bool,
-    /// The lock's file, `reylo-lock.yaml`.
+    /// The lock's file, `reylo/reylo-lock.yaml`.
     pub lock: PathBuf,
+    /// The cache of replays and the SQLite lock files, `reylo/.cache/`.
+    pub cache: PathBuf,
+    /// When apply builds shadow databases: where the stored fingerprint can't decide (the default),
+    /// always (`--shadows`), or never, refusing what only shadows could check (`--no-shadows`).
+    pub shadows: ShadowUse,
     /// Whether comments on objects are compared (`strict_comments`, on by default).
     pub comments: bool,
     /// A shell command run after `apply --reset` replays every migration (a seed).
@@ -43,6 +48,16 @@ impl Options {
 }
 
 pub type Log<'a> = &'a mut dyn FnMut(&str);
+
+/// When apply builds shadow databases.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ShadowUse {
+    /// Only where the fingerprint its last run stored can't say the database is as that run left it.
+    #[default]
+    Auto,
+    Always,
+    Never,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Migration {
@@ -137,11 +152,14 @@ fn history_ddl(d: Dialect) -> String {
     }
 }
 
-fn now_sql(d: Dialect) -> &'static str {
+/// The time a row is applied at: now, and after every row already there, so that rows written in
+/// one run read back in the order they were written. On SQLite, whose clock has milliseconds, a tie
+/// is broken by the row's rowid instead ([`read_history`]).
+fn now_sql(d: Dialect) -> String {
     match d {
-        Dialect::Postgres => "clock_timestamp()",
-        Dialect::Mysql => "now(6)",
-        Dialect::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')",
+        Dialect::Postgres => format!("greatest(clock_timestamp(), (select max(applied_at) + interval '1 microsecond' from {HISTORY_TABLE}))"),
+        Dialect::Mysql => format!("greatest(now(6), coalesce((select max(h.applied_at) + interval 1 microsecond from (select applied_at from {HISTORY_TABLE}) h), now(6)))"),
+        Dialect::Sqlite => "strftime('%Y-%m-%d %H:%M:%f', 'now')".into(),
     }
 }
 
@@ -167,14 +185,15 @@ async fn read_history(db: &mut Db) -> Result<Vec<HistoryRow>, Error> {
         return Ok(vec![]);
     }
     let d = db.dialect();
-    // Rows applied in one run share a timestamp at the clock's resolution (SQLite's is a
-    // millisecond), and a run applies in time order, so a tie is broken by it: init.sql first.
+    // Rows are written each after the last (`now_sql`); on SQLite, whose clock has milliseconds, rows
+    // written in one run tie, and are read in the order they were written, by rowid.
     let applied_at = if d == Dialect::Postgres { "applied_at::text" } else { "applied_at" };
+    let tie = if d == Dialect::Sqlite { "rowid, " } else { "" };
     // A table an earlier build made has no fingerprint column until the next apply adds it.
     let fingerprint = if has_fingerprint(db).await? { "fingerprint" } else { "null as fingerprint" };
     let rows = db
         .rows(&format!(
-            "select name, {} as body, {applied_at} as applied_at, {fingerprint} from {HISTORY_TABLE} order by applied_at is null, applied_at, case when name = '{INIT}' then '' else name end",
+            "select name, {} as body, {applied_at} as applied_at, {fingerprint} from {HISTORY_TABLE} order by applied_at is null, applied_at, {tie}case when name = '{INIT}' then '' else name end",
             sql_col(d)
         ))
         .await?;
@@ -234,7 +253,7 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 /// once (two instances of an app, each migrating as it starts) neither decide alike nor apply alike:
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
-/// file of the project's (in `.reylo/`, which only these runs open), held while the answer lives.
+/// file of the project's (in its cache, which only these runs open), held while the answer lives.
 async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
@@ -255,7 +274,7 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             let canonical = std::fs::canonicalize(&path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path);
             let mut digest = crate::cache::Sha256::new();
             digest.part(canonical.as_bytes());
-            let dir = opts.root.join(".reylo").join("migrate").join("locks");
+            let dir = opts.cache.join("migrate").join("locks");
             std::fs::create_dir_all(&dir)?;
             let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(crate::cache::hex(&digest.finish()[..8])))?;
             file.lock()?;
@@ -266,7 +285,7 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
 
 async fn insert_row(db: &mut Db, m: &Migration, applied: bool) -> Result<(), Error> {
     let d = db.dialect();
-    let sql = format!("insert into {HISTORY_TABLE} (name, {}, applied_at) values ({}, {}, {})", sql_col(d), db.param(1), db.param(2), if applied { now_sql(d) } else { "null" });
+    let sql = format!("insert into {HISTORY_TABLE} (name, {}, applied_at) values ({}, {}, {})", sql_col(d), db.param(1), db.param(2), if applied { now_sql(d) } else { "null".to_string() });
     db.exec_with(&sql, &[&m.name, &m.sql]).await
 }
 
@@ -424,6 +443,12 @@ pub struct Plan {
     pub landed: Vec<String>,
     /// The invalid indexes such statements left, which apply drops before running them again.
     pub leftovers: Vec<Leftover>,
+    /// Decided without shadow databases: the database is as Reylo's last run left it.
+    pub quick: bool,
+    /// The check needs shadow databases, and was given no server to make them on.
+    pub needs_shadows: bool,
+    /// What the database is to read as once the pending migrations have run, as shadows replayed it.
+    pub expected: Option<Vec<String>>,
 }
 
 /// An index a lone `create index concurrently` (or `reindex concurrently`) left invalid when it was
@@ -665,7 +690,7 @@ fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
 /// Checks the target against the migration files, and in `Mode::Check` the migrations against
 /// schema.sql too; changes nothing. Nothing is ever recorded without running but a lone statement
 /// of apply's own, cut off after it ran and before its row was finished, which shadows show landed.
-pub async fn check(db: &mut Db, server: &mut Server, opts: &Options, mode: Mode, log: Log<'_>) -> Result<Plan, Error> {
+pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mode: Mode, log: Log<'_>) -> Result<Plan, Error> {
     let d = db.dialect();
     let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
@@ -711,7 +736,7 @@ pub async fn check(db: &mut Db, server: &mut Server, opts: &Options, mode: Mode,
     // A locked project's databases run the lock's order, and nothing else.
     if opts.locked && problems.is_empty() {
         if let Some(k) = applied.iter().zip(&files).position(|(r, f)| r.name != f.name) {
-            problems.push(Problem::new(format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), files[k].name)).note("A locked project's databases run its migrations in the lock's order. On a development database, take it to that order:").fix("", &["reylo migrate apply --dev"]));
+            problems.push(Problem::new(format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), files[k].name)).note("A locked project's databases run its migrations in the lock's order. Where one ran them otherwise, the lock was merged keeping a branch's lines: keep main's.").fix("On a development database, take it to the lock's order", &["reylo migrate apply --dev"]));
         }
     }
     // Nothing is recorded without running but what a cut-off run of apply's own left (below).
@@ -763,16 +788,46 @@ pub async fn check(db: &mut Db, server: &mut Server, opts: &Options, mode: Mode,
         }
         None => None,
     };
+    // apply needs no shadow database where the database is as Reylo's last run left it: nothing
+    // has changed it since, and what is pending runs after what ran. A first run (is the database
+    // empty, as a replay of nothing is?), a late migration (unlocked) and a cut-off statement are
+    // decided by shadows.
+    let late = !opts.locked && pending.iter().any(|p| p.name != INIT && p.time < newest);
+    let cut_off = history.iter().any(|r| !r.applied) || !leftovers.is_empty();
+    // With migrations pending, shadows run them first, so that one that fails does before any runs,
+    // and so that what they leave is known; --no-shadows trusts them instead.
+    if mode == Mode::Apply && opts.shadows != ShadowUse::Always && !late && !cut_off && unchanged == Some(true) && (pending.is_empty() || opts.shadows == ShadowUse::Never) {
+        return Ok(Plan { pending, unchanged, leftovers, quick: true, ..Plan::default() });
+    }
+    let Some(server) = server else {
+        if opts.shadows == ShadowUse::Never {
+            let why = if late {
+                "a migration is older than one this database applied, and only shadows show whether both orders end the same"
+            } else if cut_off {
+                "a statement was cut off, and only shadows show whether its change landed"
+            } else {
+                match unchanged {
+                    Some(false) => "the database changed since Reylo last applied to it, and only shadows show how",
+                    _ if history.iter().any(|r| r.fingerprint.is_some()) => "the server or Reylo was upgraded since the fingerprint was stored",
+                    _ => "no run of Reylo's stored a fingerprint of this database yet",
+                }
+            };
+            let problem = Problem::new("Without shadow databases, Reylo can't tell this database is as its migrations left it").note(format!("{why}.")).fix("Check it with shadows once: on a server where Reylo can create databases, or with migrate.shadow_url", &["reylo migrate apply"]);
+            return Ok(Plan { problems: vec![problem], ..Plan::default() });
+        }
+        return Ok(Plan { needs_shadows: true, ..Plan::default() });
+    };
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     // A lone statement cut off before its row was finished did run, or did not: the database says
     // which, and one that landed is recorded, as the row it started says it ran.
     let started: Vec<String> = history.iter().filter(|r| !r.applied).map(|r| r.name.clone()).collect();
-    let mut run = Run { live: &live, schema_sql: schema_sql.as_deref(), files: &files, applied_files: &applied_files, records, pending, started, landed: vec![], d };
+    let mut run = Run { live: &live, schema_sql: schema_sql.as_deref(), files: &files, applied_files: &applied_files, records, pending, started, landed: vec![], d, expected: Default::default(), locked: opts.locked };
     let result = check_in_shadows(&mut shadows, db, &mut run).await;
     shadows.finish().await;
     let problems = result?;
-    Ok(Plan { problems, records: run.records, pending: run.pending, unchanged, landed: run.landed, leftovers })
+    let expected = run.expected.into_inner();
+    Ok(Plan { problems, records: run.records, pending: run.pending, unchanged, landed: run.landed, leftovers, expected, ..Plan::default() })
 }
 
 /// What a check holds the shadows against.
@@ -787,6 +842,10 @@ struct Run<'a> {
     started: Vec<String>,
     landed: Vec<String>,
     d: Dialect,
+    /// What the replay of the history and the pending migrations reads as: what this database is to
+    /// read as once they have run.
+    expected: std::cell::RefCell<Option<Vec<String>>>,
+    locked: bool,
 }
 
 async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut Run<'_>) -> Result<Vec<Problem>, Error> {
@@ -795,7 +854,7 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         let lane = shadows.lane();
         shadows.push(lane, run.applied_files.iter().chain(&run.records).chain(&landed).map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(lane).await {
-            if lines == run.live {
+            if crate::catalog::without_extra_children(run.live, &lines) == lines {
                 run.pending.retain(|m| !landed.contains(m));
                 run.landed = landed.iter().map(|m| m.name.clone()).collect();
                 run.records.extend(landed);
@@ -814,7 +873,7 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         Ok(lines) => lines,
         Err((m, error)) => return Ok(vec![Problem::new(format!("{m} fails when replayed in a shadow database")).note(error)]),
     };
-    if checkpoint != run.live {
+    if crate::catalog::without_extra_children(run.live, &checkpoint) != checkpoint {
         return drift(shadows, target, run, &checkpoint).await;
     }
     shadows.push(b_lane, run.pending.iter().map(Step::of));
@@ -822,6 +881,7 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         Ok(lines) => lines,
         Err((m, error)) => return Ok(vec![Problem::new(format!("{m} fails on this database's history")).note(error)]),
     };
+    *run.expected.borrow_mut() = Some(b.clone());
 
     // C: every migration in name order, unless that is B's own sequence.
     let b_order: Vec<&str> = run.applied_files.iter().chain(&run.records).chain(&run.pending).map(|f| f.name.as_str()).collect();
@@ -869,13 +929,15 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
 /// history makes to what the database has, and the ways out. Where the next pending migrations,
 /// none of which changes data, make exactly the change, recording them is named.
 async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkpoint: &[String]) -> Result<Vec<Problem>, Error> {
-    let (only_history, only_live) = difference(checkpoint, run.live);
+    // Partitions made at run time are data, and no part of what differs.
+    let live = &crate::catalog::without_extra_children(run.live, checkpoint)[..];
+    let (only_history, only_live) = difference(checkpoint, live);
     if !run.records.is_empty() {
         let names = run.records.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
         let without = shadows.lane();
         shadows.push(without, run.applied_files.iter().map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(without).await {
-            if lines == run.live {
+            if lines == live {
                 return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate apply"])]);
             }
         }
@@ -888,7 +950,7 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         let lane = shadows.lane();
         shadows.push(lane, run.applied_files.iter().chain(&run.records).chain(&run.pending[..j]).map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(lane).await {
-            if lines == run.live {
+            if lines == live {
                 hint = run.pending[..j].iter().map(|m| m.name.clone()).collect();
                 break;
             }
@@ -912,6 +974,12 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
     }
     if !hint.is_empty() {
         problem = problem.fix(format!("{} {} exactly that change. Record the history the database has, running nothing", hint.join(" and "), if hint.len() == 1 { "makes" } else { "make" }), &["reylo migrate sync-history"]);
+    } else if !only_live.is_empty() && run.locked {
+        // A new migration is a draft until development locks it; then this database's history can
+        // be recorded with it.
+        problem = problem
+            .fix("Keep it: add it to schema.sql, write the migration, and apply it in development, which locks it", &["reylo migrate create <name>", "reylo migrate apply --dev"])
+            .fix("Then, with the lock committed, record this database's history, running nothing", &["reylo migrate sync-history"]);
     } else if !only_live.is_empty() {
         problem = problem.fix("Keep it: add it to schema.sql, write the migration, then record the history the database has, running nothing", &["reylo migrate create <name>", "reylo migrate sync-history"]);
     }
@@ -928,6 +996,8 @@ async fn plan_text(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Option
         crate::diff::postgres::declare(to, &mut target, sql).await.ok()?;
     }
     let current = crate::diff::read(from).await.ok()?;
+    // Partitions the database made at run time are data, not a difference.
+    crate::diff::without_extra_children(&mut target, &current);
     let alterer = crate::diff::alterer(from).await.ok()?;
     let mut plan = crate::diff::plan(&current, &target, alterer.as_ref());
     style(from, &mut plan, &target).await.ok()?;
@@ -996,10 +1066,9 @@ fn print_problems(problems: &[Problem], log: Log<'_>) {
 /// `reylo migrate apply`: checks the database against the migrations, then applies what is pending.
 /// Refuses on any disagreement, and runs nothing then.
 pub async fn apply(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    let (mut db, mut server, swept) = open(opts).await?;
-    let result = apply_on(&mut db, &mut server, swept, opts, log).await;
+    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let result = apply_on(&mut db, opts, log).await;
     db.close().await;
-    server.close().await;
     result
 }
 
@@ -1009,10 +1078,22 @@ fn swept_note(swept: usize, log: Log<'_>) {
     }
 }
 
-async fn apply_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    swept_note(swept, log);
+async fn apply_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let _held = lock(db, opts).await?;
-    let plan = check(db, server, opts, Mode::Apply, log).await?;
+    let mut plan = check(db, None, opts, Mode::Apply, log).await?;
+    if plan.needs_shadows {
+        let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
+        server.copy_default_privileges(!sets_default_privileges(opts));
+        let checked = async {
+            swept_note(server.sweep().await?, log);
+            check(db, Some(&mut server), opts, Mode::Apply, log).await
+        }
+        .await;
+        server.close().await;
+        plan = checked?;
+    } else if plan.quick && plan.ok() {
+        log(&paint("dim", "Checked without shadow databases: this database is as Reylo's last run left it"));
+    }
     if !plan.ok() {
         print_problems(&plan.problems, log);
         log("");
@@ -1020,6 +1101,15 @@ async fn apply_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options
         return Ok(1);
     }
     if plan.pending.is_empty() && plan.records.is_empty() {
+        // Shadows found the database as its migrations made it: its fingerprint is stored again,
+        // so the next run needs none (a server upgraded, a partition made at run time).
+        if !plan.quick && plan.unchanged != Some(true) {
+            if let Some(last) = read_history(db).await?.iter().rfind(|r| r.applied) {
+                ensure_history(db).await?;
+                let value = fingerprint(db, opts.scope()).await?;
+                set_fingerprint(db, &last.name, &value).await?;
+            }
+        }
         log(&format!("{} Up to date", paint("green", "✓")));
         return Ok(0);
     }
@@ -1053,13 +1143,23 @@ async fn apply_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options
             }
         }
     }
-    // The schema as this run leaves it, on the run's last row: the next run reads whether anything
-    // changed the database since.
+    // The schema as this run leaves it, on the run's last row, where it is what the replay made of
+    // the same migrations (or --no-shadows trusts it): the next run reads whether anything changed
+    // the database since. A migration that did something else here than in its replay (DDL that
+    // depends on the rows) leaves none, so the next run checks in shadows, and says how it differs.
     if last.is_some() {
-        // On the row a later read takes as the last, which a tie on the clock may make another.
-        if let Some(row) = read_history(db).await?.iter().rfind(|r| r.applied) {
-            let value = fingerprint(db, opts.scope()).await?;
-            set_fingerprint(db, &row.name, &value).await?;
+        let now = catalog(db, opts.scope()).await?;
+        let verified = match &plan.expected {
+            Some(expected) => crate::catalog::without_extra_children(&now, expected) == *expected,
+            None => opts.shadows == ShadowUse::Never,
+        };
+        if verified {
+            if let Some(row) = read_history(db).await?.iter().rfind(|r| r.applied) {
+                let value = fingerprint_of(db, &now).await?;
+                set_fingerprint(db, &row.name, &value).await?;
+            }
+        } else if code == 0 {
+            log(&format!("{} This database isn't what its migrations make when replayed: the next apply checks it in shadow databases", paint("yellow", "!")));
         }
     }
     Ok(code)
@@ -1070,7 +1170,7 @@ async fn apply_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options
 pub async fn check_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
-    let result = check(&mut db, &mut server, opts, Mode::Check, log).await;
+    let result = check(&mut db, Some(&mut server), opts, Mode::Check, log).await;
     db.close().await;
     server.close().await;
     let plan = result?;
@@ -1115,8 +1215,9 @@ pub fn check_offline(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     if opts.locked {
         problems.extend(lock_problems(opts, &files));
         if let (true, Some(sql), lock::State::Lock(l)) = (problems.is_empty(), &schema_sql, lock::read(&opts.lock)) {
+            let last = l.entries.last().map(|e| e.sum.clone()).unwrap_or_default();
             match l.schema {
-                Some(sum) if sum == lock::schema_sum(&normalized(sql)) => proven = Some(true),
+                Some(sum) if sum == lock::schema_sum(&last, sql) => proven = Some(true),
                 Some(_) => problems.push(
                     Problem::new("schema.sql has changes not reflected in any migration file")
                         .note(format!("It isn't the schema.sql the migrations reached when {} was last written.", shown(&opts.lock)))
@@ -1302,6 +1403,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         return Ok(1);
     }
     // A locked project's history is its lock's; its drafts are development's alone.
+    let before_rows = read_history(db).await?;
     let order: Vec<Migration> = if opts.locked {
         let problems: Vec<Problem> = lock_problems(opts, &files).into_iter().filter(|p| !p.is_drafts()).collect();
         if !problems.is_empty() {
@@ -1317,7 +1419,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     };
     let live = catalog(db, scope).await?;
     let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     // The replay after each migration, from none: the longest run that equals the database, and
     // else the one closest to it.
     let replayed = async {
@@ -1330,7 +1432,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         let mut closest: (usize, usize, Vec<String>) = (usize::MAX, 0, vec![]);
         for k in 0..=order.len() {
             let now = catalog(shadows.db(lane), scope).await?;
-            if now == live {
+            if crate::catalog::without_extra_children(&live, &now) == now {
                 matches.push(k);
             } else {
                 let (a, b) = difference(&now, &live);
@@ -1366,11 +1468,13 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     };
     // A migration at the end of the run that changes data and nothing a schema shows can't be told
     // to have run: it stays pending, to run.
-    while n > 0 && !data_statements(&order[n - 1].sql, d).is_empty() && matches.contains(&(n - 1)) {
+    // One the history says ran, as written, stays recorded.
+    let ran = |m: &Migration| before_rows.iter().any(|r| r.applied && r.name == m.name && same_statements(&r.sql, &m.sql, d));
+    while n > 0 && !data_statements(&order[n - 1].sql, d).is_empty() && matches.contains(&(n - 1)) && !ran(&order[n - 1]) {
         n -= 1;
     }
     let recorded = &order[..n];
-    let before = read_history(db).await?;
+    let before = before_rows;
     ensure_history(db).await?;
     db.exec(if d == Dialect::Mysql { "start transaction" } else { "begin" }).await?;
     let written = async {
@@ -1547,6 +1651,9 @@ fn plan_files(plan: &crate::diff::Plan, d: Dialect) -> Vec<String> {
     for loss in &plan.losses {
         pending.push_str(&format!("-- loses data: {}\n", loss.trim_start_matches("column ").trim_start_matches("table ")));
     }
+    for (column, why) in &plan.narrowings {
+        pending.push_str(&format!("-- loses data: {} {why}\n", column.trim_start_matches("column ")));
+    }
     for s in &plan.statements {
         if s.starts_with("--") {
             pending.push_str(s);
@@ -1665,12 +1772,14 @@ async fn rename_tables(db: &mut Db, current: &crate::diff::Schema, target: &Targ
 
 /// The plan from the database to `target`: a table that goes while one of its columns comes renamed
 /// first, on the database itself, then the diff engine's plan from there, which is not run.
-async fn plan_to(db: &mut Db, target: &Target) -> Result<(Vec<String>, crate::diff::Plan), Error> {
+async fn plan_to(db: &mut Db, target: &Target, live: bool) -> Result<(Vec<String>, crate::diff::Plan), Error> {
     let mut current = crate::diff::read(db).await?;
+    current.live = live;
     let renamed = crate::diff::table_renames(&current, &target.schema, &[], &std::collections::BTreeSet::new());
     let renames = if renamed.is_empty() { vec![] } else { rename_tables(db, &current, target, &renamed, &mut |_| {}).await? };
     if !renames.is_empty() {
         current = crate::diff::read(db).await?;
+        current.live = live;
     }
     let alterer = crate::diff::alterer(db).await?;
     let mut plan = crate::diff::plan(&current, &target.schema, alterer.as_ref());
@@ -1699,7 +1808,7 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
         let (old, new) = (bare(old_id), bare(new_id));
         if !was_stated {
             out.push(format!("-- {old} is renamed {new}, keeping its rows. If they are two tables, drop the one and create the other instead."));
-            log(&format!("{} Renames the table {old} to {new}, keeping its rows: no other table of its columns came or went. If they are two tables, state it: --drop {old}", paint("yellow", "!")));
+            log(&format!("{} Renames the table {old} to {new}, keeping its rows. If they are two tables, state it: --drop {old}", paint("yellow", "!")));
         }
         out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
         names.push((old, new, old_id.clone(), new_id.clone()));
@@ -1746,14 +1855,16 @@ fn create_command(migration: &str, choices: &Choices, more_drops: &[String], ren
 /// The problems with what `choices` states about the tables and columns a plan drops (`lost`, as
 /// the plan's ids, and `shown`, as the file names them, one for one): each must be named in
 /// `--drop`, and each name in `--drop` must name only what it drops.
-fn drop_problems(lost: &[String], shown: &[String], choices: &Choices, migration: &str) -> Vec<Problem> {
-    let display = |id: &String| lost.iter().position(|l| l == id).map(|k| shown_id(&shown[k])).unwrap_or_else(|| shown_id(id));
+fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], choices: &Choices, migration: &str) -> Vec<Problem> {
+    let display = |id: &String| lost.iter().position(|l| l == id).map(|k| shown_id(&shown[k])).or_else(|| narrowed.iter().find(|(n, _, _)| n == id).map(|(_, s, _)| shown_id(s))).unwrap_or_else(|| shown_id(id));
     let mut problems = Vec::new();
     let mut named: Vec<String> = Vec::new();
-    // What --drop states that holds, which a suggested command keeps.
+    // What --drop states that holds, which a suggested command keeps. It names what is dropped, and
+    // a column whose change of type loses what its values hold.
     let mut stated = Choices { drop: vec![], rename: choices.rename.clone() };
+    let all: Vec<String> = lost.iter().cloned().chain(narrowed.iter().map(|(id, _, _)| id.clone())).collect();
     for w in &choices.drop {
-        match resolve(lost, w) {
+        match resolve(&all, w) {
             Ok(hits) if hits.is_empty() => {
                 let columns: Vec<String> = lost.iter().filter(|l| l.starts_with("column ") && split_name(&shown_id(l)).last() == split_name(w).last() && split_name(w).len() == 1).map(&display).collect();
                 problems.push(Problem::new(format!("--drop names {w}, which this migration doesn't drop")).note(if !columns.is_empty() {
@@ -1783,6 +1894,10 @@ fn drop_problems(lost: &[String], shown: &[String], choices: &Choices, migration
             problem = problem.fix("If a column was renamed instead", &[&create_command(migration, &stated, &[], Some((display(c), "<new name>".into())))]);
         }
         problems.push(problem);
+    }
+    for (shown, why) in narrowed.iter().filter(|(id, _, _)| !named.contains(id)).map(|(_, shown, why)| (shown, why)) {
+        let name = shown_id(shown);
+        problems.push(Problem::new(format!("{name} {why}")).fix("To accept that", &[&create_command(migration, &stated, std::slice::from_ref(&name), None)]));
     }
     problems
 }
@@ -1829,7 +1944,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
     db.close().await;
     let scope = opts.scope();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
-    let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, scope, &texts).await;
+    let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     let result = async {
         let a = shadows.lane();
         shadows.push(a, [Step::script("schema.sql", schema_sql)]);
@@ -1927,8 +2042,10 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
         let dropped: std::collections::BTreeSet<String> = columns.drop.iter().filter_map(|w| resolve(&gone, w).ok()).flatten().collect();
         let mut plan = crate::diff::plan_with(&current, &target, alterer.as_ref(), &renames, &dropped);
         let lost = plan.losses.clone();
+        let narrowing: Vec<(String, String)> = plan.narrowings.clone();
         style(shadows.db(c), &mut plan, &target).await?;
-        let problems = drop_problems(&lost, &plan.losses, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, migration);
+        let narrowed: Vec<(String, String, String)> = narrowing.iter().zip(&plan.narrowings).map(|((id, why), (shown, _))| (id.clone(), shown.clone(), why.clone())).collect();
+        let problems = drop_problems(&lost, &plan.losses, &narrowed, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, migration);
         if !problems.is_empty() {
             return Ok(Err(problems));
         }
@@ -1961,8 +2078,11 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
         for loss in &plan.losses {
             log(&format!("{} Drops {}, and its data", paint("yellow", "!"), loss.trim_start_matches("column ").trim_start_matches("table ")));
         }
+        for (column, why) in &plan.narrowings {
+            log(&format!("{} {} {why}", paint("yellow", "!"), column.trim_start_matches("column ")));
+        }
         for (old, new) in &plan.renames {
-            log(&format!("{} Renames {} to {new}, keeping its rows: no other column of its definition came or went in its table. If they are two columns, state it: --drop {}", paint("yellow", "!"), old.trim_start_matches("column "), old.trim_start_matches("column ")));
+            log(&format!("{} Renames {} to {new}, keeping its rows. If they are two columns, state it: --drop {}", paint("yellow", "!"), old.trim_start_matches("column "), old.trim_start_matches("column ")));
         }
         if failed.is_none() && reached == wanted {
             return Ok(Ok((texts, 0)));
@@ -2082,6 +2202,13 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     let init = opts.dir.join(INIT);
     std::fs::write(&init, &sql)?;
     log(&format!("wrote {} and {}", shown(&opts.schema), shown(&init)));
+    // A locked project's history is its lock's: init.sql is its first line, and reaches schema.sql.
+    if opts.locked {
+        let entries = lock::chain([(INIT, sql.as_str())]);
+        let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
+        lock::write(&opts.lock, &lock::Lock { schema, entries })?;
+        log(&shown(&opts.lock));
+    }
     sync_history(opts, log).await
 }
 
@@ -2101,7 +2228,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         for s in &statements {
             db.script(s).await?;
         }
-        let now = catalog(db, scope).await?;
+        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
         return Ok(if now == expect { Ok(()) } else { Err(differs(&now)) });
     }
     if d == Dialect::Sqlite {
@@ -2113,7 +2240,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = catalog(db, scope).await?;
+        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
         if now != expect {
             return Ok(Err(differs(&now)));
         }
@@ -2145,14 +2272,14 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         db.exec("begin").await?;
     }
     let result = async {
-        let (renames, plan) = plan_to(db, target).await?;
+        let (renames, plan) = plan_to(db, target, true).await?;
         for s in plan.runnable().chain(then) {
             db.script(&format!("{};", s.trim_end().trim_end_matches(';'))).await?;
         }
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = catalog(db, scope).await?;
+        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
         if now != expect {
             return Ok(Err(describe_diff("this database", &now, "the target", expect)));
         }
@@ -2243,6 +2370,17 @@ async fn apply_dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Opt
     let (files, strays) = read_migrations(&opts.dir)?;
     let mut problems = file_problems(opts, &files, &strays, None, d);
     let history = read_history(db).await?;
+    // A lock deleted, or never written on this branch, starts again from main's, where git has it,
+    // and not from the files' names.
+    if opts.locked && problems.is_empty() && lock::read(&opts.lock) == lock::State::Missing {
+        if let Some(main) = main_lock(opts) {
+            let here = main_lines_here(&main, &files);
+            if !here.is_empty() {
+                lock::write(&opts.lock, &lock::Lock { schema: None, entries: here })?;
+                log(&paint("dim", &format!("Wrote {} from main's", shown(&opts.lock))));
+            }
+        }
+    }
     if opts.locked && problems.is_empty() {
         problems.extend(dev_lock_problems(opts, &files, &history));
     }
@@ -2270,7 +2408,7 @@ async fn apply_dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Opt
     let live = catalog(db, scope).await?;
     let schema_sql = std::fs::read_to_string(&opts.schema).ok();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     let result = dev_in_shadows(&mut shadows, db, opts, &files, &applied, agree, &live, log).await;
     let result = match result {
         Ok(0) if opts.locked => relock(&mut shadows, db, opts, &files, schema_sql.as_deref(), log).await.map(|()| 0),
@@ -2294,6 +2432,11 @@ fn main_lock(opts: &Options) -> Option<lock::Lock> {
     }
 }
 
+/// Main's lock's lines whose files this checkout has, from the first: what this checkout merged of main.
+fn main_lines_here(main: &lock::Lock, files: &[Migration]) -> Vec<lock::Entry> {
+    main.entries.iter().take_while(|e| files.iter().any(|f| f.name == e.name)).cloned().collect()
+}
+
 /// What keeps `apply --dev` from taking a locked project's lock as it is. It writes the lock again,
 /// chaining this branch's lines after main's; but a line locked elsewhere (on main where git can
 /// say, else one this database never applied) that is out of its chain, or whose file changed,
@@ -2309,6 +2452,20 @@ fn dev_lock_problems(opts: &Options, files: &[Migration], history: &[HistoryRow]
         Err(p) => return vec![p],
     };
     let main = main_lock(opts);
+    // Main's lines this checkout has come first, as main has them: a lock that leaves one out, or
+    // puts this branch's line before it, was merged keeping this branch's side.
+    if let Some(m) = &main {
+        let here = main_lines_here(m, files);
+        for (k, e) in here.iter().enumerate() {
+            if l.entries.get(k).is_some_and(|x| x.name == e.name && x.sum == e.sum) {
+                continue;
+            }
+            let after = if k == 0 { "first".to_string() } else { format!("after {}", here[k - 1].name) };
+            return vec![Problem::new(format!("{path} doesn't start with main's lines: main locks {} {after}", e.name))
+                .note("Keep main's lines, in main's order, and leave out this branch's: apply --dev then runs this branch's migrations after them, and adds them back.")
+                .fix("Then", &["reylo migrate apply --dev"])];
+        }
+    }
     let ours = |name: &str, sum: &str| match &main {
         Some(m) => !m.entries.iter().any(|e| e.name == name && e.sum == sum),
         None => history.iter().any(|r| r.applied && r.name == name),
@@ -2350,7 +2507,7 @@ async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &
         shadows.push(theirs, [Step::script("schema.sql", sql)]);
         if let (Ok(Ok(a)), Ok(Ok(b))) = (shadows.lines(ours).await, shadows.lines(theirs).await) {
             if a == b {
-                schema = Some(lock::schema_sum(&normalized(sql)));
+                schema = Some(lock::schema_sum(&entries.last().map(|e| e.sum.clone()).unwrap_or_default(), sql));
             }
         }
     }
@@ -2406,6 +2563,8 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         Ok(lines) => lines,
         Err((m, e)) => return fail(&format!("{m} fails when replayed in a shadow database"), e, log),
     };
+    // Children of a table made at run time are data: never compared, never rewound.
+    let live = &crate::catalog::without_extra_children(live, &at_kept)[..];
     let mut pending: Vec<Migration> = files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name)).cloned().collect();
     let rewind_rows: Vec<&&HistoryRow> = applied[keep..].iter().collect();
     let mut records: Vec<Migration> = Vec::new();
@@ -2446,7 +2605,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         if let Ok(Ok(at_applied)) = shadows.lines(h_lane).await {
             if let Ok(()) = shadows.open(h_lane).await? {
                 shadows.taint(h_lane);
-                let (renames, plan) = plan_to(shadows.db(h_lane), &k_target).await?;
+                let (renames, plan) = plan_to(shadows.db(h_lane), &k_target, false).await?;
                 let (only_h, only_k) = difference(&at_applied, &at_kept);
                 let expect: Vec<String> = live.iter().filter(|l| !only_h.contains(l)).cloned().chain(only_k).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 let statements: Vec<String> = renames.iter().cloned().chain(plan.runnable().cloned()).collect();
@@ -2580,6 +2739,68 @@ pub async fn sync(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Erro
     result
 }
 
+/// `reylo migrate sync --watch`: syncs, then again each time schema.sql or a migration changes,
+/// until it is stopped. Each run prints its block under the time it ran; one that changes nothing
+/// prints a line. A refusal (a migration to apply first) is printed and waited out like any run.
+/// `runs` bounds how many runs it makes, for a test; None runs until stopped.
+pub async fn sync_watch(opts: &Options, in_ci: bool, runs: Option<usize>, log: Log<'_>) -> Result<i32, Error> {
+    if in_ci {
+        return Ok(refused_in_ci("reylo migrate sync --watch", log));
+    }
+    let snapshot = || -> Vec<(PathBuf, Option<std::time::SystemTime>, u64)> {
+        let mut paths = vec![opts.schema.clone()];
+        if let Ok(entries) = std::fs::read_dir(&opts.dir) {
+            let mut files: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "sql")).collect();
+            files.sort();
+            paths.extend(files);
+        }
+        paths.into_iter().map(|p| {
+            let meta = std::fs::metadata(&p).ok();
+            let (at, len) = (meta.as_ref().and_then(|m| m.modified().ok()), meta.map_or(0, |m| m.len()));
+            (p, at, len)
+        }).collect()
+    };
+    log(&paint("dim", &format!("Watching {} and {}: each change syncs again (Ctrl-C stops)", shown(&opts.schema), shown(&opts.dir))));
+    let mut made = 0;
+    let mut last = Vec::new();
+    loop {
+        let before = snapshot();
+        let mut lines: Vec<String> = Vec::new();
+        // A database that went away (restarting) is waited out like a refusal: said, then watched.
+        let code = match sync(opts, false, &mut |l: &str| lines.push(l.to_string())).await {
+            Ok(code) => code,
+            Err(e) => {
+                lines.push(format!("{} {e}", paint("bold red", "✗")));
+                1
+            }
+        };
+        let at = time::clock();
+        let quiet = code == 0 && lines.iter().all(|l| l.contains("This database matches schema.sql and its migrations"));
+        if quiet && !last.is_empty() {
+            log(&paint("dim", &format!("{at} · nothing to change")));
+        } else {
+            log("");
+            log(&paint("dim", &format!("{at}")));
+            for l in &lines {
+                log(l);
+            }
+        }
+        last = lines;
+        made += 1;
+        if runs.is_some_and(|n| made >= n) {
+            return Ok(code);
+        }
+        // Until a file changes, and a moment longer, so an editor's save of several files is one run.
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            if snapshot() != before {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                break;
+            }
+        }
+    }
+}
+
 async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
@@ -2625,7 +2846,7 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
     }
     let schema_sql = schema_sql.unwrap_or_default();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql.as_str()]).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     let in_order: Vec<Migration> = applied.iter().filter_map(|r| files.iter().find(|f| f.name == r.name).cloned()).collect();
     let result = sync_in_shadows(&mut shadows, db, opts, &in_order, &schema_sql, log).await;
     shadows.finish().await;
@@ -2648,7 +2869,7 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
         Ok(()) => shadows.taint(s_lane),
     }
     let wanted = catalog(shadows.db(s_lane), scope).await?;
-    let now = catalog(db, scope).await?;
+    let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, &wanted);
     let pushed = if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
@@ -2682,7 +2903,7 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
     // The lock certifies that its migrations reach this schema.sql.
     if made && opts.locked {
         if let lock::State::Lock(mut l) = lock::read(&opts.lock) {
-            let sum = lock::schema_sum(&normalized(schema_sql));
+            let sum = lock::schema_sum(&l.entries.last().map(|e| e.sum.clone()).unwrap_or_default(), schema_sql);
             if l.schema.as_deref() != Some(sum.as_str()) {
                 l.schema = Some(sum);
                 lock::write(&opts.lock, &l)?;

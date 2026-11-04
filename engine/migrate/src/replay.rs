@@ -63,8 +63,8 @@ pub(crate) struct Shadows<'s> {
 impl<'s> Shadows<'s> {
     /// The shadows of one run on `server`, for the target at `url`; `texts` are the SQL of every
     /// step the run may replay.
-    pub(crate) async fn new(server: &'s mut Server, url: &str, root: &Path, scope: Scope, texts: &[&str]) -> Shadows<'s> {
-        let cache = Cache::open(server, url, root, texts).await;
+    pub(crate) async fn new(server: &'s mut Server, url: &str, root: &Path, cache: &Path, scope: Scope, texts: &[&str]) -> Shadows<'s> {
+        let cache = Cache::open(server, url, root, cache, texts).await;
         Shadows { server, cache, scope, lanes: vec![] }
     }
 

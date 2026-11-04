@@ -56,3 +56,16 @@ mod tests {
         assert_eq!(seconds("2026"), None);
     }
 }
+
+/// The local time of day, as HH:MM:SS, for a line a watch prints: from `date` where there is one,
+/// since std has no time zones, and else in UTC, so labelled.
+pub fn clock() -> String {
+    if let Ok(out) = std::process::Command::new("date").arg("+%H:%M:%S").output() {
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if out.status.success() && text.len() == 8 {
+            return text;
+        }
+    }
+    let s = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0).rem_euclid(86_400);
+    format!("{:02}:{:02}:{:02} UTC", s / 3600, (s / 60) % 60, s % 60)
+}

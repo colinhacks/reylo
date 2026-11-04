@@ -1094,7 +1094,51 @@ impl MysqlAlterer {
     }
 }
 
+/// A MySQL column type, as information_schema writes it, for a change that may lose values.
+fn type_class(def: &str) -> super::TypeClass {
+    use super::TypeClass;
+    let lower = def.trim().to_lowercase();
+    let Some(c) = regex::Regex::new(r"^([a-z]+)(?:\(([0-9]+)(?:,([0-9]+))?\))?").unwrap().captures(&lower) else { return TypeClass::Other };
+    let (p, s) = (c.get(2).and_then(|m| m.as_str().parse::<u32>().ok()), c.get(3).and_then(|m| m.as_str().parse::<u32>().ok()));
+    match &c[1] {
+        "tinyint" => TypeClass::Int(8),
+        "smallint" => TypeClass::Int(16),
+        "mediumint" => TypeClass::Int(24),
+        "int" | "integer" => TypeClass::Int(32),
+        "bigint" => TypeClass::Int(64),
+        // A float with a scale (`double(10,2)`) keeps that many decimal places.
+        "float" | "double" | "real" if s.is_some() => TypeClass::Numeric(s),
+        "float" => TypeClass::Float(6),
+        "double" | "real" => TypeClass::Float(15),
+        "decimal" | "numeric" => TypeClass::Numeric(Some(s.unwrap_or(0))),
+        "date" => TypeClass::Date,
+        // A timestamp is a moment, kept in UTC; a datetime is a wall-clock time.
+        "datetime" => TypeClass::Timestamp { zone: false, precision: p.unwrap_or(0) },
+        "timestamp" => TypeClass::Timestamp { zone: true, precision: p.unwrap_or(0) },
+        "time" => TypeClass::Time { precision: p.unwrap_or(0) },
+        "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" => TypeClass::Text,
+        "json" => TypeClass::Jsonb,
+        _ => TypeClass::Other,
+    }
+}
+
+/// The type a column's definition opens with: `decimal(10,2) unsigned` of `decimal(10,2) unsigned not null`.
+fn type_of(def: &str) -> String {
+    let words: Vec<&str> = def.split_whitespace().collect();
+    let n = 1 + words.iter().skip(1).take_while(|w| matches!(**w, "unsigned" | "zerofill" | "signed")).count();
+    words[..n.min(words.len())].join(" ")
+}
+
 impl Alterer for MysqlAlterer {
+    fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
+        if from.kind != Some(Kind::Column) {
+            return None;
+        }
+        let (a, b) = (type_of(&from.def), type_of(&to.def));
+        let why = super::narrowing(&type_class(&a), &type_class(&b))?;
+        Some(format!("changes from {a} to {b}, which {why}"))
+    }
+
     fn decide(&self, renames: &[(String, String)]) {
         self.decided.set(renames);
     }

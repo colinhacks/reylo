@@ -35,6 +35,53 @@ pub async fn catalog(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
     Ok(lines.into_iter().collect::<BTreeSet<_>>().into_iter().collect())
 }
 
+/// The child tables the lines hold (a partition, or a table that inherits another, as TimescaleDB's
+/// chunks do), each with its parent, where the parent is a table the lines hold too.
+fn children(lines: &[String]) -> Vec<(String, String)> {
+    let tables: BTreeSet<&str> = lines.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
+    lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("table "))
+        .filter_map(|l| {
+            let name = name_at(l);
+            let parent = l[name.len()..].split_once(" partition of ").or_else(|| l[name.len()..].split_once(" inherits ")).map(|(_, rest)| name_at(rest))?;
+            tables.contains(parent).then(|| (name.to_string(), parent.to_string()))
+        })
+        .collect()
+}
+
+/// The qualified name `text` opens with, as `format('%I.%I')` writes it: quoted parts keep their spaces.
+fn name_at(text: &str) -> &str {
+    let mut quoted = false;
+    for (k, c) in text.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ' ' if !quoted => return &text[..k],
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Whether the line is one of the table `name`'s: the table, its columns, and what is on it.
+fn of_table(line: &str, name: &str) -> bool {
+    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$' || c == '"';
+    line.match_indices(name).any(|(at, _)| !line[..at].ends_with(ident) && !line[at + name.len()..].starts_with(ident))
+}
+
+/// `live` without the partitions (and inheriting children) of a table `reference` has too that
+/// `reference` lacks: children made at run time (pg_partman's, TimescaleDB's chunks) are data, not
+/// schema. A child `reference` has is compared as any table, missing or changed.
+pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<String> {
+    let theirs: BTreeSet<String> = children(reference).into_iter().map(|(name, _)| name).collect();
+    let parents: BTreeSet<&str> = reference.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
+    let extra: Vec<String> = children(live).into_iter().filter(|(name, parent)| !theirs.contains(name) && parents.contains(parent.as_str()) && !parents.contains(name.as_str())).map(|(name, _)| name).collect();
+    if extra.is_empty() {
+        return live.to_vec();
+    }
+    live.iter().filter(|l| !extra.iter().any(|name| of_table(l, name))).cloned().collect()
+}
+
 /// The lines only in `a`, and those only in `b`.
 pub fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
     let sa: BTreeSet<&String> = a.iter().collect();
@@ -179,8 +226,10 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
         if r.text("kind") == "p" {
             parts.push(format!("partition by {}", r.text("partkey")));
         }
-        if let Some(bound) = r.get("bound") {
-            parts.push(format!("partition of {} {bound}", r.text("parent")));
+        match (r.get("bound"), r.get("parent")) {
+            (Some(bound), _) => parts.push(format!("partition of {} {bound}", r.text("parent"))),
+            (None, Some(parent)) if kind == "table" => parts.push(format!("inherits {parent}")),
+            _ => {}
         }
         if r.text("persistence") == "u" {
             parts.push("unlogged".into());

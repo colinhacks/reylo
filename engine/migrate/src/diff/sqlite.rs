@@ -533,7 +533,39 @@ pub struct SqliteAlterer {
     decided: super::Decided,
 }
 
+/// The affinity of a SQLite column's declared type, by SQLite's rules (datatype3.html, 3.1), as far as
+/// a change between two affinities can lose values.
+fn affinity(def: &str) -> super::TypeClass {
+    use super::TypeClass;
+    const ENDS: [&str; 11] = ["CONSTRAINT", "PRIMARY", "NOT", "NULL", "UNIQUE", "CHECK", "DEFAULT", "COLLATE", "REFERENCES", "GENERATED", "AS"];
+    let declared: Vec<&str> = def.split_whitespace().take_while(|w| !ENDS.contains(&w.to_ascii_uppercase().as_str())).collect();
+    let t = declared.join(" ").to_ascii_uppercase();
+    if t.contains("INT") {
+        TypeClass::Int(64)
+    } else if t.contains("CHAR") || t.contains("CLOB") || t.contains("TEXT") || t.is_empty() || t.contains("BLOB") {
+        TypeClass::Text
+    } else if t.contains("REAL") || t.contains("FLOA") || t.contains("DOUB") {
+        TypeClass::Float(15)
+    } else {
+        TypeClass::Numeric(None)
+    }
+}
+
 impl Alterer for SqliteAlterer {
+    fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
+        if from.kind != Some(Kind::Column) {
+            return None;
+        }
+        // Only text turns into numbers: an INTEGER column keeps 1.5 as it is, and so on.
+        let from_affinity = affinity(&from.def);
+        if from_affinity != super::TypeClass::Text {
+            return None;
+        }
+        let why = super::narrowing(&from_affinity, &affinity(&to.def))?;
+        let declared = |def: &str| def.split_whitespace().next().unwrap_or("none").to_lowercase();
+        Some(format!("changes from {} to {}, which {why}", declared(&from.def), declared(&to.def)))
+    }
+
     fn decide(&self, renames: &[(String, String)]) {
         self.decided.set(renames);
     }

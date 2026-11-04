@@ -1,9 +1,9 @@
 //! The replay cache. A check replays a project's whole history in its shadows, and nearly all of its
 //! time is those replays, so what a replay ends in is kept: the catalog's lines at a prefix of steps
-//! (`.reylo/migrate/lines/`, for every database), and on Postgres and SQLite the database itself,
+//! (`reylo/.cache/migrate/lines/`, for every database), and on Postgres and SQLite the database itself,
 //! which a later shadow starts from to replay only what follows it. On Postgres that database is
 //! `reylo_cache_<key>` on the shadows' server, made by renaming a shadow that is done with and
-//! copied with `create database … template`; on SQLite it is a file in `.reylo/migrate/sqlite/`,
+//! copied with `create database … template`; on SQLite it is a file in `reylo/.cache/migrate/sqlite/`,
 //! copied with SQLite's backup API. MySQL keeps lines alone: with no template databases, a copy is
 //! made by running every object's `create` again, which costs what replaying a history of simple
 //! migrations costs.
@@ -229,7 +229,7 @@ pub(crate) struct Cache {
     /// The target, as eviction counts it: a digest of its URL without the user and password, or of
     /// its file.
     target: String,
-    /// `.reylo/migrate/` in the project.
+    /// `migrate/` in the project's cache, `reylo/.cache/`.
     dir: PathBuf,
     /// Whether a shadow may start from a cached database: never on MySQL, which keeps none.
     pub(crate) copies: bool,
@@ -244,7 +244,7 @@ fn now_ms() -> u128 {
 impl Cache {
     /// The cache for shadows made on `server` for the target at `url`, or None where it is off or
     /// what decides a replay cannot all be read. `texts` are every step's SQL the run may replay.
-    pub(crate) async fn open(server: &mut Server, url: &str, root: &Path, texts: &[&str]) -> Option<Cache> {
+    pub(crate) async fn open(server: &mut Server, url: &str, root: &Path, cache: &Path, texts: &[&str]) -> Option<Cache> {
         if !enabled() {
             return None;
         }
@@ -258,7 +258,7 @@ impl Cache {
             _ => crate::redact(url),
         };
         let copies = d != Dialect::Mysql && !texts.iter().any(|t| SESSION_STATE.iter().any(|r| r.is_match(t)));
-        Some(Cache { d, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: root.join(".reylo").join("migrate"), copies, used: vec![] })
+        Some(Cache { d, base: h.finish(), target: hex(&Sha256::new().part(target.as_bytes()).finish()[..8]), dir: cache.join("migrate"), copies, used: vec![] })
     }
 
     pub(crate) fn base(&self) -> Hash {
@@ -583,11 +583,11 @@ fn sqlite_backup(from: &rusqlite::Connection, to: &rusqlite::Connection) -> Resu
 
 fn ensure_dir(root: &Path, dir: &Path) {
     let _ = std::fs::create_dir_all(dir);
-    // `.reylo/.gitignore` keeps the directory out of git, as the type check's cache beside it does.
-    if let Some(reylo) = root.parent() {
-        let ignore = reylo.join(".gitignore");
+    // `.cache/.gitignore` keeps the cache out of git, as pytest's and ruff's caches do.
+    if let Some(cache) = root.parent() {
+        let ignore = cache.join(".gitignore");
         if !ignore.exists() {
-            let _ = std::fs::write(ignore, "# reylo's cache: written by the type check, the build steps, reylo generate and reylo migrate; never committed.\n*\n");
+            let _ = std::fs::write(ignore, "# reylo's cache: written by the type check, the build steps and reylo migrate; never committed.\n*\n");
         }
     }
 }

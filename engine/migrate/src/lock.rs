@@ -71,17 +71,100 @@ fn digest(parts: &[&str]) -> String {
 }
 
 /// The checksum of a migration after the entry `prev` (empty for the first): of its name and its
-/// statements as `canonical` writes them, so that comments and spacing change nothing.
-pub fn checksum(prev: &str, name: &str, canonical: &str) -> String {
-    digest(&[prev, "\n", name, "\n", canonical])
+/// SQL as `canonical` writes it, so that comments and spacing change nothing.
+pub fn checksum(prev: &str, name: &str, sql: &str) -> String {
+    digest(&[prev, "\n", name, "\n", &canonical(sql)])
 }
 
-/// The checksum of schema.sql's statements, written as `canonical` writes them.
-pub fn schema_sum(canonical: &str) -> String {
-    digest(&["schema\n", canonical])
+/// The checksum of schema.sql's SQL, as `canonical` writes it, with the last entry's checksum the
+/// migrations it was proven against end with: a stamp that no longer holds once they change.
+pub fn schema_sum(last: &str, sql: &str) -> String {
+    digest(&["schema\n", last, "\n", &canonical(sql)])
 }
 
-/// The entries of migrations in the order given, each its name and canonical statements.
+/// SQL without its comments, its whitespace runs as one space, as any of the three databases reads
+/// it: what a lock's checksum covers, so an edit to a comment or to spacing is no edit. Quoted text
+/// (`'…'`, `"…"`, `` `…` ``, and Postgres's `$tag$…$tag$`) is kept as written.
+pub fn canonical(sql: &str) -> String {
+    let b: Vec<char> = sql.chars().collect();
+    let mut out = String::new();
+    let mut space = false;
+    let mut k = 0;
+    let push = |out: &mut String, space: &mut bool, text: &str| {
+        if *space && !out.is_empty() {
+            out.push(' ');
+        }
+        *space = false;
+        out.push_str(text);
+    };
+    while k < b.len() {
+        let c = b[k];
+        if c == '-' && b.get(k + 1) == Some(&'-') {
+            while k < b.len() && b[k] != '\n' {
+                k += 1;
+            }
+            space = true;
+        } else if c == '/' && b.get(k + 1) == Some(&'*') {
+            let mut depth = 0;
+            while k < b.len() {
+                if b[k] == '/' && b.get(k + 1) == Some(&'*') {
+                    depth += 1;
+                    k += 2;
+                } else if b[k] == '*' && b.get(k + 1) == Some(&'/') {
+                    depth -= 1;
+                    k += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    k += 1;
+                }
+            }
+            space = true;
+        } else if c.is_whitespace() {
+            space = true;
+            k += 1;
+        } else if c == '\'' || c == '"' || c == '`' {
+            let start = k;
+            k += 1;
+            while k < b.len() {
+                if b[k] == c {
+                    if b.get(k + 1) == Some(&c) {
+                        k += 2;
+                        continue;
+                    }
+                    k += 1;
+                    break;
+                }
+                k += 1;
+            }
+            push(&mut out, &mut space, &b[start..k].iter().collect::<String>());
+        } else if c == '$' && (k == 0 || !(b[k - 1].is_alphanumeric() || b[k - 1] == '_')) {
+            // A dollar-quoted string: $tag$ … $tag$.
+            let tag_end = (k + 1..b.len()).find(|&j| !(b[j].is_alphanumeric() || b[j] == '_'));
+            match tag_end.filter(|&j| b[j] == '$') {
+                Some(j) => {
+                    let tag: String = b[k..=j].iter().collect();
+                    let body_from = j + 1;
+                    let rest: String = b[body_from..].iter().collect();
+                    let end = rest.find(&tag).map_or(b.len(), |at| body_from + rest[..at].chars().count() + tag.chars().count());
+                    push(&mut out, &mut space, &b[k..end].iter().collect::<String>());
+                    k = end;
+                }
+                None => {
+                    push(&mut out, &mut space, "$");
+                    k += 1;
+                }
+            }
+        } else {
+            push(&mut out, &mut space, &c.to_string());
+            k += 1;
+        }
+    }
+    out
+}
+
+/// The entries of migrations in the order given, each its name and SQL.
 pub fn chain<'a>(migrations: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Entry> {
     let mut out: Vec<Entry> = Vec::new();
     for (name, canonical) in migrations {
@@ -141,7 +224,8 @@ mod tests {
 
     #[test]
     fn a_lock_reads_back_as_written() {
-        let lock = Lock { schema: Some(schema_sum("create table a (id int)")), entries: chain([("20261101000000_a.sql", "create table a (id int)"), ("20261102000000_b.sql", "create table b (id int)")]) };
+        let entries = chain([("20261101000000_a.sql", "create table a (id int)"), ("20261102000000_b.sql", "create table b (id int)")]);
+        let lock = Lock { schema: Some(schema_sum(&entries[1].sum, "create table a (id int)")), entries };
         let text = render(&lock);
         let dir = std::env::temp_dir().join(format!("reylo-lock-unit-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -152,6 +236,16 @@ mod tests {
         std::fs::write(dir.join(LOCK), format!("{text}<<<<<<< HEAD\n")).unwrap();
         assert_eq!(read(&dir.join(LOCK)), State::Conflicted);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn comments_and_spacing_are_no_edit() {
+        let a = "create table a (\n  id int -- the key\n);\n/* made by hand */";
+        assert_eq!(canonical(a), canonical("create table a ( id int );"));
+        assert_ne!(canonical("insert into a values ('-- not a comment')"), canonical("insert into a values ('')"));
+        assert_eq!(canonical("select $$ two  spaces $$"), "select $$ two  spaces $$");
+        assert_eq!(canonical("do $f$ begin -- x\n end $f$;"), "do $f$ begin -- x\n end $f$;");
+        assert_ne!(checksum("", "a.sql", "create table a (id int)"), checksum("", "a.sql", "create table a (id bigint)"));
     }
 
     #[test]
