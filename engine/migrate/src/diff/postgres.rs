@@ -11,7 +11,9 @@ use super::{Alterer, Change, Kind, Object, Schema};
 use crate::catalog::{not_extension, not_platform, HISTORY_TABLE, PG_USER_NS};
 use crate::db::{Db, Row};
 use crate::{Dialect, Error};
+use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::LazyLock;
 
 mod declared;
 
@@ -431,6 +433,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select c.oid, c.reltype, format('%I.%I', n.nspname, c.relname) as name, c.relkind as kind, c.relpersistence as persistence,
               c.relrowsecurity as rls, c.relforcerowsecurity as force,
               (select string_agg(o, ', ' order by o) from unnest(c.reloptions) o) as options,
+              (select nullif(a.amname, 'heap') from pg_am a where a.oid = c.relam) as am,
               pg_get_expr(c.relpartbound, c.oid) as bound,
               (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits i join pg_class pc on pc.oid = i.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where i.inhrelid = c.oid order by i.inhseqno limit 1) as parent,
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
@@ -600,6 +603,8 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         }
         col_defs.extend(inline_constraints.remove(&rel).unwrap_or_default());
         let options = r.get("options").map(|o| format!(" with ({o})")).unwrap_or_default();
+        // The storage, where it is not the heap: `using columnar` and the like.
+        let using = r.get("am").map(|am| format!(" using {am}")).unwrap_or_default();
         let mut extra = Vec::new();
         let (def, create, drop) = match kind {
             "v" => {
@@ -608,7 +613,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             }
             "m" => {
                 let body = r.text("view").trim().trim_end_matches(';').to_string();
-                (format!("materialized view{options} as {body}"), format!("create materialized view {name}{options} as\n{body}"), format!("drop materialized view {name}"))
+                (format!("materialized view{using}{options} as {body}"), format!("create materialized view {name}{using}{options} as\n{body}"), format!("drop materialized view {name}"))
             }
             "c" => (String::new(), format!("create type {name} as (\n  {}\n)", col_defs.join(",\n  ")), format!("drop type {name}")),
             _ => {
@@ -626,12 +631,13 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 extra.push(format!("shape {foreign}table{partkey}{server}"));
                 extra.push(format!("persistence {}", if unlogged.is_empty() { "logged" } else { "unlogged" }));
                 extra.push(format!("options {}", r.text("options")));
+                extra.push(format!("access method {}", r.get("am").unwrap_or("heap")));
                 match (r.get("bound"), r.get("parent")) {
                     (Some(bound), Some(parent)) => extra.push(format!("partition of {parent} {bound}")),
                     (None, Some(parent)) => extra.push(format!("inherits {parent}")),
                     _ => {}
                 }
-                (extra.join("\n"), format!("{body}{partkey}{server}{options}"), format!("drop {foreign}table {name}"))
+                (extra.join("\n"), format!("{body}{partkey}{using}{server}{options}"), format!("drop {foreign}table {name}"))
             }
         };
         let object_kind = match kind {
@@ -1536,6 +1542,33 @@ fn swap_enum(name: &str, create: &str, columns: &[String]) -> Vec<String> {
 pub struct PostgresAlterer {
     /// The server's version (`server_version_num`): Postgres 17 changes a generated column's expression in place.
     pub version: i64,
+    /// The casts the server makes in assignment (`pg_cast`'s implicit and assignment ones), each a
+    /// source and a target type as `format_type` names them, without a modifier.
+    pub assignment: BTreeSet<(String, String)>,
+}
+
+impl PostgresAlterer {
+    /// The casts the server behind `db` makes in assignment.
+    pub async fn read(db: &mut Db, version: i64) -> Result<PostgresAlterer, Error> {
+        let rows = db.rows("select format_type(castsource, null) as s, format_type(casttarget, null) as t from pg_cast where castcontext in ('a', 'i')").await?;
+        let assignment = rows.iter().map(|r| (r.text("s").to_string(), r.text("t").to_string())).collect();
+        Ok(PostgresAlterer { version, assignment })
+    }
+
+    /// Whether a column of type `from` becomes `to` without an explicit cast: the same type with
+    /// another modifier, or a cast the server makes in assignment, element by element for arrays.
+    /// That conversion refuses a value the new type cannot hold (a string too long for its
+    /// `varchar(n)`, an integer out of range), where an explicit cast would cut it to fit.
+    fn assigns(&self, from: &str, to: &str) -> bool {
+        static MODIFIER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\(\d+(,\d+)?\)").expect("a valid pattern"));
+        let bare = |t: &str| MODIFIER.replace_all(t, "").into_owned();
+        let (from, to) = (bare(from), bare(to));
+        let (from_elem, to_elem) = (from.trim_end_matches("[]"), to.trim_end_matches("[]"));
+        if from.ends_with("[]") != to.ends_with("[]") {
+            return false;
+        }
+        from_elem == to_elem || self.assignment.contains(&(from_elem.to_string(), to_elem.to_string()))
+    }
 }
 
 impl Alterer for PostgresAlterer {
@@ -1597,7 +1630,11 @@ impl Alterer for PostgresAlterer {
                 if type_changes {
                     out.extend(unmake);
                     let collate = b.collation.as_deref().map(|c| format!(" collate {c}")).unwrap_or_default();
-                    out.push(format!("{at} type {}{collate} using {name}::{}", b.ty, b.ty));
+                    if self.assigns(&a.ty, &b.ty) {
+                        out.push(format!("{at} type {}{collate}", b.ty));
+                    } else {
+                        out.push(format!("{at} type {}{collate} using {name}::{}", b.ty, b.ty));
+                    }
                     out.extend(remake);
                 }
                 if b.default.is_some() && (a.default != b.default || reset) {
@@ -1732,6 +1769,17 @@ impl Alterer for PostgresAlterer {
                     (Some("unlogged"), Some("logged")) => out.push(format!("alter table {name} set logged")),
                     (Some("logged"), Some("unlogged")) => out.push(format!("alter table {name} set unlogged")),
                     _ => {}
+                }
+                // Storage moves in place, rows rewritten into it, from Postgres 15 (a partitioned
+                // table's, from 17); before, the table is created again.
+                if let (Some(a), Some(b)) = (part(from, "access method "), part(to, "access method ")) {
+                    if a != b {
+                        let partitioned = part(to, "shape ").is_some_and(|s| s.contains("partition by"));
+                        if self.version < if partitioned { 170000 } else { 150000 } {
+                            return None;
+                        }
+                        out.push(format!("alter table {name} set access method {b}"));
+                    }
                 }
                 let opts = |o: &Object| -> Vec<String> { part(o, "options ").unwrap_or_default().split(", ").filter(|s| !s.is_empty()).map(String::from).collect() };
                 let (a, b) = (opts(from), opts(to));

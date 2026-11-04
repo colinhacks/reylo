@@ -29,7 +29,7 @@ pub async fn alterer(db: &mut Db) -> Result<Box<dyn Alterer>, Error> {
     Ok(match db.dialect() {
         Dialect::Postgres => {
             let version = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
-            Box::new(postgres::PostgresAlterer { version })
+            Box::new(postgres::PostgresAlterer::read(db, version).await?)
         }
         Dialect::Mysql => Box::new(mysql::MysqlAlterer),
         Dialect::Sqlite => Box::new(sqlite::SqliteAlterer),

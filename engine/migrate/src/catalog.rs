@@ -152,6 +152,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
             "select format('%I.%I', n.nspname, c.relname) as name, c.relkind as kind, c.relpersistence as persistence,
               c.relrowsecurity as rls, c.relforcerowsecurity as force,
               (select string_agg(o, ', ' order by o) from unnest(c.reloptions) o) as options,
+              (select nullif(a.amname, 'heap') from pg_am a where a.oid = c.relam) as am,
               pg_get_expr(c.relpartbound, c.oid) as bound,
               (select format('%I.%I', pn.nspname, pc.relname) from pg_inherits i join pg_class pc on pc.oid = i.inhparent join pg_namespace pn on pn.oid = pc.relnamespace where i.inhrelid = c.oid limit 1) as parent,
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
@@ -183,6 +184,11 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
         }
         if r.text("persistence") == "u" {
             parts.push("unlogged".into());
+        }
+        // A table's storage, where it is not Postgres's own heap: a column store's, such as Citus
+        // columnar's or pg_duckdb's.
+        if let Some(am) = r.get("am") {
+            parts.push(format!("using {am}"));
         }
         if r.flag("rls") {
             parts.push("row level security".into());

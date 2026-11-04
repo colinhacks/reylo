@@ -135,6 +135,17 @@ pub(crate) fn hex(h: &[u8]) -> String {
     h.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// This build's catalog reader, which decides what a schema's fingerprint is a digest of: a build
+/// whose reader differs reads another fingerprint for the same schema, which is then not drift.
+pub(crate) fn code_id() -> String {
+    static ID: LazyLock<String> = LazyLock::new(|| {
+        let mut h = Sha256::new();
+        h.part(include_str!("catalog.rs").as_bytes());
+        hex(&h.finish()[..6])
+    });
+    ID.clone()
+}
+
 /// This build's code, as far as it decides what a replay ends in or what the catalog reads: the
 /// version, and the sources that make shadows, run their steps, connect to their servers and read
 /// their catalogs. A development build edited between two runs keys its caches anew.

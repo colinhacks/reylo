@@ -51,7 +51,7 @@ async fn postgres() {
     let here = std::env::temp_dir();
     let mut admin = Db::connect(&base, &here).await.unwrap();
     let version: i64 = admin.rows("select current_setting('server_version_num') as v").await.unwrap()[0].text("v").parse().unwrap();
-    let alterer = diff::postgres::PostgresAlterer { version };
+    let alterer = diff::postgres::PostgresAlterer::read(&mut admin, version).await.unwrap();
     let bless = std::env::var("REYLO_BLESS").is_ok();
     let mut failures = Vec::new();
     for (n, case) in cases("postgres").into_iter().enumerate() {
@@ -157,7 +157,7 @@ async fn postgres_oracle_schemas() {
     let here = std::env::temp_dir();
     let mut admin = Db::connect(&base, &here).await.unwrap();
     let version: i64 = admin.rows("select current_setting('server_version_num') as v").await.unwrap()[0].text("v").parse().unwrap();
-    let alterer = diff::postgres::PostgresAlterer { version };
+    let alterer = diff::postgres::PostgresAlterer::read(&mut admin, version).await.unwrap();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../oracle/cases");
     let mut cases: Vec<PathBuf> = std::fs::read_dir(&root).unwrap().map(|e| e.unwrap().path()).filter(|p| p.join("setup.sql").exists() && !p.join("dialect").exists()).collect();
     cases.sort();

@@ -39,11 +39,15 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
                             (Postgres: the public schema unless named), and record init.sql
   create <name>             Write the migration that takes the migrations to schema.sql, checked in
                             a shadow database, named with the current UTC time
-  apply [--dry-run|--reset] Check the migrations against schema.sql in shadow databases, then
-                            apply the pending ones. A pending migration whose change the
-                            database already has is recorded without running. --dry-run checks
-                            and changes nothing; --reset drops everything first, applies every
-                            migration, then runs migrate.post (loses data)
+  apply [--record <file>…]  Check the database against the migrations in shadow databases, then
+                            apply the pending ones. Refuses on any disagreement and runs nothing
+                            then. --record records a migration without running it, where the
+                            database already has its change and it changes no data (a fix made
+                            by hand, written down afterwards)
+  apply --reset             Drop everything, apply every migration, then run migrate.post (loses
+                            data)
+  check                     What apply checks, and the migrations against schema.sql; runs nothing
+  restore <file>            Write the text this database ran for a migration back to its file
   repair                    When the database, schema.sql and the migrations agree, rewrite the
                             history to the migration files; never touches the schema or data
   rebase [files…] [--base <branch>]
@@ -74,6 +78,7 @@ struct Args {
     values: HashMap<String, String>,
     schemas: Vec<String>,
     files: Vec<String>,
+    records: Vec<String>,
     switches: Vec<String>,
     rest: Vec<String>,
 }
@@ -94,6 +99,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--schema" => out.schemas.push(value()?),
             "--file" | "-f" => out.files.push(value()?),
+            "--record" => out.records.push(value()?),
             s if s.starts_with("--") => out.switches.push(s[2..].to_string()),
             _ => out.rest.push(a.clone()),
         }
@@ -167,7 +173,14 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
     let result = rt.block_on(async {
         match command.as_str() {
             "apply" if has("reset") => reylo_migrate::reset(&opts, &mut log).await,
-            "apply" => reylo_migrate::migrate(&opts, has("dry-run"), &mut log).await,
+            // `--dry-run` was the check's flag before it was a command of its own.
+            "check" => reylo_migrate::check_command(&opts, &mut log).await,
+            "apply" if has("dry-run") => reylo_migrate::check_command(&opts, &mut log).await,
+            "apply" => reylo_migrate::migrate(&opts, &parsed.records, &mut log).await,
+            "restore" => match parsed.rest.first() {
+                Some(name) => reylo_migrate::restore(&opts, name, &mut log).await,
+                None => Err(reylo_migrate::Error("name the migration to restore: reylo migrate restore <file>".into())),
+            },
             "init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
             "create" => reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &mut log).await,
             "rebase" => reylo_migrate::rebase(&opts, &parsed.rest, &mut log).await,
