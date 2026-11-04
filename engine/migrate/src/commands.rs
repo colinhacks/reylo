@@ -2118,7 +2118,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
     match db.dialect() {
         Dialect::Postgres => {
             // pg_dump refuses a server newer than itself, so the one of the server's own major
-            // version is looked for first (Homebrew's keg), then the PATH's.
+            // version is looked for first (Homebrew's keg, and the directory Debian's and Ubuntu's
+            // packages install it in, whose PATH wrapper picks a local cluster's version), then the
+            // PATH's.
             let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
             let major = version / 10000;
             let version_of = |p: &str| -> i64 {
@@ -2126,7 +2128,7 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
                 text.split_whitespace().find_map(|w| w.split('.').next()?.parse().ok()).unwrap_or(0)
             };
-            let candidates = [format!("/opt/homebrew/opt/postgresql@{major}/bin/pg_dump"), "pg_dump".to_string()];
+            let candidates = [format!("/opt/homebrew/opt/postgresql@{major}/bin/pg_dump"), format!("/usr/lib/postgresql/{major}/bin/pg_dump"), "pg_dump".to_string()];
             let Some(pg_dump) = candidates.iter().find(|p| version_of(p) >= major) else {
                 return Err(Error(format!("init needs pg_dump {major} or newer (the server is Postgres {major})")));
             };
