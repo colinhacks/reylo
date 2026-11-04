@@ -1545,6 +1545,9 @@ pub struct PostgresAlterer {
     /// The casts the server makes in assignment (`pg_cast`'s implicit and assignment ones), each a
     /// source and a target type as `format_type` names them, without a modifier.
     pub assignment: BTreeSet<(String, String)>,
+    /// The string types (`typcategory` S): any type converts to one in assignment, through its text
+    /// form, with no `pg_cast` row.
+    pub strings: BTreeSet<String>,
 }
 
 impl PostgresAlterer {
@@ -1552,7 +1555,8 @@ impl PostgresAlterer {
     pub async fn read(db: &mut Db, version: i64) -> Result<PostgresAlterer, Error> {
         let rows = db.rows("select format_type(castsource, null) as s, format_type(casttarget, null) as t from pg_cast where castcontext in ('a', 'i')").await?;
         let assignment = rows.iter().map(|r| (r.text("s").to_string(), r.text("t").to_string())).collect();
-        Ok(PostgresAlterer { version, assignment })
+        let strings = db.rows("select format_type(oid, null) as t from pg_type where typcategory = 'S'").await?.iter().map(|r| r.text("t").to_string()).collect();
+        Ok(PostgresAlterer { version, assignment, strings })
     }
 
     /// Whether a column of type `from` becomes `to` without an explicit cast: the same type with
@@ -1567,7 +1571,7 @@ impl PostgresAlterer {
         if from.ends_with("[]") != to.ends_with("[]") {
             return false;
         }
-        from_elem == to_elem || self.assignment.contains(&(from_elem.to_string(), to_elem.to_string()))
+        from_elem == to_elem || self.strings.contains(to_elem) || self.assignment.contains(&(from_elem.to_string(), to_elem.to_string()))
     }
 }
 
@@ -1607,6 +1611,8 @@ impl Alterer for PostgresAlterer {
                             let expr = declared_generated.map(|g| format!("({g})")).unwrap_or_else(|| y.trim_start_matches("generated always as ").trim_end_matches(" stored").to_string());
                             out.push(format!("{at} set expression as {expr}"));
                         }
+                        // A stored column stops being generated in place, keeping its values.
+                        (Some(x), None) if self.version >= 130000 && x.ends_with(" stored") => out.push(format!("{at} drop expression")),
                         _ => return None,
                     }
                 }

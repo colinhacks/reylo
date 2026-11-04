@@ -500,7 +500,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         match &ops[k] {
             Op::Drop(id) => {
                 let o = &from.objects[id];
-                if !creates.contains(id) && matches!(o.kind, Some(Kind::Table | Kind::Column)) {
+                // A table or column dropped loses its rows, made again or not; a column whose table
+                // goes is the table's loss.
+                let in_lost_table = o.kind == Some(Kind::Column) && o.owner.as_ref().is_some_and(|t| drops.contains(t));
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.iter().cloned());
