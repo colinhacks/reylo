@@ -66,8 +66,9 @@ impl<R: Into<String>, C: Into<String>> FromIterator<(R, Vec<C>)> for Columns {
     }
 }
 
-/// Whether a statement holds a scalar subquery, the one place a rule asks whose an aggregate is:
-/// a statement without one needs no [`Columns`] for that.
+/// Whether a statement holds a scalar subquery, where a rule asks whose an aggregate is, or an
+/// `ARRAY(SELECT …)`, where one asks whether the column it collects is an array: a statement with
+/// neither needs no [`Columns`] for that.
 pub fn needed(sql: &str) -> bool {
     crate::stack::kept(&NEEDED, sql, || crate::stack::run(|| needed_here(sql)))
 }
@@ -79,12 +80,12 @@ thread_local! {
 fn needed_here(sql: &str) -> bool {
     fn walk(v: &Value) -> bool {
         match v {
-            Value::Object(map) => map.iter().any(|(key, child)| (key == "SubLink" && child.get("sub_link_type").and_then(Value::as_i64) == Some(protobuf::SubLinkType::ExprSublink as i64)) || walk(child)),
+            Value::Object(map) => map.iter().any(|(key, child)| (key == "SubLink" && child.get("sub_link_type").and_then(Value::as_i64).is_some_and(|t| t == protobuf::SubLinkType::ExprSublink as i64 || t == protobuf::SubLinkType::ArraySublink as i64)) || walk(child)),
             Value::Array(items) => items.iter().any(walk),
             _ => false,
         }
     }
-    // A subquery that aggregates is a second SELECT at the least.
+    // A subquery is a second SELECT at the least.
     if sql.to_ascii_lowercase().matches("select").count() < 2 {
         return false;
     }

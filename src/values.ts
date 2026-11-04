@@ -615,10 +615,18 @@ export function parseArray(text: string, element: (text: string) => unknown, del
   return level();
 }
 
+/**
+ * The kind of an array's innermost elements, `int` for `int[][]`: Postgres's text of an array
+ * nests its levels itself, so every element it spells is one of these.
+ */
+export function elementKind(kind: Kind): Kind {
+  return kind.replace(/(?:\[\])+$/, "") as Kind;
+}
+
 /** The decoder of a Postgres value of `kind` from its text; `delim` is an array's (`;` for `box[]`). */
 export function textDecoder(kind: Kind, delim = ","): Decoder {
   if (kind.endsWith("[]")) {
-    const element = textDecoder(kind.slice(0, -2), delim);
+    const element = textDecoder(elementKind(kind), delim);
     return (x) => parseArray(x, element, delim);
   }
   return TEXT_DECODERS[kind as ScalarKind] ?? identity;
@@ -772,7 +780,7 @@ export function float32s(bytes: Uint8Array, column: string): number[] {
 export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unknown {
   if (v === null || v === undefined) return null;
   if (kind.endsWith("[]")) {
-    const element = kind.slice(0, -2);
+    const element = elementKind(kind);
     if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column), delim);
     if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column, delim) : coerce(element, e, column)));
     // A MySQL VECTOR's bytes: no driver gives any other array of floats as bytes.
