@@ -902,6 +902,10 @@ fn depth_contradiction(ty: &Type, text: &str) -> Option<String> {
     let depth = body.chars().take_while(|c| *c == '{').count();
     let (mut levels, mut open, mut at) = (0, false, ty);
     while let Kind::Array(array) = &at.kind {
+        // A type written otherwise in Postgres's text (`vector`) adds no braces.
+        if !postgres_array(at) {
+            break;
+        }
         levels += 1;
         if array.any_depth {
             open = true;
@@ -1638,6 +1642,12 @@ mod tests {
         assert_eq!(contradiction(&rows, "{}", false, ','), None);
         assert_eq!(contradiction(&rows, "{{1,NULL}}", false, ',').as_deref(), Some("typed with non-null elements holds a NULL element"));
         assert_eq!(contradiction(&stacked, "{{1,NULL}}", false, ','), None);
+        // A vector is an array in the type but no braces in Postgres's text, so it adds no dimension.
+        let float4 = json!({"kind": "float", "exponent_bits": 8, "mantissa_bits": 23});
+        let vector = json!({"kind": "array", "name": "public.vector", "element": {"type": float4}});
+        let vectors = json!({"kind": "array", "name": "public._vector", "element": {"type": {"kind": "array", "name": "public._vector", "element": {"type": vector}}}});
+        assert_eq!(contradiction(&vectors, r#"{{"[1,2]"}}"#, false, ','), None);
+        assert_eq!(contradiction(&vectors, r#"{"[1,2]"}"#, false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
     }
 
     #[test]
