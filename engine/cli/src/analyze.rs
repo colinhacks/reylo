@@ -4,7 +4,7 @@
 use crate::project::{self, Project};
 use reylo_engine_core::api::{utf16_offset, Analysis};
 use reylo_engine_core::dialect::Dialect;
-use reylo_engine_core::types::{Cardinality, DialectVersion, Diagnostic, Kind, StatementDescriptor};
+use reylo_engine_core::types::{Cardinality, DialectVersion, Diagnostic, Kind, StatementDescriptor, RTD_VERSION};
 use reylo_engine_native::Failure;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -169,6 +169,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
             // This statement alone could not be analyzed: its line says why, over the whole
             // statement, and the run goes on.
             Err(Failure::Error(message)) => StatementDescriptor {
+                rtd: RTD_VERSION.to_string(),
                 dialect: version.clone(),
                 sql: input.sql.clone(),
                 kind: None,
