@@ -2,6 +2,7 @@ beside_union.sql: many () -> { tags: text[], u: text?[] }
 casts.sql: many () -> { wrapped: (public.wrap{ v: text? }?)[]?, points: public.score[]? }
 columns.sql: at_most_one (id: int4) -> { tags: text[], scores: int4[]?, l: text[]?, loose: text?[]?, other: text?[]? }
 filtered.sql: many () -> { tags: text[], scores: int4[] }
+grids.sql: many () -> { cells: int4[]? }
 json.sql: many () -> { doc: jsonb { tags: text[] } }
 left_join.sql: many () -> { tags: text[]? }
 returning.sql: one (id: int4, tags: text?[]) -> { tags: text[] }

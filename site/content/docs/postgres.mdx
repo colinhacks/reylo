@@ -452,7 +452,7 @@ Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[
 
 </Pairs>
 
-A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`.
+A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `users.tags`, types the elements non-null wherever the column is selected as it is, except through a view or a `union`. Postgres refuses to search an array of more than one dimension, so the same `CHECK` keeps such values out of the column too.
 
 **Several dimensions**
 

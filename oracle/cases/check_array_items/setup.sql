@@ -30,3 +30,13 @@ create table casts (
   points score[] check (array_position(points, null::score) is null)
 );
 insert into casts values (1, '{NULL}', '{1}');
+-- Postgres refuses to search an array of more than one dimension, so the same CHECK keeps such a
+-- value out of the column: it holds one dimension, or none, with no NULL element.
+create table grids (id int primary key, cells int[] check (array_position(cells, null) is null));
+insert into grids values (1, '{1,2}');
+do $$
+begin
+  insert into grids values (2, '{{1,2},{3,4}}');
+  raise exception 'a CHECK on array_position stored an array of two dimensions';
+exception when feature_not_supported then
+end $$;
