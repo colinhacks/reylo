@@ -805,7 +805,8 @@ fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
 
 /// Why a decimal's text breaks its precision and scale, if it does: more digits after the point
 /// than its scale, or more digits than its precision. A negative scale rounds to tens or hundreds,
-/// whose zeros the precision does not count.
+/// whose zeros the precision does not count, and a scale above the precision leaves zeros after the
+/// point (`0.000123` in a `numeric(3,6)`), which it does not count either.
 fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
     let digits = text.trim_start_matches(['-', '+']);
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
@@ -821,7 +822,7 @@ fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
     if zeros > 0 && !whole.is_empty() && !whole.ends_with(&"0".repeat(zeros)) {
         return Some(format!("typed with a scale of {:?} holds {text}", decimal.min_scale));
     }
-    let significant = whole.len().saturating_sub(zeros) + fraction.len();
+    let significant = format!("{whole}{fraction}").trim_start_matches('0').len().saturating_sub(zeros);
     (significant > precision as usize).then(|| format!("typed with a precision of {precision} holds {text}"))
 }
 
@@ -1701,6 +1702,20 @@ mod tests {
         assert!(!array_has_null("{NULL:x}", ','));
         assert!(array_has_null("{a,NULL}", ','));
         assert!(!array_has_null(r#"{"NULL",b}"#, ','));
+    }
+
+    #[test]
+    fn a_decimal_counts_the_digits_its_precision_holds() {
+        let decimal = |precision: u32, scale: i32| DecimalType { precision: Some(precision), min_scale: Some(scale), max_scale: Some(scale), ..Default::default() };
+        // A scale above the precision leaves zeros after the point that are no significant digits.
+        assert_eq!(decimal_contradiction(&decimal(3, 6), "0.000123"), None);
+        assert!(decimal_contradiction(&decimal(3, 6), "0.001230").is_some());
+        assert_eq!(decimal_contradiction(&decimal(10, 2), "-99999999.99"), None);
+        assert!(decimal_contradiction(&decimal(10, 2), "999999999.99").is_some());
+        assert_eq!(decimal_contradiction(&decimal(5, 2), "0.50"), None);
+        // A negative scale's zeros before the point are not counted either.
+        assert_eq!(decimal_contradiction(&decimal(5, -2), "9999900"), None);
+        assert!(decimal_contradiction(&decimal(5, -2), "99999900").is_some());
     }
 
     #[test]
