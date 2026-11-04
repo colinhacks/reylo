@@ -56,9 +56,8 @@ pub struct Project {
 /// `reylo migrate`'s settings: where the migrations and the declared schema are (`migrations` and
 /// `schema.sql` beside the project file when absent), the database (the type check's connection
 /// when absent), a server to make shadow databases on where the target's refuses `create database`,
-/// the main branch a bare `rebase` compares with (git's `origin/HEAD` when absent), how the history
-/// is ordered, the strictness flags, and `post`, a shell command run after `apply --reset` replays
-/// every migration (a seed).
+/// whether the project is locked, the strictness flags, and `post`, a shell command run after
+/// `apply --reset` replays every migration, and after `wipe` (a seed).
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migrate {
@@ -70,9 +69,7 @@ pub struct Migrate {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub main_branch: Option<String>,
-    /// `loose` when absent.
+    /// `linear` (locked) when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub history: Option<History>,
     /// Compare comments on objects (on when absent).
@@ -82,10 +79,11 @@ pub struct Migrate {
     pub post: Option<String>,
 }
 
-/// How a project's migrations are ordered. `loose`: a migration older than one a database applied
-/// still runs there, once replaying the database's own order and the order by time both reach
-/// `schema.sql`. `linear`: it is refused, and `migrations/lock.yaml` lists every migration in the
-/// order they run, so that two branches that each add one conflict in git, which `rebase` resolves.
+/// How a project's migrations are ordered. `linear`, the default: the project is locked, and
+/// `reylo-lock.yaml` lists every migration in the order they run, so that two branches that each
+/// add one conflict in git; a migration not in it is a draft only development runs. `loose`
+/// (`reylo migrate unlock`): there is no lock, migrations run by name, and one older than one a
+/// database applied still runs there, once replaying both orders reaches the same schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum History {
@@ -132,7 +130,7 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
         if let Some(m) = project.migrate.as_mut() {
-            for value in [&mut m.dir, &mut m.schema, &mut m.url, &mut m.shadow_url, &mut m.main_branch, &mut m.post].into_iter().flatten() {
+            for value in [&mut m.dir, &mut m.schema, &mut m.url, &mut m.shadow_url, &mut m.post].into_iter().flatten() {
                 *value = unmask_placeholders(value);
             }
         }

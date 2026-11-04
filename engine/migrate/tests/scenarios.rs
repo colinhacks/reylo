@@ -75,15 +75,29 @@ impl P {
         Some(P { d, dir, url, name, lines: vec![], t, strict: false })
     }
 
+    /// A second project directory of the same dialect, with no database of its own yet.
+    fn sibling(p: &P) -> P {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("reylo-migrate-{}-sib_{}_{n}", p.d.name(), std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("migrations")).unwrap();
+        let t = match p.d {
+            Dialect::Postgres => Types { id: p.t.id, text: p.t.text, int: p.t.int },
+            _ => Types { id: p.t.id, text: p.t.text, int: p.t.int },
+        };
+        let url = if p.d == Dialect::Sqlite { format!("sqlite:{}", dir.join("dev.db").display()) } else { p.url.clone() };
+        P { d: p.d, dir, url, name: p.name.clone(), lines: vec![], t, strict: p.strict }
+    }
+
     fn opts(&self) -> Options {
         Options {
             url: self.url.clone(),
             shadow_url: None,
             dir: self.dir.join("migrations"),
             schema: self.dir.join("schema.sql"),
-            linear: self.strict,
+            locked: self.strict,
+            lock: self.dir.join(reylo_migrate::lock::LOCK),
             comments: true,
-            main_branch: None,
             post: None,
             root: self.dir.clone(),
         }
@@ -149,6 +163,28 @@ impl P {
         assert_eq!(warm, off, "a warm cache changed the check");
         assert_eq!(copied, off, "the cache's databases changed the check");
         off
+    }
+
+    /// A lock listing `names`, chained as Reylo chains it, from the files' texts.
+    fn lock(&self, names: &[&str]) {
+        let texts: Vec<(String, String)> = names.iter().map(|n| (n.to_string(), std::fs::read_to_string(self.dir.join("migrations").join(n)).unwrap().replace("\r\n", "\n").trim_end().to_string())).collect();
+        let l = reylo_migrate::lock::Lock { schema: None, entries: reylo_migrate::lock::chain(texts.iter().map(|(n, t)| (n.as_str(), t.as_str()))) };
+        reylo_migrate::lock::write(&self.dir.join(reylo_migrate::lock::LOCK), &l).unwrap();
+    }
+
+    fn locked(&self) -> Vec<String> {
+        match reylo_migrate::lock::read(&self.dir.join(reylo_migrate::lock::LOCK)) {
+            reylo_migrate::lock::State::Lock(l) => l.names(),
+            other => panic!("the lock reads {other:?}"),
+        }
+    }
+
+    async fn dev(&mut self) -> i32 {
+        self.run(async |o, log| reylo_migrate::apply_dev(o, false, log).await).await
+    }
+
+    async fn offline(&mut self) -> i32 {
+        self.run(async |o, log| reylo_migrate::check_offline(o, log)).await
     }
 
     fn file(&self, name: &str, sql: &str) {
@@ -278,7 +314,9 @@ for_each_dialect!(
     sync_rewinds_what_no_longer_agrees,
     sync_runs_a_late_migration_only_where_apply_would,
     sync_keeps_what_no_migration_makes_yet,
-    sync_keeps_a_linear_history_in_order,
+    apply_dev_locks_a_draft_after_what_is_locked,
+    a_locked_project_runs_its_lock,
+    a_lock_conflict_is_resolved_by_apply_dev,
     create_resolves_the_names_drop_gives,
     create_renames_a_table_keeping_its_rows,
     sync_renames_a_table_keeping_its_rows,
@@ -448,10 +486,12 @@ async fn a_late_migration_runs_when_both_orders_agree(mut p: P) {
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     p.schema(&format!("create table a (id {int}); create table b (id {int}); create table c (id {int});"));
     p.file("20261027110000_b.sql", &format!("create table b (id {int});"));
+    // Locked, the lock's order is the order, whatever the names: b is a draft until development
+    // locks it after c.
     p.strict = true;
-    reylo_migrate::lock::write(&p.dir.join("migrations"), &p.files()).unwrap();
+    p.lock(&["20261027100000_a.sql", "20261027120000_c.sql"]);
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"older than 20261027120000_c\.sql[\s\S]*history is linear");
+    assert_has!(p.output(), r"20261027110000_b\.sql isn't in \S*reylo-lock\.yaml: it's a draft\n\n  Apply in development, which adds them to the lock:\n    reylo migrate apply --dev");
     p.strict = false;
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027120000_c.sql", "20261027110000_b.sql"]);
@@ -920,20 +960,106 @@ async fn sync_keeps_what_no_migration_makes_yet(mut p: P) {
     assert_eq!(p.rows("select * from notes").await.len(), 1);
 }
 
-async fn sync_keeps_a_linear_history_in_order(mut p: P) {
+async fn apply_dev_locks_a_draft_after_what_is_locked(mut p: P) {
     let int = p.t.int;
     p.strict = true;
     p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
     p.file("20261027120000_c.sql", &format!("create table c (id {int});"));
     p.schema(&format!("create table a (id {int}); create table c (id {int});"));
     assert_eq!(p.sync().await, 0, "{}", p.peek());
-    // An older migration that commutes with c still runs in its place: c is rewound and runs after it.
+    assert_has!(p.output(), r"✓ Locked 20261027100000_a\.sql, 20261027120000_c\.sql in \S*reylo-lock\.yaml");
+    p.exec("insert into c values (1)").await;
+    // A draft named older than c runs after it, where the lock puts it: nothing is rewound.
     p.file("20261027110000_b.sql", &format!("create table b (id {int});"));
     p.schema(&format!("create table a (id {int}); create table b (id {int}); create table c (id {int});"));
-    p.output();
     assert_eq!(p.sync().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"↺ Rewound 20261027120000_c\.sql: a migration before it came in later");
-    assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027110000_b.sql", "20261027120000_c.sql"]);
+    let out = p.output();
+    assert!(!out.contains("Rewound"), "{out}");
+    assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027120000_c.sql", "20261027110000_b.sql"]);
+    assert_eq!(p.locked(), ["20261027100000_a.sql", "20261027120000_c.sql", "20261027110000_b.sql"]);
+    assert_eq!(p.rows("select * from c").await.len(), 1);
+}
+
+async fn a_locked_project_runs_its_lock(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.strict = true;
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
+    p.schema(&format!("create table users (id {id}, email {text});"));
+    // With no lock yet, apply runs nothing: development applies the migrations, and that locks them.
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"reylo-lock\.yaml is missing\n\n  On a development database, apply the migrations, which writes it:\n    reylo migrate apply --dev");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ Locked 20261027100000_users\.sql in");
+    // The lock certifies schema.sql too, since the migrations reach it.
+    assert_eq!(p.offline().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"lists every migration, in order, as written\n✓ The migrations reach \S*schema\.sql");
+    // Another database runs what the lock lists.
+    let q = P::new(p.d).await.unwrap();
+    let dev_url = std::mem::replace(&mut p.url, q.url.clone());
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(q.history().await, ["20261027100000_users.sql"]);
+    p.url = dev_url;
+    p.output();
+    // An edit to a locked migration is seen without a database, and refused by apply.
+    let locked_text = std::fs::read_to_string(p.dir.join("migrations/20261027100000_users.sql")).unwrap();
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text}, nick {text});"));
+    assert_eq!(p.offline().await, 1);
+    assert_has!(p.output(), r"20261027100000_users\.sql changed after it was locked");
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), "changed after it was locked");
+    p.file("20261027100000_users.sql", &locked_text);
+    // A draft beside the lock is refused by apply, and run by development.
+    p.file("20261027110000_nick.sql", &format!("alter table users add column nick {text};"));
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"20261027110000_nick\.sql isn't in \S*reylo-lock\.yaml: it's a draft");
+    std::fs::remove_file(p.dir.join("migrations/20261027110000_nick.sql")).unwrap();
+    // schema.sql that moves with no migration is seen without a database too.
+    p.schema(&format!("create table users (id {id}, email {text}, bio {int});"));
+    assert_eq!(p.offline().await, 1);
+    assert_has!(p.output(), r"schema\.sql has changes not reflected in any migration file\n  It isn't the schema\.sql the migrations reached");
+    // reylo migrate lock writes it from what a database applied.
+    std::fs::remove_file(p.dir.join(reylo_migrate::lock::LOCK)).unwrap();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"reylo-lock\.yaml is missing");
+    assert_eq!(p.run(async |o, log| reylo_migrate::lock_command(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ Wrote \S*reylo-lock\.yaml: the 1 migration this database applied, in its order");
+    assert_eq!(p.locked(), ["20261027100000_users.sql"]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+}
+
+async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
+    let int = p.t.int;
+    p.strict = true;
+    p.file("20261027100000_base.sql", &format!("create table base (id {int});"));
+    p.file("20261027120000_mine.sql", &format!("create table mine (id {int});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_eq!(p.locked(), ["20261027100000_base.sql", "20261027120000_mine.sql"]);
+    p.exec("insert into base values (1)").await;
+    // Main locked another migration after base; its lines are kept, and this branch's left out.
+    p.file("20261027110000_theirs.sql", &format!("create table theirs (id {int});"));
+    p.lock(&["20261027100000_base.sql", "20261027110000_theirs.sql"]);
+    p.output();
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Rewound 20261027120000_mine\.sql[\s\S]*✓ Applied 20261027110000_theirs\.sql[\s\S]*✓ Applied 20261027120000_mine\.sql[\s\S]*✓ Locked 20261027120000_mine\.sql");
+    assert_eq!(p.locked(), ["20261027100000_base.sql", "20261027110000_theirs.sql", "20261027120000_mine.sql"]);
+    assert_eq!(p.rows("select * from base").await.len(), 1);
+    // Accepting both sides with this branch's line first breaks main's line out of its chain: refused.
+    let q = P::new(p.d).await.unwrap();
+    let mut r = P { url: q.url.clone(), ..P::sibling(&p) };
+    r.strict = true;
+    r.file("20261027100000_base.sql", &format!("create table base (id {int});"));
+    assert_eq!(r.dev().await, 0, "{}", r.peek());
+    r.file("20261027110000_theirs.sql", &format!("create table theirs (id {int});"));
+    r.file("20261027120000_mine.sql", &format!("create table mine (id {int});"));
+    // Each line was locked right after base, on its own branch.
+    let base = reylo_migrate::lock::chain([("20261027100000_base.sql", format!("create table base (id {int});").as_str())]);
+    let after = |name: &str, sql: &str| reylo_migrate::lock::Entry { name: name.into(), sum: reylo_migrate::lock::checksum(&base[0].sum, name, sql) };
+    let wrong = reylo_migrate::lock::Lock { schema: None, entries: vec![base[0].clone(), after("20261027120000_mine.sql", &format!("create table mine (id {int});")), after("20261027110000_theirs.sql", &format!("create table theirs (id {int});"))] };
+    reylo_migrate::lock::write(&r.dir.join(reylo_migrate::lock::LOCK), &wrong).unwrap();
+    r.output();
+    assert_eq!(r.dev().await, 1);
+    assert_has!(r.output(), r"lines were merged out of their order: 20261027110000_theirs\.sql was locked right after 20261027100000_base\.sql on another branch");
 }
 
 async fn create_resolves_the_names_drop_gives(mut p: P) {

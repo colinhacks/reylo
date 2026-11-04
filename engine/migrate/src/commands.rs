@@ -4,7 +4,7 @@
 
 use crate::catalog::{catalog, difference, Scope, HISTORY_TABLE};
 use crate::db::{wipe, Db, Server};
-use crate::lock::{self, LOCK};
+use crate::lock;
 use crate::replay::{Shadows, Step};
 use crate::sql::{atomicity_problem, changes_data, runs_alone, shadow_problem, split_statements};
 use crate::{time, Dialect, Error};
@@ -21,15 +21,15 @@ pub struct Options {
     pub shadow_url: Option<String>,
     pub dir: PathBuf,
     pub schema: PathBuf,
-    /// A linear history (`history: linear`): a pending migration older than one already applied is
-    /// refused, and `migrations/lock.yaml` lists every migration in order. Off by default: a
-    /// development database that pulls migrations merged on main applies them on top of its own, in
-    /// an order production never ran, and the shadows of both orders must agree.
-    pub linear: bool,
+    /// A locked project (the default; `history: loose` turns it off): the lock lists the migrations
+    /// in the order they run, a migration not in it is a draft only development runs, and two
+    /// branches that add migrations conflict on it. Unlocked, migrations run by name, and one that
+    /// lands older than one already applied runs only where both orders end the same.
+    pub locked: bool,
+    /// The lock's file, `reylo-lock.yaml`.
+    pub lock: PathBuf,
     /// Whether comments on objects are compared (`strict_comments`, on by default).
     pub comments: bool,
-    /// For a bare `rebase`: the main branch; git's origin/HEAD when absent.
-    pub main_branch: Option<String>,
     /// A shell command run after `apply --reset` replays every migration (a seed).
     pub post: Option<String>,
     /// The project's directory: a relative SQLite path is its, and `post` runs in it.
@@ -118,7 +118,7 @@ pub fn read_migrations(dir: &Path) -> Result<(Vec<Migration>, Vec<String>), Erro
         } else if let Some(m) = NAME.captures(&name) {
             let time = m[1].to_string();
             files.push(Migration { sql: std::fs::read_to_string(&path)?, name, time, path });
-        } else if !name.starts_with('.') && name != LOCK {
+        } else if !name.starts_with('.') {
             strays.push(name);
         }
     }
@@ -356,11 +356,17 @@ pub struct Problem {
     pub title: String,
     pub lines: Vec<String>,
     fixed: bool,
+    /// Whether it is the lock's drafts, which some commands pass over.
+    drafts: bool,
 }
 
 impl Problem {
     fn new(title: impl Into<String>) -> Problem {
-        Problem { title: title.into(), lines: vec![], fixed: false }
+        Problem { title: title.into(), lines: vec![], fixed: false, drafts: false }
+    }
+
+    fn is_drafts(&self) -> bool {
+        self.drafts
     }
 
     /// SQL under the heading, set off by blank lines: what differs, never a fix to run.
@@ -561,31 +567,99 @@ fn line_diff(old: &str, new: &str) -> Vec<String> {
     out
 }
 
-/// What is wrong with the lock of a linear history: it must list the migration files, each once, in
-/// the order of their names, which is the order they run in.
+/// How an entry of the lock stands against the migration files.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Link {
+    /// Its file, chained to the entry before it.
+    Ok,
+    /// No file of its name.
+    Missing,
+    /// Its file's text isn't what was locked.
+    Edited,
+    /// Locked after another entry than the one before it (`after`): two branches' lines merged.
+    Moved { after: Option<String> },
+}
+
+/// Each entry's link, in the lock's order.
+fn links(l: &lock::Lock, files: &[Migration]) -> Vec<Link> {
+    let mut out = Vec::new();
+    for (k, e) in l.entries.iter().enumerate() {
+        let Some(f) = files.iter().find(|f| f.name == e.name) else {
+            out.push(Link::Missing);
+            continue;
+        };
+        let text = normalized(&f.sql);
+        let prev = if k == 0 { String::new() } else { l.entries[k - 1].sum.clone() };
+        if lock::checksum(&prev, &e.name, &text) == e.sum {
+            out.push(Link::Ok);
+            continue;
+        }
+        // Chained after an earlier entry, or as the first: moved there from another branch's lock.
+        let parents = std::iter::once((None, String::new())).chain(l.entries[..k.saturating_sub(1)].iter().map(|p| (Some(p.name.clone()), p.sum.clone())));
+        match parents.filter(|(_, sum)| *sum != prev).find(|(_, sum)| lock::checksum(sum, &e.name, &text) == e.sum) {
+            Some((after, _)) => out.push(Link::Moved { after }),
+            None => out.push(Link::Edited),
+        }
+    }
+    out
+}
+
+/// The lock of a locked project, or what keeps it from being read. A project with no migrations
+/// needs none yet.
+fn read_lock(opts: &Options, files: &[Migration]) -> Result<lock::Lock, Problem> {
+    let path = shown(&opts.lock);
+    match lock::read(&opts.lock) {
+        lock::State::Lock(l) => Ok(l),
+        lock::State::Missing if files.is_empty() => Ok(lock::Lock::default()),
+        lock::State::Missing => Err(Problem::new(format!("{path} is missing")).fix("On a development database, apply the migrations, which writes it", &["reylo migrate apply --dev"]).fix("Or write it from what a database applied", &["reylo migrate lock"])),
+        lock::State::Conflicted => Err(Problem::new(format!("{path} has a merge conflict: another branch added migrations too"))
+            .note("Keep main's lines, and leave out this branch's (git checkout --theirs while merging main in, --ours while rebasing onto it)")
+            .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate apply --dev"])),
+        lock::State::Invalid(e) => Err(Problem::new(format!("{path} doesn't read as a lock file")).note(e).fix("Write it again from what a database applied", &["reylo migrate lock"])),
+    }
+}
+
+/// The problems of a locked project's lock against the migration files, for a command that runs
+/// what it lists as it is (apply, check): an entry with no file, a file edited after it was locked,
+/// lines merged out of their order, and drafts.
 fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
-    let path = shown(&opts.dir.join(LOCK));
-    let names = match lock::read(&opts.dir) {
-        lock::State::Missing => return vec![Problem::new(format!("The history is linear, and {path} is missing")).fix("Write it from the migration files", &["reylo migrate lock"])],
-        lock::State::Conflicted => return vec![Problem::new(format!("{path} has a merge conflict: another branch added migrations too")).fix("Move this branch's migrations after the others', and resolve it", &["reylo migrate lock"])],
-        lock::State::Invalid(e) => return vec![Problem::new(format!("{path} doesn't read as a lock file")).note(e).fix("Write it again from the migration files", &["reylo migrate lock"])],
-        lock::State::Names(names) => names,
+    let path = shown(&opts.lock);
+    let l = match read_lock(opts, files) {
+        Ok(l) => l,
+        Err(p) => return vec![p],
     };
-    let order: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
-    if names.iter().map(String::as_str).eq(order.iter().copied()) {
-        return vec![];
+    let mut problems = Vec::new();
+    for (e, link) in l.entries.iter().zip(links(&l, files)) {
+        match link {
+            Link::Ok => {}
+            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database's history", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked", e.name)).note("A database may have run it as it was: take the text back from git, or from a database's history.").fix("Restore the text a database ran", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Moved { after } => problems.push(
+                Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {}, not where it is", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
+                    .note("Keep main's lines in main's order, and leave out this branch's.")
+                    .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate apply --dev"]),
+            ),
+        }
     }
-    let mut lines = Vec::new();
-    for f in order.iter().filter(|f| !names.iter().any(|n| n == *f)) {
-        lines.push(format!("  {f} isn't in it"));
+    let drafts: Vec<&str> = files.iter().filter(|f| !l.entries.iter().any(|e| e.name == f.name)).map(|f| f.name.as_str()).collect();
+    if !drafts.is_empty() {
+        let mut problem = Problem::new(format!("{} {} in {path}: {}", drafts.join(", "), if drafts.len() == 1 { "isn't" } else { "aren't" }, if drafts.len() == 1 { "it's a draft" } else { "they're drafts" }))
+            .fix("Apply in development, which adds them to the lock", &["reylo migrate apply --dev"]);
+        problem.drafts = true;
+        problems.push(problem);
     }
-    for n in names.iter().filter(|n| !order.contains(&n.as_str())) {
-        lines.push(format!("  It lists {n}, which isn't a migration file"));
+    problems
+}
+
+/// The order the migrations run in: a locked project's lock, then its drafts by name; else by name.
+fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
+    if !opts.locked {
+        return files.to_vec();
     }
-    if lines.is_empty() {
-        lines.push(format!("  It lists {}", names.join(", ")));
-    }
-    vec![Problem::new(format!("{path} doesn't list the migration files in the order they run")).lines(lines).fix("Put them in its order", &["reylo migrate lock"])]
+    let Ok(l) = read_lock(opts, files) else { return files.to_vec() };
+    let mut out: Vec<Migration> = l.entries.iter().filter_map(|e| files.iter().find(|f| f.name == e.name).cloned()).collect();
+    out.extend(files.iter().filter(|f| !l.entries.iter().any(|e| e.name == f.name)).cloned());
+    out
 }
 
 /// Checks the target against the migration files, and in `Mode::Check` the migrations against
@@ -609,11 +683,12 @@ pub async fn check(db: &mut Db, server: &mut Server, opts: &Options, mode: Mode,
             text
         }
     };
-    if opts.linear {
+    if opts.locked {
         problems.extend(lock_problems(opts, &files));
-    } else if opts.dir.join(LOCK).exists() {
-        log(&paint("yellow", &format!("! {} is read only when the history is linear: delete it, or set migrate.history: linear", shown(&opts.dir.join(LOCK)))));
+    } else if opts.lock.exists() {
+        log(&paint("yellow", &format!("! {} is read only by a locked project: delete it, or lock the project with reylo migrate lock", shown(&opts.lock))));
     }
+    let files = run_order(opts, &files);
     let history = read_history(db).await?;
     // A row marked started (a lone statement cut off before its row was finished) counts as pending:
     // whether it landed is read from the live database below, as for any pending migration.
@@ -633,18 +708,21 @@ pub async fn check(db: &mut Db, server: &mut Server, opts: &Options, mode: Mode,
         }
     }
     let applied_files: Vec<Migration> = applied.iter().filter_map(|r| by_name(&r.name).cloned()).collect();
+    // A locked project's databases run the lock's order, and nothing else.
+    if opts.locked && problems.is_empty() {
+        if let Some(k) = applied.iter().zip(&files).position(|(r, f)| r.name != f.name) {
+            problems.push(Problem::new(format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), files[k].name)).note("A locked project's databases run its migrations in the lock's order. On a development database, take it to that order:").fix("", &["reylo migrate apply --dev"]));
+        }
+    }
     // Nothing is recorded without running but what a cut-off run of apply's own left (below).
     let records: Vec<Migration> = Vec::new();
     let pending: Vec<Migration> = files.iter().filter(|f| !applied_files.iter().any(|a| a.name == f.name) && !records.contains(f)).cloned().collect();
     let done: Vec<&Migration> = applied_files.iter().chain(&records).collect();
     let newest = done.iter().filter(|f| f.name != INIT).map(|f| f.time.clone()).max().unwrap_or_default();
-    for p in pending.iter().filter(|p| p.name != INIT && p.time < newest) {
+    // A locked project's order is the lock's, whatever the names; an unlocked one's is by name.
+    for p in pending.iter().filter(|p| !opts.locked && p.name != INIT && p.time < newest) {
         let passed: Vec<&&Migration> = done.iter().filter(|f| f.name != INIT && f.time > p.time).collect();
         let first = passed.iter().min_by(|a, b| a.time.cmp(&b.time)).map(|f| f.name.clone()).unwrap_or_default();
-        if opts.linear {
-            problems.push(Problem::new(format!("{} is older than {first}, which this database already applied", p.name)).note(format!("The history is linear: give {} a time after {first}'s, by renaming the file.", p.name)));
-            continue;
-        }
         // Loose: a late migration runs only where both orders end the same, which the shadows
         // check below; and only where nothing it passes changes data, which no shadow can see.
         let changing: Vec<&str> = std::iter::once(&p).map(|m| m.name.as_str()).filter(|_| !data_statements(&p.sql, d).is_empty()).chain(passed.iter().filter(|m| !data_statements(&m.sql, d).is_empty()).map(|m| m.name.as_str())).collect();
@@ -1019,6 +1097,54 @@ pub async fn check_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     Ok(0)
 }
 
+/// `reylo migrate check --offline`: every check that needs no database. The files: their names, and
+/// with the URL's dialect, whether each runs atomically and replays in a shadow. A locked project's
+/// lock against them: every entry's file, chained, in order, and no draft; and schema.sql against
+/// the checksum the lock holds from the last time the migrations were proven to reach it.
+pub fn check_offline(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    let (files, strays) = read_migrations(&opts.dir)?;
+    let schema_sql = std::fs::read_to_string(&opts.schema).ok();
+    let mut problems = match Dialect::of_url(&opts.url) {
+        Ok(d) => file_problems(opts, &files, &strays, schema_sql.as_deref(), d),
+        Err(_) => file_problems(opts, &[], &strays, None, Dialect::Postgres),
+    };
+    if schema_sql.is_none() {
+        problems.push(Problem::new(format!("{} doesn't exist", shown(&opts.schema))).note("The declared schema is required: migrations are written from it, and checked against it."));
+    }
+    let mut proven = None;
+    if opts.locked {
+        problems.extend(lock_problems(opts, &files));
+        if let (true, Some(sql), lock::State::Lock(l)) = (problems.is_empty(), &schema_sql, lock::read(&opts.lock)) {
+            match l.schema {
+                Some(sum) if sum == lock::schema_sum(&normalized(sql)) => proven = Some(true),
+                Some(_) => problems.push(
+                    Problem::new("schema.sql has changes not reflected in any migration file")
+                        .note(format!("It isn't the schema.sql the migrations reached when {} was last written.", shown(&opts.lock)))
+                        .fix("Write them as a migration, then apply it in development", &["reylo migrate create <name>", "reylo migrate apply --dev"]),
+                ),
+                None => proven = Some(false),
+            }
+        }
+    }
+    if !problems.is_empty() {
+        print_problems(&problems, log);
+        return Ok(1);
+    }
+    if opts.locked {
+        log(&format!("{} {} lists every migration, in order, as written", paint("green", "✓"), shown(&opts.lock)));
+        match proven {
+            Some(true) => log(&format!("{} The migrations reach {}", paint("green", "✓"), shown(&opts.schema))),
+            _ => log(&format!("{} {} isn't proven against the migrations offline: reylo migrate sync proves it in development, and reylo migrate check against a database", paint("yellow", "!"), shown(&opts.schema))),
+        }
+    } else {
+        log(&format!("{} The migration files read as migrations; an unlocked project's order and history are checked against a database (reylo migrate check)", paint("green", "✓")));
+    }
+    if Dialect::of_url(&opts.url).is_err() {
+        log(&paint("dim", "With no database URL, whether each migration runs atomically wasn't checked."));
+    }
+    Ok(0)
+}
+
 /// `reylo migrate apply --reset`: drops everything the migrations could have made, applies every
 /// migration, then runs `post`.
 pub async fn reset(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
@@ -1175,7 +1301,20 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         log(&paint("dim", "Nothing was changed."));
         return Ok(1);
     }
-    let order = run_order(opts, &files);
+    // A locked project's history is its lock's; its drafts are development's alone.
+    let order: Vec<Migration> = if opts.locked {
+        let problems: Vec<Problem> = lock_problems(opts, &files).into_iter().filter(|p| !p.is_drafts()).collect();
+        if !problems.is_empty() {
+            print_problems(&problems, log);
+            log("");
+            log(&paint("dim", "Nothing was changed."));
+            return Ok(1);
+        }
+        let l = read_lock(opts, &files).unwrap_or_default();
+        l.entries.iter().filter_map(|e| files.iter().find(|f| f.name == e.name).cloned()).collect()
+    } else {
+        files.clone()
+    };
     let live = catalog(db, scope).await?;
     let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
@@ -1274,10 +1413,43 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     Ok(0)
 }
 
-/// The order migrations run in: the files by name.
-fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
-    let _ = opts;
-    files.to_vec()
+/// `reylo migrate lock`: writes the lock from what the database applied, in the order it did, each
+/// migration's file holding the text it ran; the files it hasn't applied stay drafts. For a project
+/// that was unlocked, from the database whose order is the one to keep (production's), and for a
+/// lock lost. The caller marks the project locked.
+pub async fn lock_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let result = async {
+        let d = db.dialect();
+        let (files, _) = read_migrations(&opts.dir)?;
+        let history = read_history(&mut db).await?;
+        let mut problems = Vec::new();
+        let mut texts: Vec<(String, String)> = Vec::new();
+        for r in history.iter().filter(|r| r.applied) {
+            match files.iter().find(|f| f.name == r.name) {
+                None => problems.push(Problem::new(format!("This database applied {}, which isn't in {}", r.name, shown(&opts.dir))).fix("Restore it from this database's history", &[&format!("reylo migrate restore {}", r.name)])),
+                Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(Problem::new(format!("{} changed after this database applied it", r.name)).lines(std::iter::once(String::new()).chain(line_diff(&r.sql, &f.sql))).fix("Restore the text this database ran", &[&format!("reylo migrate restore {}", r.name)])),
+                Some(f) => texts.push((f.name.clone(), normalized(&f.sql))),
+            }
+        }
+        if !problems.is_empty() {
+            print_problems(&problems, log);
+            log("");
+            log(&paint("dim", "Nothing was written."));
+            return Ok(1);
+        }
+        let l = lock::Lock { schema: None, entries: lock::chain(texts.iter().map(|(n, t)| (n.as_str(), t.as_str()))) };
+        lock::write(&opts.lock, &l)?;
+        let drafts = files.iter().filter(|f| !texts.iter().any(|(n, _)| *n == f.name)).count();
+        log(&format!("{} Wrote {}: the {} migration{} this database applied, in its order", paint("green", "✓"), shown(&opts.lock), texts.len(), if texts.len() == 1 { "" } else { "s" }));
+        if drafts > 0 {
+            log(&format!("  {drafts} more {} drafts, until apply --dev runs {}", if drafts == 1 { "is" } else { "are" }, if drafts == 1 { "it" } else { "them" }));
+        }
+        Ok(0)
+    }
+    .await;
+    db.close().await;
+    result
 }
 
 /// `reylo migrate restore <migration>`: writes the text the database ran for a migration back to
@@ -1329,15 +1501,15 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         return Err(Error(format!("a migration's name is a-z, 0-9 and _: {name}")));
     }
     let (files, _) = read_migrations(&opts.dir)?;
-    // A linear history's lock must be in order before a migration is added to it; a missing one is
-    // written from the files.
-    if opts.linear && lock::read(&opts.dir) != lock::State::Missing {
-        let problems = lock_problems(opts, &files);
-        if !problems.is_empty() {
-            print_problems(&problems, log);
+    // A locked project's migrations replay in the lock's order, then its drafts; a lock that can't
+    // be read is resolved first.
+    if opts.locked {
+        if let Err(problem) = read_lock(opts, &files) {
+            print_problems(&[problem], log);
             return Ok(1);
         }
     }
+    let files = run_order(opts, &files);
     // The plan starts from every migration file, drafts not yet applied anywhere included, and is
     // named after the newest of them.
     let schema_sql = std::fs::read_to_string(&opts.schema).map_err(|e| Error(format!("cannot read {}: {e}", shown(&opts.schema))))?;
@@ -1361,18 +1533,7 @@ pub async fn create(opts: &Options, name: &str, choices: &Choices, log: Log<'_>)
         std::fs::write(&file, text)?;
         log(&shown(&file));
     }
-    if opts.linear {
-        write_lock(opts)?;
-        log(&shown(&opts.dir.join(LOCK)));
-    }
     Ok(code)
-}
-
-/// Writes the lock of a linear history: the migration files in the order they run.
-fn write_lock(opts: &Options) -> Result<(), Error> {
-    let (files, _) = read_migrations(&opts.dir)?;
-    lock::write(&opts.dir, &files.iter().map(|f| f.name.clone()).collect::<Vec<_>>())?;
-    Ok(())
 }
 
 /// The plan as migration files: one, or on MySQL, where every DDL statement commits on its own,
@@ -2080,14 +2241,18 @@ async fn apply_dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Opt
     let d = db.dialect();
     let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
-    let problems = file_problems(opts, &files, &strays, None, d);
+    let mut problems = file_problems(opts, &files, &strays, None, d);
+    let history = read_history(db).await?;
+    if opts.locked && problems.is_empty() {
+        problems.extend(dev_lock_problems(opts, &files, &history));
+    }
     if !problems.is_empty() {
         print_problems(&problems, log);
         log("");
         log(&paint("dim", "Nothing was changed."));
         return Ok(1);
     }
-    let history = read_history(db).await?;
+    let files = run_order(opts, &files);
     let left = leftovers(db, &history).await?;
     drop_leftovers(db, &left, log).await?;
     if history.iter().any(|r| !r.applied) {
@@ -2095,14 +2260,110 @@ async fn apply_dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Opt
         db.exec(&format!("delete from {HISTORY_TABLE} where applied_at is null")).await?;
     }
     let applied: Vec<&HistoryRow> = history.iter().filter(|r| r.applied).collect();
-    // The history as far as it agrees with the files: each row's file there, with the text it ran.
-    let agree = applied.iter().take_while(|r| files.iter().any(|f| f.name == r.name && same_statements(&f.sql, &r.sql, d))).count();
+    // The history as far as it agrees with the files: each row's file there, with the text it ran;
+    // in a locked project, also where the lock puts it.
+    let agree = if opts.locked {
+        applied.iter().zip(&files).take_while(|(r, f)| r.name == f.name && same_statements(&f.sql, &r.sql, d)).count()
+    } else {
+        applied.iter().take_while(|r| files.iter().any(|f| f.name == r.name && same_statements(&f.sql, &r.sql, d))).count()
+    };
     let live = catalog(db, scope).await?;
-    let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).collect();
+    let schema_sql = std::fs::read_to_string(&opts.schema).ok();
+    let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, scope, &texts).await;
     let result = dev_in_shadows(&mut shadows, db, opts, &files, &applied, agree, &live, log).await;
+    let result = match result {
+        Ok(0) if opts.locked => relock(&mut shadows, db, opts, &files, schema_sql.as_deref(), log).await.map(|()| 0),
+        other => other,
+    };
     shadows.finish().await;
     result
+}
+
+/// The lock of the main branch, as git has it, where git can tell: `origin/HEAD`'s copy of it.
+fn main_lock(opts: &Options) -> Option<lock::Lock> {
+    let dir = opts.lock.parent()?;
+    let name = opts.lock.file_name()?.to_string_lossy().into_owned();
+    let out = std::process::Command::new("git").args(["show", &format!("origin/HEAD:./{name}")]).current_dir(dir).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    match lock::of_text(&String::from_utf8_lossy(&out.stdout)) {
+        lock::State::Lock(l) => Some(l),
+        _ => None,
+    }
+}
+
+/// What keeps `apply --dev` from taking a locked project's lock as it is. It writes the lock again,
+/// chaining this branch's lines after main's; but a line locked elsewhere (on main where git can
+/// say, else one this database never applied) that is out of its chain, or whose file changed,
+/// would be laundered so, and is refused.
+fn dev_lock_problems(opts: &Options, files: &[Migration], history: &[HistoryRow]) -> Vec<Problem> {
+    let path = shown(&opts.lock);
+    // A missing lock is written as the migrations apply.
+    if lock::read(&opts.lock) == lock::State::Missing {
+        return vec![];
+    }
+    let l = match read_lock(opts, files) {
+        Ok(l) => l,
+        Err(p) => return vec![p],
+    };
+    let main = main_lock(opts);
+    let ours = |name: &str, sum: &str| match &main {
+        Some(m) => !m.entries.iter().any(|e| e.name == name && e.sum == sum),
+        None => history.iter().any(|r| r.applied && r.name == name),
+    };
+    let mut problems = Vec::new();
+    for (e, link) in l.entries.iter().zip(links(&l, files)) {
+        match link {
+            Link::Ok => {}
+            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database's history", &[&format!("reylo migrate restore {}", e.name)])),
+            _ if ours(&e.name, &e.sum) => {}
+            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked, on another branch", e.name)).note("A database may have run it as it was: take the text back from git, or from a database's history.").fix("Restore the text a database ran", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Moved { after } => problems.push(
+                Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {} on another branch", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
+                    .note("Keep main's lines in main's order, and leave out this branch's: apply --dev then runs this branch's migrations after them, and adds them back.")
+                    .fix("Then", &["reylo migrate apply --dev"]),
+            ),
+        }
+    }
+    problems
+}
+
+/// Writes a locked project's lock after `apply --dev`: what the database applied, in the order it
+/// did, chained; and schema.sql's checksum where the migrations reach it.
+async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &[Migration], schema_sql: Option<&str>, log: Log<'_>) -> Result<(), Error> {
+    let history = read_history(db).await?;
+    let ran: Vec<&Migration> = history.iter().filter(|r| r.applied).filter_map(|r| files.iter().find(|f| f.name == r.name)).collect();
+    let texts: Vec<(String, String)> = ran.iter().map(|f| (f.name.clone(), normalized(&f.sql))).collect();
+    let entries = lock::chain(texts.iter().map(|(n, t)| (n.as_str(), t.as_str())));
+    let before = match lock::read(&opts.lock) {
+        lock::State::Lock(l) => Some(l),
+        _ => None,
+    };
+    // The migrations' replay against schema.sql's, where there is one.
+    let mut schema = None;
+    if let Some(sql) = schema_sql {
+        let ours = shadows.lane();
+        shadows.push(ours, ran.iter().map(|m| Step::of(m)));
+        let theirs = shadows.lane();
+        shadows.push(theirs, [Step::script("schema.sql", sql)]);
+        if let (Ok(Ok(a)), Ok(Ok(b))) = (shadows.lines(ours).await, shadows.lines(theirs).await) {
+            if a == b {
+                schema = Some(lock::schema_sum(&normalized(sql)));
+            }
+        }
+    }
+    let next = lock::Lock { schema, entries };
+    if before.as_ref() == Some(&next) {
+        return Ok(());
+    }
+    let added: Vec<&str> = next.entries.iter().filter(|e| !before.as_ref().is_some_and(|b| b.entries.iter().any(|x| x.name == e.name && x.sum == e.sum))).map(|e| e.name.as_str()).collect();
+    lock::write(&opts.lock, &next)?;
+    if !added.is_empty() {
+        log(&format!("{} Locked {} in {}", paint("green", "✓"), added.join(", "), shown(&opts.lock)));
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2120,13 +2381,12 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     // both orders end the same. Otherwise the database is rewound to before it.
     let kept = kept_of(keep);
     let newest = kept.iter().filter(|f| f.name != INIT).map(|f| f.time.clone()).max().unwrap_or_default();
-    let late: Vec<&Migration> = files.iter().filter(|f| f.name != INIT && !kept.iter().any(|k| k.name == f.name) && f.time < newest).collect();
+    let late: Vec<&Migration> = files.iter().filter(|f| !opts.locked && f.name != INIT && !kept.iter().any(|k| k.name == f.name) && f.time < newest).collect();
     if let Some(first) = late.iter().map(|f| f.time.clone()).min() {
         let passed: Vec<&Migration> = kept.iter().filter(|k| k.time > first).collect();
         let quiet = late.iter().copied().chain(passed.iter().copied()).all(|m| data_statements(&m.sql, d).is_empty());
-        // A linear history runs in one order, whatever commutes.
         let mut commute = false;
-        if quiet && !opts.linear {
+        if quiet {
             let ours = shadows.lane();
             shadows.push(ours, kept.iter().chain(files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name))).map(Step::of));
             let by_name = shadows.lane();
@@ -2346,6 +2606,14 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
     for f in files.iter().filter(|f| !applied.iter().any(|r| r.name == f.name)) {
         behind.push(format!("  {} isn't applied", f.name));
     }
+    // A locked project's lock lists what the database applied, in its order.
+    if opts.locked && behind.is_empty() {
+        match lock::read(&opts.lock) {
+            lock::State::Lock(l) if l.names() == applied.iter().map(|r| r.name.clone()).collect::<Vec<_>>() => {}
+            lock::State::Missing if applied.is_empty() => {}
+            _ => behind.push(format!("  {} doesn't list what it applied, in its order", shown(&opts.lock))),
+        }
+    }
     if !behind.is_empty() {
         problems.push(Problem::new("This database isn't at its migrations").lines(behind).fix("Bring it to them first", &["reylo migrate apply --dev"]));
     }
@@ -2411,6 +2679,16 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
         Ok(lines) => lines == wanted,
         Err(_) => false,
     };
+    // The lock certifies that its migrations reach this schema.sql.
+    if made && opts.locked {
+        if let lock::State::Lock(mut l) = lock::read(&opts.lock) {
+            let sum = lock::schema_sum(&normalized(schema_sql));
+            if l.schema.as_deref() != Some(sum.as_str()) {
+                l.schema = Some(sum);
+                lock::write(&opts.lock, &l)?;
+            }
+        }
+    }
     if made && !pushed {
         log(&format!("{} This database matches schema.sql and its migrations", paint("green", "✓")));
     } else if !made {

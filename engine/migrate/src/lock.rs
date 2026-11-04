@@ -1,32 +1,45 @@
-//! `migrations/lock.yaml`, kept under `history: linear`: every migration's name, in the order they
-//! run. Two branches that each add a migration both append to it, so git conflicts on it when the
-//! second one merges, which is the point: the conflict says, before anything is deployed, that one
-//! branch's migrations must move after the other's. `rebase` resolves it from the two sides git
-//! keeps in its index. Each entry is an object, so that a field can be added without changing the
-//! format; nothing but the name is kept, since the history table holds the SQL each database ran.
+//! `reylo-lock.yaml`, the lock of a locked project (the default; `history: loose` keeps none): the
+//! migrations in the order they run, each its name and a checksum chained to the line before, and
+//! the checksum of `schema.sql` from the last time the migrations were proven to reach it. Two
+//! branches that each add a migration both append to it, so git conflicts on it when the second one
+//! merges, which is the point: before anything is deployed, one branch's migrations must move after
+//! the other's (keep main's lines, then `reylo migrate apply --dev`). The chain makes an edit, a
+//! deletion or a reordering visible without a database: a wrong "accept both" breaks it at the
+//! first line out of place. Only Reylo writes it, after applying what it lists to a development
+//! database (`apply --dev`) or reading what a database applied (`lock`), so its checksums certify
+//! what ran.
 
-use crate::Error;
+use crate::cache::{hex, Sha256};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::process::Command;
 use std::sync::LazyLock;
 
-pub const LOCK: &str = "lock.yaml";
+pub const LOCK: &str = "reylo-lock.yaml";
 
-const HEADER: &str = "# The order this project's migrations run in (history: linear), written by reylo migrate create
-# and rebase. A conflict here means another branch added a migration first: reylo migrate rebase
-# moves this branch's after it and resolves the conflict.
+const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate apply --dev and reylo migrate
+# lock. A merge conflict here means another branch added migrations too: keep main's lines, then
+# run reylo migrate apply --dev, which runs this branch's after them and adds them back.
 ";
 
-#[derive(Serialize, Deserialize)]
-struct LockFile {
-    migrations: Vec<Entry>,
+/// The lock: its migrations in order, and schema.sql's checksum where one was proven.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Lock {
+    pub schema: Option<String>,
+    pub entries: Vec<Entry>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Entry {
-    name: String,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    /// The checksum of the migration's statements and the entry before it.
+    pub sum: String,
+}
+
+impl Lock {
+    pub fn names(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.name.clone()).collect()
+    }
 }
 
 /// The lock as it reads on disk.
@@ -36,80 +49,90 @@ pub enum State {
     /// It holds git's conflict markers.
     Conflicted,
     Invalid(String),
-    Names(Vec<String>),
+    Lock(Lock),
+}
+
+#[derive(Serialize, Deserialize)]
+struct LockFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    schema: Option<String>,
+    #[serde(default)]
+    migrations: Vec<String>,
 }
 
 static MARKER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^(<<<<<<<|=======|>>>>>>>)( |$)").expect("a valid pattern"));
 
-fn parse(text: &str) -> Result<Vec<String>, String> {
-    let file: LockFile = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
-    Ok(file.migrations.into_iter().map(|e| e.name).collect())
-}
-
-pub fn read(dir: &Path) -> State {
-    match std::fs::read_to_string(dir.join(LOCK)) {
-        Err(_) => State::Missing,
-        Ok(text) if MARKER.is_match(&text) => State::Conflicted,
-        Ok(text) => match parse(&text) {
-            Ok(names) => State::Names(names),
-            Err(e) => State::Invalid(e),
-        },
+fn digest(parts: &[&str]) -> String {
+    let mut h = Sha256::new();
+    for p in parts {
+        h.part(p.as_bytes());
     }
+    hex(&h.finish()[..4])
 }
 
-pub fn render(names: &[String]) -> String {
-    let mut out = format!("{HEADER}migrations:\n");
-    for n in names {
-        out.push_str(&format!("  - name: {n}\n"));
+/// The checksum of a migration after the entry `prev` (empty for the first): of its name and its
+/// statements as `canonical` writes them, so that comments and spacing change nothing.
+pub fn checksum(prev: &str, name: &str, canonical: &str) -> String {
+    digest(&[prev, "\n", name, "\n", canonical])
+}
+
+/// The checksum of schema.sql's statements, written as `canonical` writes them.
+pub fn schema_sum(canonical: &str) -> String {
+    digest(&["schema\n", canonical])
+}
+
+/// The entries of migrations in the order given, each its name and canonical statements.
+pub fn chain<'a>(migrations: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<Entry> {
+    let mut out: Vec<Entry> = Vec::new();
+    for (name, canonical) in migrations {
+        let prev = out.last().map(|e| e.sum.clone()).unwrap_or_default();
+        out.push(Entry { name: name.to_string(), sum: checksum(&prev, name, canonical) });
     }
     out
 }
 
-pub fn write(dir: &Path, names: &[String]) -> std::io::Result<()> {
-    std::fs::write(dir.join(LOCK), render(names))
-}
-
-fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").args(args).current_dir(dir).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
-}
-
-/// The two sides of a conflicted lock, from git's index: this branch's entries, then the other
-/// side's. Which side is this branch's follows what git is doing: a rebase or a cherry-pick replays
-/// this branch's commits onto the other side, so theirs (stage 3) is this branch's; a merge brings
-/// the other side into this branch, so ours (stage 2) is, unless this is the main branch itself,
-/// which a feature branch is being merged into.
-pub fn sides(dir: &Path, main_branch: Option<&str>) -> Result<(Vec<String>, Vec<String>), Error> {
-    let unmerged = git(dir, &["ls-files", "-u", "--", LOCK]).unwrap_or_default();
-    if unmerged.trim().is_empty() {
-        return Err(Error(format!(
-            "{LOCK} holds conflict markers, but git does not hold it as a conflict (was it added with them?): take out the markers so that each migration is listed once, then run reylo migrate rebase"
-        )));
+fn parse(text: &str) -> Result<Lock, String> {
+    let file: LockFile = serde_yaml::from_str(text).map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    for line in file.migrations {
+        let (name, sum) = line.trim().split_once(' ').ok_or_else(|| format!("\"{line}\" is a migration's name and its checksum"))?;
+        entries.push(Entry { name: name.trim().to_string(), sum: sum.trim().to_string() });
     }
-    let side = |stage: u8| -> Result<Vec<String>, Error> {
-        let text = git(dir, &["show", &format!(":{stage}:./{LOCK}")]).ok_or_else(|| Error(format!("git cannot read side {stage} of the conflict in {LOCK}")))?;
-        parse(&text).map_err(|e| Error(format!("side {stage} of the conflict in {LOCK} does not read as a lock file: {e}")))
-    };
-    let (ours, theirs) = (side(2)?, side(3)?);
-    let exists = |p: &str| git(dir, &["rev-parse", "--git-path", p]).is_some_and(|path| dir.join(path.trim()).exists());
-    let replaying = exists("rebase-merge") || exists("rebase-apply") || exists("CHERRY_PICK_HEAD");
-    let on_main = || {
-        let branch = git(dir, &["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default();
-        let main = match main_branch {
-            Some(m) => m.to_string(),
-            None => git(dir, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]).unwrap_or_default(),
-        };
-        let main = main.trim();
-        !branch.trim().is_empty() && (branch.trim() == main || Some(branch.trim()) == main.split_once('/').map(|(_, b)| b))
-    };
-    Ok(if replaying || on_main() { (theirs, ours) } else { (ours, theirs) })
+    Ok(Lock { schema: file.schema, entries })
 }
 
-/// Stages what `rebase` wrote to resolve a conflict: the lock, and each renamed file at both paths.
-pub fn stage(dir: &Path, paths: &[String]) -> Result<(), Error> {
-    let mut args = vec!["add", "-A", "--"];
-    args.extend(paths.iter().map(String::as_str));
-    git(dir, &args).map(|_| ()).ok_or_else(|| Error(format!("git could not stage {}", paths.join(", "))))
+pub fn read(path: &Path) -> State {
+    match std::fs::read_to_string(path) {
+        Err(_) => State::Missing,
+        Ok(text) => of_text(&text),
+    }
+}
+
+/// A lock's text, as read from a file or from git.
+pub fn of_text(text: &str) -> State {
+    if MARKER.is_match(text) {
+        return State::Conflicted;
+    }
+    match parse(text) {
+        Ok(lock) => State::Lock(lock),
+        Err(e) => State::Invalid(e),
+    }
+}
+
+pub fn render(lock: &Lock) -> String {
+    let mut out = HEADER.to_string();
+    if let Some(schema) = &lock.schema {
+        out.push_str(&format!("schema: {schema}\n"));
+    }
+    out.push_str("migrations:\n");
+    for e in &lock.entries {
+        out.push_str(&format!("  - {} {}\n", e.name, e.sum));
+    }
+    out
+}
+
+pub fn write(path: &Path, lock: &Lock) -> std::io::Result<()> {
+    std::fs::write(path, render(lock))
 }
 
 #[cfg(test)]
@@ -117,26 +140,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reads_what_it_writes() {
-        let names = vec!["init.sql".to_string(), "20261028100000_users.sql".to_string()];
-        let text = render(&names);
-        assert_eq!(parse(&text).unwrap(), names);
-        assert!(text.ends_with("migrations:\n  - name: init.sql\n  - name: 20261028100000_users.sql\n"));
-        // CRLF line endings, as a checkout on Windows writes them, read the same.
-        assert_eq!(parse(&text.replace('\n', "\r\n")).unwrap(), names);
-        assert_eq!(parse("migrations: []\n").unwrap(), Vec::<String>::new());
-        assert!(parse("migrations:\n  - 20261028100000_users.sql\n").is_err());
+    fn a_lock_reads_back_as_written() {
+        let lock = Lock { schema: Some(schema_sum("create table a (id int)")), entries: chain([("20261101000000_a.sql", "create table a (id int)"), ("20261102000000_b.sql", "create table b (id int)")]) };
+        let text = render(&lock);
+        let dir = std::env::temp_dir().join(format!("reylo-lock-unit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write(&dir.join(LOCK), &lock).unwrap();
+        assert_eq!(read(&dir.join(LOCK)), State::Lock(lock.clone()));
+        assert!(text.contains("  - 20261101000000_a.sql "), "{text}");
+        assert_eq!(lock.entries[1].sum, checksum(&lock.entries[0].sum, "20261102000000_b.sql", "create table b (id int)"));
+        std::fs::write(dir.join(LOCK), format!("{text}<<<<<<< HEAD\n")).unwrap();
+        assert_eq!(read(&dir.join(LOCK)), State::Conflicted);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn knows_a_conflict() {
-        let dir = std::env::temp_dir().join(format!("reylo-lock-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read(&dir), State::Missing);
-        std::fs::write(dir.join(LOCK), "migrations:\n  - name: a.sql\n<<<<<<< HEAD\n  - name: b.sql\n=======\n  - name: c.sql\n>>>>>>> other\n").unwrap();
-        assert_eq!(read(&dir), State::Conflicted);
-        std::fs::write(dir.join(LOCK), "migrations: {\n").unwrap();
-        assert!(matches!(read(&dir), State::Invalid(_)));
-        std::fs::remove_dir_all(&dir).unwrap();
+    fn the_chain_depends_on_order_and_text() {
+        let ab = chain([("a.sql", "x"), ("b.sql", "y")]);
+        let ba = chain([("b.sql", "y"), ("a.sql", "x")]);
+        assert_ne!(ab[1].sum, ba[0].sum);
+        assert_ne!(chain([("a.sql", "x2")])[0].sum, ab[0].sum);
     }
 }

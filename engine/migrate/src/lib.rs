@@ -9,7 +9,7 @@
 //! Postgres, MySQL and SQLite. The commands are in `commands`; the comparator is `catalog`; the
 //! lexer that splits and classifies statements is `sql`; the connections and shadows are `db`; the
 //! replays the shadows run are `replay`, which the cache of what they reached (`cache`) shortens;
-//! `lock` is the lock file a linear history keeps.
+//! `lock` is the lock file a locked project keeps.
 
 pub mod cache;
 pub mod catalog;
@@ -21,7 +21,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{apply, apply_dev, check_command, create, init, reset, restore, run_sql, sync, sync_history, wipe_rows, Choices, Mode, Options};
+pub use commands::{apply, apply_dev, check_command, check_offline, create, init, lock_command, reset, restore, run_sql, sync, sync_history, wipe_rows, Choices, Mode, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
