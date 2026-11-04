@@ -10,7 +10,7 @@ const int8: IntegerType = { kind: "integer", bits: 64, name: "int8" };
  *   select id, email, bio from users where id = :id
  */
 export const first_example: StatementDescriptor = {
-  $schema: "https://reylo.dev/typedefs/0.1.0",
+  $schema: "https://reylo.dev/typedefs/0.1.0.json",
   dialect: { name: "postgres", version: "18.1" },
   sql: "select id, email, bio from users where id = $1",
   kind: "select",

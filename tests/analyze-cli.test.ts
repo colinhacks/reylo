@@ -8,18 +8,19 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { Ajv } from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
 import type { StatementDescriptor } from "../spec/type-descriptor.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
 
 type Line = StatementDescriptor & { file?: string };
 
-// The format's version, as the spec's `$schema` literal names it, and the JSON Schema the docs site
-// publishes at that URL (site/scripts/typedefs-schema.ts), which every line printed is held to.
-const SCHEMA = /\$schema: "([^"]+)";/.exec(readFileSync(new URL("../spec/type-descriptor.ts", import.meta.url), "utf8"))![1]!;
-const ajv = new Ajv({ strict: false, allErrors: true });
-const valid = ajv.compile(JSON.parse(readFileSync(new URL(`../site/public/typedefs/${SCHEMA.split("/").pop()}.json`, import.meta.url), "utf8")));
+// The format's JSON Schema (spec/typedefs.schema.json), whose `$id` is the URL every line printed
+// names in `$schema`, and which every line printed is held to.
+const schema = JSON.parse(readFileSync(new URL("../spec/typedefs.schema.json", import.meta.url), "utf8"));
+const SCHEMA: string = schema.$id;
+const ajv = new Ajv2020({ strict: false, allErrors: true });
+const valid = ajv.compile(schema);
 
 /** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
 function analyze(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {

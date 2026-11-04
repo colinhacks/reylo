@@ -4,11 +4,10 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/playground-engine.ts && react-router dev",
-    "build": "node scripts/typedefs-schema.ts --check && node scripts/playground-engine.ts && react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts",
+    "build": "node scripts/playground-engine.ts && react-router typegen && tsc && react-router build && vite build --config vite.api.config.ts && vite build --config vite.share.config.ts",
     "start": "vite preview --outDir build/client --port 3311",
     "capture": "nub scripts/capture-types.ts",
     "playground-engine": "node scripts/playground-engine.ts",
-    "typedefs-schema": "node scripts/typedefs-schema.ts",
     "build:play": "vite build --config vite.play.config.ts"
   },
   "dependencies": {
@@ -52,7 +51,6 @@
     "@types/react-dom": "^19.2.0",
     "@vercel/og": "0.11.1",
     "@vercel/postgres": "0.10.0",
-    "ajv": "8.20.0",
     "better-sqlite3": "12.11.1",
     "drizzle-orm": "0.45.4",
     "mariadb": "3.5.4",
@@ -64,7 +62,6 @@
     "sqlite": "5.1.1",
     "sqlite3": "6.0.1",
     "tailwindcss": "^4.1.0",
-    "ts-json-schema-generator": "2.9.0",
     "typescript": "^5.9.0",
     "vite": "8.3.4"
   }

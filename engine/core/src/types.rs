@@ -551,8 +551,8 @@ pub struct Param {
 // ---------------------------------------------------------------------------------------------
 
 /// The URL of the JSON Schema of the format version this crate writes, which every
-/// [`StatementDescriptor`] names in `$schema`: the literal `spec/type-descriptor.ts` gives it.
-pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0";
+/// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1332,8 +1332,9 @@ mod tests {
 
     #[test]
     fn the_schema_url_is_the_one_the_spec_names() {
-        let spec = include_str!("../../../spec/type-descriptor.ts");
-        assert!(spec.contains(&format!("$schema: \"{SCHEMA}\";")), "spec/type-descriptor.ts names another $schema than {SCHEMA}");
+        let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
+        assert_eq!(spec["$id"], SCHEMA);
+        assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
     }
 
     #[test]

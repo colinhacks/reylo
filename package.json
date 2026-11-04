@@ -41,7 +41,8 @@
   "scripts": {
     "build": "nub scripts/build.ts",
     "typecheck": "tsc --noEmit --runExternalCode",
-    "test": "node --test 'tests/**/*.test.ts'"
+    "test": "node --test 'tests/**/*.test.ts'",
+    "typedefs": "node spec/generate.ts"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "1.39.0",

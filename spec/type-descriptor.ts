@@ -1,16 +1,37 @@
-/** The result of introspecting one SQL statement (`StatementDescriptor`, below) and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. The TypeScript is notation: a descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans. This file holds types alone; `examples.ts` beside it shows descriptors from each database.
- *
- * The spec is a living document, and every part of it was weighed against the databases it covers. A change to it is a design decision: agree it with a maintainer before writing it, and where implementing it shows a limitation, raise the limitation rather than working around it. */
+// Generated from typedefs.schema.json, the format's source of truth, by `nub run typedefs`: edit the
+// schema, not this file. The rules every descriptor follows are in README.md beside it.
+
+/** A type descriptor: which values a position can hold. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes. */
 export type Type =
-  | BooleanType | IntegerType | FloatType | DecimalType
-  | TextType | BytesType | UuidType
-  | ArrayType | RecordType | JsonType
-  | DateType | TimeType | DateTimeType | InstantType | DurationType
-  | UnionType | SetType | MapType | RangeType | MultirangeType | GeometryType | XmlType
-  | OpaqueType | AnyType | UnknownType | TaggedUnionType;
+  | BooleanType
+  | IntegerType
+  | FloatType
+  | DecimalType
+  | TextType
+  | BytesType
+  | UuidType
+  | ArrayType
+  | RecordType
+  | JsonType
+  | DateType
+  | TimeType
+  | DateTimeType
+  | InstantType
+  | DurationType
+  | UnionType
+  | SetType
+  | MapType
+  | RangeType
+  | MultirangeType
+  | GeometryType
+  | XmlType
+  | OpaqueType
+  | AnyType
+  | UnknownType
+  | TaggedUnionType;
 
 /** What every type may carry. */
-interface Base {
+export interface Base {
   /**
    * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, the name is qualified, and it is the type's identity.
    *   - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).
@@ -26,7 +47,7 @@ interface Base {
 }
 
 /** Bounds on an ordered kind's values, in its canonical text (`"-1.50"`, `"2026-10-23"`, and for a decimal an exponent where it is shorter, `"1e126"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: "0"`. A side takes one of its two fields. A whole-number kind takes only `min` and `max` (`x > 0` is `min: "1"`); any other kind writes a bound as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: "0"`, never `min: "0.01"`. Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds. */
-interface Bounds {
+export interface Bounds {
   min?: string;
   max?: string;
   exclusive_min?: string;
@@ -34,17 +55,15 @@ interface Bounds {
 }
 
 /** How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's own `unit`): `exact`, or `min`, `max` or both, never `exact` beside either. `char(8)` is `size: { exact: 8 }`, `varchar(255)` is `size: { max: 255 }`, and Oracle's `VARCHAR2(20 CHAR)`, which stores `''` as null, is `size: { min: 1, max: 20 }`. A length is never exclusive, since a whole number has an inclusive spelling. */
-interface Size {
+export interface Size {
   exact?: number;
   min?: number;
   max?: number;
 }
 
-interface Lengths {
+export interface Lengths {
   size?: Size;
 }
-
-// Truth values and numbers -------------------------------------------------------------------
 
 /** A truth value: Postgres `boolean`, SQL Server `bit`, Oracle `BOOLEAN`, and a comparison's result on any database, which MySQL and SQLite deliver as 1 or 0. A MySQL `BOOLEAN` column is an `integer`, since it can hold 5. */
 export interface BooleanType extends Base {
@@ -100,10 +119,7 @@ export interface DecimalType extends Base, Bounds {
   enum?: string[];
 }
 
-// Text and bytes -----------------------------------------------------------------------------
-//
-// Text is one kind in three shapes, by whether every value is valid Unicode (well-formed, in the Unicode Standard's word, which JavaScript's `isWellFormed()` uses too). A length counts in a unit, since languages disagree on what a string's length is: four code points take 4 to 16 bytes in UTF-8, and a JavaScript string's `length` counts UTF-16 units. A shape takes only the units that mean something for its values. How text compares, under a collation, is not part of its type, since a collation adds and removes no value.
-
+/** Text is one kind in three shapes, by whether every value is valid Unicode (well-formed, in the Unicode Standard's word, which JavaScript's `isWellFormed()` uses too). A length counts in a unit, since languages disagree on what a string's length is: four code points take 4 to 16 bytes in UTF-8, and a JavaScript string's `length` counts UTF-16 units. A shape takes only the units that mean something for its values. How text compares, under a collation, is not part of its type, since a collation adds and removes no value. */
 export type TextType = UnicodeText | IllFormedUtf8Text | IllFormedUtf16Text;
 
 /** Valid Unicode: Postgres, MySQL and Oracle text. Its lengths count code points (`varchar(255)` is `size: { max: 255 }`), UTF-16 units (Oracle `NVARCHAR2`), or bytes in the encoding the database stores it in (MySQL `TEXT` is `size: { unit: "byte", encoding: "UTF-8", max: 65535 }`). `char(8)` is `size: { exact: 8 }`, since Postgres pads it with spaces. */
@@ -114,7 +130,7 @@ export interface UnicodeText extends Base, TextFacts {
 }
 
 /** A valid text's size, which says what it counts: code points when `unit` is absent, UTF-16 units, or bytes in `encoding`. */
-interface TextSize extends Size {
+export interface TextSize extends Size {
   unit?: "utf16_unit" | "byte";
   /** The encoding bytes are counted in, written only with `unit: "byte"`. */
   encoding?: string;
@@ -124,7 +140,7 @@ interface TextSize extends Size {
 export interface IllFormedUtf8Text extends Base, Lengths {
   kind: "text";
   ill_formed: "utf8";
-  pattern?: { dialect: "like" | "ilike"; source: string };
+  pattern?: { dialect: "like" | "ilike"; source: string; };
   enum?: string[];
 }
 
@@ -134,9 +150,9 @@ export interface IllFormedUtf16Text extends Base, TextFacts, Lengths {
   ill_formed: "utf16";
 }
 
-interface TextFacts {
+export interface TextFacts {
   /** A pattern every value matches, in its own dialect and matched as that dialect matches: `like` and `ilike` against the whole value, a regular expression anywhere in it unless anchored. A case-insensitive match (`~*`, or `REGEXP` under a case-insensitive collation) begins its source with `(?i)`. Postgres's and ECMA's regular expressions disagree on `.` and newlines. */
-  pattern?: { dialect: "postgres" | "mysql" | "posix" | "ecma" | "like" | "ilike"; source: string };
+  pattern?: { dialect: "postgres" | "mysql" | "posix" | "ecma" | "like" | "ilike"; source: string; };
   /** The only values, as JSON Schema's `enum`: a database's enum type (Postgres `create type mood as enum (…)`, MySQL `ENUM(…)`), a `CHECK (x IN (…))`, or a constant the statement writes (`select 'user' as kind`). An enum type's declared order concerns only how its values sort, so it is not part of the type. */
   enum?: string[];
 }
@@ -150,8 +166,6 @@ export interface BytesType extends Base, Lengths {
 export interface UuidType extends Base {
   kind: "uuid";
 }
-
-// Structure ----------------------------------------------------------------------------------
 
 /**
  * A sequence of `element`s, in order. Where its index starts is not part of the type.
@@ -191,12 +205,8 @@ export interface RecordType extends Base {
 export interface JsonType extends Base {
   kind: "json";
   content?: Position;
-  schema?: { $schema: string; [keyword: string]: unknown };
+  schema?: { $schema: string; [keyword: string]: unknown; };
 }
-
-// Dates and times ----------------------------------------------------------------------------
-//
-// One kind per class every language has: a date, a time of day, a wall-clock date and time, an instant, and a duration. Each but the time of day may hold infinity and -infinity too, as Postgres's do. Wall-clock time is never an instant: a time with no zone cannot be read as UTC. `tick` is the smallest step, in seconds, in lowest terms: `"1/1000000"` (microseconds), `"1/300"` (SQL Server `datetime`), `"60"` (`smalldatetime`). A date-bearing kind's range is 0001-01-01 to 9999-12-31, and a time's 00:00:00 up to 24:00:00, unless its bounds say otherwise.
 
 /** A calendar date. Postgres's runs from `-4713-11-24` to `+5874897-12-31`, in astronomical years. */
 export interface DateType extends Base, Bounds {
@@ -231,7 +241,7 @@ export interface InstantType extends Base, Bounds {
 }
 
 /** What each value keeps besides the moment: a UTC offset (SQL Server `datetimeoffset`, Postgres `timetz`), a region such as `America/Los_Angeles`, or either, per value (Oracle `TIMESTAMP WITH TIME ZONE`, Firebird's `WITH TIME ZONE` types). No database keeps regions alone today. */
-type Zone = "offset" | "region" | "region_or_offset";
+export type Zone = "offset" | "region" | "region_or_offset";
 
 /**
  * A length of time, in the parts it has, each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time: Postgres adds `1 month` to January 31 as February 28, and `1 day` across a clock change as 23 or 25 hours.
@@ -243,14 +253,12 @@ type Zone = "offset" | "region" | "region_or_offset";
  */
 export interface DurationType extends Base {
   kind: "duration";
-  months?: { max?: string };
-  days?: { max?: string };
-  time?: { tick: string; max?: string };
+  months?: { max?: string; };
+  days?: { max?: string; };
+  time?: { tick: string; max?: string; };
   /** Also holds infinity and -infinity: Postgres's, from version 17. */
   infinity?: true;
 }
-
-// Advanced -----------------------------------------------------------------------------------
 
 /**
  * One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.
@@ -280,7 +288,18 @@ export interface MapType extends Base {
 }
 
 /** The kinds that have an order, so the only ones a range can span. */
-type OrderedType = IntegerType | FloatType | DecimalType | TextType | BytesType | UuidType | DateType | TimeType | DateTimeType | InstantType | DurationType;
+export type OrderedType =
+  | IntegerType
+  | FloatType
+  | DecimalType
+  | TextType
+  | BytesType
+  | UuidType
+  | DateType
+  | TimeType
+  | DateTimeType
+  | InstantType
+  | DurationType;
 
 /** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
 export interface RangeType extends Base {
@@ -317,8 +336,6 @@ export interface XmlFragment extends Base {
   fragment: true;
 }
 
-// Escape hatches ----------------------------------------------------------------------------
-
 /** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide. */
 export interface OpaqueType extends Base {
   kind: "opaque";
@@ -335,8 +352,6 @@ export interface UnknownType {
   kind: "unknown";
 }
 
-// Appended kinds ----------------------------------------------------------------------------
-
 /** One of several alternatives, each named by the tag every value carries, in the order the type declares them: DuckDB's `UNION(num INTEGER, str VARCHAR)`, a Rust enum. Unlike a union's members, two alternatives may hold one type, and a value says which alternative it is, even where it holds NULL (DuckDB's `union_value(num := NULL)` is no NULL union). */
 export interface TaggedUnionType extends Base {
   kind: "tagged_union";
@@ -348,14 +363,10 @@ export interface Alternative extends Position {
   tag: string;
 }
 
-// =============================================================================================
-// The statement and its positions
-// =============================================================================================
-
-/** What introspecting one statement returns. */
+/** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
-  /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads (rule 8). */
-  $schema: "https://reylo.dev/typedefs/0.1.0";
+  /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads (rule 8 of the format's rules, at https://reylo.dev/typedefs). */
+  $schema: "https://reylo.dev/typedefs/0.1.0.json";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;
@@ -416,67 +427,3 @@ export interface Dialect {
   name: string;
   version: string;
 }
-
-// =============================================================================================
-// Rules
-// =============================================================================================
-//
-// 1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field either widens the type or narrows it, on its own, so any combination is valid. A flag is a boolean written only when true: its default is false. The widening fields are a closed list, and a new one means a new major version, while a narrowing one may come in a minor version, since a consumer that ignores it stays sound:
-//      - `nullable` and `optional` on a position;
-//      - `unsigned` on an integer;
-//      - `infinity` and `nan`;
-//      - `zone` on a time or an instant;
-//      - `ill_formed` on text;
-//      - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
-//      - `months`, `days` and `time` on a duration, each a part its values may carry;
-//      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
-//    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
-//
-// 2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums.
-//
-// 3. **A value is what the type denotes, never its encoding.** A decimal is a number, so `1.5` and `1.50` are one value; a `timestamptz` is one instant however a session prints it; a duration is its months, days and time, so `1 mon` and `30 days` are two values though Postgres finds them equal; an array is its elements, wherever its index starts. The format says nothing about how a driver or protocol encodes a value: decoding is the driver's.
-//
-// 4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds, and members of one kind in the order the database declares them (an object type before its subtypes; an `inet`'s IPv4 record before its IPv6 one).
-//
-// 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
-//
-// 6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
-//
-// 7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a whole-number kind takes neither exclusive field; a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive.
-//
-// 8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
-
-// =============================================================================================
-// Facts about each database
-// =============================================================================================
-//
-// What an implementation needs, and the format does not state on every node.
-//
-// What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER`, `NUMERIC` or untyped column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A STRICT column holds its declared type alone.
-//
-// Which types hold infinities and NaN: Postgres's floats (both), `numeric` (NaN, and with no size the infinities), `date`, `timestamp`, `timestamptz` and, from version 17, `interval`; SQLite's `REAL` holds the infinities and stores a NaN as NULL. MySQL has none, refusing NaN and the infinities even in `FLOAT` and `DOUBLE`.
-//
-// What a database writes inside its own JSON:
-//   - Postgres:
-//       - a `boolean` is `true` or `false`;
-//       - an integer, a float or a `numeric` is a JSON number, a `numeric`'s of any length and an `int8`'s one that may pass 2^53, and a float's or a `numeric`'s NaN or Infinity a string;
-//       - a `date`, a `timestamp` and a `timestamptz` are ISO 8601 (`"2026-01-02T03:04:05"`), a `timestamptz` in the session's offset (the offset can carry seconds), a BC year with a suffix (`"0001-01-01 BC"`), and an infinity the string `"infinity"` or `"-infinity"`;
-//       - an array is a JSON array of its elements, and a composite or any other row an object of its fields (`row(1, 'x')` is `{"f1":1,"f2":"x"}`);
-//       - an `hstore` is an object of nullable text, and PostGIS's `geometry` GeoJSON;
-//       - `jsonb` sorts keys and keeps the last duplicate, while `json` keeps the text as written;
-//       - every other type is a string of its text, structured or not: `bit` and `varbit` (`"101"`), the geometric types (`"(1,2)"`, `"[(0,0),(1,1)]"`), `inet`, `cidr`, `macaddr` and `macaddr8`, ranges and multiranges (`"[1,5)"`), `interval` in the session's IntervalStyle (`"1 mon -1 days"`), `time`, `uuid`, `money`, `oid`, `xml`, and `bytea` in the session's `bytea_output` (hex by default, `"\\x0102"`).
-//   - MySQL:
-//       - a `DATETIME` or `TIMESTAMP` is a string with a space and six fractional digits, and a `TIME` its text with six fractional digits (`"12:00:01.500000"`);
-//       - a `DECIMAL` is a number that keeps its scale, and a `YEAR` a number;
-//       - a comparison is `true` or `false`;
-//       - an `ENUM` is its label, and a `SET` its elements joined by commas (`"a,b"`);
-//       - a binary value, a `BIT` among them, is `"base64:type15:…"`, the number its protocol type;
-//       - a spatial value is GeoJSON;
-//       - the last duplicate key wins.
-//   - SQLite: ±Infinity is the number `9e999`, and a blob is never a JSON value.
-//
-// Bounds no field states:
-//   - offsets: Postgres's run to ±15:59:59, SQL Server's to ±14:00;
-//   - Postgres text cannot hold the NUL character, and `jsonb` refuses `\u0000`;
-//   - Oracle `VARCHAR2(n CHAR)` is also capped at 4,000 bytes, which its one size, in code points, leaves out;
-//   - a MySQL `latin1` or `utf8mb3` column holds only the characters its character set can store.

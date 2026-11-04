@@ -1,0 +1,1346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reylo.dev/typedefs/0.1.0.json",
+  "title": "Reylo Type Defs 0.1.0",
+  "description": "What introspecting one SQL statement returns, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. The rules every descriptor follows are at https://reylo.dev/typedefs.",
+  "$ref": "#/$defs/StatementDescriptor",
+  "$defs": {
+    "Type": {
+      "description": "A type descriptor: which values a position can hold. Every kind, from everyday to advanced; a union lists its members in this order, and a new kind is appended, so the order never changes.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BooleanType"
+        },
+        {
+          "$ref": "#/$defs/IntegerType"
+        },
+        {
+          "$ref": "#/$defs/FloatType"
+        },
+        {
+          "$ref": "#/$defs/DecimalType"
+        },
+        {
+          "$ref": "#/$defs/TextType"
+        },
+        {
+          "$ref": "#/$defs/BytesType"
+        },
+        {
+          "$ref": "#/$defs/UuidType"
+        },
+        {
+          "$ref": "#/$defs/ArrayType"
+        },
+        {
+          "$ref": "#/$defs/RecordType"
+        },
+        {
+          "$ref": "#/$defs/JsonType"
+        },
+        {
+          "$ref": "#/$defs/DateType"
+        },
+        {
+          "$ref": "#/$defs/TimeType"
+        },
+        {
+          "$ref": "#/$defs/DateTimeType"
+        },
+        {
+          "$ref": "#/$defs/InstantType"
+        },
+        {
+          "$ref": "#/$defs/DurationType"
+        },
+        {
+          "$ref": "#/$defs/UnionType"
+        },
+        {
+          "$ref": "#/$defs/SetType"
+        },
+        {
+          "$ref": "#/$defs/MapType"
+        },
+        {
+          "$ref": "#/$defs/RangeType"
+        },
+        {
+          "$ref": "#/$defs/MultirangeType"
+        },
+        {
+          "$ref": "#/$defs/GeometryType"
+        },
+        {
+          "$ref": "#/$defs/XmlType"
+        },
+        {
+          "$ref": "#/$defs/OpaqueType"
+        },
+        {
+          "$ref": "#/$defs/AnyType"
+        },
+        {
+          "$ref": "#/$defs/UnknownType"
+        },
+        {
+          "$ref": "#/$defs/TaggedUnionType"
+        }
+      ]
+    },
+    "Base": {
+      "description": "What every type may carry.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, the name is qualified, and it is the type's identity.\n  - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).\n  - MySQL: `bigint`, `enum`, `json`.\n  - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.\n  - Oracle: `VARCHAR2`, `R.SHAPE_T`.\n\nAbsent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.",
+          "type": "string"
+        },
+        "comment": {
+          "description": "The comment the database keeps on a named type: `COMMENT ON TYPE` or `COMMENT ON DOMAIN`. A column's own comment is on the column.",
+          "type": "string"
+        }
+      }
+    },
+    "Bounds": {
+      "description": "Bounds on an ordered kind's values, in its canonical text (`\"-1.50\"`, `\"2026-10-23\"`, and for a decimal an exponent where it is shorter, `\"1e126\"`), as JSON Schema's `minimum`, `maximum`, `exclusiveMinimum` and `exclusiveMaximum` are: each holds a value, so `CHECK (x > 0)` on a float is `exclusive_min: \"0\"`. A side takes one of its two fields. A whole-number kind takes only `min` and `max` (`x > 0` is `min: \"1\"`); any other kind writes a bound as the constraint states it, so `x > 0` on a `numeric(10,2)` is `exclusive_min: \"0\"`, never `min: \"0.01\"`. Bounds constrain the finite values only: whether infinity, -infinity and NaN also occur is said by the `infinity` and `nan` flags alone, whatever the bounds.",
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        }
+      }
+    },
+    "Size": {
+      "description": "How long a value is, in whole numbers of its kind's unit (bytes, elements, or a text's own `unit`): `exact`, or `min`, `max` or both, never `exact` beside either. `char(8)` is `size: { exact: 8 }`, `varchar(255)` is `size: { max: 255 }`, and Oracle's `VARCHAR2(20 CHAR)`, which stores `''` as null, is `size: { min: 1, max: 20 }`. A length is never exclusive, since a whole number has an inclusive spelling.",
+      "type": "object",
+      "properties": {
+        "exact": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        }
+      }
+    },
+    "Lengths": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "$ref": "#/$defs/Size",
+          "type": "object",
+          "unevaluatedProperties": false
+        }
+      }
+    },
+    "BooleanType": {
+      "description": "A truth value: Postgres `boolean`, SQL Server `bit`, Oracle `BOOLEAN`, and a comparison's result on any database, which MySQL and SQLite deliver as 1 or 0. A MySQL `BOOLEAN` column is an `integer`, since it can hold 5.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "IntegerType": {
+      "description": "A whole number of a fixed width, two's complement unless `unsigned`: `int4` is 32 bits, MySQL `BIGINT UNSIGNED` 64 bits unsigned, SQL Server `tinyint` 8 bits unsigned, MySQL `MEDIUMINT` 24 bits, DuckDB `HUGEINT` 128 bits, SQLite `INTEGER` 64 bits, and Vertica's `TINYINT`, despite its name, 64 bits. Its range follows from the width; bounds narrow it further, from a CHECK or for a type narrower than any width, as MySQL `YEAR` (0 and 1901 to 2155, 16 bits bounded at 0 and 2155). A whole-number bound is always written inclusive, since `x > 0` is `x >= 1`. An integer of no fixed width is a `decimal` whose scale is at most 0.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "integer"
+        },
+        "bits": {
+          "type": "number"
+        },
+        "unsigned": {
+          "description": "From 0 to 2^bits − 1: MySQL `UNSIGNED`, SQL Server `tinyint`, Postgres `oid`.",
+          "const": true
+        },
+        "multiple_of": {
+          "type": "string"
+        },
+        "enum": {
+          "description": "The only values, as JSON Schema's `enum`: a `CHECK (x IN (…))`, or a constant the statement writes (`select 1 as one`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "bits"
+      ],
+      "unevaluatedProperties": false
+    },
+    "FloatType": {
+      "description": "An IEEE 754 binary float, given by its exponent and mantissa widths, which fix its range and precision: `float8`, SQLite `REAL` and SQL Server `float` are 11 and 52, `float4` 8 and 23, the half float in pgvector's `halfvec` 5 and 10, and ClickHouse's `BFloat16` 8 and 7. A width alone would not do, since those last two are both 16 bits. A generator picks the smallest native float whose widths are both at least these. -0 is a float like any other, and equal to 0.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "float"
+        },
+        "exponent_bits": {
+          "type": "number"
+        },
+        "mantissa_bits": {
+          "description": "Not counting the implicit leading bit.",
+          "type": "number"
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity: Postgres's floats, SQLite's `REAL`. MySQL's `FLOAT` and `DOUBLE` refuse them.",
+          "const": true
+        },
+        "nan": {
+          "description": "Also holds NaN: Postgres's floats. SQLite stores a NaN as NULL, and MySQL refuses it.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "exponent_bits",
+        "mantissa_bits"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DecimalType": {
+      "description": "An exact decimal: `numeric`, MySQL `DECIMAL`, Oracle `NUMBER`, `DECFLOAT`. It is a kind of its own, so that a generator switching on the kind never turns money into `int64` or `double`.\n\nA decimal is a coefficient, a whole number, times a power of ten: 1.25 is 125 × 10^-2. IEEE 754 and the General Decimal Arithmetic specification call the coefficient's digits the precision and the power the exponent; SQL and Java's `BigDecimal` count the exponent negated, as the scale, the digits after the point. A type bounds both:\n  - `numeric(10,2)`: precision 10, scale 2, so up to 99,999,999.99. MySQL `DECIMAL(M,D)`, SQL Server `decimal(p,s)` and Oracle `NUMBER(p,s)` alike, and SQL Server `money` is (19,4) with bounds at -922,337,203,685,477.5808 and 922,337,203,685,477.5807. Oracle's `NUMBER(5,-2)` has scale -2, rounding to hundreds.\n  - Postgres `numeric` with no size: scale 0 to 16,383, below 10^131072 in magnitude.\n  - `DECFLOAT(34)`, IEEE's decimal128: precision 34, scale -6111 to 6176.\n  - Oracle `NUMBER`: precision 40, below 10^126 in magnitude; Oracle `INTEGER` adds a scale of at most 0.\n\nA decimal is a number, so 1.5 and 1.50 are one value however the database prints them. Postgres `money` is `opaque`: its scale follows the session's locale, and the client receives `$1,234.57`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "decimal"
+        },
+        "precision": {
+          "description": "The most digits in the coefficient.",
+          "type": "number"
+        },
+        "min_scale": {
+          "description": "A value is in the type when it can be written as a coefficient of at most `precision` digits times 10^-scale, with a scale from `min_scale` to `max_scale`: so `numeric(5,2)`, precision 5 and scale 2 to 2, holds 1.5, written 150 × 10^-2. Equal bounds make a fixed scale.",
+          "type": "number"
+        },
+        "max_scale": {
+          "type": "number"
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity: Postgres `numeric` with no size, `DECFLOAT`. Java's `BigDecimal`, Rust's `rust_decimal` and C#'s `decimal` hold neither, nor NaN.",
+          "const": true
+        },
+        "nan": {
+          "description": "Also holds NaN: Postgres `numeric`, sized or not, `DECFLOAT`.",
+          "const": true
+        },
+        "multiple_of": {
+          "type": "string"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TextType": {
+      "description": "Text is one kind in three shapes, by whether every value is valid Unicode (well-formed, in the Unicode Standard's word, which JavaScript's `isWellFormed()` uses too). A length counts in a unit, since languages disagree on what a string's length is: four code points take 4 to 16 bytes in UTF-8, and a JavaScript string's `length` counts UTF-16 units. A shape takes only the units that mean something for its values. How text compares, under a collation, is not part of its type, since a collation adds and removes no value.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UnicodeText"
+        },
+        {
+          "$ref": "#/$defs/IllFormedUtf8Text"
+        },
+        {
+          "$ref": "#/$defs/IllFormedUtf16Text"
+        }
+      ]
+    },
+    "UnicodeText": {
+      "description": "Valid Unicode: Postgres, MySQL and Oracle text. Its lengths count code points (`varchar(255)` is `size: { max: 255 }`), UTF-16 units (Oracle `NVARCHAR2`), or bytes in the encoding the database stores it in (MySQL `TEXT` is `size: { unit: \"byte\", encoding: \"UTF-8\", max: 65535 }`). `char(8)` is `size: { exact: 8 }`, since Postgres pads it with spaces.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/TextFacts"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "ill_formed": {
+          "const": false
+        },
+        "size": {
+          "$ref": "#/$defs/TextSize"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TextSize": {
+      "description": "A valid text's size, which says what it counts: code points when `unit` is absent, UTF-16 units, or bytes in `encoding`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Size"
+        }
+      ],
+      "properties": {
+        "unit": {
+          "enum": [
+            "utf16_unit",
+            "byte"
+          ]
+        },
+        "encoding": {
+          "description": "The encoding bytes are counted in, written only with `unit: \"byte\"`.",
+          "type": "string"
+        }
+      },
+      "unevaluatedProperties": false
+    },
+    "IllFormedUtf8Text": {
+      "description": "Bytes meant as UTF-8 but never validated, so a value may not be valid Unicode: SQLite `TEXT` (`CAST(x'ff' AS TEXT)`), ClickHouse `String`, a Postgres `SQL_ASCII` database, Firebird `NONE`. A JavaScript string cannot hold every value. Its lengths count bytes, and its patterns are `like` and `ilike`, since a regular expression matches characters.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Lengths"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "ill_formed": {
+          "const": "utf8"
+        },
+        "pattern": {
+          "type": "object",
+          "properties": {
+            "dialect": {
+              "enum": [
+                "like",
+                "ilike"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dialect",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "ill_formed"
+      ],
+      "unevaluatedProperties": false
+    },
+    "IllFormedUtf16Text": {
+      "description": "UTF-16 units that may hold a lone surrogate: SQL Server `nvarchar`, `nchar` and `ntext`. A Rust `String` cannot hold every value. Its lengths count UTF-16 units.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/TextFacts"
+        },
+        {
+          "$ref": "#/$defs/Lengths"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "ill_formed": {
+          "const": "utf16"
+        }
+      },
+      "required": [
+        "kind",
+        "ill_formed"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TextFacts": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "description": "A pattern every value matches, in its own dialect and matched as that dialect matches: `like` and `ilike` against the whole value, a regular expression anywhere in it unless anchored. A case-insensitive match (`~*`, or `REGEXP` under a case-insensitive collation) begins its source with `(?i)`. Postgres's and ECMA's regular expressions disagree on `.` and newlines.",
+          "type": "object",
+          "properties": {
+            "dialect": {
+              "enum": [
+                "postgres",
+                "mysql",
+                "posix",
+                "ecma",
+                "like",
+                "ilike"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dialect",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "enum": {
+          "description": "The only values, as JSON Schema's `enum`: a database's enum type (Postgres `create type mood as enum (…)`, MySQL `ENUM(…)`), a `CHECK (x IN (…))`, or a constant the statement writes (`select 'user' as kind`). An enum type's declared order concerns only how its values sort, so it is not part of the type.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "BytesType": {
+      "description": "Bytes: `bytea`, `binary(n)` (exactly n), `varbinary(n)`, `BLOB`, `RAW(n)`, SQL Server `rowversion` (8), Postgres `macaddr` (6) and `macaddr8` (8).",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Lengths"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "bytes"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "UuidType": {
+      "description": "A 128-bit identifier (RFC 9562): Postgres `uuid`, SQL Server `uniqueidentifier`, MariaDB `UUID`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "uuid"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "ArrayType": {
+      "description": "A sequence of `element`s, in order. Where its index starts is not part of the type.\n  - **Nesting:** a two-dimensional array is an array of arrays. A Postgres array column takes `any_depth`, since Postgres ignores declared dimensions: one `int[]` column holds `{1,2}` and `{{1,2},{3,4}}`. Every array a statement builds (`array_agg`, `ARRAY[…]`, a JSON array) has the depth its nesting shows.\n  - **Its size** counts the outermost array's elements. A fixed shape, such as DuckDB's `INTEGER[3]` or a 3×3 matrix, is arrays of exact sizes, nested.\n  - **A vector** is an array of floats: pgvector's `vector(3)` is exactly 3 elements, and MySQL's `VECTOR(n)` at most n.\n  - **A bit string** is an array of booleans: Postgres `bit(7)` and MySQL `BIT(7)` are exactly 7, and Postgres `varbit(n)` at most n. That is its value, not its representation: a client may hold one as a string of 0s and 1s, a number or a buffer.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Lengths"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "array"
+        },
+        "element": {
+          "$ref": "#/$defs/Position",
+          "type": "object",
+          "unevaluatedProperties": false
+        },
+        "any_depth": {
+          "description": "An element may itself be an array of `element`, to any depth, each value rectangular.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "element"
+      ],
+      "unevaluatedProperties": false
+    },
+    "RecordType": {
+      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "record"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Field"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "fields"
+      ],
+      "unevaluatedProperties": false
+    },
+    "JsonType": {
+      "description": "A JSON value: `json`, `jsonb`, MySQL `JSON`.\n  - `content`: what the statement built (`json_build_object`, `json_agg`), described with the same types. Each leaf is typed by the SQL value the database wrote it from: inside a `json_build_object`, an `int8` may pass 2^53, which a JSON Schema could not say.\n  - `schema`: a JSON Schema every value satisfies, from a CHECK or a parameter's typed cast, whose `$schema` names the draft it is read by: MySQL's `JSON_SCHEMA_VALID` reads draft 4, and Postgres's validator extensions differ.\n  - Neither: any JSON, whose numbers may have any length (`jsonb` keeps them as `numeric`), never only doubles.\n\nWhat each database writes for each type is in \"Facts about each database\".",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "json"
+        },
+        "content": {
+          "$ref": "#/$defs/Position",
+          "type": "object",
+          "unevaluatedProperties": false
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "$schema": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "$schema"
+          ],
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DateType": {
+      "description": "A calendar date. Postgres's runs from `-4713-11-24` to `+5874897-12-31`, in astronomical years.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "date"
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "TimeType": {
+      "description": "A time of day: `time(p)`. Postgres's holds `24:00:00` itself, its `max`, which Java's `LocalTime`, Python's `time` and Temporal refuse. With `zone`, each value keeps an offset too: Postgres `timetz`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "time"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "zone": {
+          "$ref": "#/$defs/Zone"
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "unevaluatedProperties": false
+    },
+    "DateTimeType": {
+      "description": "A date and time of day as a wall clock reads, with no zone: Postgres `timestamp`, MySQL `DATETIME`, SQL Server `datetime2`, Oracle `DATE`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "datetime"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "unevaluatedProperties": false
+    },
+    "InstantType": {
+      "description": "A point on the timeline: Postgres `timestamptz`, MySQL `TIMESTAMP`, Oracle `TIMESTAMP WITH LOCAL TIME ZONE`. Each stores the moment and shows it in the session's zone. Bounds are in UTC.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Bounds"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "instant"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "zone": {
+          "description": "Absent: only the moment, with no claim about any offset, as Postgres `timestamptz`, which takes `12:00+05:30` and gives back that moment in the session's zone.",
+          "$ref": "#/$defs/Zone"
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity, which sort after and before every other value, whatever the bounds, which constrain only finite values.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Zone": {
+      "description": "What each value keeps besides the moment: a UTC offset (SQL Server `datetimeoffset`, Postgres `timetz`), a region such as `America/Los_Angeles`, or either, per value (Oracle `TIMESTAMP WITH TIME ZONE`, Firebird's `WITH TIME ZONE` types). No database keeps regions alone today.",
+      "enum": [
+        "offset",
+        "region",
+        "region_or_offset"
+      ]
+    },
+    "DurationType": {
+      "description": "A length of time, in the parts it has, each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time: Postgres adds `1 month` to January 31 as February 28, and `1 day` across a clock change as 23 or 25 hours.\n  - Postgres `interval` has all three (`1 mon -1 day`, which `Temporal.Duration` refuses).\n  - Oracle's `INTERVAL YEAR TO MONTH` has `months`, and its `INTERVAL DAY TO SECOND` `time`, since it holds a day as 24 hours.\n  - MySQL `TIME` is a `time` part, up to 838:59:59.\n\nA part's `max` bounds its magnitude, of either sign, as an ISO 8601 duration (`P2147483648M`, `PT838H59M59S`). A two's complement part reaches one unit further below zero than above it, so its `max` is the negative side's magnitude: Postgres's `months` reaches -2147483648 and +2147483647, and is `P2147483648M`. SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "duration"
+        },
+        "months": {
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "days": {
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "time": {
+          "type": "object",
+          "properties": {
+            "tick": {
+              "type": "string"
+            },
+            "max": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tick"
+          ],
+          "additionalProperties": false
+        },
+        "infinity": {
+          "description": "Also holds infinity and -infinity: Postgres's, from version 17.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "UnionType": {
+      "description": "One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.\n\nA union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "union"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Type"
+          }
+        },
+        "per": {
+          "description": "Every value of one execution is of the same member, which what is bound decides: MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL. A consumer that ignores it reads each value as any member, which holds.",
+          "const": "execution"
+        }
+      },
+      "required": [
+        "kind",
+        "members"
+      ],
+      "unevaluatedProperties": false
+    },
+    "SetType": {
+      "description": "Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        },
+        {
+          "$ref": "#/$defs/Lengths"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "set"
+        },
+        "element": {
+          "$ref": "#/$defs/Position",
+          "type": "object",
+          "unevaluatedProperties": false
+        },
+        "duplicates": {
+          "description": "An element may appear more than once, making a multiset: the SQL standard's `MULTISET`, Oracle's nested tables.",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "element"
+      ],
+      "unevaluatedProperties": false
+    },
+    "MapType": {
+      "description": "Keys to values, each key once by the key type's equality, in no order: `hstore` (text to nullable text). A key is never null. A map whose keys may repeat, such as ClickHouse's `Map`, is an array of `{ key, value }` records.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "map"
+        },
+        "key": {
+          "$ref": "#/$defs/Type"
+        },
+        "value": {
+          "$ref": "#/$defs/Position",
+          "type": "object",
+          "unevaluatedProperties": false
+        }
+      },
+      "required": [
+        "kind",
+        "key",
+        "value"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OrderedType": {
+      "description": "The kinds that have an order, so the only ones a range can span.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/IntegerType"
+        },
+        {
+          "$ref": "#/$defs/FloatType"
+        },
+        {
+          "$ref": "#/$defs/DecimalType"
+        },
+        {
+          "$ref": "#/$defs/TextType"
+        },
+        {
+          "$ref": "#/$defs/BytesType"
+        },
+        {
+          "$ref": "#/$defs/UuidType"
+        },
+        {
+          "$ref": "#/$defs/DateType"
+        },
+        {
+          "$ref": "#/$defs/TimeType"
+        },
+        {
+          "$ref": "#/$defs/DateTimeType"
+        },
+        {
+          "$ref": "#/$defs/InstantType"
+        },
+        {
+          "$ref": "#/$defs/DurationType"
+        }
+      ]
+    },
+    "RangeType": {
+      "description": "A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "range"
+        },
+        "subtype": {
+          "$ref": "#/$defs/OrderedType"
+        }
+      },
+      "required": [
+        "kind",
+        "subtype"
+      ],
+      "unevaluatedProperties": false
+    },
+    "MultirangeType": {
+      "description": "An ordered set of non-overlapping ranges: Postgres multiranges.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "multirange"
+        },
+        "subtype": {
+          "$ref": "#/$defs/OrderedType"
+        }
+      },
+      "required": [
+        "kind",
+        "subtype"
+      ],
+      "unevaluatedProperties": false
+    },
+    "GeometryType": {
+      "description": "An OGC simple feature: PostGIS `geometry` and `geography` (`geodetic`), and the spatial types of MySQL, SQL Server and Oracle.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "geometry"
+        },
+        "model": {
+          "enum": [
+            "planar",
+            "geodetic"
+          ]
+        },
+        "srid": {
+          "type": "number"
+        },
+        "subtype": {
+          "enum": [
+            "point",
+            "linestring",
+            "polygon",
+            "multipoint",
+            "multilinestring",
+            "multipolygon",
+            "geometrycollection"
+          ]
+        },
+        "coordinates": {
+          "enum": [
+            "xy",
+            "xyz",
+            "xym",
+            "xyzm"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "XmlType": {
+      "description": "XML: a document with one root, valid against any `schemas` given, or a fragment, which may have several roots (`<a/><b/>`), as Postgres's `xml` may. An XML Schema validates documents only, so a fragment names none.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/XmlDocument"
+        },
+        {
+          "$ref": "#/$defs/XmlFragment"
+        }
+      ]
+    },
+    "XmlDocument": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "xml"
+        },
+        "fragment": {
+          "const": false
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "XmlFragment": {
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "xml"
+        },
+        "fragment": {
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "fragment"
+      ],
+      "unevaluatedProperties": false
+    },
+    "OpaqueType": {
+      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "opaque"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "unevaluatedProperties": false
+    },
+    "AnyType": {
+      "description": "The database's own type admits a value of any type, each carrying its type, which is one of this format's types: SQL Server `sql_variant`, Oracle `ANYDATA`.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "any"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "unevaluatedProperties": false
+    },
+    "UnknownType": {
+      "description": "Nothing is known about the values.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "unknown"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "TaggedUnionType": {
+      "description": "One of several alternatives, each named by the tag every value carries, in the order the type declares them: DuckDB's `UNION(num INTEGER, str VARCHAR)`, a Rust enum. Unlike a union's members, two alternatives may hold one type, and a value says which alternative it is, even where it holds NULL (DuckDB's `union_value(num := NULL)` is no NULL union).",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "tagged_union"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Alternative"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "alternatives"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Alternative": {
+      "description": "An alternative of a tagged union: its tag, unique in the type, and the value it holds.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Position"
+        }
+      ],
+      "properties": {
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tag"
+      ],
+      "unevaluatedProperties": false
+    },
+    "StatementDescriptor": {
+      "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from.",
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "description": "The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads (rule 8 of the format's rules, at https://reylo.dev/typedefs).",
+          "const": "https://reylo.dev/typedefs/0.1.0.json"
+        },
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
+        },
+        "sql": {
+          "description": "The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`select` for any query, a `VALUES` list and a set operation included; `other` for any statement that is none of the five: a `CALL`, whose procedure may write, an `EXPLAIN`, a `SHOW` or a SQLite `PRAGMA`, and DDL. Absent when the statement does not parse.",
+          "enum": [
+            "select",
+            "insert",
+            "update",
+            "delete",
+            "merge",
+            "other"
+          ]
+        },
+        "comment": {
+          "description": "The prose written in comments before the statement: its summary, as an editor's hover shows it.",
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Param"
+          }
+        },
+        "columns": {
+          "description": "In order; empty when the statement returns no rows.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Column"
+          }
+        },
+        "cardinality": {
+          "description": "How many rows the statement returns: exactly one, at most one, any number, or none (a write without `RETURNING`).",
+          "enum": [
+            "one",
+            "at_most_one",
+            "many",
+            "none"
+          ]
+        },
+        "diagnostics": {
+          "description": "What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Diagnostic"
+          }
+        }
+      },
+      "required": [
+        "$schema",
+        "dialect",
+        "sql",
+        "params",
+        "columns",
+        "cardinality",
+        "diagnostics"
+      ]
+    },
+    "Diagnostic": {
+      "description": "`start` and `end` are offsets into the statement as it was written, in UTF-16 units, as the Language Server Protocol counts by default. `code` is the database's own error code where it has one (Postgres's SQLSTATE `42703`, MySQL's `1054`).",
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "start": {
+          "type": "number"
+        },
+        "end": {
+          "type": "number"
+        },
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "start",
+        "end"
+      ],
+      "additionalProperties": false
+    },
+    "Position": {
+      "description": "Where a value stands: a column, a parameter, a record's field, an array's element, a map's value, or JSON content. Nullability lives here, never in a type, since an outer join makes any position nullable whatever its type.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/Type"
+        },
+        "nullable": {
+          "description": "The value may be null; absent, it never is. On a parameter, the statement accepts null; inside JSON content, the value may be JSON null.",
+          "const": true
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    "Column": {
+      "description": "A result's column. A row always has every column, so none is optional. Columns can share a name (`select a.id, b.id`), so a row is a list of columns, not an object.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Position"
+        }
+      ],
+      "properties": {
+        "name": {
+          "description": "The name the database gives the column: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty.",
+          "type": "string"
+        },
+        "comment": {
+          "description": "The comment the database keeps on the column (`COMMENT ON COLUMN`).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Field": {
+      "description": "A record's field.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Position"
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "optional": {
+          "description": "The key may be absent: a structured parameter's `?` member, a JSON object's key (as `jsonb_strip_nulls` drops). Apart from `nullable`, and never a default value.",
+          "const": true
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Param": {
+      "description": "A statement's parameter. Where the statement writes it whole into a column, its type is that column's: `insert into t (price) values (:price)`, into a `numeric(10,2)` column, gives `price` precision 10 and scale 2, though Postgres describes the parameter as plain `numeric` and would round 1.234. That is stricter than the server, never looser.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Position"
+        }
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "optional": {
+          "description": "The caller may leave the parameter out.",
+          "const": true
+        },
+        "comment": {
+          "description": "The comment the database keeps on the column the parameter is written to whole.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "unevaluatedProperties": false
+    },
+    "Dialect": {
+      "description": "The database a document of descriptors describes, stated once at the document's top: every `name` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
