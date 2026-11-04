@@ -421,3 +421,10 @@ async function built(root: string, name: string, sql: string) {
   writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
   return (await import(`${pathToFileURL(out).href}?${Math.random()}`)).default;
 }
+
+test("a Standard Query holds a Postgres array column to one dimension, as .run() does", () => {
+  const q = defineQuery<{}, { tags: (number | null)[] | null }, "many", "postgres">({ dialect: "postgres", sql: "select tags from posts", params: [], columns: [["tags", "int[]"]], cardinality: "many" })["~standard"].query;
+  assert.deepEqual(q.decode([["{1,NULL}"], [null]]), [{ tags: [1, null] }, { tags: null }]);
+  assert.throws(() => q.decode([["{{1,2},{3,4}}"]]), /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one:/);
+  assert.throws(() => q.columns![0]!.decode("{{1}}"), /Column "tags" holds an array of 2 dimensions/);
+});

@@ -616,6 +616,28 @@ export function parseArray(text: string, element: (text: string) => unknown, del
 }
 
 /**
+ * A Postgres array held to the dimensions its kind declares, one per `[]`. Postgres lets an array
+ * column hold any number of dimensions, whatever it declares (one `int4[]` column holds `{1,2}` and
+ * `{{1,2},{3,4}}`), and Reylo types a column's value as one dimension, which nearly every array
+ * column holds, so a value of more is refused, naming the column. An array the statement builds
+ * of arrays (`array_agg` over an array column) is declared with a `[]` per level, and holds them.
+ * Postgres's arrays are rectangular, so the depth of the first element at each level is every one's.
+ * A vector element is an array itself, one level more; a JSON element may be one at any depth,
+ * which its type holds whatever the dimensions around it.
+ */
+export function withinDimensions(v: unknown, kind: Kind, column: string): unknown {
+  const element = elementKind(kind);
+  if (!Array.isArray(v) || element === "json") return v;
+  const declared = (kind.length - element.length) / 2;
+  let depth = element === "vector" ? -1 : 0;
+  for (let level: unknown = v; Array.isArray(level); level = level.find((e) => e !== null)) depth++;
+  if (depth <= declared) return v;
+  throw new DecodeError(
+    `Column "${column}" holds an array of ${depth} dimensions, and its type has ${declared === 1 ? "one" : declared}: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce. Select to_jsonb(${column}) to read it as JSON.`,
+  );
+}
+
+/**
  * The kind of an array's innermost elements, `int` for `int[][]`: Postgres's text of an array
  * nests its levels itself, so every element it spells is one of these.
  */

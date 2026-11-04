@@ -400,3 +400,26 @@ test("Bun.sql: its values are given their kinds after the fact", async () => {
   // A query defined by hand: a typed array an array, and a Date, which no value is, the instant's text.
   assert.deepEqual(await execute(bun, probe, { id: 1 }), [{ ...bunRow, day: "2024-01-15T00:00:00Z", wall: "2024-01-15T10:30:00.12Z", old: "-000043-03-15T12:00:00Z", far: "+012345-06-01T12:00:00Z", at: "2024-01-15T08:30:00Z", ints: [1, 2] }]);
 });
+
+test("a Postgres array column holds one dimension, and an array the statement builds of arrays the levels it declares", async () => {
+  // Bun.sql parses an array's text itself, nested arrays included, which the run time is given.
+  const client = (rows: Record<string, unknown>[]) => ({ unsafe: async () => rows.map((r) => ({ ...r })), commitDistributed: async () => {} });
+  const flat: QueryModule<"postgres"> = { ...probe, columns: [["tags", "int[]"]] };
+  assert.deepEqual(await execute(client([{ tags: [1, null] }, { tags: [] }, { tags: null }]), flat, { id: 1 }), [{ tags: [1, null] }, { tags: [] }, { tags: null }]);
+  await assert.rejects(
+    async () => execute(client([{ tags: [1] }, { tags: [[1, 2], [3, 4]] }]), flat, { id: 1 }),
+    /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce\. Select to_jsonb\(tags\) to read it as JSON\.$/,
+  );
+  // array_agg(tags) over an int4[] column: two levels, the elements' own arrays.
+  const built: QueryModule<"postgres"> = { ...probe, columns: [["all_tags", "int[][]"]] };
+  assert.deepEqual(await execute(client([{ all_tags: [[1, 2], [3, 4]] }]), built, { id: 1 }), [{ all_tags: [[1, 2], [3, 4]] }]);
+  await assert.rejects(async () => execute(client([{ all_tags: [[[1]]] }]), built, { id: 1 }), /holds an array of 3 dimensions, and its type has 2:/);
+  // An array of NULLs at the top is one dimension: a NULL is never a nested array.
+  assert.deepEqual(await execute(client([{ tags: [null, null] }]), flat, { id: 1 }), [{ tags: [null, null] }]);
+  // A vector is an array itself, and a JSON value may be one at any depth.
+  const vectors: QueryModule<"postgres"> = { ...probe, columns: [["v", "vector[]"]] };
+  assert.deepEqual(await execute(client([{ v: [null, [1, 2]] }]), vectors, { id: 1 }), [{ v: [null, [1, 2]] }]);
+  await assert.rejects(async () => execute(client([{ v: [[[1, 2]]] }]), vectors, { id: 1 }), /Column "v" holds an array of 2 dimensions, and its type has one:/);
+  const docs: QueryModule<"postgres"> = { ...probe, columns: [["docs", "json[]"]] };
+  assert.deepEqual(await execute(client([{ docs: [[[1], { a: [2] }]] }]), docs, { id: 1 }), [{ docs: [[[1], { a: [2] }]] }]);
+});
