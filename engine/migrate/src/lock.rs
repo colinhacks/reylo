@@ -84,8 +84,9 @@ pub fn schema_sum(last: &str, sql: &str) -> String {
 
 /// SQL without its comments, its whitespace runs as one space, as any of the three databases reads
 /// it: what a lock's checksum covers, so an edit to a comment or to spacing is no edit. Quoted text
-/// (`'…'`, `"…"`, `` `…` ``, and Postgres's `$tag$…$tag$`) is kept as written, and so is everything
-/// after a string that a backslash-escaped quote leaves ambiguous between the databases.
+/// (`'…'`, `"…"`, `` `…` ``, and Postgres's `$tag$…$tag$`) and MySQL's `/*! … */` are kept as
+/// written, and so is everything after a string, a comment or a `--` that the databases read
+/// differently, so that text one of them runs is never dropped as a comment.
 pub fn canonical(sql: &str) -> String {
     let b: Vec<char> = sql.chars().collect();
     let mut out = String::new();
@@ -101,27 +102,50 @@ pub fn canonical(sql: &str) -> String {
     while k < b.len() {
         let c = b[k];
         if c == '-' && b.get(k + 1) == Some(&'-') {
+            // MySQL reads `--` as a comment only where a space or a control character follows it
+            // (`n--1` is `n - -1` there), Postgres and SQLite everywhere: where the two differ, the
+            // rest is kept as written.
+            if b.get(k + 2).is_some_and(|n| !n.is_whitespace() && !n.is_control()) {
+                push(&mut out, &mut space, &b[k..].iter().collect::<String>());
+                k = b.len();
+                continue;
+            }
             while k < b.len() && b[k] != '\n' {
                 k += 1;
             }
             space = true;
         } else if c == '/' && b.get(k + 1) == Some(&'*') {
+            // Postgres nests block comments, while MySQL and SQLite end one at its first `*/`: where
+            // the two end it at different places, the rest is kept as written. MySQL runs the text
+            // of `/*! … */` (as `SHOW CREATE TABLE` writes `/*!50100 PARTITION BY … */`), so that
+            // comment is kept as written too.
+            let flat = (k + 2..b.len().saturating_sub(1)).find(|&j| b[j] == '*' && b[j + 1] == '/').map_or(b.len(), |j| j + 2);
             let mut depth = 0;
-            while k < b.len() {
-                if b[k] == '/' && b.get(k + 1) == Some(&'*') {
+            let mut nested = k;
+            while nested < b.len() {
+                if b[nested] == '/' && b.get(nested + 1) == Some(&'*') {
                     depth += 1;
-                    k += 2;
-                } else if b[k] == '*' && b.get(k + 1) == Some(&'/') {
+                    nested += 2;
+                } else if b[nested] == '*' && b.get(nested + 1) == Some(&'/') {
                     depth -= 1;
-                    k += 2;
+                    nested += 2;
                     if depth == 0 {
                         break;
                     }
                 } else {
-                    k += 1;
+                    nested += 1;
                 }
             }
-            space = true;
+            if flat != nested {
+                push(&mut out, &mut space, &b[k..].iter().collect::<String>());
+                k = b.len();
+            } else if b.get(k + 2) == Some(&'!') {
+                push(&mut out, &mut space, &b[k..flat].iter().collect::<String>());
+                k = flat;
+            } else {
+                k = flat;
+                space = true;
+            }
         } else if c.is_whitespace() {
             space = true;
             k += 1;
@@ -265,6 +289,14 @@ mod tests {
         assert_ne!(canonical("insert into t values ('a\\' -- b')"), canonical("insert into t values ('a\\' -- c')"));
         assert_ne!(canonical("select E'a\\', '-- b'"), canonical("select E'a\\', '-- c'"));
         assert_ne!(canonical("insert into t values (\"a\\\" -- b\")"), canonical("insert into t values (\"a\\\" -- c\")"));
+        // MySQL runs `/*! … */`, and reads `n--1` as `n - -1`.
+        assert_ne!(canonical("create table t (a int) /*!50100 PARTITION BY HASH (a) */"), canonical("create table t (a int) /*!50100 PARTITION BY KEY (a) */"));
+        assert_ne!(canonical("select 1--1"), canonical("select 1--2"));
+        assert_eq!(canonical("select 1 --\tx\n, 2 --\n"), "select 1 , 2");
+        // A comment Postgres nests and MySQL ends at its first `*/`.
+        assert_ne!(canonical("/* a /* b */ create table t (a int); /* */"), canonical("/* a /* b */ create table t (a bigint); /* */"));
+        assert_eq!(canonical("select /* a /* b */ c */  1"), "select /* a /* b */ c */  1");
+        assert_eq!(canonical("select /* a */  1"), "select 1");
         // A backslash both readings agree on changes nothing.
         assert_eq!(canonical("select 'a\\n' -- x\n,  'b\\\\'"), "select 'a\\n' , 'b\\\\'");
         assert_ne!(checksum("", "a.sql", "create table a (id int)"), checksum("", "a.sql", "create table a (id bigint)"));
