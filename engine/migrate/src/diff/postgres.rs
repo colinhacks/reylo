@@ -1320,6 +1320,84 @@ pub fn moved(from: &Schema, to: &Schema) -> Vec<(String, String)> {
     out
 }
 
+/// The statements that rename, with the tables `renamed` renames (each its old name and new name,
+/// and its old id and new id, in `current`'s and `target`'s), what Postgres named after each: its
+/// constraints, indexes and sequences (`users_pkey`), where the target names them after the new
+/// name. A sequence keeps its value, and no index is built again. They follow the tables' renames.
+pub fn derived_renames(current: &Schema, target: &Schema, renamed: &[(String, String, String, String)]) -> Vec<String> {
+    // The text after the last dot outside quotes, and what is before it.
+    let last = |rest: &str| -> (String, String) {
+        let mut quoted = false;
+        let mut at = None;
+        for (k, ch) in rest.char_indices() {
+            match ch {
+                '"' => quoted = !quoted,
+                '.' if !quoted => at = Some(k),
+                _ => {}
+            }
+        }
+        at.map_or((String::new(), rest.to_string()), |k| (rest[..k].to_string(), rest[k + 1..].to_string()))
+    };
+    let mut out = Vec::new();
+    for (old, new, old_table, new_table) in renamed {
+        let related = |o: &Object| o.owner.as_deref() == Some(old_table.as_str()) || o.goes_with.as_ref().is_some_and(|c| current.objects.get(c).is_some_and(|c| c.owner.as_deref() == Some(old_table.as_str())));
+        let new_rel = new_table.strip_prefix("table ").unwrap_or(new_table);
+        for o in current.objects.values().filter(|o| matches!(o.kind, Some(Kind::Constraint | Kind::Index | Kind::Sequence)) && related(o)) {
+            let Some((word, rest)) = o.id.split_once(' ') else { continue };
+            let (prefix, name) = last(rest);
+            let wanted = crate::diff::swap_name(&name, old, new);
+            let at = if o.kind == Some(Kind::Constraint) { new_rel.to_string() } else { prefix.clone() };
+            if wanted == name || !target.objects.get(&format!("{word} {at}.{wanted}")).is_some_and(|t| t.kind == o.kind) {
+                continue;
+            }
+            out.push(match o.kind {
+                Some(Kind::Constraint) => format!("alter table {at} rename constraint {name} to {wanted}"),
+                Some(Kind::Index) => format!("alter index {rest} rename to {wanted}"),
+                _ => format!("alter sequence {rest} rename to {wanted}"),
+            });
+        }
+    }
+    out
+}
+
+/// Each table's indexes by name, each table as `schema.table` (quoted where it must be), the ones a
+/// constraint or a partition's parent made included: what no object of the schema shows.
+pub async fn index_names(db: &mut Db) -> Result<BTreeMap<String, BTreeSet<String>>, Error> {
+    let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let rows = db
+        .rows(&format!(
+            "select format('%I.%I', tn.nspname, t.relname) as rel, c.relname as name from pg_index i join pg_class c on c.oid = i.indexrelid join pg_class t on t.oid = i.indrelid join pg_namespace tn on tn.oid = t.relnamespace where {}",
+            crate::catalog::PG_USER_NS.replace("n.nspname", "tn.nspname")
+        ))
+        .await?;
+    for r in rows {
+        out.entry(r.text("rel").to_string()).or_default().insert(r.text("name").to_string());
+    }
+    Ok(out)
+}
+
+/// After the tables `renamed` names were renamed on `db` (each its old name, its new name and its
+/// new id), the statements that rename the indexes of each named after its old name, where the
+/// target (whose indexes `target` lists) names them after its new one: those no object of the
+/// schema is, as a partition's, which its table's key made.
+pub async fn inherited_renames(db: &mut Db, target: &BTreeMap<String, BTreeSet<String>>, renamed: &[(String, String, String)]) -> Result<Vec<String>, Error> {
+    let now = index_names(db).await?;
+    let quote = |name: &str| if regex::Regex::new(r"^[a-z_][a-z0-9_$]*$").unwrap().is_match(name) { name.to_string() } else { format!("\"{}\"", name.replace('"', "\"\"")) };
+    let mut out = Vec::new();
+    for (old, new, id) in renamed {
+        let rel = id.strip_prefix("table ").unwrap_or(id);
+        let (Some(have), Some(want)) = (now.get(rel), target.get(rel)) else { continue };
+        let schema = rel.rsplit_once('.').map_or("", |(s, _)| s);
+        for name in have.iter().filter(|n| !want.contains(*n)) {
+            let wanted = crate::diff::swap_name(name, old, new);
+            if wanted != *name && want.contains(&wanted) && !have.contains(&wanted) {
+                out.push(format!("alter index {schema}.{} rename to {}", quote(name), quote(&wanted)));
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The statements that move the tables `moved` names, its new schemas first: run on the database
 /// `from` was read from, ahead of the plan read from it afterwards, which opens with them.
 pub fn moves(from: &Schema, to: &Schema) -> Vec<String> {

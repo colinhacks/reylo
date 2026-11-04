@@ -219,6 +219,102 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
     out
 }
 
+/// `text` with the name `old` (a table's) written `new` wherever it stands as a name or as the start
+/// of one (`users` in `users_pkey`, `nextval('users_id_seq')`), ignoring case.
+pub fn swap_name(text: &str, old: &str, new: &str) -> String {
+    if old.is_empty() {
+        return text.to_string();
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '$';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    let mut before: Option<char> = None;
+    while let Some(c) = rest.chars().next() {
+        let starts = rest.len() >= old.len() && rest.is_char_boundary(old.len()) && rest[..old.len()].eq_ignore_ascii_case(old);
+        if starts && !before.is_some_and(ident) {
+            let after = rest[old.len()..].chars().next();
+            if after.is_none_or(|a| a == '_' || !ident(a)) {
+                out.push_str(new);
+                rest = &rest[old.len()..];
+                before = old.chars().last();
+                continue;
+            }
+        }
+        out.push(c);
+        before = Some(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// A table's id's parts (`table public.users` is public, users), unquoted.
+fn table_parts(id: &str) -> Vec<String> {
+    let rest = id.split_once(' ').map_or(id, |(_, r)| r);
+    let mut out = vec![String::new()];
+    let mut quoted: Option<char> = None;
+    for ch in rest.chars() {
+        match quoted {
+            Some(q) if ch == q => quoted = None,
+            Some(_) => out.last_mut().unwrap().push(ch),
+            None if ch == '"' || ch == '`' => quoted = Some(ch),
+            None if ch == '.' => out.push(String::new()),
+            None => out.last_mut().unwrap().push(ch),
+        }
+    }
+    out
+}
+
+/// The tables renamed from `from` to `to`, each its old id, its new id, and whether it was stated:
+/// those `stated` names, and a table that goes while one comes in its schema with the same columns
+/// (each its name and definition, the names derived from the table's, and from any table renamed
+/// with it, following them), alone in that both ways, with no table that stays alike, and not one
+/// `dropped` names. A partition is renamed with its table.
+pub fn table_renames(from: &Schema, to: &Schema, stated: &[(String, String)], dropped: &BTreeSet<String>) -> Vec<(String, String, bool)> {
+    let tables = |a: &Schema, b: &Schema| -> Vec<String> { a.objects.values().filter(|o| o.kind == Some(Kind::Table) && !b.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect() };
+    let (gone, come) = (tables(from, to), tables(to, from));
+    let stays: Vec<String> = from.objects.values().filter(|o| o.kind == Some(Kind::Table) && to.objects.contains_key(&o.id)).map(|o| o.id.clone()).collect();
+    let mut out: Vec<(String, String, bool)> = stated.iter().filter(|(o, n)| gone.contains(o) && come.contains(n)).map(|(o, n)| (o.clone(), n.clone(), true)).collect();
+    let bare = |id: &str| table_parts(id).pop().unwrap_or_default();
+    let shape = |schema: &Schema, id: &str, swaps: &[(String, String)]| -> (String, Vec<(String, String)>) {
+        let swapped = |text: &str| swaps.iter().fold(text.to_string(), |t, (old, new)| swap_name(&t, old, new));
+        let mut columns: Vec<(String, String)> = schema.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(id)).map(|o| (table_parts(&o.id).pop().unwrap_or_default(), swapped(&o.def))).collect();
+        columns.sort();
+        (swapped(&schema.objects[id].def), columns)
+    };
+    let same_schema = |a: &str, b: &str| {
+        let (a, b) = (table_parts(a), table_parts(b));
+        a.len() == b.len() && a[..a.len() - 1] == b[..b.len() - 1]
+    };
+    // Each pass may find a partition whose table the pass before renamed.
+    loop {
+        let known: Vec<(String, String)> = out.iter().map(|(o, n, _)| (bare(o), bare(n))).collect();
+        let alike = |old: &String, new: &String| -> bool {
+            let swaps: Vec<(String, String)> = std::iter::once((bare(old), bare(new))).chain(known.iter().cloned()).collect();
+            let ours = shape(from, old, &swaps);
+            same_schema(old, new) && !ours.1.is_empty() && ours == shape(to, new, &[])
+        };
+        let free_gone: Vec<&String> = gone.iter().filter(|g| !dropped.contains(*g) && !out.iter().any(|(o, _, _)| o == *g)).collect();
+        let free_come: Vec<&String> = come.iter().filter(|c| !out.iter().any(|(_, n, _)| n == *c)).collect();
+        let mut found = Vec::new();
+        for old in &free_gone {
+            let same: Vec<&&String> = free_come.iter().filter(|c| alike(old, c)).collect();
+            if same.len() != 1 || free_gone.iter().filter(|g| alike(g, same[0])).count() != 1 {
+                continue;
+            }
+            // A table that stays as the one that comes is: which of them is the old one is anyone's guess.
+            if stays.iter().any(|t| same_schema(t, same[0]) && shape(to, t, &[(bare(t), bare(same[0]))]) == shape(to, same[0], &[])) {
+                continue;
+            }
+            found.push(((*old).clone(), (*same[0]).clone(), false));
+        }
+        if found.is_empty() {
+            break;
+        }
+        out.extend(found);
+    }
+    out
+}
+
 /// The plan from `from` to `to`.
 pub fn plan(from: &Schema, to: &Schema, alterer: &dyn Alterer) -> Plan {
     plan_with(from, to, alterer, &[], &BTreeSet::new())
@@ -503,7 +599,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 // A table or column dropped loses its rows, made again or not; a column whose table
                 // goes is the table's loss.
                 let in_lost_table = o.kind == Some(Kind::Column) && o.owner.as_ref().is_some_and(|t| drops.contains(t));
-                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table {
+                // A foreign table's rows are its server's.
+                let table = if o.kind == Some(Kind::Column) { o.owner.as_ref().and_then(|t| from.objects.get(t)) } else { Some(o) };
+                let foreign = table.is_some_and(|t| t.extra.iter().any(|l| l.starts_with("shape foreign")));
+                if matches!(o.kind, Some(Kind::Table | Kind::Column)) && !in_lost_table && !foreign {
                     plan.losses.push(id.clone());
                 }
                 plan.statements.extend(o.drop.iter().cloned());

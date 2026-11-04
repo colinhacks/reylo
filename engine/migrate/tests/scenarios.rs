@@ -274,6 +274,13 @@ for_each_dialect!(
     sync_keeps_a_linear_history_in_order,
     create_resolves_the_names_drop_gives,
     record_takes_the_name_create_was_given,
+    create_renames_a_table_keeping_its_rows,
+    sync_renames_a_table_keeping_its_rows,
+    sync_renames_a_table_back_when_it_rewinds,
+    sync_keeps_what_it_records_when_it_undoes_the_rest,
+    sync_runs_or_records_a_migration_cut_off,
+    sync_rewinds_only_what_the_rewound_migrations_made,
+    create_guesses_no_rename_a_table_that_stays_could_explain,
 );
 
 async fn applies_pending_migrations_once(mut p: P) {
@@ -934,6 +941,158 @@ async fn create_resolves_the_names_drop_gives(mut p: P) {
     assert_eq!(p.rows("select handle from posts").await[0].text("handle"), "p", "posts.nick was renamed, not dropped");
 }
 
+async fn create_renames_a_table_keeping_its_rows(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
+    p.file("20261027110000_posts.sql", &format!("create table posts (id {int}, user_id {int}, foreign key (user_id) references users (id));"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.exec("insert into users (email) values ('a'); insert into posts values (1, 1)").await;
+    let sql_of = |p: &P, name: &str| p.files().into_iter().filter(|f| f.ends_with(&format!("_{name}.sql"))).map(|f| std::fs::read_to_string(p.dir.join("migrations").join(f)).unwrap()).collect::<String>();
+    // One table goes while one of its columns comes: renamed, and the foreign key on it follows.
+    p.schema(&format!("create table accounts (id {id}, email {text}); create table posts (id {int}, user_id {int}, foreign key (user_id) references accounts (id));"));
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Renames the table users to accounts, keeping its rows");
+    let sql = sql_of(&p, "accounts");
+    assert!(sql.contains("rename to accounts") && !sql.contains("drop table"), "{sql}");
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
+    p.output();
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    p.output();
+    // A table renamed with its columns changed is a drop, unless --rename states it.
+    p.schema(&format!("create table members (id {id}, address {text}, joined {int}); create table posts (id {int}, user_id {int}, foreign key (user_id) references members (id));"));
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "members", &Default::default(), log).await).await, 1);
+    assert_has!(p.output(), r"would drop accounts, and its data\n\n  To drop it:\n    reylo migrate create members --drop accounts\n  If a table was renamed instead:\n    reylo migrate create members --rename accounts=<new name>");
+    let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("accounts".into(), "members".into()), ("accounts.email".into(), "address".into())] };
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "members", &choices, log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.rows("select address from members").await[0].text("address"), "a");
+    p.exec("insert into members (address) values ('b')").await;
+    assert_eq!(p.rows("select distinct id from members").await.len(), 2);
+    p.output();
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+}
+
+async fn sync_renames_a_table_keeping_its_rows(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
+    p.schema(&format!("create table users (id {id}, email {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into users (email) values ('a')").await;
+    p.output();
+    p.schema(&format!("create table accounts (id {id}, email {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"unrecorded:\n\n    -- users is renamed accounts, keeping its rows[^\n]*\n    alter table \S*users\S* rename to \S*accounts\S*;");
+    assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
+    // The migration written for it is recorded, and the row stays.
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Recorded \d{14}_accounts\.sql without running it[\s\S]*This database matches schema\.sql and its migrations");
+    assert_eq!(p.rows("select email from accounts").await[0].text("email"), "a");
+}
+
+async fn sync_renames_a_table_back_when_it_rewinds(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
+    p.schema(&format!("create table users (id {id}, email {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into users (email) values ('a')").await;
+    // A branch renames the table; then main again, without it.
+    p.file("20261027110000_accounts.sql", "alter table users rename to accounts;");
+    p.schema(&format!("create table accounts (id {id}, email {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_accounts.sql")).unwrap();
+    p.schema(&format!("create table users (id {id}, email {text});"));
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Rewound 20261027110000_accounts\.sql: it isn't in the migrations");
+    assert!(!out.contains("drops"), "{out}");
+    assert_eq!(p.rows("select email from users").await[0].text("email"), "a");
+}
+
+async fn sync_keeps_what_it_records_when_it_undoes_the_rest(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id});"));
+    p.schema(&format!("create table users (id {id}); create table notes (id {int}, body {text}); create table tags (id {int});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into notes values (1, 'kept')").await;
+    // notes is written as made; tags as something else, which can't run on what sync made.
+    p.file("20261027110000_notes.sql", &format!("create table notes (id {int}, body {text});"));
+    p.file("20261027120000_tags.sql", &format!("create table tags (id {int}, label {text});"));
+    p.schema(&format!("create table users (id {id}); create table notes (id {int}, body {text}); create table tags (id {int}, label {text});"));
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Undid changes no migration made, which 20261027120000_tags\.sql can't run on \(drops tags, and the data in it\)");
+    assert_has!(&out, r"Recorded 20261027110000_notes\.sql without running it[\s\S]*✓ Applied 20261027120000_tags\.sql");
+    assert_eq!(p.rows("select body from notes").await[0].text("body"), "kept");
+    assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_notes.sql", "20261027120000_tags.sql"]);
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+}
+
+async fn sync_runs_or_records_a_migration_cut_off(mut p: P) {
+    let (id, int) = (p.t.id, p.t.int);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id});"));
+    p.schema(&format!("create table users (id {id}); create table a (id {int}); create table b (id {int});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    // Two runs cut off with their rows marked started: one whose change landed, one whose didn't.
+    p.exec("drop table a; drop table b").await;
+    let (a, b) = (format!("create table a (id {int});"), format!("create table b (id {int});"));
+    p.file("20261027110000_a.sql", &a);
+    p.file("20261027120000_b.sql", &b);
+    p.exec(&a).await;
+    let column = if p.d == Dialect::Mysql { "`sql`" } else { "sql" };
+    for (name, sql) in [("20261027110000_a.sql", &a), ("20261027120000_b.sql", &b)] {
+        p.exec(&format!("insert into __reylo_migrations (name, {column}, applied_at) values ('{name}', '{sql}', null)")).await;
+    }
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"Recorded 20261027110000_a\.sql without running it[\s\S]*✓ Applied 20261027120000_b\.sql");
+    assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_a.sql", "20261027120000_b.sql"]);
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "This database matches schema.sql and its migrations");
+}
+
+async fn sync_rewinds_only_what_the_rewound_migrations_made(mut p: P) {
+    let (id, int, text) = (p.t.id, p.t.int, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id});"));
+    p.file("20261027110000_tags.sql", &format!("create table tags (id {int});"));
+    p.schema(&format!("create table users (id {id}); create table tags (id {int}); create table notes (id {int}, body {text});"));
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    p.exec("insert into notes values (1, 'kept')").await;
+    // Back on a branch without tags: it goes, and notes, which schema.sql still declares, stays.
+    std::fs::remove_file(p.dir.join("migrations").join("20261027110000_tags.sql")).unwrap();
+    p.schema(&format!("create table users (id {id}); create table notes (id {int}, body {text});"));
+    p.output();
+    assert_eq!(p.sync().await, 0, "{}", p.peek());
+    let out = p.output();
+    assert_has!(&out, r"↺ Rewound 20261027110000_tags\.sql: it isn't in the migrations\n  \(drops tags, and the data in it\)");
+    assert!(!out.contains("notes"), "{out}");
+    assert_eq!(p.rows("select body from notes").await[0].text("body"), "kept");
+    assert!(p.try_rows("select 1 from tags").await.is_err());
+}
+
+async fn create_guesses_no_rename_a_table_that_stays_could_explain(mut p: P) {
+    let (id, text) = (p.t.id, p.t.text);
+    p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
+    p.file("20261027110000_accounts.sql", &format!("create table accounts (id {id}, email {text});"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    // accounts became members and users became accounts, or users became members: no telling.
+    p.schema(&format!("create table accounts (id {id}, email {text}); create table members (id {id}, email {text});"));
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "members", &Default::default(), log).await).await, 1);
+    assert_has!(p.output(), r"would drop users, and its data[\s\S]*reylo migrate create members --rename users=<new name>");
+    // Stated, it is done as stated, and names ignore case.
+    let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("USERS".into(), "Members".into())] };
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "members", &choices, log).await).await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+}
+
 async fn record_takes_the_name_create_was_given(mut p: P) {
     let (id, int, text) = (p.t.id, p.t.int, p.t.text);
     p.file("20261027100000_users.sql", &format!("create table users (id {id}, email {text});"));
@@ -1200,6 +1359,10 @@ on!(
     a_replaced_column_is_a_stated_drop,
     a_rename_to_a_name_that_needs_quotes,
     an_index_left_invalid_by_a_cut_off_build_is_dropped_and_built_again,
+    a_renamed_tables_sequence_keeps_counting,
+    a_foreign_table_is_renamed_as_stated,
+    a_partitioned_table_is_renamed_with_its_partitions,
+    a_schemas_table_is_never_read_as_a_renamed_tables_column,
 );
 
 #[tokio::test(flavor = "current_thread")]
@@ -1207,12 +1370,16 @@ async fn wipe_keeps_full_text_and_rtree_tables_whole() {
     let mut p = P::new(Dialect::Sqlite).await.unwrap();
     p.file("20261027100000_docs.sql", "create virtual table docs using fts5(body);");
     p.file("20261027110000_box.sql", "create virtual table box using rtree(id, x0, x1);");
-    p.schema("create virtual table docs using fts5(body); create virtual table box using rtree(id, x0, x1);");
+    p.file("20261027120000_notes.sql", "create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');");
+    let schema = "create virtual table docs using fts5(body); create virtual table box using rtree(id, x0, x1); create table notes (id integer primary key, body text); create virtual table bare using fts5(body, content=''); create virtual table indexed using fts5(body, content='notes', content_rowid='id');";
+    p.schema(schema);
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    p.exec("insert into docs values ('hello world'); insert into box values (1, 0, 1)").await;
+    p.exec("insert into docs values ('hello world'); insert into box values (1, 0, 1); insert into bare values ('hello'); insert into notes values (1, 'hello'); insert into indexed (rowid, body) values (1, 'hello')").await;
     p.output();
     assert_eq!(p.run(async |o, log| reylo_migrate::wipe_rows(o, log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Deleted every row of 2 tables");
+    assert_has!(p.output(), r"Deleted every row of 5 tables");
+    assert!(p.rows("select rowid from bare where bare match 'hello'").await.is_empty(), "a contentless index is emptied");
+    assert!(p.rows("select rowid from indexed where indexed match 'hello'").await.is_empty(), "an external-content index is emptied with its content");
     assert!(p.rows("select * from docs").await.is_empty() && p.rows("select * from box").await.is_empty());
     // Each still works: their own tables were emptied by them, not under them.
     p.exec("insert into docs values ('again'); insert into box values (2, 0, 1)").await;
@@ -1496,6 +1663,70 @@ mod adversarial {
         assert!(p.rows("select 1 from pg_index where not indisvalid").await.is_empty());
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_has!(p.output(), "Up to date");
+    }
+
+    pub async fn a_renamed_tables_sequence_keeps_counting(mut p: P) {
+        p.schema("create table users (id serial primary key, email text unique);");
+        p.file("20261027100000_users.sql", "create table users (id serial primary key, email text unique);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into users (email) values ('a'), ('b'), ('c')").await;
+        // What Postgres named after the table is renamed with it: its sequence keeps its value.
+        p.schema("create table accounts (id serial primary key, email text unique);");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_accounts.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        for part in ["alter table users rename to accounts", "rename constraint users_pkey to accounts_pkey", "rename constraint users_email_key to accounts_email_key", "alter sequence users_id_seq rename to accounts_id_seq"] {
+            assert!(sql.contains(part), "{part} in:\n{sql}");
+        }
+        assert!(!sql.lines().any(|l| !l.starts_with("--") && (l.contains("create") || l.contains("drop"))), "{sql}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into accounts (email) values ('d')").await;
+        assert_eq!(p.rows("select id from accounts where email = 'd'").await[0].text("id"), "4");
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_foreign_table_is_renamed_as_stated(mut p: P) {
+        let server = "create foreign data wrapper madv_w; create server madv_s foreign data wrapper madv_w;";
+        p.file("20261027100000_users.sql", &format!("{server} create foreign table users (id int, email text) server madv_s;"));
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.schema(&format!("{server} create foreign table accounts (id int, email text) server madv_s;"));
+        // Its rows are its server's: dropping it loses none here, and its rename is a foreign table's.
+        let choices = reylo_migrate::Choices { drop: vec![], rename: vec![("users".into(), "accounts".into())] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &choices, log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_accounts.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("alter foreign table users rename to accounts"), "{sql}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_partitioned_table_is_renamed_with_its_partitions(mut p: P) {
+        p.file("20261027100000_events.sql", "create table events (id int, at date, primary key (id, at)) partition by range (at); create table events_2024 partition of events for values from ('2024-01-01') to ('2025-01-01');");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.exec("insert into events values (1, '2024-06-01')").await;
+        p.schema("create table logs (id int, at date, primary key (id, at)) partition by range (at); create table logs_2024 partition of logs for values from ('2024-01-01') to ('2025-01-01');");
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "logs", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_logs.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("alter table events rename to logs") && sql.contains("alter table events_2024 rename to logs_2024") && sql.contains("rename to logs_2024_pkey"), "{sql}");
+        p.output();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select id from logs_2024").await.len(), 1);
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_schemas_table_is_never_read_as_a_renamed_tables_column(mut p: P) {
+        p.file("20261027100000_t.sql", "create schema billing; create table billing.invoices (id int); create table billing (id int, total int);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.schema("create schema billing; create table ledger (id int, total int);");
+        let choices = reylo_migrate::Choices { drop: vec!["billing.invoices".into()], rename: vec![] };
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "ledger", &choices, log).await).await, 0, "{}", p.peek());
+        let made = p.files().into_iter().find(|f| f.ends_with("_ledger.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("alter table billing rename to ledger") && sql.contains("drop table billing.invoices"), "{sql}");
     }
 
     pub async fn a_migration_that_names_a_database_is_refused(mut p: P) {
