@@ -413,7 +413,7 @@ test("a Postgres array column holds one dimension, and an array the statement bu
   // array_agg(tags) over an int4[] column: two levels, the elements' own arrays.
   const built: QueryModule<"postgres"> = { ...probe, columns: [["all_tags", "int[][]"]] };
   assert.deepEqual(await execute(client([{ all_tags: [[1, 2], [3, 4]] }]), built, { id: 1 }), [{ all_tags: [[1, 2], [3, 4]] }]);
-  await assert.rejects(async () => execute(client([{ all_tags: [[[1]]] }]), built, { id: 1 }), /holds an array of 3 dimensions, and its type has 2:/);
+  await assert.rejects(async () => execute(client([{ all_tags: [[[1]]] }]), built, { id: 1 }), /^TypeError: Column "all_tags" holds an array of 3 dimensions, and its type has 2: an array column it collects holds more than one dimension, which Postgres doesn't enforce\. Collect to_jsonb\(<that column>\) instead to read it as JSON\.$/);
   // An array of NULLs at the top is one dimension: a NULL is never a nested array.
   assert.deepEqual(await execute(client([{ tags: [null, null] }]), flat, { id: 1 }), [{ tags: [null, null] }]);
   // A vector is an array itself, and a JSON value may be one at any depth.

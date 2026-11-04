@@ -632,8 +632,11 @@ export function withinDimensions(v: unknown, kind: Kind, column: string): unknow
   let depth = element === "vector" ? -1 : 0;
   for (let level: unknown = v; Array.isArray(level); level = level.find((e) => e !== null)) depth++;
   if (depth <= declared) return v;
+  // An array built of arrays is too deep only where an array column it collects is.
   throw new DecodeError(
-    `Column "${column}" holds an array of ${depth} dimensions, and its type has ${declared === 1 ? "one" : declared}: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce. Select to_jsonb(${column}) to read it as JSON.`,
+    declared === 1
+      ? `Column "${column}" holds an array of ${depth} dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce. Select to_jsonb(${column}) to read it as JSON.`
+      : `Column "${column}" holds an array of ${depth} dimensions, and its type has ${declared}: an array column it collects holds more than one dimension, which Postgres doesn't enforce. Collect to_jsonb(<that column>) instead to read it as JSON.`,
   );
 }
 
