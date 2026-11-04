@@ -169,6 +169,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
             // This statement alone could not be analyzed: its line says why, over the whole
             // statement, and the run goes on.
             Err(Failure::Error(message)) => StatementDescriptor {
+                schema: reylo_engine_core::types::SCHEMA.to_string(),
                 dialect: version.clone(),
                 sql: input.sql.clone(),
                 kind: None,

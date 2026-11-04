@@ -9,6 +9,7 @@
     "api/play-og/page.mjs": { "maxDuration": 10 }
   },
   "routes": [
+    { "src": "^/typedefs/(\\d+\\.\\d+\\.\\d+)$", "dest": "/typedefs/$1.json", "headers": { "Content-Type": "application/schema+json", "Access-Control-Allow-Origin": "*" } },
     { "src": "^/play/api/(analyze|schema)$", "dest": "/api/play/$1" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "q" }], "dest": "/api/play-og/image" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "example" }], "dest": "/api/play-og/image" },

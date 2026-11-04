@@ -354,6 +354,8 @@ export interface Alternative extends Position {
 
 /** What introspecting one statement returns. */
 export interface StatementDescriptor {
+  /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads (rule 8). */
+  $schema: "https://reylo.dev/typedefs/0.1.0";
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;
@@ -441,6 +443,8 @@ export interface Dialect {
 // 6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
 //
 // 7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a whole-number kind takes neither exclusive field; a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive.
+//
+// 8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
 
 // =============================================================================================
 // Facts about each database

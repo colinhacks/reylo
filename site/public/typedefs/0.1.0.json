@@ -1,0 +1,1480 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://reylo.dev/typedefs/0.1.0",
+  "title": "Reylo Type Defs 0.1.0",
+  "description": "What introspecting one SQL statement returns, and the type of each parameter and column in it.",
+  "$ref": "#/definitions/StatementDescriptor",
+  "definitions": {
+    "StatementDescriptor": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string",
+          "const": "https://reylo.dev/typedefs/0.1.0"
+        },
+        "dialect": {
+          "$ref": "#/definitions/Dialect"
+        },
+        "sql": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "select",
+            "insert",
+            "update",
+            "delete",
+            "merge",
+            "other"
+          ]
+        },
+        "comment": {
+          "type": "string"
+        },
+        "params": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Param"
+          }
+        },
+        "columns": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Column"
+          }
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "one",
+            "at_most_one",
+            "many",
+            "none"
+          ]
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Diagnostic"
+          }
+        }
+      },
+      "required": [
+        "$schema",
+        "dialect",
+        "sql",
+        "params",
+        "columns",
+        "cardinality",
+        "diagnostics"
+      ]
+    },
+    "Dialect": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "additionalProperties": false
+    },
+    "Param": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/Type"
+        },
+        "nullable": {
+          "type": "boolean",
+          "const": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean",
+          "const": true
+        },
+        "comment": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Type": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/BooleanType"
+        },
+        {
+          "$ref": "#/definitions/IntegerType"
+        },
+        {
+          "$ref": "#/definitions/FloatType"
+        },
+        {
+          "$ref": "#/definitions/DecimalType"
+        },
+        {
+          "$ref": "#/definitions/TextType"
+        },
+        {
+          "$ref": "#/definitions/BytesType"
+        },
+        {
+          "$ref": "#/definitions/UuidType"
+        },
+        {
+          "$ref": "#/definitions/ArrayType"
+        },
+        {
+          "$ref": "#/definitions/RecordType"
+        },
+        {
+          "$ref": "#/definitions/JsonType"
+        },
+        {
+          "$ref": "#/definitions/DateType"
+        },
+        {
+          "$ref": "#/definitions/TimeType"
+        },
+        {
+          "$ref": "#/definitions/DateTimeType"
+        },
+        {
+          "$ref": "#/definitions/InstantType"
+        },
+        {
+          "$ref": "#/definitions/DurationType"
+        },
+        {
+          "$ref": "#/definitions/UnionType"
+        },
+        {
+          "$ref": "#/definitions/SetType"
+        },
+        {
+          "$ref": "#/definitions/MapType"
+        },
+        {
+          "$ref": "#/definitions/RangeType"
+        },
+        {
+          "$ref": "#/definitions/MultirangeType"
+        },
+        {
+          "$ref": "#/definitions/GeometryType"
+        },
+        {
+          "$ref": "#/definitions/XmlType"
+        },
+        {
+          "$ref": "#/definitions/OpaqueType"
+        },
+        {
+          "$ref": "#/definitions/AnyType"
+        },
+        {
+          "$ref": "#/definitions/UnknownType"
+        },
+        {
+          "$ref": "#/definitions/TaggedUnionType"
+        }
+      ]
+    },
+    "BooleanType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "boolean"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "IntegerType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "integer"
+        },
+        "bits": {
+          "type": "number"
+        },
+        "unsigned": {
+          "type": "boolean",
+          "const": true
+        },
+        "multiple_of": {
+          "type": "string"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "bits"
+      ],
+      "additionalProperties": false
+    },
+    "FloatType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "float"
+        },
+        "exponent_bits": {
+          "type": "number"
+        },
+        "mantissa_bits": {
+          "type": "number"
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        },
+        "nan": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "exponent_bits",
+        "mantissa_bits"
+      ],
+      "additionalProperties": false
+    },
+    "DecimalType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "decimal"
+        },
+        "precision": {
+          "type": "number"
+        },
+        "min_scale": {
+          "type": "number"
+        },
+        "max_scale": {
+          "type": "number"
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        },
+        "nan": {
+          "type": "boolean",
+          "const": true
+        },
+        "multiple_of": {
+          "type": "string"
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "TextType": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/UnicodeText"
+        },
+        {
+          "$ref": "#/definitions/IllFormedUtf8Text"
+        },
+        {
+          "$ref": "#/definitions/IllFormedUtf16Text"
+        }
+      ]
+    },
+    "UnicodeText": {
+      "type": "object",
+      "properties": {
+        "pattern": {
+          "type": "object",
+          "properties": {
+            "dialect": {
+              "type": "string",
+              "enum": [
+                "postgres",
+                "mysql",
+                "posix",
+                "ecma",
+                "like",
+                "ilike"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dialect",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "text"
+        },
+        "ill_formed": {
+          "type": "boolean",
+          "const": false
+        },
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            },
+            "unit": {
+              "type": "string",
+              "enum": [
+                "utf16_unit",
+                "byte"
+              ]
+            },
+            "encoding": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "IllFormedUtf8Text": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "text"
+        },
+        "ill_formed": {
+          "type": "string",
+          "const": "utf8"
+        },
+        "pattern": {
+          "type": "object",
+          "properties": {
+            "dialect": {
+              "type": "string",
+              "enum": [
+                "like",
+                "ilike"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dialect",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "ill_formed"
+      ],
+      "additionalProperties": false
+    },
+    "IllFormedUtf16Text": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "pattern": {
+          "type": "object",
+          "properties": {
+            "dialect": {
+              "type": "string",
+              "enum": [
+                "postgres",
+                "mysql",
+                "posix",
+                "ecma",
+                "like",
+                "ilike"
+              ]
+            },
+            "source": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "dialect",
+            "source"
+          ],
+          "additionalProperties": false
+        },
+        "enum": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "text"
+        },
+        "ill_formed": {
+          "type": "string",
+          "const": "utf16"
+        }
+      },
+      "required": [
+        "kind",
+        "ill_formed"
+      ],
+      "additionalProperties": false
+    },
+    "BytesType": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "bytes"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "UuidType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "uuid"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "ArrayType": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "array"
+        },
+        "element": {
+          "$ref": "#/definitions/Position"
+        },
+        "any_depth": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "element"
+      ],
+      "additionalProperties": false
+    },
+    "Position": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/Type"
+        },
+        "nullable": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "RecordType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "record"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Field"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "fields"
+      ],
+      "additionalProperties": false
+    },
+    "Field": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/Type"
+        },
+        "nullable": {
+          "type": "boolean",
+          "const": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "optional": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "JsonType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "json"
+        },
+        "content": {
+          "$ref": "#/definitions/Position"
+        },
+        "schema": {
+          "type": "object",
+          "properties": {
+            "$schema": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "$schema"
+          ],
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "DateType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "date"
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "TimeType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "time"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "zone": {
+          "type": "string",
+          "enum": [
+            "offset",
+            "region",
+            "region_or_offset"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "additionalProperties": false
+    },
+    "DateTimeType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "datetime"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "additionalProperties": false
+    },
+    "InstantType": {
+      "type": "object",
+      "properties": {
+        "min": {
+          "type": "string"
+        },
+        "max": {
+          "type": "string"
+        },
+        "exclusive_min": {
+          "type": "string"
+        },
+        "exclusive_max": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "instant"
+        },
+        "tick": {
+          "type": "string"
+        },
+        "zone": {
+          "type": "string",
+          "enum": [
+            "offset",
+            "region",
+            "region_or_offset"
+          ]
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "tick"
+      ],
+      "additionalProperties": false
+    },
+    "DurationType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "duration"
+        },
+        "months": {
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "days": {
+          "type": "object",
+          "properties": {
+            "max": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        },
+        "time": {
+          "type": "object",
+          "properties": {
+            "tick": {
+              "type": "string"
+            },
+            "max": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "tick"
+          ],
+          "additionalProperties": false
+        },
+        "infinity": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "UnionType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "union"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Type"
+          }
+        },
+        "per": {
+          "type": "string",
+          "const": "execution"
+        }
+      },
+      "required": [
+        "kind",
+        "members"
+      ],
+      "additionalProperties": false
+    },
+    "SetType": {
+      "type": "object",
+      "properties": {
+        "size": {
+          "type": "object",
+          "properties": {
+            "exact": {
+              "type": "number"
+            },
+            "min": {
+              "type": "number"
+            },
+            "max": {
+              "type": "number"
+            }
+          },
+          "additionalProperties": false
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "set"
+        },
+        "element": {
+          "$ref": "#/definitions/Position"
+        },
+        "duplicates": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "element"
+      ],
+      "additionalProperties": false
+    },
+    "MapType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "map"
+        },
+        "key": {
+          "$ref": "#/definitions/Type"
+        },
+        "value": {
+          "$ref": "#/definitions/Position"
+        }
+      },
+      "required": [
+        "kind",
+        "key",
+        "value"
+      ],
+      "additionalProperties": false
+    },
+    "RangeType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "range"
+        },
+        "subtype": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IntegerType"
+            },
+            {
+              "$ref": "#/definitions/FloatType"
+            },
+            {
+              "$ref": "#/definitions/DecimalType"
+            },
+            {
+              "$ref": "#/definitions/TextType"
+            },
+            {
+              "$ref": "#/definitions/BytesType"
+            },
+            {
+              "$ref": "#/definitions/UuidType"
+            },
+            {
+              "$ref": "#/definitions/DateType"
+            },
+            {
+              "$ref": "#/definitions/TimeType"
+            },
+            {
+              "$ref": "#/definitions/DateTimeType"
+            },
+            {
+              "$ref": "#/definitions/InstantType"
+            },
+            {
+              "$ref": "#/definitions/DurationType"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "subtype"
+      ],
+      "additionalProperties": false
+    },
+    "MultirangeType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "multirange"
+        },
+        "subtype": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/IntegerType"
+            },
+            {
+              "$ref": "#/definitions/FloatType"
+            },
+            {
+              "$ref": "#/definitions/DecimalType"
+            },
+            {
+              "$ref": "#/definitions/TextType"
+            },
+            {
+              "$ref": "#/definitions/BytesType"
+            },
+            {
+              "$ref": "#/definitions/UuidType"
+            },
+            {
+              "$ref": "#/definitions/DateType"
+            },
+            {
+              "$ref": "#/definitions/TimeType"
+            },
+            {
+              "$ref": "#/definitions/DateTimeType"
+            },
+            {
+              "$ref": "#/definitions/InstantType"
+            },
+            {
+              "$ref": "#/definitions/DurationType"
+            }
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "subtype"
+      ],
+      "additionalProperties": false
+    },
+    "GeometryType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "geometry"
+        },
+        "model": {
+          "type": "string",
+          "enum": [
+            "planar",
+            "geodetic"
+          ]
+        },
+        "srid": {
+          "type": "number"
+        },
+        "subtype": {
+          "type": "string",
+          "enum": [
+            "point",
+            "linestring",
+            "polygon",
+            "multipoint",
+            "multilinestring",
+            "multipolygon",
+            "geometrycollection"
+          ]
+        },
+        "coordinates": {
+          "type": "string",
+          "enum": [
+            "xy",
+            "xyz",
+            "xym",
+            "xyzm"
+          ]
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "XmlType": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/XmlDocument"
+        },
+        {
+          "$ref": "#/definitions/XmlFragment"
+        }
+      ]
+    },
+    "XmlDocument": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "xml"
+        },
+        "fragment": {
+          "type": "boolean",
+          "const": false
+        },
+        "schemas": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "XmlFragment": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "xml"
+        },
+        "fragment": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "kind",
+        "fragment"
+      ],
+      "additionalProperties": false
+    },
+    "OpaqueType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "opaque"
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ],
+      "additionalProperties": false
+    },
+    "AnyType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "any"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "UnknownType": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "unknown"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false
+    },
+    "TaggedUnionType": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "const": "tagged_union"
+        },
+        "alternatives": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Alternative"
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "alternatives"
+      ],
+      "additionalProperties": false
+    },
+    "Alternative": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/Type"
+        },
+        "nullable": {
+          "type": "boolean",
+          "const": true
+        },
+        "tag": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "tag",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Column": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "$ref": "#/definitions/Type"
+        },
+        "nullable": {
+          "type": "boolean",
+          "const": true
+        },
+        "name": {
+          "type": "string"
+        },
+        "comment": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Diagnostic": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "type": "string"
+        },
+        "start": {
+          "type": "number"
+        },
+        "end": {
+          "type": "number"
+        },
+        "code": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "message",
+        "start",
+        "end"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

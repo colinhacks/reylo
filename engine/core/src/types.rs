@@ -550,9 +550,16 @@ pub struct Param {
 // The statement
 // ---------------------------------------------------------------------------------------------
 
+/// The URL of the JSON Schema of the format version this crate writes, which every
+/// [`StatementDescriptor`] names in `$schema`: the literal `spec/type-descriptor.ts` gives it.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0";
+
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
+    /// The format version the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
+    #[serde(rename = "$schema")]
+    pub schema: String,
     pub dialect: DialectVersion,
     /// The statement as the database runs it, with its own placeholders, in the order `params`
     /// lists them.
@@ -1324,8 +1331,15 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_url_is_the_one_the_spec_names() {
+        let spec = include_str!("../../../spec/type-descriptor.ts");
+        assert!(spec.contains(&format!("$schema: \"{SCHEMA}\";")), "spec/type-descriptor.ts names another $schema than {SCHEMA}");
+    }
+
+    #[test]
     fn a_statement_descriptor_reads_and_writes_as_the_spec_spells_it() {
         let value = json!({
+            "$schema": SCHEMA,
             "dialect": {"name": "postgres", "version": "18.1"},
             "sql": "select id, email, bio from users where id = $1",
             "kind": "select",

@@ -4,21 +4,33 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { Ajv } from "ajv";
 import type { StatementDescriptor } from "../spec/type-descriptor.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
 
 type Line = StatementDescriptor & { file?: string };
 
-/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment. */
+// The format's version, as the spec's `$schema` literal names it, and the JSON Schema the docs site
+// publishes at that URL (site/scripts/typedefs-schema.ts), which every line printed is held to.
+const SCHEMA = /\$schema: "([^"]+)";/.exec(readFileSync(new URL("../spec/type-descriptor.ts", import.meta.url), "utf8"))![1]!;
+const ajv = new Ajv({ strict: false, allErrors: true });
+const valid = ajv.compile(JSON.parse(readFileSync(new URL(`../site/public/typedefs/${SCHEMA.split("/").pop()}.json`, import.meta.url), "utf8")));
+
+/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
 function analyze(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
   const run = spawnSync(nativeBinary(), ["analyze", ...args], { cwd, env: { ...inherited, ...env }, input, encoding: "utf8" });
-  return { status: run.status, lines: run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line), stderr: run.stderr };
+  const lines = run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+  for (const line of lines) {
+    assert.equal(line.$schema, SCHEMA);
+    assert.ok(valid(line), `${JSON.stringify(line)}: ${ajv.errorsText(valid.errors)}`);
+  }
+  return { status: run.status, lines, stderr: run.stderr };
 }
 
 /** A package whose `.env` names a SQLite database of one table, with `files` written into it. */
