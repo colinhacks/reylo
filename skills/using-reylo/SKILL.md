@@ -50,5 +50,15 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 ## After a change
 
 - Run the type check. An error in a `.sql` file shows at its line and column, and `tsc` holds back the TypeScript errors while one remains, so fix the SQL first (https://reylo.dev/#errors).
-- After a migration, the type check reads the new schema: a dropped column is an error in each `.sql` file that names it and in the code that reads it. Reylo runs no migrations; use the project's own tool.
-- `.reylo/` is Reylo's cache of each query's analysis. Never edit it or commit it.
+- After a migration, the type check reads the new schema: a dropped column is an error in each `.sql` file that names it and in the code that reads it.
+- `reylo/.cache/` is Reylo's cache of each query's analysis. Never edit it or commit it.
+
+## Migrations
+
+A project whose `.reylo.yaml` has a `migrate` section keeps its schema in `reylo/schema.sql` and each change to it in `reylo/migrations/<YYYYMMDDHHMMSS>_<name>.sql`, in the order `reylo/reylo-lock.yaml` lists (https://reylo.dev/migrations). Commit all three.
+
+- To change the schema, edit `reylo/schema.sql`, then `reylo migrate create <name>`: Reylo writes the migration, checked in a shadow database. Read the file it writes, and add the data changes a schema can't say. Never write a migration's DDL by hand where `create` can write it.
+- `create` refuses a change that drops a table or a column, or changes a column's type so that values are lost, until `--drop <table or table.column>` names it. Name only what the change is meant to lose; where a column was renamed, Reylo keeps its rows, and `--rename <table.old>=<new>` settles which of two columns became which.
+- In development, `reylo migrate apply --dev` runs the new migrations and adds them to the lock; until then a migration is a draft, free to edit. `reylo migrate sync` makes what `schema.sql` adds without a migration, to try a change; refusing while a migration is unapplied, it names `apply --dev`. After a branch switch or a lock conflict (keep main's lines), run `apply --dev` again.
+- Never edit a migration the lock lists, which another database may have run: write a new one. Never edit `reylo/reylo-lock.yaml` by hand but to keep main's side of a conflict.
+- In CI, `reylo migrate check` checks the migrations against `schema.sql` and a database, running nothing; `reylo migrate check --offline` needs no database. In production, `reylo migrate apply` runs what the lock lists and refuses a database whose history disagrees, running nothing then: read its refusal, which names the fix. The development commands (`apply --dev`, `apply --reset`, `sync`, `wipe`) refuse to run where `CI` is set.

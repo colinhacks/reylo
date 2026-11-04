@@ -15,6 +15,8 @@ env: [.env.local, .env]
 strict_params: true
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
+# the directory of Reylo's files: schema.sql, the migrations and its cache (the default)
+dir: reylo
 ```
 
 ### `direct_url`
@@ -79,4 +81,31 @@ sqlcommenter: false
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
+```
+
+### `dir`
+
+The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrations), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+
+```yaml title=".reylo.yaml"
+# the default is reylo
+dir: db
+```
+
+### `migrate`
+
+Turns on [migrations](/migrations), and holds their settings:
+
+```yaml title=".reylo.yaml"
+migrate:
+  # the database to migrate (the default is direct_url)
+  url: ${DATABASE_URL}
+  # a server for shadow databases, where the database's own refuses create database
+  shadow_url: ${SHADOW_URL}
+  # no lock, and migrations run by name (the default is linear: locked)
+  history: loose
+  # compare comments on tables and columns too (the default is true)
+  strict_comments: true
+  # a command run after reylo migrate apply --reset and wipe, such as a seed
+  post: reylo run --file reylo/seed.sql
 ```
