@@ -359,7 +359,7 @@ export interface StatementDescriptor {
   dialect: Dialect;
   /** The statement as the database runs it, with its own placeholders (`$1` on Postgres, `?` on MySQL and SQLite), in the order `params` lists them. */
   sql: string;
-  /** `other` for any statement that is none of the five (`CALL`, `VALUES`, `EXPLAIN`, a MySQL `SHOW`, DDL); absent when the statement does not parse. */
+  /** `select` for any query, a `VALUES` list and a set operation included; `other` for any statement that is none of the five: a `CALL`, whose procedure may write, an `EXPLAIN`, a `SHOW` or a SQLite `PRAGMA`, and DDL. Absent when the statement does not parse. */
   kind?: "select" | "insert" | "update" | "delete" | "merge" | "other";
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
