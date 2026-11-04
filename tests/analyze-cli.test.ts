@@ -1,5 +1,5 @@
 // `reylo analyze`, the native binary's own command line: each statement's type descriptor
-// (spec/type-descriptor.ts) as one line of JSON, from the database the project names as the type
+// (spec/index.ts) as one line of JSON, from the database the project names as the type
 // check finds it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { Ajv2020 } from "ajv/dist/2020.js";
-import type { StatementDescriptor } from "../spec/type-descriptor.ts";
+import type { StatementDescriptor } from "../spec/index.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
 

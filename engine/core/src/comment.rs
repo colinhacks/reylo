@@ -1,5 +1,5 @@
 //! The prose written in comments before a statement: its summary, as an editor's hover shows it
-//! (the format's `comment`, `spec/type-descriptor.ts`).
+//! (the format's `comment`, `spec/index.ts`).
 
 use crate::dialect::Dialect;
 

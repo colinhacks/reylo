@@ -777,10 +777,18 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
             let inner = text.trim_start_matches('[').trim_end_matches(']').trim();
             length_contradiction(size, if inner.is_empty() { 0 } else { inner.split(',').count() as u64 }, "elements")
         }
-        // A Postgres array, as its text shows it: a type that is structured as an array but
-        // written otherwise (`bit`, `vector`) is not one here.
-        Kind::Array(array) if !array.element.nullable && ty.name.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_')) => {
-            array_has_null(text, delimiter).then(|| "typed with non-null elements holds a NULL element".to_string())
+        // A Postgres array, as its text shows it ([`postgres_array`]).
+        Kind::Array(array) if postgres_array(&ty) => {
+            // Each level over the innermost holds arrays, never NULL, so a NULL the text spells is
+            // an element of the innermost level.
+            let mut innermost = array;
+            while let Kind::Array(inner) = &innermost.element.ty.kind {
+                if !postgres_array(&innermost.element.ty) {
+                    break;
+                }
+                innermost = inner;
+            }
+            depth_contradiction(&ty, text).or_else(|| (!innermost.element.nullable && array_has_null(text, delimiter)).then(|| "typed with non-null elements holds a NULL element".to_string()))
         }
         Kind::Json(JsonType { content: Some(content), .. }) => {
             let json: Value = serde_json::from_str(text).ok()?;
@@ -875,6 +883,37 @@ fn interval_contradiction(duration: &DurationType, text: &str) -> Option<String>
         tick => tick_digits(tick).is_some_and(|allowed| fraction > allowed),
     };
     coarse.then(|| format!("ticking by {} holds {text}", time.tick))
+}
+
+/// Whether a type structured as an array is one in Postgres's text too: a type written otherwise
+/// (`bit`, `vector`) is not one here.
+fn postgres_array(ty: &Type) -> bool {
+    ty.name.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
+}
+
+/// Why a Postgres array's text nests deeper or shallower than its type, if it does: a type fixes
+/// one dimension per level of arrays it nests, and an `any_depth` level allows any number more.
+/// An empty array has no dimensions, and fits any.
+fn depth_contradiction(ty: &Type, text: &str) -> Option<String> {
+    let body = if text.starts_with('[') { &text[text.find('=')? + 1..] } else { text };
+    if body.trim() == "{}" {
+        return None;
+    }
+    let depth = body.chars().take_while(|c| *c == '{').count();
+    let (mut levels, mut open, mut at) = (0, false, ty);
+    while let Kind::Array(array) = &at.kind {
+        // A type written otherwise in Postgres's text (`vector`) adds no braces.
+        if !postgres_array(at) {
+            break;
+        }
+        levels += 1;
+        if array.any_depth {
+            open = true;
+            break;
+        }
+        at = &array.element.ty;
+    }
+    (depth < levels || (!open && depth > levels)).then(|| format!("typed with {levels}{} dimensions holds {depth}", if open { " or more" } else { "" }))
 }
 
 fn array_has_null(text: &str, delimiter: char) -> bool {
@@ -1582,6 +1621,33 @@ mod tests {
         assert!(built_contradiction(&ty, &text(r#"{"id":1,"r":1,"doc":1,"tags":[],"pair":[1,2]}"#)).is_some_and(|why| why.contains("does not admit")));
         assert!(built_contradiction(&ty, &text("not json")).is_some_and(|why| why.contains("which is no JSON")));
         assert_eq!(built_contradiction(&ty, &Integer(1)).as_deref(), Some("typed as built JSON holds Integer(1), which is no text"));
+    }
+
+    #[test]
+    fn a_postgres_array_nests_as_deep_as_its_type_says() {
+        let int4 = json!({"kind": "integer", "bits": 32, "name": "int4"});
+        let column = json!({"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": int4}});
+        let flat = json!({"kind": "array", "name": "_int4", "element": {"nullable": true, "type": int4}});
+        let rows = json!({"kind": "array", "name": "_int4", "element": {"type": {"kind": "array", "name": "_int4", "element": {"type": int4}}}});
+        let stacked = json!({"kind": "array", "name": "_int4", "element": {"type": column}});
+        // A column's array holds any depth; one a statement builds holds the depth it shows.
+        assert_eq!(contradiction(&column, "{{1,2},{3,4}}", false, ','), None);
+        assert_eq!(contradiction(&flat, "{1,NULL}", false, ','), None);
+        assert_eq!(contradiction(&flat, "{{1,2}}", false, ',').as_deref(), Some("typed with 1 dimensions holds 2"));
+        assert_eq!(contradiction(&rows, "{{1,2},{3,4}}", false, ','), None);
+        assert_eq!(contradiction(&rows, "{1,2}", false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
+        assert_eq!(contradiction(&stacked, "[0:1]={{{1}},{{2}}}", false, ','), None);
+        assert_eq!(contradiction(&stacked, "{1}", false, ',').as_deref(), Some("typed with 2 or more dimensions holds 1"));
+        // An empty array fits any depth, and a NULL is an element of the innermost level.
+        assert_eq!(contradiction(&rows, "{}", false, ','), None);
+        assert_eq!(contradiction(&rows, "{{1,NULL}}", false, ',').as_deref(), Some("typed with non-null elements holds a NULL element"));
+        assert_eq!(contradiction(&stacked, "{{1,NULL}}", false, ','), None);
+        // A vector is an array in the type but no braces in Postgres's text, so it adds no dimension.
+        let float4 = json!({"kind": "float", "exponent_bits": 8, "mantissa_bits": 23});
+        let vector = json!({"kind": "array", "name": "public.vector", "element": {"type": float4}});
+        let vectors = json!({"kind": "array", "name": "public._vector", "element": {"type": {"kind": "array", "name": "public._vector", "element": {"type": vector}}}});
+        assert_eq!(contradiction(&vectors, r#"{{"[1,2]"}}"#, false, ','), None);
+        assert_eq!(contradiction(&vectors, r#"{"[1,2]"}"#, false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
     }
 
     #[test]

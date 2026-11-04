@@ -1,5 +1,5 @@
 // The type descriptor format: its JSON Schema, spec/typedefs.schema.json, is the source of truth, and
-// spec/type-descriptor.ts and the copy reylo.dev publishes are generated from it (spec/generate.ts).
+// spec/index.ts and the copy reylo.dev publishes are generated from it (spec/generate.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";

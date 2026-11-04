@@ -13,5 +13,5 @@
   // src/sqlite-drivers.ts starts); the rest are what these import. `include` is emptied, since it
   // would otherwise come from tsconfig.json.
   "include": [],
-  "files": ["src/index.ts", "src/register.ts", "src/register-worker.ts", "src/vite.ts", "src/esbuild.ts", "src/webpack.ts", "src/turbopack.ts", "src/next.ts", "src/jest.ts", "src/mapper.ts", "src/cli.ts", "src/tooling.ts", "src/d1-proxy.ts"]
+  "files": ["src/index.ts", "src/register.ts", "src/register-worker.ts", "src/vite.ts", "src/esbuild.ts", "src/webpack.ts", "src/turbopack.ts", "src/next.ts", "src/jest.ts", "src/rtd.ts", "src/mapper.ts", "src/cli.ts", "src/tooling.ts", "src/d1-proxy.ts"]
 }

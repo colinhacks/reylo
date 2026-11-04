@@ -1,4 +1,4 @@
-// `nub run typedefs` at the root: the TypeScript of the type descriptor format, spec/type-descriptor.ts,
+// `nub run typedefs` at the root: the TypeScript of the type descriptor format, spec/index.ts,
 // generated from its JSON Schema, spec/typedefs.schema.json, which is the source of truth; and the
 // schema as reylo.dev publishes it, site/public/typedefs/<version>.json, the version its `$id` names.
 // Each version's published file is kept once written, so a descriptor of an older version still
@@ -86,7 +86,7 @@ for (const [name, def] of Object.entries(defs)) {
 ts = ts.trimEnd() + "\n";
 
 const outputs: [string, string][] = [
-  [path.join(root, "spec", "type-descriptor.ts"), ts],
+  [path.join(root, "spec", "index.ts"), ts],
   [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8")],
 ];
 const stale = outputs.filter(([file, text]) => !existsSync(file) || readFileSync(file, "utf8") !== text);

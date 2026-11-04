@@ -76,7 +76,7 @@ impl Program for Sqlite {
                     Ok(_) => {
                         self.next += 1;
                         self.connections.insert(self.next, Connection { file, answers: AnswerCache::default() });
-                        json!({ "status": "opened", "conn": self.next })
+                        json!({ "status": "opened", "conn": self.next, "version": rusqlite::version() })
                     }
                     // A file that cannot be opened is a database that cannot be reached: a build runs on `.reylo/`.
                     Err(e) => json!({ "status": "unreachable", "message": e.to_string() }),

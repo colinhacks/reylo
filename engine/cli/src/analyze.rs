@@ -1,4 +1,4 @@
-//! `reylo analyze`: each statement's type descriptor (spec/type-descriptor.ts), one JSON line per
+//! `reylo analyze`: each statement's type descriptor (spec/index.ts), one JSON line per
 //! statement, read from the database the project names, as the type check reads it.
 
 use crate::project::{self, Project};

@@ -1,4 +1,4 @@
-//! MySQL's types as the format describes them (`spec/type-descriptor.ts`): what a prepare's protocol
+//! MySQL's types as the format describes them (`spec/index.ts`): what a prepare's protocol
 //! type code, flags, character set and display length say of a value, under MySQL's own name for
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 

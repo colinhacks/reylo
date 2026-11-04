@@ -1,9 +1,9 @@
 # Reylo Type Defs
 
-The result of introspecting one SQL statement, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. A descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans.
+Reylo Type Defs (RTD), experimental until 1.0.0: the result of introspecting one SQL statement, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. A descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans.
 
 - [`typedefs.schema.json`](./typedefs.schema.json) is the format, as a JSON Schema (2020-12), and its source of truth. Each version is published at `https://reylo.dev/typedefs/<version>.json`, the URL every descriptor names in `$schema`.
-- [`type-descriptor.ts`](./type-descriptor.ts) is the same format as TypeScript types, generated from the schema by `nub run typedefs`.
+- [`index.ts`](./index.ts) is the same format as TypeScript types, generated from the schema by `nub run typedefs`.
 - [`examples.ts`](./examples.ts) holds descriptors from each database, checked against both.
 
 The spec is a living document, and every part of it was weighed against the databases it covers. A change to it is a design decision: agree it with a maintainer before writing it, and where implementing it shows a limitation, raise the limitation rather than working around it.

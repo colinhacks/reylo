@@ -1478,8 +1478,10 @@ impl ResolveCtx<'_> {
     /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
     /// column gets them, under the type modifier its describe reported (`varchar(20)`'s size).
     fn column(&self, col: &DescribedColumn) -> Type {
-        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render_typmod(col.type_oid, col.typmod) };
-        col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref()))
+        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { crate::postgres::nest(col, self.registry) };
+        // A built array of arrays carries its elements' nullability at its innermost level, as a result column does.
+        let items = if col.nested.is_some() { None } else { col.nullable_items };
+        col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref()))
     }
 
     /// One shape as (type, whether the value can never be null).
@@ -2390,7 +2392,7 @@ mod tests {
     const BYTEA: u32 = 17;
 
     fn column(name: &str, type_oid: u32, type_name: &str, nullable: bool) -> DescribedColumn {
-        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
+        DescribedColumn { name: name.into(), type_oid, typmod: -1, type_name: type_name.into(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
     }
 
     #[test]

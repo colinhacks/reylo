@@ -305,7 +305,7 @@ export async function callTry(ctx: Ctx, q: any, client: Client, params?: Record<
 // ---------------------------------------------------------------------------------------------
 // The statements, per dialect
 
-// Parameter types as the engine writes them (spec/type-descriptor.ts), each with what the run time reads of it.
+// Parameter types as the engine writes them (spec/index.ts), each with what the run time reads of it.
 const T = {
   int4: { kind: "integer", bits: 32, name: "int4" },
   int8: { kind: "integer", bits: 64, name: "int8" },

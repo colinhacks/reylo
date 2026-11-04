@@ -1,5 +1,5 @@
-//! The type model every database's engine answers with: the type descriptor format of
-//! `spec/type-descriptor.ts`, as Rust types that serialize to exactly its JSON. A [`Type`] says
+//! The type model every database's engine answers with: Reylo Type Defs (RTD), the type descriptor
+//! format of `spec/typedefs.schema.json`, as Rust types that serialize to exactly its JSON. A [`Type`] says
 //! which values a parameter or a column can hold, across databases: its `kind`, that kind's
 //! fields, and the database's `name` for it; a [`Position`] says where a value stands and whether
 //! it may be null; a [`StatementDescriptor`] is what introspecting one statement returns.

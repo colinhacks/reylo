@@ -9,10 +9,11 @@ import type { EngineType } from "./engine-type.ts";
 export type { EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
-export type Diagnostic = { message: string; start: number; length: number; code: number };
+/** A diagnostic as Reylo's own tools read it: its place in UTF-8 bytes, Reylo's code, and the database's own code where the database raised it (`server_code`). */
+export type Diagnostic = { message: string; start: number; length: number; code: number; server_code?: string };
 
 /**
- * What the engine answers for a statement: the format's statement descriptor (spec/type-descriptor.ts,
+ * What the engine answers for a statement: the format's statement descriptor (spec/index.ts,
  * `StatementDescriptor`) less its dialect and with Reylo's diagnostics, and what Reylo's own tools
  * read beside it.
  */

@@ -7,6 +7,8 @@ import { docComment } from "./doc-comment.ts";
 import { analysisWithBases } from "./engine-type.ts";
 import { ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
+type Placeholder = Lexed["placeholders"][number];
+
 /** A diagnostic of the `.sql` file: its range in UTF-8 bytes, the encoding the content mapper chose. */
 export type FileDiagnostic = { message: string; start: number; length: number; code: number };
 
@@ -95,6 +97,42 @@ export function withinFile(start: number, length: number, size: number): { start
 }
 
 /**
+ * The error at the first use of each parameter nothing in the statement types, which the type check
+ * and `reylo analyze` give unless the project file says `strict_params: false` (the default is true
+ * since 2026-10-20); `placeholders` are where the statement writes each parameter, in UTF-8 bytes. A
+ * statement the engine already refused (a parameter written twice, an error from the server) was not
+ * analysed to its end, so its parameters are untyped for that reason: its own error is the one to fix
+ * first, and none is given.
+ */
+export function untypedParams(sql: string, analysis: Pick<Analysis, "params" | "diagnostics">, placeholders: readonly Placeholder[], projectFile = ".reylo.yaml"): FileDiagnostic[] {
+  if (analysis.diagnostics.length) return [];
+  const bytes = utf8.encode(sql);
+  const diagnostics: FileDiagnostic[] = [];
+  for (const q of analysis.params) {
+    if (q.type.kind !== "unknown") continue;
+    const at = placeholders.find((h) => h.name === q.name);
+    // The engine's offsets are UTF-8 bytes, as the diagnostics' are. A MySQL placeholder's span
+    // takes in the `::type` the engine rewrote, which is no part of its name.
+    const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
+    const written = span.replace(/\s*::[\s\S]*$/, "");
+    const length = at ? utf8.encode(written).length : 1;
+    const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${projectFile}.`;
+    diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
+  }
+  return diagnostics;
+}
+
+/**
+ * Where the statement writes each parameter, in UTF-8 bytes: the lexer's reading (absent where the
+ * lexer refused it), but on MySQL the placeholders the analysis read, since a MySQL session reads its
+ * strings by its sql_mode, which the analysis asked for and the lexer alone does not know.
+ */
+export function placeholdersOf(analysis: Pick<Analysis, "rewritten">, dialect: Dialect, lexed: Pick<Lexed, "placeholders"> | undefined): Placeholder[] {
+  if (dialect === "mysql") return analysis.rewritten.spans.map(([start, end], k) => ({ name: analysis.rewritten.order[k]!, start, end }));
+  return lexed?.placeholders ?? [];
+}
+
+/**
  * The module's types for a statement the engine analyzed. `lexed` is the engine's lexer's reading of
  * the statement, which names the parameters (absent where the lexer refused it); `strictParams` is
  * the project file's `strict_params`, and `projectFile` the file the error about it names: the
@@ -102,33 +140,11 @@ export function withinFile(start: number, length: number, size: number): { start
  */
 export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
   const analysis = analysisWithBases(written);
-  let names = lexed?.params ?? [];
-  let placeholders = lexed?.placeholders ?? [];
-  // A MySQL session reads its strings by its sql_mode, which the analysis asked for and the
-  // lexer alone does not know: the placeholders are the ones the analysis read.
-  if (dialect === "mysql") {
-    names = analysis.params.map((q) => q.name);
-    placeholders = analysis.rewritten.spans.map(([start, end], k) => ({ name: analysis.rewritten.order[k]!, start, end }));
-  }
+  // On MySQL, the names and places are the ones the analysis read (`placeholdersOf`).
+  const names = dialect === "mysql" ? analysis.params.map((q) => q.name) : (lexed?.params ?? []);
+  const placeholders = placeholdersOf(analysis, dialect, lexed);
   const diagnostics: FileDiagnostic[] = analysis.diagnostics.map((d) => ({ message: d.message, start: d.start, length: d.length, code: d.code }));
-  // A parameter nothing in the statement types is an error at its first use, unless the project
-  // file says `strict_params: false` (the default is true since 2026-10-20). A statement the engine
-  // already refused (a parameter written twice, an error from the server) was not analysed to its
-  // end, so its parameters are untyped for that reason: its own error is the one to fix first.
-  if (strictParams && !analysis.diagnostics.length) {
-    const bytes = utf8.encode(sql);
-    for (const q of analysis.params) {
-      if (q.type.kind !== "unknown") continue;
-      const at = placeholders.find((h) => h.name === q.name);
-      // The engine's offsets are UTF-8 bytes, as the diagnostics' are. A MySQL placeholder's span
-      // takes in the `::type` the engine rewrote, which is no part of its name.
-      const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
-      const written = span.replace(/\s*::[\s\S]*$/, "");
-      const length = at ? utf8.encode(written).length : 1;
-      const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${projectFile}.`;
-      diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
-    }
-  }
+  if (strictParams) diagnostics.push(...untypedParams(sql, analysis, placeholders, projectFile));
   const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
   const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);

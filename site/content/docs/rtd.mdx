@@ -1,0 +1,107 @@
+---
+title: Reylo Type Defs
+description: Each SQL statement's parameters, columns, types, nullability and cardinality as plain data, inferred from your live database, for tools in any language.
+---
+
+<p className="dk-subheader">Your SQL's types as plain data</p>
+
+[Reylo](/) lets you import `.sql` files into TypeScript, with every query typed from your live database. Reylo Type Defs (RTD) is the same inference as data: each statement's parameters and columns, their types and nullability, and its cardinality, as JSON that a code generator, a linter or a tool in another language can read.
+
+<Callout title="Experimental">
+
+Reylo Type Defs is at version 0.1.0. Until 1.0.0, any release may change the format, and each descriptor names the version it is written in as `$schema`, the URL of that version's JSON Schema.
+
+</Callout>
+
+| | |
+| --- | --- |
+| Version | 0.1.0, experimental |
+| From TypeScript | `analyze()` from `reylo/rtd` |
+| From a shell | `reylo analyze` |
+| Databases | Postgres, MySQL and SQLite, and DuckDB from TypeScript |
+| The format | [`https://reylo.dev/typedefs/0.1.0.json`](/typedefs/0.1.0.json), a JSON Schema, and [spec/index.ts](https://github.com/colinhacks/reylo/blob/release/spec/index.ts), its TypeScript |
+
+## `analyze()`
+
+Pass a database URL and one statement, with `:name` parameters on every database:
+
+```ts
+import { analyze } from "reylo/rtd";
+
+const td = await analyze({
+  url: process.env.DATABASE_URL!,
+  sql: "select id, name, email, role from users where id = :id",
+});
+```
+
+It returns the statement's descriptor, which is plain data. On the [example schema](/#schema):
+
+```json
+{
+  "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+  "dialect": { "name": "postgres", "version": "18.6" },
+  "sql": "select id, name, email, role from users where id = $1",
+  "kind": "select",
+  "params": [
+    { "name": "id", "type": { "kind": "integer", "bits": 32, "name": "int4" } }
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "type": { "kind": "integer", "bits": 32, "name": "int4" }
+    },
+    {
+      "name": "name",
+      "type": { "kind": "text", "name": "text" }
+    },
+    {
+      "name": "email",
+      "type": { "kind": "text", "name": "text" },
+      "nullable": true
+    },
+    {
+      "name": "role",
+      "type": {
+        "kind": "text",
+        "enum": ["admin", "member"],
+        "name": "public.user_role"
+      }
+    }
+  ],
+  "cardinality": "at_most_one",
+  "diagnostics": []
+}
+```
+
+A statement the database refuses comes back with its diagnostics, each at its place in the statement, and no columns. A parameter nothing in the statement gives a type is a diagnostic too, at its first use, as the type check reports it. The call rejects only when it cannot analyze at all: a URL of no database it reads, or a database it cannot reach. Calls with the same URL share one connection, and each reads the schema as it stands, so a migration between two calls shows in the second.
+
+## `reylo analyze`
+
+The same descriptors from a shell, one line of JSON per statement:
+
+```sh
+npx reylo analyze queries/
+```
+
+It reads your project's database as the type check does, from [`direct_url`](/#direct_url) or `DATABASE_URL`. Name another with `--url`, and pass a statement inline with `--sql`.
+
+## The format
+
+Every descriptor has these fields:
+
+| Field | What it says |
+| --- | --- |
+| `$schema` | The version of Reylo Type Defs it is written in, as the URL of that version's JSON Schema |
+| `dialect` | The database's name and its server's version |
+| `sql` | The statement with the database's own placeholders, `$1` on Postgres and `?` on MySQL and SQLite, in the order `params` lists them |
+| `kind` | `select`, `insert`, `update`, `delete`, `merge` or `other`, and absent when the statement does not parse |
+| `comment` | The comment written before the statement |
+| `params`, `columns` | Each one's `name`, its `type`, and `nullable` where it may be null |
+| `cardinality` | `one`, `at_most_one`, `many`, or `none` for a write without `returning` |
+| `diagnostics` | What the database reported, at offsets into the statement as written |
+
+A `type` names its `kind`, such as `integer`, `decimal`, `text`, `instant`, `array` or `record`, with the facts that pick a representation holding every value: an integer's `bits`, a decimal's precision and scale, an instant's `tick`. [spec/index.ts](https://github.com/colinhacks/reylo/blob/release/spec/index.ts) defines every kind and the rules a reader follows, and `reylo/rtd` exports its TypeScript types:
+
+```ts
+import type { StatementDescriptor, Type } from "reylo/rtd";
+```

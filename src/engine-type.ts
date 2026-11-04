@@ -1,10 +1,10 @@
-// The engine's types: the type descriptor format (spec/type-descriptor.ts), which the engine answers
+// The engine's types: the type descriptor format (spec/index.ts), which the engine answers
 // every parameter and column with. Apart from the engine's host so that the run time and the
 // modules a build writes can name it without Node's types: `src/execute.ts` reads a parameter's
 // type from a module's `inputs`.
-import type { Type } from "../spec/type-descriptor.ts";
+import type { Type } from "../spec/index.ts";
 
-export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, Type, UnionType } from "../spec/type-descriptor.ts";
+export type { Alternative, ArrayType, Field, JsonType, Position, RecordType, TaggedUnionType, Type, UnionType } from "../spec/index.ts";
 
 /** A parameter's or a column's type as the engine writes it. */
 export type EngineType = Type;

@@ -1,6 +1,6 @@
-/** Examples of the type descriptor format (`type-descriptor.ts`), database by database. `nub run typecheck` checks each against the types. */
+/** Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database. `nub run typecheck` checks each against the types. */
 
-import type { Column, FloatType, InstantType, IntegerType, Param, RecordType, StatementDescriptor, TextType } from "./type-descriptor.ts";
+import type { Column, FloatType, InstantType, IntegerType, Param, RecordType, StatementDescriptor, TextType } from "./index.ts";
 
 const int8: IntegerType = { kind: "integer", bits: 64, name: "int8" };
 

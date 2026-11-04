@@ -8,5 +8,6 @@ inner_product.sql: many (q: public.vector(float(8,23)[]), threshold: float8) -> 
 json_agg.sql: one () -> { embeddings: jsonb public.vector(float(8,23)[3])[]?, halves: jsonb ({ half: public.halfvec(float(5,10)[3])? })[]? }
 json_object.sql: many () -> { doc: json { id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[3])?[]? } }
 nearest.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, distance: float8? } key (id)
+nested.sql: many () -> { stacked: public.vector(float(8,23)[3])[][], histories: public.vector(float(8,23)[3])?[][] }
 plain.sql: many () -> { id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, half: public.halfvec(float(5,10)[3])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[3])?[]?, halves: public.halfvec(float(5,10)[])?[] } key (id)
 whole_row.sql: many () -> { doc: jsonb { id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, half: public.halfvec(float(5,10)[3])?, sparse: public.sparsevec(float(8,23)[])?, history: public.vector(float(8,23)[3])?[]?, halves: public.halfvec(float(5,10)[])?[] } }
