@@ -1476,9 +1476,9 @@ impl ResolveCtx<'_> {
     /// A probe's column as a type: what the catalog says of it, with what the probe's own
     /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
     /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
-    /// column gets them.
+    /// column gets them, under the type modifier its describe reported (`varchar(20)`'s size).
     fn column(&self, col: &DescribedColumn) -> Type {
-        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render(col.type_oid) };
+        let ty = if col.whole_row { self.registry.render_row(col.type_oid) } else { self.registry.render_typmod(col.type_oid, col.typmod) };
         col.non_finite.apply(crate::postgres::with_document(crate::postgres::with_values(crate::postgres::with_items(ty, col.nullable_items), col.values.as_deref(), self.registry.is_string(col.type_oid)), col.document.as_ref()))
     }
 
