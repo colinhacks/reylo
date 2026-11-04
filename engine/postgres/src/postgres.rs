@@ -850,7 +850,7 @@ impl<'a> Engine<'a> {
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
                 _ => {
-                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render(col.type_oid) };
+                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render_typmod(col.type_oid, col.typmod) };
                     (col.non_finite.apply(with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
                 }
             };
@@ -1871,7 +1871,7 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, type_name: registry.name(col.oid), nullable, nullable_items: None, values: None, document, non_finite: Default::default(), whole_row }
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, values: None, document, non_finite: Default::default(), whole_row }
             })
             .collect();
         let columns = columns
@@ -3740,7 +3740,7 @@ mod tests {
             for need in needs {
                 match need {
                     crate::api::Need::Describe { id, sql } => {
-                        let columns = (0..target_count(&sql)).map(|i| RawColumn { name: format!("c{i}"), oid: 25, table: 0, attnum: 0 }).collect();
+                        let columns = (0..target_count(&sql)).map(|i| RawColumn { name: format!("c{i}"), oid: 25, table: 0, attnum: 0, typmod: -1 }).collect();
                         answers.insert(id, Answer::Describe { describe: RawDescribe { params: vec![], columns } });
                     }
                     crate::api::Need::Query { id, .. } => {
@@ -4160,7 +4160,7 @@ mod tests {
             for need in host.needs() {
                 match need {
                     crate::api::Need::Describe { id, .. } => {
-                        let columns = names.iter().map(|name| RawColumn { name: name.to_string(), oid: 25, table: 16400, attnum: 2 }).collect();
+                        let columns = names.iter().map(|name| RawColumn { name: name.to_string(), oid: 25, table: 16400, attnum: 2, typmod: -1 }).collect();
                         answers.insert(id, Answer::Describe { describe: RawDescribe { params: vec![25, 23], columns } });
                     }
                     crate::api::Need::Query { id, sql, .. } => {
@@ -4508,7 +4508,7 @@ mod tests {
 
     #[test]
     fn a_tables_whole_row_is_a_row_unless_an_outer_join_nulls_it() {
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         // The probes select the whole row as `a0`; the statement itself has one JSON column.
         let describe = |sql: &str| -> Vec<RawColumn> {
             if sql.contains(" e AS a0") {
@@ -4559,7 +4559,7 @@ mod tests {
         const USERS: u32 = 16400;
         const ACCOUNTS: u32 = 16600;
         let not_null: HashSet<(u32, i32)> = HashSet::from([(USERS, 1), (USERS, 2), (ACCOUNTS, 1)]);
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         let analyzed = |sql: &str| {
             let mut answers: HashMap<String, Answer> = HashMap::new();
             for _ in 0..64 {
@@ -4661,7 +4661,7 @@ mod tests {
         const USERS: u32 = 16400;
         const ADULTS: u32 = 16500;
         let definition = "SELECT id, age AS years FROM users";
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         let describe = |sql: &str| -> RawDescribe {
             let count = lex::lex(sql, Dialect::Postgres).map(|l| l.placeholders.len()).unwrap_or(0);
             let columns = match sql {

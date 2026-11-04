@@ -141,7 +141,7 @@ impl Program for Postgres {
                         Ok(stmt) => json!({
                             "status": "described",
                             "params": stmt.params().iter().map(tokio_postgres::types::Type::oid).collect::<Vec<_>>(),
-                            "columns": stmt.columns().iter().map(|col| json!({ "name": col.name(), "oid": col.type_().oid(), "table": col.table_oid().unwrap_or(0), "attnum": col.column_id().map_or(0, i32::from) })).collect::<Vec<_>>(),
+                            "columns": stmt.columns().iter().map(|col| json!({ "name": col.name(), "oid": col.type_().oid(), "table": col.table_oid().unwrap_or(0), "attnum": col.column_id().map_or(0, i32::from), "typmod": col.type_modifier() })).collect::<Vec<_>>(),
                         }),
                         Err(e) => failure(&e),
                     }

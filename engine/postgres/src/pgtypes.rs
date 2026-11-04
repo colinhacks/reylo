@@ -3,7 +3,7 @@
 
 use crate::host::{as_bool, as_strings, as_u32};
 use reylo_engine_core::types::{
-    ArrayType, Bounds, BytesType, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
+    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -68,6 +68,9 @@ pub struct PgType {
     pub namespace: Option<String>,
     /// A range's or a multirange's subtype.
     pub subtype: Option<u32>,
+    /// A domain's type modifier on its base type, `typtypmod` (`varchar(255)` for `create domain
+    /// email as varchar(255)`); -1, none, for every other type.
+    pub typmod: i32,
 }
 
 impl PgType {
@@ -98,6 +101,27 @@ pub struct Attribute {
     /// Its number in the composite's relation; 0 where it was not read.
     #[serde(default)]
     pub attnum: i32,
+    /// Its type modifier, `atttypmod` (`varchar(10)`); -1, none, where it has none or was not read.
+    #[serde(default = "no_typmod")]
+    pub typmod: i32,
+}
+
+/// The type modifier of a type that has none, as Postgres writes it.
+pub fn no_typmod() -> i32 {
+    -1
+}
+
+pub fn is_no_typmod(typmod: &i32) -> bool {
+    *typmod < 0
+}
+
+/// A type modifier as the host hands it back, a number or its text; -1, none, for anything else.
+fn as_i32(v: &Value) -> i32 {
+    match v {
+        Value::Number(n) => n.as_i64().and_then(|n| i32::try_from(n).ok()).unwrap_or(-1),
+        Value::String(s) => s.parse().unwrap_or(-1),
+        _ => -1,
+    }
 }
 
 /// The types a statement mentions, by oid. Loaded lazily: the engine asks the host for the oids
@@ -158,7 +182,8 @@ macro_rules! composite_fields {
 /// name, `typtype`, the element and base types, an enum's labels, the name a cast spells, and a
 /// composite's columns from `pg_attribute` as three arrays in attribute order (names, type oids,
 /// `NOT NULL`), so a whole-row value has its fields in the same round as its type, the delimiter
-/// of an array of it, its schema, and a range's or multirange's subtype. An enum of no label, or a
+/// of an array of it, its schema, a range's or multirange's subtype, a domain's type modifier, and
+/// the composite's columns' type modifiers. An enum of no label, or a
 /// composite of no column, has NULL for its arrays.
 macro_rules! type_columns {
     () => {
@@ -173,7 +198,9 @@ macro_rules! type_columns {
     composite_fields!("a.attnum::pg_catalog.int4"), ", \
     t.typdelim::pg_catalog.text, \
     (SELECT n.nspname::pg_catalog.text FROM pg_catalog.pg_namespace n WHERE n.oid OPERATOR(pg_catalog.=) t.typnamespace), \
-    (SELECT r.rngsubtype::pg_catalog.int8 FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) t.oid OR r.rngmultitypid OPERATOR(pg_catalog.=) t.oid)")
+    (SELECT r.rngsubtype::pg_catalog.int8 FROM pg_catalog.pg_range r WHERE r.rngtypid OPERATOR(pg_catalog.=) t.oid OR r.rngmultitypid OPERATOR(pg_catalog.=) t.oid), \
+    t.typtypmod::pg_catalog.int4, ",
+    composite_fields!("a.atttypmod::pg_catalog.int4"))
     };
 }
 
@@ -326,13 +353,14 @@ impl TypeRegistry {
             let labels = row.get(5).and_then(as_strings);
             let cast_name = row.get(6).and_then(Value::as_str).unwrap_or("").to_string();
             let attnums: Vec<i32> = row.get(11).and_then(Value::as_array).map(|a| a.iter().map(|n| as_u32(n).unwrap_or(0) as i32).collect()).unwrap_or_default();
+            let typmods: Vec<i32> = row.get(16).and_then(Value::as_array).map(|a| a.iter().map(as_i32).collect()).unwrap_or_default();
             let fields = match (row.get(7).and_then(as_strings), row.get(8).and_then(Value::as_array), row.get(9).and_then(Value::as_array)) {
                 (Some(names), Some(oids), Some(not_null)) if names.len() == oids.len() && names.len() == not_null.len() => names
                     .into_iter()
                     .zip(oids)
                     .zip(not_null)
                     .enumerate()
-                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0) }))
+                    .filter_map(|(i, ((name, o), n))| Some(Attribute { name, type_oid: as_u32(o)?, not_null: as_bool(n)?, attnum: attnums.get(i).copied().unwrap_or(0), typmod: typmods.get(i).copied().unwrap_or(-1) }))
                     .collect(),
                 _ => Vec::new(),
             };
@@ -340,6 +368,7 @@ impl TypeRegistry {
             let delimiter = row.get(12).and_then(Value::as_str).filter(|d| *d != ",").map(str::to_string);
             let namespace = row.get(13).and_then(Value::as_str).map(str::to_string);
             let subtype = row.get(14).and_then(as_u32).filter(|s| *s != 0);
+            let typmod = row.get(15).map_or(-1, as_i32);
             let name = name.to_string();
             let kind = match typtype {
                 "b" | "p" if elem != 0 && name.starts_with('_') => TypeKind::Array,
@@ -353,7 +382,7 @@ impl TypeRegistry {
             };
             self.types.insert(
                 oid,
-                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype },
+                PgType { oid, name, kind, elem: (elem != 0).then_some(elem), base: (base != 0).then_some(base), labels: labels.unwrap_or_default(), fields, cast_name, relid, delimiter, namespace, subtype, typmod },
             );
         }
     }
@@ -373,6 +402,7 @@ impl TypeRegistry {
             delimiter: None,
             namespace: None,
             subtype: None,
+            typmod: -1,
         });
     }
 
@@ -464,13 +494,20 @@ impl TypeRegistry {
     /// builds (`row(…)::docs`), or that another table's column holds, met none of them, and
     /// renders as [`TypeRegistry::render`] does.
     pub fn render_row(&self, oid: u32) -> Type {
-        self.render_at(oid, 0, true)
+        self.render_at(oid, -1, 0, true)
     }
 
     /// The type of one oid. A composite's fields are each nullable: a row value of a table's type
     /// need not be one of its stored rows ([`TypeRegistry::render_row`]).
     pub fn render(&self, oid: u32) -> Type {
-        self.render_at(oid, 0, false)
+        self.render_at(oid, -1, 0, false)
+    }
+
+    /// The type of one oid under a type modifier, as RowDescription reports one for a result
+    /// column (-1 for none): `varchar(20)` is text of at most 20 code points, and an array's
+    /// modifier is its element's ([`with_typmod`]).
+    pub fn render_typmod(&self, oid: u32, typmod: i32) -> Type {
+        self.render_at(oid, typmod, 0, false)
     }
 
     /// What separates the elements of an array of type `oid`'s text, where it is not a comma: its
@@ -505,7 +542,7 @@ impl TypeRegistry {
             .collect()
     }
 
-    fn render_at(&self, oid: u32, depth: usize, stored: bool) -> Type {
+    fn render_at(&self, oid: u32, typmod: i32, depth: usize, stored: bool) -> Type {
         if depth > MAX_DEPTH {
             return Type::unknown();
         }
@@ -514,12 +551,14 @@ impl TypeRegistry {
             // A Postgres array holds any number of dimensions, whatever a column declares, and an
             // element may be NULL whatever a column's NOT NULL says. The elements of an array of
             // stored rows are stored rows.
+            // An array's type modifier is its element's (`varchar(20)[]`).
             TypeKind::Array => match t.elem {
-                Some(e) => Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(self.render_at(e, depth + 1, stored))), size: None, any_depth: true })).named(t.qualified()),
+                Some(e) => Type::new(Kind::Array(ArrayType { element: Box::new(Position::nullable(self.render_at(e, typmod, depth + 1, stored))), size: None, any_depth: true })).named(t.qualified()),
                 None => Type::unknown(),
             },
-            // A domain is its base type's values under its own name.
-            TypeKind::Domain => match t.base.map(|b| self.render_at(b, depth + 1, stored)) {
+            // A domain is its base type's values under its own name, its own type modifier on
+            // the base (`create domain email as varchar(255)`).
+            TypeKind::Domain => match t.base.map(|b| self.render_at(b, if t.typmod >= 0 { t.typmod } else { typmod }, depth + 1, stored)) {
                 Some(base) if !base.is_unknown() => base.named(t.qualified()),
                 _ => Type::unknown(),
             },
@@ -529,7 +568,7 @@ impl TypeRegistry {
                     .fields
                     .iter()
                     .map(|f| {
-                        let ty = self.render_at(f.type_oid, depth + 1, false);
+                        let ty = self.render_at(f.type_oid, f.typmod, depth + 1, false);
                         let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
                         let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
                         let non_finite = t.relid.filter(|_| stored).and_then(|r| self.non_finite.get(&(r, f.attnum)));
@@ -548,16 +587,132 @@ impl TypeRegistry {
             // A row value whose columns were not read: no driver parses one, so it reaches the
             // caller as its text form, and so does an array of them.
             TypeKind::Composite => Type::opaque("record"),
-            TypeKind::Range | TypeKind::Multirange => match t.subtype.map(|s| self.render_at(s, depth + 1, false)) {
+            TypeKind::Range | TypeKind::Multirange => match t.subtype.map(|s| self.render_at(s, -1, depth + 1, false)) {
                 Some(subtype) if !subtype.is_unknown() => {
                     let range = RangeType { subtype: Box::new(subtype) };
                     Type::new(if t.kind == TypeKind::Range { Kind::Range(range) } else { Kind::Multirange(range) }).named(t.qualified())
                 }
                 _ => Type::opaque(t.qualified()),
             },
-            TypeKind::Base | TypeKind::Other => base_type(t),
+            TypeKind::Base | TypeKind::Other => with_typmod(t, base_type(t), typmod),
         }
     }
+}
+
+/// What a type modifier narrows a base type to (`atttypmod`, a result column's modifier, or a
+/// domain's `typtypmod`; below 0, none). The encodings are Postgres's own: `varchar(n)` and
+/// `char(n)` store n + 4; `numeric(p,s)` stores p in the upper half of the modifier less 4 and s,
+/// which may be negative, in its lowest 11 bits; a time's precision p is p; `bit(n)`, `varbit(n)`
+/// and pgvector's `vector(n)` and `halfvec(n)` store n; an interval's fields mask its upper half
+/// and its precision the lower, `0xFFFF` for none; and PostGIS packs a geometry's SRID, subtype
+/// and dimensions.
+pub fn with_typmod(t: &PgType, ty: Type, typmod: i32) -> Type {
+    if typmod < 0 {
+        return ty;
+    }
+    let builtin = t.namespace.as_deref().is_none_or(|n| n == "pg_catalog");
+    let n = (typmod - 4).max(0) as u64;
+    match (builtin, t.name.as_str(), ty.kind) {
+        // `char(n)` pads what it stores to exactly n code points; `varchar(n)` stores at most n.
+        (true, "varchar", Kind::Text(text)) => Type { kind: Kind::Text(TextType { size: Some(Size { max: Some(n), ..Size::default() }), ..text }), ..ty },
+        (true, "bpchar", Kind::Text(text)) => Type { kind: Kind::Text(TextType { size: Some(Size::exact(n)), ..text }), ..ty },
+        // A sized `numeric` holds NaN, never an infinity, and no bound beyond what its precision
+        // and scale imply.
+        (true, "numeric", Kind::Decimal(_)) if typmod >= 4 => {
+            let packed = typmod - 4;
+            let precision = ((packed >> 16) & 0xffff) as u32;
+            let scale = ((packed & 0x7ff) ^ 0x400) - 0x400;
+            Type { kind: Kind::Decimal(DecimalType { precision: Some(precision), min_scale: Some(scale), max_scale: Some(scale), nan: true, ..DecimalType::default() }), ..ty }
+        }
+        (true, "time" | "timetz", Kind::Time(time)) if typmod <= 6 => Type { kind: Kind::Time(TimeType { tick: tick(typmod), ..time }), ..ty },
+        (true, "timestamp", Kind::DateTime(dt)) if typmod <= 6 => Type { kind: Kind::DateTime(DateTimeType { tick: tick(typmod), bounds: to_tick(dt.bounds, typmod), ..dt }), ..ty },
+        (true, "timestamptz", Kind::Instant(instant)) if typmod <= 6 => Type { kind: Kind::Instant(InstantType { tick: tick(typmod), bounds: to_tick(instant.bounds, typmod), ..instant }), ..ty },
+        (true, "interval", Kind::Duration(duration)) => Type { kind: Kind::Duration(interval(duration, typmod)), ..ty },
+        (true, "bit", Kind::Array(array)) => Type { kind: Kind::Array(ArrayType { size: Some(Size::exact(typmod as u64)), ..array }), ..ty },
+        (true, "varbit", Kind::Array(array)) => Type { kind: Kind::Array(ArrayType { size: Some(Size { max: Some(typmod as u64), ..Size::default() }), ..array }), ..ty },
+        (_, "vector" | "halfvec", Kind::Array(array)) if typmod > 0 => Type { kind: Kind::Array(ArrayType { size: Some(Size::exact(typmod as u64)), ..array }), ..ty },
+        // PostGIS's `geometry(Point, 4326)` and `geography(…)`: the SRID in bits 8 to 27, a
+        // negative one marked by bit 28, the subtype in bits 2 to 7 (0 for any), and Z and M in
+        // bits 1 and 0, which fix the coordinates of every value.
+        (_, "geometry" | "geography", Kind::Geometry(geometry)) => {
+            let srid = i64::from(((typmod & 0x0fff_ff00) - (typmod & 0x1000_0000)) >> 8);
+            let subtype = match (typmod & 0xfc) >> 2 {
+                1 => Some(GeometrySubtype::Point),
+                2 => Some(GeometrySubtype::Linestring),
+                3 => Some(GeometrySubtype::Polygon),
+                4 => Some(GeometrySubtype::Multipoint),
+                5 => Some(GeometrySubtype::Multilinestring),
+                6 => Some(GeometrySubtype::Multipolygon),
+                7 => Some(GeometrySubtype::Geometrycollection),
+                _ => None,
+            };
+            let coordinates = match (typmod & 2 != 0, typmod & 1 != 0) {
+                (false, false) => Coordinates::Xy,
+                (true, false) => Coordinates::Xyz,
+                (false, true) => Coordinates::Xym,
+                (true, true) => Coordinates::Xyzm,
+            };
+            Type { kind: Kind::Geometry(GeometryType { srid: (srid != 0).then_some(srid), subtype, coordinates: Some(coordinates), ..geometry }), ..ty }
+        }
+        (_, _, kind) => Type { kind, ..ty },
+    }
+}
+
+/// The smallest step of a time of `digits` fractional digits, in lowest terms: `"1/1000"` for 3,
+/// `"1"` for none.
+fn tick(digits: i32) -> String {
+    match digits {
+        0 => "1".to_string(),
+        d => format!("1/{}", 10u64.pow(d as u32)),
+    }
+}
+
+/// A timestamp's bounds at `digits` fractional digits: the latest value's fraction cut to them.
+fn to_tick(bounds: Bounds, digits: i32) -> Bounds {
+    let cut = |v: String| match v.split_once('.') {
+        Some((whole, fraction)) => {
+            let zone = fraction.trim_start_matches(|c: char| c.is_ascii_digit());
+            let kept = &fraction[..(digits as usize).min(fraction.len() - zone.len())];
+            if kept.is_empty() { format!("{whole}{zone}") } else { format!("{whole}.{kept}{zone}") }
+        }
+        None => v,
+    };
+    Bounds { max: bounds.max.map(cut), ..bounds }
+}
+
+/// An interval under its fields and precision: `year`, `month` and `year to month` keep months
+/// alone, `day` months and days, `hour` and `day to hour` whole hours, a range ending in `minute`
+/// whole minutes, and one ending in `second(p)`, or `interval(p)`, p fractional digits. Postgres
+/// truncates the parts below the last field it names and keeps the ones above.
+fn interval(duration: DurationType, typmod: i32) -> DurationType {
+    const MONTH: i32 = 1 << 1;
+    const YEAR: i32 = 1 << 2;
+    const DAY: i32 = 1 << 3;
+    const HOUR: i32 = 1 << 10;
+    const MINUTE: i32 = 1 << 11;
+    const SECOND: i32 = 1 << 12;
+    const FULL_RANGE: i32 = 0x7fff;
+    const FULL_PRECISION: i32 = 0xffff;
+    let range = (typmod >> 16) & 0x7fff;
+    let precision = typmod & 0xffff;
+    let second = |time: TimePart| if precision == FULL_PRECISION || precision > 6 { time } else { TimePart { tick: tick(precision), ..time } };
+    let step = |time: TimePart, seconds: &str| TimePart { tick: seconds.to_string(), ..time };
+    if range == FULL_RANGE || range & SECOND != 0 {
+        return DurationType { time: duration.time.map(second), ..duration };
+    }
+    if range & MINUTE != 0 {
+        return DurationType { time: duration.time.map(|t| step(t, "60")), ..duration };
+    }
+    if range & HOUR != 0 {
+        return DurationType { time: duration.time.map(|t| step(t, "3600")), ..duration };
+    }
+    if range & DAY != 0 {
+        return DurationType { time: None, ..duration };
+    }
+    if range & (YEAR | MONTH) != 0 {
+        return DurationType { days: None, time: None, ..duration };
+    }
+    duration
 }
 
 /// A `text` or `varchar` value kept to a CHECK's list of strings (`status IN ('active',
@@ -678,9 +833,9 @@ mod tests {
             assert_eq!(
                 registry.get(90001).unwrap().fields,
                 vec![
-                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0 },
-                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0 },
-                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0 },
+                    Attribute { name: "id".into(), type_oid: 20, not_null: true, attnum: 0, typmod: -1 },
+                    Attribute { name: "name".into(), type_oid: 25, not_null: false, attnum: 0, typmod: -1 },
+                    Attribute { name: "tags".into(), type_oid: 1009, not_null: false, attnum: 0, typmod: -1 },
                 ]
             );
             // A stored row of the table holds its NOT NULL; a row value of its type need not. A
@@ -743,6 +898,52 @@ mod tests {
         assert_eq!(registry.render(90004).short(), "public.place?[]");
         // A comma, and a host that predates the column, leave it out.
         assert_eq!(registry.delimiter(1009), None);
+    }
+
+    /// Each type modifier as Postgres 18 stores it (`atttypmod`, read off a table of these columns)
+    /// narrows its type: a length, a precision and scale, a tick, an interval's parts.
+    #[test]
+    fn a_type_modifier_narrows_its_type() {
+        let registry = TypeRegistry::with_builtins();
+        let json = |oid: u32, typmod: i32| serde_json::to_value(registry.render_typmod(oid, typmod)).unwrap();
+        // varchar(20) and char(5): n + 4.
+        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "size": {"max": 20}, "name": "varchar"}));
+        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "size": {"exact": 5}, "name": "bpchar"}));
+        // numeric(10,2), numeric(5,-2) and numeric(5): NaN and no infinity, no bound beyond the digits.
+        assert_eq!(json(oid::NUMERIC, 655366), json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "name": "numeric"}));
+        assert_eq!(json(oid::NUMERIC, 329730), json!({"kind": "decimal", "precision": 5, "min_scale": -2, "max_scale": -2, "nan": true, "name": "numeric"}));
+        assert_eq!(json(oid::NUMERIC, 327684), json!({"kind": "decimal", "precision": 5, "min_scale": 0, "max_scale": 0, "nan": true, "name": "numeric"}));
+        // time(3), timestamp(3) and timestamptz(0): the tick, and the latest value cut to it.
+        assert_eq!(json(oid::TIME, 3), json!({"kind": "time", "tick": "1/1000", "max": "24:00:00", "name": "time"}));
+        assert_eq!(json(oid::TIMESTAMP, 3)["max"], json!("+294276-12-31T23:59:59.999"));
+        assert_eq!(json(oid::TIMESTAMPTZ, 0), json!({"kind": "instant", "tick": "1", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59Z", "infinity": true, "name": "timestamptz"}));
+        // An interval's fields: year to month, day, hour, hour to minute, second(3) and interval(2).
+        let parts = |typmod: i32| {
+            let d = json(oid::INTERVAL, typmod);
+            (d.get("months").is_some(), d.get("days").is_some(), d["time"]["tick"].as_str().map(str::to_string))
+        };
+        assert_eq!(parts(458751), (true, false, None));
+        assert_eq!(parts(589823), (true, true, None));
+        assert_eq!(parts((1 << 10 << 16) | 0xffff), (true, true, Some("3600".into())));
+        assert_eq!(parts(201392127), (true, true, Some("60".into())));
+        assert_eq!(parts(268435459), (true, true, Some("1/1000".into())));
+        assert_eq!(parts(2147418114), (true, true, Some("1/100".into())));
+        assert_eq!(parts(-1), (true, true, Some("1/1000000".into())));
+        // bit(7) and varbit(5), and an array's modifier on its element: varchar(20)[].
+        assert_eq!(registry.render_typmod(1560, 7).short(), "bit(boolean[7])");
+        assert_eq!(registry.render_typmod(1562, 5).short(), "varbit(boolean[..5])");
+        assert_eq!(registry.render_typmod(1015, 24).short(), "varchar(≤20)?[]");
+        // PostGIS: geometry(Point,4326), geometry(LineStringZ,3857) and geometry(MultiPolygonZM).
+        let mut registry = registry;
+        registry.insert_rows(&[row(90100, "geometry", "b", 0, 0, ",", "public", 0)]);
+        let geometry = |typmod: i32| serde_json::to_value(registry.render_typmod(90100, typmod)).unwrap();
+        assert_eq!(geometry(1107460), json!({"kind": "geometry", "model": "planar", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "public.geometry"}));
+        assert_eq!(geometry(987402), json!({"kind": "geometry", "model": "planar", "srid": 3857, "subtype": "linestring", "coordinates": "xyz", "name": "public.geometry"}));
+        assert_eq!(geometry(27), json!({"kind": "geometry", "model": "planar", "subtype": "multipolygon", "coordinates": "xyzm", "name": "public.geometry"}));
+        assert_eq!(geometry(-1), json!({"kind": "geometry", "model": "planar", "name": "public.geometry"}));
+        // No modifier, or a type that takes none, leaves the type as it is.
+        assert_eq!(registry.render_typmod(oid::VARCHAR, -1), registry.render(oid::VARCHAR));
+        assert_eq!(registry.render_typmod(oid::TEXT, 24), registry.render(oid::TEXT));
     }
 
     #[test]

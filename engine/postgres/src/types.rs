@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct DescribedColumn {
     pub name: String,
     pub type_oid: u32,
+    /// The type modifier the describe reports for it (`varchar(20)`); -1, none, where it has none.
+    #[serde(default = "crate::pgtypes::no_typmod", skip_serializing_if = "crate::pgtypes::is_no_typmod")]
+    pub typmod: i32,
     pub type_name: String,
     pub nullable: bool,
     /// For an array column the statement builds (`ARRAY[a, b]`, `array_agg(x)`, an array

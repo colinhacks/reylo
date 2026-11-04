@@ -33,6 +33,10 @@ pub struct RawColumn {
     pub table: u32,
     #[serde(default)]
     pub attnum: i32,
+    /// The column's type modifier as RowDescription reports it (`varchar(20)`, `numeric(10,2)`);
+    /// -1, none, where the host sends none.
+    #[serde(default = "crate::pgtypes::no_typmod")]
+    pub typmod: i32,
 }
 
 /// Postgres, for [`reylo_engine_core::api::call`].
