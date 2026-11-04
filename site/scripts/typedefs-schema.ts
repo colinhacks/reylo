@@ -7,7 +7,7 @@
 // The schema holds a document to its version exactly: no key the format does not define, but at a
 // descriptor's top level, where a tool may write keys of its own beside it, as `reylo analyze`
 // writes the file a statement was read from. Every example in spec/examples.ts is checked against
-// it. With `--check`, nothing is written, and a file that differs from what the spec generates fails.
+// it. Each declaration's doc comment becomes its `description`. With `--check`, nothing is written, and a file that differs from what the spec generates fails.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Ajv } from 'ajv';
@@ -21,9 +21,11 @@ const literal = /\$schema: "(https:\/\/reylo\.dev\/typedefs\/(\d+\.\d+\.\d+))";/
 if (!literal) throw new Error(`${spec} names no $schema of the form https://reylo.dev/typedefs/<version>`);
 const [, url, version] = literal;
 
-const generated = createGenerator({ path: spec, type: 'StatementDescriptor', expose: 'export', jsDoc: 'basic', additionalProperties: false, skipTypeCheck: true }).createSchema('StatementDescriptor');
+const generated = createGenerator({ path: spec, type: 'StatementDescriptor', expose: 'export', jsDoc: 'extended', additionalProperties: false, skipTypeCheck: true }).createSchema('StatementDescriptor');
 const definitions = generated.definitions as Record<string, Record<string, unknown>>;
 delete definitions.StatementDescriptor!.additionalProperties;
+// The comment above `Type` opens the spec file and describes the file, not the type.
+delete definitions.Type!.description;
 const schema = { $schema: generated.$schema, $id: url, title: `Reylo Type Defs ${version}`, description: 'What introspecting one SQL statement returns, and the type of each parameter and column in it.', $ref: generated.$ref, definitions };
 const text = `${JSON.stringify(schema, null, 2)}\n`;
 
