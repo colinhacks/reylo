@@ -1,2 +1,2 @@
-# The SQLite database setup.mjs creates; the tests analyze query.sql against it, or read .reylo/.
+# The SQLite database setup.mjs creates; the tests analyze query.sql against it, or read reylo/.cache/.
 direct_url: file:./lab.db
