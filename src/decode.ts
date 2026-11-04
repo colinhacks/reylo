@@ -23,7 +23,7 @@
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
 // those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, DecodeError, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+import { coerce, DecodeError, elementKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
 
@@ -530,7 +530,7 @@ function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unkn
   if (typeof v === "string") return textDecoder(kind, delim)(v);
   // pg parses an array's text into an array, each element by the element type's parser, which
   // Reylo's tag passes through for the types it names.
-  if (Array.isArray(v) && kind.endsWith("[]")) return v.map((e) => (Array.isArray(e) ? slonikValue(kind, e, name, delim) : slonikValue(kind.slice(0, -2), e, name, delim)));
+  if (Array.isArray(v) && kind.endsWith("[]")) return v.map((e) => (Array.isArray(e) ? slonikValue(kind, e, name, delim) : slonikValue(elementKind(kind), e, name, delim)));
   if (SLONIK_STRICT.test(kind)) {
     throw new DecodeError(`Column "${name}" reached Reylo already converted by Slonik's driver (${v instanceof Date ? "a Date" : typeof v}), which ignored the query's type parsers, as a custom driverFactory may: Reylo refuses it rather than return a value that may have been rounded.`);
   }

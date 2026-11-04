@@ -220,6 +220,11 @@ pub struct Analysis {
     /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
+    /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
+    /// every sort key, so the order is the same on every run. Only for a result that can hold more
+    /// than one row, as `key` is.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub ordered: bool,
     pub rewritten: lex::Rewritten,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,
@@ -339,8 +344,7 @@ fn call_here<D: Database>(request: &str) -> String {
                 D::unbundle(&mut answers);
                 match D::round(&sql, &answers) {
                     Response::Analysis { mut analysis } => {
-                        let prose = crate::comment::leading(&sql, D::DIALECT).prose;
-                        analysis.comment = (!prose.is_empty()).then_some(prose);
+                        analysis.comment = crate::comment::prose(&sql, D::DIALECT);
                         Response::Analysis { analysis }
                     }
                     other => other,

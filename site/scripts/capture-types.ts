@@ -131,7 +131,7 @@ async function render(session: Session, source: string, written: string, sql: st
     if (q.type.kind === 'unknown') return 'unknown';
     return q.nullable ? orNull(rendered) : rendered;
   };
-  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined), columns?: string) => {
+  const emit = (compiled: string, paramsType: string, rowType: string, cardinality: string, names: string[], queryError = queryErrorType(project.dialect, undefined), columns?: string, ordered = false) => {
     const leading = leadingComment(written, project.dialect);
     const prose = leading.prose;
     const shown = statementAfter(written, leading);
@@ -147,7 +147,7 @@ async function render(session: Session, source: string, written: string, sql: st
       `  readonly sql: typeof sql;`,
       `  readonly raw: typeof raw;`,
       `  readonly source: string;`,
-      ...(columns === undefined ? [] : [`  readonly "~standard": { readonly query: { readonly columns: ${columns} } };`]),
+      ...(columns === undefined && !ordered ? [] : [`  readonly "~standard": { readonly query: { ${[columns === undefined ? "" : `readonly columns: ${columns}`, ordered ? "readonly ordered: true" : ""].filter(Boolean).join("; ")} } };`]),
       `};`,
       `export default query;`,
       ``,
@@ -176,7 +176,7 @@ async function render(session: Session, source: string, written: string, sql: st
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect)), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
 }
 
 // ---- The scratch databases ----

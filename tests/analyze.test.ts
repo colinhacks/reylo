@@ -28,7 +28,7 @@ function project(): { root: string; env: Record<string, string> } {
   return { root, env: { DATABASE_URL: "file:./app.db" } };
 }
 
-// Each session stands for a process of its own: the type check, a build, reylo generate.
+// Each session stands for a process of its own: the type check, a build.
 async function analyze(root: string, env: Record<string, string>, sql: string, options: { force?: boolean } = {}) {
   const session = await Session.open(root, env);
   try {
@@ -73,7 +73,32 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
-test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that names reylo generate", async () => {
+test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
+  const { root, env } = project();
+  const sql = "select id from users where name = :name";
+  // A build step's session, kept open, which read the fingerprint moments ago.
+  const build = await Session.open(root, env);
+  try {
+    const before = await build.analyze(sql);
+    assert.ok(before.ok);
+    assert.equal(before.analysis.cardinality, "many");
+    const db = new DatabaseSync(join(root, "app.db"));
+    db.exec("create unique index users_name on users (name)");
+    db.close();
+    // The type check, a process of its own, analyzes the statement on the new schema.
+    const checked = await analyze(root, env, sql);
+    assert.ok(checked.ok);
+    assert.deepEqual([checked.source, checked.analysis.cardinality], ["database", "at_most_one"]);
+    const after = await build.analyze(sql);
+    assert.ok(after.ok);
+    assert.deepEqual([after.source, after.analysis.cardinality], ["cache", "at_most_one"]);
+    assert.equal((JSON.parse(readFileSync(after.entry, "utf8")) as { analysis: { cardinality: string } }).analysis.cardinality, "at_most_one");
+  } finally {
+    await build.close();
+  }
+});
+
+test("without the database, .reylo/ answers as it is, and a statement it lacks is an error that says where to fill it", async () => {
   const { root, env } = project();
   assert.ok((await analyze(root, env, SELECT)).ok);
   renameSync(join(root, "app.db"), join(root, "gone.db"));
@@ -83,7 +108,7 @@ test("without the database, .reylo/ answers as it is, and a statement it lacks i
   const missing = await analyze(root, env, "select name from users");
   assert.ok(!missing.ok);
   assert.equal(missing.code, 5);
-  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run reylo generate where the database can be reached\.$/);
+  assert.match(missing.message, /^Cannot open the database .*app\.db .*\.reylo has no analysis of this statement, so run the type check or a build where the database can be reached first\.$/);
   // --force asks the database even for a statement .reylo/ holds.
   const forced = await analyze(root, env, SELECT, { force: true });
   assert.ok(!forced.ok);
@@ -172,7 +197,7 @@ test("the module a build step emits carries the analysis and reads nothing at ru
     // A build (a process of its own) that has neither the database nor the entry fails instead of guessing.
     for (const session of Session.opened()) await session.close();
     renameSync(join(root, "app.db"), join(root, "gone.db"));
-    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run reylo generate/);
+    await assert.rejects(sqlModule(file, "select name from users"), /user\.sql: Cannot open the database .*run the type check or a build where/);
   } finally {
     for (const session of Session.opened()) await session.close();
   }
@@ -295,7 +320,7 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     }
   };
   try {
-    await db.unsafe(`create table a (x int, s text); create table b (x int, s text);
+    await db.unsafe(`create table a (x int, s text); create table b (x int, s text); create table m (v varchar(20), n numeric);
       create function skip() returns trigger language plpgsql as 'begin return null; end';
       create function to_one(boolean) returns int8 language sql as 'select 1::int8';
       create function plus(int, int) returns int language sql as 'select $1 + $2'`);
@@ -315,7 +340,8 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
     // Each change touches only a catalog the row count or the trust check reads: rows of b are read
     // by a scan of a, a BEFORE ROW trigger can skip an INSERT's row and a rule can replace it, a
     // key holds only under the index's collation, and a user's operator, cast, default argument,
-    // volatility or strictness decides which call the server makes and what it may answer.
+    // volatility or strictness decides which call the server makes and what it may answer, and a
+    // column's type modifier is the size, precision or scale its type carries.
     let last = hostile;
     for (const change of [
       "alter table b inherit a",
@@ -329,6 +355,8 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
       "alter function plus(int, int) immutable",
       "alter function plus(int, int) strict",
+      "alter table m alter column v type varchar(50)",
+      "alter table m alter column n type numeric(10,2)",
     ]) {
       await db.unsafe(change);
       const next = await fingerprint();

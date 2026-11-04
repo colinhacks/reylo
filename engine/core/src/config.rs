@@ -9,8 +9,7 @@
 //! names the dialect. A key the library does not know is an error, so a typo does not pass for a
 //! default; the `api` and `rest` sections, which the importer does not read, are accepted as they
 //! are, and a top-level `$schema` (the JSON Schema an editor validates the file
-//! against, which `reylo schema --config` prints) is ignored. `cli` says which files `reylo
-//! generate` analyzes.
+//! against, which `reylo schema --config` prints) is ignored.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,31 +43,11 @@ pub struct Project {
     /// the statement's tags. On when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlcommenter: Option<bool>,
-    #[serde(default, skip_serializing_if = "Cli::is_empty")]
-    pub cli: Cli,
     #[serde(default, skip_serializing)]
     pub rest: Option<serde_yaml::Value>,
     /// The settings of a host that serves the queries, which that host parses.
     #[serde(default, skip_serializing)]
     pub api: Option<serde_yaml::Value>,
-}
-
-/// The files `reylo generate` analyzes, as globs relative to the project file: `include` replaces
-/// the default (every `.sql` file), and `exclude` adds to what is always left out (dependencies,
-/// build output, directories whose name starts with a dot, and what git ignores).
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Cli {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub include: Option<Vec<String>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exclude: Option<Vec<String>>,
-}
-
-impl Cli {
-    fn is_empty(&self) -> bool {
-        self.include.is_none() && self.exclude.is_none()
-    }
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -96,19 +75,21 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
         let end = text[start.min(text.len())..].find(['\n', ':']).map_or(text.len(), |n| start + n);
         // `strict` was renamed `strict_params` on 2026-10-20: the old key is unknown like any
         // other, and its error names the new one.
-        let message = match message.strip_prefix("unknown field `strict`,") {
-            Some(_) => "unknown field `strict`: the key is `strict_params` since 2026-10-20".to_string(),
-            None => message,
+        // The `cli` section said which files `reylo generate` analyzed, and went with it in 0.8.0.
+        let message = if message.starts_with("unknown field `strict`,") {
+            "unknown field `strict`: the key is `strict_params` since 2026-10-20".to_string()
+        } else if message.starts_with("unknown field `cli`,") {
+            "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it".to_string()
+        } else {
+            message
         };
         ConfigError { message: unmask_placeholders(message.trim_end()), start, end }
     })?;
     if masked != text {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
-        for list in [&mut project.env, &mut project.cli.include, &mut project.cli.exclude].into_iter().flatten() {
-            for item in list.iter_mut() {
-                *item = unmask_placeholders(item);
-            }
+        for item in project.env.iter_mut().flatten() {
+            *item = unmask_placeholders(item);
         }
     }
     Ok(project)
@@ -159,7 +140,7 @@ mod tests {
 
     #[test]
     fn reads_the_library_keys_and_leaves_the_later_sections_alone() {
-        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\nsqlcommenter: false\ncli:\n  include: [src/**/*.sql]\n  exclude: [src/legacy/**]\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
+        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\nsqlcommenter: false\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec![".env".to_string()]));
@@ -167,7 +148,7 @@ mod tests {
         assert_eq!(p.sqlcommenter, Some(false));
         assert!(p.api.is_some() && p.rest.is_some());
         // What a host reads back: the later sections are not its business.
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false, "cli": { "include": ["src/**/*.sql"], "exclude": ["src/legacy/**"] } }));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
     }
@@ -185,8 +166,10 @@ mod tests {
         let e = parse(text).unwrap_err();
         assert!(e.message.starts_with("unknown field `types`"), "{}", e.message);
         assert_eq!(&text[e.start..e.end], "types");
-        let e = parse("cli:\n  ignore: [x]\n").unwrap_err();
-        assert!(e.message.contains("unknown field `ignore`"), "{}", e.message);
+        let text = "cli:\n  include: [\"src/**/*.sql\"]\n";
+        let e = parse(text).unwrap_err();
+        assert_eq!(e.message, "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it");
+        assert_eq!(&text[e.start..e.end], "cli");
         let e = parse("strict_params: sometimes\n").unwrap_err();
         assert!(e.message.contains("invalid type"), "{}", e.message);
         // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is

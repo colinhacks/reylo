@@ -49,7 +49,7 @@ export function pgliteIo(pg: PGlite): EngineIo {
     describe(text) {
       return serial(async () => {
         const { messages } = await pg.execProtocol(describeMessage(text), { throwOnError: false });
-        const out = { params: [] as { oid: number }[], columns: [] as { name: string; oid: number; table: number; attnum: number }[] };
+        const out = { params: [] as { oid: number }[], columns: [] as { name: string; oid: number; table: number; attnum: number; typmod: number }[] };
         for (const m of messages as any[]) {
           if (m.name === "error") {
             const err = new Error(m.message) as Error & { code?: string; position?: string };
@@ -58,7 +58,7 @@ export function pgliteIo(pg: PGlite): EngineIo {
             throw err;
           }
           if (m.name === "parameterDescription") out.params = (m.dataTypeIDs as number[]).map((oid) => ({ oid }));
-          if (m.name === "rowDescription") out.columns = (m.fields as any[]).map((f) => ({ name: f.name, oid: f.dataTypeID, table: f.tableID, attnum: f.columnID }));
+          if (m.name === "rowDescription") out.columns = (m.fields as any[]).map((f) => ({ name: f.name, oid: f.dataTypeID, table: f.tableID, attnum: f.columnID, typmod: f.dataTypeModifier }));
         }
         return out;
       });

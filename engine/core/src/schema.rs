@@ -143,11 +143,17 @@ impl Type {
             Kind::Record(r) if !r.fields.is_empty() && r.fields.iter().all(|f| f.name.is_empty()) => {
                 json!({"type": "array", "prefixItems": r.fields.iter().map(|f| nullable(f.ty.json_schema(opts))).collect::<Vec<_>>(), "items": false, "minItems": r.fields.len()})
             }
-            // A row's fields stand where the row does, and a field that may be null is always
-            // spelled as an `anyOf` with null.
+            // A row's fields stand where the row does. A field that may be null is spelled as an
+            // `anyOf` with null in a record with a name (a composite, an anonymous `record`), and is
+            // widened as `nullable` widens any value in one without (an object a statement built, a
+            // DuckDB struct).
             Kind::Record(r) => object(&r.fields, |f| {
                 let schema = f.ty.json_schema(opts);
-                if f.nullable { json!({"anyOf": [schema, {"type": "null"}]}) } else { schema }
+                match (f.nullable, self.name.is_some()) {
+                    (false, _) => schema,
+                    (true, true) => json!({"anyOf": [schema, {"type": "null"}]}),
+                    (true, false) => nullable(schema),
+                }
             }),
             // What a statement built: its keys and items are inside the document.
             Kind::Json(JsonType { content: Some(content), .. }) => {
@@ -345,8 +351,8 @@ mod tests {
             "type": "object",
             "properties": {
                 "id": {"type": "integer", "format": "int64"},
-                "title": {"anyOf": [{"type": "string"}, {"type": "null"}]},
-                "body": {"anyOf": [{}, {"type": "null"}]},
+                "title": {"type": ["string", "null"]},
+                "body": {},
                 "blob": {"type": "string", "format": "hex"},
             },
             "required": ["id", "title", "body", "blob"],

@@ -9,7 +9,7 @@ import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./deco
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
-import { columnKind, describe, hstoreText, numbersInJson, ParameterError, postgresInterval, postgresYear, rowMasks, zoned, type Columns, type JsonNumbers } from "./values.ts";
+import { columnKind, describe, hstoreText, numbersInJson, ParameterError, postgresInterval, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
@@ -170,6 +170,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly row?: RowBuilder | undefined;
   /** The result key: output columns, by name, that identify each row of the result, where the analysis proves one. */
   readonly key?: readonly string[] | undefined;
+  /** Whether the statement's ORDER BY orders its rows totally, where the analysis proves it. */
+  readonly ordered?: boolean | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
@@ -216,10 +218,15 @@ export function execute<D extends Dialect>(
   const c = underneath(client as AnyClient);
   if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return executeSyncSqlite(c, query, params);
   const nonFinite = query.dialect === "postgres" && query.nonFinite !== undefined && query.columns !== undefined ? rowMasks(query.columns, query.nonFinite) : [];
-  if (!nonFinite.length) return executeAsync(c, query, params);
-  // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
+  // A Postgres array column holds the dimensions its type declares and no more (src/values.ts, `withinDimensions`).
+  const arrays = query.dialect === "postgres" ? (query.columns ?? []).filter(([, kind]) => kind.endsWith("[]")) : [];
+  if (!nonFinite.length && !arrays.length) return executeAsync(c, query, params);
   return executeAsync(c, query, params).then((rows) => {
-    for (const row of rows as Record<string, unknown>[]) for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
+    for (const row of rows as Record<string, unknown>[]) {
+      // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
+      for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
+      for (const [name, kind] of arrays) withinDimensions(row[name], kind, name);
+    }
     return rows;
   });
 }

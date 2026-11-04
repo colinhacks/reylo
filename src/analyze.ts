@@ -1,9 +1,9 @@
-// One analysis path for every consumer of a `.sql` file — the type check, the bundler plugins,
-// the runtime hook and `reylo generate` — and one cache they share: `.reylo/` beside the project
+// One analysis path for every consumer of a `.sql` file — the type check, the bundler plugins and
+// the runtime hook — and one cache they share: `.reylo/` beside the project
 // file, one entry per statement. The cache is only for speed. An entry records the schema it was
 // analyzed against; while the database answers, an entry for another schema is analyzed again,
 // and while it does not, or no URL names it, the entries are used as they are, so a build that
-// cannot reach the database runs on what `reylo generate` or an earlier type check wrote.
+// cannot reach the database runs on what an earlier type check or build wrote.
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
@@ -126,7 +126,7 @@ export class Session {
     return new Session(engine, project, idle, from, env);
   }
 
-  /** Every build-step session this process opened, for a caller that ends them (`reylo generate`). */
+  /** Every build-step session this process opened, for a caller that ends them (a test). */
   static opened(): Session[] {
     return [...sessions.values()];
   }
@@ -229,14 +229,24 @@ export class Session {
     const engine = this.#engine;
     if (engine instanceof MissingEngine) return { ok: false, message: engine.message, code: 11 };
     const file = this.entryFile(sql);
-    const schema = await this.schema();
+    let schema = await this.schema();
     if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
     if (schema.value === null) {
       const hit = options.force ? undefined : this.#offlineEntry(sql);
       if (hit) return { ok: true, analysis: hit.entry.analysis, source: "cache", entry: hit.file };
-      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run reylo generate where the database can be reached.`, code: 5 };
+      return { ok: false, message: `${this.cannotConnect(schema.error)}; .reylo has no analysis of this statement, so run the type check or a build where the database can be reached first.`, code: 5 };
     }
     const entry = options.force || options.store === false ? undefined : readEntry(file);
+    // An entry for another fingerprint, written since this session read its own, is another
+    // process's analysis of a schema that changed since (the type check's after a migration, while
+    // a build step still trusts the fingerprint it read): the fingerprint is read again before
+    // either is used, so the build step neither builds from the old schema nor writes it back.
+    if (entry && entry.schema !== schema.value && entry.at >= this.#schema!.at) {
+      await this.recheck();
+      schema = await this.schema();
+      if (schema.fatal) return { ok: false, message: schema.error!, code: 5 };
+      if (schema.value === null) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
+    }
     if (entry && entry.schema === schema.value) return { ok: true, analysis: entry.analysis, source: "cache", entry: file };
     let analysis: Analysis;
     const io = this.#connection();
@@ -504,7 +514,7 @@ function writeEntry(root: string, file: string, entry: Entry): void {
   try {
     mkdirSync(join(dir, "queries"), { recursive: true });
     const ignore = join(dir, ".gitignore");
-    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check, the build steps and reylo generate; never committed.\n*\n");
+    if (!existsSync(ignore)) writeFileSync(ignore, "# reylo's cache: written by the type check and the build steps; never committed.\n*\n");
     writeFileSync(tmp, JSON.stringify(entry) + "\n");
     renameSync(tmp, file);
   } catch {
@@ -514,8 +524,8 @@ function writeEntry(root: string, file: string, entry: Entry): void {
 
 /**
  * One query per dialect whose rows change when anything an analysis reads changes: relations and
- * their columns, inheritance, constraints, indexes, row triggers and rules (nullability and the row
- * count read them), enum labels, domains, functions with their defaults, volatility, strictness,
+ * their columns with their type modifiers (a `varchar(n)`'s size, a `numeric(p,s)`'s precision), inheritance, constraints, indexes, row triggers and rules (nullability and the row
+ * count read them), enum labels, domains with their base type's modifier, functions with their defaults, volatility, strictness,
  * kind and variadic argument, user operators and casts (the trust check reads them), view
  * definitions and column comments (a field's doc comment), and the server settings that change a statement's types;
  * and what the errors a statement may raise are read from: defaults (a domain's too), generated columns, policies and
@@ -547,7 +557,7 @@ const USER = "'16384'::pg_catalog.oid";
 const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_agg(t.x, E'\\n'::pg_catalog.text order by t.x), ''::pg_catalog.text)) from (
     select ${line("v", "pg_catalog.current_setting('server_version_num'::pg_catalog.text)", "pg_catalog.current_setting('search_path'::pg_catalog.text)")} as x
     union all select ${line("r", out("oid", "c.oid"), cat(txt("n.nspname"), lit("."), txt("c.relname")), txt("c.relkind"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where ${NS}
-    union all select ${line("a", out("oid", "a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), out("oid", "a.atttypid"), txt("a.attnotnull"), out("oid", "a.attcollation"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
+    union all select ${line("a", out("oid", "a.attrelid"), out("int2", "a.attnum"), txt("a.attname"), out("oid", "a.atttypid"), out("int4", "a.atttypmod"), txt("a.attnotnull"), out("oid", "a.attcollation"))} from pg_catalog.pg_attribute a ${rel("a", "attrelid")} where a.attnum operator(pg_catalog.>) 0 and not a.attisdropped and ${NS}
     union all select ${line("h", out("oid", "h.inhrelid"), out("oid", "h.inhparent"), out("int4", "h.inhseqno"))} from pg_catalog.pg_inherits h ${rel("h", "inhrelid")} where ${NS}
     union all select ${line("c", out("oid", "o.conrelid"), out("oid", "o.contypid"), txt("o.conname"), "pg_catalog.pg_get_constraintdef(o.oid)")} from pg_catalog.pg_constraint o join pg_catalog.pg_namespace n on ${eq("n.oid", "o.connamespace")} where ${NS}
     union all select ${line("i", out("oid", "i.indexrelid"), txt("i.indisvalid"), "pg_catalog.pg_get_indexdef(i.indexrelid)")} from pg_catalog.pg_index i ${rel("i", "indrelid")} where ${NS}
@@ -555,7 +565,7 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("u", out("oid", "w.ev_class"), txt("w.rulename"), txt("w.ev_type"), txt("w.ev_enabled"), md5("pg_catalog.pg_get_ruledef(w.oid)"))} from pg_catalog.pg_rewrite w ${rel("w", "ev_class")} where w.rulename operator(pg_catalog.<>) '_RETURN'::pg_catalog.name and ${NS}
     union all select ${line("o", out("oid", "o.oid"), txt("o.oprname"), out("oid", "o.oprleft"), out("oid", "o.oprright"), out("oid", "o.oprcode::pg_catalog.oid"))} from pg_catalog.pg_operator o where o.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("e", out("oid", "e.enumtypid"), out("float4", "e.enumsortorder"), txt("e.enumlabel"))} from pg_catalog.pg_enum e
-    union all select ${line("t", out("oid", "t.oid"), txt("t.typname"), txt("t.typtype"), out("oid", "t.typbasetype"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
+    union all select ${line("t", out("oid", "t.oid"), txt("t.typname"), txt("t.typtype"), out("oid", "t.typbasetype"), out("int4", "t.typtypmod"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
     union all select ${line("f", out("oid", "p.oid"), txt("p.proname"), out("oid", "p.prorettype"), txt("p.proretset"), out("oidvector", "p.proargtypes"), md5(or("p.prosrc")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), out("oid", "p.provariadic"))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
     union all select ${line("k", out("oid", "k.oid"), out("oid", "k.castsource"), out("oid", "k.casttarget"), out("oid", "k.castfunc"), txt("k.castcontext"), txt("k.castmethod"))} from pg_catalog.pg_cast k where k.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("w", out("oid", "c.oid"), md5("pg_catalog.pg_get_viewdef(c.oid)"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where c.relkind operator(pg_catalog.=) any ('{v,m}'::pg_catalog."char"[]) and ${NS}

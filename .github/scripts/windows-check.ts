@@ -1,9 +1,10 @@
 // The type check on Windows (windows.yml), through the packages `nub run build` writes: one project
 // links dist/reylo, which finds the engine where an install puts it (dist/reylo/node_modules, a
-// junction to dist/engine-win32-x64), and for each way a URL can name its database `reylo generate`
-// analyzes its query and `tsc` types it. The engine opens the files a URL names itself, so each
-// case names its database differently: relative, absolute, as a file URL, on another drive, on a
-// `subst` drive, through a share, through a short (8.3) name, beside a writer holding a WAL open; a
+// junction to dist/engine-win32-x64), and for each way a URL can name its database the loader
+// analyzes its query as the type check does, `reylo analyze` through the package's command does
+// too, and `tsc` types it. The engine opens the files a URL names itself, so each case names its
+// database differently: relative, absolute, as a file URL, on another drive, on a `subst` drive,
+// through a share, through a short (8.3) name, beside a writer holding a WAL open; a
 // DuckDB file, which the app's own @duckdb/node-api opens, named the same ways; and for Postgres the
 // TLS files a URL or the environment names.
 import { spawnSync } from "node:child_process";
@@ -74,18 +75,41 @@ function sqliteDb(path: string, wal = false): DatabaseSync {
   return db;
 }
 
-/** One way to name the database: `reylo generate` must type the query, and for SQLite `tsc` must too. */
-function check(name: string, url: string, { env = {}, tsc = true, refused }: { env?: Record<string, string>; tsc?: boolean; refused?: RegExp } = {}) {
+// The loader's analysis of the query, as the type check and the build steps make it: a session of
+// the package's own, opened on the project as the content mapper opens one. An analysis that holds
+// a diagnostic typed nothing, so it fails as a refusal does.
+const loaderAnalysis = [
+  `import { readFileSync } from "node:fs";`,
+  `const { Session } = await import(process.argv[1]);`,
+  `const session = await Session.open(process.cwd());`,
+  `const outcome = await session.analyze(readFileSync("queries/get_user.sql", "utf8"));`,
+  `await session.close();`,
+  `const errors = outcome.ok ? outcome.analysis.diagnostics.map((d) => d.message) : [outcome.message];`,
+  `console.log(errors.length ? errors.join("\\n") : "typed");`,
+  `process.exit(errors.length ? 1 : 0);`,
+].join("\n");
+const sessionModule = pathToFileURL(join(project, "node_modules", "reylo", "src", "analyze.js")).href;
+
+/**
+ * One way to name the database: the loader must type the query, and so must `reylo analyze`, the
+ * native binary's own reading of the project, which the package's command runs (a DuckDB database
+ * runs inside the app, and the binary refuses it); for SQLite `tsc` must too.
+ */
+function check(name: string, url: string, { env = {}, tsc = true, analyze = !url.startsWith("duckdb:"), refused }: { env?: Record<string, string>; tsc?: boolean; analyze?: boolean; refused?: RegExp } = {}) {
   writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
   rmSync(join(project, ".reylo"), { recursive: true, force: true });
-  const generate = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "generate"], project, false, env);
-  const typed = generate.status === 0 && generate.out.includes("✓");
-  console.log(`\n== ${name}: ${url}\n${generate.out.trim()}`);
+  const loader = run(process.execPath, ["--input-type=module", "-e", loaderAnalysis, sessionModule], project, false, env);
+  console.log(`\n== ${name}: ${url}\n${loader.out.trim()}`);
   if (refused) {
-    if (generate.status !== 1 || !refused.test(generate.out)) failures.push(`${name}: reylo generate did not refuse it with ${refused}`);
+    if (loader.status !== 1 || !refused.test(loader.out)) failures.push(`${name}: the loader did not refuse it with ${refused}`);
     return;
   }
-  if (!typed) failures.push(`${name}: reylo generate exited ${generate.status}`);
+  if (loader.status !== 0) failures.push(`${name}: the loader's analysis exited ${loader.status}`);
+  if (analyze) {
+    const analyzed = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "analyze", "queries/get_user.sql"], project, false, env);
+    console.log(`reylo analyze: ${analyzed.status}\n${analyzed.out.trim()}`);
+    if (analyzed.status !== 0 || !analyzed.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo analyze exited ${analyzed.status}`);
+  }
   if (!tsc) return;
   rmSync(join(project, ".reylo"), { recursive: true, force: true });
   const check = run(process.execPath, [join(project, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--runExternalCode"], project, false, env);
@@ -152,7 +176,8 @@ if (pg && certs) {
   // MySQL over TCP and over a named pipe, as mysql2's socketPath names one on Windows; Postgres's
   // socket directory, which Node cannot open on Windows, is refused with what to write instead.
   check("MySQL over TCP", "mysql://root@127.0.0.1:53306/reylo_windows", { tsc: false });
-  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false });
+  // The engine connects over TCP alone, and the loader bridges a named pipe to it (src/host-url.ts).
+  check("MySQL, a named pipe", `mysql://root@localhost/reylo_windows?socketPath=${encodeURIComponent(String.raw`\\.\pipe\reylo-mysql`)}`, { tsc: false, analyze: false });
   check("Postgres, a socket directory", "postgres://postgres@/reylo_windows?host=/tmp", { tsc: false, refused: /names the Unix socket \/tmp\/\.s\.PGSQL\.5432, which Node cannot open on Windows/ });
 }
 

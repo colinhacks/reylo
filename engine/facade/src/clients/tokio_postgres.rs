@@ -33,7 +33,7 @@ impl AsyncAnswerer<Describe> for Answers<'_> {
                     let columns: Vec<Value> = stmt
                         .columns()
                         .iter()
-                        .map(|c| json!({ "name": c.name(), "oid": c.type_().oid(), "table": c.table_oid().unwrap_or(0), "attnum": c.column_id().map_or(0, i32::from) }))
+                        .map(|c| json!({ "name": c.name(), "oid": c.type_().oid(), "table": c.table_oid().unwrap_or(0), "attnum": c.column_id().map_or(0, i32::from), "typmod": c.type_modifier() }))
                         .collect();
                     serde_json::from_value(json!({ "params": params, "columns": columns })).map(Ok).map_err(|e| HostError(e.to_string()))
                 }

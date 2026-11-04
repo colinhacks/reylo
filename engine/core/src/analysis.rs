@@ -188,6 +188,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         cardinality: Cardinality::Many,
         cardinality_reason: None,
         key: None,
+        ordered: false,
         rewritten,
         style: lexed.style,
         diagnostics,

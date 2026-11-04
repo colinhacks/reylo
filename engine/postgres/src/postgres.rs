@@ -769,6 +769,7 @@ impl<'a> Engine<'a> {
             merge_keys(&mut catalog, build_catalog(&operators, rows));
         }
         catalog.views = view_definitions;
+        catalog.not_null = self.not_null_columns();
         catalog.param_types = raw.params.clone();
         trusted(&mut catalog, &trust);
         let arbiters = arbiters.unwrap_or_default();
@@ -850,8 +851,10 @@ impl<'a> Engine<'a> {
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
                 _ => {
-                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { registry.render(col.type_oid) };
-                    (col.non_finite.apply(with_document(with_values(with_items(ty, col.nullable_items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
+                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
+                    // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
+                    let items = if col.nested.is_some() { None } else { col.nullable_items };
+                    (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
@@ -895,6 +898,7 @@ impl<'a> Engine<'a> {
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
         let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
         let mut analysis = Analysis {
@@ -905,6 +909,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: reason,
             key,
+            ordered,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -920,6 +925,21 @@ impl<'a> Engine<'a> {
         analysis.domains = registry.domain_bases(&names);
         crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
         Some(analysis)
+    }
+
+    /// Each relation's columns, by the relation's name as the statement writes it, every row of which
+    /// a scan reads holds a value ([`Catalog::not_null`]).
+    fn not_null_columns(&self) -> HashMap<String, HashSet<String>> {
+        let relations = self.relations.borrow();
+        let by_name = self.columns_by_name.borrow();
+        let oids = self.oids_by_name.borrow();
+        oids.iter()
+            .filter_map(|(asked, oid)| {
+                let (_, reads) = relations.get(oid)?;
+                let columns = by_name.get(asked)?;
+                Some((asked.clone(), columns.iter().filter(|(attnum, _)| reads.get(attnum) == Some(&true)).map(|(_, (name, _))| name.clone()).collect()))
+            })
+            .collect()
     }
 
     /// The columns of an UPDATE's or a DELETE's RETURNING list its WHERE is strict in, non-null
@@ -997,6 +1017,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: None,
             key: None,
+            ordered: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -1866,7 +1887,7 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, type_name: registry.name(col.oid), nullable, nullable_items: None, values: None, document, non_finite: Default::default(), whole_row }
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, nested: None, values: None, document, non_finite: Default::default(), whole_row }
             })
             .collect();
         let columns = columns
@@ -2147,7 +2168,7 @@ impl<'a> Engine<'a> {
         let plan = infer::plan(sql, Dialect::Postgres, trust, &columns);
         // Per column: whether it is non-null, and what the statement says of an array's elements.
         let mut reads: Vec<Option<infer::JsonRead>> = Vec::new();
-        let facts: Vec<Option<(bool, Option<bool>)>> = match &plan.set_op {
+        let facts: Vec<Option<(bool, Option<bool>, Option<infer::Nesting>)>> = match &plan.set_op {
             Some(set) => {
                 let left = self.probe(&set.left, trust);
                 let right = self.probe(&set.right, trust);
@@ -2168,7 +2189,13 @@ impl<'a> Engine<'a> {
                     },
                     infer::SetKind::Except => l.nullable_items,
                 });
-                facts.into_iter().zip(items).map(|(f, items)| Some((f.non_null, items))).collect()
+                // An arm's nesting holds where both arms' agree, and an EXCEPT's is its left arm's.
+                let nested = left.columns.iter().zip(&right.columns).map(|(l, r)| match set.kind {
+                    infer::SetKind::Except => l.nested,
+                    _ if l.nested == r.nested => l.nested,
+                    _ => None,
+                });
+                facts.into_iter().zip(items).zip(nested).map(|((f, items), nested)| Some((f.non_null, items, nested))).collect()
             }
             None => {
                 let claims = plan.claims(described.columns.len());
@@ -2189,19 +2216,22 @@ impl<'a> Engine<'a> {
                 // A type the registry has not read may be an array, whose elements say nothing.
                 let registry = self.registry.borrow();
                 let is_array = |o: u32| registry.get(o).is_none_or(|t| t.kind == crate::pgtypes::TypeKind::Array);
+                // Elements nest only where their type is read: one not read says nothing.
+                let surely_array = |o: u32| registry.get(o).map(|t| t.kind == crate::pgtypes::TypeKind::Array);
                 reads = claims.iter().map(|claim| claim.and_then(|e| infer::json_read(e, leaves.as_deref()))).collect();
-                claims.iter().map(|claim| claim.map(|e| (infer::resolve(e, leaves.as_deref()).non_null, infer::items_nullable(e, leaves.as_deref(), &is_array)))).collect()
+                claims.iter().map(|claim| claim.map(|e| (infer::resolve(e, leaves.as_deref()).non_null, infer::items_nullable(e, leaves.as_deref(), &is_array), infer::nesting(e, leaves.as_deref(), &surely_array)))).collect()
             }
         };
         if facts.len() != described.columns.len() {
             return Some(());
         }
         for (col, fact) in described.columns.iter_mut().zip(facts) {
-            if let Some((non_null, items)) = fact {
+            if let Some((non_null, items, nested)) = fact {
                 if non_null {
                     col.nullable = false;
                 }
                 col.nullable_items = items;
+                col.nested = nested;
             }
         }
         // A read of a JSON column at literal keys holds what the column's schema says is there:
@@ -3210,6 +3240,31 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
     compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
 }
 
+/// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
+/// result's name: its levels of rows over the innermost arrays, each of which collects arrays of
+/// the element type, of any depth as a column's array is, or else holds the result's elements, as
+/// `nullable_items` says ([`with_items`]), and no arrays. Each level is non-null, and of the depth
+/// it shows. The column's type modifier is its elements', which the arrays it collects share,
+/// since Postgres reports one only where every element has it.
+pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
+    let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
+    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
+    match (col.nested, kind) {
+        (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
+            let mut inner = match element {
+                Some(oid) => named(TyKind::Array(level(registry.render_typmod(oid, col.typmod)))),
+                None => with_items(named(TyKind::Array(crate::types::ArrayType { any_depth: false, ..array })), col.nullable_items),
+            };
+            for _ in 0..rows {
+                inner = named(TyKind::Array(level(inner)));
+            }
+            inner
+        }
+        (_, kind) => named(kind),
+    }
+}
+
 /// `ty` with what the statement says of its elements, when it is an array.
 pub fn with_items(mut ty: Type, nullable_items: Option<bool>) -> Type {
     if let (TyKind::Array(a), Some(nullable)) = (&mut ty.kind, nullable_items) {
@@ -3734,6 +3789,25 @@ fn identifies(ty: &Type) -> bool {
     }
 }
 
+/// Whether a statement's ORDER BY orders its rows totally ([`Analysis::ordered`]): for a SELECT that
+/// can return more than one row, as [`cardinality::total_order`] proves; never where the
+/// cardinality already says the result holds one row at most or none.
+fn total_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> bool {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
+        return false;
+    }
+    // A type with no collation orders its values by one equality whatever the statement writes; a
+    // string's order is its collation's, which may be one under which two values tie.
+    let plain: Vec<bool> = columns.iter().map(|c| uncollated(&c.ty)).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::total_order(sql, trust, catalog, &named, &plain)
+}
+
+/// Whether values of `ty` have no collation: a number, a truth value, bytes, a UUID or a time.
+fn uncollated(ty: &Type) -> bool {
+    matches!(ty.kind, TyKind::Boolean | TyKind::Integer(_) | TyKind::Float(_) | TyKind::Decimal(_) | TyKind::Bytes(_) | TyKind::Uuid | TyKind::Date(_) | TyKind::Time(_) | TyKind::DateTime(_) | TyKind::Instant(_) | TyKind::Duration(_))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3772,7 +3846,7 @@ mod tests {
             for need in needs {
                 match need {
                     crate::api::Need::Describe { id, sql } => {
-                        let columns = (0..target_count(&sql)).map(|i| RawColumn { name: format!("c{i}"), oid: 25, table: 0, attnum: 0 }).collect();
+                        let columns = (0..target_count(&sql)).map(|i| RawColumn { name: format!("c{i}"), oid: 25, table: 0, attnum: 0, typmod: -1 }).collect();
                         answers.insert(id, Answer::Describe { describe: RawDescribe { params: vec![], columns } });
                     }
                     crate::api::Need::Query { id, .. } => {
@@ -4209,7 +4283,7 @@ mod tests {
             for need in host.needs() {
                 match need {
                     crate::api::Need::Describe { id, .. } => {
-                        let columns = names.iter().map(|name| RawColumn { name: name.to_string(), oid: 25, table: 16400, attnum: 2 }).collect();
+                        let columns = names.iter().map(|name| RawColumn { name: name.to_string(), oid: 25, table: 16400, attnum: 2, typmod: -1 }).collect();
                         answers.insert(id, Answer::Describe { describe: RawDescribe { params: vec![25, 23], columns } });
                     }
                     crate::api::Need::Query { id, sql, .. } => {
@@ -4557,7 +4631,7 @@ mod tests {
 
     #[test]
     fn a_tables_whole_row_is_a_row_unless_an_outer_join_nulls_it() {
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         // The probes select the whole row as `a0`; the statement itself has one JSON column.
         let describe = |sql: &str| -> Vec<RawColumn> {
             if sql.contains(" e AS a0") {
@@ -4608,7 +4682,7 @@ mod tests {
         const USERS: u32 = 16400;
         const ACCOUNTS: u32 = 16600;
         let not_null: HashSet<(u32, i32)> = HashSet::from([(USERS, 1), (USERS, 2), (ACCOUNTS, 1)]);
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         let analyzed = |sql: &str| {
             let mut answers: HashMap<String, Answer> = HashMap::new();
             for _ in 0..64 {
@@ -4710,7 +4784,7 @@ mod tests {
         const USERS: u32 = 16400;
         const ADULTS: u32 = 16500;
         let definition = "SELECT id, age AS years FROM users";
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum };
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
         let describe = |sql: &str| -> RawDescribe {
             let count = lex::lex(sql, Dialect::Postgres).map(|l| l.placeholders.len()).unwrap_or(0);
             let columns = match sql {

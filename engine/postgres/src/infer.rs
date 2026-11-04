@@ -302,7 +302,9 @@ pub enum Expr {
     /// A column the reader has no leaf probe for: one inside a scalar subquery, whose `FROM` the
     /// probe over the outer one does not read, or any under grouping sets. Nullable and untyped,
     /// as `Unknown`; an array built from it says nothing of its elements, as a column's array.
-    Unread,
+    /// The type the catalog gives it, where it is a column of a table in the innermost FROM for
+    /// certain, says only whether an array built of it nests ([`Nesting`]).
+    Unread(Option<u32>),
     /// The inner expression's type, nullable whatever the inner proves: a `CASE` with no `ELSE`,
     /// a scalar subquery that may match no row, SQLite's `total()`.
     Nullable(Box<Expr>),
@@ -857,7 +859,7 @@ pub fn resolve(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> Fact {
     const NOTHING: Fact = Fact { non_null: false, type_oid: None };
     match expr {
         Expr::NonNull(type_oid) => Fact { non_null: true, type_oid: *type_oid },
-        Expr::Unknown | Expr::Unread => NOTHING,
+        Expr::Unknown | Expr::Unread(_) => NOTHING,
         Expr::Nullable(inner) => Fact { non_null: false, ..resolve(inner, leaves) },
         Expr::Leaf(i) => match leaves.and_then(|l| l.get(*i)) {
             Some(col) => Fact { non_null: !col.nullable, type_oid: (col.type_oid != oid::UNKNOWN).then_some(col.type_oid) },
@@ -1012,7 +1014,7 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
         Some(ty) => ty == oid::JSONB || ty >= FIRST_USER_OID,
         None => match expr {
             Expr::NonNull(_) | Expr::Array { .. } => false,
-            Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) => true,
+            Expr::Unknown | Expr::Unread(_) | Expr::Leaf(_) | Expr::Row(..) => true,
             Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => may_be_jsonb(inner, leaves),
             Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(|o| may_be_jsonb(o, leaves)),
             // `->` and `#>` give the column's own JSON; `->>` and `#>>` text.
@@ -1041,7 +1043,7 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
         Expr::Array { items, .. } => array_items(items, leaves, is_array),
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => items_nullable(inner, leaves, is_array),
         Expr::Every(operands, _) | Expr::Any(operands, _) => join_items(operands.iter().map(|o| items_nullable(o, leaves, is_array))),
-        Expr::NonNull(_) | Expr::Unknown | Expr::Unread | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
+        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) | Expr::Leaf(_) | Expr::Row(..) | Expr::JsonPath { .. } => None,
         // A user's overload may return any elements.
         Expr::Call(call) => match (call.fact(leaves), &call.claim) {
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
@@ -1050,6 +1052,69 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
         },
         Expr::Trusted(t) => items_nullable(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves, is_array),
     }
+}
+
+/// How an array the statement builds nests where its elements are arrays themselves
+/// ([`DescribedColumn::nested`]), which adds dimensions the describe cannot show, since it reports
+/// the elements' own array type. `rows` counts the levels of rows over the innermost arrays: an
+/// array literal's rows (`ARRAY[ARRAY[1, 2]]` has one), an aggregate's or a subquery's of arrays it
+/// builds (`array_agg(ARRAY[a, b])`, `ARRAY(SELECT ARRAY[a, b] …)`). `element` is the type of the
+/// arrays the innermost ones collect (`array_agg(tags)`, `ARRAY[tags, tags]`,
+/// `ARRAY(SELECT tags …)`), each of any depth as a column's array is; without one, the innermost
+/// arrays' elements are no arrays for certain. Postgres's arrays are rectangular and hold no NULL in
+/// place of a row or an element array (`array_agg` refuses a NULL array), so each level is a
+/// non-null position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Nesting {
+    pub rows: u32,
+    pub element: Option<u32>,
+}
+
+impl Nesting {
+    /// An array whose elements are no arrays, for certain.
+    const FLAT: Nesting = Nesting { rows: 0, element: None };
+}
+
+/// How an array expression nests ([`Nesting`]), given the leaf probe and whether a type oid is an
+/// array (`None` for a type not read); `None` where its elements are no arrays, or where nothing
+/// certain is known of them.
+pub fn nesting(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> Option<bool>) -> Option<Nesting> {
+    let nested = match expr {
+        Expr::Array { items, .. } => items_nesting(items, leaves, is_array),
+        Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => nesting(inner, leaves, is_array),
+        Expr::Call(call) => match (call.fact(leaves), &call.claim) {
+            (Some(_), Claim::Array(_)) => items_nesting(&call.args, leaves, is_array),
+            _ => None,
+        },
+        Expr::Trusted(t) => nesting(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves, is_array),
+        _ => None,
+    };
+    nested.filter(|n| *n != Nesting::FLAT)
+}
+
+/// How an array built from `items` nests: one item that is an array decides it, since Postgres's
+/// arrays are rectangular, and it is [`Nesting::FLAT`] only where every item is of a type that is
+/// no array, for certain.
+fn items_nesting(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &dyn Fn(u32) -> Option<bool>) -> Option<Nesting> {
+    let mut flat = true;
+    for item in items {
+        match item {
+            // A nested constructor is a row of the result, one level over its own nesting.
+            Expr::Array { items, .. } => return items_nesting(items, leaves, is_array).map(|n| Nesting { rows: n.rows + 1, ..n }),
+            _ => {
+                let type_oid = match item {
+                    Expr::Unread(type_oid) => *type_oid,
+                    _ => resolve(item, leaves).type_oid,
+                };
+                match type_oid.map(|t| (t, is_array(t))) {
+                    Some((t, Some(true))) => return Some(Nesting { rows: 0, element: Some(t) }),
+                    Some((_, Some(false))) => {}
+                    _ => flat = false,
+                }
+            }
+        }
+    }
+    flat.then_some(Nesting::FLAT)
 }
 
 /// What an array built from `items` says of its elements ([`items_nullable`]).
@@ -1072,7 +1137,7 @@ fn array_items(items: &[Expr], leaves: Option<&[DescribedColumn]>, is_array: &dy
 /// Whether an expression reads a column the reader had no leaf probe for ([`Expr::Unread`]).
 fn reads_unread(expr: &Expr) -> bool {
     match expr {
-        Expr::Unread => true,
+        Expr::Unread(_) => true,
         Expr::Nullable(inner) | Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_unread(inner),
         Expr::JsonPath { base, .. } => reads_unread(base),
         Expr::Every(operands, _) | Expr::Any(operands, _) => operands.iter().any(reads_unread),
@@ -1588,7 +1653,7 @@ impl Reader<'_> {
                         Expr::Leaf(leaves.len() - 1)
                     }
                     Some(_) => Expr::Unknown,
-                    None => Expr::Unread,
+                    None => Expr::Unread(self.scope.as_ref().and_then(|scope| scope.last()).and_then(|level| level.column_type(expr, self.columns))),
                 };
                 let read = if missing { Expr::Nullable(Box::new(read)) } else { read };
                 let fields: Option<Vec<String>> = c.fields.iter().map(|f| match f.node.as_ref() {
@@ -2132,14 +2197,13 @@ impl Reader<'_> {
             return Expr::NonNull(Some(oid::BOOL));
         }
         // `ARRAY(SELECT …)` is an array whatever the subquery returns: empty for no rows.
-        if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 {
-            return Expr::NonNull(None);
-        }
-        if s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
+        let array = s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32;
+        if !array && s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
             return Expr::Unknown;
         }
-        let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Expr::Unknown };
-        let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return Expr::Unknown };
+        let unknown = || if array { Expr::NonNull(None) } else { Expr::Unknown };
+        let Some(select) = s.subselect.as_deref().and_then(as_select) else { return unknown() };
+        let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return unknown() };
         // The leaf probe selects over the outer `FROM`, which a reference inside a subquery does
         // not read, so the inner expression is read without leaves.
         let withs = self.withs.with(select.with_clause.as_ref(), self.columns);
@@ -2151,6 +2215,16 @@ impl Reader<'_> {
         };
         let mut inner_reader = Reader { dialect: self.dialect, trust: self.trust, columns: self.columns, withs, rows: None, leaves: None, grouped: false, narrowed: Vec::new(), scope, windows: &select.window_clause, fields: self.fields, lockstep: false };
         let value = inner_reader.read(inner);
+        if array {
+            // Its elements are the subquery's values: arrays of arrays where they are arrays
+            // ([`Nesting`]), and as the subquery's target says otherwise. A column it collects is
+            // typed by the subquery's FROM, where the reader around it knows no scope.
+            let value = match value {
+                Expr::Unread(None) => Expr::Unread(level.column_type(inner, self.columns)),
+                value => value,
+            };
+            return Expr::Array { non_null: true, items: vec![value] };
+        }
         if one_row(select, inner, self.dialect, self.trust) || (keeps_one_row(select, inner, self.dialect, self.trust) && self.aggregates(inner, false, Some(&level), &|n| level.column_type(n, self.columns))) {
             value
         } else {
@@ -3501,7 +3575,7 @@ fn reads_leaf(expr: &Expr) -> bool {
         Expr::Guarded(inner, _) | Expr::NotJsonb(inner) | Expr::Narrowed(inner) | Expr::NotRow(inner, _) => reads_leaf(inner),
         Expr::JsonPath { base, .. } => reads_leaf(base),
         Expr::Array { items, .. } => items.iter().any(reads_leaf),
-        Expr::NonNull(_) | Expr::Unknown | Expr::Unread => false,
+        Expr::NonNull(_) | Expr::Unknown | Expr::Unread(_) => false,
         Expr::Call(call) => call.args.iter().any(reads_leaf),
         Expr::Trusted(t) => t.reads_leaf(),
     }
@@ -3597,7 +3671,7 @@ mod tests {
     }
 
     fn col(nullable: bool, type_oid: u32) -> DescribedColumn {
-        DescribedColumn { name: "a".into(), type_oid, type_name: String::new(), nullable, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
+        DescribedColumn { name: "a".into(), type_oid, typmod: -1, type_name: String::new(), nullable, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false }
     }
 
     #[test]
@@ -4473,8 +4547,8 @@ mod tests {
         assert_eq!(p.head[1], None);
         assert_eq!(p.leaves.as_deref(), Some("SELECT u AS a0 FROM users u WHERE u.id = NULL"));
         // The probe says whether it was the row after all: a column named like the alias is not.
-        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, type_name: "users".into(), nullable: true, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
-        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, type_name: "text".into(), nullable: true, nullable_items: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
+        let row = DescribedColumn { name: "whole".into(), type_oid: 16500, typmod: -1, type_name: "users".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
+        let column = DescribedColumn { name: "whole".into(), type_oid: oid::TEXT, typmod: -1, type_name: "text".into(), nullable: true, nullable_items: None, nested: None, values: None, document: None, non_finite: Default::default(), whole_row: false };
         assert!(resolve(p.head[0].as_ref().unwrap(), Some(&[row])).non_null);
         assert!(!resolve(p.head[0].as_ref().unwrap(), Some(&[column])).non_null);
         assert_eq!(pg("SELECT p FROM users u LEFT JOIN posts p ON p.user_id = u.id").head[0], None);

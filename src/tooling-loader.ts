@@ -1,5 +1,5 @@
-// How reylo's entry points (the build steps, the preload's worker, the content mapper and the CLI)
-// load the build-time half (src/tooling.ts) the first time they run: from beside this file, else,
+// How reylo's entry points (the build steps, the preload's worker and the content mapper) load
+// the build-time half (src/tooling.ts) the first time they run: from beside this file, else,
 // where a bundler has moved this file into a bundle of its own (Turbopack bundles the webpack
 // loader), from reylo's install as the project resolves it.
 //
@@ -22,8 +22,6 @@ export type Tooling = {
   releaseConnections(): Promise<void>;
   /** The methods of TypeScript's content mapper protocol, which src/mapper.ts serves over this process's stdin and stdout. */
   mapperHandlers(): Record<string, (params: unknown) => unknown | Promise<unknown>>;
-  /** Runs the CLI's TypeScript command, and answers with its exit code. */
-  runCli(args: string[]): Promise<number>;
 };
 
 let loaded: Tooling | undefined;

@@ -132,7 +132,10 @@ fn round<Db: Database>(sql: &str, answers: &mut Answers<Db::Describe>) -> Result
     Db::unbundle(answers);
     let answers: &Answers<Db::Describe> = answers;
     match crate::stack::run(move || Db::round(sql, answers)) {
-        Response::Analysis { analysis } => Ok(Round::Done(Box::new(analysis))),
+        Response::Analysis { mut analysis } => {
+            analysis.comment = crate::comment::prose(sql, Db::DIALECT);
+            Ok(Round::Done(Box::new(analysis)))
+        }
         Response::Need { needs } => Ok(Round::Needs(needs)),
         Response::Error { message } => Err(message),
         other => Err(format!("the engine answered a request for an analysis with {other:?}")),

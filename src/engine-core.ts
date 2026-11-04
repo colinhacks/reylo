@@ -32,6 +32,8 @@ export type Analysis = {
   cardinalityReason?: string;
   /** The result key: output columns, by name, no two rows of the result agree on all of (a NULL equal to another NULL). Only for a result that can hold more than one row: absent where the cardinality is `one` or `maybeOne`, and where no key is proven (engine/core/src/api.rs). */
   key?: string[];
+  /** Whether the statement's ORDER BY orders its rows totally: no two rows of a result tie on every sort key, so the order is the same on every run. Only for a result that can hold more than one row, as `key` is (engine/core/src/api.rs). */
+  ordered?: true;
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
   rewritten: { sql: string; order: string[]; spans: [number, number, number, number][]; inserted?: [number, number, number][] };
   style: "none" | "named" | "positional" | "mixed";
@@ -61,7 +63,7 @@ export type Need =
   | { kind: "describe"; id: string; sql: string }
   | { kind: "query"; id: string; sql: string; params: unknown[]; scope: "session" | "statement" };
 
-export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number }[] };
+export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number; typmod?: number }[] };
 /** MySQL's prepare metadata: the protocol type code, the flags (bit 1 is NOT NULL), the charset (63 is binary), the display length and the table the column is one of (empty for an expression). */
 export type MysqlDescribed = { kind: "mysql"; columns: { name: string; type: number; flags: number; charset: number; length: number; org_table: string; org_name: string }[]; params: { type: number; flags: number; charset: number }[] };
 /** A DuckDB logical type as the engine reads it (engine/duckdb/src/api.rs): its id, its text, and what the id says more of. */
