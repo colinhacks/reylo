@@ -850,7 +850,7 @@ impl<'a> Engine<'a> {
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
                 _ => {
-                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(registry.render_typmod(col.type_oid, col.typmod), col.nested, col.nullable_items, &registry) };
+                    let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
                     (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
@@ -3170,19 +3170,21 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
     compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
 }
 
-/// A built array of arrays at its depth ([`infer::Nesting`]), under the result's name: its levels
-/// of rows over the innermost arrays, each of which collects arrays of the element type, of any
-/// depth as a column's array is, or else holds the result's elements, as `nullable_items` says
-/// ([`with_items`]), and no arrays. Each level is non-null, and of the depth it shows.
-pub fn nest(ty: Type, nested: Option<infer::Nesting>, nullable_items: Option<bool>, registry: &crate::pgtypes::TypeRegistry) -> Type {
+/// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
+/// result's name: its levels of rows over the innermost arrays, each of which collects arrays of
+/// the element type, of any depth as a column's array is, or else holds the result's elements, as
+/// `nullable_items` says ([`with_items`]), and no arrays. Each level is non-null, and of the depth
+/// it shows. The column's type modifier is its elements', which the arrays it collects share,
+/// since Postgres reports one only where every element has it.
+pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
-    let Type { kind, name, comment } = ty;
+    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
     let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
-    match (nested, kind) {
+    match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {
-                Some(oid) => named(TyKind::Array(level(registry.render(oid)))),
-                None => with_items(named(TyKind::Array(crate::types::ArrayType { any_depth: false, ..array })), nullable_items),
+                Some(oid) => named(TyKind::Array(level(registry.render_typmod(oid, col.typmod)))),
+                None => with_items(named(TyKind::Array(crate::types::ArrayType { any_depth: false, ..array })), col.nullable_items),
             };
             for _ in 0..rows {
                 inner = named(TyKind::Array(level(inner)));
