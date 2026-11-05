@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { Session } from "../src/analyze.ts";
 import { sqlModule } from "../src/loader.ts";
 import { pgLive, mysqlLive, INDEX, postgresDatabase, mysqlDatabase, closeSessions } from "./helpers.ts";
 
@@ -87,6 +88,29 @@ test("on Postgres, only a SELECT that sets off nothing volatile is read-only", {
     ];
     for (const [sql, expected] of cases) assert.equal(await readOnly(db.url, sql), expected, sql);
   } finally {
+    await db.drop();
+    await closeSessions();
+  }
+});
+
+test("on Postgres, a table a policy reads is read by a write, not written", { skip: pgLive }, async () => {
+  const db = await postgresDatabase("read_only_policy", `create table members (id int primary key, note text not null unique);
+    create function touch() returns trigger language plpgsql as $$ begin return new; end $$;
+    create trigger touched before insert on members for each row execute function touch();
+    create table docs (id int primary key);
+    alter table docs enable row level security;
+    create policy member on docs using (exists (select 1 from members));`);
+  const root = mkdtempSync(join(tmpdir(), "reylo-read-only-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const session = await Session.open(root, { DATABASE_URL: db.url });
+  try {
+    const outcome = await session.analyze("insert into docs values (1) returning id", { store: false });
+    assert.ok(outcome.ok, !outcome.ok ? outcome.message : "");
+    const errors = JSON.stringify(outcome.analysis.errors);
+    assert.ok(errors?.includes("docs_pkey"), `the write's own errors are named: ${errors}`);
+    assert.ok(!errors.includes("members"), `a table the policy only reads is not written: ${errors}`);
+  } finally {
+    await session.close();
     await db.drop();
     await closeSessions();
   }

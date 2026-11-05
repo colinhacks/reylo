@@ -86,7 +86,7 @@ macro_rules! relname {
 /// each type of a user's present, which [`OPERATORS_QUERY`] takes. One row `('runs', name, 'built in' or
 /// NULL)` for each volatile function, or aggregate over one, that a view or a policy a read reaches
 /// calls, read from the stored expression, since `pg_depend` records nothing for a built-in and every
-/// aggregate is labelled immutable ([`read_only`]). A policy's relations are among what a read reaches.
+/// aggregate is labelled immutable ([`read_only`]). A policy's relations are among what a read reaches, and never among what a write does: it only reads them.
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
     named(oid, written) AS ( \
@@ -99,18 +99,18 @@ pub const ERRORS_QUERY: &str = concat!(
     " JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     relation_named!("x.name"),
     "), \
-    edge(parent, child, read) AS ( \
-      SELECT h.inhparent, h.inhrelid, true FROM pg_catalog.pg_inherits h \
-      UNION ALL SELECT q.ev_class, d.refobjid, true FROM pg_catalog.pg_rewrite q JOIN pg_catalog.pg_depend d \
+    edge(parent, child, read, written) AS ( \
+      SELECT h.inhparent, h.inhrelid, true, true FROM pg_catalog.pg_inherits h \
+      UNION ALL SELECT q.ev_class, d.refobjid, true, true FROM pg_catalog.pg_rewrite q JOIN pg_catalog.pg_depend d \
         ON d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " AND d.objid OPERATOR(pg_catalog.=) q.oid \
         AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) q.ev_class \
         WHERE q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
-      UNION ALL SELECT k.confrelid, k.conrelid, false FROM pg_catalog.pg_constraint k WHERE $5::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
+      UNION ALL SELECT k.confrelid, k.conrelid, false, true FROM pg_catalog.pg_constraint k WHERE $5::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
         AND (k.confdeltype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]) OR k.confupdtype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[])) \
-      UNION ALL SELECT y.polrelid, d.refobjid, true FROM pg_catalog.pg_policy y JOIN pg_catalog.pg_depend d \
+      UNION ALL SELECT y.polrelid, d.refobjid, true, false FROM pg_catalog.pg_policy y JOIN pg_catalog.pg_depend d \
         ON d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_policy"), " AND d.objid OPERATOR(pg_catalog.=) y.oid \
         AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) y.polrelid), \
-    w(oid) AS (SELECT n.oid FROM named n WHERE n.written UNION SELECT e.child FROM edge e JOIN w ON e.parent OPERATOR(pg_catalog.=) w.oid), \
+    w(oid) AS (SELECT n.oid FROM named n WHERE n.written UNION SELECT e.child FROM edge e JOIN w ON e.parent OPERATOR(pg_catalog.=) w.oid WHERE e.written), \
     r(oid) AS (SELECT n.oid FROM named n UNION SELECT e.child FROM edge e JOIN r ON e.parent OPERATOR(pg_catalog.=) r.oid WHERE e.read), \
     rel(oid) AS (SELECT w.oid FROM w UNION SELECT r.oid FROM r), \
     dom(oid) AS ( \
