@@ -6,7 +6,7 @@ Written by `./run.sh` on 2026-11-05. Each mark comes from what the tool answered
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Version | 0.7.0 | v1.31.1 | 2.4.3 | 7.10.1 | 0.49.0 | 5.4.2 | 0.9.0 | 0.24.0 | 0.1.0-beta.22 |
 | No codegen | yes | no | no | no | no | partly | yes | no | partly |
-| Live database | yes (3/3) | partly (2/3) | yes (3/3) | yes (3/3) | partly (1/3) | partly (2/3) | yes (3/3) | yes (3/3) | no (3/3) |
+| Live database | yes (3/3) | partly (3/3) | yes (3/3) | yes (3/3) | partly (1/3) | partly (2/3) | yes (3/3) | yes (3/3) | no (3/3) |
 | Nullable left joins | yes (17/17) | partly (14/17) | no (0/6) | partly (12/17) | no (0/17) | yes (6/6) | partly (12/17) | partly (11/17) | yes (6/6) |
 | Nullable expressions | yes (57/57) | partly (37/57) | no (9/19) | partly (44/57) | partly (30/57) | partly (15/19) | partly (44/57) | partly (49/57) | yes (19/19) |
 | Parameter types | yes (17/17) | yes (17/17) | yes (7/7) | partly (12/17) | partly (16/17) | partly (5/7) | partly (7/17) | partly (16/17) | yes (7/7) |
@@ -27,9 +27,7 @@ Written by `./run.sh` on 2026-11-05. Each mark comes from what the tool answered
 
 **No codegen**: no. A run leaves new files to commit: `db/db.go`, `db/models.go`, `db/query.sql.go`.
 
-**Live database**: partly, 2 of 3. By default it reads your schema files and never connects; a `database:` setting asks Postgres for types.
-
-- postgres: `select array_agg(id) as v from users`: it types the result `interface{}`
+**Live database**: partly, 3 of 3. By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.
 
 **Nullable left joins**: partly, 14 of 17
 
@@ -628,7 +626,7 @@ Every tool gets each query on each database it supports. [probes.ts](probes.ts) 
 - `select u.name, p.title from users u left join posts p on p.author_id = u.id where u.id = $1`
 - `select u.name, x.title from users u left join (select author_id, title from posts) x on x.author_id = u.id`
 - `select u.name, p.title from posts p right join users u on u.id = p.author_id`
-- `select u.name, p.title from users u full join posts p on p.author_id = u.id` (Postgres)
+- `select u.name, p.title from users u full join posts p on p.author_id = u.id` (Postgres and SQLite)
 
 **expressions**
 
@@ -636,9 +634,9 @@ Every tool gets each query on each database it supports. [probes.ts](probes.ts) 
 - `select max(id) as v from posts`
 - `select sum(score) as v from posts`
 - `select coalesce(nickname, 'x') as v from users`
-- `select name || '!' as v from users` (Postgres)
+- `select name || '!' as v from users` (Postgres and SQLite)
 - `select concat(name, '!') as v from users` (MySQL)
-- `select nickname || '!' as v from users` (Postgres)
+- `select nickname || '!' as v from users` (Postgres and SQLite)
 - `select concat(nickname, '!') as v from users` (MySQL)
 - `select upper(name) as v from users`
 - `select upper(nickname) as v from users`
@@ -676,10 +674,10 @@ Every tool gets each query on each database it supports. [probes.ts](probes.ts) 
 - `select id, name from users where id = $1`: at most one row
 - `select id from users where email = $1`: at most one row
 - `select count(*) as v from users`: exactly one row
-- `insert into users (id, email, name) values ($1, $2, $3) returning id` (Postgres): exactly one row
+- `insert into users (id, email, name) values ($1, $2, $3) returning id` (Postgres and SQLite): exactly one row
 - `select id from users`: many rows
 - `select id from users limit 1`: at most one row
-- `update users set name = $1 where id = $2 returning id` (Postgres): at most one row
+- `update users set name = $1 where id = $2 returning id` (Postgres and SQLite): at most one row
 - `select p.title from posts p join users u on u.id = p.author_id where p.id = $1`: at most one row
 - `select id from posts where author_id = $1`: many rows
 - `delete from users where id = $1`: no rows
@@ -687,8 +685,7 @@ Every tool gets each query on each database it supports. [probes.ts](probes.ts) 
 **json-shapes**
 
 - `select json_build_object('id', id, 'name', name) as v from users` (Postgres)
-- `select json_object('id', id, 'name', name) as v from users` (MySQL)
-- `select json_object('id', id, 'name', name) as v from users` (SQLite)
+- `select json_object('id', id, 'name', name) as v from users` (MySQL and SQLite)
 - `select json_agg(json_build_object('id', id, 'title', title)) as v from posts` (Postgres)
 - `select json_arrayagg(json_object('id', id, 'title', title)) as v from posts` (MySQL)
 - `select json_group_array(json_object('id', id, 'title', title)) as v from posts` (SQLite)

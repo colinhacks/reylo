@@ -17,6 +17,6 @@ It needs Homebrew's `postgresql@18` (with the JSON Schema validators) and `mysql
 - It is no as well when a tool gives every expression or parameter the same answer, since that reads nothing from the query, even though the answer is right for some.
 - A tool's cardinality counts only where the tool works it out. A tool that has the user declare it (`:one`) or pick it per call (`fetch_one`) answers no.
 - No codegen reads `git status` after a run: nothing to commit is yes, a changed source file is partly, new files are no. A tool with a second way that generates nothing, run for real, is partly.
-- Live database runs the tool once with no server to reach, to see whether it needs one, and checks what it says of a function's result and an operator's.
+- Live database runs the tool once with no server to reach, to see whether it needs one, and likewise any setting that has it ask one, which is partly at best, and checks what it says of a function's result and an operator's.
 
 Postgres's rows are seeded and analyzed, so a tool that reads the query plan sees the plan a real table gets. Unlike the other labs, this one installs `reylo` from npm, the release a user gets, and a run also writes `site/lib/compare-results.json`, which the docs' table reads.

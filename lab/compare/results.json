@@ -1118,9 +1118,9 @@
     },
     "from-the-database": {
      "state": "p",
-     "right": 2,
+     "right": 3,
      "total": 3,
-     "note": "By default it reads your schema files and never connects; a `database:` setting asks Postgres for types.",
+     "note": "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.",
      "results": [
       {
        "db": "postgres",
@@ -1140,10 +1140,8 @@
        "db": "postgres",
        "probe": "builtin",
        "sql": "select array_agg(id) as v from users",
-       "ok": false,
-       "problems": [
-        "it types the result `interface{}`"
-       ]
+       "ok": true,
+       "problems": []
       }
      ]
     },
@@ -8986,5 +8984,5 @@
    }
   }
  },
- "at": "2026-11-05T00:46:45.624Z"
+ "at": "2026-11-05T01:04:38.628Z"
 }

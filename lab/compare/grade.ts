@@ -54,7 +54,7 @@ function cell(results: ProbeResult[], constant = false, note?: string): Cell {
 // True when every answer on a database is the same whatever the statement, the sign of a rule that reads nothing from the query.
 function constantOn(values: boolean[]) { return values.length > 1 && values.every((v) => v === values[0]); }
 
-export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[]; connects: "yes" | "opt-in" | "no"; cardinalityNote?: string; noConnectNote?: string; withoutGenerating?: string | null; supportNotes?: Partial<Record<string, string>> }) {
+export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[]; connects: "yes" | "opt-in" | "no"; cardinalityNote?: string; noConnectNote?: string; optInNote?: string; withoutGenerating?: string | null; supportNotes?: Partial<Record<string, string>> }) {
   const cells: Record<string, Cell> = {};
 
   const none = facts.wrote.length === 0;
@@ -68,7 +68,7 @@ export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[];
   });
   const liveRight = live.filter((r) => r.ok).length;
   if (!none && facts.withoutGenerating) cells["no-codegen"] = { state: "p", right: 0, total: 1, note: facts.withoutGenerating, results: [] };
-  cells["from-the-database"] = { state: facts.connects === "yes" && liveRight === live.length ? "y" : facts.connects === "no" ? "n" : "p", right: liveRight, total: live.length, note: facts.connects === "no" ? facts.noConnectNote ?? "It never connects to a database." : facts.connects === "opt-in" ? "By default it reads your schema files and never connects; a `database:` setting asks Postgres for types." : liveRight < live.length ? "It connects, but types some expressions itself." : undefined, results: live };
+  cells["from-the-database"] = { state: facts.connects === "yes" && liveRight === live.length ? "y" : facts.connects === "no" ? "n" : "p", right: liveRight, total: live.length, note: facts.connects === "no" ? facts.noConnectNote ?? "It never connects to a database." : facts.connects === "opt-in" ? facts.optInNote : liveRight < live.length ? "It connects, but types some expressions itself." : undefined, results: live };
 
   const joins = run(answers, dbs, "outer-joins", OUTER_JOINS, (p, a, db) => checkColumns(p, a, true, db));
   cells["outer-joins"] = cell(joins);

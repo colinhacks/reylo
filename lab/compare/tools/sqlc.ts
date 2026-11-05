@@ -2,7 +2,7 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Db, Kind } from "../probes.ts";
-import { failed, gitDelta, gitInit, rewrite, sh, workdir, type Answer, type Tool, type TypedValue } from "./lib.ts";
+import { failed, gitDelta, gitInit, rewrite, sh, workdir, type Answer, type Statement, type Tool, type TypedValue } from "./lib.ts";
 
 const schemaDir = resolve(import.meta.dirname, "../schema");
 const version = sh("sqlc", ["version"]).out.trim();
@@ -38,6 +38,28 @@ function readQuery(go: string, wantColumns: string[] | undefined): Answer {
   return { ok: true, params, columns, cardinality: null };
 }
 
+// Each statement runs alone, on its own project. `databaseUrl` adds the `database:` setting, which has sqlc ask that server.
+async function run(db: Db, statements: Statement[], databaseUrl?: string) {
+  const answers: Record<string, Answer> = {};
+  let wrote: string[] = [];
+  const database = databaseUrl ? `\n    database:\n      uri: ${databaseUrl}` : "";
+  for (const s of statements) {
+    const dir = workdir("sqlc");
+    writeFileSync(join(dir, "schema.sql"), readFileSync(join(schemaDir, `${db}.sql`), "utf8"));
+    const sql = rewrite(s.sql, db === "postgres" ? (n) => `$${n}` : () => "?");
+    const returns = /^\s*select|returning/i.test(sql);
+    writeFileSync(join(dir, "query.sql"), `-- name: Q ${returns ? ":many" : ":exec"}\n${sql};\n`);
+    writeFileSync(join(dir, "sqlc.yaml"), `version: "2"\nsql:\n  - engine: ${ENGINE[db]}\n    schema: schema.sql\n    queries: query.sql${database}\n    gen:\n      go:\n        package: db\n        out: db\n        query_parameter_limit: 0\n`);
+    gitInit(dir);
+    const generated = sh("sqlc", ["generate"], { cwd: dir });
+    const out = join(dir, "db", "query.sql.go");
+    if (generated.status !== 0 || !existsSync(out)) { answers[s.key] = failed(generated.all); continue; }
+    answers[s.key] = readQuery(readFileSync(out, "utf8"), s.probe.columns?.map((c) => c.name));
+    wrote = gitDelta(dir);
+  }
+  return { answers, wrote };
+}
+
 export const sqlc: Tool = {
   id: "sqlc",
   name: "sqlc",
@@ -45,24 +67,11 @@ export const sqlc: Tool = {
   dbs: ["postgres", "mysql", "sqlite"],
   noDuckdb: 'Not in v1.31.1, the latest release. A DuckDB engine is on its unreleased main branch.',
   cardinalityNote: "Declared by hand on each query: `:one`, `:many` or `:exec`. The annotation decides the method's return type, and sqlc accepts any of them.",
-  async analyze(db, statements, urls) {
-    const answers: Record<string, Answer> = {};
-    let wrote: string[] = [];
-    const database = process.env.COMPARE_SQLC_DATABASE === "1" && db === "postgres" ? `\n    database:\n      uri: ${urls.postgres}` : "";
-    for (const s of statements) {
-      const dir = workdir("sqlc");
-      writeFileSync(join(dir, "schema.sql"), readFileSync(join(schemaDir, `${db}.sql`), "utf8"));
-      const sql = rewrite(s.sql, db === "postgres" ? (n) => `$${n}` : () => "?");
-      const returns = /^\s*select|returning/i.test(sql);
-      writeFileSync(join(dir, "query.sql"), `-- name: Q ${returns ? ":many" : ":exec"}\n${sql};\n`);
-      writeFileSync(join(dir, "sqlc.yaml"), `version: "2"\nsql:\n  - engine: ${ENGINE[db]}\n    schema: schema.sql\n    queries: query.sql${database}\n    gen:\n      go:\n        package: db\n        out: db\n        query_parameter_limit: 0\n`);
-      gitInit(dir);
-      const run = sh("sqlc", ["generate"], { cwd: dir });
-      const out = join(dir, "db", "query.sql.go");
-      if (run.status !== 0 || !existsSync(out)) { answers[s.key] = failed(run.all); continue; }
-      answers[s.key] = readQuery(readFileSync(out, "utf8"), s.probe.columns?.map((c) => c.name));
-      wrote = gitDelta(dir);
-    }
-    return { answers, wrote };
+  optInNote: "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.",
+  async withDatabaseSetting(statements, urls) {
+    return (await run("postgres", statements, urls.postgres)).answers;
+  },
+  async analyze(db, statements) {
+    return run(db, statements);
   },
 };

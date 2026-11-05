@@ -1,5 +1,5 @@
 {
- "at": "2026-11-05T00:46:45.624Z",
+ "at": "2026-11-05T01:04:38.628Z",
  "tools": {
   "reylo": {
    "name": "Reylo",
@@ -85,14 +85,9 @@
     },
     "from-the-database": {
      "state": "p",
-     "note": "By default it reads your schema files and never connects; a `database:` setting asks Postgres for types.",
-     "wrong": 1,
-     "examples": [
-      {
-       "sql": "select array_agg(id) as v from users",
-       "problem": "It types the result `interface{}`."
-      }
-     ]
+     "note": "By default it reads your schema files and never connects. A `database:` setting asks Postgres for types, but not for nullability.",
+     "wrong": 0,
+     "examples": []
     },
     "outer-joins": {
      "state": "p",

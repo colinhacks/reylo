@@ -33,8 +33,19 @@ for (const id of reportOnly ? [] : toolIds) {
   const smokeSql = sqlFor(SMOKE, tool.dbs[0])!;
   const offline = await tool.analyze(tool.dbs[0], [{ key: "dead", probe: SMOKE, sql: smokeSql }], dead);
   const needsDatabase = !offline.answers.dead?.ok;
-  const connects = needsDatabase ? "yes" : tool.id === "sqlc" ? "opt-in" : "no";
-  const cells = gradeTool(answers, tool.dbs, { wrote, connects, cardinalityNote: tool.cardinalityNote, noConnectNote: tool.noConnectNote, withoutGenerating: await tool.withoutGenerating?.() });
+  // A tool that needs none may still have a setting that asks the database: it counts if it answers with a server and fails with none, and its answers are the ones graded for this row.
+  let connects: "yes" | "opt-in" | "no" = needsDatabase ? "yes" : "no";
+  if (!needsDatabase && tool.withDatabaseSetting) {
+    const smoke = [{ key: "smoke", probe: SMOKE, sql: smokeSql }];
+    const live = await tool.withDatabaseSetting(smoke, urls);
+    const none = await tool.withDatabaseSetting(smoke, dead);
+    if (live.smoke?.ok && !none.smoke?.ok) {
+      connects = "opt-in";
+      const statements = FROM_THE_DATABASE.flatMap((probe) => { const sql = sqlFor(probe, "postgres"); return sql ? [{ key: `postgres:from-the-database:${probe.id}`, probe, sql }] : []; });
+      Object.assign(answers, await tool.withDatabaseSetting(statements, urls));
+    }
+  }
+  const cells = gradeTool(answers, tool.dbs, { wrote, connects, cardinalityNote: tool.cardinalityNote, noConnectNote: tool.noConnectNote, optInNote: tool.optInNote, withoutGenerating: await tool.withoutGenerating?.() });
   // DuckDB takes no probes but this one: of these tools, only Reylo can point at it, and an adapter without `duckdb` has no way to.
   const duck = await tool.duckdb?.(SMOKE);
   cells.duckdb = duck?.ok ? { state: "y", right: 1, total: 1, results: [] } : { state: "n", right: 0, total: 1, note: duck?.error ?? tool.noDuckdb ?? `${tool.name} has no support for DuckDB.`, results: [] };
@@ -67,10 +78,13 @@ lines.push(``, `## The queries`, ``, `Every tool gets each query on each databas
 for (const [group, probes] of GROUPS) {
   if (group === "smoke") continue;
   lines.push(``, `**${group}**`, ``);
-  for (const p of probes) for (const db of ["postgres", "mysql", "sqlite"] as const) {
-    const sql = sqlFor(p, db);
-    if (!sql || (db !== "postgres" && sql === sqlFor(p, "postgres"))) continue;
-    lines.push(`- \`${sql}\`${typeof p.sql === "string" ? "" : ` (${DB_NAME[db]})`}${p.cardinality ? `: ${CARD[p.cardinality]}` : ""}`);
+  for (const p of probes) {
+    const byDb = new Map<string, string[]>();
+    for (const db of ["postgres", "mysql", "sqlite"] as const) {
+      const sql = sqlFor(p, db);
+      if (sql) byDb.set(sql, [...(byDb.get(sql) ?? []), DB_NAME[db]]);
+    }
+    for (const [sql, names] of byDb) lines.push(`- \`${sql}\`${names.length === 3 ? "" : ` (${names.join(" and ")})`}${p.cardinality ? `: ${CARD[p.cardinality]}` : ""}`);
   }
 }
 writeFileSync(resolve(here, "RESULTS.md"), `${lines.join("\n")}\n`);

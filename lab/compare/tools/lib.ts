@@ -25,7 +25,10 @@ export interface Tool {
   withoutGenerating?(): Promise<string | null>;
   // Why it never connects, for a tool that reads its types elsewhere.
   noConnectNote?: string;
-  analyze(db: Db, statements: Statement[], urls: Urls): Promise<{ answers: Record<string, Answer>; wrote: string[]; connects?: boolean }>;
+  // A setting that makes a tool that needs no database ask one, on Postgres, and what it says of it.
+  withDatabaseSetting?(statements: Statement[], urls: Urls): Promise<Record<string, Answer>>;
+  optInNote?: string;
+  analyze(db: Db, statements: Statement[], urls: Urls): Promise<{ answers: Record<string, Answer>; wrote: string[] }>;
 }
 
 export const failed = (error: string): Answer => ({ ok: false, error: error.slice(0, 400), params: null, columns: null, cardinality: null });
