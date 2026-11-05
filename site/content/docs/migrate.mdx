@@ -307,7 +307,7 @@ Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
 
-It builds no shadow database, so it needs no permission to create one. Each run stores a fingerprint of the schema, and it refuses a database that no longer has it:
+It builds no shadow database, so it needs no permission to create one. Each migration it runs stores a fingerprint of the schema, and it refuses a database that no longer has it:
 
 ```text
 ✗ This database changed since Reylo last ran on it
@@ -317,6 +317,8 @@ It builds no shadow database, so it needs no permission to create one. Each run 
 
 Nothing was applied.
 ```
+
+After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared: it runs, stores a new one, and says so. Run `reylo migrate check` first, as in every deploy, and it checks the database then too.
 
 ### `sync-history`
 

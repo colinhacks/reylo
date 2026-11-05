@@ -85,7 +85,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 return Ok(v.clone());
             }
             k += 1;
-            args.get(k).cloned().ok_or_else(|| format!("{a} needs a value"))
+            args.get(k).filter(|v| !v.starts_with("--")).cloned().ok_or_else(|| format!("{a} needs a value"))
         };
         match a {
             "--url" | "--dir" => {

@@ -342,6 +342,9 @@ for_each_dialect!(
     prod_compares_with_what_dev_replayed,
     changing_strict_comments_is_not_a_change_to_the_database,
     prod_refuses_any_schema_with_no_history,
+    a_broken_draft_keeps_what_sync_made,
+    a_migrations_directory_that_isnt_there_is_refused,
+    a_run_cut_off_between_migrations_is_still_compared,
     create_settles_every_guess_with_one_command,
     sync_renames_a_table_keeping_its_rows,
     sync_renames_a_table_back_when_it_rewinds,
@@ -1348,6 +1351,60 @@ async fn changing_strict_comments_is_not_a_change_to_the_database(mut p: P) {
     assert_has!(p.output(), r"no fingerprint of this database[\s\S]*Up to date");
     assert_eq!(p.run(without).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"^✓ Up to date$");
+}
+
+async fn a_broken_draft_keeps_what_sync_made(mut p: P) {
+    let (int, text) = (p.t.int, p.t.text);
+    p.strict = true;
+    p.schema(&format!("create table a (id {int});"));
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.schema(&format!("create table a (id {int}); create table notes (body {text});"));
+    assert_eq!(p.sync_only().await, 0, "{}", p.peek());
+    p.exec("insert into notes values ('kept')").await;
+    p.output();
+    p.file("20261027110000_b.sql", "insert into nope values (1);");
+    assert_eq!(p.dev().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"20261027110000_b\.sql fails when replayed in a shadow database");
+    assert!(!out.contains("Undid"), "{out}");
+    assert_eq!(p.rows("select * from notes").await.len(), 1);
+}
+
+async fn a_migrations_directory_that_isnt_there_is_refused(mut p: P) {
+    let int = p.t.int;
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec("insert into a values (1)").await;
+    p.output();
+    let elsewhere = |o: &Options| {
+        let mut o = o.clone();
+        o.dir = o.root.join("reylo-typo").join("migrations");
+        o.lock = o.root.join("reylo-typo").join(reylo_migrate::lock::LOCK);
+        o
+    };
+    assert_eq!(p.run(async |o, log| reylo_migrate::dev(&elsewhere(o), false, log).await).await, 1);
+    assert_has!(p.output(), r"reylo-typo/migrations doesn't exist\n  This database ran 1 migration from it");
+    assert_eq!(p.run(async |o, log| reylo_migrate::reset(&elsewhere(o), false, log).await).await, 1);
+    assert_has!(p.output(), r"doesn't exist[\s\S]*Nothing was changed\.$");
+    assert_eq!(p.run(async |o, log| reylo_migrate::sync_history(&elsewhere(o), log).await).await, 1);
+    assert_has!(p.output(), "doesn't exist");
+    assert_eq!(p.rows("select * from a").await.len(), 1);
+    assert_eq!(p.history().await, ["20261027100000_a.sql"]);
+}
+
+async fn a_run_cut_off_between_migrations_is_still_compared(mut p: P) {
+    let int = p.t.int;
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    p.file("20261027110000_b.sql", &format!("create table b (id {int});"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.output();
+    // Each row holds the fingerprint its migration left; a change after the last is seen.
+    let rows = p.rows("select name from __reylo_migrations where fingerprint is not null").await;
+    assert_eq!(rows.len(), 2);
+    p.exec(&format!("create table stray (id {int})")).await;
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), "changed since Reylo last ran on it");
 }
 
 async fn prod_refuses_any_schema_with_no_history(mut p: P) {

@@ -74,7 +74,7 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   const flag = reylo(root, ["migrate", "prod", "--dev"]);
   assert.equal(flag.status, 1);
   assert.match(flag.err, /^reylo migrate: prod doesn't take --dev/);
-  for (const [args, said] of [[["migrate", "sync", "--rename", "users.a=b"], /sync doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "prod", "--schema", "x"], /prod doesn't take --schema/], [["migrate", "prod", "-f", "x.sql"], /prod doesn't take --file/], [["migrate", "prod", "dev"], /prod doesn't take dev/], [["migrate", "create", "a", "b"], /create doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/]] as const) {
+  for (const [args, said] of [[["migrate", "sync", "--rename", "users.a=b"], /sync doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "prod", "--schema", "x"], /prod doesn't take --schema/], [["migrate", "prod", "-f", "x.sql"], /prod doesn't take --file/], [["migrate", "prod", "dev"], /prod doesn't take dev/], [["migrate", "create", "a", "b"], /create doesn't take b/], [["migrate", "dev", "--dir", "--watch"], /--dir needs a value/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/]] as const) {
     const r = reylo(root, [...args]);
     assert.equal(r.status, 1, args.join(" "));
     assert.match(r.err, said);

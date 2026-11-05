@@ -217,9 +217,11 @@ async fn fingerprint(db: &mut Db, scope: Scope) -> Result<String, Error> {
 
 /// The fingerprint of catalog lines already read from `db`.
 async fn fingerprint_of(db: &mut Db, lines: &[String], scope: Scope) -> Result<String, Error> {
+    // The server's major version: a minor release fixes bugs and leaves the catalog's text alone, so
+    // that an upgrade a managed host makes on its own leaves the fingerprint comparable.
     let version = match db.dialect() {
-        Dialect::Postgres => "select current_setting('server_version_num') as v",
-        Dialect::Mysql => "select version() as v",
+        Dialect::Postgres => "select (current_setting('server_version_num')::int / 10000)::text as v",
+        Dialect::Mysql => "select substring_index(version(), '.', 2) as v",
         Dialect::Sqlite => "select sqlite_version() as v",
     };
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
@@ -1047,6 +1049,15 @@ impl Rows {
     }
 }
 
+/// The refusal for a migrations directory that isn't there, on a database that ran migrations: a
+/// typo in `dir` or `--dir`, which would otherwise read as every migration taken away.
+fn missing_dir(opts: &Options, history: &[HistoryRow]) -> Option<Problem> {
+    let ran = history.iter().filter(|r| r.applied).count();
+    (!opts.dir.exists() && ran > 0).then(|| {
+        Problem::new(format!("{} doesn't exist", shown(&opts.dir))).note(format!("This database ran {ran} migration{} from it: check `dir` in .reylo.yaml, or --dir.", if ran == 1 { "" } else { "s" }))
+    })
+}
+
 /// A migration a database ran whose file is gone: the text it ran is the way back.
 fn missing_problem(name: &str, ran: &str, dir: &str) -> Problem {
     Problem::new(format!("This database applied {name}, which isn't in {dir}"))
@@ -1095,7 +1106,7 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
     }
     let history = read_history(db).await?;
     if plan.unchanged.is_none() && history.iter().any(|r| r.applied) {
-        log(&paint("dim", "Reylo holds no fingerprint of this database to compare (a new version of Reylo or the server, or a run cut off): reylo migrate check compares it with its migrations"));
+        log(&paint("dim", "Reylo holds no fingerprint of this database to compare (after a new version of Reylo, or a new major version of the server): reylo migrate check compares it with its migrations"));
     }
     for name in &plan.late {
         log(&format!("{} {name} is older than a migration this database ran: reylo migrate check says whether both orders end the same", paint("yellow", "!")));
@@ -1119,20 +1130,16 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
     db.exec(&format!("delete from {HISTORY_TABLE} where applied_at is null")).await?;
     let mut rows = Rows::new(format!("Applying to {}", shown_url(&opts.url)), plan.pending.iter().map(|m| m.name.as_str()));
     let d = db.dialect();
-    let mut ran = false;
     let mut code = 0;
-    // The schema after the last migration that ran, read where the next could leave part of itself.
-    let mut before_next = None;
-    for (k, m) in plan.pending.iter().enumerate() {
+    for m in &plan.pending {
         let at = std::time::Instant::now();
         match run(db, m, true).await {
             Ok(()) => {
                 rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", at.elapsed().as_millis()))));
-                ran = true;
-                before_next = match plan.pending.get(k + 1) {
-                    Some(next) if may_leave_part(&next.sql, d) => Some(fingerprint(db, opts.scope()).await?),
-                    _ => None,
-                };
+                // On its own row as it finishes, so that a run cut off after it, or a migration
+                // after it that fails and leaves part of itself, is seen by the next run.
+                let value = fingerprint(db, opts.scope()).await?;
+                set_fingerprint(db, &m.name, &value).await?;
             }
             Err(e) => {
                 rows.row(log, &paint("bold red", "✗"), &m.name, failed_row(&m.sql, d));
@@ -1143,17 +1150,6 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
                 code = 1;
                 break;
             }
-        }
-    }
-    // The schema as the last migration that ran left it, on its row: the next run reads from it
-    // whether anything has changed the database since, what a failure left included.
-    if ran {
-        let value = match before_next.filter(|_| code != 0) {
-            Some(value) => value,
-            None => fingerprint(db, opts.scope()).await?,
-        };
-        if let Some(row) = read_history(db).await?.iter().rfind(|r| r.applied) {
-            set_fingerprint(db, &row.name, &value).await?;
         }
     }
     Ok(code)
@@ -1267,6 +1263,7 @@ pub async fn reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Err
         let (files, strays) = read_migrations(&opts.dir)?;
         let history = read_history(&mut db).await?;
         let mut problems = file_problems(opts, &files, &strays, None, db.dialect());
+        problems.extend(missing_dir(opts, &history));
         if opts.locked && problems.is_empty() {
             seed_lock(opts, &files, log)?;
             problems.extend(dev_lock_problems(opts, &files, &history));
@@ -1404,7 +1401,9 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     let d = db.dialect();
     let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
-    let problems = file_problems(opts, &files, &strays, None, d);
+    let before_rows = read_history(db).await?;
+    let mut problems = file_problems(opts, &files, &strays, None, d);
+    problems.extend(missing_dir(opts, &before_rows));
     if !problems.is_empty() {
         print_problems(&problems, log);
         log("");
@@ -1412,7 +1411,6 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         return Ok(1);
     }
     // A locked project's history is its lock's; its drafts are development's alone.
-    let before_rows = read_history(db).await?;
     let order: Vec<Migration> = if opts.locked {
         let problems: Vec<Problem> = lock_problems(opts, &files).into_iter().filter(|p| !p.is_drafts()).collect();
         if !problems.is_empty() {
@@ -2450,6 +2448,7 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     let (files, strays) = read_migrations(&opts.dir)?;
     let mut problems = file_problems(opts, &files, &strays, None, d);
     let history = read_history(db).await?;
+    problems.extend(missing_dir(opts, before.unwrap_or(&history)));
     if opts.locked && problems.is_empty() {
         seed_lock(opts, &files, log)?;
         problems.extend(dev_lock_problems(opts, &files, before.unwrap_or(&history)));
@@ -2774,6 +2773,13 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             }
         }
         if !runs {
+            // A migration that fails on what the migrations make, too, fails for its own reasons:
+            // undoing what no migration made would lose it for nothing.
+            let clean = shadows.lane();
+            shadows.push(clean, kept.iter().chain(&records).chain(&pending).map(Step::of));
+            if let Err((m, e)) = shadows.lines(clean).await? {
+                return fail(&format!("{m} fails when replayed in a shadow database"), e, log);
+            }
             // Undone, to what the migrations kept and recorded make: the recorded ones' change stays.
             let lane = shadows.lane();
             shadows.push(lane, kept.iter().chain(&records).map(Step::of));
