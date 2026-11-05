@@ -1288,6 +1288,7 @@ mod tests {
         round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
         round_trip(json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
         round_trip(json!({"kind": "range", "subtype": {"kind": "date"}, "name": "daterange"}));
+        round_trip(json!({"kind": "range", "subtype": {"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": {"kind": "integer", "bits": 32, "name": "int4"}}}, "name": "public.arrayrange"}));
         round_trip(json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
         round_trip(json!({"kind": "set", "size": {"max": 2}, "name": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
         round_trip(json!({"kind": "map", "name": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));

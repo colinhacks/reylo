@@ -835,46 +835,8 @@
       ],
       "unevaluatedProperties": false
     },
-    "OrderedType": {
-      "description": "The kinds that have an order, so the only ones a range can span.",
-      "anyOf": [
-        {
-          "$ref": "#/$defs/IntegerType"
-        },
-        {
-          "$ref": "#/$defs/FloatType"
-        },
-        {
-          "$ref": "#/$defs/DecimalType"
-        },
-        {
-          "$ref": "#/$defs/TextType"
-        },
-        {
-          "$ref": "#/$defs/BytesType"
-        },
-        {
-          "$ref": "#/$defs/UuidType"
-        },
-        {
-          "$ref": "#/$defs/DateType"
-        },
-        {
-          "$ref": "#/$defs/TimeType"
-        },
-        {
-          "$ref": "#/$defs/DateTimeType"
-        },
-        {
-          "$ref": "#/$defs/InstantType"
-        },
-        {
-          "$ref": "#/$defs/DurationType"
-        }
-      ]
-    },
     "RangeType": {
-      "description": "A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not.",
+      "description": "A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Its subtype is any type the database orders, which on Postgres takes in an array, a composite and a `boolean`. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not.",
       "type": "object",
       "allOf": [
         {
@@ -886,7 +848,7 @@
           "const": "range"
         },
         "subtype": {
-          "$ref": "#/$defs/OrderedType"
+          "$ref": "#/$defs/Type"
         }
       },
       "required": [
@@ -908,7 +870,7 @@
           "const": "multirange"
         },
         "subtype": {
-          "$ref": "#/$defs/OrderedType"
+          "$ref": "#/$defs/Type"
         }
       },
       "required": [

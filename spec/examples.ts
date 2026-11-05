@@ -70,6 +70,13 @@ export const json_column: Column = {
   type: { kind: "json", name: "json", content: { type: { kind: "array", element: { type: { kind: "text", name: "text" } } } } },
 };
 
+/** Postgres: `create type arrayrange as range (subtype = int4[]); create table t (r arrayrange); select r from t`. A range spans whatever the database orders, an array here. */
+export const range_over_array: Column = {
+  name: "r",
+  nullable: true,
+  type: { kind: "range", name: "public.arrayrange", subtype: { kind: "array", any_depth: true, name: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, name: "int4" } } } },
+};
+
 /**
  * MySQL.
  *

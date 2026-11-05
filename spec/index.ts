@@ -286,30 +286,16 @@ export interface MapType extends Base {
   value: Position;
 }
 
-/** The kinds that have an order, so the only ones a range can span. */
-export type OrderedType =
-  | IntegerType
-  | FloatType
-  | DecimalType
-  | TextType
-  | BytesType
-  | UuidType
-  | DateType
-  | TimeType
-  | DateTimeType
-  | InstantType
-  | DurationType;
-
-/** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
+/** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Its subtype is any type the database orders, which on Postgres takes in an array, a composite and a `boolean`. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
 export interface RangeType extends Base {
   kind: "range";
-  subtype: OrderedType;
+  subtype: Type;
 }
 
 /** An ordered set of non-overlapping ranges: Postgres multiranges. */
 export interface MultirangeType extends Base {
   kind: "multirange";
-  subtype: OrderedType;
+  subtype: Type;
 }
 
 /** An OGC simple feature: PostGIS `geometry` and `geography` (`geodetic`), and the spatial types of MySQL, SQL Server and Oracle. */
