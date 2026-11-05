@@ -30,7 +30,7 @@ It opens the page in the browser; --no-open leaves it closed, for a script or an
 type Backend = {
   dialect: Dialect;
   label: string;
-  /** What the project file sets that Reylo does not read (`url` alone), said once, as `reylo compile` says it. */
+  /** What the project file sets that Reylo does not read (`url` alone), said once, as `reylo analyze` says it. */
   notice?: string;
   schema: string;
   catalog: Catalog;

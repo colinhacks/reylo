@@ -8,7 +8,7 @@
 // a file. The URL's scheme names the dialect. The connection is
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
-// `reylo compile` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
+// `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
 // is the one the project's `.reylo/` entries record.
 import { spawnSync } from "node:child_process";

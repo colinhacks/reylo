@@ -1,4 +1,4 @@
-//! `reylo compile`: each statement's type descriptor (spec/index.ts), one JSON line per
+//! `reylo analyze`: each statement's type descriptor (spec/index.ts), one JSON line per
 //! statement, read from the database the project names, as the type check reads it.
 
 use crate::project::{self, Project};
@@ -10,8 +10,8 @@ use serde_json::{Map, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub const USAGE: &str = "Usage: reylo compile <file.sql | directory | -> ... [--url <url>]
-       reylo compile --sql <statement> [--url <url>]
+pub const USAGE: &str = "Usage: reylo analyze <file.sql | directory | -> ... [--url <url>]
+       reylo analyze --sql <statement> [--url <url>]
 
 Prints each statement's type descriptor as one line of JSON, with the file it was read from.
 A directory is searched for .sql files, leaving out node_modules, dist, build, out, target,
@@ -97,7 +97,7 @@ pub fn run(args: &[String]) -> i32 {
         Err(message) => return fail(&message),
     };
     if let Some(notice) = project.notice() {
-        eprintln!("reylo compile: {notice}");
+        eprintln!("reylo analyze: {notice}");
     }
     let mut inputs: Vec<Input> = sql.map(|sql| Input { file: None, sql }).into_iter().collect();
     for path in &paths {
@@ -119,16 +119,16 @@ pub fn run(args: &[String]) -> i32 {
         return fail(&format!("Cannot tell the database from the URL ({}): reylo reads postgres://, postgresql://, mysql://, file:, sqlite: and duckdb: URLs.", if given { "--url" } else { "the project's" }));
     };
     if dialect == "duckdb" {
-        return fail("A DuckDB database runs inside the app, and the type check reads it through the project's @duckdb/node-api: reylo compile cannot open one yet.");
+        return fail("A DuckDB database runs inside the app, and the type check reads it through the project's @duckdb/node-api: reylo analyze cannot open one yet.");
     }
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
     // A relative SQLite path in a URL typed on the command line is the shell's, from the working
     // directory; one in the project's URL is from the project's root, as the type check reads it.
     let base = if given { cwd.clone() } else { project.root.clone() };
-    runtime.block_on(compile_all(dialect, url, given, &base, &project, inputs))
+    runtime.block_on(analyze_all(dialect, url, given, &base, &project, inputs))
 }
 
-async fn compile_all(dialect: &str, url: String, given: bool, base: &Path, project: &Project, inputs: Vec<Input>) -> i32 {
+async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, project: &Project, inputs: Vec<Input>) -> i32 {
     let mut session = match Session::open(dialect, &url, base).await {
         Ok(session) => session,
         // A command in `direct_url` that makes a short-lived token is run again once the token is
@@ -303,11 +303,11 @@ fn shown(cwd: &Path, path: &Path) -> String {
 }
 
 fn usage(message: &str) -> i32 {
-    eprintln!("reylo compile: {message}\n\n{USAGE}");
+    eprintln!("reylo analyze: {message}\n\n{USAGE}");
     2
 }
 
 fn fail(message: &str) -> i32 {
-    eprintln!("reylo compile: {message}");
+    eprintln!("reylo analyze: {message}");
     2
 }
