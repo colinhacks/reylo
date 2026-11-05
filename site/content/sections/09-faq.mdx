@@ -22,7 +22,7 @@ Yes: [`reylo migrate`](/migrate) writes each migration from your `schema.sql`, a
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
 
-Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too.
+Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [Deploying](#deploying) covers the build's database. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL.
 
 </Accordion>
 <Accordion title="How do I move a project from Prisma?" id="faq-prisma">
@@ -32,7 +32,7 @@ Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.s
 </Accordion>
 <Accordion title="Can another tool read the types Reylo infers?" id="faq-rtd">
 
-Yes, as [Reylo Type Defs](/rtd): each statement's parameters, columns, types and cardinality as JSON, from `reylo analyze` in a shell or `analyze()` from `reylo/rtd`. The format is experimental, and may change in any release until 1.0.
+Yes: [`compile()`](#compile) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo compile` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
 
 </Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
@@ -42,7 +42,7 @@ It holds your [migrations](/migrate), which you commit, and Reylo's cache of eac
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">
 
-No, not yet: Reylo reads your types from a live database, so a type check or a build needs one.
+No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. [The build](#deploy-build) shows how to give one to a host that migrates after it builds.
 
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">

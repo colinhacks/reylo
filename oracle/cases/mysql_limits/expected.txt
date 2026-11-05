@@ -13,8 +13,8 @@ key_limit_0.sql: at_most_one (id: bigint) -> { id: bigint, name: varchar? }
 key_limit_5.sql: at_most_one (id: bigint) -> { id: bigint, name: varchar? }
 key_limit_offset.sql: at_most_one (id: bigint, n: int32, skip: int32) -> { id: bigint, name: varchar? }
 key_limit_param.sql: at_most_one (id: bigint, n: int32) -> { id: bigint, name: varchar? }
-no_from_limit_0.sql: at_most_one () -> { one: either(bigint, int) }
-no_from_limit_param.sql: at_most_one (n: int32) -> { one: either(bigint, int) }
+no_from_limit_0.sql: at_most_one () -> { one: bigint | int }
+no_from_limit_param.sql: at_most_one (n: int32) -> { one: bigint | int }
 scan_comma_1.sql: at_most_one () -> { id: bigint, name: varchar? }
 scan_limit_0.sql: at_most_one () -> { id: bigint, name: varchar? }
 scan_limit_1.sql: at_most_one () -> { id: bigint, name: varchar? }
@@ -24,5 +24,5 @@ scan_limit_param.sql: many (n: int32) -> { id: bigint, name: varchar? }
 subquery_limit.sql: one () -> { first: varchar?, n: bigint }
 union_limit_1.sql: at_most_one () -> { id: bigint }
 union_limit_5.sql: many (id: bigint, other: bigint) -> { id: bigint }
-values_limit.sql: one () -> { column_0: either(bigint, int), column_1: varchar }
+values_limit.sql: one () -> { column_0: bigint | int, column_1: varchar }
 with_limit.sql: at_most_one () -> { n: bigint }

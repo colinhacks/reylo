@@ -1,10 +1,10 @@
 //! `reylo`, one program for every database: the analysis engine a language's frontend talks to over
 //! standard input and output (`reylo engine <database>`, one JSON request per line, one answer per
-//! line), each statement's type descriptor on the command line (`reylo analyze`), and the
+//! line), each statement's type descriptor on the command line (`reylo compile`), and the
 //! migrations (`reylo migrate`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
 //! `reylo play`, the playground's server, which renders TypeScript and so runs in JavaScript.
 
-mod analyze;
+mod compile;
 mod project;
 
 use project::Project;
@@ -15,7 +15,7 @@ use std::path::Path;
 
 const USAGE: &str = "Usage: reylo <command>
 
-  analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
+  compile <paths> [--url]   Print each statement's type descriptor, one line of JSON per
                             statement, read from the project's database
   migrate <command>         Write, check and apply migrations (reylo migrate --help)
   run \"<sql>\"… [--file <path>]…
@@ -399,14 +399,14 @@ fn main() {
             println!("reylo {}", env!("CARGO_PKG_VERSION"));
             0
         }
-        Some("analyze") => analyze::run(&args[1..]),
+        Some("compile") => compile::run(&args[1..]),
         Some("engine") => engine_command(&args[1..]),
         Some("play") => {
             eprintln!("reylo play runs from reylo's npm package, which renders the playground's TypeScript: npx reylo play");
             2
         }
         Some("generate") => {
-            eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
+            eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo compile prints each statement's types.");
             2
         }
         Some("migrate") => migrate_command(&args[1..]).unwrap_or_else(|e| {

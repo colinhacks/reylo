@@ -1,7 +1,7 @@
 cache_get.sql: at_most_one (k: varchar) -> { v: varchar? }
 cache_put.sql: none (k: varchar, v: varchar?) -> {  }
 count_hits.sql: one () -> { n: bigint }
-count_users.sql: one () -> { n: bigint, top: either(int, bigint)? }
+count_users.sql: one () -> { n: bigint, top: int | bigint? }
 counter.sql: one () -> { seen: unknown }
 delete_hits.sql: none (page: varchar) -> {  }
 insert_hit.sql: none (page: varchar) -> {  }

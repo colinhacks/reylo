@@ -468,6 +468,11 @@
   color: var(--color-fd-primary);
 }
 
+/* A page with no headings, as /compare: the left column holds the brand and the links, its first and last children, without "On this page" and an empty list. A table of contents' entries are its only links to anchors. */
+#nd-toc:not(:has(a[href^='#'])) > :not(:first-child, :last-child) {
+  display: none;
+}
+
 /* ── The comparison, /compare (components/compare-table.tsx) ──
    The label, then Reylo's column between two gutters that hold the frame's light, then the other
    tools. Where the window has room, the table runs past the prose column to the right. */

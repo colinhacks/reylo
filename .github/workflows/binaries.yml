@@ -121,7 +121,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # Each platform's package installed as a project installs it, and run there: npm brings that platform's engine alone, which types a query with reylo analyze through the installed command, runs it under the reylo/register preload, and reads Postgres statements nested to its bound (.github/scripts/install-check.ts). Each runs on a machine of the platform: macOS on Intel on an Intel runner, and Linux in each of the platform's images, Node 24's Debian 11 (older than the build's runner), AlmaLinux 8 (glibc 2.28, the oldest the binary starts on) and Amazon Linux 2023 for glibc, and Alpine for musl.
+  # Each platform's package installed as a project installs it, and run there: npm brings that platform's engine alone, which types a query with reylo compile through the installed command, runs it under the reylo/register preload, and reads Postgres statements nested to its bound (.github/scripts/install-check.ts). Each runs on a machine of the platform: macOS on Intel on an Intel runner, and Linux in each of the platform's images, Node 24's Debian 11 (older than the build's runner), AlmaLinux 8 (glibc 2.28, the oldest the binary starts on) and Amazon Linux 2023 for glibc, and Alpine for musl.
   install:
     needs: [platforms, package]
     name: Install and run (${{ matrix.platform }})

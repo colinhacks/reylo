@@ -775,7 +775,7 @@
       "unevaluatedProperties": false
     },
     "UnionType": {
-      "description": "One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.\n\nA union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.",
+      "description": "One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, an object column with subtypes holds any subtype's record, and MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL by what is bound and how the driver sends it. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.\n\nA union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.",
       "type": "object",
       "allOf": [
         {
@@ -791,10 +791,6 @@
           "items": {
             "$ref": "#/$defs/Type"
           }
-        },
-        "per": {
-          "description": "Every value of one execution is of the same member, which what is bound decides: MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL. A consumer that ignores it reads each value as any member, which holds.",
-          "const": "execution"
         }
       },
       "required": [
@@ -1145,7 +1141,7 @@
       "unevaluatedProperties": false
     },
     "StatementDescriptor": {
-      "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from.",
+      "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo compile` writes the file a statement was read from.",
       "type": "object",
       "properties": {
         "$schema": {

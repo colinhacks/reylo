@@ -163,6 +163,10 @@ Fractions keep the server's precision, up to microseconds, without trailing zero
 
 </Pairs>
 
+So two instants don't sort as strings: `"…10:00:00Z"` sorts after `"…10:00:00.5Z"`, and `<`, `>` and `localeCompare` all read them that way. Sort in SQL, or compare their `Date.parse()`.
+
+A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
+
 **Infinity**
 
 Postgres's `infinity` and `-infinity` come back as those words, in every date and time type, so `Temporal` can't parse them.
@@ -906,6 +910,64 @@ values (:user_id, :total, :ships_on)
 </Rules>
 
 Any other cast sets the parameter's whole type, so `:email::text` never accepts `null`. Neither `coalesce` nor a test for null (`:role is null`) makes a parameter nullable, and one cast to `nullable(…)` but written to a column that refuses `null` is an error.
+
+## Recipes
+
+Each of these is one statement in place of code around one.
+
+**Fill only what is still empty**
+
+To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
+
+<Inferred>
+
+```sql file="pg_fill_order.sql"
+update orders
+set ships_on = coalesce(ships_on, :ships_on::date),
+    receipt = coalesce(receipt, :receipt::bytea)
+where id = :id and (ships_on is null or receipt is null)
+returning id, ships_on, receipt
+```
+
+</Inferred>
+
+**Buckets with no gaps**
+
+To count by day with a row for each empty day, join a `generate_series` to the counts, rather than filling the gaps with `Date` arithmetic:
+
+<Inferred>
+
+```sql file="pg_orders_per_day.sql"
+select
+  day::date::text as day,
+  count(o.id)::int as orders
+from generate_series(
+  :from::timestamptz,
+  :to::timestamptz,
+  '1 day'
+) as day
+left join orders o
+  on o.placed_at >= day and o.placed_at < day + '1 day'
+group by day
+order by day
+```
+
+</Inferred>
+
+**An enum's labels as a type**
+
+A query you import only for its `Row` type never runs, so it can give you each enum as a union:
+
+```ts twoslash tab="enums.ts"
+import type { Row } from "./pg_enums.sql";
+
+export type UserRole = NonNullable<Row["role"]>;
+//          ^?
+```
+
+```sql tab="pg_enums.sql"
+select null::user_role as role
+```
 
 ## Database errors
 

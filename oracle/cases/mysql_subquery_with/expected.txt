@@ -6,7 +6,7 @@ own_count.sql: one () -> { n: bigint }
 own_count_correlated.sql: many () -> { id: int, n: bigint }
 own_json.sql: one () -> { recent_posts: json ({ id: int, title: text })[] }
 own_json_unguarded.sql: one () -> { recent_posts: json ({ id: int, body: unknown? })[]? }
-own_max.sql: one () -> { last: either(int, bigint)? }
+own_max.sql: one () -> { last: int | bigint? }
 recursive.sql: one () -> { c: bigint, s: decimal? }
 recursive_beside_self_named.sql: one () -> { c: bigint? }
 shadows_table.sql: one () -> { titles: json ({ id: int, title: text? })[] }

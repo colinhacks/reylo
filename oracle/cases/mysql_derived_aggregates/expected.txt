@@ -1,6 +1,6 @@
 derived_bare_columns.sql: one () -> { recent_posts: json ({ id: int, title: text })[] }
 derived_column_list.sql: one () -> { ids: json ({ n: int })[] }
-derived_count.sql: many () -> { id: int, n: bigint, last: either(int, bigint)? }
+derived_count.sql: many () -> { id: int, n: bigint, last: int | bigint? }
 derived_ifnull.sql: one () -> { recent_posts: json ({ id: int, title: text })[] }
 derived_limit.sql: one () -> { user_count: bigint, recent_posts: json ({ id: int, title: text })[] }
 derived_no_limit.sql: one () -> { all_posts: json ({ id: int, title: text })[] }

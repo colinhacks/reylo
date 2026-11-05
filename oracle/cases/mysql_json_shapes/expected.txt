@@ -20,7 +20,7 @@ array_agg_nullable_items.sql: one () -> { emails: json varchar?[]? }
 array_agg_objects.sql: one () -> { list: json ({ id: int, name: varchar })[]? }
 array_agg_of_json_column.sql: one () -> { docs: json json?[]?, wrapped: json ({ doc: json? })[]? }
 array_agg_ordered_subquery.sql: many () -> { titles: json varchar[] }
-array_agg_placeholder_passed.sql: one (p: decimal) -> { l: json (either(bigint, double, decimal, text)?)[]? }
+array_agg_placeholder_passed.sql: one (p: decimal) -> { l: json (bigint | double | decimal | text?)[]? }
 array_agg_truth.sql: one () -> { l: json (boolean | bigint)[]? }
 array_agg_truth_buffered.sql: one () -> { l: json (boolean | bigint)[]? }
 array_agg_truth_cast.sql: many () -> { l: json boolean[] }
@@ -73,8 +73,8 @@ object_left_join.sql: many () -> { o: json { user: int, post: int?, title: varch
 object_nested.sql: many () -> { o: json { user: { id: int, name: varchar }, meta: { email: varchar? } } }
 object_null_literal_field.sql: many () -> { o: json { a: unknown?, b: bigint?, c: int? } }
 object_odd_arguments.sql: many () -> { o: json { a: int, b: varchar }, none: json {  } }
-object_placeholder.sql: at_most_one (n: int32, s: varchar, id: int32) -> { o: json { n: either(bigint, double, decimal)?, s: varchar?, id: int } }
-object_placeholder_passed.sql: many (p: decimal, q: decimal, r: varchar, d: date, n: int32, m: int32, t: time) -> { o: json { a: either(bigint, double, decimal, text)?, b: either(bigint, double, decimal, text)?, c: varchar?, d: either(text, date, datetime, time)?, e: boolean | either(bigint, double, decimal, text)?, f: either(bigint, double, decimal)?, g: unknown? } }
+object_placeholder.sql: at_most_one (n: int32, s: varchar, id: int32) -> { o: json { n: bigint | double | decimal?, s: varchar?, id: int } }
+object_placeholder_passed.sql: many (p: decimal, q: decimal, r: varchar, d: date, n: int32, m: int32, t: time) -> { o: json { a: bigint | double | decimal | text?, b: bigint | double | decimal | text?, c: varchar?, d: text | date | datetime | time?, e: boolean | bigint | double | decimal | text?, f: bigint | double | decimal?, g: unknown? } }
 object_right_join.sql: many () -> { o: json { user: int?, post: int } }
 object_through_function.sql: many () -> { merged: json?, inserted: json? }
 object_truth_all_aggregated.sql: one () -> { o: json { c: boolean?, n: bigint, l: boolean, t: boolean | bigint, both: boolean? } }

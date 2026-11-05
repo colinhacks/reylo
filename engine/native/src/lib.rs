@@ -2,7 +2,7 @@
 //! one JSON answer per line on standard output, carrying the request's `id` back. The core answers
 //! the requests that need no database (`ping`, `lex`, `config`, and `analyze` with the host's own
 //! answers). A database's program also opens connections of its own (`open`, answered with the
-//! connection's number and the server's version, as `reylo analyze` reports it), analyzes a statement
+//! connection's number and the server's version, as `reylo compile` reports it), analyzes a statement
 //! to its end over one (`run`), runs a query on one (`query`), describes a statement on one
 //! (`describe`, on Postgres), forgets the answers it keeps for one when the schema changes
 //! (`forget`), and closes it (`close`). Each database's WebAssembly component (engine/wasip2) is this

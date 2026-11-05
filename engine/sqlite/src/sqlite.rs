@@ -17,7 +17,7 @@ use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, Target};
 use crate::sqlite_tree::{self as tree, From, Node, Sel, Tree};
-use crate::types::{Cardinality, Field, FloatType, IllFormed, Kind, Per, Position, StatementKind, TextType, Type};
+use crate::types::{Cardinality, Field, FloatType, IllFormed, Kind, Position, StatementKind, TextType, Type};
 
 /// What the analysis reasons in: a value's storage class by the affinity name SQLite gives it
 /// (`integer`, `real`, `text`, `blob`, `numeric`; `int8` for a value a column declared 64 bits wide
@@ -561,7 +561,7 @@ fn stored(aff: &str) -> Type {
         "text" => vec![text(), Type::bytes()],
         _ => vec![int64(), real(), text(), Type::bytes()],
     };
-    Type::union(members, Per::Value)
+    Type::union(members)
 }
 
 /// The format's type of a value the analysis typed `ty` ([`Ty`]). A column read as it is

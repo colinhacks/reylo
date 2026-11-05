@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { arrayLiteral, execute, executeSync, type QueryModule } from "../src/execute.ts";
 import { checks, defineQuery } from "../src/index.ts";
 import type { EngineType, JsonSchema } from "../src/engine-type.ts";
-import { array, checked, either, lite as liteType, my as myType, pg as pgType, record } from "./descriptors.ts";
+import { array, checked, lite as liteType, my as myType, oneOf, pg as pgType, record } from "./descriptors.ts";
 import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
 
 // Each fake client records what execute handed it and answers the way its driver does; the
@@ -239,7 +239,7 @@ test("a Date for any date or time parameter, and a string without its zone for a
   await refused({ days: [["2026-10-12", undefined]] }, /^Parameter "days" is an array whose elements may not be null, and the element at \[0\]\[1\] is/);
   assert.equal(seen.length, 1);
   // MySQL's DATETIME and TIMESTAMP both reach the client as wall-clock time, and a placeholder compared with both is either.
-  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :at", params: ["at"], inputs: { at: { type: either(myType("datetime"), myType("timestamp")) } } };
+  const my: QueryModule<"mysql"> = { dialect: "mysql", sql: "select :at", params: ["at"], inputs: { at: { type: oneOf(myType("datetime"), myType("timestamp")) } } };
   await assert.rejects(Promise.resolve().then(() => execute({ query: async () => [[], []] as [unknown, unknown], execute: async () => [[], []] as [unknown, unknown] }, my, { at: new Date() })), /^TypeError: Parameter "at" is a timestamp without a time zone/);
 });
 
