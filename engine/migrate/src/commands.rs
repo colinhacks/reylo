@@ -72,7 +72,7 @@ pub fn set_color(on: bool) {
     COLOR.store(on, Ordering::Relaxed);
 }
 
-fn paint(style: &str, text: &str) -> String {
+pub fn paint(style: &str, text: &str) -> String {
     if !COLOR.load(Ordering::Relaxed) {
         return text.to_string();
     }
@@ -83,6 +83,7 @@ fn paint(style: &str, text: &str) -> String {
         "dim" => "2",
         "cyan" => "36",
         "bold red" => "1;31",
+        "bold" => "1",
         _ => "0",
     };
     format!("\x1b[{code}m{text}\x1b[0m")

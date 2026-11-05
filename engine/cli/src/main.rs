@@ -36,21 +36,21 @@ connection; --url names another.";
 const MIGRATE_USAGE: &str = "Usage: reylo migrate <command> [flags]
 
 Commands:
+  init                    Start from this database
+    --schema <name>       A schema to read (Postgres; public by default)
   create <name>           Write a migration from your change to schema.sql
     --drop <names>        Accept what it drops: tables and columns
     --rename <old>=<new>  Say a table or column was renamed
   dev                     Take this database to the migrations, and lock them
+  prod                    Run what the lock lists, with no shadow database
   sync                    Take this database to schema.sql, unrecorded
     --watch               Again on each change
-  reset                   Drop everything in this database
-  wipe                    Delete every row, keeping the schema
   check                   Check the migrations, schema.sql and this database
     --offline             Check only what needs no database
-  prod                    Run what the lock lists, with no shadow database
+  reset                   Drop everything in this database
+  wipe                    Delete every row, keeping the schema
   pull                    Write the migrations this database ran into files
   sync-history            Record what this database's schema already has
-  init                    Start from this database
-    --schema <name>       A schema to read (Postgres; public by default)
   lock                    Write the lock from what this database ran
   unlock                  Delete the lock: migrations run by name
 
@@ -58,6 +58,26 @@ Flags:
   --url <url>             The database, in place of migrate.url
   --dir <path>            Reylo's directory, in place of dir
   -h, --help              Print this help";
+
+/// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
+/// it takes dim. Piped, it is the text alone.
+fn painted_usage() -> String {
+    use reylo_migrate::commands::paint;
+    let name = regex::Regex::new(r"^(\s+)(--?[a-z-]+(?:, --[a-z-]+)?|[a-z][a-z-]*)( <\S+)?(\s{2}.*)$").unwrap();
+    let lines = MIGRATE_USAGE.lines().map(|line| {
+        if let Some(rest) = line.strip_prefix("Usage: ") {
+            return format!("{} {rest}", paint("bold", "Usage:"));
+        }
+        if !line.starts_with(' ') && line.ends_with(':') {
+            return paint("bold", line);
+        }
+        let Some(c) = name.captures(line) else { return line.to_string() };
+        let style = if c[2].starts_with('-') { "yellow" } else { "cyan" };
+        let takes = c.get(3).map_or(String::new(), |t| paint("dim", t.as_str()));
+        format!("{}{}{takes}{}", &c[1], paint(style, &c[2]), &c[4])
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
 #[derive(Default)]
@@ -165,11 +185,11 @@ fn print(line: &str) {
 
 fn migrate_command(args: &[String]) -> Result<i32, String> {
     let Some(command) = args.first() else {
-        println!("{MIGRATE_USAGE}");
+        println!("{}", painted_usage());
         return Ok(0);
     };
     if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) || command == "help" {
-        println!("{MIGRATE_USAGE}");
+        println!("{}", painted_usage());
         return Ok(0);
     }
     if !["create", "dev", "sync", "reset", "wipe", "check", "prod", "pull", "sync-history", "init", "lock", "unlock"].contains(&command.as_str()) {
@@ -396,7 +416,12 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::with_history;
+    use super::{painted_usage, with_history, MIGRATE_USAGE};
+
+    #[test]
+    fn the_help_is_its_text_when_nothing_paints_it() {
+        assert_eq!(painted_usage(), MIGRATE_USAGE);
+    }
 
     #[test]
     fn history_is_set_in_the_migrate_section_and_taken_out_again() {

@@ -54,7 +54,7 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   assert.equal(migrate.status, 0, migrate.err);
   assert.match(migrate.out, /^Usage: reylo migrate <command> \[flags\]\n/);
   // The docs show the help as it is.
-  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").includes(`\`\`\`text\n${migrate.out}\`\`\``));
+  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
   assert.equal(run.status, 0, run.err);
   const db = new DatabaseSync(join(root, "app.db"));
