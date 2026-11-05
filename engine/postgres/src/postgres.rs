@@ -212,13 +212,15 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// path, `$2` how many. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
 /// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
-/// generated column does not; the ninth, the relation's name as `$1` gives it.
+/// generated column does not; the ninth, the relation's name as `$1` gives it; the tenth and the
+/// eleventh, the column's type and its type modifier (`numeric(10,2)`'s), which a parameter
+/// written whole to it takes.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
     CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
-    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name FROM (SELECT DISTINCT n.name FROM ",
+    ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name, a.atttypid::pg_catalog.int8, a.atttypmod FROM (SELECT DISTINCT n.name FROM ",
     cardinality::names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "n"),
     ") AS x JOIN pg_catalog.pg_class c ON c.oid OPERATOR(pg_catalog.=) ",
     cardinality::relation_named!("x.name"),
@@ -619,6 +621,8 @@ struct Engine<'a> {
     /// The parse-named relations' columns that hold what is written to them, by (relation oid,
     /// attnum): no generated column, whose value an UPDATE computes again.
     stored: RefCell<HashSet<(u32, i32)>>,
+    /// The parse-named relations' columns' types and type modifiers, by (relation oid, attnum).
+    column_types: RefCell<HashMap<(u32, i32), (u32, i32)>>,
     /// Each prefetched relation's oid, by its name as the statement writes it.
     oids_by_name: RefCell<HashMap<String, u32>>,
     /// The defining SELECT of each of those that is a view or a materialized view. The catalog
@@ -678,7 +682,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -728,6 +732,8 @@ impl<'a> Engine<'a> {
         });
         let operators = set_returning_operators(self.host);
         let written = self.written_columns(parsed.as_ref(), &relations);
+        // Each parameter written whole and bare, the SELECT that feeds an INSERT included, with its column.
+        let bare_written = parsed.as_ref().map_or(Some(Vec::new()), |p| self.columns_of(&p.bare, &relations));
         let described = match &written {
             Some(written) => self.described(&rewritten.sql, parsed.as_ref(), &relations, trust.as_ref(), &written.iter().map(|(_, rel, att)| (*rel, *att)).collect::<Vec<_>>()),
             None => None,
@@ -769,7 +775,7 @@ impl<'a> Engine<'a> {
             Some(target) => self.host.query(REQUIRED_COLUMNS_QUERY, vec![json!(target.relation)], Scope::Statement),
             None => Some(Ok(Vec::new())),
         };
-        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(required), Some(view_rows), Some((view_definitions, _, _))) = (described, trust, operators, catalog_rows, arbiters, written, required, view_rows, viewed) else { return None };
+        let (Some(described), Some(trust), Some(operators), Some(catalog_rows), Some(arbiters), Some(written), Some(bare_written), Some(required), Some(view_rows), Some((view_definitions, _, _))) = (described, trust, operators, catalog_rows, arbiters, written, bare_written, required, view_rows, viewed) else { return None };
         let (raw, mut described) = match described {
             Ok(d) => d,
             Err(e) => {
@@ -902,11 +908,22 @@ impl<'a> Engine<'a> {
                         Some(known) => known.into_iter().filter(|v| values.contains(v)).collect(),
                         None => values.clone(),
                     }));
+                // A bare parameter written whole to a column is described as the column's type, but
+                // without its type modifier, which it takes: `numeric(10,2)`'s precision and scale,
+                // `varchar(20)`'s size. The server rounds 1.234 written to such a column, and refuses
+                // a longer string, so the column's type is the stricter one, never the looser.
+                let modified = {
+                    let types = self.column_types.borrow();
+                    let mut typmods = bare_written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| types.get(&(*rel, *att)).filter(|(t, _)| *t == o).map(|(_, m)| *m));
+                    let first = typmods.next().flatten();
+                    first.filter(|m| *m >= 0 && typmods.all(|other| other == Some(*m)))
+                };
+                let ty = modified.map_or_else(|| registry.render(o), |m| registry.render_typmod(o, m));
                 // A parameter written to columns that share one comment carries it.
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(registry.render(o), values.as_deref(), registry.holds_strings(o)), document.as_ref())) }
+                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(ty, values.as_deref(), registry.holds_strings(o)), document.as_ref())) }
             })
             .collect();
 
@@ -1151,6 +1168,9 @@ impl<'a> Engine<'a> {
             if row.get(7).and_then(as_bool) == Some(true) {
                 self.stored.borrow_mut().insert((oid, attnum as i32));
             }
+            if let (Some(type_oid), Some(typmod)) = (row.get(9).and_then(as_u32), row.get(10).and_then(Value::as_i64)) {
+                self.column_types.borrow_mut().insert((oid, attnum as i32), (type_oid, typmod as i32));
+            }
             // The columns by the relation's name as the statement writes it (`public.kv` or
             // `kv`), which is how the parse names what a parameter is written to.
             let asked = row.get(8).and_then(as_str).unwrap_or(name);
@@ -1226,12 +1246,20 @@ impl<'a> Engine<'a> {
     /// Each parameter written whole to a column, as `(parameter, relation, attribute)`: the
     /// columns whose CHECKs may type it ([`Engine::checks`]).
     fn written_columns(&self, parsed: Option<&Parsed>, relations: &[String]) -> Lazy<Vec<(i32, u32, i32)>> {
-        let Some(parsed) = parsed.filter(|p| !p.filled.is_empty()) else { return Some(Vec::new()) };
+        parsed.map_or(Some(Vec::new()), |p| self.columns_of(&p.filled, relations))
+    }
+
+    /// The columns each of `filled`'s parameters is written to, as `(parameter, relation,
+    /// attribute)`: the relation as the statement names it, and the column by name or place.
+    fn columns_of(&self, filled: &[(i32, String, analyze::Filled)], relations: &[String]) -> Lazy<Vec<(i32, u32, i32)>> {
+        if filled.is_empty() {
+            return Some(Vec::new());
+        }
         self.prefetch(relations)?;
         let columns = self.columns_by_name.borrow();
         let oids = self.oids_by_name.borrow();
         let mut out = Vec::new();
-        for (n, relation, column) in &parsed.filled {
+        for (n, relation, column) in filled {
             let (Some(known), Some(oid)) = (columns.get(relation), oids.get(relation)) else { continue };
             let attnum = match column {
                 analyze::Filled::Name(name) => known.iter().find(|(_, (c, _))| c == name).map(|(a, _)| *a),
@@ -4510,6 +4538,51 @@ mod tests {
             }
         }
         panic!("the replay did not converge");
+    }
+
+    #[test]
+    fn a_parameter_written_bare_to_a_column_takes_its_type_modifier() {
+        // A server with one table, `items (id int4, name varchar(20), price numeric(10,2), tags
+        // varchar(8)[])`, describing each statement's parameters as the types given.
+        let columns = [("id", 23, -1), ("name", 1043, 24), ("price", 1700, (10 << 16 | 2) + 4), ("tags", 1015, 12)];
+        let shown = |sql: &str, params: &[u32]| {
+            let mut answers: HashMap<String, Answer> = HashMap::new();
+            for _ in 0..64 {
+                let host = Host::new(&answers);
+                if let Some(a) = analyze(sql, &host) {
+                    assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+                    return a.params.iter().map(|p| format!("{}: {}", p.name, p.ty.short())).collect::<Vec<_>>().join(", ");
+                }
+                for need in host.needs() {
+                    match need {
+                        crate::api::Need::Describe { id, .. } => {
+                            answers.insert(id, Answer::Describe { describe: RawDescribe { params: params.to_vec(), columns: vec![] } });
+                        }
+                        crate::api::Need::Query { id, sql, .. } => {
+                            let rows = match sql.as_str() {
+                                RELATION_COLUMNS_QUERY => columns
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(i, (name, typid, typmod))| vec![json!(16400), json!("items"), json!(i + 1), json!(false), Value::Null, json!(name), json!(false), json!(true), json!("items"), json!(typid), json!(typmod)])
+                                    .collect(),
+                                _ => vec![],
+                            };
+                            answers.insert(id, Answer::Rows { rows });
+                        }
+                    }
+                }
+            }
+            panic!("the replay did not converge");
+        };
+        // Written whole and bare, by an INSERT's VALUES, the SELECT that feeds an INSERT, and an
+        // UPDATE's SET: the column's modifier, an array's for its elements.
+        let modified = "name: varchar(≤20), price: numeric(10,2), tags: varchar(≤8)?[]";
+        assert_eq!(shown("INSERT INTO items (name, price, tags) VALUES (:name, :price, :tags)", &[1043, 1700, 1015]), modified);
+        assert_eq!(shown("INSERT INTO items (name, price, tags) SELECT :name, :price, :tags", &[1043, 1700, 1015]), modified);
+        assert_eq!(shown("UPDATE items SET name = :name, price = :price, tags = :tags WHERE id = :id", &[1043, 1700, 1015, 23]), format!("{modified}, id: int4"));
+        // A cast one is its cast's type, and one only compared with a column is the server's.
+        assert_eq!(shown("INSERT INTO items (name, price) VALUES (:name::text, :price::numeric)", &[25, 1700]), "name: text, price: numeric");
+        assert_eq!(shown("SELECT id FROM items WHERE name = :name AND price = :price", &[1043, 1700]), "name: varchar, price: numeric");
     }
 
     #[test]
