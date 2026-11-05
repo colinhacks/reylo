@@ -1,24 +1,20 @@
 // `reylo/rtd`: Reylo Type Defs (RTD), experimental. `analyze` returns one statement's descriptor
-// (spec/type-descriptor.ts, `StatementDescriptor`), read from a live database by the engine, as
+// (spec/index.ts, `StatementDescriptor`), read from a live database by the engine, as
 // plain data that serializes to JSON; `reylo analyze` prints the same descriptors on the command
 // line (engine/cli/src/analyze.rs). It reads no project file and no `.reylo/` cache: the URL names
 // the database, every call reads it afresh, and a parameter nothing types is an error, as under the
 // project file's default, `strict_params: true`.
-import type { StatementDescriptor } from "../spec/type-descriptor.ts";
+import type { StatementDescriptor } from "../spec/index.ts";
 import { NotMysql, reason } from "./connection.ts";
 import { duckdbDatabase } from "./duckdb.ts";
 import { AnswerCache, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
 import { dialectOf, duckdbPath, sqlitePath, type Dialect as Database } from "./project.ts";
 
-export type * from "../spec/type-descriptor.ts";
+export type * from "../spec/index.ts";
 
-/**
- * The version of Reylo Type Defs that `analyze` writes, which each descriptor states as `rtd`.
- *
- * @experimental Until 1.0, a new version of the format may change anything in it.
- */
-export const RTD_VERSION = "0.1";
+/** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
+const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
 
 /** What `analyze` reads: the database, and the statement. */
 export interface AnalyzeInput {
@@ -39,8 +35,8 @@ export interface AnalyzeInput {
  * the catalog as it stands when it is made, so a migration run between two calls shows in the
  * second.
  *
- * @experimental Reylo Type Defs is at version 0.1, and until 1.0 a new version may change anything
- * in it. Each descriptor states its version as `rtd`.
+ * @experimental Reylo Type Defs is at version 0.1.0, and until 1.0.0 a new version may change
+ * anything in it. Each descriptor names its version in `$schema`.
  */
 export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
   const { url, sql } = input;
@@ -158,7 +154,7 @@ async function untyped(e: Engine, sql: string, dialect: Database, analysis: Anal
  */
 function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
   return {
-    rtd: RTD_VERSION,
+    $schema: SCHEMA,
     dialect: { name: dialect, version },
     sql: a.rewritten.sql,
     ...(a.kind !== undefined && { kind: a.kind }),
@@ -175,7 +171,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
 
 /** A statement the engine could not analyze: no parameters or columns, and one diagnostic over the whole of it. */
 function refused(sql: string, dialect: Database, version: string, message: string): StatementDescriptor {
-  return { rtd: RTD_VERSION, dialect: { name: dialect, version }, sql, params: [], columns: [], cardinality: "many", diagnostics: [{ message, start: 0, end: sql.length }] };
+  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], columns: [], cardinality: "many", diagnostics: [{ message, start: 0, end: sql.length }] };
 }
 
 /** The UTF-16 offset of the UTF-8 byte offset `byte` of `text`: a byte inside a character counts from the character's start, and one past the end at the end (`utf16_offset` in engine/core/src/api.rs). */

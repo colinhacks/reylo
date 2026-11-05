@@ -9,6 +9,7 @@
     "api/play-og/page.mjs": { "maxDuration": 10 }
   },
   "routes": [
+    { "src": "^/typedefs/\\d+\\.\\d+\\.\\d+\\.json$", "headers": { "Content-Type": "application/schema+json", "Access-Control-Allow-Origin": "*" }, "continue": true },
     { "src": "^/play/api/(analyze|schema)$", "dest": "/api/play/$1" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "q" }], "dest": "/api/play-og/image" },
     { "src": "^/play/og\\.png$", "has": [{ "type": "query", "key": "example" }], "dest": "/api/play-og/image" },
@@ -39,6 +40,11 @@
       "source": "/opengraph-image",
       "destination": "/opengraph-image.png",
       "permanent": true
+    },
+    {
+      "source": "/typedefs",
+      "destination": "https://github.com/colinhacks/reylo/blob/main/spec/README.md",
+      "permanent": false
     }
   ],
   "headers": [

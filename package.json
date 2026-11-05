@@ -42,12 +42,14 @@
   "scripts": {
     "build": "nub scripts/build.ts",
     "typecheck": "tsc --noEmit --runExternalCode",
-    "test": "node --test 'tests/**/*.test.ts'"
+    "test": "node --test 'tests/**/*.test.ts'",
+    "typedefs": "node spec/generate.ts"
   },
   "devDependencies": {
     "@bytecodealliance/jco": "1.39.0",
     "@duckdb/node-api": "2.0.0-r.1",
     "@types/node": "^26.6.1",
+    "ajv": "8.20.0",
     "esbuild": "^0.28.2",
     "slonik": "49.12.0",
     "typescript": "^7.1.0-dev.20260918.1"

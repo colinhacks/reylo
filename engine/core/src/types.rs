@@ -1,5 +1,5 @@
 //! The type model every database's engine answers with: Reylo Type Defs (RTD), the type descriptor
-//! format of `spec/type-descriptor.ts`, as Rust types that serialize to exactly its JSON. A [`Type`] says
+//! format of `spec/typedefs.schema.json`, as Rust types that serialize to exactly its JSON. A [`Type`] says
 //! which values a parameter or a column can hold, across databases: its `kind`, that kind's
 //! fields, and the database's `name` for it; a [`Position`] says where a value stands and whether
 //! it may be null; a [`StatementDescriptor`] is what introspecting one statement returns.
@@ -550,14 +550,16 @@ pub struct Param {
 // The statement
 // ---------------------------------------------------------------------------------------------
 
-/// The version of Reylo Type Defs the descriptors are written in, which each one states as `rtd`.
-pub const RTD_VERSION: &str = "0.1";
+/// The URL of the JSON Schema of the format version this crate writes, which every
+/// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
+pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
-    /// The version of Reylo Type Defs the descriptor is written in: [`RTD_VERSION`].
-    pub rtd: String,
+    /// The format version the descriptor is written in, as the URL of its JSON Schema ([`SCHEMA`]).
+    #[serde(rename = "$schema")]
+    pub schema: String,
     pub dialect: DialectVersion,
     /// The statement as the database runs it, with its own placeholders, in the order `params`
     /// lists them.
@@ -1329,9 +1331,16 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_url_is_the_one_the_spec_names() {
+        let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
+        assert_eq!(spec["$id"], SCHEMA);
+        assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
+    }
+
+    #[test]
     fn a_statement_descriptor_reads_and_writes_as_the_spec_spells_it() {
         let value = json!({
-            "rtd": "0.1",
+            "$schema": SCHEMA,
             "dialect": {"name": "postgres", "version": "18.1"},
             "sql": "select id, email, bio from users where id = $1",
             "kind": "select",

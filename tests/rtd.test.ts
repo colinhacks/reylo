@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, existsSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { analyze, RTD_VERSION, type StatementDescriptor } from "../src/rtd.ts";
+import { analyze, type StatementDescriptor } from "../src/rtd.ts";
 import { nativeBinary } from "../src/native.ts";
 import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
 
@@ -40,10 +40,9 @@ function sqliteFile(setup: string): string {
 test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as reylo analyze prints it", async () => {
   const url = `file:${sqliteFile("create table users (id integer primary key, name text not null, email text)")}`;
   const [user, count, broken, untyped] = await same(url, ["-- One user, by id\nselect id, name, email from users where id = :id", "select count(*) as n from users", "select 'é🙂' as x, nope from users", "select 'é🙂' as x, :v as v, :w as w"]);
-  assert.equal(RTD_VERSION, "0.1");
   const { columns, ...rest } = user!;
   assert.deepEqual(rest, {
-    rtd: "0.1",
+    $schema: "https://reylo.dev/typedefs/0.1.0.json",
     dialect: { name: "sqlite", version: user!.dialect.version },
     sql: "-- One user, by id\nselect id, name, email from users where id = ?",
     kind: "select",
@@ -123,7 +122,7 @@ test("analyze reads DuckDB through the project's own @duckdb/node-api", { skip: 
   process.chdir(root);
   try {
     const td = await analyze({ url: "duckdb::memory:", sql: "select 42::integer as answer, :name::varchar as name" });
-    assert.equal(td.rtd, "0.1");
+    assert.equal(td.$schema, "https://reylo.dev/typedefs/0.1.0.json");
     assert.equal(td.dialect.name, "duckdb");
     assert.match(td.dialect.version, /^\d+\.\d+\.\d+/);
     assert.deepEqual(td.columns.map((c) => [c.name, c.type.kind]), [["answer", "integer"], ["name", "text"]]);

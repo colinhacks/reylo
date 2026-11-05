@@ -1,0 +1,73 @@
+# Reylo Type Defs
+
+Reylo Type Defs (RTD), experimental until 1.0.0: the result of introspecting one SQL statement, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. A descriptor is data, written as JSON, YAML or anything else that carries objects, lists, strings, numbers and booleans.
+
+- [`typedefs.schema.json`](./typedefs.schema.json) is the format, as a JSON Schema (2020-12), and its source of truth. Each version is published at `https://reylo.dev/typedefs/<version>.json`, the URL every descriptor names in `$schema`.
+- [`index.ts`](./index.ts) is the same format as TypeScript types, generated from the schema by `nub run typedefs`.
+- [`examples.ts`](./examples.ts) holds descriptors from each database, checked against both.
+
+The spec is a living document, and every part of it was weighed against the databases it covers. A change to it is a design decision: agree it with a maintainer before writing it, and where implementing it shows a limitation, raise the limitation rather than working around it.
+
+## Dates and times
+
+One kind per class every language has: a date, a time of day, a wall-clock date and time, an instant, and a duration. Each but the time of day may hold infinity and -infinity too, as Postgres's do. Wall-clock time is never an instant: a time with no zone cannot be read as UTC. `tick` is the smallest step, in seconds, in lowest terms: `"1/1000000"` (microseconds), `"1/300"` (SQL Server `datetime`), `"60"` (`smalldatetime`). A date-bearing kind's range is 0001-01-01 to 9999-12-31, and a time's 00:00:00 up to 24:00:00, unless its bounds say otherwise.
+
+## Rules
+
+1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field either widens the type or narrows it, on its own, so any combination is valid. A flag is a boolean written only when true: its default is false. The widening fields are a closed list, and a new one means a new major version, while a narrowing one may come in a minor version, since a consumer that ignores it stays sound:
+     - `nullable` and `optional` on a position;
+     - `unsigned` on an integer;
+     - `infinity` and `nan`;
+     - `zone` on a time or an instant;
+     - `ill_formed` on text;
+     - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
+     - `months`, `days` and `time` on a duration, each a part its values may carry;
+     - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
+
+   A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
+
+2. **A type is what the database guarantees**, never only what was declared: a SQLite column that is not STRICT is the union of what its affinity stores. A bound appears only when it is true of every finite value, the `infinity` and `nan` flags speaking for the rest: from a type modifier, a validated CHECK on a column read straight from its table, a domain's check, or a constant the statement writes. A constraint that is not validated is not reported, and neither is a domain's NOT NULL, which an outer join defeats. A value a database stores only under a lax setting its default refuses is not typed, and a client that meets one refuses it: MySQL's zero and partial dates (`0000-00-00`, `2026-00-15`) and the empty error value of its enums.
+
+3. **A value is what the type denotes, never its encoding.** A decimal is a number, so `1.5` and `1.50` are one value; a `timestamptz` is one instant however a session prints it; a duration is its months, days and time, so `1 mon` and `30 days` are two values though Postgres finds them equal; an array is its elements, wherever its index starts. The format says nothing about how a driver or protocol encodes a value: decoding is the driver's.
+
+4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds, and members of one kind in the order the database declares them (an object type before its subtypes; an `inet`'s IPv4 record before its IPv6 one).
+
+5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
+
+6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
+
+7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a whole-number kind takes neither exclusive field; a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive.
+
+8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
+## Facts about each database
+
+What an implementation needs, and the format does not state on every node.
+
+What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER`, `NUMERIC` or untyped column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A STRICT column holds its declared type alone.
+
+Which types hold infinities and NaN: Postgres's floats (both), `numeric` (NaN, and with no size the infinities), `date`, `timestamp`, `timestamptz` and, from version 17, `interval`; SQLite's `REAL` holds the infinities and stores a NaN as NULL. MySQL has none, refusing NaN and the infinities even in `FLOAT` and `DOUBLE`.
+
+What a database writes inside its own JSON:
+  - Postgres:
+      - a `boolean` is `true` or `false`;
+      - an integer, a float or a `numeric` is a JSON number, a `numeric`'s of any length and an `int8`'s one that may pass 2^53, and a float's or a `numeric`'s NaN or Infinity a string;
+      - a `date`, a `timestamp` and a `timestamptz` are ISO 8601 (`"2026-01-02T03:04:05"`), a `timestamptz` in the session's offset (the offset can carry seconds), a BC year with a suffix (`"0001-01-01 BC"`), and an infinity the string `"infinity"` or `"-infinity"`;
+      - an array is a JSON array of its elements, and a composite or any other row an object of its fields (`row(1, 'x')` is `{"f1":1,"f2":"x"}`);
+      - an `hstore` is an object of nullable text, and PostGIS's `geometry` GeoJSON;
+      - `jsonb` sorts keys and keeps the last duplicate, while `json` keeps the text as written;
+      - every other type is a string of its text, structured or not: `bit` and `varbit` (`"101"`), the geometric types (`"(1,2)"`, `"[(0,0),(1,1)]"`), `inet`, `cidr`, `macaddr` and `macaddr8`, ranges and multiranges (`"[1,5)"`), `interval` in the session's IntervalStyle (`"1 mon -1 days"`), `time`, `uuid`, `money`, `oid`, `xml`, and `bytea` in the session's `bytea_output` (hex by default, `"\\x0102"`).
+  - MySQL:
+      - a `DATETIME` or `TIMESTAMP` is a string with a space and six fractional digits, and a `TIME` its text with six fractional digits (`"12:00:01.500000"`);
+      - a `DECIMAL` is a number that keeps its scale, and a `YEAR` a number;
+      - a comparison is `true` or `false`;
+      - an `ENUM` is its label, and a `SET` its elements joined by commas (`"a,b"`);
+      - a binary value, a `BIT` among them, is `"base64:type15:…"`, the number its protocol type;
+      - a spatial value is GeoJSON;
+      - the last duplicate key wins.
+  - SQLite: ±Infinity is the number `9e999`, and a blob is never a JSON value.
+
+Bounds no field states:
+  - offsets: Postgres's run to ±15:59:59, SQL Server's to ±14:00;
+  - Postgres text cannot hold the NUL character, and `jsonb` refuses `\u0000`;
+  - Oracle `VARCHAR2(n CHAR)` is also capped at 4,000 bytes, which its one size, in code points, leaves out;
+  - a MySQL `latin1` or `utf8mb3` column holds only the characters its character set can store.
