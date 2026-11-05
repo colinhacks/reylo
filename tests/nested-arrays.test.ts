@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { moduleTypes, reyloImport } from "../src/module-types.ts";
 import { querySchemas } from "../src/schema.ts";
+import { playResult } from "../src/play-result.ts";
 import { analysisWithNestedArrays } from "../src/engine-type.ts";
 import type { Analysis } from "../src/engine.ts";
 
@@ -23,11 +24,16 @@ test("a Postgres array column is typed with one dimension by default, and at any
   assert.match(flat.row, /cells: \(number \| null\)\[\]/);
   assert.match(flat.row, /stacked: \(number \| null\)\[\]\[\]/);
   assert.equal(reyloImport(flat.row), `import type { Query } from "reylo";`);
-  const nested = moduleTypes("", analysis, "postgres", undefined, true, ".reylo.yaml", true);
+  const nested = moduleTypes("", analysis, "postgres", undefined, true, ".reylo.yaml", {}, true);
   assert.match(nested.row, /cells: NestedArray<number \| null>/);
   // An array the statement builds of arrays keeps its levels, over the arrays it collects.
   assert.match(nested.row, /stacked: NestedArray<number \| null>\[\]/);
   assert.equal(reyloImport(nested.row), `import type { NestedArray, Query } from "reylo";`);
+});
+
+test("reylo play types an array column as the type check does under allow_nested_arrays", () => {
+  assert.match(playResult("", "postgres", { analysis }).element ?? "", /cells: \(number \| null\)\[\]/);
+  assert.match(playResult("", "postgres", { analysis }, { allowNestedArrays: true }).element ?? "", /cells: NestedArray<number \| null>/);
 });
 
 test("a query's output schema lets an array nest under allow_nested_arrays", () => {

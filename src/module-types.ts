@@ -100,7 +100,7 @@ export function withinFile(start: number, length: number, size: number): { start
 
 /**
  * The error at the first use of each parameter nothing in the statement types, which the type check
- * and `reylo analyze` give unless the project file says `allow_untyped_params: true` (the default is true
+ * and `reylo analyze` give unless the project file says `allow_untyped_params: true` (an error by default
  * since 2026-10-20); `placeholders` are where the statement writes each parameter, in UTF-8 bytes. A
  * statement the engine already refused (a parameter written twice, an error from the server) was not
  * analysed to its end, so its parameters are untyped for that reason: its own error is the one to fix
