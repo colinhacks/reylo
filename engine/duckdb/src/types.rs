@@ -1,4 +1,4 @@
-//! A DuckDB logical type as the format's type (`spec/type-descriptor.ts`), under DuckDB's own name
+//! A DuckDB logical type as the format's type (`spec/index.ts`), under DuckDB's own name
 //! for it, lowercased (`integer`, `hugeint`, `timestamptz`): a `LIST` or an `ARRAY` as an array
 //! whose elements may be NULL, a `STRUCT` as a record whose fields may each be NULL (DuckDB has no
 //! NOT NULL inside one; a struct whose fields have no names, a tuple, is no type the format has,

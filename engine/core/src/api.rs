@@ -260,7 +260,7 @@ impl Analysis {
     /// version the analysis read.
     pub fn descriptor(&self, sql: &str, dialect: DialectVersion) -> StatementDescriptor {
         StatementDescriptor {
-            rtd: types::RTD_VERSION.to_string(),
+            schema: types::SCHEMA.to_string(),
             dialect,
             sql: self.rewritten.sql.clone(),
             kind: self.kind,

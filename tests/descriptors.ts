@@ -1,4 +1,4 @@
-// Type descriptors (spec/type-descriptor.ts) as each database's engine writes them, for the tests that
+// Type descriptors (spec/index.ts) as each database's engine writes them, for the tests that
 // render, check and bind values of a type without running an engine.
 import type { EngineType, Field } from "../src/engine-type.ts";
 

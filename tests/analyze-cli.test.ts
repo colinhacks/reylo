@@ -1,24 +1,37 @@
 // `reylo analyze`, the native binary's own command line: each statement's type descriptor
-// (spec/type-descriptor.ts) as one line of JSON, from the database the project names as the type
+// (spec/index.ts) as one line of JSON, from the database the project names as the type
 // check finds it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { StatementDescriptor } from "../spec/type-descriptor.ts";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import type { StatementDescriptor } from "../spec/index.ts";
 import { nativeBinary } from "../src/native.ts";
 import { mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
 
 type Line = StatementDescriptor & { file?: string };
 
-/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment. */
+// The format's JSON Schema (spec/typedefs.schema.json), whose `$id` is the URL every line printed
+// names in `$schema`, and which every line printed is held to.
+const schema = JSON.parse(readFileSync(new URL("../spec/typedefs.schema.json", import.meta.url), "utf8"));
+const SCHEMA: string = schema.$id;
+const ajv = new Ajv2020({ strict: false, allErrors: true });
+const valid = ajv.compile(schema);
+
+/** `reylo analyze` run in `cwd`, with no connection of the developer's own in its environment; each line it prints names the format's version and validates against its schema. */
 function analyze(cwd: string, args: string[], env: Record<string, string> = {}, input?: string) {
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
   const run = spawnSync(nativeBinary(), ["analyze", ...args], { cwd, env: { ...inherited, ...env }, input, encoding: "utf8" });
-  return { status: run.status, lines: run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line), stderr: run.stderr };
+  const lines = run.stdout.split("\n").filter(Boolean).map((l) => JSON.parse(l) as Line);
+  for (const line of lines) {
+    assert.equal(line.$schema, SCHEMA);
+    assert.ok(valid(line), `${JSON.stringify(line)}: ${ajv.errorsText(valid.errors)}`);
+  }
+  return { status: run.status, lines, stderr: run.stderr };
 }
 
 /** A package whose `.env` names a SQLite database of one table, with `files` written into it. */
