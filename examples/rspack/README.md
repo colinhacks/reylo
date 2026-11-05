@@ -47,7 +47,6 @@ Misspell a column in `queries/get_user.sql` and run `nub run typecheck` again: t
 ## In your own project
 
 - Install from npm instead of the `link:` dependencies: `npm install reylo pg` and `npm install -D @types/pg typescript@beta`.
-- The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
 
 ## Notes
 

@@ -43,7 +43,6 @@ Each run of `start` adds a post; `nub run setup` starts over. The tests roll the
 ## In your own project
 
 - Install from npm instead of the `link:` dependencies: `bun add reylo` and `bun add -d typescript@beta @types/bun`.
-- The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
 
 ## Notes
 
