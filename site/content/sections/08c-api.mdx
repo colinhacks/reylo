@@ -4,7 +4,7 @@ title: "API"
 
 ## API
 
-Reylo's functions for scripts and tools, imported from `reylo`. They run on Node and Bun, and an app that doesn't call them bundles none of them.
+Reylo's function for scripts and tools, imported from `reylo`. It runs on Node and Bun, and an app that doesn't call it bundles none of it.
 
 ### `compile()`
 
@@ -20,9 +20,9 @@ const defs = await compile({
 
 It returns what Reylo infers about it as plain JSON, in Reylo Type Defs (RTD): its parameters, columns, types, nullability and cardinality, for a code generator, a linter or a tool in another language.
 
-<Callout title="Experimental">
+<Callout title="Preview">
 
-Reylo Type Defs is at version 0.1.0. Until 1.0.0, any release may change the format, and each descriptor names the version it is written in as `$schema`, the URL of that version's JSON Schema.
+Reylo Type Defs is in preview, at version 0.1.0. Until 1.0.0, any release may change the format, and each descriptor names the version it is written in as `$schema`, the URL of that version's JSON Schema.
 
 </Callout>
 

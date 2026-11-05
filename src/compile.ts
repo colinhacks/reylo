@@ -1,5 +1,5 @@
 // `compile`, which the root module exports through src/build-time.ts: one statement's descriptor in
-// Reylo Type Defs, experimental (spec/index.ts, `StatementDescriptor`), read from a live
+// Reylo Type Defs, in preview (spec/index.ts, `StatementDescriptor`), read from a live
 // database by the engine, as plain data that serializes to JSON. `reylo compile` prints the same
 // descriptors on the command line (engine/cli/src/compile.rs), and both read the project as the type
 // check does: the database it names, unless the caller names another, and its `strict_params`. It
