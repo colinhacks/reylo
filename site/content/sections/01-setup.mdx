@@ -53,7 +53,7 @@ npm install -D typescript@beta
 
 <Details summary="Moving an existing project to TypeScript 7" id="typescript-7">
 
-- **`baseUrl` is gone.** TypeScript 7 refuses it, so write your `paths` relative to `tsconfig.json`.
+- **TypeScript 7 refuses `baseUrl`**, so write your `paths` relative to `tsconfig.json`.
 - **So is the compiler API.** Code that imports `typescript` for `createSourceFile` or a program has nothing to call: move it to another parser, such as `oxc-parser`.
 - **Keep one `typescript`.** TypeScript 5 installed under an alias beside it can take over the `tsc` command, which then refuses `--runExternalCode` as an unknown option.
 
