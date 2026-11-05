@@ -1314,6 +1314,10 @@ mod tests {
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "geography"}));
         round_trip(json!({"kind": "xml", "fragment": true, "name": "xml"}));
         round_trip(json!({"kind": "opaque", "name": "ltree"}));
+        round_trip(json!({"kind": "uuid", "name": "uuid"}));
+        round_trip(json!({"kind": "datetime", "tick": "1/1000000", "name": "timestamp"}));
+        round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "name": "int4"}, "name": "int4multirange"}));
+        round_trip(json!({"kind": "any"}));
     }
 
     #[test]
