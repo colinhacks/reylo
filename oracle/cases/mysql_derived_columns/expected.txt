@@ -17,7 +17,7 @@ outer_expression.sql: many () -> { m: bigint, label: text? }
 plain.sql: many () -> { id: int, n: bigint }
 right_join.sql: many () -> { id: int?, n: bigint?, name: text }
 rollup.sql: many () -> { n: bigint?, c: bigint }
-union.sql: many () -> { id: either(int, bigint) }
+union.sql: many () -> { id: int | bigint }
 union_counts.sql: many () -> { n: bigint? }
 where_rejects_null.sql: many () -> { id: int, next: bigint }
 wildcard.sql: many () -> { id: int, name: text, email: text?, n: bigint }

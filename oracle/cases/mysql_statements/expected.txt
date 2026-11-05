@@ -46,13 +46,13 @@ placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar 
 replace_statement.sql: none (id: int32, name: varchar) -> {  }
 select_distinctrow.sql: many () -> { name: varchar }
 select_for_share.sql: at_most_one (id: int32) -> { id: int }
-select_function_writes.sql: at_most_one (id: int32) -> { id: int, n: either(int, bigint)? }
+select_function_writes.sql: at_most_one (id: int32) -> { id: int, n: int | bigint? }
 select_high_priority.sql: at_most_one (id: int32) -> { id: int }
 select_into_outfile.sql: none () -> {  }
 select_into_variable.sql: none (id: int32) -> {  }
 select_one.sql: at_most_one (id: int32) -> { id: int, name: varchar }
 select_sql_calc.sql: at_most_one () -> { id: int }
-select_stored_function.sql: one () -> { n: either(int, bigint)? }
+select_stored_function.sql: one () -> { n: int | bigint? }
 set_variable.sql: none () -> {  }
 show_tables.sql: many () -> { Tables_in_reylo_oracle_mysql_statements: varchar? }
 syntax_error.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '' at line 1 (ER_PARSE_ERROR)
@@ -68,8 +68,8 @@ unknown_table.sql: many () -> {  } !! reylo6: Table 'reylo_oracle_mysql_statemen
 update_all.sql: none () -> {  }
 use_database.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 user_variable_read.sql: at_most_one (id: int32) -> { x: unknown?, id: int }
-values_statement.sql: many () -> { column_0: either(bigint, int), column_1: varchar }
+values_statement.sql: many () -> { column_0: bigint | int, column_1: varchar }
 window_named.sql: many () -> { id: int, r: bigint }
-with_recursive_cte.sql: many () -> { i: either(bigint, int)? }
+with_recursive_cte.sql: many () -> { i: bigint | int? }
 with_statement.sql: many () -> { id: int }
 wrong_group.sql: many () -> {  } !! reylo6: In aggregated query without GROUP BY, expression #1 of SELECT list contains nonaggregated column 'reylo_oracle_mysql_statements.users.id'; this is incompatible with sql_mode=only_full_group_by (ER_MIX_OF_GROUP_FUNC_AND_FIELDS)

@@ -98,6 +98,5 @@ export const doc = (content: EngineType, nullable = false): EngineType => ({ kin
 /** JSON every value of which the engine's canonical JSON Schema `source` admits, carrying its draft as the engine writes it. */
 export const checked = (source: unknown): EngineType => ({ kind: "json", schema: { ...(source === false ? { not: {} } : typeof source === "object" && source !== null ? source : {}), $schema: "https://json-schema.org/draft/2020-12/schema" } });
 
-/** One of several types the execution chooses among (`per: "execution"`), or each value one of. */
-export const either = (...members: EngineType[]): EngineType => ({ kind: "union", per: "execution", members });
+/** One of several types, each value one of them. */
 export const oneOf = (...members: EngineType[]): EngineType => ({ kind: "union", members });

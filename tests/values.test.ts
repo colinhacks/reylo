@@ -6,7 +6,7 @@ import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
 import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, postgresInterval, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
-import { array, either, lite, my, pg } from "./descriptors.ts";
+import { array, lite, my, oneOf, pg } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
@@ -366,7 +366,7 @@ test("a truth value: 0 or 1 in every form a driver gives it, and any other value
 });
 
 test("the kinds: a BIGINT is a BigInt, and an integer a temporary table may widen to one is too; a timestamptz a string; no kind a Date", () => {
-  const mysql = [my("bigint"), either(my("bigint"), my("int")), either(my("int"), my("bigint")), either(my("bigint"), my("double"), my("decimal")), either(my("int"), my("bigint"), my("double"), my("decimal")), { kind: "boolean" } as EngineType, my("timestamp"), my("date")];
+  const mysql = [my("bigint"), oneOf(my("bigint"), my("int")), oneOf(my("int"), my("bigint")), oneOf(my("bigint"), my("double"), my("decimal")), oneOf(my("int"), my("bigint"), my("double"), my("decimal")), { kind: "boolean" } as EngineType, my("timestamp"), my("date")];
   assert.deepEqual(mysql.map((t) => columnKind(t, "mysql")), ["int8", "int8", "int8", "int8|float|decimal", "int|int8|float|decimal", "bool", "timestamp", "date"]);
   assert.deepEqual(mysql.map((t) => kindType(columnKind(t, "mysql"))), ["bigint", "bigint", "bigint", "bigint | number | string", "number | bigint | string", "boolean", "string", "string"]);
   assert.equal(renderType(array(pg("int8"))), "(bigint | null)[]");

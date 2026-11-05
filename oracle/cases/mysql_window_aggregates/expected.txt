@@ -1,5 +1,5 @@
 aggregate_family.sql: many () -> { mean: decimal, first_title: varchar, bits: bigint, notes: json varchar?[], by_title: json }
-around_current.sql: many () -> { rows_around: decimal, rest: decimal, running: decimal, least_id: either(int, bigint), mean: decimal }
+around_current.sql: many () -> { rows_around: decimal, rest: decimal, running: decimal, least_id: int | bigint, mean: decimal }
 chained_windows.sql: many () -> { total: decimal, ahead: decimal? }
 copied_window.sql: many () -> { around: decimal, before_row: decimal? }
 count_window.sql: many () -> { n: bigint }
@@ -16,7 +16,7 @@ partition_sum.sql: many () -> { total: decimal }
 plain_sum.sql: one () -> { total: decimal? }
 preceding_end.sql: many () -> { before_row: decimal? }
 range_offsets.sql: many () -> { by_day: decimal?, by_score: decimal?, by_weight: decimal? }
-rollup_window.sql: many () -> { user_id: either(int, bigint)?, running: decimal?, top_user: either(int, bigint)? }
+rollup_window.sql: many () -> { user_id: int | bigint?, running: decimal?, top_user: int | bigint? }
 running_sum.sql: many () -> { running: decimal }
 subquery_window.sql: many () -> { name: varchar, own: decimal? }
 where_tested.sql: many () -> { last_note: varchar }

@@ -3,7 +3,7 @@
 
 use crate::host::{as_bool, as_strings, as_u32};
 use reylo_engine_core::types::{
-    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Per, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
+    ArrayType, Bounds, BytesType, Coordinates, DateTimeType, DateType, DecimalType, DurationType, Field, FloatType, GeometryModel, GeometrySubtype, GeometryType, InstantType, IntegerType, Kind, MapType, Part, Position, RangeType, Size, TextType, TimePart, TimeType, Type, XmlType, Zone, MICROSECOND,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -801,7 +801,7 @@ fn base_type(t: &PgType) -> Type {
         (true, "json" | "jsonb") => Type::json(),
         (true, "xml") => Type::new(Kind::Xml(XmlType { fragment: true, schemas: None })),
         (true, "bit" | "varbit") => bits(),
-        (true, "inet" | "cidr") => Type::union(vec![address(4, 32), address(16, 128)], Per::Value),
+        (true, "inet" | "cidr") => Type::union(vec![address(4, 32), address(16, 128)]),
         (true, "macaddr") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(6)) })),
         (true, "macaddr8") => Type::new(Kind::Bytes(BytesType { size: Some(Size::exact(8)) })),
         (true, "point") => return point(),

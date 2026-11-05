@@ -1298,7 +1298,7 @@ mod tests {
         let double = json!({ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "name": "double" });
         let date = json!({ "kind": "date", "name": "date" });
         let datetime = json!({ "kind": "datetime", "tick": "1/1000000", "name": "datetime" });
-        let either = |members: Vec<Value>| json!({ "kind": "union", "per": "execution", "members": members });
+        let either = |members: Vec<Value>| json!({ "kind": "union", "members": members });
         assert_eq!(type_contradiction(&int, 3, 63), None);
         assert_eq!(type_contradiction(&int, 5, 63), None);
         assert_eq!(type_contradiction(&bigint, 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
@@ -1337,7 +1337,7 @@ mod tests {
         assert_eq!(check(json!({ "id": null, "ok": true, "tags": [] })).as_deref(), Some("has a null at .id, typed non-null"));
         assert_eq!(check(json!({ "id": "1", "ok": true, "tags": [] })).as_deref(), Some("holds a string at .id, typed int"));
         assert_eq!(check(json!({ "id": 1, "ok": 1, "tags": [] })).as_deref(), Some("holds a number at .ok, typed boolean"));
-        let either = json!({ "kind": "union", "per": "value", "members": [{ "kind": "boolean" }, { "kind": "integer", "bits": 64, "name": "bigint" }] });
+        let either = json!({ "kind": "union", "members": [{ "kind": "boolean" }, { "kind": "integer", "bits": 64, "name": "bigint" }] });
         assert_eq!(json_contradiction(&either, &json!(true), false, ".ok"), None);
         assert_eq!(json_contradiction(&either, &json!(1), false, ".ok"), None);
         assert_eq!(json_contradiction(&either, &json!("1"), false, ".ok").as_deref(), Some("holds a string at .ok, typed boolean | bigint"));

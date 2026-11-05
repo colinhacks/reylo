@@ -2,7 +2,7 @@
 //! type code, flags, character set and display length say of a value, under MySQL's own name for
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 
-use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Per, Position, SetType, Size, TimePart, Type, MICROSECOND};
+use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, TimePart, Type, MICROSECOND};
 
 /// The protocol's flag for an UNSIGNED integer column.
 const UNSIGNED: u32 = 32;
@@ -114,7 +114,7 @@ pub(crate) fn widened(ty: &Type, string: bool) -> Option<Type> {
     };
     let mut members = vec![ty.clone()];
     members.extend(others.into_iter().filter(|o| o != ty));
-    let either = Type::union(members, Per::Execution);
+    let either = Type::union(members);
     (either != *ty).then_some(either)
 }
 
@@ -133,7 +133,7 @@ pub(crate) fn content(ty: Type) -> Type {
     }
 }
 
-/// Whether a type is a whole number, or an execution's choice among types one of which is.
+/// Whether a type is a whole number, or a union one of whose members is.
 pub(crate) fn has_integer(ty: &Type) -> bool {
     ty.members().iter().any(|m| matches!(m.kind, Kind::Integer(_)))
 }
@@ -164,9 +164,9 @@ mod tests {
 
     #[test]
     fn a_placeholder_widens_a_number_to_what_the_execution_binds() {
-        assert_eq!(widened(&of(3, 0, 0, None), false).unwrap().short(), "either(int, bigint, double, decimal)");
-        assert_eq!(widened(&bigint(), true).unwrap().short(), "either(bigint, double, decimal, text)");
-        assert_eq!(widened(&date(), false).unwrap().short(), "either(text, date, datetime, time)");
+        assert_eq!(widened(&of(3, 0, 0, None), false).unwrap().short(), "int | bigint | double | decimal");
+        assert_eq!(widened(&bigint(), true).unwrap().short(), "bigint | double | decimal | text");
+        assert_eq!(widened(&date(), false).unwrap().short(), "text | date | datetime | time");
         assert!(widened(&Type::text(), false).is_none());
     }
 }

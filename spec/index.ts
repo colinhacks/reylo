@@ -261,15 +261,13 @@ export interface DurationType extends Base {
 }
 
 /**
- * One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, and an object column with subtypes holds any subtype's record. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.
+ * One of several types: each value is one of them. A SQLite column that is not STRICT holds what its affinity stores, an object column with subtypes holds any subtype's record, and MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL by what is bound and how the driver sends it. A union whose members a database names, and whose values say which member they are, is a `tagged_union`.
  *
  * A union of no members holds no value, so a position typed so with `nullable` is always null: the field of a `json_build_object('a', null)`.
  */
 export interface UnionType extends Base {
   kind: "union";
   members: Type[];
-  /** Every value of one execution is of the same member, which what is bound decides: MySQL's `:n + 1` is a BIGINT, a DOUBLE or a DECIMAL. A consumer that ignores it reads each value as any member, which holds. */
-  per?: "execution";
 }
 
 /** Elements in no order, each at most once by the element type's equality: MySQL `SET`, a set of the values it declares, at most 64. A client may receive the elements in any order. Not an array, since it has no rank and no index. */

@@ -1,5 +1,5 @@
 column_beside_aggregate.sql: one () -> { name: varchar?, n: bigint }
-column_beside_aggregate_empty.sql: one () -> { name: varchar?, id: int?, n: bigint, top: either(int, bigint)? }
+column_beside_aggregate_empty.sql: one () -> { name: varchar?, id: int?, n: bigint, top: int | bigint? }
 column_beside_aggregate_key.sql: one (id: int32) -> { name: varchar?, n: bigint }
 column_not_grouped.sql: many () -> { id: int, name: varchar, n: bigint }
 object_beside_aggregate.sql: one () -> { o: json { name: varchar?, n: bigint } }

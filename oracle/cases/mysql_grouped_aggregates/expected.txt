@@ -1,20 +1,20 @@
-by_expression.sql: many () -> { y: varchar?, n: bigint, top: either(int, bigint) }
-derived.sql: many () -> { user_id: int, top: either(int, bigint) }
+by_expression.sql: many () -> { y: varchar?, n: bigint, top: int | bigint }
+derived.sql: many () -> { user_id: int, top: int | bigint }
 expression.sql: many () -> { user_id: int, next: decimal?, note: varchar }
 grouped.sql: many () -> { user_id: int, total: decimal, mean: decimal, first_title: varchar, last_at: datetime?, score: double? }
 grouped_distinct.sql: many () -> { user_id: int, total: decimal, top: varchar }
-grouped_window.sql: many () -> { user_id: int, top: either(int, bigint), total: decimal }
+grouped_window.sql: many () -> { user_id: int, top: int | bigint, total: decimal }
 having.sql: many () -> { user_id: int, top: varchar }
 json.sql: many () -> { user_id: int, by_title: json, notes: json varchar?[] }
 left_joined.sql: many () -> { id: int, top: varchar? }
 left_joined_reduced.sql: many () -> { id: int, top: varchar }
-param.sql: at_most_one (1: int32) -> { user_id: int, top: either(int, bigint) }
-rollup.sql: many () -> { user_id: either(int, bigint)?, total: decimal?, top: varchar? }
-scalar_subquery.sql: many () -> { id: int, top: either(int, bigint)? }
-select_distinct.sql: many () -> { user_id: int, top: either(int, bigint) }
+param.sql: at_most_one (1: int32) -> { user_id: int, top: int | bigint }
+rollup.sql: many () -> { user_id: int | bigint?, total: decimal?, top: varchar? }
+scalar_subquery.sql: many () -> { id: int, top: int | bigint? }
+select_distinct.sql: many () -> { user_id: int, top: int | bigint }
 ungrouped.sql: one () -> { total: decimal?, top: varchar? }
-ungrouped_empty.sql: one () -> { top: either(int, bigint)? }
+ungrouped_empty.sql: one () -> { top: int | bigint? }
 union_arm.sql: many () -> { user_id: bigint, top: bigint? }
 variance.sql: many () -> { user_id: int, v: double?, s: double?, g: text?, b: bigint }
 where_tested.sql: many () -> { user_id: int, last_note: varchar }
-with_query.sql: many () -> { user_id: int, top: either(int, bigint) }
+with_query.sql: many () -> { user_id: int, top: int | bigint }

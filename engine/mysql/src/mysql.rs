@@ -19,7 +19,7 @@ use crate::shape::Shape;
 use crate::dialect::Dialect;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, MysqlText, Style, Target};
-use crate::types::{Cardinality, Field, Kind as TyKind, Per, Position, StatementKind, Type};
+use crate::types::{Cardinality, Field, Kind as TyKind, Position, StatementKind, Type};
 use serde_json::{json, Value};
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Statement, TableFactor};
 use sqlparser::dialect::MySqlDialect;
@@ -1354,8 +1354,8 @@ fn settle(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, parsed: Option<&
             }
             let ty = column_type(c);
             match (widened(&ty, *reached), other_width(c)) {
-                (Some(either), Some(other)) if !either.members().contains(&other) && !either.is_unknown() => Some(Type::union(vec![either, other], Per::Execution)),
-                (None, Some(other)) if ty != other => Some(Type::union(vec![ty, other], Per::Execution)),
+                (Some(either), Some(other)) if !either.members().contains(&other) && !either.is_unknown() => Some(Type::union(vec![either, other])),
+                (None, Some(other)) if ty != other => Some(Type::union(vec![ty, other])),
                 (widened, _) => widened,
             }
         })
@@ -1626,7 +1626,7 @@ fn error_name(code: u16) -> Option<&'static str> {
 fn param_type(code: u32, charset: u32) -> Type {
     match code {
         1 | 2 | 3 | 8 | 9 | 13 => Type::integer(32),
-        16 => Type::union(vec![Type::boolean(), crate::mysql_types::bits(None)], Per::Value),
+        16 => Type::union(vec![Type::boolean(), crate::mysql_types::bits(None)]),
         _ => crate::mysql_types::of(code, 0, charset, None),
     }
 }
@@ -1662,7 +1662,7 @@ fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysq
                 // A JSON document a column holds is, inside another, what it holds.
                 let ty = crate::mysql_types::content(ty);
                 if plan.either.contains(&(*probe, *index)) && crate::mysql_types::has_integer(&ty) {
-                    (Type::union(vec![Type::boolean(), ty], Per::Value), c.flags & 1 != 0)
+                    (Type::union(vec![Type::boolean(), ty]), c.flags & 1 != 0)
                 } else {
                     (ty, c.flags & 1 != 0)
                 }
@@ -2789,32 +2789,32 @@ mod tests {
         };
         // A number for a `?` the server typed as an integer may be no integer: a DOUBLE where it
         // is bound, a DECIMAL where it is written into the text.
-        assert_eq!(types("select :n + 1 as c, id, name from users where id = :id", &[8, 3, 253], &[8, 8]), "either(bigint, double, decimal) int varchar");
-        assert_eq!(types("select id,\n  coalesce(:n, id) as c from users", &[3, 8], &[8]), "int either(bigint, double, decimal)");
-        assert_eq!(types("select u.*, :n * 2 as c from users u", &[3, 253, 8], &[8]), "int varchar either(bigint, double, decimal)");
-        assert_eq!(types("select :n * 2 as c, u.* from users u", &[8, 3, 253], &[8]), "either(bigint, double, decimal) int varchar");
+        assert_eq!(types("select :n + 1 as c, id, name from users where id = :id", &[8, 3, 253], &[8, 8]), "bigint | double | decimal int varchar");
+        assert_eq!(types("select id,\n  coalesce(:n, id) as c from users", &[3, 8], &[8]), "int bigint | double | decimal");
+        assert_eq!(types("select u.*, :n * 2 as c from users u", &[3, 253, 8], &[8]), "int varchar bigint | double | decimal");
+        assert_eq!(types("select :n * 2 as c, u.* from users u", &[8, 3, 253], &[8]), "bigint | double | decimal int varchar");
         // `-5` is a BIGINT where the prepare typed `-?` a DOUBLE.
-        assert_eq!(types("select -:x as c, abs(:y) as d", &[5, 5], &[5, 5]), "either(bigint, double, decimal) either(bigint, double, decimal)");
+        assert_eq!(types("select -:x as c, abs(:y) as d", &[5, 5], &[5, 5]), "bigint | double | decimal bigint | double | decimal");
         // A string for a DECIMAL makes the product a DOUBLE where it is written into the text,
         // and is the value itself where nothing computes with it.
-        assert_eq!(types("select id * :rate as c, coalesce(:fallback, price) as d, +:plus as e, round(:rounded) as f from users", &[246, 246, 246, 246], &[246, 246, 246, 246]), "either(bigint, double, decimal) either(bigint, double, decimal, text) either(bigint, double, decimal, text) either(bigint, double, decimal)");
+        assert_eq!(types("select id * :rate as c, coalesce(:fallback, price) as d, +:plus as e, round(:rounded) as f from users", &[246, 246, 246, 246], &[246, 246, 246, 246]), "bigint | double | decimal bigint | double | decimal | text bigint | double | decimal | text bigint | double | decimal");
         assert_eq!(types("select length(:s) as c, year(:d) as d, app.pick(:t) as e", &[8, 8, 8], &[253, 10, 253]), "bigint bigint bigint");
         // A comparison and a cast are their own types whatever the value is, and so is a column
         // beside the placeholder: a comparison is a truth value.
         assert_eq!(types("select id = :n as c, cast(:m as signed) as d, id from users", &[8, 8, 3], &[8, 8]), "boolean bigint int");
         // A column of a derived table or a WITH query carries what reached it.
-        assert_eq!(types("select d.c from (select :n + 1 as c from users) d", &[8], &[8]), "either(bigint, double, decimal)");
-        assert_eq!(types("with d as (select :n + 1 as c) select sum(c) as c from d", &[246], &[8]), "either(bigint, double, decimal)");
-        assert_eq!(types("select (select max(:n + p.id) from posts p) as c from users", &[8], &[8]), "either(bigint, double, decimal)");
-        assert_eq!(types("select id from users where id = :n union all select :m + 1", &[8], &[8, 8]), "either(bigint, double, decimal)");
+        assert_eq!(types("select d.c from (select :n + 1 as c from users) d", &[8], &[8]), "bigint | double | decimal");
+        assert_eq!(types("with d as (select :n + 1 as c) select sum(c) as c from d", &[246], &[8]), "bigint | double | decimal");
+        assert_eq!(types("select (select max(:n + p.id) from posts p) as c from users", &[8], &[8]), "bigint | double | decimal");
+        assert_eq!(types("select id from users where id = :n union all select :m + 1", &[8], &[8, 8]), "bigint | double | decimal");
         // A `Date` bound for a DATE makes the sum a DATETIME, and a string written into the text a string.
-        assert_eq!(types("select :day + interval 1 day as c, addtime(:t, '1') as d", &[10, 11], &[10, 11]), "either(text, date, datetime, time) unknown");
+        assert_eq!(types("select :day + interval 1 day as c, addtime(:t, '1') as d", &[10, 11], &[10, 11]), "text | date | datetime | time unknown");
         assert_eq!(types("select created + interval :n day as c from users", &[10], &[8]), "date");
-        assert_eq!(types("select adddate(created, :n) as c, addtime(:t, '1') as d from users", &[10, 11], &[8, 11]), "either(text, date, datetime, time) unknown");
+        assert_eq!(types("select adddate(created, :n) as c, addtime(:t, '1') as d from users", &[10, 11], &[8, 11]), "text | date | datetime | time unknown");
         // A bit operation is a number or a string of bytes by what it is given, and a form the
         // walk does not read may be anything.
         assert_eq!(types("select ~:a as c, :b | 1 as d, bit_count(:c) as e, id | 1 as f from users", &[253, 8, 8, 8], &[253, 8, 253]), "unknown unknown unknown bigint");
-        assert_eq!(types("select :a member of ('[1]') as c, substring(name, 1, :n) as d, ceil(:x) as e from users", &[8, 253, 8], &[8, 8, 5]), "unknown varchar either(bigint, double, decimal)");
+        assert_eq!(types("select :a member of ('[1]') as c, substring(name, 1, :n) as d, ceil(:x) as e from users", &[8, 253, 8], &[8, 8, 5]), "unknown varchar bigint | double | decimal");
         // A user variable holds a value of any type.
         assert_eq!(types("select @n := coalesce(@n, 0) + 1 as c, id, @@max_join_size as d, @`q` as e from users", &[8, 3, 8, 251], &[]), "unknown int bigint unknown");
         assert_eq!(types("select d.c, 'a@b' as e from (select @n as c) d", &[8, 253], &[]), "unknown varchar");
@@ -2836,13 +2836,13 @@ mod tests {
         assert_eq!(types(sql, (0..16).map(|_| truth()).collect()), ["boolean"; 16].join(" "));
         // A literal number is no truth value, whatever its width, nor is what computes with one.
         let sql = "select 1 as c, 5 as c, case when a then 1 else 0 end as c, if(a, 1, a = b) as c, (a = b) + 0 as c, max(a = b) as c from users";
-        assert_eq!(types(sql, vec![column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 3, "", ""), column(8, 1, "", "")]), ["either(bigint, int)"; 6].join(" "));
+        assert_eq!(types(sql, vec![column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 2, "", ""), column(8, 3, "", ""), column(8, 1, "", "")]), ["bigint | int"; 6].join(" "));
         // Every arm of a union, a NULL among them; a wildcard leaves every position unknown.
         assert_eq!(types("select a = b as c from users union select null", vec![truth()]), "boolean");
-        assert_eq!(types("select a = b as c from users union select 5", vec![column(8, 2, "", "")]), "either(bigint, int)");
+        assert_eq!(types("select a = b as c from users union select 5", vec![column(8, 2, "", "")]), "bigint | int");
         assert_eq!(types("select users.*, a = b as c from users", vec![column(3, 11, "users", "id"), truth()]), "int boolean");
-        assert_eq!(types("select a = b as c, users.*, a < b as d from users", vec![truth(), column(3, 11, "users", "id"), column(8, 1, "", "e"), truth()]), "boolean int either(bigint, int) boolean");
-        assert_eq!(types("select users.* from users union select a = b from users", vec![column(8, 1, "", "")]), "either(bigint, int)");
+        assert_eq!(types("select a = b as c, users.*, a < b as d from users", vec![truth(), column(3, 11, "users", "id"), column(8, 1, "", "e"), truth()]), "boolean int bigint | int boolean");
+        assert_eq!(types("select users.* from users union select a = b from users", vec![column(8, 1, "", "")]), "bigint | int");
         // A table's TINYINT(1) or BIT(1), through a derived table too, keeps its type, an integer
         // or a bit string, which a client reads as a truth value by its name; an expression or a
         // view's column one digit or one bit wide is a TINYINT, or bits of no known number.
@@ -2881,16 +2881,16 @@ mod tests {
         let column = |ty: u32, length: u32, table: &str| json!({ "name": "c", "type": ty, "flags": 0, "length": length, "org_table": table });
         // A table's own column keeps its type; a view's may be an expression.
         assert_eq!(types(json!([column(3, 11, "users"), column(8, 20, "users"), column(1, 4, "users")]), &[]), "None None None");
-        assert_eq!(types(json!([column(3, 11, "Recent"), column(8, 2, "recent")]), &["recent"]), "either(int, bigint) either(bigint, int)");
+        assert_eq!(types(json!([column(3, 11, "Recent"), column(8, 2, "recent")]), &["recent"]), "int | bigint bigint | int");
         // An expression: under ten digits an INT, from ten on a BIGINT.
-        assert_eq!(types(json!([column(8, 1, ""), column(8, 9, ""), column(8, 10, ""), column(8, 21, "")]), &[]), "either(bigint, int) either(bigint, int) None None");
-        assert_eq!(types(json!([column(3, 11, ""), column(3, 9, ""), column(1, 4, ""), column(13, 4, ""), column(9, 10, "")]), &[]), "either(int, bigint) None None None either(mediumint, bigint)");
+        assert_eq!(types(json!([column(8, 1, ""), column(8, 9, ""), column(8, 10, ""), column(8, 21, "")]), &[]), "bigint | int bigint | int None None");
+        assert_eq!(types(json!([column(3, 11, ""), column(3, 9, ""), column(1, 4, ""), column(13, 4, ""), column(9, 10, "")]), &[]), "int | bigint None None None mediumint | bigint");
         // A host that sends neither the length nor the table.
-        assert_eq!(types(json!([{ "name": "c", "type": 3, "flags": 0 }, { "name": "c", "type": 8, "flags": 0 }, { "name": "c", "type": 253, "flags": 0 }]), &[]), "either(int, bigint) either(bigint, int) None");
+        assert_eq!(types(json!([{ "name": "c", "type": 3, "flags": 0 }, { "name": "c", "type": 8, "flags": 0 }, { "name": "c", "type": 253, "flags": 0 }]), &[]), "int | bigint bigint | int None");
         // Without the views, every name may be one.
         let raw: MysqlDescribe = serde_json::from_value(json!({ "columns": [column(3, 11, "users")], "params": [] })).unwrap();
         let lexed = lex::lex("select 1", Dialect::Mysql).unwrap();
-        assert_eq!(settle("select 1", &lexed, &lex::rewrite("select 1", &lexed, Target::Question), None, &raw, None).iter().map(|t| t.as_ref().map(Type::short)).collect::<Vec<_>>(), vec![Some("either(int, bigint)".to_string())]);
+        assert_eq!(settle("select 1", &lexed, &lex::rewrite("select 1", &lexed, Target::Question), None, &raw, None).iter().map(|t| t.as_ref().map(Type::short)).collect::<Vec<_>>(), vec![Some("int | bigint".to_string())]);
     }
 
     /// Analyzes with a host that describes each statement as `describe` says, answers the mode

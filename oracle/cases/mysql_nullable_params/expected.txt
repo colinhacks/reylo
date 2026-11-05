@@ -13,7 +13,7 @@ insert_select_params.sql: none (name: varchar, email: varchar?) -> {  }
 insert_set.sql: none (name: varchar, email: varchar?) -> {  }
 insert_upsert.sql: none (name: varchar, email: varchar?, bio: varchar?) -> {  }
 insert_values.sql: none (name: varchar, email: varchar?) -> {  }
-isnull_call.sql: many (p: varchar) -> { id: int, missing: either(bigint, int) }
+isnull_call.sql: many (p: varchar) -> { id: int, missing: bigint | int }
 null_safe.sql: many (email: varchar) -> { id: int }
 replace_parenthesized.sql: none (name: varchar, email: varchar?, bio: varchar?) -> {  }
 replace_values.sql: none (id: int32, name: varchar, bio: varchar) -> {  }

@@ -115,7 +115,7 @@ int_string_literal.sql: many () -> { id: int }
 int_table_name.sql: at_most_one (id: int32) -> { id: int }
 int_true.sql: at_most_one () -> { id: int }
 int_twice.sql: at_most_one (a: int32, b: int32) -> { id: int }
-int_view.sql: at_most_one (id: int32) -> { id: either(int, bigint) }
+int_view.sql: at_most_one (id: int32) -> { id: int | bigint }
 int_xor.sql: many (id: int32) -> { id: int }
 prefix_key.sql: at_most_one (name: varchar) -> { name: varchar }
 prefix_key_scan.sql: at_most_one (name: varchar) -> { name: varchar }
