@@ -94,6 +94,11 @@ impl Database for Duckdb {
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         host.on_engine_stack(|host| crate::duckdb::analyze_text(sql, host))
     }
+
+    /// A SELECT that moves no sequence writes nothing on DuckDB.
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::catalog::read_only(analysis, host)
+    }
 }
 
 #[cfg(test)]

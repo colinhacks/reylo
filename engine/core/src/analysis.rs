@@ -196,6 +196,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        read_only: false,
         tables: None,
         domains: Default::default(),
     }

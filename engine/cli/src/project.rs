@@ -240,26 +240,35 @@ impl Project {
         if missing.is_empty() { Ok(out) } else { Err(self.unset(key, &missing)) }
     }
 
-    /// `text` with each `${VAR}` replaced, the variables nothing sets added to `missing`.
+    /// `text` with each `${VAR}` replaced, the variables nothing sets added to `missing`, and each
+    /// `${VAR:-fallback}` by its variable, or where that is unset or empty by its fallback, read the
+    /// same way, as a shell reads one. A `${` that opens neither stays as written.
     fn substitute(&self, text: &str, missing: &mut Vec<String>) -> String {
         let mut out = String::new();
         let mut rest = text;
         while let Some(at) = rest.find("${") {
             out.push_str(&rest[..at]);
             let after = &rest[at + 2..];
-            match after.find('}') {
-                Some(end) if after[..end].chars().all(|c| c == '_' || c.is_ascii_alphanumeric()) && !after[..end].is_empty() => {
-                    let name = &after[..end];
-                    match self.lookup(name) {
-                        Some(v) => out.push_str(&v),
-                        None => missing.push(format!("${{{name}}}")),
-                    }
-                    rest = &after[end + 1..];
+            let name_len = after.find(|c: char| !(c == '_' || c.is_ascii_alphanumeric())).unwrap_or(after.len());
+            let name = &after[..name_len];
+            let tail = &after[name_len..];
+            let body = tail.strip_prefix(":-").filter(|_| !name.is_empty());
+            let closes = body.and_then(fallback_end);
+            if !name.is_empty() && tail.starts_with('}') {
+                match self.lookup(name) {
+                    Some(v) => out.push_str(&v),
+                    None => missing.push(format!("${{{name}}}")),
                 }
-                _ => {
-                    out.push_str("${");
-                    rest = after;
+                rest = &tail[1..];
+            } else if let (Some(body), Some(end)) = (body, closes) {
+                match self.lookup(name).filter(|v| !v.is_empty()) {
+                    Some(v) => out.push_str(&v),
+                    None => out.push_str(&self.substitute(&body[..end], missing)),
                 }
+                rest = &body[end + 1..];
+            } else {
+                out.push_str("${");
+                rest = after;
             }
         }
         out.push_str(rest);
@@ -452,6 +461,26 @@ fn percent_encode(text: &str) -> String {
         .collect()
 }
 
+/// Where the `}` that closes a `${VAR:-` falls in what follows it, past any `${…}` inside.
+fn fallback_end(body: &str) -> Option<usize> {
+    let mut depth = 1;
+    let bytes = body.as_bytes();
+    let mut at = 0;
+    while at < bytes.len() {
+        if bytes[at] == b'$' && bytes.get(at + 1) == Some(&b'{') {
+            depth += 1;
+            at += 1;
+        } else if bytes[at] == b'}' {
+            depth -= 1;
+            if depth == 0 {
+                return Some(at);
+            }
+        }
+        at += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +583,14 @@ mod tests {
         let p = Project::resolve(&dir, HashMap::new()).unwrap();
         assert!(p.expand("url", "${A}-${MISSING_VAR_X}").unwrap_err().contains("${MISSING_VAR_X}"));
         assert_eq!(p.expand("url", "db-${A}").unwrap(), "db-1");
+        // A fallback is read only where the variable is unset or empty, and may name another.
+        assert_eq!(p.expand("url", "${A:-x}").unwrap(), "1");
+        assert_eq!(p.expand("url", "${MISSING_VAR_X:-x}").unwrap(), "x");
+        assert_eq!(p.expand("url", "${MISSING_VAR_X:-}").unwrap(), "");
+        assert_eq!(p.expand("url", "a${MISSING_VAR_X:-${A}}b").unwrap(), "a1b");
+        assert_eq!(p.expand("url", "${MISSING_VAR_X:-${MISSING_VAR_Y:-z}}").unwrap(), "z");
+        assert!(p.expand("url", "${MISSING_VAR_X:-${MISSING_VAR_Y}}").unwrap_err().contains("${MISSING_VAR_Y}"));
+        assert_eq!(p.expand("url", "${MISSING_VAR_X:-unclosed").unwrap(), "${MISSING_VAR_X:-unclosed");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

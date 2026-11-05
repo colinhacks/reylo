@@ -89,7 +89,7 @@ pub struct Session {
 impl Session {
     pub async fn open(url: &str) -> Result<Session, Failure> {
         let (conn, version) = open(url).await?;
-        Ok(Session { connection: Connection { conn, url: url.to_string(), bridge: None, answers: AnswerCache::default() }, version })
+        Ok(Session { connection: Connection { conn, url: url.to_string(), bridge: None, answers: AnswerCache::until_cleared() }, version })
     }
 
     pub async fn analyze(&mut self, sql: &str) -> Result<Analysis, Failure> {
@@ -113,7 +113,7 @@ impl Program for Mysql {
                 match connect(url, bridge.as_deref()).await {
                     Ok((conn, version)) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { conn, url: url.to_string(), bridge, answers: AnswerCache::default() });
+                        self.connections.insert(self.next, Connection { conn, url: url.to_string(), bridge, answers: AnswerCache::until_cleared() });
                         json!({ "status": "opened", "conn": self.next, "version": version })
                     }
                     Err(failure) => failure,

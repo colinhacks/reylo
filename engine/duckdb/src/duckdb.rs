@@ -194,6 +194,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        read_only: false,
         tables: parsed.as_ref().map(tables),
         domains: Default::default(),
     };

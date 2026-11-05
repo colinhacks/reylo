@@ -361,6 +361,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            read_only: false,
             tables: None,
             domains: Default::default(),
         });
@@ -519,6 +520,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        read_only: false,
         // From the tree as the session reads the statement, also where it reads some part of it
         // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
         // turn on that.
@@ -1711,10 +1713,16 @@ pub(crate) enum Class {
     Instant,
 }
 
+/// A catalog query of one table's name, asked of each of `tables` on its own, so that a later
+/// statement naming it reads no more ([`Host::query_each`]).
+pub(crate) fn by_table(host: &Host, sql: &str, tables: &[String]) -> Lazy<Result<Vec<Vec<Value>>, reylo_engine_core::api::DbError>> {
+    host.query_each(sql, tables.iter().map(|t| vec![json!(t)]), Scope::Statement)
+}
+
 /// The columns of `tables`, each table by its name as given: a table the server has under
 /// another case answers to none of them.
 fn table_columns(host: &Host, tables: &[String]) -> Lazy<crate::mysql_shape::Columns> {
-    let rows = host.query(TABLE_COLUMNS_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
+    let rows = by_table(host, TABLE_COLUMNS_QUERY, tables)?;
     let mut columns = crate::mysql_shape::Columns::new();
     for row in rows.unwrap_or_default() {
         if let (Some(table), Some(column)) = (row.first().and_then(as_str), row.get(1).and_then(as_str)) {
@@ -1747,7 +1755,7 @@ fn documents(statement: Option<&Statement>, raw: &MysqlDescribe, host: &Host) ->
     let mut names: Vec<String> = wanted.iter().map(|(_, table, _)| table.clone()).collect();
     names.sort();
     names.dedup();
-    let rows = host.query(CHECKS_QUERY, vec![json!(names.join(","))], Scope::Statement)?;
+    let rows = by_table(host, CHECKS_QUERY, &names)?;
     let mut schemas: HashMap<(String, String), Vec<(String, &[&crate::schema_type::Validator])>> = HashMap::new();
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(clause)) = (row.first().and_then(as_str), row.get(1).and_then(as_str)) else { continue };
@@ -1902,10 +1910,9 @@ fn catalog(host: &Host, q: &Query) -> Lazy<Keys> {
     let mut names = crate::mysql_keys::tables_anywhere(q, None);
     let mut seen: HashSet<String> = names.iter().map(|n| n.to_ascii_lowercase()).collect();
     while !names.is_empty() {
-        let joined = json!(names.join(","));
         let found = unique_keys(host, &names);
-        let columns = host.query(KEY_COLUMNS_QUERY, vec![joined.clone()], Scope::Statement);
-        let views = host.query(VIEW_DEFINITIONS_QUERY, vec![joined], Scope::Statement);
+        let columns = by_table(host, KEY_COLUMNS_QUERY, &names);
+        let views = by_table(host, VIEW_DEFINITIONS_QUERY, &names);
         let (Some(found), Some(columns), Some(views)) = (found, columns, views) else { return None };
         keys.of.extend(found.of);
         keys.class.extend(found.class);
@@ -1934,7 +1941,7 @@ fn catalog(host: &Host, q: &Query) -> Lazy<Keys> {
 }
 
 fn unique_keys(host: &Host, tables: &[String]) -> Lazy<Keys> {
-    let rows = host.query(UNIQUE_KEYS_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
+    let rows = by_table(host, UNIQUE_KEYS_QUERY, tables)?;
     Some(keys_of(rows.unwrap_or_default()))
 }
 

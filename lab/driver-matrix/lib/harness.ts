@@ -408,7 +408,7 @@ export function queries(d: Dialect, typed = true) {
 // Reylo's one representation per SQL type (src/values.ts) of the `typed` fixture's row, on every driver.
 const TYPED: Record<Dialect, Record<string, unknown>> = {
   postgres: {
-    id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123", stamp: "2026-10-20T08:00:00.123Z",
+    id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123000", stamp: "2026-10-20T08:00:00.123000Z",
     doc: { a: [1, 2] }, docb: { b: true }, raw: Uint8Array.of(1, 2, 255), flag: true, f8: 2.5, tags: ["a", null, "NULL", "b,c"], ints: [1, 2, 3], moods: ["ok", "sad"], span: "P1DT2H", uid: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
   },
   mysql: {
@@ -1078,7 +1078,7 @@ export const SCENARIOS: Scenario[] = [
       // They come back as `+010000-…Z` and `-000001-…Z`, which Postgres refuses as input
       // ("time zone displacement out of range"); Reylo writes them as `10000-…` and `0002-… BC`.
       const far = (await call(ctx, q.farInstants, client)) as Record<string, unknown>;
-      eq(far, { far: "+010000-01-01T00:00:00Z", bc: "-000001-01-01T00:00:00Z" }, "the instants past 9999 and before 1");
+      eq(far, { far: "+010000-01-01T00:00:00.000000Z", bc: "-000001-01-01T00:00:00.000000Z" }, "the instants past 9999 and before 1");
       eq(await call(ctx, q.farBack, client, far), { far: true, bc: true }, "the same instants passed back");
     },
   },

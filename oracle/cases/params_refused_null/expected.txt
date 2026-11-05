@@ -1,5 +1,5 @@
 coalesced.sql: at_most_one (nickname: text?, email: text?, id: int4) -> { nickname: text?, email: text? }
-insert_select.sql: many (id: int4, email: public.required_email, nickname: text, note: text?, tag: public.present_text) -> { id: int4 }
+insert_select.sql: one (id: int4, email: public.required_email, nickname: text, note: text?, tag: public.present_text) -> { id: int4 }
 insert_values.sql: one (id: int4, email: public.required_email, nickname: text, tag: public.present_text) -> { id: int4 }
 row_value.sql: at_most_one (email: public.required_email, nickname: text, id: int4) -> { id: int4 }
 update_set.sql: at_most_one (email: public.required_email, nickname: text, tag: public.present_text, note: text, id: int4) -> { email: text?, nickname: text? }

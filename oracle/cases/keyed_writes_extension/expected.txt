@@ -1,0 +1,5 @@
+delete_using_with.sql: at_most_one (id: int4) -> { id: int4 }
+select_by_key.sql: at_most_one (id: int4) -> { id: int4 }
+select_by_with.sql: at_most_one (id: int4) -> { id: int4 }
+update_from_with.sql: at_most_one (id: int4) -> { id: int4 }
+update_with_two.sql: at_most_one (id: int4, name: text) -> { id: int4 }

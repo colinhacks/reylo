@@ -67,6 +67,11 @@ impl Database for Mysql {
     fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::errors::Errors>> {
         crate::errors::errors(analysis, host)
     }
+
+    /// Whether the engine finds nothing in the statement that could write.
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::errors::read_only(analysis, host)
+    }
 }
 
 #[cfg(test)]

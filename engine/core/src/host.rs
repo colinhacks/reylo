@@ -80,6 +80,30 @@ impl<'a, D: Describe> Host<'a, D> {
             }
         }
     }
+
+    /// A catalog query asked once per set of parameters, its rows together: the host keeps the
+    /// answers by what each asks, so what a later statement asks again of the same relation costs
+    /// no round trip, where a list of a statement's own relations would be a new question each time.
+    /// `None` until each is answered; the first error otherwise.
+    pub fn query_each(&self, sql: &str, each: impl IntoIterator<Item = Vec<Value>>, scope: Scope) -> Lazy<Result<Vec<Vec<Value>>, DbError>> {
+        let mut asked = Vec::new();
+        let (mut rows, mut error, mut pending) = (Vec::new(), None, false);
+        for params in each {
+            if asked.contains(&params) {
+                continue;
+            }
+            asked.push(params.clone());
+            match self.query(sql, params, scope) {
+                Some(Ok(found)) => rows.extend(found),
+                Some(Err(e)) => error = error.or(Some(e)),
+                None => pending = true,
+            }
+        }
+        if pending {
+            return None;
+        }
+        Some(error.map_or(Ok(rows), Err))
+    }
 }
 
 /// A number the driver may have decoded as a JSON number or, for `int8`, as a string.

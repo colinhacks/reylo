@@ -1,0 +1,9 @@
+columns.sql: at_most_one (id: int4) -> { tags: (text('a' | 'b'))[], sizes: (varchar('s' | 'm'))[]?, both_ways: text('b')[]?, or_null: text('a')[]?, sized: text('a')[]?, l: (text('x' | 'y'))[]?, loose: text?[]?, containing: text?[]?, other: text?[]?, numbers: int4?[]? }
+folded.sql: many () -> { tags: text?[]? }
+json.sql: many () -> { doc: jsonb { tags: (text('a' | 'b'))[] } }
+left_join.sql: many () -> { tags: (text('a' | 'b'))[]? }
+returning.sql: one (id: int4, tags: (text('a' | 'b'))[]) -> { tags: (text('a' | 'b'))[] }
+row.sql: many () -> { doc: jsonb { id: int4, tags: (text('a' | 'b'))[], sizes: (varchar('s' | 'm'))[]?, both_ways: text('b')[]?, or_null: text('a')[]?, sized: text('a')[]?, l: (text('x' | 'y'))[]?, loose: text?[]?, containing: text?[]?, other: text?[]?, numbers: int4?[]? } }
+subquery.sql: many () -> { tags: (text('a' | 'b'))[] }
+union.sql: many () -> { tags: text?[] }
+view.sql: many () -> { tags: text?[] }

@@ -97,7 +97,7 @@ pub const POSTGRES_TOTAL: &[&str] = &[
     "reverse", "repeat", "replace", "left", "right", "lpad", "rpad", "translate", "ascii", "chr", "split_part", "strpos", "starts_with",
     "regexp_replace", "quote_ident", "quote_literal", "encode", "decode", "to_hex", "to_timestamp", "to_date", "uuidv7",
     "abs", "round", "floor", "ceil", "ceiling", "trunc", "sign", "sqrt", "cbrt", "exp", "ln", "log", "power", "mod",
-    "date_trunc", "age", "make_date", "make_timestamp", "make_timestamptz", "nextval",
+    "date_trunc", "date_bin", "age", "make_date", "make_timestamp", "make_timestamptz", "nextval",
     // `make_interval` and `make_time` raise for a value out of range; `x AT TIME ZONE z` and `x AT
     // LOCAL` call `timezone`, which keeps an infinite timestamp infinite and raises for an unknown
     // zone. `position(a IN b)` is `strpos`, and every overload of `substr` takes integer bounds.
@@ -202,7 +202,7 @@ pub const POSTGRES_STRICT: &[&str] = &[
     "md5", "reverse", "repeat", "replace", "left", "right", "lpad", "rpad", "translate", "ascii", "chr", "split_part", "strpos", "position",
     "starts_with", "substr", "substring", "regexp_replace", "quote_ident", "to_hex", "to_char", "to_date", "to_timestamp",
     "abs", "round", "floor", "ceil", "ceiling", "trunc", "sign", "sqrt", "cbrt", "exp", "ln", "log", "power", "mod",
-    "date_trunc", "date_part", "extract", "age",
+    "date_trunc", "date_bin", "date_part", "extract", "age",
 ];
 /// The functions the rules read with a built-in of one argument that takes a row (`"any"`,
 /// `anyelement`, `anynonarray`, `record`, or a variadic `"any"`): a call of one over a row is that
@@ -369,6 +369,9 @@ pub enum Claim {
     NonNull(Option<u32>),
     /// An array of the arguments' values (`array_agg`), never NULL itself where the flag says so.
     Array(bool),
+    /// `array_remove`, which is NULL only for a NULL array, whatever it removes; the flag says it
+    /// removes NULL, so that no element is.
+    Removed(bool),
 }
 
 /// See [`Expr::Trusted`].
@@ -401,10 +404,15 @@ pub enum Arg {
 }
 
 impl Check {
+    /// The check of a call of a name no user defined, which is always the built-in.
+    fn builtin() -> Check {
+        Check { kind: Kind::Function, name: String::new(), args: Vec::new(), overloads: None }
+    }
+
     /// What [`crate::resolution::Overloads::resolve`] says of the call, the arguments' types read
     /// from their facts, or from `leaves` for an operand of its own.
     fn resolve(&self, args: &[Fact], leaves: Option<&[DescribedColumn]>) -> Option<Option<u32>> {
-        let overloads = self.overloads.as_ref()?;
+        let Some(overloads) = self.overloads.as_ref() else { return Some(None) };
         let typed = |t: Option<u32>| t.map_or(Operand::Opaque, Operand::Is);
         let operands: Vec<Operand> = self
             .args
@@ -445,6 +453,7 @@ impl Call {
             }
             Claim::NonNull(ty) => Fact { non_null: true, type_oid: ty.or(result) },
             Claim::Array(non_null) => Fact { non_null: *non_null, type_oid: None },
+            Claim::Removed(_) => Fact { non_null: facts.first().is_some_and(|f| f.non_null), type_oid: result },
         };
         Some((fact, facts))
     }
@@ -1023,7 +1032,7 @@ fn may_be_jsonb(expr: &Expr, leaves: Option<&[DescribedColumn]>) -> bool {
             Expr::Call(call) => match (call.fact(leaves), &call.claim) {
                 (None, _) => true,
                 (Some(_), Claim::Every(..)) => call.args.iter().any(|a| may_be_jsonb(a, leaves)),
-                (Some(_), Claim::NonNull(_) | Claim::Array(_)) => false,
+                (Some(_), Claim::NonNull(_) | Claim::Array(_) | Claim::Removed(_)) => false,
             },
             Expr::Trusted(t) => may_be_jsonb(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves),
         },
@@ -1049,6 +1058,8 @@ pub fn items_nullable(expr: &Expr, leaves: Option<&[DescribedColumn]>, is_array:
             (None, _) | (Some(_), Claim::NonNull(_)) => None,
             (Some(_), Claim::Array(_)) => array_items(&call.args, leaves, is_array),
             (Some(_), Claim::Every(..)) => join_items(call.args.iter().map(|o| items_nullable(o, leaves, is_array))),
+            (Some(_), Claim::Removed(true)) => Some(false),
+            (Some(_), Claim::Removed(false)) => call.args.first().and_then(|a| items_nullable(a, leaves, is_array)),
         },
         Expr::Trusted(t) => items_nullable(if t.holds(leaves) { &t.then } else { &t.otherwise }, leaves, is_array),
     }
@@ -2014,6 +2025,12 @@ impl Reader<'_> {
                 operands[0] = Expr::Guarded(Box::new(operands[0].clone()), types);
                 Expr::Every(operands, Ty::Unknown)
             }
+            // NULL only for a NULL array, whatever it removes, which makes it no strict function.
+            (Dialect::Postgres, "array_remove", 2) if self.trust.builtin("array_remove") => {
+                let args = self.args(f, projection);
+                let claim = Claim::Removed(is_null_literal(&f.args[1]));
+                Expr::Call(Box::new(Call { check: Check::builtin(), args, claim }))
+            }
             (Dialect::Postgres, n, _) if POSTGRES_TOTAL.contains(&n) && self.trust.builtin(n) => {
                 let ty = if POSTGRES_JSONB.contains(&n) { Ty::Is(oid::JSONB) } else { Ty::Unknown };
                 Expr::Every(self.args(f, projection), ty)
@@ -2098,6 +2115,7 @@ impl Reader<'_> {
                 }
             }
             ("array_agg", 1) => (Claim::Array(false), None),
+            ("array_remove", 2) => (Claim::Removed(is_null_literal(&f.args[1])), None),
             (n, _) if POSTGRES_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
             ("uuidv7", 0) => (Claim::NonNull(Some(oid::UUID)), None),
             (n, 0) if POSTGRES_NO_ARGUMENT_NEVER_NULL.contains(&n) => (Claim::NonNull(None), None),
@@ -2348,6 +2366,9 @@ pub struct ItemQuery {
     /// statement cannot be described alone, its select list is read by the rules alone
     /// ([`lateral_columns`]).
     pub lateral: bool,
+    /// For a LATERAL subquery, what reads an arm of a set operation over the items before it, where
+    /// the arms can be described: the rules alone read no set operation.
+    pub around: Option<Around>,
 }
 
 /// The columns of a FROM item the SQL settles ([`ItemQuery::known`]).
@@ -2414,9 +2435,10 @@ fn reads_here(sql: &str) -> Option<(Vec<ItemRead>, Vec<ItemQuery>)> {
     if set_kind(select).is_some() || !select.values_lists.is_empty() {
         return None;
     }
-    let mut items = Items { version, with: select.with_clause.as_ref(), names: Vec::new(), shows: Vec::new(), merged: false, before: None, queries: Vec::new() };
+    let mut items = Items { version, with: select.with_clause.as_ref(), names: Vec::new(), shows: Vec::new(), merged: false, before: None, beside: Vec::new(), queries: Vec::new() };
     for (at, item) in select.from_clause.iter().enumerate() {
         items.before = Some(select.from_clause[..at].to_vec());
+        items.beside = select.from_clause[..at].to_vec();
         items.read(item, false)?;
     }
     let strings = |fields: &[Node]| -> Option<Vec<String>> {
@@ -2505,6 +2527,9 @@ struct Items<'a> {
     /// The items of the FROM before the one being read, where it is one of the FROM's own and not
     /// inside a join: what a function there may read.
     before: Option<Vec<Node>>,
+    /// The items a LATERAL subquery here may read: those of the FROM before it, and the left side
+    /// of each join it is on the right of.
+    beside: Vec<Node>,
     queries: Vec<ItemQuery>,
 }
 
@@ -2577,6 +2602,7 @@ impl Items<'_> {
                 }
                 self.merged |= j.is_natural || !j.using_clause.is_empty();
                 self.before = None;
+                let beside = self.beside.clone();
                 use protobuf::JoinType;
                 let (left, right) = match j.jointype {
                     t if t == JoinType::JoinInner as i32 => (nulled, nulled),
@@ -2584,9 +2610,10 @@ impl Items<'_> {
                     t if t == JoinType::JoinRight as i32 => (true, nulled),
                     _ => (true, true),
                 };
-                for (side, nulled) in [(j.larg.as_deref(), left), (j.rarg.as_deref(), right)] {
-                    self.read(side?, nulled)?;
-                }
+                self.read(j.larg.as_deref()?, left)?;
+                self.beside.extend(j.larg.as_deref().cloned());
+                self.read(j.rarg.as_deref()?, right)?;
+                self.beside = beside;
                 return Some(());
             }
             Some(NodeEnum::RangeVar(rv)) => {
@@ -2617,7 +2644,7 @@ impl Items<'_> {
                     names.extend(own.into_iter().skip(names.len()));
                     // SEARCH adds its sequence column, CYCLE its mark and its path.
                     let extra = usize::from(cte.search_clause.is_some()) + 2 * usize::from(cte.cycle_clause.is_some());
-                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, known: None, ordinality: None, lateral: false, extra })
+                    Some(ItemQuery { sql: arm_text(self.version, body, scope.as_ref())?, columns: names, with: Some(cte.ctename.clone()), nulled, known: None, ordinality: None, lateral: false, around: None, extra })
                 });
                 let name = Some(alias(rv.alias.as_ref()).unwrap_or_else(|| rv.relname.clone()));
                 if cte.is_none() {
@@ -2630,7 +2657,8 @@ impl Items<'_> {
             }
             Some(NodeEnum::RangeSubselect(r)) => {
                 let query = r.subquery.as_deref().and_then(as_select).and_then(|body| {
-                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled, known: None, ordinality: None, lateral: r.lateral, extra: 0 })
+                    let around = r.lateral.then(|| Around::of(self.version, &self.beside, self.with)).flatten();
+                    Some(ItemQuery { sql: arm_text(self.version, body, self.with)?, columns: columns(r.alias.as_ref()), with: None, nulled, known: None, ordinality: None, lateral: r.lateral, around, extra: 0 })
                 });
                 (alias(r.alias.as_ref()), query)
             }
@@ -2672,7 +2700,7 @@ impl Items<'_> {
                     // A call that reads a column reads one of the items before it: the probe reads
                     // it over them, as the statement does.
                     let before = if reads_a_column(call) { self.before.as_deref().unwrap_or(&[]) } else { &[] };
-                    Some(ItemQuery { sql: value_text(self.version, call, before, self.with)?, columns: vec![column], with: None, nulled, known, ordinality, lateral: false, extra: 0 })
+                    Some(ItemQuery { sql: value_text(self.version, call, before, self.with)?, columns: vec![column], with: None, nulled, known, ordinality, lateral: false, around: None, extra: 0 })
                 });
                 self.shows.push(match &query {
                     Some(ItemQuery { known: Some(known), .. }) => Shows::Names { query: self.queries.len(), names: known.columns.iter().map(|c| c.name.clone()).collect(), builtin: known.builtin },
@@ -2694,7 +2722,7 @@ impl Items<'_> {
             // (a path that finds nothing, a nested path's columns in its sibling's rows).
             Some(NodeEnum::JsonTable(t)) => {
                 let columns = json_table_columns(&t.columns, true);
-                let query = columns.map(|columns| ItemQuery { sql: String::new(), columns: Vec::new(), with: None, nulled, known: Some(Known { builtin: None, columns }), ordinality: None, lateral: false, extra: 0 });
+                let query = columns.map(|columns| ItemQuery { sql: String::new(), columns: Vec::new(), with: None, nulled, known: Some(Known { builtin: None, columns }), ordinality: None, lateral: false, around: None, extra: 0 });
                 (alias(t.alias.as_ref()), query)
             }
             _ => (None, None),
@@ -2773,6 +2801,71 @@ fn json_table_columns(columns: &[Node], top: bool) -> Option<Vec<KnownColumn>> {
         }
     }
     Some(out)
+}
+
+/// Whether an argument is NULL as written, cast or not.
+fn is_null_literal(node: &Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::AConst(c)) => c.isnull,
+        Some(NodeEnum::TypeCast(c)) => c.arg.as_deref().is_some_and(is_null_literal),
+        _ => false,
+    }
+}
+
+/// The statement that reads a subquery's columns over the FROM items beside it, the query around it
+/// and its WITH queries in scope, so that one reading those items can be described: [`Around::with`]
+/// makes it, for a LATERAL set operation's arm or an `ARRAY(SELECT …)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Around {
+    /// `SELECT reylo_arm.* FROM …`, the items beside the subquery after the `FROM`.
+    statement: String,
+    /// Whether the statement has any FROM item yet.
+    has_items: bool,
+}
+
+impl Around {
+    fn of(version: i32, items: &[Node], with: Option<&protobuf::WithClause>) -> Option<Around> {
+        let target = crate::stack::parse("SELECT reylo_arm.*").ok()?;
+        let Some(NodeEnum::SelectStmt(select)) = target.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
+        let select = SelectStmt { from_clause: items.to_vec(), ..(**select).clone() };
+        Some(Around { statement: arm_text(version, &select, with)?, has_items: !items.is_empty() })
+    }
+
+    /// The statement over this subquery's text.
+    pub fn with(&self, subquery: &str) -> String {
+        format!("{} {} LATERAL ({subquery}) AS reylo_arm", self.statement, if self.has_items { "," } else { "FROM" })
+    }
+}
+
+/// Per target of a SELECT, what reads the subquery of one that is `ARRAY(SELECT …)` over the
+/// statement's FROM, whose elements are that subquery's one column. `None` for a statement whose
+/// targets are not one per column: a `*`, or a set operation.
+pub fn array_subqueries(sql: &str) -> Option<Vec<Option<String>>> {
+    crate::stack::run(|| {
+        let parsed = crate::stack::parse(sql).ok()?;
+        let version = parsed.protobuf.version;
+        let Some(NodeEnum::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
+        if set_kind(select).is_some() || !select.values_lists.is_empty() {
+            return None;
+        }
+        let around = std::cell::OnceCell::new();
+        select
+            .target_list
+            .iter()
+            .map(|target| {
+                let Some(NodeEnum::ResTarget(target)) = target.node.as_ref() else { return None };
+                match target.val.as_deref()?.node.as_ref()? {
+                    NodeEnum::ColumnRef(c) if c.fields.iter().any(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) => None,
+                    NodeEnum::SubLink(s) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => {
+                        let text = s.subselect.as_deref().and_then(as_select).and_then(|sub| arm_text(version, sub, None));
+                        let around = around.get_or_init(|| Around::of(version, &select.from_clause, select.with_clause.as_ref()));
+                        Some(text.zip(around.as_ref()).map(|(text, around)| around.with(&text)))
+                    }
+                    _ => Some(None),
+                }
+            })
+            .collect()
+    })
 }
 
 /// The columns of a LATERAL subquery's select list as the rules read them without a probe, which a
@@ -4635,7 +4728,7 @@ mod tests {
         let column = |item: usize, column: &str| ItemRead::Column { item, column: column.into() };
         let (reads, queries) = item_reads("WITH c AS (SELECT 1 AS one) SELECT s.n, u.id FROM users u LEFT JOIN (SELECT count(*) AS n FROM c) s (total) ON true").unwrap();
         assert_eq!(reads, vec![column(0, "n"), ItemRead::Table]);
-        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true, known: None, ordinality: None, lateral: false, extra: 0 }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "WITH c AS (SELECT 1 AS one) SELECT count(*) AS n FROM c".into(), columns: vec!["total".into()], with: None, nulled: true, known: None, ordinality: None, lateral: false, around: None, extra: 0 }]);
         // The preserved side of an outer join is not nulled; a FULL JOIN nulls both.
         let nulled = |sql: &str| item_reads(sql).unwrap().1.iter().map(|q| q.nulled).collect::<Vec<_>>();
         assert_eq!(nulled("SELECT a.x, b.y FROM (SELECT 1 AS x) a LEFT JOIN (SELECT 2 AS y) b ON true"), vec![false, true]);
@@ -4646,7 +4739,7 @@ mod tests {
         // item's one column goes by.
         let (reads, queries) = item_reads("SELECT * FROM lower($1)").unwrap();
         assert_eq!(reads, vec![ItemRead::Star { item: Some(0) }]);
-        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false, known: None, ordinality: None, lateral: false, extra: 0 }]);
+        assert_eq!(queries, vec![ItemQuery { sql: "SELECT lower($1) AS value".into(), columns: vec!["lower".into()], with: None, nulled: false, known: None, ordinality: None, lateral: false, around: None, extra: 0 }]);
         assert_eq!(item_reads("SELECT t FROM now() AS t").unwrap().1[0].columns, vec!["t"]);
         assert_eq!(item_reads("SELECT v FROM now() AS t (v)").unwrap().1[0].columns, vec!["v"]);
         assert_eq!(item_reads("SELECT * FROM CURRENT_DATE AS d").unwrap().1[0].sql, "SELECT current_date AS value");

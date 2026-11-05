@@ -4,7 +4,8 @@
 //! DuckDB compares a table's name without case.
 
 use crate::host::{as_bool, as_str, Host, Lazy};
-use reylo_engine_core::api::Scope;
+use reylo_engine_core::api::{Analysis, Scope};
+use reylo_engine_core::dialect::Dialect;
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -24,6 +25,41 @@ const KEYS_QUERY: &str = "select database_name, schema_name, table_name, to_json
 /// Every macro and its definition: a macro may call `unnest`, itself or through another macro,
 /// and so make a row of each element (`generate_subscripts`, `regexp_split_to_table`).
 const MACROS_QUERY: &str = "select lower(function_name), macro_definition from duckdb_functions() where function_type = 'macro' and macro_definition is not null";
+
+/// Every macro and view a user defined, by lowercased name: its definition, and whether it is a view.
+const DEFINITIONS_QUERY: &str = "select lower(function_name), macro_definition, false from duckdb_functions() where function_type in ('macro', 'table_macro') and macro_definition is not null and not internal \
+    union all select lower(view_name), sql, true from duckdb_views() where not internal and sql is not null";
+
+/// The functions that move a sequence, or run SQL they are given as text, which may.
+const MOVES_A_SEQUENCE: [&str; 4] = ["nextval", "setval", "query", "query_table"];
+
+/// Whether the statement is certain to write nothing: a SELECT that moves no sequence, itself or
+/// through a view or a macro, however deep. A view counts wherever its name stands as a word, a
+/// column or an alias of that name too, which can only say a read may write.
+pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+    let sql = &analysis.rewritten.sql;
+    if analysis.kind != Some(reylo_engine_core::types::StatementKind::Select) {
+        return Some(false);
+    }
+    let Ok(rows) = host.query(DEFINITIONS_QUERY, Vec::new(), Scope::Session)? else { return Some(false) };
+    let mut definitions: Vec<(String, String, bool)> = rows.iter().filter_map(|r| Some((as_str(r.first()?)?.to_string(), as_str(r.get(1)?)?.to_string(), as_bool(r.get(2)?)?))).collect();
+    let mut functions: Vec<String> = MOVES_A_SEQUENCE.iter().map(|f| f.to_string()).collect();
+    let mut views: Vec<String> = Vec::new();
+    let moves = |sql: &str, functions: &[String], views: &[String]| {
+        let names: Vec<&str> = views.iter().map(String::as_str).collect();
+        reylo_engine_core::errors::called(sql, Dialect::Duckdb).iter().any(|f| functions.contains(f)) || reylo_engine_core::errors::has_word(sql, Dialect::Duckdb, &names)
+    };
+    loop {
+        let (moving, rest): (Vec<_>, Vec<_>) = definitions.into_iter().partition(|(_, definition, _)| moves(definition, &functions, &views));
+        if moving.is_empty() {
+            return Some(!moves(sql, &functions, &views));
+        }
+        for (name, _, view) in moving {
+            if view { views.push(name) } else { functions.push(name) }
+        }
+        definitions = rest;
+    }
+}
 
 /// A table or view as the catalog has it.
 #[derive(Debug, Clone, Default)]

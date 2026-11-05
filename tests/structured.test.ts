@@ -246,7 +246,7 @@ test("Postgres: a rows insert keeps the array's order and exact 64-bit ids, a ke
     assert.deepEqual(returned.map((r: { id: bigint }) => r.id), many.map((_, i) => BigInt(i + 1)));
     // One row.
     const user = await built(root, url.href, "insert_user", "insert into users :user::row(email text not null, name text not null) returning id");
-    assert.deepEqual(plain(await user.run(sql, { user: { email: "a@x", name: "Ada" } })), [{ id: 1001n }]);
+    assert.deepEqual({ ...(await user.run(sql, { user: { email: "a@x", name: "Ada" } })) }, { id: 1001n });
     // Elsewhere, a table whose not null keys are never null.
     const read = "select e.id, e.amount from :events::rows(id int8 not null, amount numeric) as e order by e.id";
     assert.deepEqual((await analysis(root, url.href, read)).columns.map((c) => [c.name, c.nullable === true]), [["id", false], ["amount", true]]);
@@ -355,8 +355,8 @@ test("Postgres: rows that leave out different keys go in one insert, each such r
     }
     // One row reads the object itself for its key tests.
     const one = await built(root, url.href, "insert_account", "insert into accounts :a::row(name text not null, role? text not null) returning role");
-    assert.deepEqual(plain(await one.run(sql, { a: { name: "Joan" } })), [{ role: "member" }]);
-    assert.deepEqual(plain(await one.run(sql, { a: { name: "Alan", role: "admin" } })), [{ role: "admin" }]);
+    assert.deepEqual({ ...(await one.run(sql, { a: { name: "Joan" } })) }, { role: "member" });
+    assert.deepEqual({ ...(await one.run(sql, { a: { name: "Alan", role: "admin" } })) }, { role: "admin" });
     // A view's column with no default of its own would take its table's, which is not copied.
     await sql.unsafe("create view accounts_v as select id, name, email from accounts");
     const view = "insert into accounts_v :a::rows(name text not null, email text)";

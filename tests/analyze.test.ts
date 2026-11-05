@@ -73,6 +73,41 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
+test("a database with the same schema at another URL reads the entry, and one with another schema writes its own", async () => {
+  const { root, env } = project();
+  const first = await analyze(root, env, SELECT);
+  assert.ok(first.ok);
+  assert.equal(first.source, "database");
+  // A copy of the file, as a fresh database built by the same migrations is.
+  cpSync(join(root, "app.db"), join(root, "fresh.db"));
+  const fresh = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(fresh.ok);
+  assert.deepEqual([fresh.source, fresh.entry], ["cache", first.entry]);
+  const db = new DatabaseSync(join(root, "fresh.db"));
+  db.exec("alter table users add column email text");
+  db.close();
+  const changed = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(changed.ok);
+  assert.equal(changed.source, "database");
+  assert.notEqual(changed.entry, first.entry);
+});
+
+test("a statement keeps the entries of a few databases, and the newest of them", async () => {
+  const { root, env } = project();
+  await analyze(root, env, SELECT);
+  for (let i = 0; i < 6; i++) {
+    cpSync(join(root, "app.db"), join(root, `build${i}.db`));
+    const db = new DatabaseSync(join(root, `build${i}.db`));
+    db.exec(`create table t${i} (id integer)`);
+    db.close();
+    const built = await analyze(root, { DATABASE_URL: `file:./build${i}.db` }, SELECT);
+    assert.ok(built.ok);
+    assert.equal(built.source, "database");
+    assert.ok(existsSync(built.entry));
+  }
+  assert.equal(readdirSync(join(root, ".reylo", "queries")).length, 4);
+});
+
 test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
   const { root, env } = project();
   const sql = "select id from users where name = :name";
@@ -184,7 +219,7 @@ test("the module a build step emits carries the analysis and reads nothing at ru
       `export const sql = "select id, name from users where id = ?";`,
       `export const raw = ${JSON.stringify(SELECT)};`,
       `export const params = ["id"];`,
-      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
+      `export default defineQuery({ dialect: "sqlite", sql: raw, params, cardinality: "maybeOne", readOnly: true, text: sql, order: ["id"], inputs: {"id":{"type":{"kind":"integer","bits":64},"nullable":false}}, columns: [["id","int"],["name","text"]], row: (v) => ({ "id": v[0], "name": v[1] }), fresh: {"query":"select j.value as fresh_table, p.name as fresh_column, p.type as fresh_type, cast(p.\\"notnull\\" as text) as fresh_not_null, cast(p.dflt_value is not null or (p.pk > 0 and lower(p.type) = 'integer' and (select count(*) from pragma_table_xinfo(j.value) k where k.pk > 0) = 1) as text) as fresh_default from (select 'users' as value) j, pragma_table_xinfo(j.value) p order by 1, 2","rows":[["users","id","INTEGER","0","1"],["users","name","TEXT","1","0"]],"inserts":[]}, source: "user.sql", sqlcommenter: true, jsonSchema: {"input":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"id":{"type":"integer","format":"int64"}},"required":["id"],"additionalProperties":false},"output":{"$schema":"https://json-schema.org/draft/2020-12/schema","anyOf":[{"type":"object","properties":{"id":{"type":"integer","format":"int64"},"name":{"type":"string"}},"required":["id","name"]},{"type":"null"}]}} });`,
       ``,
     ].join("\n"));
     // A statement that relies on no catalog fact carries its file too, written with `/`.
@@ -299,6 +334,44 @@ test("a parameter as a whole sort key is an error the type check places, and a b
     assert.match(code, /export const params = \["sort"\];/);
   } finally {
     for (const session of Session.opened()) await session.close();
+  }
+});
+
+test("a Postgres database built by the same migrations reads the entries of another, whatever its object ids", { skip: live }, async () => {
+  const migrations = `
+    create type mood as enum ('calm', 'loud');
+    create domain short as text check (length(value) < 9);
+    create table people (id serial primary key, mood mood not null, nick short, tags text[], born timestamptz default now());
+    create index on people (mood);
+    create function touch() returns trigger language plpgsql as $$ begin return new; end $$;
+    create trigger touch before update on people for each row execute function touch();
+    create function adults() returns setof people language sql stable as 'select * from people';
+    create view moods as select id, mood from people;
+    create policy everyone on people using (true);
+    comment on column people.nick is 'What they go by';
+  `;
+  const first = await postgresDatabase("reylo_same_first", migrations);
+  // Object ids are given out across a whole server, so that anything created first moves them.
+  const second = await postgresDatabase("reylo_same_second", `create table moved (id int); drop table moved; ${migrations}`);
+  const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const sql = "select id, mood, nick from people where id = :id";
+  try {
+    const typed = await analyze(root, { DATABASE_URL: first.url }, sql);
+    assert.ok(typed.ok);
+    assert.equal(typed.source, "database");
+    const fresh = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(fresh.ok);
+    assert.deepEqual([fresh.source, fresh.entry], ["cache", typed.entry]);
+    assert.deepEqual(fresh.analysis, typed.analysis);
+    // What the analysis said of the objects is the second database's to say too.
+    await second.sql.unsafe("alter table people alter column nick set not null");
+    const changed = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(changed.ok);
+    assert.equal(changed.source, "database");
+  } finally {
+    await first.drop();
+    await second.drop();
   }
 });
 

@@ -1,0 +1,1 @@
+select doc from shadowed

@@ -34,6 +34,12 @@ pub trait Database {
         Some(None)
     }
 
+    /// Whether the engine finds nothing in the statement that could write, read once the rest of the analysis is
+    /// settled: by default it is not.
+    fn read_only(_analysis: &Analysis, _host: &Host<'_, Self::Describe>) -> Lazy<bool> {
+        Some(false)
+    }
+
     /// One request's round: the analysis, and then the facts it relied on. Postgres overrides it
     /// to settle what a server-side extension offers first.
     fn round(sql: &str, answers: &Answers<Self::Describe>) -> Response {
@@ -59,7 +65,13 @@ pub fn with_facts<D: Database + ?Sized>(mut analysis: Analysis, host: &Host<'_, 
         (Some(fresh), Some(errors)) => {
             analysis.fresh = fresh;
             analysis.errors = errors;
-            Response::Analysis { analysis }
+            match D::read_only(&analysis, host) {
+                Some(read_only) => {
+                    analysis.read_only = read_only;
+                    Response::Analysis { analysis }
+                }
+                None => Response::Need { needs: host.needs() },
+            }
         }
         _ => Response::Need { needs: host.needs() },
     }

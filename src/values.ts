@@ -288,8 +288,21 @@ function isoDate(x: string): string {
 /** `2026-10-20` as it is; `0002-06-01 BC` → `-000001-06-01` and `12345-01-01` → `+012345-01-01` (`isoDate`). */
 const date: Decoder = isoDate;
 
-/** `2026-10-20 10:00:00.123456` → `2026-10-20T10:00:00.123456`, its year as a date's (`isoDate`); `infinity` as written. */
-const timestamp: Decoder = (x) => isoDate(x.replace(" ", "T"));
+/** `2026-10-20 10:00:00.5` → `2026-10-20T10:00:00.500000`, its year as a date's (`isoDate`) and its fraction six digits (`sixDigits`); `infinity` as written. */
+const timestamp: Decoder = (x) => sixDigits(isoDate(x.replace(" ", "T")));
+
+/**
+ * A Postgres `timestamp`'s ISO 8601 text with a fraction of six digits, the microseconds Postgres
+ * keeps, where the server writes as many as the value needs: so two of them sort as strings in the
+ * order of their times. Any other text as it is.
+ */
+export function sixDigits(x: string): string {
+  const m = /^(.*T\d\d:\d\d:\d\d)(?:\.(\d{1,6}))?$/.exec(x);
+  return m === null ? x : `${m[1]}.${(m[2] ?? "").padEnd(6, "0")}`;
+}
+
+/** A fraction of a second as the server wrote it (`.5`, or none), as six digits (`.500000`). */
+const micros = (fraction: string) => (fraction === "" ? ".000000" : fraction.padEnd(7, "0"));
 
 // timestamptz in DateStyle ISO: `2026-10-20 03:03:00.123456-07`, offsets with seconds before
 // standard time (`-07:52:58`), years past 9999, ` BC`. `new Date(text)`, which postgres.js and
@@ -349,10 +362,10 @@ export function postgresYear(text: string): string {
 }
 
 /**
- * A timestamptz's text as the instant's ISO 8601 text in UTC: `2026-10-20 10:00:00.123456+02` is
- * `2026-10-20T08:00:00.123456Z`, the fraction as the server wrote it (trailing zeros dropped, none
- * for a whole second), which `Temporal.Instant.from` reads. `infinity` and `-infinity` stay those
- * words.
+ * A timestamptz's text as the instant's ISO 8601 text in UTC: `2026-10-20 10:00:00.5+02` is
+ * `2026-10-20T08:00:00.500000Z`, the fraction six digits where the server writes as many as the
+ * value needs, so that two instants sort as strings in the order of their times. `Temporal.Instant.from`
+ * reads it. `infinity` and `-infinity` stay those words.
  */
 export function instant(x: string): string {
   // The server's usual text, `YYYY-MM-DD HH:MM:SS[.f]±HH[:MM[:SS]]` with a year from 1000 to 9999,
@@ -389,7 +402,7 @@ export function instant(x: string): string {
   const mo = mp + (mp < 10 ? 3 : -9);
   const y = era * 400 + yoe + (mo <= 2 ? 1 : 0);
   if (y < 1000 || y > 9999) return instantByPattern(x);
-  return `${y}-${TWO[mo]}-${TWO[d]}T${TWO[Math.floor(s / 3600)]}:${TWO[Math.floor(s / 60) % 60]}:${TWO[s % 60]}${fraction}Z`;
+  return `${y}-${TWO[mo]}-${TWO[d]}T${TWO[Math.floor(s / 3600)]}:${TWO[Math.floor(s / 60) % 60]}:${TWO[s % 60]}${micros(fraction)}Z`;
 }
 
 /** `00` to `99`, by number. */
@@ -416,17 +429,17 @@ function instantByPattern(x: string): string {
   const days = Math.floor(seconds / 86400);
   const s = seconds - days * 86400;
   const [y, mo, d] = civilFromDays(days);
-  return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${m[7] ?? ""}Z`;
+  return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${micros(m[7] ?? "")}Z`;
 }
 
 /**
  * The instant a driver already decoded to a Date (Bun.sql's timestamptz), as the same text: to the
- * millisecond, which is all a Date holds, with its fraction's trailing zeros dropped as the server
- * drops them, so that a value the driver did not cut reads alike on every driver.
+ * millisecond, which is all a Date holds, in six digits as `instant` writes them, so that a value
+ * the driver did not cut reads alike on every driver.
  */
 export function instantOfDate(d: Date, column: string): string {
   validDate(d, column);
-  return d.toISOString().replace(/\.?0+Z$/, "Z");
+  return d.toISOString().replace(/Z$/, "000Z");
 }
 
 // interval in IntervalStyle postgres: `1 year 2 mons 3 days 04:05:06.789`. Postgres keeps three
@@ -777,12 +790,14 @@ function validDate(d: Date, column: string): void {
  * decode to: `YYYY-MM-DD`, or with `T` and the fraction the driver kept, the year as `isoYear`
  * writes it.
  */
-function utcText(d: Date, kind: "date" | "timestamp", column: string): string {
+function utcText(d: Date, kind: "date" | "timestamp", column: string, postgres: boolean): string {
   validDate(d, column);
   const date = `${isoYear(d.getUTCFullYear())}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
   if (kind === "date") return date;
   const ms = d.getUTCMilliseconds();
-  return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : ""}`;
+  // A Postgres `timestamp`'s six digits, as `sixDigits` writes them; a MySQL DATETIME's as the driver kept them.
+  const fraction = postgres ? `.${pad(ms, 3)}000` : ms ? `.${pad(ms, 3).replace(/0+$/, "")}` : "";
+  return `${date}T${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}${fraction}`;
 }
 
 const isBytes = (v: unknown): v is Uint8Array => v instanceof Uint8Array;
@@ -800,14 +815,15 @@ export function float32s(bytes: Uint8Array, column: string): number[] {
 /**
  * `v` as a value of `kind`, from the form a driver decoded it to; `column` names it in an error. A
  * number past ±(2^53 - 1) in an integer column is one the driver already rounded, and is refused.
- * `delim` is an array's, where its text is what the driver gave.
+ * `delim` is an array's, where its text is what the driver gave; `postgres` says the value is a
+ * Postgres one, whose `timestamp` takes six fraction digits.
  */
-export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unknown {
+export function coerce(kind: Kind, v: unknown, column: string, delim = ",", postgres = false): unknown {
   if (v === null || v === undefined) return null;
   if (kind.endsWith("[]")) {
     const element = elementKind(kind);
-    if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column), delim);
-    if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column, delim) : coerce(element, e, column)));
+    if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column, ",", postgres), delim);
+    if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column, delim, postgres) : coerce(element, e, column, ",", postgres)));
     // A MySQL VECTOR's bytes: no driver gives any other array of floats as bytes.
     if (element === "float" && isBytes(v)) return float32s(v, column);
     // Bun.sql's int4[] and float4[] are typed arrays.
@@ -832,7 +848,7 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unk
       return v;
     case "date":
     case "timestamp":
-      if (v instanceof Date) return utcText(v, kind as "date" | "timestamp", column);
+      if (v instanceof Date) return utcText(v, kind as "date" | "timestamp", column, postgres);
       // Bun.sql's `infinity`.
       if (v === Infinity || v === -Infinity) return v > 0 ? "infinity" : "-infinity";
       return v;
@@ -883,7 +899,7 @@ function coerceEither(kind: Kind, v: unknown, column: string): unknown {
     if (kinds.includes("int")) return exactInteger(v, column);
     return kinds.includes("int8") ? bigInteger(v, column) : v;
   }
-  if (v instanceof Date) return kinds.includes("timestamp") ? utcText(v, "timestamp", column) : kinds.includes("date") ? utcText(v, "date", column) : kinds.includes("timestamptz") ? instantOfDate(v, column) : v;
+  if (v instanceof Date) return kinds.includes("timestamp") ? utcText(v, "timestamp", column, false) : kinds.includes("date") ? utcText(v, "date", column, false) : kinds.includes("timestamptz") ? instantOfDate(v, column) : v;
   if (v instanceof ArrayBuffer || (Array.isArray(v) && kinds.includes("bytes"))) return coerce("bytes", v, column);
   return v;
 }

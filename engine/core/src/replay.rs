@@ -92,6 +92,12 @@ impl<D> AnswerCache<D> {
         AnswerCache { entries: HashMap::new(), session, statement }
     }
 
+    /// Answers kept until [`AnswerCache::clear`], for a host that clears them when the schema
+    /// changes, or that lives for one run: each catalog fact is then read once.
+    pub fn until_cleared() -> Self {
+        AnswerCache::new(Duration::MAX, Duration::MAX)
+    }
+
     /// Forgets every answer, as after a change to the schema.
     pub fn clear(&mut self) {
         self.entries.clear();

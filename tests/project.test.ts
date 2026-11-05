@@ -107,6 +107,14 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is unknown, and its error names the new one.
   const renamed = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\nstrict: true\n" });
   assert.equal(resolveProject(e, renamed, {}).error, ".reylo.yaml:2:1: unknown field `strict`: the key is `strict_params` since 2026-10-20");
+  // A variable falls back, as in a shell, where it is unset or empty; the fallback may name another.
+  const fallback = (url: string, env: Record<string, string>) => resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": `direct_url: ${url}\n` }), env);
+  assert.equal(fallback("${BUILD:-${DEV}}", { BUILD: "postgres://build/db", DEV: "postgres://dev/db" }).url, "postgres://build/db");
+  assert.equal(fallback("${BUILD:-${DEV}}", { DEV: "postgres://dev/db" }).url, "postgres://dev/db");
+  assert.equal(fallback("${BUILD:-${DEV}}", { BUILD: "", DEV: "postgres://dev/db" }).url, "postgres://dev/db");
+  assert.equal(fallback("postgres://${HOST:-localhost}/db", {}).url, "postgres://localhost/db");
+  assert.equal(fallback("${A:-${B:-postgres://c/db}}", {}).url, "postgres://c/db");
+  assert.match(fallback("${BUILD:-${DEV}}", {}).error!, /^\.reylo\.yaml: "direct_url" names \$\{DEV\}, which neither the environment nor/);
   const unset = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: ${NOPE}\n" });
   const r = resolveProject(e, unset, {});
   assert.equal(r.url, undefined);

@@ -1,0 +1,1 @@
+select tags from shadowed
