@@ -1041,7 +1041,12 @@ impl<'a> Engine<'a> {
         let registry = self.registry.borrow();
         let columns: Vec<Column> = raw.columns.iter().map(|c| Column { delimiter: registry.delimiter(c.oid), ..Column::new(c.name.clone(), registry.render(c.oid), true) }).collect();
         let params = lexed.params.iter().zip(&raw.params).map(|(name, &o)| Param { delimiter: registry.delimiter(o), ..Param::new(name.clone(), registry.render(o)) }).collect();
-        let cardinality = if columns.is_empty() { Cardinality::None } else { Cardinality::Many };
+        // A CALL returns its OUT parameters' values as one row, and a procedure with none no row.
+        let cardinality = match columns.is_empty() {
+            true => Cardinality::None,
+            false if kind.eq_ignore_ascii_case("call") => Cardinality::One,
+            false => Cardinality::Many,
+        };
         Some(Analysis {
             kind: Some(StatementKind::of(&kind)),
             comment: None,
