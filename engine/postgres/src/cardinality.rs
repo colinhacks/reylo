@@ -489,8 +489,12 @@ pub const COLUMNS_QUERY: &str = concat!(
 );
 
 /// `$1` is `text[]` of function names: `(proname, has a set-returning overload, has a volatile
-/// overload)`.
-pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\") \
+/// overload)`, an aggregate volatile where a function it runs is, whatever its own label, which
+/// Postgres writes as immutable for every aggregate.
+pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog.bool_or(p.proretset), pg_catalog.bool_or(p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" \
+      OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
+        ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")) \
     FROM pg_catalog.pg_proc p WHERE p.proname::pg_catalog.text OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) GROUP BY p.proname";
 
 /// Every operator some set-returning function implements.

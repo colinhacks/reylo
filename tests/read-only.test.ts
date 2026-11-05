@@ -36,7 +36,22 @@ test("on Postgres, only a SELECT that sets off nothing volatile is read-only", {
     create view writing_view as select id, writer() as w from t;
     create table guarded (id int primary key);
     alter table guarded enable row level security;
-    create policy guard on guarded using (writer() = 1);`);
+    create policy guard on guarded using (writer() = 1);
+    create view next_ids as select nextval('s') as id;
+    create view next_ids_again as select id from next_ids;
+    create view random_view as select random() as r, id from t;
+    create table sequenced (id int primary key);
+    alter table sequenced enable row level security;
+    create policy sequenced_guard on sequenced using (nextval('s') > 0);
+    create table guarded_by_view (id int primary key);
+    alter table guarded_by_view enable row level security;
+    create policy view_guard on guarded_by_view using (exists (select 1 from next_ids));
+    create function step(int, int) returns int volatile language sql as 'select nextval(''s'')::int';
+    create aggregate writing_sum(int) (sfunc = step, stype = int);
+    create function pure_step(int, int) returns int immutable language sql as 'select $1 + $2';
+    create aggregate pure_sum(int) (sfunc = pure_step, stype = int);
+    create view aggregate_view as select writing_sum(id) as total from t;
+    create function public.timeofday() returns text volatile language sql as 'select nextval(''s'')::text';`);
   try {
     const cases: [string, boolean][] = [
       ["select id from t", true],
@@ -60,6 +75,15 @@ test("on Postgres, only a SELECT that sets off nothing volatile is read-only", {
       ["select writer()", false],
       ["select reader()", true],
       ["select * into t2 from t", false],
+      ["select id from next_ids", false],
+      ["select id from next_ids_again", false],
+      ["select r from random_view", true],
+      ["select id from sequenced", false],
+      ["select id from guarded_by_view", false],
+      ["select writing_sum(id) from t", false],
+      ["select total from aggregate_view", false],
+      ["select pure_sum(id), count(*) from t", true],
+      ["select public.timeofday()", false],
     ];
     for (const [sql, expected] of cases) assert.equal(await readOnly(db.url, sql), expected, sql);
   } finally {
@@ -69,7 +93,7 @@ test("on Postgres, only a SELECT that sets off nothing volatile is read-only", {
 });
 
 test("on MySQL, only a SELECT with no lock, no INTO, no variable and no stored function is read-only", { skip: mysqlLive }, async () => {
-  const db = await mysqlDatabase("read_only", "create table t (id int primary key, name text); create function writer() returns int deterministic return 1;");
+  const db = await mysqlDatabase("read_only", "create table t (id int primary key, name text); create function writer() returns int deterministic return 1; create view locking_view as select get_lock('a', 0) as l, id from t; create view locking_again as select id from locking_view; create view plain_view as select id from t;");
   try {
     const cases: [string, boolean][] = [
       ["select id from t", true],
@@ -80,6 +104,9 @@ test("on MySQL, only a SELECT with no lock, no INTO, no variable and no stored f
       ["select @a := 1", false],
       ["select get_lock('a', 0)", false],
       ["select writer()", false],
+      ["select id from plain_view", true],
+      ["select id from locking_view", false],
+      ["select id from locking_again", false],
     ];
     for (const [sql, expected] of cases) assert.equal(await readOnly(db.url, sql), expected, sql);
   } finally {

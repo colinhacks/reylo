@@ -69,8 +69,8 @@ impl Database for Mysql {
     }
 
     /// Whether the statement is certain to write nothing.
-    fn read_only(analysis: &Analysis, _host: &Host) -> Lazy<bool> {
-        Some(crate::errors::read_only(analysis))
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::errors::read_only(analysis, host)
     }
 }
 

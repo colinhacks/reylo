@@ -400,7 +400,7 @@ getUser.readOnly;
 //      ^?
 ```
 
-A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator.
+A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator. A function of your own counts by the volatility it declares.
 
 ### `.with()`
 

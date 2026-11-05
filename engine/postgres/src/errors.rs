@@ -83,7 +83,10 @@ macro_rules! relname {
 /// A server newer than 18 may raise a code the run time's list lacks. An `open` row's last column is
 /// `reads` where what it finds cannot write ([`read_only`]): a type's input and output, or a function
 /// that is not volatile. One row `('present', oid)` for
-/// each type of a user's present, which [`OPERATORS_QUERY`] takes.
+/// each type of a user's present, which [`OPERATORS_QUERY`] takes. One row `('runs', name, 'built in' or
+/// NULL)` for each volatile function, or aggregate over one, that a view or a policy a read reaches
+/// calls, read from the stored expression, since `pg_depend` records nothing for a built-in and every
+/// aggregate is labelled immutable ([`read_only`]). A policy's relations are among what a read reaches.
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
     named(oid, written) AS ( \
@@ -103,7 +106,10 @@ pub const ERRORS_QUERY: &str = concat!(
         AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) q.ev_class \
         WHERE q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
       UNION ALL SELECT k.confrelid, k.conrelid, false FROM pg_catalog.pg_constraint k WHERE $5::pg_catalog.bool AND k.contype OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
-        AND (k.confdeltype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]) OR k.confupdtype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]))), \
+        AND (k.confdeltype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[]) OR k.confupdtype OPERATOR(pg_catalog.=) ANY ('{c,n,d}'::pg_catalog.\"char\"[])) \
+      UNION ALL SELECT y.polrelid, d.refobjid, true FROM pg_catalog.pg_policy y JOIN pg_catalog.pg_depend d \
+        ON d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_policy"), " AND d.objid OPERATOR(pg_catalog.=) y.oid \
+        AND d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_class"), " AND d.refobjid OPERATOR(pg_catalog.<>) y.polrelid), \
     w(oid) AS (SELECT n.oid FROM named n WHERE n.written UNION SELECT e.child FROM edge e JOIN w ON e.parent OPERATOR(pg_catalog.=) w.oid), \
     r(oid) AS (SELECT n.oid FROM named n UNION SELECT e.child FROM edge e JOIN r ON e.parent OPERATOR(pg_catalog.=) r.oid WHERE e.read), \
     rel(oid) AS (SELECT w.oid FROM w UNION SELECT r.oid FROM r), \
@@ -208,7 +214,15 @@ pub const ERRORS_QUERY: &str = concat!(
       UNION ALL SELECT '23P01', 'constraint', k.conname::pg_catalog.text FROM pg_catalog.pg_constraint k JOIN w ON k.conrelid OPERATOR(pg_catalog.=) w.oid \
         WHERE k.contype OPERATOR(pg_catalog.=) 'x'::pg_catalog.\"char\" \
     ) AS k(code, field, name) WHERE k.name IS NOT NULL \
-    UNION ALL SELECT 'present', pg_catalog.textin(pg_catalog.oidout(p.oid)), NULL, NULL FROM present p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid"
+    UNION ALL SELECT 'present', pg_catalog.textin(pg_catalog.oidout(p.oid)), NULL, NULL FROM present p WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid \
+    UNION ALL SELECT DISTINCT 'runs', p.proname::pg_catalog.text, CASE WHEN p.oid OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid THEN 'built in'::pg_catalog.text END, NULL FROM r \
+      CROSS JOIN LATERAL (SELECT q.ev_action::pg_catalog.text FROM pg_catalog.pg_rewrite q WHERE q.ev_class OPERATOR(pg_catalog.=) r.oid AND q.rulename OPERATOR(pg_catalog.=) '_RETURN'::pg_catalog.name \
+        UNION ALL SELECT y.polqual::pg_catalog.text FROM pg_catalog.pg_policy y WHERE y.polrelid OPERATOR(pg_catalog.=) r.oid) AS t(tree) \
+      CROSS JOIN LATERAL pg_catalog.regexp_matches(t.tree, ':(?:funcid|opfuncid|aggfnoid|winfnoid) ([0-9]+)'::pg_catalog.text, 'g'::pg_catalog.text) AS m(found) \
+      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) (m.found[1])::pg_catalog.oid \
+      WHERE p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" OR EXISTS (SELECT 1 FROM pg_catalog.pg_aggregate a JOIN pg_catalog.pg_proc f \
+        ON f.oid OPERATOR(pg_catalog.=) ANY (ARRAY[a.aggtransfn::pg_catalog.oid, a.aggfinalfn::pg_catalog.oid, a.aggcombinefn::pg_catalog.oid, a.aggmtransfn::pg_catalog.oid, a.aggminvtransfn::pg_catalog.oid, a.aggmfinalfn::pg_catalog.oid]) \
+        WHERE a.aggfnoid::pg_catalog.oid OPERATOR(pg_catalog.=) p.oid AND f.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\")"
 );
 
 /// Every operator a user or an extension defined, by name: the only ones [`OPERATORS_QUERY`] can find.
@@ -317,10 +331,11 @@ const VOLATILE_READS: &[&str] = &["random", "random_normal", "gen_random_uuid", 
 
 /// Whether the statement is certain to write nothing: a SELECT with no data-modifying WITH query,
 /// no locking clause and no `INTO`, which calls nothing volatile by name, what a built-in that
-/// writes must be (`nextval`, `set_config`, `pg_advisory_lock`), and sets off nothing of a user's or an
-/// extension's that is: a function behind a view, a policy, a default, an operator or a cast. A
-/// user's function that is not volatile cannot write, as Postgres refuses it, and a type's input
-/// and output write nothing.
+/// writes must be (`nextval`, `set_config`, `pg_advisory_lock`), reaches no view or policy that does,
+/// and sets off nothing else of a user's or an extension's that is: a default, an operator or a
+/// cast. A function is taken at its label, as Postgres asks of whoever writes one: one labelled
+/// `stable` or `immutable` that calls a volatile function goes unseen. A type's input and output
+/// write nothing.
 pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     use pg_query::protobuf::node::Node as N;
     if !analysis.diagnostics.is_empty() {
@@ -335,16 +350,20 @@ pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     let Some(request) = request(&analysis.rewritten.sql) else { return Some(false) };
     let rows = catalog_rows(request, host);
     let mut called = names(&parsed.functions);
-    called.retain(|f| !VOLATILE_READS.contains(f));
     called.sort_unstable();
     called.dedup();
     let functions = host.query_each(crate::cardinality::FUNCTIONS_QUERY, called.iter().map(|f| vec![json!([f])]), Scope::Statement);
     let (rows, functions) = (rows?, functions?);
     let (Some(rows), Ok(functions)) = (rows, functions) else { return Some(false) };
-    let reads = rows.iter().all(|row| row.first().and_then(Value::as_str) != Some("open") || row.get(3).and_then(Value::as_str) == Some("reads"));
+    let tagged = |row: &&Vec<Value>, tag: &str| row.first().and_then(Value::as_str) == Some(tag);
+    let text = |row: &Vec<Value>, k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);
+    let reads = rows.iter().filter(|row| tagged(row, "open")).all(|row| text(row, 3).as_deref() == Some("reads"));
+    let reach_nothing = rows.iter().filter(|row| tagged(row, "runs")).all(|row| text(row, 2).as_deref() == Some("built in") && text(row, 1).is_some_and(|f| VOLATILE_READS.contains(&f.as_str())));
+    // A user's function of a name in VOLATILE_READS may be the one called.
+    let a_users = |f: &str| rows.iter().filter(|row| tagged(row, "open")).any(|row| text(row, 1).as_deref() == Some("function") && text(row, 2).as_deref() == Some(f));
     // Each is in the catalog, none of them volatile.
-    let not_volatile = called.iter().all(|f| functions.iter().any(|row| row.first().and_then(Value::as_str) == Some(f) && row.get(2).and_then(reylo_engine_core::host::as_bool) == Some(false)));
-    Some(reads && not_volatile)
+    let not_volatile = called.iter().all(|f| (VOLATILE_READS.contains(f) && !a_users(f)) || functions.iter().any(|row| row.first().and_then(Value::as_str) == Some(f) && row.get(2).and_then(reylo_engine_core::host::as_bool) == Some(false)));
+    Some(reads && reach_nothing && not_volatile)
 }
 
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement.
@@ -360,6 +379,8 @@ fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
             }
             // A type of a user's the statement's objects hold, which [`OPERATORS_QUERY`] reads.
             Some("present") => {}
+            // What [`read_only`] reads: a built-in's errors are the server's own.
+            Some("runs") => {}
             _ => return None,
         }
     }

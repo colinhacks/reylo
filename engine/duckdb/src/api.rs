@@ -96,9 +96,8 @@ impl Database for Duckdb {
     }
 
     /// A SELECT that moves no sequence writes nothing on DuckDB.
-    fn read_only(analysis: &Analysis, _host: &Host) -> Lazy<bool> {
-        let called = reylo_engine_core::errors::called(&analysis.rewritten.sql, Dialect::Duckdb);
-        Some(analysis.kind == Some(reylo_engine_core::types::StatementKind::Select) && !called.iter().any(|f| f == "nextval" || f == "setval"))
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::catalog::read_only(analysis, host)
     }
 }
 

@@ -44,7 +44,7 @@ fn queries() -> Vec<(&'static str, String)> {
 /// polymorphic argument. A query that needs another adds it here once it is checked to be so:
 /// `unnest`, `array_agg`, `cardinality`, `array_length`, `to_jsonb` and the like take any type, and
 /// an overload of narrower types created in `pg_catalog` would be the closer match.
-const FUNCTIONS: [&str; 24] = [
+const FUNCTIONS: [&str; 25] = [
     "bit_or",
     "bool_or",
     "count",
@@ -63,6 +63,7 @@ const FUNCTIONS: [&str; 24] = [
     "quote_ident",
     "quote_literal",
     "regclassout",
+    "regexp_matches",
     "split_part",
     "strpos",
     "textin",
