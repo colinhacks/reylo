@@ -26,8 +26,7 @@
     "./webpack": "./src/webpack.ts",
     "./turbopack": "./src/turbopack.ts",
     "./next": "./src/next.ts",
-    "./jest": "./src/jest.ts",
-    "./rtd": "./src/rtd.ts"
+    "./jest": "./src/jest.ts"
   },
   "typescript": {
     "contentMapper": {
