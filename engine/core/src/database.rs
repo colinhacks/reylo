@@ -34,7 +34,7 @@ pub trait Database {
         Some(None)
     }
 
-    /// Whether the statement is certain to write nothing, read once the rest of the analysis is
+    /// Whether the engine finds nothing in the statement that could write, read once the rest of the analysis is
     /// settled: by default it is not.
     fn read_only(_analysis: &Analysis, _host: &Host<'_, Self::Describe>) -> Lazy<bool> {
         Some(false)

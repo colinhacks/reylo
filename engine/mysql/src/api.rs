@@ -68,7 +68,7 @@ impl Database for Mysql {
         crate::errors::errors(analysis, host)
     }
 
-    /// Whether the statement is certain to write nothing.
+    /// Whether the engine finds nothing in the statement that could write.
     fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
         crate::errors::read_only(analysis, host)
     }

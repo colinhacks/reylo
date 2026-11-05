@@ -391,7 +391,7 @@ On Postgres, an error aborts the transaction it is in, even an error `.try()` re
 
 ### `.readOnly`
 
-To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo is certain, so it's safe to run the query again after a lost connection:
+To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo finds nothing that could write, so it's safe to run the query again after a lost connection:
 
 ```ts twoslash
 import getUser from "./get_user.sql";

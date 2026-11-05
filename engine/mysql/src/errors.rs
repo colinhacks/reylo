@@ -109,7 +109,7 @@ const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
     select case when v.table_schema = database() then cast(v.view_definition as char) end from r \
     join information_schema.views v on v.table_schema = r.s and v.table_name = r.t";
 
-/// Whether the statement is certain to write nothing: a SELECT that runs no stored function, as
+/// Whether the engine finds nothing in the statement that could write: a SELECT that runs no stored function, as
 /// [`errors`] says, with no locking clause, no `INTO` and no variable assigned, that calls none of
 /// the built-ins that change something, itself or through a view, and reads nothing of another
 /// schema by name.

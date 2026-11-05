@@ -329,7 +329,7 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
 /// The volatile built-ins that write nothing, only answering anew for each call.
 const VOLATILE_READS: &[&str] = &["random", "random_normal", "gen_random_uuid", "uuidv4", "uuidv7", "clock_timestamp", "timeofday"];
 
-/// Whether the statement is certain to write nothing: a SELECT with no data-modifying WITH query,
+/// Whether the engine finds nothing in the statement that could write: a SELECT with no data-modifying WITH query,
 /// no locking clause and no `INTO`, which calls nothing volatile by name, what a built-in that
 /// writes must be (`nextval`, `set_config`, `pg_advisory_lock`), reaches no view or policy that does,
 /// and sets off nothing else of a user's or an extension's that is: a default, an operator or a

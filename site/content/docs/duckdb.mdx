@@ -314,6 +314,7 @@ What Reylo can't type on DuckDB, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A `PIVOT` without its values, whose columns are the values it reads | Name the values: `pivot logs on level in ('info', 'warn') using count(*)` |
+| A table function with side effects: `.readOnly` looks only for sequences and `query()` | Don't retry a query that calls one |
 | A query in syntax Reylo's parser doesn't read, such as `PIVOT` or `SUMMARIZE`: its columns are typed, but each may be `NULL` and the query returns `Row[]` | None needed: the types hold, if loosely |
 | An app that opens the database file for writing at the moment the type check reads it, which DuckDB refuses | Start the app again |
 | `.runSync()`, since `@duckdb/node-api` answers through a promise | Use `.run()` |

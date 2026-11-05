@@ -747,6 +747,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | --- | --- |
 | An `ENUM`'s labels: an `ENUM` is typed `string` | Check the value in TypeScript where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
+| A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
 | A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |
 | A `/*! … */` comment, which MySQL runs as SQL, so it's an error | Write it as plain SQL |

@@ -243,7 +243,7 @@ pub struct Analysis {
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<crate::errors::Errors>,
-    /// Whether the statement is certain to write nothing, so that a caller may run it again after
+    /// Whether the engine finds nothing in the statement that could write, so that a caller may run it again after
     /// a lost connection ([`crate::database::Database::read_only`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only: bool,

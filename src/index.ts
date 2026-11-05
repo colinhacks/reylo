@@ -105,7 +105,7 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
   readonly source: string | undefined;
   readonly cardinality: C;
   /**
-   * Whether the statement is certain to write nothing, so that it can be run again after a lost
+   * Whether the engine finds nothing in the statement that could write, so that it can be run again after a lost
    * connection. False for any write, and for a query that locks rows or may call a volatile function.
    */
   readonly readOnly: boolean;
@@ -177,7 +177,7 @@ export type QueryDefinition = {
   /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
-  /** Whether the statement is certain to write nothing: the query's `readOnly`. */
+  /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
   readOnly?: boolean;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
   /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
