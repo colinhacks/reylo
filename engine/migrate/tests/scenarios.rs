@@ -2029,6 +2029,7 @@ on!(
     a_migrations_session_setting_is_never_carried_by_the_cache,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on);
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_prod);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
 on!(Mysql, a_reserved_word_stays_quoted);
@@ -2601,6 +2602,60 @@ mod adversarial {
         p.output();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_eq!(p.rows("select * from `order`").await.len(), 0);
+    }
+
+    pub async fn a_rebuild_keeps_every_row_where_foreign_keys_are_on(mut p: P) {
+        // A parent, and tables that reference it every way: cascade, set null, none, at a second
+        // level, and itself; each with what a rebuild takes down and makes again.
+        let tables = |check: &str| {
+            format!(
+                "create table parents (id integer primary key, boss integer references parents (id) on delete cascade, name text{check});
+create table kids (id integer primary key autoincrement, parent_id integer references parents (id) on delete cascade, note text);
+create index kids_parent on kids (parent_id);
+create table pets (id integer primary key, parent_id integer references parents (id) on delete set null);
+create table chores (id integer primary key, kid_id integer references kids (id));
+create table toys (kid_id integer references kids (id) on delete cascade, name text);
+create view kid_names as select kids.note, parents.name from kids join parents on parents.id = kids.parent_id;
+create trigger kids_note after insert on kids begin update parents set name = name where id = new.parent_id; end;"
+            )
+        };
+        p.schema(&tables(""));
+        p.file("20261027100000_t.sql", &tables(""));
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into parents values (1, null, 'a'), (2, 1, 'b'); insert into kids values (7, 1, 'x'), (8, 2, 'y'), (9, 2, 'z'); insert into pets values (1, 1), (2, 2); insert into chores values (1, 7), (2, 8); insert into toys values (9, 'ball')").await;
+        p.output();
+        // A check forces the parent's rebuild.
+        p.schema(&tables(", check (length(name) > 0)"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "check_name", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        let made = p.files().into_iter().find(|f| f.ends_with("_check_name.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(!sql.contains("pragma"), "{sql}");
+        // The file as any runner would run it: on a connection with foreign keys on, in a transaction.
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        assert_eq!(db.rows("pragma foreign_keys").await.unwrap()[0].first().map(|v| v.to_string()), Some("1".to_string()));
+        db.exec("begin").await.unwrap();
+        db.script(&sql).await.unwrap_or_else(|e| panic!("{e}\n{sql}"));
+        db.exec("commit").await.unwrap();
+        assert!(db.rows("pragma foreign_key_check").await.unwrap().is_empty());
+        let count = |name: String, rows: Vec<Row>| (name, rows[0].text("n").to_string());
+        for (table, n) in [("parents", "2"), ("kids", "3"), ("pets", "2"), ("chores", "2"), ("toys", "1")] {
+            let rows = db.rows(&format!("select count(*) as n from {table}")).await.unwrap();
+            assert_eq!(count(table.into(), rows), (table.to_string(), n.to_string()), "{sql}");
+        }
+        assert_eq!(db.rows("select count(*) as n from pets where parent_id is null").await.unwrap()[0].text("n"), "0", "{sql}");
+        assert_eq!(db.rows("select count(*) as n from parents where boss = 1").await.unwrap()[0].text("n"), "1", "{sql}");
+        assert_eq!(db.rows("select count(*) as n from kid_names").await.unwrap()[0].text("n"), "3", "{sql}");
+        // AUTOINCREMENT's counter came along, and the keys still hold.
+        db.exec("insert into kids (parent_id, note) values (1, 'next')").await.unwrap();
+        assert_eq!(db.rows("select max(id) as n from kids").await.unwrap()[0].text("n"), "10");
+        assert!(db.exec("insert into kids (parent_id) values (99)").await.is_err(), "the key to the new parents holds");
+        db.exec("delete from kids where note = 'next'").await.unwrap();
+        db.close().await;
+        // The database reads as the file says, and as schema.sql does.
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     }
 
     pub async fn a_migration_that_names_a_database_is_refused(mut p: P) {

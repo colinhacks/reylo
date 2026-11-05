@@ -130,6 +130,11 @@ pub trait Alterer {
         let _ = (from, to);
         None
     }
+    /// Both schemas, given before it asks for any statement: an alterer whose statements for one
+    /// table reach others (SQLite's rebuild, the tables that reference it) reads them.
+    fn schemas(&self, from: &Schema, to: &Schema) {
+        let _ = (from, to);
+    }
     /// The columns the planner renames, each an old column's id and a new one's, given before it asks
     /// for any statement: an alterer whose table statements write a table's renames (MySQL's alter
     /// table, SQLite's rebuild) writes these, and no others.
@@ -558,6 +563,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
         }
     }
     follow(&mut decided, &mut followers);
+    alterer.schemas(from, to);
     alterer.decide(&decided.iter().map(|(new, (old, _))| (old.clone(), new.clone())).collect::<Vec<_>>());
 
     // A partition, or a table inheriting another, of a table the target keeps, which the target
