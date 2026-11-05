@@ -422,12 +422,15 @@ test("a Postgres array column holds one dimension, and an array the statement bu
   assert.deepEqual(await execute(client([{ tags: [1, null] }, { tags: [] }, { tags: null }]), flat, { id: 1 }), [{ tags: [1, null] }, { tags: [] }, { tags: null }]);
   await assert.rejects(
     async () => execute(client([{ tags: [1] }, { tags: [[1, 2], [3, 4]] }]), flat, { id: 1 }),
-    /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce\. Select to_jsonb\(tags\) to read it as JSON\.$/,
+    /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce\. Select to_jsonb\(tags\) to read it as JSON, or set allow_nested_arrays: true in \.reylo\.yaml to type it at any depth\.$/,
   );
   // array_agg(tags) over an int4[] column: two levels, the elements' own arrays.
   const built: QueryModule<"postgres"> = { ...probe, columns: [["all_tags", "int[][]"]] };
   assert.deepEqual(await execute(client([{ all_tags: [[1, 2], [3, 4]] }]), built, { id: 1 }), [{ all_tags: [[1, 2], [3, 4]] }]);
   await assert.rejects(async () => execute(client([{ all_tags: [[[1]]] }]), built, { id: 1 }), /^TypeError: Column "all_tags" holds an array of 3 dimensions, and its type has 2: an array column it collects holds more than one dimension, which Postgres doesn't enforce\. Collect to_jsonb\(<that column>\) instead to read it as JSON\.$/);
+  // Under `allow_nested_arrays: true` the module says so, and nothing is refused.
+  const nesting: QueryModule<"postgres"> = { ...flat, nestedArrays: true };
+  assert.deepEqual(await execute(client([{ tags: [[1, 2], [3, 4]] }]), nesting, { id: 1 }), [{ tags: [[1, 2], [3, 4]] }]);
   // An array of NULLs at the top is one dimension: a NULL is never a nested array.
   assert.deepEqual(await execute(client([{ tags: [null, null] }]), flat, { id: 1 }), [{ tags: [null, null] }]);
   // A vector is an array itself, and a JSON value may be one at any depth.

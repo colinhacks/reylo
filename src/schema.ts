@@ -7,7 +7,7 @@
 // serializer that writes a BigInt exactly writes, `JSON.rawJSON(String(v))`; JSON.stringify itself
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
-import { bareName, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
+import { bareName, nestsAnyDeep, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
@@ -197,8 +197,10 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
       // A result's elements may be null unless the statement shows they are not; a parameter's
       // are strict, but a structured parameter's member keeps them (src/render.ts).
-      const items = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
-      return { type: "array", items: (input ? inRow : t.element.nullable) ? nullable(items) : items };
+      const each = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
+      const items = (input ? inRow : t.element.nullable) ? nullable(each) : each;
+      // An array the project lets nest holds its elements, or arrays of them at any depth.
+      return { type: "array", items: !input && nestsAnyDeep(t) ? { anyOf: [items, { type: "array" }] } : items };
     }
     case "record": {
       // A DuckDB struct's fields stand as a row's values do, each may be null.

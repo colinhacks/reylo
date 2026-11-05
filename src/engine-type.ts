@@ -70,3 +70,27 @@ export function analysisWithBases<A extends { params: readonly { type: Type }[];
   if (analysis.domains === undefined) return analysis;
   return { ...analysis, params: analysis.params.map((p) => ({ ...p, type: withBases(p.type, analysis.domains) })), columns: analysis.columns.map((c) => ({ ...c, type: withBases(c.type, analysis.domains) })) };
 }
+
+/** The mark an array takes under `allow_nested_arrays: true` ([`analysisWithNestedArrays`]), which is no part of the format. */
+const NESTS = Symbol("nests");
+
+/** Whether an array is one the project lets hold arrays of its elements at any depth. */
+export function nestsAnyDeep(t: Type): boolean {
+  return (t as { [NESTS]?: true })[NESTS] === true;
+}
+
+function markNesting(t: Type): Type {
+  switch (t.kind) {
+    case "array": {
+      const marked = { ...t, element: { ...t.element, type: markNesting(t.element.type) } };
+      return t.any_depth ? Object.assign(marked, { [NESTS]: true }) : marked;
+    }
+    case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: markNesting(f.type) })) };
+    default: return t;
+  }
+}
+
+/** The analysis with each array Postgres lets nest (`any_depth`) typed at any depth in its result, as `allow_nested_arrays: true` asks. */
+export function analysisWithNestedArrays<A extends { columns: readonly { type: Type }[] }>(analysis: A): A {
+  return { ...analysis, columns: analysis.columns.map((c) => ({ ...c, type: markNesting(c.type) })) };
+}

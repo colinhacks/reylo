@@ -5,7 +5,7 @@
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
 import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
-import { bareName, schemaOf, type EngineType, type Field } from "./engine-type.ts";
+import { bareName, nestsAnyDeep, schemaOf, type EngineType, type Field } from "./engine-type.ts";
 import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
 
 /** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
@@ -130,7 +130,9 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // (`renderParamType`).
       const item = renderType(t.element.type, inJson, dialect, codecs);
       const inner = t.element.nullable ? orNull(item) : item;
-      return /[|&]/.test(inner) ? `(${inner})[]` : `${inner}[]`;
+      if (nestsAnyDeep(t)) return `NestedArray<${inner}>`;
+      // An array of arrays reads `(number | null)[][]`: an inner array takes no more parentheses.
+      return /[|&]/.test(inner) && !/^(?:\(.*\)\[\]|NestedArray<.*>)(?:\[\])*$/.test(inner) ? `(${inner})[]` : `${inner}[]`;
     }
     case "record":
       // A row inside a document is an object of its fields; a built-in geometric type, its text.

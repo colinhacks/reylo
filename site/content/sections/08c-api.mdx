@@ -63,7 +63,7 @@ Reylo Type Defs is in preview, at version 0.1.0. Until 1.0.0, any release may ch
 }
 ```
 
-It reads your project as the type check does: the database from [`direct_url`](#direct_url) or `DATABASE_URL`, and your [`strict_params`](#strict_params). To read another database, pass its `url`:
+It reads your project as the type check does: the database from [`direct_url`](#direct_url) or `DATABASE_URL`, and your [`allow_untyped_params`](#allow_untyped_params). To read another database, pass its `url`:
 
 ```ts
 await analyze({ sql, url: "postgres://localhost/staging" });

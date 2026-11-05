@@ -427,4 +427,6 @@ test("a Standard Query holds a Postgres array column to one dimension, as .run()
   assert.deepEqual(q.decode([["{1,NULL}"], [null]]), [{ tags: [1, null] }, { tags: null }]);
   assert.throws(() => q.decode([["{{1,2},{3,4}}"]]), /^TypeError: Column "tags" holds an array of 2 dimensions, and its type has one:/);
   assert.throws(() => q.columns![0]!.decode("{{1}}"), /Column "tags" holds an array of 2 dimensions/);
+  const nesting = defineQuery<{}, { tags: (number | null)[] | null }, "many", "postgres">({ dialect: "postgres", sql: "select tags from posts", params: [], columns: [["tags", "int[]"]], cardinality: "many", nestedArrays: true })["~standard"].query;
+  assert.deepEqual(nesting.decode([["{{1,2},{3,4}}"]]), [{ tags: [[1, 2], [3, 4]] }]);
 });

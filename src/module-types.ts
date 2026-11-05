@@ -5,7 +5,7 @@
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
 import type { Codecs } from "./codecs.ts";
-import { analysisWithBases } from "./engine-type.ts";
+import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
 import { ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
 type Placeholder = Lexed["placeholders"][number];
@@ -58,7 +58,7 @@ function paramType(q: Analysis["params"][number], rendered: string): string {
  */
 export function reyloImport(...types: string[]): string {
   const text = types.join("\n").replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? '""' : ""));
-  const names = ["Json", "JsonInput"].filter((name) => new RegExp(`(?<![\\w$])${name}(?![\\w$]|\\s*\\??:)`).test(text));
+  const names = ["Json", "JsonInput", "NestedArray"].filter((name) => new RegExp(`(?<![\\w$])${name}(?![\\w$]|\\s*\\??:)`).test(text));
   return `import type { ${names.map((name) => `${name}, `).join("")}Query } from "reylo";`;
 }
 
@@ -100,7 +100,7 @@ export function withinFile(start: number, length: number, size: number): { start
 
 /**
  * The error at the first use of each parameter nothing in the statement types, which the type check
- * and `reylo analyze` give unless the project file says `strict_params: false` (the default is true
+ * and `reylo analyze` give unless the project file says `allow_untyped_params: true` (the default is true
  * since 2026-10-20); `placeholders` are where the statement writes each parameter, in UTF-8 bytes. A
  * statement the engine already refused (a parameter written twice, an error from the server) was not
  * analysed to its end, so its parameters are untyped for that reason: its own error is the one to fix
@@ -118,7 +118,7 @@ export function untypedParams(sql: string, analysis: Pick<Analysis, "params" | "
     const span = at ? fromUtf8.decode(bytes.subarray(at.start, at.end)) : `:${q.name}`;
     const written = span.replace(/\s*::[\s\S]*$/, "");
     const length = at ? utf8.encode(written).length : 1;
-    const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set strict_params: false in ${projectFile}.`;
+    const message = `Nothing in the statement gives the parameter ${written} a type; cast it, as in ${written}::text, or set allow_untyped_params: true in ${projectFile}.`;
     diagnostics.push({ message, start: at?.start ?? 0, length, code: 12 });
   }
   return diagnostics;
@@ -137,11 +137,12 @@ export function placeholdersOf(analysis: Pick<Analysis, "rewritten">, dialect: D
 /**
  * The module's types for a statement the engine analyzed. `lexed` is the engine's lexer's reading of
  * the statement, which names the parameters (absent where the lexer refused it); `strictParams` is
- * the project file's `strict_params`, and `projectFile` the file the error about it names: the
+ * the opposite of the project file's `allow_untyped_params`, and `projectFile` the file the error about it names: the
  * project's own file, which may be `.reylo.yml` or another path REYLO_CONFIG names.
  */
-export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml", codecs: Codecs = {}): ModuleTypes {
-  const analysis = analysisWithBases(written);
+export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml", codecs: Codecs = {}, allowNestedArrays = false): ModuleTypes {
+  const based = analysisWithBases(written);
+  const analysis = allowNestedArrays ? analysisWithNestedArrays(based) : based;
   // On MySQL, the names and places are the ones the analysis read (`placeholdersOf`).
   const names = dialect === "mysql" ? analysis.params.map((q) => q.name) : (lexed?.params ?? []);
   const placeholders = placeholdersOf(analysis, dialect, lexed);

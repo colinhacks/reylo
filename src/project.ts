@@ -26,7 +26,8 @@ export type ProjectFile = {
   url?: string;
   direct_url?: string;
   env?: string[];
-  strict_params?: boolean;
+  allow_untyped_params?: boolean;
+  allow_nested_arrays?: boolean;
   sqlcommenter?: boolean;
   js?: { codecs?: Codecs };
 };
@@ -37,8 +38,10 @@ export type ResolvedProject = {
   /** The directory a relative path in the project resolves against: the package's. */
   root: string;
   dialect: Dialect;
-  /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `strict_params: false`. */
+  /** Whether a parameter the statement does not type is an error rather than `unknown`: true unless the file says `allow_untyped_params: true`. */
   strictParams: boolean;
+  /** Whether a Postgres array column may hold nested arrays, typed at any depth and with nothing refused: false unless the file says `allow_nested_arrays: true`. */
+  allowNestedArrays: boolean;
   /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
   /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
@@ -416,7 +419,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   // (src/analyze.ts), do where they are all of one dialect.
   const cached = url ? [] : cachedDialects(root);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: !(config.allow_untyped_params ?? false), allowNestedArrays: config.allow_nested_arrays ?? false, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */

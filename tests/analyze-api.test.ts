@@ -62,8 +62,8 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
   assert.deepEqual(broken!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, nope from users".slice(d.start, d.end)]), [["no such column: nope", "nope"]]);
   assert.deepEqual(broken!.columns, []);
   // A parameter nothing types is an error at its first use, as under the project file's default,
-  // `strict_params: true`.
-  assert.deepEqual(untyped!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, :v as v, :w as w".slice(d.start, d.end)]), ["v", "w"].map((n) => [`Nothing in the statement gives the parameter :${n} a type; cast it, as in :${n}::text, or set strict_params: false in .reylo.yaml.`, `:${n}`]));
+  // `allow_untyped_params: false`.
+  assert.deepEqual(untyped!.diagnostics.map((d) => [d.message, "select 'é🙂' as x, :v as v, :w as w".slice(d.start, d.end)]), ["v", "w"].map((n) => [`Nothing in the statement gives the parameter :${n} a type; cast it, as in :${n}::text, or set allow_untyped_params: true in .reylo.yaml.`, `:${n}`]));
   // Plain data: JSON carries all of it.
   assert.deepEqual(JSON.parse(JSON.stringify(user)), user);
 });
@@ -205,12 +205,12 @@ test("analyze says where to set a database when none is named, and what is wrong
   });
 });
 
-test("analyze holds an untyped parameter to the project file's strict_params, with a url given too", async () => {
+test("analyze holds an untyped parameter to the project file's allow_untyped_params, with a url given too", async () => {
   const strict = project({ ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
   const refused = await inProject(strict, () => analyze({ sql: "select :x as x" }));
-  assert.deepEqual(refused.diagnostics.map((d) => d.message), ["Nothing in the statement gives the parameter :x a type; cast it, as in :x::text, or set strict_params: false in .reylo.yaml."]);
+  assert.deepEqual(refused.diagnostics.map((d) => d.message), ["Nothing in the statement gives the parameter :x a type; cast it, as in :x::text, or set allow_untyped_params: true in .reylo.yaml."]);
   assert.deepEqual(refused, cliIn(strict, "select :x as x"));
-  const lax = project({ ".reylo.yaml": "strict_params: false\n", ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
+  const lax = project({ ".reylo.yaml": "allow_untyped_params: true\n", ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
   for (const input of [{ sql: "select :x as x" }, { sql: "select :x as x", url: "file:./other.db" }]) {
     const found = await inProject(lax, () => analyze(input));
     assert.deepEqual(found.diagnostics, []);

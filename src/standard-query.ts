@@ -127,10 +127,10 @@ function decoder(name: string, kind: string, delim: string | undefined): (v: unk
 }
 
 /** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
-function postgresDecoder(name: string, kind: string, delim: string | undefined, nonFinite: JsonNumbers | undefined): (v: string) => unknown {
+function postgresDecoder(name: string, kind: string, delim: string | undefined, nonFinite: JsonNumbers | undefined, nestedArrays: boolean | undefined): (v: string) => unknown {
   const decode = textDecoder(kind, delim);
   const numbers = nonFinite === undefined ? decode : (v: string) => numbersInJson(decode(v), nonFinite);
-  return kind.endsWith("[]") ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
+  return kind.endsWith("[]") && !nestedArrays ? (v) => withinDimensions(numbers(v), kind, name) : numbers;
 }
 
 const notText = (name: string): never => {
@@ -152,7 +152,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
   const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
-    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
     return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);

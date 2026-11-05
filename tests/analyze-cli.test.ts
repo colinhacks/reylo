@@ -81,12 +81,12 @@ test("analyze reads a statement from --sql or standard input, and a file from a 
   assert.deepEqual(nested.lines.map((l) => [l.file, l.cardinality]), [["get_user.sql", "at_most_one"]]);
 });
 
-test("analyze holds a parameter nothing types to the project's strict_params, as the type check does", () => {
+test("analyze holds a parameter nothing types to the project's allow_untyped_params, as the type check does", () => {
   const root = project({});
   const strict = analyzeIn(root, ["--sql", "select :x as x"]);
   assert.equal(strict.status, 1);
-  assert.deepEqual(strict.lines[0]!.diagnostics.map((d) => [d.message, d.start, d.end]), [["Nothing in the statement gives the parameter :x a type; cast it, as in :x::text, or set strict_params: false in .reylo.yaml.", 7, 9]]);
-  writeFileSync(join(root, ".reylo.yaml"), "strict_params: false\n");
+  assert.deepEqual(strict.lines[0]!.diagnostics.map((d) => [d.message, d.start, d.end]), [["Nothing in the statement gives the parameter :x a type; cast it, as in :x::text, or set allow_untyped_params: true in .reylo.yaml.", 7, 9]]);
+  writeFileSync(join(root, ".reylo.yaml"), "allow_untyped_params: true\n");
   const lax = analyzeIn(root, ["--sql", "select :x as x"]);
   assert.equal(lax.status, 0, lax.stderr);
   assert.deepEqual(lax.lines[0]!.params, [{ name: "x", type: { kind: "unknown" } }]);
