@@ -72,6 +72,7 @@ where u.id = :id
 - **A page's numbers in one row.** A dozen `count` and `aggregate` calls are a dozen round trips; as scalar subqueries, they are one statement ([Counts](#counts)).
 - **Writes that read back.** An insert, an update or an upsert returns the rows it wrote, and a `with` query runs several writes in one statement.
 - **Types from the database.** Nullability, cardinality, enum labels and JSON shapes come from the schema and the statement, so a migration that changes a column fails the type check wherever the column is read.
+- **Two silent bugs go away.** With `timestamptz`, `now()` no longer reads hours off on a server outside UTC, and `starts_with(key, :prefix)` no longer takes the `_` in a value like `gh_123` for a wildcard, as Prisma's `startsWith` does.
 
 In one production app's migration, of about 750 Prisma Client calls, a billing report went from 40 calls to 5 statements, and a dashboard's twelve aggregates became one.
 
@@ -90,6 +91,7 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 - **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules: `npx skills add colinhacks/reylo --skill using-reylo`.
 - **Set Reylo up** as [Setup](/#setup) shows. TypeScript 7 refuses `baseUrl` in `tsconfig.json`, so write your `paths` relative to the file.
 - **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
+- **Keep the branch short.** A long-lived branch pays for `main` at each sync: new Prisma calls to convert, and re-indented code that reads as conflict. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
 - **Give your pool an error listener**, on the pool and on each connection a transaction takes. Prisma's adapter had both, and without them Node exits when the database drops an idle connection.
 
 ```ts title="db.ts"
@@ -106,9 +108,11 @@ Prisma Client did four things your database never saw. Move each into the databa
 | Prisma Client | In the database |
 | --- | --- |
 | A `DateTime`, stored as `timestamp(3)` and read as UTC | `timestamptz`, which is `@db.Timestamptz` in `schema.prisma` |
-| `@default(cuid())` and `@default(uuid())` | `@default(dbgenerated("(gen_random_uuid())::text"))` |
+| `@default(cuid())` and `@default(uuid())` | `@default(dbgenerated("(gen_random_uuid())::text"))`, written as Postgres prints it, or Prisma's drift check fails |
 | `@updatedAt` | `@default(now())`, and a trigger that sets it on every update |
 | A `String[]`, and no `null` element in it, which Prisma Client refuses to read | `NOT NULL`, once its nulls are filled, and `check (array_position(tags, null) is null)` |
+
+Prisma's drift check ignores triggers and check constraints, and accepts `NOT NULL` on a `String[]`, so none of these changes fails it.
 
 ### Timestamps
 
@@ -147,6 +151,15 @@ create trigger set_updated_at before update on "users"
 - **An update that sets `"updatedAt"` itself** keeps its value.
 - **An upsert on the table returns a row or `null`**, since a `BEFORE` trigger can skip a row.
 - **A new table needs its trigger** added to its migration by hand, since Prisma's schema has no triggers.
+- **A rewrite that must not move `"updatedAt"`**, such as re-encrypting a column, needs a way past the trigger. Have the trigger return early when a session setting says so, as with `if current_setting('app.keep_updated_at', true) = 'on' then return new; end if;`, and run `set local app.keep_updated_at = 'on'` before the rewrite.
+
+### `String[]`
+
+Prisma Client reads a `String[]` as never null, and throws on a `NULL` element. Postgres allows both:
+
+- **Count the nulls and the readers first.** One production app had 224,000 null lists and one reader, so `coalesce(tags, '{}')` in that reader, which is typed as a non-null array, beat a backfill that held the table for most of a minute.
+- **To add `NOT NULL`**, backfill, add `check (tags is not null) not valid`, validate it, then `set not null`, each in its own migration.
+- **Elements stay `string | null`**, since a `NOT NULL` column can still hold a `NULL` element.
 
 ## Build and deploy
 
@@ -154,7 +167,7 @@ Reylo types each query against a database with your migrations applied, so every
 
 - **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/#in-ci)).
 - **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
-- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and throws when a column it names has changed its type, its `NOT NULL` or its default. So change a column in two deploys, the new shape before the code that uses it, and roll back by redeploying an older commit, since an older build refuses a newer schema.
+- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and throws when a column it names has changed its type, its `NOT NULL` or its default. So change a column in two deploys, the new shape before the code that uses it, and roll back by redeploying an older commit, since an older build refuses a newer schema ([Deploying](/#deploying)).
 
 ```yaml title=".reylo.yaml"
 # the type check's database; a build points it at a fresh, migrated one
@@ -168,8 +181,10 @@ Each Prisma Client call, as SQL:
 | Prisma Client | SQL |
 | --- | --- |
 | `findUnique`, `findFirst` | `select … where id = :id` |
+| `findUniqueOrThrow`, `findFirstOrThrow` | the same `select`, and a check for `null` |
 | `findMany` with `include` | a `jsonb_agg` subquery per relation, as in [Why move](#why-move) and [Nested fetching](/#nested-fetching) |
-| `count`, `aggregate`, `groupBy` | one `select` of scalar subqueries ([Counts](#counts)) |
+| `count`, `aggregate`, `groupBy` | one `select` of scalar subqueries ([Counts](#counts)); a `Decimal` sum for display is `coalesce(sum(x), 0)::float8` |
+| A follow-up `findFirst` per row | a `left join lateral (… order by … limit 1)`, in the same statement |
 | `contains`, `startsWith` | `strpos(name, :q) > 0` and `starts_with(name, :q)`, since a `like` pattern reads `%` and `_` in the value |
 | `mode: "insensitive"` | `lower(email) = lower(:email)` |
 | `in: ids` | `id = any(:ids::text[])` ([Filtering by a list](/#filtering-by-a-list)) |
@@ -179,11 +194,18 @@ Each Prisma Client call, as SQL:
 | `upsert` | `insert … on conflict (id) do update … returning …` |
 | `update` with optional fields | `set name = coalesce(:name::nullable(text), name)` ([Nullable parameters](/#nullable-parameters)) |
 | `update` with a patch object | `jsonb_populate_record` ([Partial updates](#partial-updates)) |
-| An `update` or a `delete` that throws P2025 | `returning`, and a check for `null` |
+| An `update` or a `delete` that throws P2025 | `returning`, and a check for `null`, since a missing row is no longer an error |
+| `updateMany` that fills columns still empty | `set c = coalesce(c, :new) where c is null` ([Recipes](/postgres#recipes)) |
+| `deleteMany` with a relation filter | `delete … using` the related table |
+| A filter object kept in a constant, like `{ not: "draft" }` | the same condition in each query, or a view |
 | A catch of P2002 or P2034 | [`.try()`](/#try) and the error's `condition` |
-| `$transaction` | a transaction of your driver ([Supported drivers](/#postgres-drivers)) |
+| `$transaction` | a transaction of your driver ([Transactions](/#transactions)) |
+| `$transaction` with `timeout` or `maxWait` | no equivalent: `statement_timeout` bounds a statement, not a transaction waiting on your code, so move slow calls outside it |
+| `$Enums.X` and model types | each query's `Row` and `Params`; an enum alone is a query imported for its `Row` ([Recipes](/postgres#recipes)) |
+| `omit` on the client | no equivalent: name a shared read's columns, since `*` picks up a large column as soon as it is added |
+| `${json}::jsonb` with text you serialized | `:json::text::jsonb` ([JSON text](/postgres#what-a-parameter-takes)) |
 | `$queryRaw` with `Prisma.sql` fragments | a `with` query in one file, or a view or a function across files |
-| A table or column named at run time | your driver's own `query()`, which Reylo doesn't type |
+| A table or column named at run time | your driver's own `query()`, which Reylo doesn't type. It brings `Date` back, and `pg` reads a `timestamp` in the machine's time zone |
 
 ### Counts
 
@@ -272,3 +294,14 @@ The type check can't catch these, so look for each one in the converted code:
 - **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name, so a query that kept one and dropped the other changes its order.
 - **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true.
 - **A `Promise.all` on a transaction's client.** Prisma queued a transaction's calls for you; a `pg` client handed several at once warns, and `pg` 9 will refuse them. Write them as one statement, or await each in turn.
+- **Timestamps inside JSON.** A `timestamptz` you build into JSON is written in the session's time zone (`+00:00`, or `-07:00` on a laptop), unlike the `Z` of a column, so one row can hold both forms.
+
+## Checking your work
+
+Each of these caught something the type check can't see:
+
+- **Type-check every folder.** Run `tsc --noEmit --runExternalCode` against a database with the branch's migrations, and give any folder `tsconfig.json` skips a `tsconfig` of its own.
+- **Probe the risky statements.** Run each compare-and-set, partial update and cardinality guard against throwaway rows, and check what it reports.
+- **Compare with production.** Run every read-only report from the old code and the new under one read-only credential, with `TZ=UTC`, and diff the JSON with arrays sorted by key. In one production app, that separated live drift and tie order from one real bug: a sort that had lost its `::text`.
+- **Compare the catalogs.** Dump each column's table, name, type, `NOT NULL` and default from production and from an empty database built by your old migrations. If they match, the [freshness check](/#freshness-check) passes after the deploy.
+- **Probe the locks.** Run your migrations against a production-sized copy while a client reads, inserts and updates every 50 ms, and record each operation's worst latency and errors. That is how the deadlock behind one table per migration was found.

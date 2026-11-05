@@ -115,6 +115,12 @@ node --env-file=.env --import reylo/register main.ts
 
 For Bun, Nub, Vite, Next.js, esbuild, webpack, Rspack, Cloudflare Workers and Jest, add [the plugin for your setup](https://reylo.dev/#plugins), or copy its complete [example project](https://github.com/colinhacks/reylo/tree/main/examples). To see the types as you type, set up [your editor](https://reylo.dev/#editors).
 
+To give your coding agent Reylo's rules for writing and running queries, install its skill:
+
+```sh
+npx skills add colinhacks/reylo --skill using-reylo
+```
+
 ## Usage
 
 Write a query in a `.sql` file, import it, and run it with your database driver:

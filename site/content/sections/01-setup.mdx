@@ -51,6 +51,14 @@ npm install reylo
 npm install -D typescript@beta
 ```
 
+<Details summary="Moving an existing project to TypeScript 7" id="typescript-7">
+
+- **`baseUrl` is gone.** TypeScript 7 refuses it, so write your `paths` relative to `tsconfig.json`.
+- **So is the compiler API.** Code that imports `typescript` for `createSourceFile` or a program has nothing to call: move it to another parser, such as `oxc-parser`.
+- **Keep one `typescript`.** TypeScript 5 installed under an alias beside it can take over the `tsc` command, which then refuses `--runExternalCode` as an unknown option.
+
+</Details>
+
 ### TypeScript
 
 Add Reylo to `tsconfig.json`, for `.sql` files and for its project file, `.reylo.yaml` or `.reylo.yml`:
@@ -128,6 +136,20 @@ Add the preload to `nub.jsonc`:
   "preload": ["reylo/register"]
 }
 ```
+
+Nub's install refuses a name close to a popular package's, which takes in `reylo`. Allow it in `pnpm-workspace.yaml`, and add `-W` to install at a workspace's root:
+
+```yaml title="pnpm-workspace.yaml"
+allowedUnpopularPackages:
+  - reylo
+  - "@reylosql/*"
+```
+
+```sh
+nub add -W reylo
+```
+
+A `nub.jsonc` applies to every package below it, and the preload fails where Reylo isn't installed. Give a workspace package that installs on its own, without Reylo, a `nub.jsonc` of its own holding `{}`.
 
 </Tab>
 <Tab value="Vite" id="setup-vite">

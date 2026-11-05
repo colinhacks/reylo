@@ -22,7 +22,7 @@ Not at the moment: bring your own. Reylo types your queries against whatever sch
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
 
-Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too.
+Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [Deploying](#deploying) covers the build's database. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL.
 
 </Accordion>
 <Accordion title="How do I move a project from Prisma?" id="faq-prisma">
@@ -42,7 +42,7 @@ It is Reylo's cache of each query's analysis. It has its own `.gitignore`, so gi
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">
 
-No, not yet: Reylo reads your types from a live database, so a type check or a build needs one.
+No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. [The build](#deploy-build) shows how to give one to a host that migrates after it builds.
 
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">
