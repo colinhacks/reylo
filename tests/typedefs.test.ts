@@ -1,5 +1,6 @@
 // The type descriptor format: its JSON Schema, spec/typedefs.schema.json, is the source of truth, and
-// spec/index.ts and the copy reylo.dev publishes are generated from it (spec/generate.ts).
+// spec/index.ts and the copy reylo.dev publishes are generated from it (spec/generate.ts), as
+// spec/examples.json is from spec/examples.ts. tests/spec-examples.test.ts holds the examples to the engine.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -9,11 +10,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import * as examples from "../spec/examples.ts";
+import type { Example } from "../spec/examples.ts";
 
 const SPEC = new URL("../spec/", import.meta.url);
 const schema = JSON.parse(readFileSync(new URL("typedefs.schema.json", SPEC), "utf8"));
 
-test("the TypeScript of the format and its published schema are what its JSON Schema gives", () => {
+test("the TypeScript of the format and its published schema are what its JSON Schema gives, and examples.json what examples.ts gives", () => {
   const run = spawnSync(process.execPath, [fileURLToPath(new URL("generate.ts", SPEC)), "--check"], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
 });
@@ -21,7 +23,7 @@ test("the TypeScript of the format and its published schema are what its JSON Sc
 test("a CRLF checkout of the generated files is still current, as a Windows checkout may be", () => {
   const root = mkdtempSync(join(tmpdir(), "reylo-typedefs-"));
   mkdirSync(join(root, "spec"));
-  for (const name of ["generate.ts", "typedefs.schema.json", "index.ts"]) writeFileSync(join(root, "spec", name), readFileSync(new URL(name, SPEC), "utf8").replace(/\r?\n/g, "\r\n"));
+  for (const name of ["generate.ts", "typedefs.schema.json", "index.ts", "examples.ts", "examples.json"]) writeFileSync(join(root, "spec", name), readFileSync(new URL(name, SPEC), "utf8").replace(/\r?\n/g, "\r\n"));
   const published = join(root, "site", "public", "typedefs");
   mkdirSync(published, { recursive: true });
   const file = schema.$id.split("/").pop();
@@ -38,17 +40,22 @@ test("the format's JSON Schema is a valid 2020-12 schema, whose $id names its ve
   assert.equal(schema.$defs.StatementDescriptor.properties.$schema.const, schema.$id);
 });
 
-test("every example in spec/examples.ts is a value of the type its declaration names", () => {
+test("every example in spec/examples.ts is a descriptor of the format, whole or in part", () => {
   const ajv = new Ajv2020({ strict: false, allErrors: true });
   ajv.addSchema(schema);
-  const declared = [...readFileSync(new URL("examples.ts", SPEC), "utf8").matchAll(/^export const (\w+): (\w+)(\[\])? =/gm)];
-  assert.ok(declared.length > 0);
-  for (const [, name, definition, list] of declared) {
-    const validate = ajv.getSchema(`${schema.$id}#/$defs/${definition}`);
-    assert.ok(validate, `${definition} is no definition of the schema`);
-    const value = (examples as Record<string, unknown>)[name!];
-    for (const [i, v] of (list ? (value as unknown[]) : [value]).entries()) {
-      assert.ok(validate(v), `${name}${list ? `[${i}]` : ""}: ${ajv.errorsText(validate.errors)}`);
-    }
+  // A part of a descriptor: the same schema, with nothing required of the descriptor itself.
+  const partial = structuredClone(schema);
+  partial.$id = schema.$id.replace(/\.json$/, "-part.json");
+  partial.$defs.StatementDescriptor.required = [];
+  ajv.addSchema(partial);
+  const whole = ajv.getSchema(`${schema.$id}#/$defs/StatementDescriptor`)!;
+  const part = ajv.getSchema(`${partial.$id}#/$defs/StatementDescriptor`)!;
+  const all = Object.entries(examples);
+  assert.ok(all.length > 0);
+  for (const [name, example] of all) {
+    const { descriptor } = example as Example;
+    const validate = descriptor.$schema === undefined ? part : whole;
+    assert.ok(validate(descriptor), `${name}: ${ajv.errorsText(validate.errors)}`);
+    if (descriptor.dialect) assert.equal(descriptor.dialect.name, (example as Example).database, name);
   }
 });
