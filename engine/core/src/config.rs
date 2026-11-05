@@ -60,8 +60,7 @@ pub struct Project {
 
 /// `reylo migrate`'s settings: the database (the type check's connection when absent), a server to
 /// make shadow databases on where the target's refuses `create database`, whether the project is
-/// locked, the strictness flags, and `post`, a shell command run after `apply --reset` replays every
-/// migration, and after `wipe` (a seed). Where the files are is the top-level `dir`.
+/// locked, and the strictness flags. Where the files are is the top-level `dir`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migrate {

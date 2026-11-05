@@ -1,0 +1,398 @@
+---
+title: Migrate
+description: Put your schema in schema.sql, and Reylo writes, checks and runs each migration, on Postgres, MySQL and SQLite.
+---
+
+<p className="dk-subheader">Put your schema in a SQL file, and Reylo writes the migrations</p>
+
+Your schema lives in one file, `reylo/schema.sql`:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null
+);
+```
+
+To change your schema, change that file:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null -- [!code --]
+  email text not null, -- [!code ++]
+  bio text -- [!code ++]
+);
+```
+
+Reylo writes the migration:
+
+```sh
+reylo migrate create add_bio
+```
+
+```text
+reylo/migrations/20261104140347_add_bio.sql
+```
+
+The file is plain SQL, the change and nothing else:
+
+```sql
+alter table users add column bio text;
+```
+
+Run it on your development database:
+
+```sh
+reylo migrate dev
+```
+
+```text
+Applying to postgres://localhost:5432/app
+  ✓ 20261104140347_add_bio.sql  applied · 4 ms
+Wrote reylo/reylo-lock.yaml
+```
+
+Commit it, and run it on production when you deploy:
+
+```sh
+reylo migrate prod
+```
+
+```text
+Applying to postgres://db.example.com/app
+  ✓ 20261104140347_add_bio.sql  applied · 12 ms
+```
+
+Migrations work on Postgres, MySQL and SQLite.
+
+## Setup
+
+Add a `migrate` section to `.reylo.yaml`. Every setting is optional, so `migrate: {}` is enough:
+
+```yaml title=".reylo.yaml"
+migrate:
+  # The database to migrate. Default: direct_url.
+  url: ${DATABASE_URL}
+  # A server to build shadow databases on, where the database's own
+  # refuses create database. Default: the database's own server.
+  shadow_url: ${SHADOW_URL}
+  # linear: the lock sets the order. loose: names set it, with no lock.
+  # Default: linear.
+  history: linear
+  # Whether comments on tables and columns count as schema. Default: true.
+  strict_comments: true
+```
+
+Reylo keeps its files in `reylo/`, or the directory [`dir`](/#configuration) names. Commit everything but the cache:
+
+```text
+.reylo.yaml
+reylo/
+├── schema.sql              # the schema you want
+├── migrations/             # each change, as plain SQL
+│   ├── 20261104120000_users.sql
+│   └── 20261104140347_add_bio.sql
+├── reylo-lock.yaml         # the order they run in
+└── .cache/                 # keeps itself out of git
+```
+
+To start from a database you already have, run [`reylo migrate init`](#init).
+
+## CLI
+
+```text
+Usage: reylo migrate <command>
+
+  create <name>           Write a migration from your change to schema.sql
+    --drop <names>        Accept what it drops: tables and columns
+    --rename <old>=<new>  Say a table or column was renamed
+
+  dev                     Take this database to the migrations, and lock them
+  sync                    Make what schema.sql adds, unrecorded
+    --watch               Again on each change
+  reset                   Drop everything, then run every migration
+  wipe                    Delete every row
+
+  check                   Check the migrations, schema.sql and this database
+    --offline             Check only what needs no database
+  prod                    Run what the lock lists, with no shadow database
+
+  sync-history            Record what this database's schema already has
+  init                    Start from this database
+    --schema <name>       A schema to read (Postgres; public by default)
+  lock                    Write the lock from what this database ran
+  unlock                  Delete the lock: migrations run by name
+
+  --url <url>             The database, in place of migrate.url
+  --dir <path>            Reylo's directory, in place of dir
+```
+
+The development commands, `dev`, `sync`, `reset` and `wipe`, refuse to run where `CI` is set.
+
+### `create`
+
+Writes the migration that takes your migrations to `schema.sql`, after trying it on a shadow database, a throwaway one Reylo builds beside yours. The file is yours: read it, and add the data changes a schema can't say.
+
+```sh
+reylo migrate create add_bio
+```
+
+Nothing is dropped until you name it. A change that drops a table or column, or changes a type so that values are lost, is refused:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null, -- [!code --]
+  email text not null -- [!code ++]
+  bio text -- [!code --]
+);
+```
+
+```text
+✗ This migration would drop users.bio, and its data
+
+  To drop it:
+    reylo migrate create drop_bio --drop users.bio
+
+No migration was written.
+```
+
+A column that goes while one just like it comes is a rename, which keeps its rows:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null,
+  bio text -- [!code --]
+  about text -- [!code ++]
+);
+```
+
+```text
+! Renames, keeping rows:
+    users.bio → about
+  If they are two, state it: --drop users.bio
+reylo/migrations/20261104150000_about.sql
+```
+
+Where the new one differs too, only you can say what it is. Reylo lists every such pair, and writes nothing until you settle them:
+
+```text
+✗ These 2 look like renames, but each changes more than its name
+
+    posts.title → heading  text → character varying(100)
+    users.bio   → about    text → character varying(200)
+
+  If they are renames, keeping their rows:
+    reylo migrate create tidy \
+      --rename posts.title=heading \
+      --rename users.bio=about
+  If they are new, dropping the old ones and their data:
+    reylo migrate create tidy --drop posts.title,users.bio
+
+No migration was written.
+```
+
+### `dev`
+
+Takes your development database to your migrations, and writes the lock. It runs what is new, and rewinds what no longer agrees, such as a branch's migration after you switch away from it:
+
+```sh
+reylo migrate dev
+```
+
+```text
+Applying to postgres://localhost:5432/app
+  ↺ 20261104120000_tags.sql   rewound: it isn't in the migrations
+    Dropped tags, 3 rows
+  ✓ 20261104130000_posts.sql  applied · 3 ms
+Wrote reylo/reylo-lock.yaml
+```
+
+The lock lists your migrations in the order they run, each with a checksum chained to the line before. A migration it doesn't list is a draft, free to edit:
+
+```yaml title="reylo-lock.yaml"
+schema: c7bf681b
+migrations:
+  - 20261104120000_users.sql c86e9de4
+  - 20261104140347_add_bio.sql 78ad08c0
+```
+
+When two branches each add a migration, git conflicts on the lock, before anything is deployed. Keep main's lines, then run `reylo migrate dev`, which runs your branch's migrations after main's and adds them back.
+
+### `sync`
+
+Makes what `schema.sql` adds on your development database without writing a migration, to try a change:
+
+```sql title="schema.sql"
+create table users (
+  id integer primary key,
+  email text not null,
+  bio text -- [!code --]
+  bio text, -- [!code ++]
+  nick text -- [!code ++]
+);
+```
+
+```sh
+reylo migrate sync
+```
+
+```text
+Syncing postgres://localhost:5432/app with schema.sql
+  + alter table users add column nick text;
+
+  Not in any migration yet:
+    reylo migrate create <name>
+```
+
+With `--watch`, it syncs again each time you save. It needs your database at its migrations, so it refuses until `reylo migrate dev` has run. When you then write the migration, `reylo migrate dev` records it without running it again.
+
+### `reset`
+
+Drops everything, then runs every migration. To seed the result, chain [`reylo run`](#examples):
+
+```sh
+reylo migrate reset && reylo run --file seed.sql
+```
+
+### `wipe`
+
+Deletes every row, keeping the schema and the history:
+
+```sh
+reylo migrate wipe
+```
+
+```text
+✓ Deleted every row of 2 tables; the schema and the history stay
+```
+
+### `check`
+
+Checks your migrations against `schema.sql` and your database, on shadow databases, running nothing. Run it in CI, and before you deploy:
+
+```sh
+reylo migrate check
+```
+
+```text
+✓ The migrations reach reylo/schema.sql
+✓ This database matches its history
+✓ Nothing is pending
+```
+
+With `--offline`, it checks what needs no database: the lock against the files, and `schema.sql` against the checksum the lock holds.
+
+```sh
+reylo migrate check --offline
+```
+
+```text
+✓ reylo/reylo-lock.yaml lists every migration, in order, as written
+✓ The migrations reach reylo/schema.sql
+```
+
+### `prod`
+
+Runs what the lock lists and your database hasn't run. Each migration runs in one transaction with its history row; on MySQL, where a schema change commits on its own, each holds one change.
+
+```sh
+reylo migrate prod
+```
+
+```text
+Applying to postgres://db.example.com/app
+  ✓ 20261104140347_add_bio.sql  applied · 12 ms
+```
+
+It builds no shadow database, so it needs no permission to create one. After each run it stores a fingerprint of the schema, and it refuses a database that no longer has it:
+
+```text
+✗ This database changed since Reylo last ran on it
+
+  See how:
+    reylo migrate check
+
+Nothing was applied.
+```
+
+### `sync-history`
+
+Rewrites the history to the migrations your database's schema has, running nothing, once a shadow database shows they make exactly it. To keep a change someone made by hand, add it to `schema.sql`, write its migration, and lock it:
+
+```sh
+reylo migrate create users_email
+reylo migrate dev
+```
+
+Then, with the lock committed, record it on the database that has it:
+
+```sh
+reylo migrate sync-history --url $PROD_URL
+```
+
+```text
+  + 20261104160000_users_email.sql recorded, not run: already in place
+✓ The history lists the 3 migrations this database's schema has
+```
+
+### `init`
+
+Starts your migrations from a database you already have. It writes `schema.sql` and a first migration, and records that migration as run:
+
+```sh
+reylo migrate init
+```
+
+```text
+Wrote reylo/schema.sql, reylo/migrations/init.sql and reylo/reylo-lock.yaml
+  + init.sql recorded, not run: already in place
+✓ The history lists the 1 migration this database's schema has
+```
+
+### `unlock`
+
+Deletes the lock, and sets `history: loose`. Migrations then run by name, and two branches no longer conflict. One that lands older than one already run runs only if neither changes data; `reylo migrate check` says whether both orders end the same.
+
+### `lock`
+
+Writes the lock from what your database ran, in the order it ran them, and takes `history: loose` back out.
+
+## Examples
+
+```sh
+# Write a migration from your change to schema.sql
+reylo migrate create add_bio
+
+# One that drops a column
+reylo migrate create drop_bio --drop users.bio
+
+# One that renames a column and changes its type
+reylo migrate create about --rename users.bio=about
+
+# Run your migrations in development
+reylo migrate dev
+
+# Try a change with no migration yet, on every save
+reylo migrate sync --watch
+
+# Start over, with your seed
+reylo migrate reset && reylo run --file seed.sql
+
+# Check everything in CI
+reylo migrate check
+
+# Check with no database, in a pre-commit hook
+reylo migrate check --offline
+
+# Deploy
+reylo migrate check && reylo migrate prod
+
+# Another database than the one in .reylo.yaml
+reylo migrate prod --url $STAGING_URL
+
+# Run a SQL file on a database, recording nothing
+reylo run --file backfill.sql
+```

@@ -12,7 +12,7 @@ No. Reylo has your database prepare each query, which checks it and describes it
 </Accordion>
 <Accordion title="Does Reylo run migrations?" id="faq-migrations">
 
-Not at the moment: bring your own. Reylo types your queries against whatever schema your dev database has, so apply your migrations with the tool you already use, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
+Yes: [`reylo migrate`](/migrate) writes each migration from your `schema.sql`, and checks and runs it. Your own tool works just as well, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files, since Reylo types your queries against whatever schema your dev database has. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
 
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
@@ -32,7 +32,7 @@ Yes, as [Reylo Type Defs](/rtd): each statement's parameters, columns, types and
 </Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
 
-It holds your [migrations](/migrations), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
+It holds your [migrations](/migrate), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
 
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">

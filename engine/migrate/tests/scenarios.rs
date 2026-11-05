@@ -397,7 +397,7 @@ async fn refuses_drift(mut p: P) {
     assert_eq!(p.dry_run().await, 1);
     let out = p.output();
     assert_has!(&out, r"✗ This database has changes no migration made\n\n    alter table users add column hotfix [^\n]+;\n");
-    assert_has!(&out, r"Keep it: add it to schema\.sql, write the migration, then record the history the database has, running nothing:\n    reylo migrate create <name>\n    reylo migrate sync-history");
+    assert_has!(&out, r"To keep it, add it to schema\.sql, write the migration, and record it, running nothing:\n    reylo migrate create <name>\n    reylo migrate sync-history");
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
 }
 
@@ -448,7 +448,7 @@ async fn ddl_run_by_hand_then_written_is_recorded(mut p: P) {
     assert_eq!(p.dry_run().await, 1);
     assert_has!(p.output(), r"20261027110000_nick\.sql makes exactly that change\. Record the history the database has, running nothing:\n    reylo migrate sync-history");
     assert_eq!(p.sync_history().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"\+ 20261027110000_nick\.sql recorded, not run: this database has its change[\s\S]*✓ The history lists the 2 migrations this database's schema has");
+    assert_has!(p.output(), r"\+ 20261027110000_nick\.sql recorded, not run: already in place[\s\S]*✓ The history lists the 2 migrations this database's schema has");
     assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_nick.sql"]);
     // One that also changes data is recorded where the schema needs it, and says its data never ran
     // (MySQL keeps a DDL statement in a file of its own).
@@ -512,7 +512,7 @@ async fn a_late_migration_runs_when_both_orders_agree(mut p: P) {
     p.strict = true;
     p.lock(&["20261027100000_a.sql", "20261027120000_c.sql"]);
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"20261027110000_b\.sql isn't in \S*reylo-lock\.yaml: it's a draft\n\n  Run them in development, which adds them to the lock:\n    reylo migrate dev");
+    assert_has!(p.output(), r"20261027110000_b\.sql isn't in \S*reylo-lock\.yaml: it's a draft\n\n  Run it in development, which adds it to the lock:\n    reylo migrate dev");
     p.strict = false;
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027120000_c.sql", "20261027110000_b.sql"]);
@@ -1031,7 +1031,7 @@ async fn sync_keeps_what_no_migration_makes_yet(mut p: P) {
     p.schema(&format!("{users} {notes} create table tags (id {int}, label {text});"));
     assert_eq!(p.sync().await, 0, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"↺ Undid changes no migration made, which 20261027120000_tags\.sql can't run on \(drops tags, no rows\)");
+    assert_has!(&out, r"↺ Undid changes no migration made, which 20261027120000_tags\.sql can't run on\n    Dropped tags, no rows");
     assert_has!(&out, r"✓ 20261027120000_tags\.sql +applied[\s\S]*This database matches schema\.sql and its migrations");
     assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_notes.sql", "20261027120000_tags.sql"]);
     assert_eq!(p.rows("select * from notes").await.len(), 1);
@@ -1178,7 +1178,7 @@ async fn create_lists_every_rename_it_assumes(mut p: P) {
 /// What a suggested `reylo migrate create` line states.
 fn choices_of(line: &str) -> reylo_migrate::Choices {
     let mut choices = reylo_migrate::Choices::default();
-    let words: Vec<&str> = line.split_whitespace().collect();
+    let words: Vec<&str> = line.split_whitespace().filter(|w| *w != "\\").collect();
     for pair in words.windows(2) {
         match pair[0] {
             "--drop" => choices.drop.extend(pair[1].split(',').map(String::from)),
@@ -1204,8 +1204,9 @@ async fn create_settles_every_guess_with_one_command(mut p: P) {
     p.schema(&format!("create table users (id {id}, handle {long}); create table invoices (id {id}, a {text}, b {text}, c {text}, total {int}); create table posts (id {id});"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &Default::default(), log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ These 2 look like renames, but each changes more than its name\n\n    orders     → invoices  adds total, drops legacy\n    users\.nick → handle    [^\n]+\n\n  It also drops invoices\.legacy, posts\.old_a, posts\.old_b, and their data\.\n\n  If they are renames, keeping their rows:\n    reylo migrate create tidy --drop invoices\.legacy,posts\.old_a,posts\.old_b --rename orders=invoices --rename users\.nick=handle\n  If they are new, dropping the old ones and their data:\n    reylo migrate create tidy --drop orders,users\.nick,posts\.old_a,posts\.old_b\n");
-    let command = |out: &str, after: &str| out.lines().skip_while(|l| !l.contains(after)).nth(1).unwrap().to_string();
+    assert_has!(&out, r"✗ These 2 look like renames, but each changes more than its name\n\n    orders     → invoices  adds total, drops legacy\n    users\.nick → handle    [^\n]+\n\n  It also drops invoices\.legacy, posts\.old_a, posts\.old_b, and their data\.\n\n  If they are renames, keeping their rows:\n    reylo migrate create tidy \\\n      --drop invoices\.legacy,posts\.old_a,posts\.old_b \\\n      --rename orders=invoices \\\n      --rename users\.nick=handle\n  If they are new, dropping the old ones and their data:\n    reylo migrate create tidy --drop orders,users\.nick,posts\.old_a,posts\.old_b\n");
+    // A command, and the lines a backslash continues it on.
+    let command = |out: &str, after: &str| out.lines().skip_while(|l| !l.contains(after)).skip(1).take_while(|l| l.starts_with("    ")).collect::<Vec<_>>().join("\n");
     let (keeps, drops) = (command(&out, "If they are renames"), command(&out, "If they are new"));
     let made = |p: &P| p.files().into_iter().filter(|f| f.contains("_tidy")).collect::<Vec<_>>();
     // The second command, as printed, is one the next create takes.
@@ -1313,7 +1314,7 @@ async fn sync_keeps_what_it_records_when_it_undoes_the_rest(mut p: P) {
     p.output();
     assert_eq!(p.sync().await, 0, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"↺ Undid changes no migration made, which 20261027120000_tags\.sql can't run on \(drops tags, no rows\)");
+    assert_has!(&out, r"↺ Undid changes no migration made, which 20261027120000_tags\.sql can't run on\n    Dropped tags, no rows");
     assert_has!(&out, r"20261027110000_notes\.sql +recorded, not run[\s\S]*✓ 20261027120000_tags\.sql +applied");
     assert_eq!(p.rows("select body from notes").await[0].text("body"), "kept");
     assert_eq!(p.history().await, ["20261027100000_users.sql", "20261027110000_notes.sql", "20261027120000_tags.sql"]);
@@ -1357,7 +1358,7 @@ async fn sync_rewinds_only_what_the_rewound_migrations_made(mut p: P) {
     p.output();
     assert_eq!(p.sync().await, 0, "{}", p.peek());
     let out = p.output();
-    assert_has!(&out, r"↺ 20261027110000_tags\.sql +rewound: it isn't in the migrations \(drops tags, no rows\)");
+    assert_has!(&out, r"↺ 20261027110000_tags\.sql +rewound: it isn't in the migrations\n    Dropped tags, no rows");
     assert!(!out.contains("notes"), "{out}");
     assert_eq!(p.rows("select body from notes").await[0].text("body"), "kept");
     assert!(p.try_rows("select 1 from tags").await.is_err());
@@ -1495,7 +1496,7 @@ async fn create_assumes_a_rename_where_one_goes_and_one_comes(mut p: P) {
     p.schema(&format!("create table users (id {id}, handle {long}); create table members (id {int}, email {short}, name {short}, joined {int});"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "renames", &Default::default(), log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ These 2 look like renames, but each changes more than its name\n\n    accounts   → members  adds joined\n    users\.nick → handle   [^\n]+ → [^\n]+\n\n  If they are renames, keeping their rows:\n    reylo migrate create renames --rename accounts=members --rename users\.nick=handle\n  If they are new, dropping the old ones and their data:\n    reylo migrate create renames --drop accounts,users\.nick\n\nNo migration was written\.");
+    assert_has!(&out, r"✗ These 2 look like renames, but each changes more than its name\n\n    accounts   → members  adds joined\n    users\.nick → handle   [^\n]+ → [^\n]+\n\n  If they are renames, keeping their rows:\n    reylo migrate create renames \\\n      --rename accounts=members \\\n      --rename users\.nick=handle\n  If they are new, dropping the old ones and their data:\n    reylo migrate create renames --drop accounts,users\.nick\n\nNo migration was written\.");
     assert_eq!(p.files().len(), 2, "nothing is written");
     // The second command, which takes them for new ones.
     let choices = reylo_migrate::Choices { drop: vec!["accounts".into(), "users.nick".into()], rename: vec![] };
@@ -1644,7 +1645,7 @@ async fn the_drift_advice_in_a_locked_project_locks_the_migration_first(mut p: P
     p.output();
     p.schema(&format!("create table users (id {id}, n {int});"));
     assert_eq!(p.dry_run().await, 1);
-    assert_has!(p.output(), r"run it in development, which locks it:\n    reylo migrate create <name>\n    reylo migrate dev\n  Then, with the lock committed, record this database's history, running nothing:\n    reylo migrate sync-history");
+    assert_has!(p.output(), r"To keep it, add it to schema\.sql, write the migration and lock it:\n    reylo migrate create <name>\n    reylo migrate dev\n  Then, with the lock committed, record it here, running nothing:\n    reylo migrate sync-history");
 }
 
 async fn wipe_deletes_rows_and_keeps_the_schema(mut p: P) {
@@ -1684,7 +1685,7 @@ async fn create_states_what_it_drops_and_renames(mut p: P) {
     let choices = create(&[], &[]);
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "tidy", &choices, log).await).await, 1);
     let out = p.output();
-    assert_has!(&out, r"This migration would drop users\.legacy, users\.middle_name, and their data\n\n  To drop them:\n    reylo migrate create tidy --drop users\.legacy,users\.middle_name\n  If any were renamed instead, as users\.nickname:\n    reylo migrate create tidy --rename users\.legacy=<new name> --rename users\.middle_name=<new name>");
+    assert_has!(&out, r"This migration would drop users\.legacy, users\.middle_name, and their data\n\n  To drop them:\n    reylo migrate create tidy --drop users\.legacy,users\.middle_name\n  If any were renamed instead, as users\.nickname:\n    reylo migrate create tidy \\\n      --rename users\.legacy=<new name> \\\n      --rename users\.middle_name=<new name>");
     assert!(made(&p).is_empty(), "nothing is written");
     // Dropping one leaves the other alone with its definition: renamed, keeping its rows.
     let choices = create(&["users.legacy"], &[]);

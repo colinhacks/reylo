@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 pub(crate) struct Step {
     pub label: String,
     pub sql: String,
-    /// `schema.sql` runs as written; a migration runs as `apply` runs it, atomically.
+    /// `schema.sql` runs as written; a migration runs as `prod` runs it, atomically.
     pub schema: bool,
 }
 

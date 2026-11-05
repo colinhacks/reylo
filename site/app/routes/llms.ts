@@ -3,9 +3,9 @@ import { markdownOf } from '@/lib/markdown';
 
 // Every page as Markdown, for a coding agent or a language model (https://llmstxt.org): the main
 // page, then each dialect's reference, in the order a reader takes them, and the guide to moving
-// from Prisma and Reylo Type Defs, each as its own Markdown file holds it (lib/markdown.ts), then the
+// from Prisma, migrations and Reylo Type Defs, each as its own Markdown file holds it (lib/markdown.ts), then the
 // playground's API (/play/api.md). Written to build/client/llms.txt at build time.
-const PAGES = ['', 'postgres', 'mysql', 'sqlite', 'duckdb', 'prisma', 'rtd'];
+const PAGES = ['', 'postgres', 'mysql', 'sqlite', 'duckdb', 'prisma', 'migrate', 'rtd'];
 
 export async function loader() {
   const { playData } = await import('@/lib/live/play-data');

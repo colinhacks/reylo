@@ -35,57 +35,28 @@ connection; --url names another.";
 
 const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
 
-Write
-  create <name>             Write the migration that takes the migrations to schema.sql, checked in
-                            a shadow database
-    --drop <names>          Accept what it drops or changes so that values are lost: tables and
-                            columns, comma-separated
-    --rename <old>=<new>    Say that a table or column was renamed: users.name=full_name
+  create <name>           Write a migration from your change to schema.sql
+    --drop <names>        Accept what it drops: tables and columns
+    --rename <old>=<new>  Say a table or column was renamed
 
-Develop
-  dev                       Take this database to the migrations: rewind what no longer agrees with
-                            them, run the rest, and write the lock
-  sync                      Make what schema.sql adds on this database, unrecorded, once it is at
-                            its migrations
-    --watch                 Again each time schema.sql or a migration changes
-  reset                     Drop everything, then run every migration (loses data)
-  wipe                      Delete every row, keeping the schema and the history (loses data)
+  dev                     Take this database to the migrations, and lock them
+  sync                    Make what schema.sql adds, unrecorded
+    --watch               Again on each change
+  reset                   Drop everything, then run every migration
+  wipe                    Delete every row
 
-Deploy
-  prod                      Run what is pending. Builds no shadow database: refuses a database
-                            changed since Reylo last ran on it, and anything but what the lock lists
-  check                     Check the migrations against schema.sql and this database, in shadow
-                            databases; runs nothing
-    --offline               Check what needs no database: the files, the lock, and schema.sql
-                            against the lock's checksum
+  check                   Check the migrations, schema.sql and this database
+    --offline             Check only what needs no database
+  prod                    Run what the lock lists, with no shadow database
 
-Repair
-  sync-history              Rewrite the history to the migrations this database's schema has, proven
-                            in a shadow database; runs nothing
-  init                      Write schema.sql and migrations/init.sql from this database, and record
-                            init.sql
-    --schema <name>         A schema to read (Postgres; public unless named)
+  sync-history            Record what this database's schema already has
+  init                    Start from this database
+    --schema <name>       A schema to read (Postgres; public by default)
+  lock                    Write the lock from what this database ran
+  unlock                  Delete the lock: migrations run by name
 
-Order
-  lock                      Write reylo-lock.yaml, the order the migrations run in, from what this
-                            database applied
-  unlock                    Delete reylo-lock.yaml and set history: loose: migrations run by name
-
-Flags for any command
-  --url <url>               The database, in place of migrate.url
-  --dir <path>              Reylo's directory, in place of dir
-
-Settings, in .reylo.yaml:
-
-  dir: reylo                   # schema.sql, migrations/, reylo-lock.yaml, .cache/
-  migrate:
-    url: ${DATABASE_URL}       # default: the type check's connection
-    shadow_url: ${SHADOW_URL}  # a server for shadow databases; default: the database's own
-    history: linear            # linear: the lock's order; loose: by name, no lock
-    strict_comments: true      # false leaves comments on objects out of the comparison
-
-dev, sync, reset and wipe refuse to run where CI is set. To seed after reset or wipe, chain it:
-reylo migrate reset && reylo run --file seed.sql";
+  --url <url>             The database, in place of migrate.url
+  --dir <path>            Reylo's directory, in place of dir";
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
 #[derive(Default)]

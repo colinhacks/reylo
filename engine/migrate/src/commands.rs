@@ -641,7 +641,7 @@ fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
     let drafts: Vec<&str> = files.iter().filter(|f| !l.entries.iter().any(|e| e.name == f.name)).map(|f| f.name.as_str()).collect();
     if !drafts.is_empty() {
         let mut problem = Problem::new(format!("{} {} in {path}: {}", drafts.join(", "), if drafts.len() == 1 { "isn't" } else { "aren't" }, if drafts.len() == 1 { "it's a draft" } else { "they're drafts" }))
-            .fix("Run them in development, which adds them to the lock", &["reylo migrate dev"]);
+            .fix(format!("Run {} in development, which adds {} to the lock", if drafts.len() == 1 { "it" } else { "them" }, if drafts.len() == 1 { "it" } else { "them" }), &["reylo migrate dev"]);
         problem.drafts = true;
         problems.push(problem);
     }
@@ -931,12 +931,12 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         // A new migration is a draft until development locks it; then this database's history can
         // be recorded with it.
         problem = problem
-            .fix("Keep it: add it to schema.sql, write the migration, and run it in development, which locks it", &["reylo migrate create <name>", "reylo migrate dev"])
-            .fix("Then, with the lock committed, record this database's history, running nothing", &["reylo migrate sync-history"]);
+            .fix("To keep it, add it to schema.sql, write the migration and lock it", &["reylo migrate create <name>", "reylo migrate dev"])
+            .fix("Then, with the lock committed, record it here, running nothing", &["reylo migrate sync-history"]);
     } else if !only_live.is_empty() {
-        problem = problem.fix("Keep it: add it to schema.sql, write the migration, then record the history the database has, running nothing", &["reylo migrate create <name>", "reylo migrate sync-history"]);
+        problem = problem.fix("To keep it, add it to schema.sql, write the migration, and record it, running nothing", &["reylo migrate create <name>", "reylo migrate sync-history"]);
     }
-    problem = problem.fix("On a development database, start over from the migrations (loses its data)", &["reylo migrate reset"]);
+    problem = problem.fix("To start over from the migrations (loses its data)", &["reylo migrate reset"]);
     Ok(vec![problem])
 }
 
@@ -1160,7 +1160,8 @@ pub async fn check_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         print_problems(&plan.problems, log);
         return Ok(1);
     }
-    log(&format!("{} The migrations reach {}, and this database matches its history", paint("green", "✓"), shown(&opts.schema)));
+    log(&format!("{} The migrations reach {}", paint("green", "✓"), shown(&opts.schema)));
+    log(&format!("{} This database matches its history", paint("green", "✓")));
     match plan.unchanged {
         Some(true) => log(&format!("{} Nothing has changed this database since Reylo last ran on it", paint("green", "✓"))),
         Some(false) => log(&format!("{} Its fingerprint isn't the one Reylo stored, so reylo migrate prod refuses it until reylo migrate sync-history stores it again", paint("yellow", "!"))),
@@ -1483,7 +1484,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         if !ran {
             let data = data_statements(&f.sql, d);
             if data.is_empty() {
-                log(&format!("  + {} recorded, not run: this database has its change", f.name));
+                log(&format!("  + {} recorded, not run: already in place", f.name));
             } else {
                 log(&format!("  + {} recorded, not run: {} {}", f.name, paint("yellow", "its data statements never ran here"), paint("dim", &format!("({})", data.join(", ")))));
             }
@@ -1801,14 +1802,14 @@ fn shown_id(id: &str) -> String {
 /// The command that writes the migration with what the person stated and what is to be added.
 fn create_command(migration: &str, choices: &Choices, more_drops: &[String], renames: &[(String, String)]) -> String {
     let drops: Vec<String> = choices.drop.iter().cloned().chain(more_drops.iter().cloned()).collect();
-    let mut command = format!("reylo migrate create {migration}");
+    let mut flags: Vec<String> = Vec::new();
     if !drops.is_empty() {
-        command.push_str(&format!(" --drop {}", drops.join(",")));
+        flags.push(format!("--drop {}", drops.join(",")));
     }
-    for (old, new) in choices.rename.iter().chain(renames) {
-        command.push_str(&format!(" --rename {old}={new}"));
-    }
-    command
+    flags.extend(choices.rename.iter().chain(renames).map(|(old, new)| format!("--rename {old}={new}")));
+    // Several flags read one to a line, where the shell continues a line with a backslash.
+    let (head, gap) = (format!("reylo migrate create {migration}"), if cfg!(windows) || flags.len() < 2 { " " } else { " \\\n      " });
+    std::iter::once(head).chain(flags).collect::<Vec<_>>().join(gap)
 }
 
 /// A rename `create` won't assume, since it changes more than a name: only the person can say whether
@@ -2240,13 +2241,14 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     std::fs::write(&opts.schema, &sql)?;
     let init = opts.dir.join(INIT);
     std::fs::write(&init, &sql)?;
-    log(&format!("wrote {} and {}", shown(&opts.schema), shown(&init)));
     // A locked project's history is its lock's: init.sql is its first line, and reaches schema.sql.
     if opts.locked {
         let entries = lock::chain([(INIT, sql.as_str())]);
         let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
         lock::write(&opts.lock, &lock::Lock { schema, entries })?;
-        log(&shown(&opts.lock));
+        log(&format!("Wrote {}, {} and {}", shown(&opts.schema), shown(&init), shown(&opts.lock)));
+    } else {
+        log(&format!("Wrote {} and {}", shown(&opts.schema), shown(&init)));
     }
     sync_history(opts, log).await
 }
@@ -2665,25 +2667,19 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 }
             },
         };
-        // What the rewind dropped is said on its row, where there is one row to say it on.
-        let lost = counted_losses(&plan, &counts);
-        let alone = rewind_rows.len() == 1;
         for r in &rewind_rows {
             let why = match files.iter().find(|f| f.name == r.name) {
                 Some(f) if !same_statements(&f.sql, &r.sql, d) => "it changed after this database applied it",
                 Some(_) => "a migration before it came in later, and the two can't run in this order",
                 None => "it isn't in the migrations",
             };
-            let dropped = if alone && !lost.is_empty() { paint("yellow", &format!(" (drops {lost})")) } else { String::new() };
-            rows.row(log, &paint("yellow", "↺"), &r.name, &format!("rewound: {why}{dropped}"));
+            rows.row(log, &paint("yellow", "↺"), &r.name, &format!("rewound: {why}"));
             let data = data_statements(&r.sql, d);
             if !data.is_empty() {
                 log(&format!("      {}", paint("yellow", &format!("What it wrote stays ({}): a rewind undoes its schema, not its rows. To start with none: reylo migrate reset", data.join(", ")))));
             }
         }
-        if !alone && !lost.is_empty() {
-            log(&format!("    {}", paint("yellow", &format!("Dropped {lost}"))));
-        }
+        dropped_row(&plan, &counts, log);
     }
     // Changes no migration made (an earlier sync's, from schema.sql, or made by hand) are kept,
     // unless a migration still to run cannot run on top of them.
@@ -2742,9 +2738,8 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 Ok(Err(lines)) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),
                 Ok(Ok((_, plan))) => {
                     rows.open(log);
-                    let lost = counted_losses(&plan, &counts);
-                    let dropped = if lost.is_empty() { String::new() } else { paint("yellow", &format!(" (drops {lost})")) };
-                    log(&format!("  {} Undid changes no migration made, which {} can't run on{dropped}", paint("yellow", "↺"), pending[0].name));
+                    log(&format!("  {} Undid changes no migration made, which {} can't run on", paint("yellow", "↺"), pending[0].name));
+                    dropped_row(&plan, &counts, log);
                 }
             }
         }
@@ -2754,7 +2749,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     }
     for m in &records {
         insert_row(db, m, true).await?;
-        rows.row(log, &paint("yellow", "!"), &m.name, "recorded, not run: this database already had its change");
+        rows.row(log, &paint("yellow", "!"), &m.name, "recorded, not run: already in place");
     }
     for m in &pending {
         let started = std::time::Instant::now();
@@ -2934,10 +2929,7 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
         for statement in renames.iter().chain(&plan.statements) {
             statement_row(statement, log);
         }
-        let lost = counted_losses(&plan, &counts);
-        if !lost.is_empty() {
-            log(&format!("    {}", paint("yellow", &format!("Dropped {lost}"))));
-        }
+        dropped_row(&plan, &counts, log);
         true
     } else {
         false
@@ -3013,7 +3005,10 @@ async fn table_rows(db: &mut Db) -> Result<std::collections::BTreeMap<String, u6
 
 /// What a plan drops, each table with how many rows it held where `counts` holds them, as the end of
 /// a sentence (", dropping tags (3 rows) and users.bio"), or nothing.
-fn counted_losses(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<String, u64>) -> String {
+fn dropped_row(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<String, u64>, log: Log<'_>) {
+    if plan.losses.is_empty() {
+        return;
+    }
     let what: Vec<String> = plan
         .losses
         .iter()
@@ -3028,7 +3023,7 @@ fn counted_losses(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<
             }
         })
         .collect();
-    what.join("; ")
+    log(&format!("    {}", paint("yellow", &format!("Dropped {}", what.join("; ")))));
 }
 
 /// `reylo run "<sql>"` and `reylo run --file <path>`: runs SQL on the database as written, inline
