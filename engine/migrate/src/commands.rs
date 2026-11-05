@@ -30,14 +30,9 @@ pub struct Options {
     pub lock: PathBuf,
     /// The cache of replays and the SQLite lock files, `reylo/.cache/`.
     pub cache: PathBuf,
-    /// When apply builds shadow databases: where the stored fingerprint can't decide (the default),
-    /// always (`--shadows`), or never, refusing what only shadows could check (`--no-shadows`).
-    pub shadows: ShadowUse,
     /// Whether comments on objects are compared (`strict_comments`, on by default).
     pub comments: bool,
-    /// A shell command run after `apply --reset` replays every migration (a seed).
-    pub post: Option<String>,
-    /// The project's directory: a relative SQLite path is its, and `post` runs in it.
+    /// The project's directory: a relative SQLite path is its.
     pub root: PathBuf,
 }
 
@@ -48,16 +43,6 @@ impl Options {
 }
 
 pub type Log<'a> = &'a mut dyn FnMut(&str);
-
-/// When apply builds shadow databases.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ShadowUse {
-    /// Only where the fingerprint its last run stored can't say the database is as that run left it.
-    #[default]
-    Auto,
-    Always,
-    Never,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Migration {
@@ -189,7 +174,7 @@ async fn read_history(db: &mut Db) -> Result<Vec<HistoryRow>, Error> {
     // written in one run tie, and are read in the order they were written, by rowid.
     let applied_at = if d == Dialect::Postgres { "applied_at::text" } else { "applied_at" };
     let tie = if d == Dialect::Sqlite { "rowid, " } else { "" };
-    // A table an earlier build made has no fingerprint column until the next apply adds it.
+    // A table an earlier build made has no fingerprint column until the next run adds it.
     let fingerprint = if has_fingerprint(db).await? { "fingerprint" } else { "null as fingerprint" };
     let rows = db
         .rows(&format!(
@@ -239,7 +224,8 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
     };
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
     let mut digest = crate::cache::Sha256::new();
-    for line in lines {
+    // A child table may have been made at run time, as data: only a replay can tell.
+    for line in crate::catalog::without_children(lines) {
         digest.part(line.as_bytes());
     }
     Ok(format!("{}:{version}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
@@ -250,7 +236,7 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 }
 
 /// Waits until no other run of `reylo migrate` works on this database, so that two that start at
-/// once (two instances of an app, each migrating as it starts) neither decide alike nor apply alike:
+/// once (two instances of an app, each migrating as it starts) neither decide alike nor run alike:
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
 /// file of the project's (in its cache, which only these runs open), held while the answer lives.
@@ -418,16 +404,6 @@ impl Problem {
     }
 }
 
-/// What a check holds the database to.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    /// `apply`: the migrations against the database. schema.sql is not read: what it declares is
-    /// held against the migrations in development and CI (`create`, `check`), not at deploy.
-    Apply,
-    /// `check`: everything `Apply` checks, and the migrations against schema.sql; runs nothing.
-    Check,
-}
-
 #[derive(Debug, Default)]
 pub struct Plan {
     pub problems: Vec<Problem>,
@@ -441,14 +417,10 @@ pub struct Plan {
     pub unchanged: Option<bool>,
     /// The records that are lone statements cut off before their row was finished, which landed.
     pub landed: Vec<String>,
-    /// The invalid indexes such statements left, which apply drops before running them again.
+    /// The invalid indexes such statements left, which `prod` drops before running them again.
     pub leftovers: Vec<Leftover>,
-    /// Decided without shadow databases: the database is as Reylo's last run left it.
-    pub quick: bool,
-    /// The check needs shadow databases, and was given no server to make them on.
-    pub needs_shadows: bool,
-    /// What the database is to read as once the pending migrations have run, as shadows replayed it.
-    pub expected: Option<Vec<String>>,
+    /// Pending migrations older than one this database applied, in an unlocked project.
+    pub late: Vec<String>,
 }
 
 /// An index a lone `create index concurrently` (or `reindex concurrently`) left invalid when it was
@@ -636,16 +608,16 @@ fn read_lock(opts: &Options, files: &[Migration]) -> Result<lock::Lock, Problem>
     match lock::read(&opts.lock) {
         lock::State::Lock(l) => Ok(l),
         lock::State::Missing if files.is_empty() => Ok(lock::Lock::default()),
-        lock::State::Missing => Err(Problem::new(format!("{path} is missing")).fix("On a development database, apply the migrations, which writes it", &["reylo migrate apply --dev"]).fix("Or write it from what a database applied", &["reylo migrate lock"])),
+        lock::State::Missing => Err(Problem::new(format!("{path} is missing")).fix("On a development database, run the migrations, which writes it", &["reylo migrate dev"]).fix("Or write it from what a database applied", &["reylo migrate lock"])),
         lock::State::Conflicted => Err(Problem::new(format!("{path} has a merge conflict: another branch added migrations too"))
             .note("Keep main's lines, and leave out this branch's (git checkout --theirs while merging main in, --ours while rebasing onto it)")
-            .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate apply --dev"])),
+            .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate dev"])),
         lock::State::Invalid(e) => Err(Problem::new(format!("{path} doesn't read as a lock file")).note(e).fix("Write it again from what a database applied", &["reylo migrate lock"])),
     }
 }
 
 /// The problems of a locked project's lock against the migration files, for a command that runs
-/// what it lists as it is (apply, check): an entry with no file, a file edited after it was locked,
+/// what it lists as it is (prod, check): an entry with no file, a file edited after it was locked,
 /// lines merged out of their order, and drafts.
 fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
     let path = shown(&opts.lock);
@@ -657,19 +629,19 @@ fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
     for (e, link) in l.entries.iter().zip(links(&l, files)) {
         match link {
             Link::Ok => {}
-            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database's history", &[&format!("reylo migrate restore {}", e.name)])),
-            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked", e.name)).note("A database may have run it as it was: take the text back from git, or from a database's history.").fix("Restore the text a database ran", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).note("Put the file back from git.")),
+            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked", e.name)).note("A database may have run it as it was: take the text back from git, and write the change as a new migration.")),
             Link::Moved { after } => problems.push(
                 Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {}, not where it is", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
                     .note("Keep main's lines in main's order, and leave out this branch's.")
-                    .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate apply --dev"]),
+                    .fix("Then run this branch's migrations after them, which adds them back", &["reylo migrate dev"]),
             ),
         }
     }
     let drafts: Vec<&str> = files.iter().filter(|f| !l.entries.iter().any(|e| e.name == f.name)).map(|f| f.name.as_str()).collect();
     if !drafts.is_empty() {
         let mut problem = Problem::new(format!("{} {} in {path}: {}", drafts.join(", "), if drafts.len() == 1 { "isn't" } else { "aren't" }, if drafts.len() == 1 { "it's a draft" } else { "they're drafts" }))
-            .fix("Apply in development, which adds them to the lock", &["reylo migrate apply --dev"]);
+            .fix("Run them in development, which adds them to the lock", &["reylo migrate dev"]);
         problem.drafts = true;
         problems.push(problem);
     }
@@ -687,10 +659,11 @@ fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
     out
 }
 
-/// Checks the target against the migration files, and in `Mode::Check` the migrations against
-/// schema.sql too; changes nothing. Nothing is ever recorded without running but a lone statement
-/// of apply's own, cut off after it ran and before its row was finished, which shadows show landed.
-pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mode: Mode, log: Log<'_>) -> Result<Plan, Error> {
+/// Checks the target against the migration files; changes nothing. With a `server` (`reylo migrate
+/// check`) it replays them in shadow databases, against the live schema and schema.sql; with none
+/// (`reylo migrate prod`) it replays nothing, and trusts the fingerprint Reylo's last run stored: a
+/// database that no longer has it is refused, and what the fingerprint can't speak to is `check`'s.
+pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, log: Log<'_>) -> Result<Plan, Error> {
     let d = db.dialect();
     let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
@@ -698,15 +671,15 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
     for s in &strays {
         problems.push(Problem::new(format!("{s} isn't a migration")).note(format!("A file in {} is init.sql or <YYYYMMDDHHMMSS>_<name>.sql, the name in a-z, 0-9 and _.", shown(&opts.dir))));
     }
-    let schema_sql = match mode {
-        Mode::Apply => None,
-        Mode::Check => {
-            let text = std::fs::read_to_string(&opts.schema).ok();
-            if text.is_none() {
-                problems.push(Problem::new(format!("{} doesn't exist", shown(&opts.schema))).note("The declared schema is required: migrations are written from it, and checked against it."));
-            }
-            text
+    // What schema.sql declares is held against the migrations in development and CI, not at deploy.
+    let schema_sql = if server.is_some() {
+        let text = std::fs::read_to_string(&opts.schema).ok();
+        if text.is_none() {
+            problems.push(Problem::new(format!("{} doesn't exist", shown(&opts.schema))).note("The declared schema is required: migrations are written from it, and checked against it."));
         }
+        text
+    } else {
+        None
     };
     if opts.locked {
         problems.extend(lock_problems(opts, &files));
@@ -722,13 +695,9 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
     let dir = shown(&opts.dir);
     for r in &applied {
         match by_name(&r.name) {
-            None => problems.push(Problem::new(format!("This database applied {}, which isn't in {dir}", r.name)).fix("Restore it from this database's history", &[&format!("reylo migrate restore {}", r.name)])),
+            None => problems.push(missing_problem(&r.name, &r.sql, &dir)),
             // An edit to comments or spacing alone changes nothing that ran.
-            Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(
-                Problem::new(format!("{} changed after this database applied it", r.name))
-                    .lines(std::iter::once(String::new()).chain(line_diff(&r.sql, &f.sql)))
-                    .fix("Restore the text this database ran", &[&format!("reylo migrate restore {}", r.name)]),
-            ),
+            Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(edited_problem(&r.name, &r.sql, &f.sql)),
             Some(_) => {}
         }
     }
@@ -736,10 +705,10 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
     // A locked project's databases run the lock's order, and nothing else.
     if opts.locked && problems.is_empty() {
         if let Some(k) = applied.iter().zip(&files).position(|(r, f)| r.name != f.name) {
-            problems.push(Problem::new(format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), files[k].name)).note("A locked project's databases run its migrations in the lock's order. Where one ran them otherwise, the lock was merged keeping a branch's lines: keep main's.").fix("On a development database, take it to the lock's order", &["reylo migrate apply --dev"]));
+            problems.push(Problem::new(format!("This database applied {} where {} lists {}", applied[k].name, shown(&opts.lock), files[k].name)).note("A locked project's databases run its migrations in the lock's order. Where one ran them otherwise, the lock was merged keeping a branch's lines: keep main's.").fix("On a development database, take it to the lock's order", &["reylo migrate dev"]));
         }
     }
-    // Nothing is recorded without running but what a cut-off run of apply's own left (below).
+    // Nothing is recorded without running but what a cut-off run of Reylo's own left (below).
     let records: Vec<Migration> = Vec::new();
     let pending: Vec<Migration> = files.iter().filter(|f| !applied_files.iter().any(|a| a.name == f.name) && !records.contains(f)).cloned().collect();
     let done: Vec<&Migration> = applied_files.iter().chain(&records).collect();
@@ -748,8 +717,8 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
     for p in pending.iter().filter(|p| !opts.locked && p.name != INIT && p.time < newest) {
         let passed: Vec<&&Migration> = done.iter().filter(|f| f.name != INIT && f.time > p.time).collect();
         let first = passed.iter().min_by(|a, b| a.time.cmp(&b.time)).map(|f| f.name.clone()).unwrap_or_default();
-        // Loose: a late migration runs only where both orders end the same, which the shadows
-        // check below; and only where nothing it passes changes data, which no shadow can see.
+        // Loose: a late migration runs only where nothing it passes changes data, which no shadow
+        // can see; `check` holds whether both orders end the same.
         let changing: Vec<&str> = std::iter::once(&p).map(|m| m.name.as_str()).filter(|_| !data_statements(&p.sql, d).is_empty()).chain(passed.iter().filter(|m| !data_statements(&m.sql, d).is_empty()).map(|m| m.name.as_str())).collect();
         if !changing.is_empty() {
             problems.push(
@@ -764,10 +733,12 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
             problems.push(Problem::new(format!("{} can't run atomically", p.name)).note(why));
         }
     }
-    let schema_name = opts.schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "schema.sql".into());
-    for (name, sql) in files.iter().map(|f| (f.name.as_str(), f.sql.as_str())).chain(schema_sql.as_deref().map(|s| (schema_name.as_str(), s))) {
-        if let Some(why) = shadow_problem(sql, d) {
-            problems.push(Problem::new(format!("{name} can't be replayed in a shadow database")).note(why));
+    if server.is_some() {
+        let schema_name = opts.schema.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "schema.sql".into());
+        for (name, sql) in files.iter().map(|f| (f.name.as_str(), f.sql.as_str())).chain(schema_sql.as_deref().map(|s| (schema_name.as_str(), s))) {
+            if let Some(why) = shadow_problem(sql, d) {
+                problems.push(Problem::new(format!("{name} can't be replayed in a shadow database")).note(why));
+            }
         }
     }
     if !problems.is_empty() {
@@ -788,46 +759,32 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, mod
         }
         None => None,
     };
-    // apply needs no shadow database where the database is as Reylo's last run left it: nothing
-    // has changed it since, and what is pending runs after what ran. A first run (is the database
-    // empty, as a replay of nothing is?), a late migration (unlocked) and a cut-off statement are
-    // decided by shadows.
-    let late = !opts.locked && pending.iter().any(|p| p.name != INIT && p.time < newest);
-    let cut_off = history.iter().any(|r| !r.applied) || !leftovers.is_empty();
-    // With migrations pending, shadows run them first, so that one that fails does before any runs,
-    // and so that what they leave is known; --no-shadows trusts them instead.
-    if mode == Mode::Apply && opts.shadows != ShadowUse::Always && !late && !cut_off && unchanged == Some(true) && (pending.is_empty() || opts.shadows == ShadowUse::Never) {
-        return Ok(Plan { pending, unchanged, leftovers, quick: true, ..Plan::default() });
-    }
+    let late: Vec<String> = pending.iter().filter(|p| !opts.locked && p.name != INIT && p.time < newest).map(|p| p.name.clone()).collect();
     let Some(server) = server else {
-        if opts.shadows == ShadowUse::Never {
-            let why = if late {
-                "a migration is older than one this database applied, and only shadows show whether both orders end the same"
-            } else if cut_off {
-                "a statement was cut off, and only shadows show whether its change landed"
-            } else {
-                match unchanged {
-                    Some(false) => "the database changed since Reylo last applied to it, and only shadows show how",
-                    _ if history.iter().any(|r| r.fingerprint.is_some()) => "the server or Reylo was upgraded since the fingerprint was stored",
-                    _ => "no run of Reylo's stored a fingerprint of this database yet",
-                }
-            };
-            let problem = Problem::new("Without shadow databases, Reylo can't tell this database is as its migrations left it").note(format!("{why}.")).fix("Check it with shadows once: on a server where Reylo can create databases, or with migrate.shadow_url", &["reylo migrate apply"]);
+        // No replay: the fingerprint says whether the database is as Reylo's last run left it.
+        if unchanged == Some(false) {
+            let problem = Problem::new("This database changed since Reylo last ran on it").fix("See how", &["reylo migrate check"]);
             return Ok(Plan { problems: vec![problem], ..Plan::default() });
         }
-        return Ok(Plan { needs_shadows: true, ..Plan::default() });
+        // A first run is on an empty database: there is no history to say what else this one holds.
+        if history.is_empty() && live.iter().any(|l| l.starts_with("table ")) {
+            let problem = Problem::new("This database has tables, and no migration history")
+                .fix("Where the migrations describe it, record them, running nothing", &["reylo migrate sync-history"])
+                .fix("Or start the project's migrations from it", &["reylo migrate init"]);
+            return Ok(Plan { problems: vec![problem], ..Plan::default() });
+        }
+        return Ok(Plan { pending, unchanged, leftovers, late, ..Plan::default() });
     };
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
     // A lone statement cut off before its row was finished did run, or did not: the database says
     // which, and one that landed is recorded, as the row it started says it ran.
     let started: Vec<String> = history.iter().filter(|r| !r.applied).map(|r| r.name.clone()).collect();
-    let mut run = Run { live: &live, schema_sql: schema_sql.as_deref(), files: &files, applied_files: &applied_files, records, pending, started, landed: vec![], d, expected: Default::default(), locked: opts.locked };
+    let mut run = Run { live: &live, schema_sql: schema_sql.as_deref(), files: &files, applied_files: &applied_files, records, pending, started, landed: vec![], d, locked: opts.locked };
     let result = check_in_shadows(&mut shadows, db, &mut run).await;
     shadows.finish().await;
     let problems = result?;
-    let expected = run.expected.into_inner();
-    Ok(Plan { problems, records: run.records, pending: run.pending, unchanged, landed: run.landed, leftovers, expected, ..Plan::default() })
+    Ok(Plan { problems, records: run.records, pending: run.pending, unchanged, landed: run.landed, leftovers, late, ..Plan::default() })
 }
 
 /// What a check holds the shadows against.
@@ -842,9 +799,6 @@ struct Run<'a> {
     started: Vec<String>,
     landed: Vec<String>,
     d: Dialect,
-    /// What the replay of the history and the pending migrations reads as: what this database is to
-    /// read as once they have run.
-    expected: std::cell::RefCell<Option<Vec<String>>>,
     locked: bool,
 }
 
@@ -881,7 +835,6 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         Ok(lines) => lines,
         Err((m, error)) => return Ok(vec![Problem::new(format!("{m} fails on this database's history")).note(error)]),
     };
-    *run.expected.borrow_mut() = Some(b.clone());
 
     // C: every migration in name order, unless that is B's own sequence.
     let b_order: Vec<&str> = run.applied_files.iter().chain(&run.records).chain(&run.pending).map(|f| f.name.as_str()).collect();
@@ -938,7 +891,7 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         shadows.push(without, run.applied_files.iter().map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(without).await {
             if lines == live {
-                return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate apply"])]);
+                return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate prod"])]);
             }
         }
     }
@@ -978,12 +931,12 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         // A new migration is a draft until development locks it; then this database's history can
         // be recorded with it.
         problem = problem
-            .fix("Keep it: add it to schema.sql, write the migration, and apply it in development, which locks it", &["reylo migrate create <name>", "reylo migrate apply --dev"])
+            .fix("Keep it: add it to schema.sql, write the migration, and run it in development, which locks it", &["reylo migrate create <name>", "reylo migrate dev"])
             .fix("Then, with the lock committed, record this database's history, running nothing", &["reylo migrate sync-history"]);
     } else if !only_live.is_empty() {
         problem = problem.fix("Keep it: add it to schema.sql, write the migration, then record the history the database has, running nothing", &["reylo migrate create <name>", "reylo migrate sync-history"]);
     }
-    problem = problem.fix("On a development database, start over from the migrations (loses its data)", &["reylo migrate apply --reset"]);
+    problem = problem.fix("On a development database, start over from the migrations (loses its data)", &["reylo migrate reset"]);
     Ok(vec![problem])
 }
 
@@ -1063,11 +1016,62 @@ fn print_problems(problems: &[Problem], log: Log<'_>) {
     }
 }
 
-/// `reylo migrate apply`: checks the database against the migrations, then applies what is pending.
-/// Refuses on any disagreement, and runs nothing then.
-pub async fn apply(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+/// What a run prints: a heading, once there is something to put under it, and one aligned row per
+/// migration.
+struct Rows {
+    heading: String,
+    width: usize,
+    opened: bool,
+}
+
+impl Rows {
+    fn new<'a>(heading: String, names: impl Iterator<Item = &'a str>) -> Rows {
+        Rows { heading, width: names.map(|n| n.chars().count()).max().unwrap_or(0), opened: false }
+    }
+
+    fn open(&mut self, log: Log<'_>) {
+        if !self.opened {
+            log(&paint("dim", &self.heading));
+            self.opened = true;
+        }
+    }
+
+    fn row(&mut self, log: Log<'_>, mark: &str, name: &str, what: &str) {
+        self.open(log);
+        log(&format!("  {mark} {name:<width$}  {what}", width = self.width));
+    }
+}
+
+/// A database's URL as a heading says it: no credentials, and no settings.
+fn shown_url(url: &str) -> String {
+    let bare = url.split(['?', '#']).next().unwrap_or(url);
+    match bare.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://{}", rest.rsplit_once('@').map_or(rest, |(_, host)| host)),
+        None => bare.to_string(),
+    }
+}
+
+/// A migration a database ran whose file is gone: the text it ran is the way back.
+fn missing_problem(name: &str, ran: &str, dir: &str) -> Problem {
+    Problem::new(format!("This database applied {name}, which isn't in {dir}"))
+        .sql(ran)
+        .note("Put the file back: that is the text it ran.")
+        .fix("On a development database, undo it instead", &["reylo migrate dev"])
+}
+
+/// A migration edited after a database ran it.
+fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
+    Problem::new(format!("{name} changed after this database applied it"))
+        .lines(std::iter::once(String::new()).chain(line_diff(ran, now)).chain([String::new()]))
+        .note("Undo the edit, and write the change as a new migration.")
+        .fix("On a development database, run it again as it now reads", &["reylo migrate dev"])
+}
+
+/// `reylo migrate prod`: runs what is pending on a database that is as Reylo's last run left it, and
+/// refuses one that isn't, running nothing. It builds no shadow database: `check` is what replays.
+pub async fn prod(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let result = apply_on(&mut db, opts, log).await;
+    let result = prod_on(&mut db, opts, log).await;
     db.close().await;
     result
 }
@@ -1078,33 +1082,26 @@ fn swept_note(swept: usize, log: Log<'_>) {
     }
 }
 
-async fn apply_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let _held = lock(db, opts).await?;
-    let mut plan = check(db, None, opts, Mode::Apply, log).await?;
-    if plan.needs_shadows {
-        let mut server = Server::open(db, &opts.url, opts.shadow_url.as_deref()).await?;
-        server.copy_default_privileges(!sets_default_privileges(opts));
-        let checked = async {
-            swept_note(server.sweep().await?, log);
-            check(db, Some(&mut server), opts, Mode::Apply, log).await
-        }
-        .await;
-        server.close().await;
-        plan = checked?;
-    } else if plan.quick && plan.ok() {
-        log(&paint("dim", "Checked without shadow databases: this database is as Reylo's last run left it"));
-    }
+    let plan = check(db, None, opts, log).await?;
     if !plan.ok() {
         print_problems(&plan.problems, log);
         log("");
         log(&paint("dim", "Nothing was applied."));
         return Ok(1);
     }
-    if plan.pending.is_empty() && plan.records.is_empty() {
-        // Shadows found the database as its migrations made it: its fingerprint is stored again,
-        // so the next run needs none (a server upgraded, a partition made at run time).
-        if !plan.quick && plan.unchanged != Some(true) {
-            if let Some(last) = read_history(db).await?.iter().rfind(|r| r.applied) {
+    let history = read_history(db).await?;
+    if plan.unchanged.is_none() && history.iter().any(|r| r.applied) {
+        log(&paint("dim", "Reylo holds no fingerprint of this database to compare (a new version of Reylo or the server, or a run cut off): reylo migrate check compares it with its migrations"));
+    }
+    for name in &plan.late {
+        log(&format!("{} {name} is older than a migration this database ran: reylo migrate check says whether both orders end the same", paint("yellow", "!")));
+    }
+    if plan.pending.is_empty() {
+        // A fingerprint that can't be compared is stored again, for the next run to compare.
+        if plan.unchanged.is_none() {
+            if let Some(last) = history.iter().rfind(|r| r.applied) {
                 ensure_history(db).await?;
                 let value = fingerprint(db, opts.scope()).await?;
                 set_fingerprint(db, &last.name, &value).await?;
@@ -1115,62 +1112,47 @@ async fn apply_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Erro
     }
     ensure_history(db).await?;
     drop_leftovers(db, &plan.leftovers, log).await?;
+    let started: Vec<&str> = history.iter().filter(|r| !r.applied).map(|r| r.name.as_str()).collect();
     // Rows marked started belong to pending migrations: they are written again below.
     db.exec(&format!("delete from {HISTORY_TABLE} where applied_at is null")).await?;
-    let mut last = None;
-    for m in &plan.records {
-        insert_row(db, m, true).await?;
-        if plan.landed.contains(&m.name) {
-            log(&format!("{} {} was cut off before it was recorded, and its change is in place: recorded", paint("yellow", "!"), m.name));
-        } else {
-            log(&format!("{} Recorded {} without running it: this database already has its change", paint("yellow", "!"), m.name));
-        }
-        last = Some(m.name.clone());
-    }
+    let mut rows = Rows::new(format!("Applying to {}", shown_url(&opts.url)), plan.pending.iter().map(|m| m.name.as_str()));
+    let mut ran = false;
     let mut code = 0;
     for m in &plan.pending {
-        let started = std::time::Instant::now();
+        let at = std::time::Instant::now();
         match run(db, m, true).await {
             Ok(()) => {
-                log(&format!("{} Applied {} {}", paint("green", "✓"), m.name, paint("dim", &format!("· {} ms", started.elapsed().as_millis()))));
-                last = Some(m.name.clone());
+                rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", at.elapsed().as_millis()))));
+                ran = true;
             }
             Err(e) => {
-                log(&format!("{} {} failed, and nothing of it was applied:", paint("bold red", "✗"), m.name));
-                log(&format!("    {e}"));
+                rows.row(log, &paint("bold red", "✗"), &m.name, "failed, and nothing of it was applied:");
+                log(&format!("      {e}"));
+                if started.contains(&m.name.as_str()) {
+                    log("      A run before this one was cut off here, so its change may be in place: reylo migrate check says, and reylo migrate sync-history records it.");
+                }
                 code = 1;
                 break;
             }
         }
     }
-    // The schema as this run leaves it, on the run's last row, where it is what the replay made of
-    // the same migrations (or --no-shadows trusts it): the next run reads whether anything changed
-    // the database since. A migration that did something else here than in its replay (DDL that
-    // depends on the rows) leaves none, so the next run checks in shadows, and says how it differs.
-    if last.is_some() {
-        let now = catalog(db, opts.scope()).await?;
-        let verified = match &plan.expected {
-            Some(expected) => crate::catalog::without_extra_children(&now, expected) == *expected,
-            None => opts.shadows == ShadowUse::Never,
-        };
-        if verified {
-            if let Some(row) = read_history(db).await?.iter().rfind(|r| r.applied) {
-                let value = fingerprint_of(db, &now).await?;
-                set_fingerprint(db, &row.name, &value).await?;
-            }
-        } else if code == 0 {
-            log(&format!("{} This database isn't what its migrations make when replayed: the next apply checks it in shadow databases", paint("yellow", "!")));
+    // The schema as this run leaves it, on the run's last row: the next run reads from it whether
+    // anything has changed the database since.
+    if ran {
+        let value = fingerprint(db, opts.scope()).await?;
+        if let Some(row) = read_history(db).await?.iter().rfind(|r| r.applied) {
+            set_fingerprint(db, &row.name, &value).await?;
         }
     }
     Ok(code)
 }
 
-/// `reylo migrate check`: everything apply checks, and the migrations against schema.sql; runs
-/// nothing, and writes nothing to the database.
+/// `reylo migrate check`: everything `prod` checks, the database against a replay of its history, and
+/// the migrations against schema.sql; runs nothing, and writes nothing to the database.
 pub async fn check_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
-    let result = check(&mut db, Some(&mut server), opts, Mode::Check, log).await;
+    let result = check(&mut db, Some(&mut server), opts, log).await;
     db.close().await;
     server.close().await;
     let plan = result?;
@@ -1179,11 +1161,16 @@ pub async fn check_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         return Ok(1);
     }
     log(&format!("{} The migrations reach {}, and this database matches its history", paint("green", "✓"), shown(&opts.schema)));
-    if plan.unchanged == Some(true) {
-        log(&format!("{} Nothing has changed this database since Reylo last applied to it", paint("green", "✓")));
+    match plan.unchanged {
+        Some(true) => log(&format!("{} Nothing has changed this database since Reylo last ran on it", paint("green", "✓"))),
+        Some(false) => log(&format!("{} Its fingerprint isn't the one Reylo stored, so reylo migrate prod refuses it until reylo migrate sync-history stores it again", paint("yellow", "!"))),
+        None => {}
     }
     for x in &plan.leftovers {
-        log(&format!("{} {} was cut off and left {} invalid: apply drops it, then runs {} again", paint("yellow", "!"), x.migration, x.index, x.migration));
+        log(&format!("{} {} was cut off and left {} invalid: reylo migrate prod drops it, then runs {} again", paint("yellow", "!"), x.migration, x.index, x.migration));
+    }
+    for name in &plan.landed {
+        log(&format!("{} {name} was cut off, and its change is in place: reylo migrate sync-history records it", paint("yellow", "!")));
     }
     match plan.pending.len() {
         0 => log(&format!("{} Nothing is pending", paint("green", "✓"))),
@@ -1221,7 +1208,7 @@ pub fn check_offline(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
                 Some(_) => problems.push(
                     Problem::new("schema.sql has changes not reflected in any migration file")
                         .note(format!("It isn't the schema.sql the migrations reached when {} was last written.", shown(&opts.lock)))
-                        .fix("Write them as a migration, then apply it in development", &["reylo migrate create <name>", "reylo migrate apply --dev"]),
+                        .fix("Write them as a migration, then run it in development", &["reylo migrate create <name>", "reylo migrate dev"]),
                 ),
                 None => proven = Some(false),
             }
@@ -1246,52 +1233,50 @@ pub fn check_offline(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     Ok(0)
 }
 
-/// `reylo migrate apply --reset`: drops everything the migrations could have made, applies every
-/// migration, then runs `post`.
-pub async fn reset(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+/// `reylo migrate reset`: drops everything the migrations could have made, and runs every migration
+/// as `dev` does. What would keep them from running is refused before anything is dropped.
+pub async fn reset(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    if in_ci {
+        return Ok(refused_in_ci("reylo migrate reset", log));
+    }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let wiped = wipe(&mut db).await;
+    let result = async {
+        let (files, strays) = read_migrations(&opts.dir)?;
+        let mut problems = file_problems(opts, &files, &strays, None, db.dialect());
+        if opts.locked && problems.is_empty() {
+            problems.extend(dev_lock_problems(opts, &files, &[]));
+        }
+        if !problems.is_empty() {
+            print_problems(&problems, log);
+            log("");
+            log(&paint("dim", "Nothing was changed."));
+            return Ok(1);
+        }
+        wipe(&mut db).await?;
+        log(&paint("dim", "Dropped everything in the database"));
+        Ok::<i32, Error>(0)
+    }
+    .await;
     db.close().await;
-    wiped?;
-    log(&paint("dim", "dropped everything in the database"));
-    let code = apply(opts, log).await?;
-    if code != 0 {
-        return Ok(code);
+    match result? {
+        0 => dev(opts, false, log).await,
+        code => Ok(code),
     }
-    run_post(opts, log)
-}
-
-/// Runs `migrate.post` (a seed) in the project's directory, with `DATABASE_URL` set to the database.
-fn run_post(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
-    let Some(post) = opts.post.as_deref() else { return Ok(0) };
-    log(&paint("dim", &format!("post: {post}")));
-    let mut command = if cfg!(windows) {
-        let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(post);
-        c
-    } else {
-        let mut c = std::process::Command::new("sh");
-        c.arg("-c").arg(post);
-        c
-    };
-    let status = command.current_dir(&opts.root).env("DATABASE_URL", &opts.url).status()?;
-    if !status.success() {
-        log(&format!("{} post exited with {}", paint("red", "✗"), status.code().map_or_else(|| "a signal".to_string(), |c| c.to_string())));
-        return Ok(1);
-    }
-    Ok(0)
 }
 
 /// `reylo migrate wipe`: deletes every row of the project's tables, and nothing else: the schema and
-/// the history stay, identities and sequences start again, and `post` (a seed) runs after. The
-/// tables are those the comparison reads, so a platform's own (Supabase's auth.users) keep theirs.
-pub async fn wipe_rows(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+/// the history stay, and identities and sequences start again. The tables are those the comparison
+/// reads, so a platform's own (Supabase's auth.users) keep theirs.
+pub async fn wipe_rows(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+    if in_ci {
+        return Ok(refused_in_ci("reylo migrate wipe", log));
+    }
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = wipe_rows_on(&mut db).await;
     db.close().await;
     let tables = result?;
     log(&format!("{} Deleted every row of {} table{}; the schema and the history stay", paint("green", "✓"), tables, if tables == 1 { "" } else { "s" }));
-    run_post(opts, log)
+    Ok(0)
 }
 
 async fn wipe_rows_on(db: &mut Db) -> Result<usize, Error> {
@@ -1512,7 +1497,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     let pending = &order[n..];
     log(&format!("{} The history lists the {} migration{} this database's schema has", paint("green", "✓"), recorded.len(), if recorded.len() == 1 { "" } else { "s" }));
     if !pending.is_empty() {
-        log(&format!("  {} pending, which apply runs: {}", pending.len(), pending.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")));
+        log(&format!("  {} pending, which reylo migrate prod runs: {}", pending.len(), pending.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")));
     }
     Ok(0)
 }
@@ -1531,8 +1516,8 @@ pub async fn lock_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         let mut texts: Vec<(String, String)> = Vec::new();
         for r in history.iter().filter(|r| r.applied) {
             match files.iter().find(|f| f.name == r.name) {
-                None => problems.push(Problem::new(format!("This database applied {}, which isn't in {}", r.name, shown(&opts.dir))).fix("Restore it from this database's history", &[&format!("reylo migrate restore {}", r.name)])),
-                Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(Problem::new(format!("{} changed after this database applied it", r.name)).lines(std::iter::once(String::new()).chain(line_diff(&r.sql, &f.sql))).fix("Restore the text this database ran", &[&format!("reylo migrate restore {}", r.name)])),
+                None => problems.push(missing_problem(&r.name, &r.sql, &shown(&opts.dir))),
+                Some(f) if !same_statements(&f.sql, &r.sql, d) => problems.push(edited_problem(&r.name, &r.sql, &f.sql)),
                 Some(f) => texts.push((f.name.clone(), normalized(&f.sql))),
             }
         }
@@ -1547,44 +1532,13 @@ pub async fn lock_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         let drafts = files.iter().filter(|f| !texts.iter().any(|(n, _)| *n == f.name)).count();
         log(&format!("{} Wrote {}: the {} migration{} this database applied, in its order", paint("green", "✓"), shown(&opts.lock), texts.len(), if texts.len() == 1 { "" } else { "s" }));
         if drafts > 0 {
-            log(&format!("  {drafts} more {} drafts, until apply --dev runs {}", if drafts == 1 { "is" } else { "are" }, if drafts == 1 { "it" } else { "them" }));
+            log(&format!("  {drafts} more {} drafts, until reylo migrate dev runs {}", if drafts == 1 { "is" } else { "are" }, if drafts == 1 { "it" } else { "them" }));
         }
         Ok(0)
     }
     .await;
     db.close().await;
     result
-}
-
-/// `reylo migrate restore <migration>`: writes the text the database ran for a migration back to
-/// its file, from the history table, which keeps every applied migration's text: for a migration
-/// edited after it was applied, or deleted. Only the file is written.
-pub async fn restore(opts: &Options, name: &str, log: Log<'_>) -> Result<i32, Error> {
-    let base = Path::new(name).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let history = read_history(&mut db).await;
-    db.close().await;
-    let Some(row) = history?.into_iter().find(|r| r.applied && r.name == base) else {
-        return Err(Error(format!("{base} isn't in this database's history: only a migration it applied can be restored from it")));
-    };
-    let path = opts.dir.join(&base);
-    let current = std::fs::read_to_string(&path).ok();
-    if current.as_deref().is_some_and(|c| normalized(c) == normalized(&row.sql)) {
-        log(&format!("{} {} already holds the text this database ran", paint("green", "✓"), shown(&path)));
-        return Ok(0);
-    }
-    std::fs::create_dir_all(&opts.dir)?;
-    std::fs::write(&path, &row.sql)?;
-    match current {
-        Some(old) => {
-            log(&format!("{} Restored {} to the text this database ran:", paint("green", "✓"), shown(&path)));
-            for line in line_diff(&old, &row.sql).into_iter().skip(2) {
-                log(&line);
-            }
-        }
-        None => log(&format!("{} Restored {} from this database's history", paint("green", "✓"), shown(&path))),
-    }
-    Ok(0)
 }
 
 /// `reylo migrate create <name>`: a migration named with the current UTC time, refused while any
@@ -1749,9 +1703,9 @@ async fn read_target(db: &mut Db, declared: Option<&str>) -> Result<Target, Erro
 
 /// Renames the tables `renamed` names on `db`, and on Postgres what is named after them, and gives
 /// the statements that did, as the migration writes them.
-async fn rename_tables(db: &mut Db, current: &crate::diff::Schema, target: &Target, renamed: &[(String, String, bool)], log: Log<'_>) -> Result<Vec<String>, Error> {
+async fn rename_tables(db: &mut Db, current: &crate::diff::Schema, target: &Target, renamed: &[(String, String, bool)]) -> Result<Vec<String>, Error> {
     let d = db.dialect();
-    let mut statements = table_rename_statements(d, current, &target.schema, renamed, log);
+    let mut statements = table_rename_statements(d, current, &target.schema, renamed);
     let sql: Vec<String> = statements.iter().filter(|s| !s.starts_with("--")).map(|s| format!("{s};")).collect();
     if sql.is_empty() {
         return Ok(statements);
@@ -1776,7 +1730,7 @@ async fn plan_to(db: &mut Db, target: &Target, live: bool) -> Result<(Vec<String
     let mut current = crate::diff::read(db).await?;
     current.live = live;
     let renamed = crate::diff::table_renames(&current, &target.schema, &[], &std::collections::BTreeSet::new());
-    let renames = if renamed.is_empty() { vec![] } else { rename_tables(db, &current, target, &renamed, &mut |_| {}).await? };
+    let renames = if renamed.is_empty() { vec![] } else { rename_tables(db, &current, target, &renamed).await? };
     if !renames.is_empty() {
         current = crate::diff::read(db).await?;
         current.live = live;
@@ -1789,8 +1743,8 @@ async fn plan_to(db: &mut Db, target: &Target, live: bool) -> Result<(Vec<String
 
 /// The statements that rename the tables `renamed` names (each its old id in `current`, its new id
 /// in `target`, and whether --rename stated it), and on Postgres what is named after them; a guessed
-/// rename is said, and written down above its statement with what to do instead.
-fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &crate::diff::Schema, renamed: &[(String, String, bool)], log: Log<'_>) -> Vec<String> {
+/// rename is written down above its statement with what to do instead.
+fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &crate::diff::Schema, renamed: &[(String, String, bool)]) -> Vec<String> {
     // A table's name as its statements write it, and whether it is a foreign table.
     let written = |schema: &crate::diff::Schema, id: &str| -> (String, bool) {
         let drop = schema.objects[id].drop.first().map(String::as_str).unwrap_or_default();
@@ -1808,7 +1762,6 @@ fn table_rename_statements(d: Dialect, current: &crate::diff::Schema, target: &c
         let (old, new) = (bare(old_id), bare(new_id));
         if !was_stated {
             out.push(format!("-- {old} is renamed {new}, keeping its rows. If they are two tables, drop the one and create the other instead."));
-            log(&format!("{} Renames the table {old} to {new}, keeping its rows. If they are two tables, state it: --drop {old}", paint("yellow", "!")));
         }
         out.push(format!("alter {}table {from_w} rename to {new_name}", if foreign { "foreign " } else { "" }));
         names.push((old, new, old_id.clone(), new_id.clone()));
@@ -1835,27 +1788,71 @@ fn last_written(name: &str) -> String {
     name[at..].to_string()
 }
 
+/// An object's id as a command names it: no kind, and no `public` schema.
+fn shown_name(id: &str) -> String {
+    let name = shown_id(id);
+    name.strip_prefix("public.").map(str::to_string).unwrap_or(name)
+}
+
 fn shown_id(id: &str) -> String {
     id.split_once(' ').map_or(id, |(_, rest)| rest).to_string()
 }
 
 /// The command that writes the migration with what the person stated and what is to be added.
-fn create_command(migration: &str, choices: &Choices, more_drops: &[String], rename: Option<(String, String)>) -> String {
+fn create_command(migration: &str, choices: &Choices, more_drops: &[String], renames: &[(String, String)]) -> String {
     let drops: Vec<String> = choices.drop.iter().cloned().chain(more_drops.iter().cloned()).collect();
     let mut command = format!("reylo migrate create {migration}");
     if !drops.is_empty() {
         command.push_str(&format!(" --drop {}", drops.join(",")));
     }
-    for (old, new) in choices.rename.iter().cloned().chain(rename) {
+    for (old, new) in choices.rename.iter().chain(renames) {
         command.push_str(&format!(" --rename {old}={new}"));
     }
     command
 }
 
+/// A rename `create` won't assume, since it changes more than a name: only the person can say whether
+/// it is one thing renamed or two things.
+struct Guess {
+    /// The old name, as a command writes it: `users.email`, `orders`.
+    old: String,
+    /// The new name, as `--rename` takes it: `contact`, `invoices`.
+    new: String,
+    /// What else changes: `text → citext`, `adds total`.
+    change: String,
+    /// Whether its table is itself one of the guesses, so that dropping that table says it all.
+    in_guessed_table: bool,
+}
+
+/// The refusal for guesses, with what else the migration asks of `--drop`: one block, and the one
+/// command for each way of settling them all.
+fn guess_problem(guesses: &[Guess], drops: &[String], narrowed: &[(String, String)], outside: &[String], stated: &Choices, migration: &str) -> Problem {
+    let one = guesses.len() == 1;
+    let title = if one { "This looks like a rename, but it changes more than the name".to_string() } else { format!("These {} look like renames, but each changes more than its name", guesses.len()) };
+    let (old_width, new_width) = (guesses.iter().map(|g| g.old.chars().count()).max().unwrap_or(0), guesses.iter().map(|g| g.new.chars().count()).max().unwrap_or(0));
+    let mut problem = Problem::new(title).lines([String::new()]).lines(guesses.iter().map(|g| format!("    {:<old_width$} → {:<new_width$}  {}", g.old, g.new, g.change)));
+    if !drops.is_empty() {
+        problem = problem.lines([String::new()]).note(format!("It also drops {}, and {} data.", drops.join(", "), if drops.len() == 1 { "its" } else { "their" }));
+    }
+    for (name, why) in narrowed {
+        problem = problem.note(format!("{name} {why}."));
+    }
+    let more: Vec<String> = drops.iter().cloned().chain(narrowed.iter().map(|(n, _)| n.clone())).collect();
+    let renames: Vec<(String, String)> = guesses.iter().map(|g| (g.old.clone(), g.new.clone())).collect();
+    let dropped: Vec<String> = guesses.iter().filter(|g| !g.in_guessed_table).map(|g| g.old.clone()).chain(outside.iter().cloned()).collect();
+    problem
+        .fix(if one { "If it is a rename, keeping its rows" } else { "If they are renames, keeping their rows" }, &[&create_command(migration, stated, &more, &renames)])
+        .fix(if one { "If it is new, dropping the old one and its data" } else { "If they are new, dropping the old ones and their data" }, &[&create_command(migration, stated, &dropped, &[])])
+}
+
 /// The problems with what `choices` states about the tables and columns a plan drops (`lost`, as
 /// the plan's ids, and `shown`, as the file names them, one for one): each must be named in
-/// `--drop`, and each name in `--drop` must name only what it drops.
-fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], choices: &Choices, migration: &str) -> Vec<Problem> {
+/// `--drop`, and each name in `--drop` must name only what it drops. `guesses`, renames it won't
+/// assume, are settled with them; `guessed_tables` are the new ids of the tables among them, whose
+/// own columns a drop of the table takes along; `added` are the columns and tables the plan adds, the
+/// names a person could mean by a rename.
+#[allow(clippy::too_many_arguments)]
+fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String, String)], guesses: &[Guess], owners: &dyn Fn(&str) -> bool, added: &[String], choices: &Choices, migration: &str) -> Vec<Problem> {
     let display = |id: &String| lost.iter().position(|l| l == id).map(|k| shown_id(&shown[k])).or_else(|| narrowed.iter().find(|(n, _, _)| n == id).map(|(_, s, _)| shown_id(s))).unwrap_or_else(|| shown_id(id));
     let mut problems = Vec::new();
     let mut named: Vec<String> = Vec::new();
@@ -1883,21 +1880,29 @@ fn drop_problems(lost: &[String], shown: &[String], narrowed: &[(String, String,
         }
     }
     let unstated: Vec<&String> = lost.iter().filter(|l| !named.contains(l)).collect();
+    let unnamed: Vec<(&String, String, String)> = narrowed.iter().filter(|(id, _, _)| !named.contains(id)).map(|(id, shown, why)| (id, shown_id(shown), why.clone())).collect();
+    if !guesses.is_empty() {
+        let drops: Vec<String> = unstated.iter().map(|l| display(l)).collect();
+        let lossy: Vec<(String, String)> = unnamed.iter().map(|(_, name, why)| (name.clone(), why.clone())).collect();
+        let outside: Vec<String> = unstated.iter().copied().chain(unnamed.iter().map(|(id, _, _)| *id)).filter(|id| !owners(id)).map(&display).collect();
+        problems.push(guess_problem(guesses, &drops, &lossy, &outside, &stated, migration));
+        return problems;
+    }
     if !unstated.is_empty() {
         let list: Vec<String> = unstated.iter().map(|l| display(l)).collect();
         let mut problem = Problem::new(format!("This migration would drop {}, and {} data", list.join(", "), if list.len() == 1 { "its" } else { "their" }))
-            .fix(if list.len() == 1 { "To drop it" } else { "To drop them" }, &[&create_command(migration, &stated, &list, None)]);
-        if let Some(t) = unstated.iter().find(|l| l.starts_with("table ")) {
-            problem = problem.fix("If a table was renamed instead", &[&create_command(migration, &stated, &[], Some((display(t), "<new name>".into())))]);
-        }
-        if let Some(c) = unstated.iter().find(|l| l.starts_with("column ")) {
-            problem = problem.fix("If a column was renamed instead", &[&create_command(migration, &stated, &[], Some((display(c), "<new name>".into())))]);
+            .fix(if list.len() == 1 { "To drop it" } else { "To drop them" }, &[&create_command(migration, &stated, &list, &[])]);
+        // Where something comes as these go, any of them may be renamed: which became which is
+        // for the person to say, so the command names no new name for them.
+        if !added.is_empty() {
+            let renames: Vec<(String, String)> = list.iter().map(|old| (old.clone(), "<new name>".to_string())).collect();
+            let what = format!("If {} renamed instead, as {}", if list.len() == 1 { "it was" } else { "any were" }, added.join(", "));
+            problem = problem.fix(what, &[&create_command(migration, &stated, &[], &renames)]);
         }
         problems.push(problem);
     }
-    for (shown, why) in narrowed.iter().filter(|(id, _, _)| !named.contains(id)).map(|(_, shown, why)| (shown, why)) {
-        let name = shown_id(shown);
-        problems.push(Problem::new(format!("{name} {why}")).fix("To accept that", &[&create_command(migration, &stated, std::slice::from_ref(&name), None)]));
+    for (_, name, why) in &unnamed {
+        problems.push(Problem::new(format!("{name} {why}")).fix("To accept that", &[&create_command(migration, &stated, std::slice::from_ref(name), &[])]));
     }
     problems
 }
@@ -2006,10 +2011,24 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
         }
         let dropped_tables: std::collections::BTreeSet<String> = choices.drop.iter().filter_map(|w| resolve(&gone_tables, w).ok()).flatten().collect();
         let renamed_tables = crate::diff::table_renames(&current, &target, &stated_tables, &dropped_tables);
+        // A table renamed with its columns changing too is a guess only the person can settle.
+        let bare = |id: &str| split_name(&shown_id(id)).pop().unwrap_or_default();
+        let mut guesses: Vec<Guess> = Vec::new();
+        let mut guessed_tables: std::collections::BTreeSet<String> = Default::default();
+        let mut assumed: Vec<(String, String)> = Vec::new();
+        for (old, new, _) in renamed_tables.iter().filter(|(_, _, was_stated)| !was_stated) {
+            match crate::diff::column_changes(&current, &target, old, new) {
+                Some(change) => {
+                    guesses.push(Guess { old: bare(old), new: bare(new), change, in_guessed_table: false });
+                    guessed_tables.insert(new.clone());
+                }
+                None => assumed.push((bare(old), bare(new))),
+            }
+        }
         if !renamed_tables.is_empty() {
             let indexes = if d == Dialect::Postgres { crate::diff::postgres::index_names(shadows.db(a)).await? } else { Default::default() };
             let to = Target { schema: target, indexes };
-            let statements = rename_tables(shadows.db(c), &current, &to, &renamed_tables, log).await?;
+            let statements = rename_tables(shadows.db(c), &current, &to, &renamed_tables).await?;
             target = to.schema;
             current = crate::diff::read(shadows.db(c)).await?;
             moves.extend(statements);
@@ -2043,9 +2062,20 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
         let mut plan = crate::diff::plan_with(&current, &target, alterer.as_ref(), &renames, &dropped);
         let lost = plan.losses.clone();
         let narrowing: Vec<(String, String)> = plan.narrowings.clone();
+        let guessed: Vec<String> = plan.renames.iter().map(|r| r.0.clone()).collect();
         style(shadows.db(c), &mut plan, &target).await?;
         let narrowed: Vec<(String, String, String)> = narrowing.iter().zip(&plan.narrowings).map(|((id, why), (shown, _))| (id.clone(), shown.clone(), why.clone())).collect();
-        let problems = drop_problems(&lost, &plan.losses, &narrowed, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, migration);
+        let owned_by_guess = |id: &str| current.objects.get(id).and_then(|o| o.owner.as_ref()).is_some_and(|t| guessed_tables.contains(t));
+        for (raw, (old, new, change)) in guessed.iter().zip(&plan.renames) {
+            let old = shown_id(old);
+            match change {
+                Some(change) => guesses.push(Guess { old, new: new.clone(), change: change.clone(), in_guessed_table: owned_by_guess(raw) }),
+                None => assumed.push((old, new.clone())),
+            }
+        }
+        // What the plan adds, the names a person might mean by a rename of what it drops.
+        let added: Vec<String> = target.objects.iter().filter(|(id, o)| matches!(o.kind, Some(crate::diff::Kind::Column | crate::diff::Kind::Table)) && !current.objects.contains_key(*id) && !(o.kind == Some(crate::diff::Kind::Column) && o.owner.as_ref().is_some_and(|t| !current.objects.contains_key(t)))).map(|(id, _)| shown_name(id)).collect();
+        let problems = drop_problems(&lost, &plan.losses, &narrowed, &guesses, &owned_by_guess, &added, &Choices { drop: columns.drop.clone(), rename: choices.rename.clone() }, migration);
         if !problems.is_empty() {
             return Ok(Err(problems));
         }
@@ -2053,7 +2083,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
             log(&paint("dim", &format!("the migrations already make {}: the migration is empty, for a change of data", shown(&opts.schema))));
             return Ok(Ok((vec![String::new()], 0)));
         }
-        // The plan runs on the replay as `apply` will run its files: one file in one transaction (on
+        // The plan runs on the replay as `prod` will run its files: one file in one transaction (on
         // SQLite with foreign keys off until it is checked), or on MySQL a file per statement.
         let pieces: Vec<String> = if d == Dialect::Mysql {
             plan.runnable().cloned().collect()
@@ -2081,8 +2111,15 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
         for (column, why) in &plan.narrowings {
             log(&format!("{} {} {why}", paint("yellow", "!"), column.trim_start_matches("column ")));
         }
-        for (old, new) in &plan.renames {
-            log(&format!("{} Renames {} to {new}, keeping its rows. If they are two columns, state it: --drop {}", paint("yellow", "!"), old.trim_start_matches("column "), old.trim_start_matches("column ")));
+        if !assumed.is_empty() {
+            let one = assumed.len() == 1;
+            let width = assumed.iter().map(|(old, _)| old.chars().count()).max().unwrap_or(0);
+            log(&format!("{} Renames, keeping rows:", paint("yellow", "!")));
+            for (old, new) in &assumed {
+                log(&format!("    {old:<width$} → {new}"));
+            }
+            let names: Vec<&str> = assumed.iter().map(|(old, _)| old.as_str()).collect();
+            log(&format!("  {} two, state it: --drop {}", if one { "If they are" } else { "Where any are" }, names.join(",")));
         }
         if failed.is_none() && reached == wanted {
             return Ok(Ok((texts, 0)));
@@ -2215,8 +2252,8 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 }
 
 // ---------------------------------------------------------------------------------------------
-// The development commands: `apply --dev`, a database taken to its migrations; `sync`, one at its
-// migrations taken to schema.sql.
+// The development commands: `dev`, a database taken to its migrations; `sync`, one at its migrations
+// taken to schema.sql.
 
 /// Runs statements the diff engine wrote on the database, with `then` (statements of the history's own),
 /// and keeps the result only if the database then reads as `expect`; `Ok(Err(lines))` says how it
@@ -2319,25 +2356,25 @@ async fn plan_between(from: &mut Db, to: &mut Db, declared: Option<&str>) -> Res
 /// it would write (the lock) would go uncommitted.
 pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
     log(&paint("bold red", &format!("✗ {command} changes a development database, and CI is set")));
-    log("  In CI, check the migrations, or apply them:");
+    log("  In CI, check the migrations, or run them:");
     log(&format!("    {}", paint("cyan", "reylo migrate check")));
-    log(&format!("    {}", paint("cyan", "reylo migrate apply")));
+    log(&format!("    {}", paint("cyan", "reylo migrate prod")));
     1
 }
 
-/// `reylo migrate apply --dev`: takes a development database to its migrations, whatever its
+/// `reylo migrate dev`: takes a development database to its migrations, whatever its
 /// history. The history is kept as far as it agrees with the migration files: where a migration it
 /// applied was edited or is gone (another branch's), the database is rewound to that point by the
 /// diff engine's plan from what those migrations made, losing what it drops. The migrations after it
 /// then run for real, their data statements included; one with no data statements whose change the
 /// database already has (`sync` made it) is recorded instead. Never in CI (`in_ci`, from the `CI`
 /// variable).
-pub async fn apply_dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
+pub async fn dev(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
     if in_ci {
-        return Ok(refused_in_ci("reylo migrate apply --dev", log));
+        return Ok(refused_in_ci("reylo migrate dev", log));
     }
     let (mut db, mut server, swept) = open(opts).await?;
-    let result = apply_dev_on(&mut db, &mut server, swept, opts, log).await;
+    let result = dev_on(&mut db, &mut server, swept, opts, log).await;
     db.close().await;
     server.close().await;
     result
@@ -2364,7 +2401,7 @@ fn file_problems(opts: &Options, files: &[Migration], strays: &[String], schema_
     problems
 }
 
-async fn apply_dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
@@ -2439,7 +2476,7 @@ fn main_lines_here(main: &lock::Lock, files: &[Migration]) -> Vec<lock::Entry> {
     main.entries.iter().take_while(|e| files.iter().any(|f| f.name == e.name)).cloned().collect()
 }
 
-/// What keeps `apply --dev` from taking a locked project's lock as it is. It writes the lock again,
+/// What keeps `dev` from taking a locked project's lock as it is. It writes the lock again,
 /// chaining this branch's lines after main's; but a line locked elsewhere (on main where git can
 /// say, else one this database never applied) that is out of its chain, or whose file changed,
 /// would be laundered so, and is refused.
@@ -2464,8 +2501,8 @@ fn dev_lock_problems(opts: &Options, files: &[Migration], history: &[HistoryRow]
             }
             let after = if k == 0 { "first".to_string() } else { format!("after {}", here[k - 1].name) };
             return vec![Problem::new(format!("{path} doesn't start with main's lines: main locks {} {after}", e.name))
-                .note("Keep main's lines, in main's order, and leave out this branch's: apply --dev then runs this branch's migrations after them, and adds them back.")
-                .fix("Then", &["reylo migrate apply --dev"])];
+                .note("Keep main's lines, in main's order, and leave out this branch's: reylo migrate dev then runs this branch's migrations after them, and adds them back.")
+                .fix("Then", &["reylo migrate dev"])];
         }
     }
     let ours = |name: &str, sum: &str| match &main {
@@ -2476,20 +2513,20 @@ fn dev_lock_problems(opts: &Options, files: &[Migration], history: &[HistoryRow]
     for (e, link) in l.entries.iter().zip(links(&l, files)) {
         match link {
             Link::Ok => {}
-            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database's history", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).note("Put the file back from git.")),
             _ if ours(&e.name, &e.sum) => {}
-            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked, on another branch", e.name)).note("A database may have run it as it was: take the text back from git, or from a database's history.").fix("Restore the text a database ran", &[&format!("reylo migrate restore {}", e.name)])),
+            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked, on another branch", e.name)).note("A database may have run it as it was: take the text back from git, and write the change as a new migration.")),
             Link::Moved { after } => problems.push(
                 Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {} on another branch", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
-                    .note("Keep main's lines in main's order, and leave out this branch's: apply --dev then runs this branch's migrations after them, and adds them back.")
-                    .fix("Then", &["reylo migrate apply --dev"]),
+                    .note("Keep main's lines in main's order, and leave out this branch's: reylo migrate dev then runs this branch's migrations after them, and adds them back.")
+                    .fix("Then", &["reylo migrate dev"]),
             ),
         }
     }
     problems
 }
 
-/// Writes a locked project's lock after `apply --dev`: what the database applied, in the order it
+/// Writes a locked project's lock after `dev`: what the database applied, in the order it
 /// did, chained; and schema.sql's checksum where the migrations reach it.
 async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &[Migration], schema_sql: Option<&str>, log: Log<'_>) -> Result<(), Error> {
     let history = read_history(db).await?;
@@ -2517,11 +2554,8 @@ async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &
     if before.as_ref() == Some(&next) {
         return Ok(());
     }
-    let added: Vec<&str> = next.entries.iter().filter(|e| !before.as_ref().is_some_and(|b| b.entries.iter().any(|x| x.name == e.name && x.sum == e.sum))).map(|e| e.name.as_str()).collect();
     lock::write(&opts.lock, &next)?;
-    if !added.is_empty() {
-        log(&format!("{} Locked {} in {}", paint("green", "✓"), added.join(", "), shown(&opts.lock)));
-    }
+    log(&format!("Wrote {}", shown(&opts.lock)));
     Ok(())
 }
 
@@ -2536,7 +2570,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     let kept_of = |n: usize| -> Vec<Migration> { applied[..n].iter().filter_map(|r| files.iter().find(|f| f.name == r.name).cloned()).collect() };
     let mut keep = agree;
     // A migration older than one this database applied (main's, pulled in after it) runs out of
-    // order only where apply would run it so: it and every migration it passes change no data, and
+    // order only where `prod` would run it so: it and every migration it passes change no data, and
     // both orders end the same. Otherwise the database is rewound to before it.
     let kept = kept_of(keep);
     let newest = kept.iter().filter(|f| f.name != INIT).map(|f| f.time.clone()).max().unwrap_or_default();
@@ -2569,15 +2603,16 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     let live = &crate::catalog::without_extra_children(live, &at_kept)[..];
     let mut pending: Vec<Migration> = files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name)).cloned().collect();
     let rewind_rows: Vec<&&HistoryRow> = applied[keep..].iter().collect();
+    let mut rows = Rows::new(format!("Applying to {}", shown_url(&opts.url)), rewind_rows.iter().map(|r| r.name.as_str()).chain(pending.iter().map(|m| m.name.as_str())));
     let mut records: Vec<Migration> = Vec::new();
     // The database's catalog as each step leaves it.
     let mut base: Vec<String> = live.to_vec();
     let refused = |what: &str, lines: Vec<String>, log: Log<'_>| {
         let problem = Problem::new(what.to_string()).lines(lines);
         let problem = if d == Dialect::Mysql {
-            problem.fix("MySQL commits each statement, so it is part of the way there. To rebuild it from the migrations, with no rows but the seed's", &["reylo migrate apply --reset"])
+            problem.fix("MySQL commits each statement, so it is part of the way there. To rebuild it from the migrations, with no rows", &["reylo migrate reset"])
         } else {
-            problem.note("That step changed nothing.").fix("To rebuild it from the migrations, with no rows but the seed's", &["reylo migrate apply --reset"])
+            problem.note("That step changed nothing.").fix("To rebuild it from the migrations, with no rows", &["reylo migrate reset"])
         };
         print_problems(&[problem], log);
         Ok(1)
@@ -2630,21 +2665,24 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 }
             },
         };
+        // What the rewind dropped is said on its row, where there is one row to say it on.
+        let lost = counted_losses(&plan, &counts);
+        let alone = rewind_rows.len() == 1;
         for r in &rewind_rows {
-            let data = data_statements(&r.sql, d);
-            if !data.is_empty() {
-                log(&format!("{} {} changes data ({}): rewinding undoes its schema, not the rows it wrote. For a database with no rows but the seed's:", paint("yellow", "!"), r.name, data.join(", ")));
-                log(&format!("    {}", paint("cyan", "reylo migrate apply --reset")));
-            }
             let why = match files.iter().find(|f| f.name == r.name) {
                 Some(f) if !same_statements(&f.sql, &r.sql, d) => "it changed after this database applied it",
                 Some(_) => "a migration before it came in later, and the two can't run in this order",
                 None => "it isn't in the migrations",
             };
-            log(&format!("{} Rewound {}: {why}", paint("yellow", "↺"), r.name));
+            let dropped = if alone && !lost.is_empty() { paint("yellow", &format!(" (drops {lost})")) } else { String::new() };
+            rows.row(log, &paint("yellow", "↺"), &r.name, &format!("rewound: {why}{dropped}"));
+            let data = data_statements(&r.sql, d);
+            if !data.is_empty() {
+                log(&format!("      {}", paint("yellow", &format!("What it wrote stays ({}): a rewind undoes its schema, not its rows. To start with none: reylo migrate reset", data.join(", ")))));
+            }
         }
-        if !plan.losses.is_empty() {
-            log(&format!("  {}", losses_counted(&plan, &counts).replacen(", dropping", "Dropped", 1)));
+        if !alone && !lost.is_empty() {
+            log(&format!("    {}", paint("yellow", &format!("Dropped {lost}"))));
         }
     }
     // Changes no migration made (an earlier sync's, from schema.sql, or made by hand) are kept,
@@ -2702,7 +2740,12 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             match take_to(db, &target, &[], &expect, scope).await {
                 Err(e) => return fail("Undoing changes no migration made failed", e.0, log),
                 Ok(Err(lines)) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),
-                Ok(Ok((_, plan))) => log(&format!("{} Undid changes no migration made, which {} can't run on{}", paint("yellow", "↺"), pending[0].name, losses_counted(&plan, &counts))),
+                Ok(Ok((_, plan))) => {
+                    rows.open(log);
+                    let lost = counted_losses(&plan, &counts);
+                    let dropped = if lost.is_empty() { String::new() } else { paint("yellow", &format!(" (drops {lost})")) };
+                    log(&format!("  {} Undid changes no migration made, which {} can't run on{dropped}", paint("yellow", "↺"), pending[0].name));
+                }
             }
         }
     }
@@ -2711,14 +2754,16 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     }
     for m in &records {
         insert_row(db, m, true).await?;
-        log(&format!("{} Recorded {} without running it: this database already had its change", paint("yellow", "!"), m.name));
+        rows.row(log, &paint("yellow", "!"), &m.name, "recorded, not run: this database already had its change");
     }
     for m in &pending {
         let started = std::time::Instant::now();
         if let Err(e) = run(db, m, true).await {
-            return fail(&format!("{} failed, and nothing of it was applied", m.name), e.0, log);
+            rows.row(log, &paint("bold red", "✗"), &m.name, "failed, and nothing of it was applied:");
+            log(&format!("      {e}"));
+            return Ok(1);
         }
-        log(&format!("{} Applied {} {}", paint("green", "✓"), m.name, paint("dim", &format!("· {} ms", started.elapsed().as_millis()))));
+        rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", started.elapsed().as_millis()))));
     }
     if rewind_rows.is_empty() && records.is_empty() && pending.is_empty() && base == at_kept {
         log(&format!("{} Up to date", paint("green", "✓")));
@@ -2726,8 +2771,8 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
     Ok(0)
 }
 
-/// `reylo migrate sync`: takes a development database that is at its migrations (`apply --dev`
-/// brings it there) to schema.sql: what schema.sql has that no migration makes is made, unrecorded,
+/// `reylo migrate sync`: takes a development database that is at its migrations (`dev` brings it
+/// there) to schema.sql: what schema.sql has that no migration makes is made, unrecorded,
 /// for `create` to write next. Refuses a database with a migration it hasn't applied, or one whose
 /// history disagrees with the files. Never in CI.
 pub async fn sync(opts: &Options, in_ci: bool, log: Log<'_>) -> Result<i32, Error> {
@@ -2814,7 +2859,7 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
     if schema_sql.is_none() {
         problems.push(Problem::new(format!("{} doesn't exist", shown(&opts.schema))).note("sync takes the database to it."));
     }
-    // The database is at its migrations, as apply --dev leaves it: every migration applied, each
+    // The database is at its migrations, as `dev` leaves it: every migration applied, each
     // with the text on disk, and nothing else.
     let history = read_history(db).await?;
     let applied: Vec<&HistoryRow> = history.iter().filter(|r| r.applied).collect();
@@ -2838,7 +2883,7 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
         }
     }
     if !behind.is_empty() {
-        problems.push(Problem::new("This database isn't at its migrations").lines(behind).fix("Bring it to them first", &["reylo migrate apply --dev"]));
+        problems.push(Problem::new("This database isn't at its migrations").lines(behind).fix("Bring it to them first", &["reylo migrate dev"]));
     }
     if !problems.is_empty() {
         print_problems(&problems, log);
@@ -2885,12 +2930,14 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
             }
             Ok(Ok(done)) => done,
         };
-        log(&format!("{} Brought this database to schema.sql, unrecorded{}:", paint("green", "✓"), losses_counted(&plan, &counts)));
-        log("");
-        for line in renames.iter().map(|s| if s.starts_with("--") { s.clone() } else { format!("{s};") }).chain(plan.sql().trim_end().lines().filter(|l| !l.starts_with("-- loses data")).map(str::to_string)) {
-            log(&format!("    {line}"));
+        log(&paint("dim", &format!("Syncing {} with schema.sql", shown_url(&opts.url))));
+        for statement in renames.iter().chain(&plan.statements) {
+            statement_row(statement, log);
         }
-        log("");
+        let lost = counted_losses(&plan, &counts);
+        if !lost.is_empty() {
+            log(&format!("    {}", paint("yellow", &format!("Dropped {lost}"))));
+        }
         true
     } else {
         false
@@ -2903,25 +2950,50 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
         Err(_) => false,
     };
     // The lock certifies that its migrations reach this schema.sql.
+    let mut wrote = false;
     if made && opts.locked {
         if let lock::State::Lock(mut l) = lock::read(&opts.lock) {
             let sum = lock::schema_sum(&l.entries.last().map(|e| e.sum.clone()).unwrap_or_default(), schema_sql);
             if l.schema.as_deref() != Some(sum.as_str()) {
                 l.schema = Some(sum);
                 lock::write(&opts.lock, &l)?;
+                wrote = true;
             }
         }
     }
     if made && !pushed {
         log(&format!("{} This database matches schema.sql and its migrations", paint("green", "✓")));
     } else if !made {
-        if !pushed {
+        if pushed {
+            log("");
+        } else {
             log(&format!("{} This database matches schema.sql", paint("green", "✓")));
         }
-        log("  schema.sql has changes not reflected in any migration file. Write them as a migration:");
+        log("  Not in any migration yet:");
         log(&format!("    {}", paint("cyan", "reylo migrate create <name>")));
     }
+    if wrote {
+        log(&format!("Wrote {}", shown(&opts.lock)));
+    }
     Ok(0)
+}
+
+/// One statement `sync` ran: `+` for what it adds, `-` for what it takes away; a comment is dim.
+fn statement_row(statement: &str, log: Log<'_>) {
+    if statement.starts_with("--") {
+        log(&format!("    {}", paint("dim", statement)));
+        return;
+    }
+    let text = statement.trim_end();
+    let lower = text.trim_start().to_lowercase();
+    let mark = if lower.starts_with("drop ") || lower.contains(" drop ") { paint("yellow", "-") } else { paint("green", "+") };
+    for (k, line) in format!("{text};").lines().enumerate() {
+        if k == 0 {
+            log(&format!("  {mark} {line}"));
+        } else {
+            log(&format!("    {line}"));
+        }
+    }
 }
 
 /// The rows of each of the database's tables, by table id.
@@ -2941,10 +3013,7 @@ async fn table_rows(db: &mut Db) -> Result<std::collections::BTreeMap<String, u6
 
 /// What a plan drops, each table with how many rows it held where `counts` holds them, as the end of
 /// a sentence (", dropping tags (3 rows) and users.bio"), or nothing.
-fn losses_counted(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<String, u64>) -> String {
-    if plan.losses.is_empty() {
-        return String::new();
-    }
+fn counted_losses(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<String, u64>) -> String {
     let what: Vec<String> = plan
         .losses
         .iter()
@@ -2952,24 +3021,19 @@ fn losses_counted(plan: &crate::diff::Plan, counts: &std::collections::BTreeMap<
             let name = l.trim_start_matches("column ").trim_start_matches("table ");
             let rows = if l.starts_with("table ") { counts.iter().find(|(id, _)| id.ends_with(&format!(".{name}")) || id.ends_with(&format!(" {name}"))).map(|(_, n)| *n) } else { None };
             match rows {
-                Some(0) => format!("{name} (no rows)"),
-                Some(1) => format!("{name} (1 row)"),
-                Some(n) => format!("{name} ({n} rows)"),
+                Some(0) => format!("{name}, no rows"),
+                Some(1) => format!("{name}, 1 row"),
+                Some(n) => format!("{name}, {n} rows"),
                 None => name.to_string(),
             }
         })
         .collect();
-    let list = match what.as_slice() {
-        [one] => one.clone(),
-        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
-        [] => String::new(),
-    };
-    paint("yellow", &format!(", dropping {list}"))
+    what.join("; ")
 }
 
 /// `reylo run "<sql>"` and `reylo run --file <path>`: runs SQL on the database as written, inline
 /// text or files, in the order given; records nothing. For a change typed by hand during
-/// development, and a seed after `apply --reset` (`post: reylo run --file seed.sql`).
+/// development, and a seed after `reylo migrate reset`.
 pub async fn run_sql(url: &str, root: &Path, items: &[(String, String)], log: Log<'_>) -> Result<i32, Error> {
     let mut db = Db::connect(url, root).await?;
     let mut code = 0;

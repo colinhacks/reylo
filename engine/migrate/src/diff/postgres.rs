@@ -57,7 +57,7 @@ pub async fn style(db: &mut Db, plan: &mut super::Plan, verbatim: &BTreeSet<Stri
         return Ok(());
     }
     let qualified = format!(" {first}.");
-    for loss in plan.losses.iter_mut().chain(plan.renames.iter_mut().map(|(old, _)| old)).chain(plan.narrowings.iter_mut().map(|(id, _)| id)) {
+    for loss in plan.losses.iter_mut().chain(plan.renames.iter_mut().map(|(old, _, _)| old)).chain(plan.narrowings.iter_mut().map(|(id, _)| id)) {
         *loss = loss.replacen(&qualified, " ", 1);
     }
     // A comment holding SQL (what to write instead of a guessed rename) is written as SQL is.

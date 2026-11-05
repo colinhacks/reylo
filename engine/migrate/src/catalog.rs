@@ -82,6 +82,13 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
     live.iter().filter(|l| !extra.iter().any(|name| of_table(l, name))).cloned().collect()
 }
 
+/// `lines` without any partition or inheriting child, which the fingerprint leaves out: one may have
+/// been made at run time, as data, and only a replay can tell.
+pub fn without_children(lines: &[String]) -> Vec<String> {
+    let kids: Vec<String> = children(lines).into_iter().map(|(name, _)| name).collect();
+    lines.iter().filter(|l| !kids.iter().any(|name| of_table(l, name))).cloned().collect()
+}
+
 /// The lines only in `a`, and those only in `b`.
 pub fn difference(a: &[String], b: &[String]) -> (Vec<String>, Vec<String>) {
     let sa: BTreeSet<&String> = a.iter().collect();

@@ -62,6 +62,10 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   assert.equal(missing.status, 1);
   assert.match(missing.err, /^reylo run: cannot read nope\.sql: /);
   assert.notEqual(reylo(root, ["migrate", "sideways"]).status, 0);
+  // A flag a command doesn't take is refused, never passed over: this must not run prod.
+  const flag = reylo(root, ["migrate", "prod", "--dev"]);
+  assert.equal(flag.status, 1);
+  assert.match(flag.err, /^reylo migrate: prod doesn't take --dev/);
 });
 
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {

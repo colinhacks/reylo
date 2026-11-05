@@ -225,9 +225,10 @@ pub struct Plan {
     pub statements: Vec<String>,
     /// Data the plan loses, for the file's comments: a table or column dropped.
     pub losses: Vec<String>,
-    /// Columns it renames rather than dropping one and adding the other, each the old column's id
-    /// and the new name, for the person running `create` to be told.
-    pub renames: Vec<(String, String)>,
+    /// Columns it assumes renamed rather than dropping one and adding the other, each the old
+    /// column's id, the new name, and what else changes (`text → citext`) where the definition does,
+    /// for the person running `create` to settle.
+    pub renames: Vec<(String, String, Option<String>)>,
     /// Columns kept whose change of type can lose what their values hold without failing, each the
     /// column's id and what it loses ("changes from … to …, which …"), for `--drop` to accept.
     pub narrowings: Vec<(String, String)>,
@@ -436,6 +437,31 @@ pub fn table_renames(from: &Schema, to: &Schema, stated: &[(String, String)], dr
         out.extend(found);
     }
     out
+}
+
+/// How a column's definition changes, without the words at the end they share: `varchar(20) →
+/// varchar(40)`, whatever collation both have.
+fn definition_change(a: &str, b: &str) -> String {
+    let (x, y): (Vec<&str>, Vec<&str>) = (a.split_whitespace().collect(), b.split_whitespace().collect());
+    let same = x.iter().rev().zip(y.iter().rev()).take_while(|(p, q)| p == q).count().min(x.len().saturating_sub(1)).min(y.len().saturating_sub(1));
+    format!("{} → {}", x[..x.len() - same].join(" "), y[..y.len() - same].join(" "))
+}
+
+/// How the columns of the table `old` of `from` differ from those of the table `new` of `to`, in words
+/// (`adds total, drops legacy`); None where they don't.
+pub fn column_changes(from: &Schema, to: &Schema, old: &str, new: &str) -> Option<String> {
+    let bare = |id: &str| table_parts(id).pop().unwrap_or_default();
+    let (old_name, new_name) = (bare(old), bare(new));
+    let columns = |schema: &Schema, id: &str, swap: bool| -> BTreeMap<String, String> {
+        schema.objects.values().filter(|o| o.kind == Some(Kind::Column) && o.owner.as_deref() == Some(id)).map(|o| (bare(&o.id), if swap { swap_name(&o.def, &old_name, &new_name) } else { o.def.clone() })).collect()
+    };
+    let (ours, theirs) = (columns(from, old, true), columns(to, new, false));
+    let list = |word: &str, names: Vec<&String>| (!names.is_empty()).then(|| format!("{word} {}", names.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(", ")));
+    let adds = list("adds", theirs.keys().filter(|n| !ours.contains_key(*n)).collect());
+    let drops = list("drops", ours.keys().filter(|n| !theirs.contains_key(*n)).collect());
+    let changes = list("changes", ours.iter().filter(|(n, def)| theirs.get(*n).is_some_and(|d| d != *def)).map(|(n, _)| n).collect());
+    let words: Vec<String> = [adds, drops, changes].into_iter().flatten().collect();
+    (!words.is_empty()).then(|| words.join(", "))
 }
 
 /// The plan from `from` to `to`.
@@ -775,7 +801,8 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                         plan.statements.push(format!("-- {old_name} is renamed {new_name}, keeping its rows. If they are two columns, write instead:"));
                         plan.statements.extend(instead.iter().map(|s| format!("--   {};", s.trim_end())));
                     }
-                    plan.renames.push((old_id.clone(), new_name));
+                    let (a, b) = (&from.objects[old_id].def, &to.objects[id].def);
+                    plan.renames.push((old_id.clone(), new_name, (a != b).then(|| definition_change(a, b))));
                 }
                 plan.statements.extend(alters[id].iter().cloned());
             }

@@ -75,8 +75,6 @@ pub struct Migrate {
     /// Compare comments on objects (on when absent).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict_comments: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub post: Option<String>,
 }
 
 /// How a project's migrations are ordered. `linear`, the default: the project is locked, and
@@ -131,7 +129,7 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
         project.dir = project.dir.as_deref().map(unmask_placeholders);
         if let Some(m) = project.migrate.as_mut() {
-            for value in [&mut m.url, &mut m.shadow_url, &mut m.post].into_iter().flatten() {
+            for value in [&mut m.url, &mut m.shadow_url].into_iter().flatten() {
                 *value = unmask_placeholders(value);
             }
         }
@@ -202,8 +200,8 @@ mod tests {
 
     #[test]
     fn reads_the_migrate_section() {
-        let p = parse("dir: db\nmigrate:\n  url: ${MIGRATE_URL}\n  history: loose\n  post: reylo run --file seed.sql\n").unwrap();
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "url": "${MIGRATE_URL}", "history": "loose", "post": "reylo run --file seed.sql" } }));
+        let p = parse("dir: db\nmigrate:\n  url: ${MIGRATE_URL}\n  history: loose\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "url": "${MIGRATE_URL}", "history": "loose" } }));
         assert!(parse("migrate:\n  dir: db/migrations\n").is_err(), "the migrations' place is the top-level dir's");
         assert_eq!(parse("migrate:\n  history: loose\n").unwrap().migrate.and_then(|m| m.history), Some(History::Loose));
         assert_eq!(parse("migrate: {}\n").unwrap().migrate, Some(Migrate::default()));

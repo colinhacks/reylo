@@ -1,10 +1,11 @@
 //! `reylo migrate`: migrations written by hand (or by an agent), checked against the declared
-//! schema before they run. Before anything touches the target, three shadows are built beside it:
-//! A runs `schema.sql`; B replays what the target applied, in the order it applied them, is compared
-//! with the live target (the drift check), and then runs what is pending; C replays every migration
-//! by time, as a fresh database would. A, B and C must agree. Every migration file runs atomically
-//! with its history row, so a file that cannot (a statement that cannot run in a transaction beside
-//! others; MySQL's DDL beside anything) is refused.
+//! schema. `reylo migrate check` builds three shadows beside the target: A runs `schema.sql`; B
+//! replays what the target applied, in the order it applied them, is compared with the live target
+//! (the drift check), and then runs what is pending; C replays every migration by time, as a fresh
+//! database would. A, B and C must agree. `reylo migrate prod` builds none, and trusts the
+//! fingerprint its last run stored. Every migration file runs atomically with its history row, so
+//! a file that cannot (a statement that cannot run in a transaction beside others; MySQL's DDL
+//! beside anything) is refused.
 //!
 //! Postgres, MySQL and SQLite. The commands are in `commands`; the comparator is `catalog`; the
 //! lexer that splits and classifies statements is `sql`; the connections and shadows are `db`; the
@@ -21,7 +22,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{apply, apply_dev, check_command, check_offline, create, init, lock_command, reset, restore, run_sql, sync, sync_history, sync_watch, wipe_rows, Choices, Mode, Options, ShadowUse};
+pub use commands::{check_command, check_offline, create, dev, init, lock_command, prod, reset, run_sql, sync, sync_history, sync_watch, wipe_rows, Choices, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]

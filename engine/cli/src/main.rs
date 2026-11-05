@@ -35,55 +35,57 @@ connection; --url names another.";
 
 const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
 
-  create <name> [--drop <tables, columns>] [--rename <old>=<new>]
-                            Write the migration that takes the migrations to schema.sql, checked in
-                            a shadow database, named with the current UTC time. Every table or
-                            column it drops, or changes in a way that loses values, is named in
-                            --drop. A table or column that goes while one like it comes is renamed;
-                            --rename settles a tie
-  apply [--shadows | --no-shadows]
-                            Check the database against the migrations, then apply the pending ones.
-                            Refuses on any disagreement, and runs nothing then. With nothing
-                            pending and the database as Reylo's last run left it, nothing is
-                            replayed; otherwise shadow databases check it first. --shadows always
-                            replays; --no-shadows never does, running what is pending unchecked
-                            and refusing what only a replay could check
-  apply --dev               Take a development database to its migrations: rewind what no longer
-                            agrees with them, then apply the rest
-  apply --reset             Drop everything, apply every migration, then run migrate.post (loses
-                            data)
-  sync [--watch]            Make what schema.sql adds on a development database that is at its
-                            migrations, unrecorded, for create to write next; --watch does it
-                            again each time schema.sql changes
-  check [--offline]         What apply checks, and the migrations against schema.sql; runs nothing.
-                            --offline checks what needs no database: the files, the lock, and
-                            schema.sql against the lock's checksum
-  lock                      Lock the project: write reylo-lock.yaml, the order the migrations run in,
-                            from what the database applied
+Write
+  create <name>             Write the migration that takes the migrations to schema.sql, checked in
+                            a shadow database
+    --drop <names>          Accept what it drops or changes so that values are lost: tables and
+                            columns, comma-separated
+    --rename <old>=<new>    Say that a table or column was renamed: users.name=full_name
+
+Develop
+  dev                       Take this database to the migrations: rewind what no longer agrees with
+                            them, run the rest, and write the lock
+  sync                      Make what schema.sql adds on this database, unrecorded, once it is at
+                            its migrations
+    --watch                 Again each time schema.sql or a migration changes
+  reset                     Drop everything, then run every migration (loses data)
+  wipe                      Delete every row, keeping the schema and the history (loses data)
+
+Deploy
+  prod                      Run what is pending. Builds no shadow database: refuses a database
+                            changed since Reylo last ran on it, and anything but what the lock lists
+  check                     Check the migrations against schema.sql and this database, in shadow
+                            databases; runs nothing
+    --offline               Check what needs no database: the files, the lock, and schema.sql
+                            against the lock's checksum
+
+Repair
+  sync-history              Rewrite the history to the migrations this database's schema has, proven
+                            in a shadow database; runs nothing
+  init                      Write schema.sql and migrations/init.sql from this database, and record
+                            init.sql
+    --schema <name>         A schema to read (Postgres; public unless named)
+
+Order
+  lock                      Write reylo-lock.yaml, the order the migrations run in, from what this
+                            database applied
   unlock                    Delete reylo-lock.yaml and set history: loose: migrations run by name
-  sync-history              Rewrite the history to the migrations the database's schema has,
-                            proven in a shadow database; runs nothing
-  restore <file>            Write the text this database ran for a migration back to its file
-  wipe                      Delete every row of the project's tables, keeping the schema and the
-                            history, then run migrate.post (loses data)
-  init [--schema <name>…]   Write schema.sql and migrations/init.sql from the database's schema
-                            (Postgres: the public schema unless named), and record init.sql
 
-reylo run \"<sql>\"…          Run SQL on the database as written; --file <path> for a file (a seed)
+Flags for any command
+  --url <url>               The database, in place of migrate.url
+  --dir <path>              Reylo's directory, in place of dir
 
-The files are in reylo/ beside .reylo.yaml: schema.sql, migrations/, reylo-lock.yaml, and the
-cache in .cache/. Settings, in .reylo.yaml:
-  dir: reylo                 # default: the directory of those files
+Settings, in .reylo.yaml:
+
+  dir: reylo                   # schema.sql, migrations/, reylo-lock.yaml, .cache/
   migrate:
-    url: ${DATABASE_URL}     # default: the type check's connection
-    shadow_url: ${SHADOW_URL}  # a server for shadow databases, where the target's refuses create database
-    history: loose           # unlocked: no reylo-lock.yaml; migrations run by name, one older than
-                             # one applied where both orders end the same (reylo migrate unlock)
-    strict_comments: true    # default; false leaves comments out of the comparison
-    post: reylo run --file seed.sql   # run after apply --reset and wipe
+    url: ${DATABASE_URL}       # default: the type check's connection
+    shadow_url: ${SHADOW_URL}  # a server for shadow databases; default: the database's own
+    history: linear            # linear: the lock's order; loose: by name, no lock
+    strict_comments: true      # false leaves comments on objects out of the comparison
 
-Flags override them for a run: --url, and --dir for the directory. The development commands (apply --dev,
-apply --reset, sync, wipe) refuse to run where CI is set.";
+dev, sync, reset and wipe refuse to run where CI is set. To seed after reset or wipe, chain it:
+reylo migrate reset && reylo run --file seed.sql";
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
 #[derive(Default)]
@@ -169,14 +171,6 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
         lock: home.join(reylo_migrate::lock::LOCK),
         cache: home.join(".cache"),
         comments: m.strict_comments != Some(false),
-        shadows: if args.switches.iter().any(|x| x == "shadows") {
-            reylo_migrate::ShadowUse::Always
-        } else if args.switches.iter().any(|x| x == "no-shadows") {
-            reylo_migrate::ShadowUse::Never
-        } else {
-            reylo_migrate::ShadowUse::Auto
-        },
-        post: m.post.clone(),
         root: project.root.clone(),
     })
 }
@@ -200,6 +194,15 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
     }
     let parsed = parse(&args[1..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
+    // A flag a command doesn't take is refused, never passed over: prod --dev must not run prod.
+    let takes: &[&str] = match command.as_str() {
+        "sync" => &["watch"],
+        "check" => &["offline"],
+        _ => &[],
+    };
+    if let Some(flag) = parsed.switches.iter().find(|s| !takes.contains(&s.as_str())) {
+        return Err(format!("{command} doesn't take --{flag} (reylo migrate --help)"));
+    }
     let offline = command == "check" && has("offline");
     let opts = settings_with(&parsed, true, !offline && command != "unlock")?;
     if offline {
@@ -214,10 +217,10 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
     let rt = runtime();
     let result = rt.block_on(async {
         match command.as_str() {
-            "apply" if has("reset") && in_ci => Ok(reylo_migrate::commands::refused_in_ci("reylo migrate apply --reset", &mut log)),
-            "apply" if has("reset") => reylo_migrate::reset(&opts, &mut log).await,
-            "apply" if has("dev") => reylo_migrate::apply_dev(&opts, in_ci, &mut log).await,
-            "apply" => reylo_migrate::apply(&opts, &mut log).await,
+            "prod" => reylo_migrate::prod(&opts, &mut log).await,
+            "dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
+            "reset" => reylo_migrate::reset(&opts, in_ci, &mut log).await,
+            "wipe" => reylo_migrate::wipe_rows(&opts, in_ci, &mut log).await,
             "sync" if has("watch") => reylo_migrate::sync_watch(&opts, in_ci, None, &mut log).await,
             "sync" => reylo_migrate::sync(&opts, in_ci, &mut log).await,
             "check" => reylo_migrate::check_command(&opts, &mut log).await,
@@ -226,17 +229,11 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 Ok(0) => set_history(&opts.root, false).map(|()| 0).map_err(reylo_migrate::Error),
                 other => other,
             },
-            "restore" => match parsed.rest.first() {
-                Some(name) => reylo_migrate::restore(&opts, name, &mut log).await,
-                None => Err(reylo_migrate::Error("name the migration to restore: reylo migrate restore <file>".into())),
-            },
             "init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
             "create" => {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
             }
-            "wipe" if in_ci => Ok(reylo_migrate::commands::refused_in_ci("reylo migrate wipe", &mut log)),
-            "wipe" => reylo_migrate::wipe_rows(&opts, &mut log).await,
             other => {
                 eprintln!("reylo migrate: unknown command {other}\n\n{MIGRATE_USAGE}");
                 Ok(2)
