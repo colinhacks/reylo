@@ -21,11 +21,11 @@ test("the TypeScript of the format and its published schema are what its JSON Sc
 test("a CRLF checkout of the generated files is still current, as a Windows checkout may be", () => {
   const root = mkdtempSync(join(tmpdir(), "reylo-typedefs-"));
   mkdirSync(join(root, "spec"));
-  for (const name of ["generate.ts", "typedefs.schema.json", "index.ts"]) writeFileSync(join(root, "spec", name), readFileSync(new URL(name, SPEC), "utf8").replaceAll("\n", "\r\n"));
+  for (const name of ["generate.ts", "typedefs.schema.json", "index.ts"]) writeFileSync(join(root, "spec", name), readFileSync(new URL(name, SPEC), "utf8").replace(/\r?\n/g, "\r\n"));
   const published = join(root, "site", "public", "typedefs");
   mkdirSync(published, { recursive: true });
   const file = schema.$id.split("/").pop();
-  writeFileSync(join(published, file), readFileSync(new URL(`../site/public/typedefs/${file}`, SPEC), "utf8").replaceAll("\n", "\r\n"));
+  writeFileSync(join(published, file), readFileSync(new URL(`../site/public/typedefs/${file}`, SPEC), "utf8").replace(/\r?\n/g, "\r\n"));
   const run = spawnSync(process.execPath, [join(root, "spec", "generate.ts"), "--check"], { encoding: "utf8" });
   assert.equal(run.status, 0, run.stderr);
 });
