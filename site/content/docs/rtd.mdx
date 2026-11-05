@@ -100,7 +100,7 @@ Every descriptor has these fields:
 | `cardinality` | `one`, `at_most_one`, `many`, or `none` for a write without `returning` |
 | `diagnostics` | What the database reported, at offsets into the statement as written |
 
-A `type` names its `kind`, such as `integer`, `decimal`, `text`, `instant`, `array` or `record`, with the facts that pick a representation holding every value: an integer's `bits`, a decimal's precision and scale, an instant's `tick`. [spec/index.ts](https://github.com/colinhacks/reylo/blob/release/spec/index.ts) defines every kind and the rules a reader follows, and `reylo/rtd` exports its TypeScript types:
+A `type` names its `kind`, such as `integer`, `decimal`, `text`, `instant`, `array` or `record`, with the facts that pick a representation holding every value: an integer's `bits`, a decimal's precision and scale, an instant's `tick`. [spec/index.ts](https://github.com/colinhacks/reylo/blob/release/spec/index.ts) defines every kind, [spec/README.md](https://github.com/colinhacks/reylo/blob/release/spec/README.md) has the rules a reader follows, and `reylo/rtd` exports its TypeScript types:
 
 ```ts
 import type { StatementDescriptor, Type } from "reylo/rtd";
