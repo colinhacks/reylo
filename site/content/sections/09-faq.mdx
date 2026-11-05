@@ -5,6 +5,11 @@ title: "FAQ"
 ## FAQ
 
 <Accordions>
+<Accordion title="How does Reylo compare with sqlc, PgTyped and other tools?" id="faq-compare">
+
+[Comparison](/compare) runs Reylo and seven other tools that type SQL on the same queries against real databases, and shows what each one infers.
+
+</Accordion>
 <Accordion title="Does the type check run my queries?" id="faq-run-queries">
 
 No. Reylo has your database prepare each query, which checks it and describes its parameters and columns without running it, and reads the rest from the catalog. On SQLite, Reylo prepares the query in its own copy of SQLite, from the schema in your database file.

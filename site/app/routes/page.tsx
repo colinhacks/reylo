@@ -8,7 +8,7 @@ import { Brand } from '@/components/brand';
 import { HeroTitle } from '@/components/hero';
 import { getMDXComponents } from '@/components/mdx';
 import { loadPage } from '@/lib/content';
-import { githubUrl, markdownPath, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
+import { compareTitle, githubUrl, markdownPath, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
 import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
 
@@ -58,7 +58,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
   if (!loaderData) return [];
   const main = loaderData.slug === '';
-  const title = main ? siteTitle : pageTitle(loaderData.title);
+  const title = main ? siteTitle : loaderData.slug === 'compare' ? compareTitle : pageTitle(loaderData.title);
   const { description } = loaderData;
   const url = main ? siteUrl : `${siteUrl}${loaderData.url}`;
   const image = `${siteUrl}/opengraph-image.png?${loaderData.og}`;

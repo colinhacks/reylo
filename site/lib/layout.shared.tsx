@@ -22,3 +22,6 @@ export const siteTitle = 'Reylo — Import .sql files into TypeScript, fully typ
  * database's name.
  */
 export const pageTitle = (database: string) => `Reylo on ${database}: types, nulls, row counts, drivers`;
+
+/** The comparison's title in search results and link previews. */
+export const compareTitle = 'Reylo compared with sqlc, sqlx, PgTyped and others';

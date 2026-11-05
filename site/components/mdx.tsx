@@ -1,6 +1,7 @@
 import { AgentPrompt, docsMdxComponents } from 'docs-kit/components';
 import type { MDXComponents } from 'mdx/types';
 import type { ReactNode } from 'react';
+import { CompareTable } from './compare-table';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
@@ -34,6 +35,8 @@ export function getMDXComponents(components?: MDXComponents) {
     Inferred,
     InferredRow,
     InferredTypes,
+    // The marks on /compare (components/compare-table.tsx).
+    CompareTable,
     // The card that links the playground, /play (components/playground-link.tsx).
     PlaygroundLink,
     // A rule list whose rules show SQL values and what `.run()` returns for each, the dialect
