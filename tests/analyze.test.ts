@@ -73,6 +73,41 @@ test("a change to the schema makes the entry stale, and the statement is analyze
   assert.equal(after.entry, before.entry);
 });
 
+test("a database with the same schema at another URL reads the entry, and one with another schema writes its own", async () => {
+  const { root, env } = project();
+  const first = await analyze(root, env, SELECT);
+  assert.ok(first.ok);
+  assert.equal(first.source, "database");
+  // A copy of the file, as a fresh database built by the same migrations is.
+  cpSync(join(root, "app.db"), join(root, "fresh.db"));
+  const fresh = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(fresh.ok);
+  assert.deepEqual([fresh.source, fresh.entry], ["cache", first.entry]);
+  const db = new DatabaseSync(join(root, "fresh.db"));
+  db.exec("alter table users add column email text");
+  db.close();
+  const changed = await analyze(root, { DATABASE_URL: "file:./fresh.db" }, SELECT);
+  assert.ok(changed.ok);
+  assert.equal(changed.source, "database");
+  assert.notEqual(changed.entry, first.entry);
+});
+
+test("a statement keeps the entries of a few databases, and the newest of them", async () => {
+  const { root, env } = project();
+  await analyze(root, env, SELECT);
+  for (let i = 0; i < 6; i++) {
+    cpSync(join(root, "app.db"), join(root, `build${i}.db`));
+    const db = new DatabaseSync(join(root, `build${i}.db`));
+    db.exec(`create table t${i} (id integer)`);
+    db.close();
+    const built = await analyze(root, { DATABASE_URL: `file:./build${i}.db` }, SELECT);
+    assert.ok(built.ok);
+    assert.equal(built.source, "database");
+    assert.ok(existsSync(built.entry));
+  }
+  assert.equal(readdirSync(join(root, ".reylo", "queries")).length, 4);
+});
+
 test("a session that still trusts its fingerprint takes another process's newer entry, and never writes the old schema back", async () => {
   const { root, env } = project();
   const sql = "select id from users where name = :name";
@@ -299,6 +334,44 @@ test("a parameter as a whole sort key is an error the type check places, and a b
     assert.match(code, /export const params = \["sort"\];/);
   } finally {
     for (const session of Session.opened()) await session.close();
+  }
+});
+
+test("a Postgres database built by the same migrations reads the entries of another, whatever its object ids", { skip: live }, async () => {
+  const migrations = `
+    create type mood as enum ('calm', 'loud');
+    create domain short as text check (length(value) < 9);
+    create table people (id serial primary key, mood mood not null, nick short, tags text[], born timestamptz default now());
+    create index on people (mood);
+    create function touch() returns trigger language plpgsql as $$ begin return new; end $$;
+    create trigger touch before update on people for each row execute function touch();
+    create function adults() returns setof people language sql stable as 'select * from people';
+    create view moods as select id, mood from people;
+    create policy everyone on people using (true);
+    comment on column people.nick is 'What they go by';
+  `;
+  const first = await postgresDatabase("reylo_same_first", migrations);
+  // Object ids are given out across a whole server, so that anything created first moves them.
+  const second = await postgresDatabase("reylo_same_second", `create table moved (id int); drop table moved; ${migrations}`);
+  const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  const sql = "select id, mood, nick from people where id = :id";
+  try {
+    const typed = await analyze(root, { DATABASE_URL: first.url }, sql);
+    assert.ok(typed.ok);
+    assert.equal(typed.source, "database");
+    const fresh = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(fresh.ok);
+    assert.deepEqual([fresh.source, fresh.entry], ["cache", typed.entry]);
+    assert.deepEqual(fresh.analysis, typed.analysis);
+    // What the analysis said of the objects is the second database's to say too.
+    await second.sql.unsafe("alter table people alter column nick set not null");
+    const changed = await analyze(root, { DATABASE_URL: second.url }, sql);
+    assert.ok(changed.ok);
+    assert.equal(changed.source, "database");
+  } finally {
+    await first.drop();
+    await second.drop();
   }
 });
 

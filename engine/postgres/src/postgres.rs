@@ -56,11 +56,11 @@ const MAX_PROBE_CALLS: usize = 64;
 /// them, `$3` of each, as a `FROM` item `u(rel, att)`.
 macro_rules! pairs {
     () => {
-        "(SELECT ($1::pg_catalog.oid[])[n] AS rel, ($2::pg_catalog.int2[])[n] AS att FROM pg_catalog.generate_series(1, $3::pg_catalog.int4) AS n) AS u"
+        "(SELECT c.attrelid AS rel, c.attnum AS att FROM pg_catalog.pg_attribute c WHERE c.attrelid OPERATOR(pg_catalog.=) $1::pg_catalog.oid AND c.attnum OPERATOR(pg_catalog.>) 0) AS u"
     };
 }
 
-/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them, `$3` how many.
+/// `$1` is a relation's oid: its columns with a NOT NULL a read may trust.
 pub const ATTNOTNULL_QUERY: &str = concat!(
     "SELECT a.attrelid::pg_catalog.int8, a.attnum::pg_catalog.int4 FROM pg_catalog.pg_attribute a JOIN ",
     pairs!(),
@@ -96,8 +96,8 @@ macro_rules! base_type {
     };
 }
 
-/// `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them, `$3` how many:
-/// one row per validated, enforced CHECK on such a column, the table's on that column alone (and
+/// `$1` is a relation's oid:
+/// one row per validated, enforced CHECK on a column of it, the table's on that column alone (and
 /// inherited by any child a scan reads) or the column's domain's, where the column holds `text`
 /// or `varchar` under a deterministic collation, `json` or `jsonb`, a float or `numeric`, or an
 /// array: `(relation, attnum, the column's name, the CHECK as the server prints it, and per
@@ -176,8 +176,7 @@ pub const REFUSES_NULL_QUERY: &str = concat!(
       JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) c.oid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped"
 );
 /// The comment of each column that has one (`COMMENT ON COLUMN`): `(relation, attnum, the
-/// comment)`. `$1` is `oid[]` of relations, `$2` the `int2[]` of attribute numbers beside them,
-/// `$3` how many.
+/// comment)`. `$1` is a relation's oid.
 pub const COMMENTS_QUERY: &str = concat!(
     "SELECT u.rel::pg_catalog.int8, u.att::pg_catalog.int4, d.description FROM ",
     pairs!(),
@@ -542,7 +541,7 @@ fn columns_where(needed: bool, sql: &str, host: &Host) -> Lazy<Columns> {
     if relations.is_empty() {
         return Some(Columns::default());
     }
-    let rows = host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)?;
+    let rows = by_relation(host, cardinality::COLUMNS_QUERY, &relations)?;
     Some(Columns::from_rows(&rows.unwrap_or_default()))
 }
 
@@ -560,14 +559,29 @@ fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
     Some(rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect())
 }
 
+/// A catalog query of `$1` a `text[]` of relation names and `$2` how many, asked of each relation
+/// on its own, so that a later statement naming it reads no more ([`Host::query_each`]).
+fn by_relation(host: &Host, sql: &str, relations: &[String]) -> Lazy<Result<Vec<Vec<Value>>, DbError>> {
+    host.query_each(sql, relations.iter().map(|r| vec![json!([r]), json!(1)]), Scope::Statement)
+}
+
+/// A catalog query of `$1` a relation's oid, asked of each of `pairs`' relations once, with what it
+/// says of their other columns too, which nothing reads.
+fn by_oid(host: &Host, sql: &str, pairs: &[(u32, i32)]) -> Lazy<Result<Vec<Vec<Value>>, DbError>> {
+    let mut relations: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
+    relations.sort_unstable();
+    relations.dedup();
+    host.query_each(sql, relations.iter().map(|r| vec![json!(r)]), Scope::Statement)
+}
+
 /// The rows the row-count proof's catalog is built from: the unique keys, columns and skipping
 /// triggers of `relations`, and which of `functions` return a set or are volatile.
 fn catalog_rows(host: &Host, functions: &[String], relations: &[String]) -> Lazy<CatalogRows> {
     let none = || Some(Ok(Vec::new()));
-    let keys = if relations.is_empty() { none() } else { host.query(cardinality::UNIQUE_KEYS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
-    let columns = if relations.is_empty() { none() } else { host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
-    let functions = if functions.is_empty() { none() } else { host.query(cardinality::FUNCTIONS_QUERY, vec![json!(functions)], Scope::Statement) };
-    let triggers = if relations.is_empty() { none() } else { host.query(cardinality::TRIGGERS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement) };
+    let keys = by_relation(host, cardinality::UNIQUE_KEYS_QUERY, relations);
+    let columns = by_relation(host, cardinality::COLUMNS_QUERY, relations);
+    let functions = if functions.is_empty() { none() } else { host.query_each(cardinality::FUNCTIONS_QUERY, functions.iter().map(|f| vec![json!([f])]), Scope::Statement) };
+    let triggers = by_relation(host, cardinality::TRIGGERS_QUERY, relations);
     let (Some(keys), Some(columns), Some(functions), Some(triggers)) = (keys, columns, functions, triggers) else { return None };
     Some(CatalogRows {
         keys: keys.unwrap_or_default(),
@@ -747,7 +761,7 @@ impl<'a> Engine<'a> {
             Some(Ok(Vec::new()))
         } else {
             let relations = sorted(conflicts.iter().map(|c| c.relation.clone()).collect());
-            self.host.query(ARBITERS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)
+            by_relation(self.host, ARBITERS_QUERY, &relations)
         };
         // The columns an INSERT's rows must write, asked in this first round too.
         let insert = insert_target(&rewritten.sql);
@@ -1076,7 +1090,7 @@ impl<'a> Engine<'a> {
                 return Some(());
             }
             missing.sort_unstable();
-            let rows = self.host.query(TYPE_QUERY, vec![json!(missing)], Scope::Statement)?;
+            let rows = self.host.query_each(TYPE_QUERY, missing.iter().map(|o| vec![json!([o])]), Scope::Statement)?;
             let mut registry = self.registry.borrow_mut();
             registry.insert_rows(&rows.unwrap_or_default());
             for o in &missing {
@@ -1122,8 +1136,8 @@ impl<'a> Engine<'a> {
         if relations.is_empty() {
             return Some(());
         }
-        let columns = self.host.query(RELATION_COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
-        let types = self.host.query(RELATION_TYPES_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement);
+        let columns = by_relation(self.host, RELATION_COLUMNS_QUERY, relations);
+        let types = by_relation(self.host, RELATION_TYPES_QUERY, relations);
         let (Some(columns), Some(types)) = (columns, types) else { return None };
         let mut known = self.relations.borrow_mut();
         for row in columns.unwrap_or_default() {
@@ -1170,7 +1184,7 @@ impl<'a> Engine<'a> {
         let mut written: Vec<String> = parsed.bare.iter().chain(checked.iter().copied()).map(|(_, relation, _)| relation.clone()).collect();
         written.sort();
         written.dedup();
-        let refusing = self.host.query(REFUSES_NULL_QUERY, vec![json!(written), json!(written.len())], Scope::Statement);
+        let refusing = by_relation(self.host, REFUSES_NULL_QUERY, &written);
         let prefetched = self.prefetch(relations);
         let (refusing, ()) = (refusing?, prefetched?);
         // Per relation, by attribute: whether the column refuses null.
@@ -1392,7 +1406,7 @@ impl<'a> Engine<'a> {
         let typed = trust.overloads.is_some() && parsed.reductions.iter().flat_map(|(_, w)| w).flat_map(|w| &w.calls).any(|c| trust.call_checked(c));
         let columns = if typed {
             let relations = relations_of(Some(parsed));
-            if relations.is_empty() { Vec::new() } else { self.host.query(cardinality::COLUMNS_QUERY, vec![json!(relations), json!(relations.len())], Scope::Statement)?.unwrap_or_default() }
+            by_relation(self.host, cardinality::COLUMNS_QUERY, &relations)?.unwrap_or_default()
         } else {
             Vec::new()
         };
@@ -1608,9 +1622,7 @@ impl<'a> Engine<'a> {
         }
         pairs.sort_unstable();
         pairs.dedup();
-        let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
-        let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-        let rows = self.host.query(COMMENTS_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)?;
+        let rows = by_oid(self.host, COMMENTS_QUERY, &pairs)?;
         let stored: HashMap<(u32, i32), String> = rows
             .unwrap_or_default()
             .iter()
@@ -1649,9 +1661,7 @@ impl<'a> Engine<'a> {
         if pairs.is_empty() {
             return Some(Checks::default());
         }
-        let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
-        let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-        let rows = self.host.query(CHECKS_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)?;
+        let rows = by_oid(self.host, CHECKS_QUERY, pairs)?;
         let mut out = Checks::default();
         let mut schemas: HashMap<(u32, i32), Vec<(String, Validators)>> = HashMap::new();
         for row in rows.unwrap_or_default() {
@@ -1781,9 +1791,7 @@ impl<'a> Engine<'a> {
         let not_null = if pairs.is_empty() {
             Some(Ok(Vec::new()))
         } else {
-            let rs: Vec<u32> = pairs.iter().map(|(r, _)| *r).collect();
-            let atts: Vec<i32> = pairs.iter().map(|(_, a)| *a).collect();
-            self.host.query(ATTNOTNULL_QUERY, vec![json!(rs), json!(atts), json!(rs.len())], Scope::Statement)
+            by_oid(self.host, ATTNOTNULL_QUERY, &pairs)
         };
         let nullable_tables: Vec<String> = match parsed {
             Some(p) => self.unreduced(p, trust)?,
@@ -1793,7 +1801,7 @@ impl<'a> Engine<'a> {
         let relnames = if nullable_tables.is_empty() || rels.is_empty() {
             Some(Ok(Vec::new()))
         } else {
-            self.host.query(RELNAMES_QUERY, vec![json!(rels)], Scope::Statement)
+            self.host.query_each(RELNAMES_QUERY, rels.iter().map(|r| vec![json!([r])]), Scope::Statement)
         };
         let (Some(not_null), Some(relnames)) = (not_null, relnames) else { return None };
         let mut not_null: HashSet<(u32, i32)> = not_null
@@ -4910,9 +4918,8 @@ mod tests {
                                     }
                                 }
                                 ATTNOTNULL_QUERY => {
-                                    let rels: Vec<u32> = serde_json::from_value(params[0].clone()).unwrap();
-                                    let atts: Vec<i32> = serde_json::from_value(params[1].clone()).unwrap();
-                                    rels.iter().zip(&atts).filter(|(r, a)| not_null.contains(&(**r, **a))).map(|(r, a)| vec![json!(r), json!(a)]).collect()
+                                    let rel: u32 = serde_json::from_value(params[0].clone()).unwrap();
+                                    not_null.iter().filter(|(r, _)| *r == rel).map(|(r, a)| vec![json!(r), json!(a)]).collect()
                                 }
                                 _ => vec![],
                             };
@@ -5029,9 +5036,8 @@ mod tests {
                                     rows
                                 }
                                 COMMENTS_QUERY => {
-                                    let rels: Vec<u32> = serde_json::from_value(params[0].clone()).unwrap();
-                                    let atts: Vec<i32> = serde_json::from_value(params[1].clone()).unwrap();
-                                    rels.iter().zip(&atts).filter_map(|(r, a)| comments.get(&(*r, *a)).map(|c| vec![json!(r), json!(a), json!(c)])).collect()
+                                    let rel: u32 = serde_json::from_value(params[0].clone()).unwrap();
+                                    comments.iter().filter(|((r, _), _)| *r == rel).map(|((r, a), c)| vec![json!(r), json!(a), json!(c)]).collect()
                                 }
                                 _ => vec![],
                             };

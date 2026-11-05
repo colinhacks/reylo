@@ -31,6 +31,8 @@ fn queries() -> Vec<(&'static str, String)> {
         ("TYPE_QUERY", pgtypes::TYPE_QUERY.into()),
         ("RELATION_TYPES_QUERY", pgtypes::RELATION_TYPES_QUERY.into()),
         ("ERRORS_QUERY", errors::ERRORS_QUERY.into()),
+        ("OPERATORS_QUERY", errors::OPERATORS_QUERY.into()),
+        ("USER_OPERATORS_QUERY", errors::USER_OPERATORS_QUERY.into()),
         ("PROBE_QUERY", extension::PROBE_QUERY.into()),
         ("PG_TABLE_QUERY", structured::PG_TABLE_QUERY.into()),
         ("fresh::PG_QUERY", fresh::PG_QUERY.replace("{tables}", tables)),

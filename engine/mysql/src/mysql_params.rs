@@ -8,12 +8,11 @@
 //! Every other parameter is a non-null value, one the statement coalesces, tests for null or
 //! compares with `<=>` included.
 
-use crate::api::Scope;
 use crate::fresh::Tables;
 use crate::host::{as_str, Host, Lazy};
 use crate::lex;
+use crate::mysql::by_table;
 use crate::mysql_keys::Cte;
-use serde_json::json;
 use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, Query, Select, SelectItem, SetExpr, Statement, TableFactor, TableWithJoins};
 use std::collections::{HashMap, HashSet};
 
@@ -60,12 +59,12 @@ pub(crate) fn names(rewritten: &lex::Rewritten) -> Names {
 pub(crate) fn prefetch(statement: &Statement, names: &Names, host: &Host) {
     let tables = written(statement, names);
     if !tables.is_empty() {
-        let _ = host.query(COLUMNS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
-        let _ = host.query(CHECKS_QUERY, vec![json!(tables.join(","))], Scope::Statement);
+        let _ = by_table(host, COLUMNS_QUERY, &tables);
+        let _ = by_table(host, CHECKS_QUERY, &tables);
     }
     let typed = typed_tables(statement, names);
     if !typed.is_empty() {
-        let _ = host.query(TYPES_QUERY, vec![json!(typed.join(","))], Scope::Statement);
+        let _ = by_table(host, TYPES_QUERY, &typed);
     }
 }
 
@@ -147,7 +146,7 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
     if tables.is_empty() {
         return Some(Typed::default());
     }
-    let rows = host.query(TYPES_QUERY, vec![json!(tables.join(","))], Scope::Statement)?;
+    let rows = by_table(host, TYPES_QUERY, &tables)?;
     let mut out = Typed::default();
     // Per table as the server names it: each column in lower case, its type, whether it is INVISIBLE, and its comment.
     let mut columns: HashMap<String, Vec<(String, Option<crate::types::Type>, bool, Option<String>)>> = HashMap::new();
@@ -377,8 +376,8 @@ pub(crate) fn nullable(statement: &Statement, names: &Names, host: &Host, marked
         return Some(out);
     }
     // Every table a parameter is written to whole, as `prefetch` asked.
-    let tables = json!(written(statement, names).join(","));
-    let (rows, checks) = (host.query(COLUMNS_QUERY, vec![tables.clone()], Scope::Statement), host.query(CHECKS_QUERY, vec![tables], Scope::Statement));
+    let tables = written(statement, names);
+    let (rows, checks) = (by_table(host, COLUMNS_QUERY, &tables), by_table(host, CHECKS_QUERY, &tables));
     let (rows, checks) = (rows?, checks?);
     // Per table as the server names it, the CHECKs.
     let mut checked: HashMap<String, Vec<String>> = HashMap::new();
