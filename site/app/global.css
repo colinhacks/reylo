@@ -844,8 +844,10 @@ a.reylo-compare-name:hover {
    block holds the code alone. */
 #nd-page figure.has-diff pre .line::before {
   content: ' ';
+  position: static;
   display: inline-block;
   width: 2ch;
+  margin: 0;
   text-indent: 0;
   user-select: none;
 }
