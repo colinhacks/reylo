@@ -1,9 +1,9 @@
 // Installs reylo as a project does, from the packages a run built, on the platform it runs on, and
 // checks that the engine installed for that platform types and runs a query: the nine packages
 // published to a registry of the check's own (Verdaccio, holding nothing else), `npm install reylo`
-// in a fresh project, which must bring this platform's engine package alone, `reylo analyze` on a
+// in a fresh project, which must bring this platform's engine package alone, `reylo compile` on a
 // SQLite query through the `reylo` command npm installed, a program run under the reylo/register
-// preload, and Postgres statements nested to the engine's bound, analyzed by the installed binary
+// preload, and Postgres statements nested to the engine's bound, compiled by the installed binary
 // as tests/depth.test.ts analyzes them.
 //
 //   node .github/scripts/install-check.ts <packs> <platform>
@@ -98,7 +98,7 @@ try {
   if (printed !== `reylo ${version}`) throw new Error(`the installed binary prints "${printed}", where reylo is ${version}`);
   console.log(printed);
 
-  step("reylo analyze through the installed command, and the preload, on a SQLite database");
+  step("reylo compile through the installed command, and the preload, on a SQLite database");
   const db = new DatabaseSync(join(project, "app.db"));
   db.exec("create table users (id integer primary key, name text not null); insert into users values (1, 'ada')");
   db.close();
@@ -107,10 +107,10 @@ try {
   const env = { ...process.env, DATABASE_URL: "file:./app.db" };
   // npm's own shim for reylo's bin, which starts the launcher (src/cli.ts), which runs the binary.
   const command = join(project, "node_modules", ".bin", windows ? "reylo.cmd" : "reylo");
-  const analyzed = run(command, ["analyze", "user.sql"], { cwd: project, env }).trim();
-  console.log(analyzed);
-  const descriptor = JSON.parse(analyzed) as { file?: string; columns?: { name: string }[]; cardinality?: string };
-  if (descriptor.file !== "user.sql" || descriptor.columns?.map((c) => c.name).join() !== "id,name" || descriptor.cardinality !== "at_most_one") throw new Error("reylo analyze did not type user.sql");
+  const compiled = run(command, ["compile", "user.sql"], { cwd: project, env }).trim();
+  console.log(compiled);
+  const descriptor = JSON.parse(compiled) as { file?: string; columns?: { name: string }[]; cardinality?: string };
+  if (descriptor.file !== "user.sql" || descriptor.columns?.map((c) => c.name).join() !== "id,name" || descriptor.cardinality !== "at_most_one") throw new Error("reylo compile did not type user.sql");
   // The playground's server, which the launcher runs in JavaScript.
   if (!run(command, ["play", "--help"], { cwd: project }).startsWith("Usage: reylo play")) throw new Error("reylo play --help printed no usage");
   const ran = run(process.execPath, ["--import", "reylo/register", "main.ts"], { cwd: project, env }).trim();

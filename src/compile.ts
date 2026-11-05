@@ -1,28 +1,28 @@
-// `analyze`, which the root module exports through src/build-time.ts: one statement's descriptor in
+// `compile`, which the root module exports through src/build-time.ts: one statement's descriptor in
 // Reylo Type Defs, experimental (spec/index.ts, `StatementDescriptor`), read from a live
-// database by the engine, as plain data that serializes to JSON. `reylo analyze` prints the same
-// descriptors on the command line (engine/cli/src/analyze.rs), and both read the project as the type
+// database by the engine, as plain data that serializes to JSON. `reylo compile` prints the same
+// descriptors on the command line (engine/cli/src/compile.rs), and both read the project as the type
 // check does: the database it names, unless the caller names another, and its `strict_params`. It
 // reads no `.reylo/` cache, and every call reads the database afresh.
 import { basename } from "node:path";
 import type { StatementDescriptor } from "../spec/index.ts";
-import type { AnalyzeInput } from "./build-time.ts";
+import type { CompileInput } from "./build-time.ts";
 import { NotMysql, reason, refusedLogin } from "./connection.ts";
 import { duckdbDatabase } from "./duckdb.ts";
 import { AnswerCache, anyEngine, engine, Unreachable, type Analysis, type Connection, type Engine } from "./engine.ts";
 import { placeholdersOf, untypedParams } from "./module-types.ts";
 import { dialectOf, duckdbPath, PROJECT_FILE, resolveProject, sqlitePath, type Dialect as Database } from "./project.ts";
 
-/** The format version `analyze` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
+/** The format version `compile` writes, as the URL of its JSON Schema (spec/typedefs.schema.json), which the type holds to the spec's. */
 const SCHEMA: StatementDescriptor["$schema"] = "https://reylo.dev/typedefs/0.1.0.json";
 
 /** What a statement's untyped parameters answer to: whether each is an error, and the project file its message names. */
 type Strict = { params: boolean; file: string };
 
-/** The statement's descriptor (the root module's `analyze`, whose comment says what it does). */
-export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
+/** The statement's descriptor (the root module's `compile`, whose comment says what it does). */
+export async function compile(input: CompileInput): Promise<StatementDescriptor> {
   const { sql, url: given } = input;
-  if (typeof sql !== "string" || (given !== undefined && typeof given !== "string")) throw new TypeError("analyze takes { sql, url? }, each a string");
+  if (typeof sql !== "string" || (given !== undefined && typeof given !== "string")) throw new TypeError("compile takes { sql, url? }, each a string");
   const cwd = process.cwd();
   // With a URL named, the project's own connection is never read, nor a command in it run.
   const project = resolveProject(await anyEngine(), cwd, process.env, { urlGiven: given !== undefined });
@@ -35,23 +35,23 @@ export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor>
   // project's URL is from the project's root, as the type check reads it.
   const base = given === undefined ? project.root : cwd;
   const strict: Strict = { params: project.strictParams, file: project.file ? basename(project.file) : PROJECT_FILE };
-  if (dialect === "duckdb") return analyzeDuckdb(duckdbPath(url, base), project.root, sql, strict);
+  if (dialect === "duckdb") return compileDuckdb(duckdbPath(url, base), project.root, sql, strict);
   const target = (u: string) => (dialect === "sqlite" ? sqlitePath(u, base) : u);
   try {
-    return await analyzeOn(dialect, target(url), sql, strict);
+    return await compileOn(dialect, target(url), sql, strict);
   } catch (e) {
     // A command in `direct_url` that makes a short-lived token runs again once the token is refused,
     // as the type check runs it again.
     const fresh = refusedLogin(e) ? project.refreshUrl?.() : undefined;
     if (fresh === undefined || fresh === url) throw failure(e);
-    return analyzeOn(dialect, target(fresh), sql, strict).catch((again: unknown) => {
+    return compileOn(dialect, target(fresh), sql, strict).catch((again: unknown) => {
       throw failure(again);
     });
   }
 }
 
 /** The statement's descriptor over the connection to `target`, which an error it cannot be read through rejects with. */
-async function analyzeOn(dialect: Exclude<Database, "duckdb">, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
+async function compileOn(dialect: Exclude<Database, "duckdb">, target: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
   const key = `${dialect}\0${target}`;
   const entry = acquire(key, dialect, target);
   try {
@@ -76,7 +76,7 @@ async function analyzeOn(dialect: Exclude<Database, "duckdb">, target: string, s
         throw e;
       }
       // This statement alone could not be analyzed: one diagnostic over the whole of it says why,
-      // as `reylo analyze` prints it.
+      // as `reylo compile` prints it.
       return refused(sql, dialect, c.version, (e as Error).message);
     }
   } finally {
@@ -119,7 +119,7 @@ function drop(key: string, entry: Shared): void {
 }
 
 /** DuckDB runs inside the app: the engine's needs are answered by the project's own `@duckdb/node-api`, which opens the file for this call alone (src/duckdb.ts). */
-async function analyzeDuckdb(path: string, root: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
+async function compileDuckdb(path: string, root: string, sql: string, strict: Strict): Promise<StatementDescriptor> {
   const duckdb = await engine("duckdb");
   const db = duckdbDatabase(path, root);
   return db.run(async (io) => {
@@ -134,7 +134,7 @@ async function analyzeDuckdb(path: string, root: string, sql: string, strict: St
   });
 }
 
-/** Why the database could not be read, as `reylo analyze` words it. */
+/** Why the database could not be read, as `reylo compile` words it. */
 function failure(e: unknown): Error {
   if (e instanceof NotMysql) return new Error(`The URL names a MySQL database, and the server is ${e.server}, which Reylo does not read.`, { cause: e });
   if (e instanceof Unreachable) return new Error(`${refusedLogin(e) ? "The database refused the login" : "Cannot reach the database"}: ${reason(e)}`, { cause: e });
@@ -142,7 +142,7 @@ function failure(e: unknown): Error {
 }
 
 /**
- * An error at the first use of each parameter nothing in the statement types, as `reylo analyze`
+ * An error at the first use of each parameter nothing in the statement types, as `reylo compile`
  * and the type check give it where the project leaves `strict_params` on, in UTF-8 bytes
  * (`untypedParams` in src/module-types.ts). The engine's own lexer finds the placeholders; a
  * statement it cannot read has none, and each error is then at the statement's start.
@@ -156,7 +156,7 @@ async function untyped(e: Engine, sql: string, dialect: Database, analysis: Anal
 /**
  * The engine's analysis as the format writes it: the format's fields alone, a diagnostic's place
  * in UTF-16 units of the statement as written, and the database's own code (`Analysis::descriptor`
- * in engine/core/src/api.rs, which `reylo analyze` prints).
+ * in engine/core/src/api.rs, which `reylo compile` prints).
  */
 function descriptor(sql: string, dialect: Database, version: string, a: Analysis, untyped: Analysis["diagnostics"] = []): StatementDescriptor {
   return {

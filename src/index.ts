@@ -1,6 +1,6 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
-import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import { compile as compileQuery, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
@@ -10,20 +10,20 @@ import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
 import { listening, type QueryTrace } from "./trace.ts";
-import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
+import { buildTime, type CompileInput, type StatementDescriptor } from "./build-time.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
-export type { AnalyzeInput } from "./build-time.ts";
+export type { CompileInput } from "./build-time.ts";
 export type * as TypeDefs from "../spec/index.ts";
 export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
 /**
  * One statement's types as plain data that serializes to JSON, in Reylo Type Defs: its parameters and
  * columns with their types and nullability, its cardinality, its kind, and `sql` with the database's
- * own placeholders. It is what `reylo analyze` prints, for a tool that reads a statement's types
+ * own placeholders. It is what `reylo compile` prints, for a tool that reads a statement's types
  * rather than running it.
  *
  * It reads the database the type check reads (`direct_url` in the project file, else `DATABASE_URL`),
@@ -40,8 +40,8 @@ export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, Post
  * @experimental Reylo Type Defs is at version 0.1.0, and until 1.0.0 a new version may change
  * anything in it. Each descriptor names its version in `$schema`.
  */
-export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
-  return buildTime().analyze(input);
+export async function compile(input: CompileInput): Promise<StatementDescriptor> {
+  return buildTime().compile(input);
 }
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
@@ -211,7 +211,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     // A query defined by hand is compiled when its `sql` is first read, so a placeholder its
     // `params` misses fails there and in `run`, not where it is defined.
     get sql() {
-      return (compiled ??= compile(module).text);
+      return (compiled ??= compileQuery(module).text);
     },
     raw: def.sql,
     params: def.params,
