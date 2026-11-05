@@ -833,3 +833,22 @@ a.reylo-compare-name:hover {
   font: 0.92em/1 var(--font-mono, ui-monospace, monospace);
   color: var(--color-fd-foreground);
 }
+
+/* A diff's lines say what they do, as a diff does: a `+` or `-` in a gutter of their own, and a
+   space beside the lines that stay, so the code lines up. Generated content, so a copy of the
+   block holds the code alone. */
+#nd-page figure.has-diff pre .line::before {
+  content: ' ';
+  display: inline-block;
+  width: 2ch;
+  text-indent: 0;
+  user-select: none;
+}
+#nd-page figure.has-diff pre .line.diff.add::before {
+  content: '+';
+  color: var(--color-fd-success, #3fb950);
+}
+#nd-page figure.has-diff pre .line.diff.remove::before {
+  content: '-';
+  color: var(--color-fd-error, #f85149);
+}

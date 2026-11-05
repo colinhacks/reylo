@@ -8,7 +8,7 @@ type Environment = Parameters<ReturnType<typeof applyMdxPreset>>[0];
  * Reylo's own: the modules Reylo's mapper produced for the page's `.sql` blocks, put above each
  * importing block (lib/remark-mapper.ts), and Twoslash's options (lib/twoslash.ts), and the
  * Inference cards' types and the error examples' errors in each heading's section Markdown
- * (lib/inferred-markdown.ts, lib/sql-errors.ts).
+ * (lib/inferred-markdown.ts, lib/sql-errors.ts), and the ```terminal blocks' language (lib/terminal.ts).
  */
 export async function mdxOptions(environment: Environment) {
   const { docsMdxOptions } = await import('docs-kit/mdx');
@@ -16,7 +16,8 @@ export async function mdxOptions(environment: Environment) {
   const { reyloTwoslash } = await import('./twoslash.ts');
   const { rehypeInferredSections } = await import('./inferred-markdown.ts');
   const { rehypeErrorSections } = await import('./sql-errors.ts');
-  const options = await docsMdxOptions(environment, { remarkPlugins: [remarkMapper], twoslash: reyloTwoslash() });
+  const { terminal } = await import('./terminal.ts');
+  const options = await docsMdxOptions(environment, { remarkPlugins: [remarkMapper], twoslash: reyloTwoslash(), langs: ['shellscript', 'sql', terminal] });
   // After docs-kit's rehypeSections: each `<Inferred>` card's section Markdown carries its types, and
   // each error example its errors.
   return { ...options, rehypePlugins: [...(options.rehypePlugins ?? []), rehypeInferredSections, rehypeErrorSections] };
