@@ -116,6 +116,8 @@ Prisma's drift check ignores triggers and check constraints, and accepts `NOT NU
 
 ### Timestamps
 
+Prisma's `DateTime` is a `timestamp(3)`, a time with no zone, which Prisma Client writes and reads as UTC. Nothing in the column says so, so Reylo returns it without a zone, as `"2026-10-30T09:00:00.123"`, and `new Date()` reads that in the machine's own zone: on a laptop in Los Angeles, it's seven hours off. A `timestamptz` comes back as `"…Z"`, which every reader reads the same. You can keep `timestamp(3)` if your server runs in UTC and your code treats each value as UTC, but the retype removes the question.
+
 Retype every `timestamp(3)` column in UTC, one table per migration:
 
 ```sql
@@ -130,6 +132,23 @@ alter table "users"
 - **Plain `timestamptz`**, not `timestamptz(3)`, which rewrites the table.
 - **One table per migration.** Prisma runs each migration in one transaction, so a file that alters several tables holds every one until it ends, and can deadlock a live insert that needs two of them.
 - **Each index on the column is rebuilt**, and the table is locked while it is. On a 1 GB table that took 5 seconds, and `set maintenance_work_mem = '256MB'` before it cut that by 40%.
+
+To write those migrations, run this query once against your database: each row is one table's migration.
+
+```sql
+select format(
+  E'set time zone ''UTC'';\n\nalter table %I\n%s;\n',
+  c.relname,
+  string_agg(format('  alter column %I set data type timestamptz', a.attname), E',\n' order by a.attnum)
+) as migration
+from pg_attribute a
+join pg_class c on c.oid = a.attrelid
+join pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relkind = 'r'
+  and a.atttypid = 'timestamp'::regtype and a.attnum > 0 and not a.attisdropped
+group by c.relname
+order by c.relname;
+```
 
 ### `@updatedAt`
 
@@ -292,7 +311,7 @@ The type check can't catch these, so look for each one in the converted code:
 - **Instants compared as strings.** An instant's text has as many fraction digits as it needs, so `<`, `>` and `localeCompare` misorder two of them. Compare their `Date.parse`, or sort in SQL.
 - **Instants passed through a `Date`.** A `Date` keeps milliseconds and Postgres keeps microseconds, so `where "createdAt" > :since` with a rounded value matches the row it came from. Pass back the text `.run()` returned.
 - **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name, so a query that kept one and dropped the other changes its order.
-- **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true.
+- **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true. typescript-eslint's `no-unnecessary-condition` flags it.
 - **A `Promise.all` on a transaction's client.** Prisma queued a transaction's calls for you; a `pg` client handed several at once warns, and `pg` 9 will refuse them. Write them as one statement, or await each in turn.
 - **Timestamps inside JSON.** A `timestamptz` you build into JSON is written in the session's time zone (`+00:00`, or `-07:00` on a laptop), unlike the `Z` of a column, so one row can hold both forms.
 
