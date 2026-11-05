@@ -1547,11 +1547,10 @@ pub async fn lock_command(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 
 /// `reylo migrate pull`: writes each migration the database ran into its file, as it ran it, from the
 /// history table, which keeps every applied migration's text: a file deleted is written again, and
-/// one whose statements differ from what ran is written over. A file that differs in comments or
-/// spacing alone is left as it is, and so is a file the database hasn't run. Changes no database.
+/// one that reads differently to the lock is written over. A file that differs in comments alone is
+/// left as it is, and so is a file the database hasn't run. Changes no database.
 pub async fn pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let d = db.dialect();
     let history = read_history(&mut db).await;
     db.close().await;
     let history = history?;
@@ -1562,7 +1561,8 @@ pub async fn pull(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
         let path = opts.dir.join(&r.name);
         let what = match files.iter().find(|f| f.name == r.name) {
             None => "written: it wasn't here",
-            Some(f) if !same_statements(&f.sql, &r.sql, d) => "written over: it differed from what ran",
+            // By the lock's own reading, so that what the lock refuses as edited is written back.
+            Some(f) if lock::canonical(&normalized(&f.sql)) != lock::canonical(&normalized(&r.sql)) => "written over: it differed from what ran",
             Some(_) => continue,
         };
         std::fs::create_dir_all(&opts.dir)?;

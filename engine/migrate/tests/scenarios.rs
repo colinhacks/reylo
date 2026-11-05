@@ -290,6 +290,7 @@ for_each_dialect!(
     column_order_is_not_compared,
     refuses_drift,
     an_edited_migration_is_refused,
+    pull_takes_back_what_the_lock_refuses,
     ddl_run_by_hand_then_written_is_recorded,
     a_change_by_hand_with_schema_sql_is_told_to_write_the_migration,
     init_writes_and_records_the_baseline,
@@ -443,6 +444,32 @@ async fn an_edited_migration_is_refused(mut p: P) {
     assert_eq!(std::fs::read_to_string(p.dir.join("migrations").join("20261027100000_users.sql")).unwrap(), original);
     assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
     assert_has!(p.output(), r"^✓ \S*migrations holds every migration this database ran, as it ran it\n");
+}
+
+async fn pull_takes_back_what_the_lock_refuses(mut p: P) {
+    let int = p.t.int;
+    p.strict = true;
+    let original = format!("create table a (id {int});");
+    p.schema(&original);
+    p.file("20261027100000_a.sql", &original);
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.output();
+    // A formatter's reflow reads as an edit to the lock, so pull writes it back.
+    p.file("20261027100000_a.sql", &format!("create table a (\n  id {int}\n);"));
+    assert_eq!(p.dry_run().await, 1);
+    assert_has!(p.output(), r"changed after it was locked[\s\S]*reylo migrate pull");
+    assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), "written over");
+    assert_eq!(std::fs::read_to_string(p.dir.join("migrations").join("20261027100000_a.sql")).unwrap(), original);
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    p.output();
+    // A comment isn't, and stays.
+    let commented = format!("-- the table\n{original}");
+    p.file("20261027100000_a.sql", &commented);
+    assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), "holds every migration");
+    assert_eq!(std::fs::read_to_string(p.dir.join("migrations").join("20261027100000_a.sql")).unwrap(), commented);
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
 }
 
 async fn ddl_run_by_hand_then_written_is_recorded(mut p: P) {
