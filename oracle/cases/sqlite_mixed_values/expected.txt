@@ -3,7 +3,7 @@ case_no_else.sql: many () -> { v: int64? }
 coalesce_json.sql: many () -> { v: unknown? }
 coalesce_text.sql: many () -> { v: text(utf8) }
 coalesce_untyped.sql: many () -> { v: unknown? }
-compound_integers.sql: many () -> { v: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+compound_integers.sql: many () -> { v: INTEGER }
 compound_json.sql: many () -> { v: unknown? }
 compound_null.sql: many () -> { v: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
 compound_parameter.sql: many (p: int64) -> { v: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }

@@ -5,5 +5,5 @@ insert_member.sql: none (id: int64) -> {  }
 insert_pair.sql: none (x: int64, y: int64) -> {  }
 insert_post.sql: none (id: int64, user_id: int64, slug: text(utf8)?, lang: text(utf8)?) -> {  }
 insert_user.sql: none (id: int64, email: text(utf8), age: int64?) -> {  }
-select_users.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), email: TEXT(text(utf8) | bytes) }
+select_users.sql: many () -> { id: INTEGER, email: TEXT(utf8) }
 update_row_short.sql: many () -> {  } !! reylo6: 3 columns assigned 2 values

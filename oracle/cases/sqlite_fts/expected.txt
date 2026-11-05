@@ -1,11 +1,11 @@
-highlight_unmatched.sql: many (col: int64, open: text(utf8), close: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), hit: text(utf8)?, rank: float(11,52) }
-notes_fts4.sql: many (q: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), o: text(utf8), m: bytes, s: text(utf8)? }
-rank.sql: many (weight: float(11,52), q: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), rank: float(11,52), weighted: float(11,52)?, body_hit: text(utf8)?, excerpt: text(utf8)? }
+highlight_unmatched.sql: many (col: int64, open: text(utf8), close: text(utf8)) -> { id: INTEGER, hit: text(utf8)?, rank: float(11,52) }
+notes_fts4.sql: many (q: text(utf8)) -> { id: INTEGER, o: text(utf8), m: bytes, s: text(utf8)? }
+rank.sql: many (weight: float(11,52), q: text(utf8)) -> { id: INTEGER, rank: float(11,52), weighted: float(11,52)?, body_hit: text(utf8)?, excerpt: text(utf8)? }
 recipe.sql: at_most_one (id: int64) -> { title: TEXT(text(utf8) | bytes) }
-remove.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), body: TEXT(text(utf8) | bytes)? }
-retitle.sql: at_most_one (title: text(utf8)?, id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), title: TEXT(text(utf8) | bytes)? }
-search.sql: many (q: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), title: TEXT(text(utf8) | bytes) }
-search_articles.sql: many (q: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), body: TEXT(text(utf8) | bytes)? }
-search_bare.sql: many (q: text(utf8)) -> { rowid: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-search_index.sql: many (q: text(utf8)) -> { rowid: INTEGER(int64 | float(11,52) | text(utf8) | bytes), title: unknown?, body: unknown? }
+remove.sql: at_most_one (id: int64) -> { id: INTEGER, body: TEXT(text(utf8) | bytes)? }
+retitle.sql: at_most_one (title: text(utf8)?, id: int64) -> { id: INTEGER, title: TEXT(text(utf8) | bytes)? }
+search.sql: many (q: text(utf8)) -> { id: INTEGER, title: TEXT(text(utf8) | bytes) }
+search_articles.sql: many (q: text(utf8)) -> { id: INTEGER, body: TEXT(text(utf8) | bytes)? }
+search_bare.sql: many (q: text(utf8)) -> { rowid: INTEGER }
+search_index.sql: many (q: text(utf8)) -> { rowid: INTEGER, title: unknown?, body: unknown? }
 search_words.sql: many (q: text(utf8)) -> { word: unknown? }

@@ -1,5 +1,5 @@
 coalesced.sql: at_most_one (nickname: text(utf8)?, email: text(utf8)?, id: int64) -> { nickname: TEXT(text(utf8) | bytes)?, email: TEXT(text(utf8) | bytes)? }
-insert_select.sql: many (id: int64, email: text(utf8), nickname: text(utf8), note: text(utf8)?) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-insert_values.sql: one (id: int64, email: text(utf8), nickname: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+insert_select.sql: many (id: int64, email: text(utf8), nickname: text(utf8), note: text(utf8)?) -> { id: INTEGER }
+insert_values.sql: one (id: int64, email: text(utf8), nickname: text(utf8)) -> { id: INTEGER }
 update_set.sql: at_most_one (email: text(utf8), nickname: text(utf8), id: int64) -> { email: TEXT(text(utf8) | bytes)?, nickname: TEXT(text(utf8) | bytes)? }
-upsert.sql: one (id: int64, email: text(utf8), nickname: text(utf8), note: text(utf8)?) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+upsert.sql: one (id: int64, email: text(utf8), nickname: text(utf8), note: text(utf8)?) -> { id: INTEGER }

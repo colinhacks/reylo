@@ -1,5 +1,5 @@
-a_full.sql: one (note: text(utf8)?) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-add_note.sql: one (body: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), body: TEXT(text(utf8) | bytes) }
-add_tag.sql: one (name: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
-note.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), body: TEXT(text(utf8) | bytes), pinned: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+a_full.sql: one (note: text(utf8)?) -> { id: INTEGER }
+add_note.sql: one (body: text(utf8)) -> { id: INTEGER, body: TEXT(text(utf8) | bytes) }
+add_tag.sql: one (name: text(utf8)) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
+note.sql: at_most_one (id: int64) -> { id: INTEGER, body: TEXT(text(utf8) | bytes), pinned: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
 notes.sql: many () -> { body: TEXT(text(utf8) | bytes), pinned: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
