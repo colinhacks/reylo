@@ -102,7 +102,8 @@ macro_rules! base_type {
 /// or `varchar` under a deterministic collation, `json` or `jsonb`, a float or `numeric`, or an
 /// array: `(relation, attnum, the column's name, the CHECK as the server prints it, and per
 /// function the CHECK calls, its name, its extension's name and that extension's version, in three
-/// arrays, then the column's type and that type's base type)`. A CHECK `NOT ENFORCED` (PostgreSQL
+/// arrays, then the column's type and that type's base type, and whether its collation is
+/// deterministic)`. A CHECK `NOT ENFORCED` (PostgreSQL
 /// 18) is never validated, so `convalidated` leaves it out. A table's CHECK says nothing where the
 /// table, or a partition or child a scan reads, is a foreign table, whose rows the server never
 /// checks; a domain's input function checks every value. Nothing is read under `standard_conforming_strings` off, where the
@@ -116,7 +117,7 @@ pub const CHECKS_QUERY: &str = concat!(
     check_function_array!("coalesce(e.extversion, ''::pg_catalog.text)"),
     ", a.atttypid::pg_catalog.int8, ",
     base_type!(),
-    "::pg_catalog.int8 FROM ",
+    "::pg_catalog.int8, coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true) FROM ",
     pairs!(),
     " JOIN pg_catalog.pg_attribute a ON a.attrelid OPERATOR(pg_catalog.=) u.rel AND a.attnum OPERATOR(pg_catalog.=) u.att AND NOT a.attisdropped \
     JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
@@ -790,7 +791,7 @@ impl<'a> Engine<'a> {
         // insert or in its place may fill the column, and a rule may rewrite the insert, so then
         // nothing is said.
         if let Some(target) = &insert {
-            let filled_elsewhere = catalog.skipping_triggers.get(&target.relation).is_some_and(|events| events & cardinality::TRIGGER_ROW_INSERT != 0)
+            let filled_elsewhere = catalog.row_triggers.get(&target.relation).is_some_and(|events| events & cardinality::TRIGGER_ROW_INSERT != 0)
                 || catalog.rewritten.get(&target.relation).is_some_and(|events| events & cardinality::TRIGGER_ROW_INSERT != 0);
             if !filled_elsewhere {
                 if let Some(message) = unwritten(target, &required.unwrap_or_default()) {
@@ -854,7 +855,7 @@ impl<'a> Engine<'a> {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
-                    (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.is_string(col.type_oid)), col.document.as_ref())), col.nullable)
+                    (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.holds_strings(col.type_oid)), col.document.as_ref())), col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
@@ -891,7 +892,7 @@ impl<'a> Engine<'a> {
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(registry.render(o), values.as_deref(), registry.is_string(o)), document.as_ref())) }
+                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(registry.render(o), values.as_deref(), registry.holds_strings(o)), document.as_ref())) }
             })
             .collect();
 
@@ -958,7 +959,7 @@ impl<'a> Engine<'a> {
             return;
         }
         let events = if found.update { cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE | cardinality::TRIGGER_ROW_DELETE } else { cardinality::TRIGGER_ROW_DELETE };
-        let triggered = catalog.skipping_triggers.get(&found.target).is_some_and(|mask| mask & events != 0);
+        let triggered = catalog.row_triggers.get(&found.target).is_some_and(|mask| mask & events != 0);
         let stored = self.stored.borrow();
         for ((read, col), raw) in found.columns.iter().zip(described.columns.iter_mut()).zip(&raw.columns) {
             let Some((name, read)) = read else { continue };
@@ -1038,7 +1039,7 @@ impl<'a> Engine<'a> {
             if !parsed.has_returning || described.columns.is_empty() {
                 return (Cardinality::None, None);
             }
-            return match cardinality::dml(sql, catalog) {
+            return match cardinality::dml(sql, trust, catalog) {
                 Some(Ok(cardinality::Cardinality::One)) => (Cardinality::One, None),
                 Some(Ok(cardinality::Cardinality::AtMostOne)) => (Cardinality::AtMostOne, None),
                 Some(Err(why)) => (Cardinality::Many, Some(why)),
@@ -1559,7 +1560,7 @@ impl<'a> Engine<'a> {
         let own = own_provenance(sql, parsed, raw.columns.len());
         let json = |oid: u32| {
             let registry = self.registry.borrow();
-            !checked_only || jsonshape::is_json(&registry, oid) || registry.is_string(oid) || registry.is_number(oid) || registry.get(registry.resolve_domain(oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array)
+            !checked_only || jsonshape::is_json(&registry, oid) || registry.holds_strings(oid) || registry.is_number(oid) || registry.get(registry.resolve_domain(oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array)
         };
         let mut pairs: Vec<(u32, i32)> = raw.columns.iter().zip(&own).filter(|(c, own)| **own && c.table != 0 && c.attnum > 0 && json(c.oid)).map(|(c, _)| (c.table, c.attnum)).collect();
         pairs.extend(written.iter().filter(|p| !pairs.contains(p)).copied().collect::<Vec<_>>());
@@ -1657,7 +1658,9 @@ impl<'a> Engine<'a> {
             let (Some(rel), Some(att), Some(name), Some(text)) = (row.first().and_then(as_u32), row.get(1).and_then(as_u32), row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { continue };
             let key = (rel, att as i32);
             let types = (row.get(7).and_then(as_u32), row.get(8).and_then(as_u32));
-            if let Some(values) = check_values(text, name, types, trust) {
+            // An element under a nondeterministic collation may equal a listed string and differ from it.
+            let deterministic = row.get(9).and_then(as_bool).unwrap_or(false);
+            if let Some(values) = check_values(text, name, types, trust).or_else(|| deterministic.then(|| check_array_values(text, name, types, trust)).flatten()) {
                 // Every CHECK holds, so a value is in each one's list.
                 out.values.entry(key).and_modify(|known| known.retain(|v| values.contains(v))).or_insert(values);
             }
@@ -1674,6 +1677,13 @@ impl<'a> Engine<'a> {
             // does a cast that runs one, which may turn NULL into a value.
             if check_items(text, name, calls.is_empty()) && !calls.iter().any(|(n, _, _)| n == "array_position") {
                 out.items.insert(key);
+            }
+            // A built-in function is pinned, so the catalog records no dependency on it: a call of
+            // `jsonb_typeof` that resolved to a user's function lists it among the calls.
+            if !calls.iter().any(|(n, _, _)| n == "jsonb_typeof" || n == "json_typeof") {
+                for kind in check_json_kinds(text, name, trust) {
+                    schemas.entry(key).or_default().push((kind.to_string(), JSON_KIND));
+                }
             }
             for (function, args) in check_documents(text, name) {
                 // The function the CHECK calls under that name, which the catalog names by its
@@ -1972,6 +1982,17 @@ impl<'a> Engine<'a> {
                     // its columns' leaves proving nothing: a column they prove non-null is so, and
                     // any other is left to its provenance, as it was.
                     Some(None) if query.lateral => {
+                        match self.lateral_arms(query, trust) {
+                            None => {
+                                pending = true;
+                                break;
+                            }
+                            Some(Some(columns)) => {
+                                settled.insert(i, columns);
+                                break;
+                            }
+                            Some(None) => {}
+                        }
                         if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
                             let columns = columns.into_iter().enumerate().filter(|(_, (_, non_null))| *non_null);
                             settled.insert(i, columns.map(|(at, (name, _))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or(name), nullable: false, document: None, values: None }).collect());
@@ -2161,6 +2182,20 @@ impl<'a> Engine<'a> {
         Some(out)
     }
 
+    /// What a LATERAL set operation that reads the items before it says of its columns, the ones it
+    /// keeps non-null: each arm is described over those items, as the set operation is not alone.
+    /// `None` inside where it is no set operation, or an arm cannot be described.
+    fn lateral_arms(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<Option<Vec<ItemColumn>>> {
+        let Some(around) = &query.around else { return Some(None) };
+        let Some(set) = infer::plan(&query.sql, Dialect::Postgres, trust, &Columns::default()).set_op else { return Some(None) };
+        let (left, right) = (self.probe(&around.with(&set.left), trust), self.probe(&around.with(&set.right), trust));
+        let (Some(left), Some(right)) = (left, right) else { return None };
+        let (Some(left), Some(right)) = (left, right) else { return Some(None) };
+        let Some(facts) = infer::combine(set.kind, &left.columns, &right.columns) else { return Some(None) };
+        let kept = facts.iter().zip(&left.columns).enumerate().filter(|(_, (fact, _))| fact.non_null);
+        Some(Some(kept.map(|(at, (_, column))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or_else(|| column.name.clone()), nullable: false, document: None, values: None }).collect()))
+    }
+
     /// Settle what the describe left open about expression columns from the SQL itself. A column
     /// only ever becomes non-null here, and a probe that cannot be described proves nothing.
     fn refine(&self, sql: &str, described: &mut DescribedStatement, trust: &Trust) -> Lazy<()> {
@@ -2232,6 +2267,27 @@ impl<'a> Engine<'a> {
                 }
                 col.nullable_items = items;
                 col.nested = nested;
+            }
+        }
+        // `ARRAY(SELECT …)`'s elements are its subquery's one column, which the subquery's own FROM
+        // and WHERE settle, over the items of this statement it may read.
+        if plan.set_op.is_none() {
+            let subqueries = infer::array_subqueries(sql).filter(|s| s.len() == described.columns.len()).unwrap_or_default();
+            let mut pending = false;
+            for (col, subquery) in described.columns.iter_mut().zip(&subqueries) {
+                let Some(subquery) = subquery else { continue };
+                match self.probe(subquery, trust) {
+                    Some(Some(settled)) => {
+                        if matches!(settled.columns.as_slice(), [only] if !only.nullable) {
+                            col.nullable_items = Some(false);
+                        }
+                    }
+                    Some(None) => {}
+                    None => pending = true,
+                }
+            }
+            if pending {
+                return None;
             }
         }
         // A read of a JSON column at literal keys holds what the column's schema says is there:
@@ -3080,6 +3136,141 @@ fn check_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), tru
     compared.iter().all(|[l, r]| trust.resolves(Kind::Infix, "=", &[*l, *r]).is_some()).then_some(values)
 }
 
+/// The schema a CHECK of `jsonb_typeof` is read as, whose meaning no validator's version changes.
+const JSON_KIND: Validators = &[&crate::schema_type::REYLO];
+
+/// What a CHECK, as the server prints it, says of a JSON column's kind, each as the JSON Schema of
+/// that kind: `jsonb_typeof(column) = 'object'` or `'array'` (`json_typeof` for a `json` column,
+/// `VALUE` in a domain's), among the conjuncts of an AND, or beside `column IS NULL` under an OR,
+/// which only lets NULL through as well. Such a CHECK refuses JSON's `null`, whose kind is `null`.
+/// Only where `=` over text is the built-in; the caller makes sure the call is.
+fn check_json_kinds(text: &str, column: &str, trust: &Trust) -> Vec<&'static str> {
+    use crate::resolution::{Kind, Operand};
+    use pg_query::protobuf::node::Node as N;
+    use pg_query::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
+    let Ok(parsed) = crate::stack::parse(&format!("SELECT {text}")) else { return Vec::new() };
+    let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|s| s.node.as_ref()) else { return Vec::new() };
+    let Some(N::ResTarget(target)) = select.target_list.first().and_then(|t| t.node.as_ref()) else { return Vec::new() };
+    let names_column = |node: &Node| matches!(node.node.as_ref(), Some(N::ColumnRef(c)) if matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value")));
+    let typeof_column = |node: &Node| {
+        let Some(N::FuncCall(f)) = node.node.as_ref() else { return false };
+        let name = crate::infer::builtin_name(&f.funcname);
+        matches!(name.as_deref(), Some("jsonb_typeof" | "json_typeof")) && matches!(f.args.as_slice(), [arg] if names_column(arg))
+    };
+    let kind = |node: &Node| -> Option<&'static str> {
+        let Some(N::TypeCast(t)) = node.node.as_ref() else { return None };
+        let Some(N::AConst(c)) = t.arg.as_deref().and_then(|a| a.node.as_ref()) else { return None };
+        match &c.val {
+            Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval == "object" => Some(r#"{"type":"object"}"#),
+            Some(pg_query::protobuf::a_const::Val::Sval(s)) if s.sval == "array" => Some(r#"{"type":"array"}"#),
+            _ => None,
+        }
+    };
+    fn kinds(node: &Node, typeof_column: &dyn Fn(&Node) -> bool, kind: &dyn Fn(&Node) -> Option<&'static str>, names_column: &dyn Fn(&Node) -> bool, out: &mut Vec<&'static str>) {
+        match node.node.as_ref() {
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().for_each(|a| kinds(a, typeof_column, kind, names_column, out)),
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::OrExpr as i32 && b.args.len() == 2 => {
+                let null_test = |a: &Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(names_column));
+                match (null_test(&b.args[0]), null_test(&b.args[1])) {
+                    (true, false) => kinds(&b.args[1], typeof_column, kind, names_column, out),
+                    (false, true) => kinds(&b.args[0], typeof_column, kind, names_column, out),
+                    _ => {}
+                }
+            }
+            Some(N::AExpr(e)) if e.kind == AExprKind::AexprOp as i32 && e.name.len() == 1 && crate::jsonshape::last_string(&e.name).as_deref() == Some("=") => {
+                let (Some(l), Some(r)) = (e.lexpr.as_deref(), e.rexpr.as_deref()) else { return };
+                let found = if typeof_column(l) { kind(r) } else if typeof_column(r) { kind(l) } else { None };
+                out.extend(found);
+            }
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(value) = target.val.as_deref() {
+        kinds(value, &typeof_column, &kind, &names_column, &mut out);
+    }
+    let text_type = Operand::Is(crate::pgtypes::oid::TEXT);
+    if trust.resolves(Kind::Infix, "=", &[text_type, text_type]).is_none() {
+        return Vec::new();
+    }
+    out
+}
+
+/// The strings a CHECK, as the server prints it, keeps the elements of array column `column` to
+/// (`VALUE` in a domain's): `column <@ ARRAY['a'::text, …]` or `ARRAY['a'::text, …] @> column`,
+/// among the conjuncts of an AND, or beside `column IS NULL` under an OR. `<@` finds NULL in no
+/// list, so such a CHECK refuses a NULL element too; it looks at elements alone, so it says nothing
+/// of an array's dimensions. Only over `text[]` and `varchar[]`, under a deterministic collation
+/// ([`CHECKS_QUERY`]), where `<@` resolves to the built-in for the column's type.
+pub fn check_array_values(text: &str, column: &str, types: (Option<u32>, Option<u32>), trust: &Trust) -> Option<Vec<String>> {
+    use crate::pgtypes::oid;
+    use crate::resolution::{Kind, Operand};
+    use pg_query::protobuf::node::Node as N;
+    use pg_query::protobuf::{AExprKind, BoolExprType, Node, NullTestType};
+    let array_type = types.1.filter(|base| [oid::TEXT_ARRAY, oid::VARCHAR_ARRAY].contains(base))?;
+    let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
+    let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
+    let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
+    /// A cast to a string type, as the server prints one around a column of a domain.
+    fn uncast(node: &Node) -> &Node {
+        match node.node.as_ref() {
+            Some(N::TypeCast(t)) => {
+                let name = t.type_name.as_ref().and_then(|n| crate::infer::builtin_name(&n.names)).unwrap_or_default();
+                match (["text", "varchar"].contains(&name.as_str()), t.arg.as_deref()) {
+                    (true, Some(arg)) => uncast(arg),
+                    _ => node,
+                }
+            }
+            _ => node,
+        }
+    }
+    let names_column = |node: &Node| matches!(uncast(node).node.as_ref(), Some(N::ColumnRef(c)) if matches!(c.fields.as_slice(), [f] if matches!(f.node.as_ref(), Some(N::String(s)) if s.sval == column || s.sval == "value")));
+    /// The strings of an `ARRAY[…]`, cast or not; a NULL among them is no value `<@` matches.
+    fn strings(node: &Node) -> Option<Vec<String>> {
+        let Some(N::AArrayExpr(a)) = uncast(node).node.as_ref() else { return None };
+        let mut out = Vec::new();
+        for element in &a.elements {
+            let Some(N::AConst(c)) = uncast(element).node.as_ref() else { return None };
+            match &c.val {
+                _ if c.isnull => {}
+                Some(pg_query::protobuf::a_const::Val::Sval(s)) => out.push(s.sval.clone()),
+                _ => return None,
+            }
+        }
+        Some(out)
+    }
+    fn list(node: &Node, names_column: &dyn Fn(&Node) -> bool) -> Option<Vec<String>> {
+        match node.node.as_ref()? {
+            N::BoolExpr(b) if b.boolop == BoolExprType::AndExpr as i32 => {
+                let mut lists = b.args.iter().filter_map(|a| list(a, names_column));
+                let first = lists.next()?;
+                Some(lists.fold(first, |kept, other| kept.into_iter().filter(|v| other.contains(v)).collect()))
+            }
+            N::BoolExpr(b) if b.boolop == BoolExprType::OrExpr as i32 && b.args.len() == 2 => {
+                let null_test = |a: &Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().is_some_and(names_column));
+                match (null_test(&b.args[0]), null_test(&b.args[1])) {
+                    (true, false) => list(&b.args[1], names_column),
+                    (false, true) => list(&b.args[0], names_column),
+                    _ => None,
+                }
+            }
+            N::AExpr(e) if e.kind == AExprKind::AexprOp as i32 && e.name.len() == 1 => {
+                let (l, r) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
+                match crate::jsonshape::last_string(&e.name).as_deref()? {
+                    "<@" if names_column(l) => strings(r),
+                    "@>" if names_column(r) => strings(l),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    let values = list(target.val.as_deref()?, &names_column)?;
+    let operand = Operand::Is(array_type);
+    let resolved = trust.resolves(Kind::Infix, "<@", &[operand, operand]).is_some() && trust.resolves(Kind::Infix, "@>", &[operand, operand]).is_some();
+    resolved.then_some(values)
+}
+
 /// The non-finite values a CHECK on float or `numeric` column `column` (`VALUE` in a domain's),
 /// whose type and base type `types` names, keeps out of it. Postgres orders those types'
 /// values `-Infinity`, then the finite ones, then `Infinity`, then NaN, which equals itself, so
@@ -3420,6 +3611,13 @@ fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
     }
     for row in rows.triggers {
         if let (Some(rel), Some(events)) = (row.first().and_then(as_str), row.get(1).and_then(as_u32)) {
+            let fired: Vec<u32> = row.get(3).and_then(Value::as_array).into_iter().flatten().filter_map(as_u32).collect();
+            let bodies = row.get(4).and_then(as_strings).unwrap_or_default();
+            let every = fired.iter().fold(events, |events, fires| events | fires);
+            if every != 0 {
+                catalog.row_triggers.insert(rel.to_string(), every as i32);
+            }
+            let events = fired.iter().zip(&bodies).filter(|(fires, body)| !cardinality::keeps_the_row(body, **fires as i32)).fold(events, |events, (fires, _)| events | fires);
             if events != 0 {
                 catalog.skipping_triggers.insert(rel.to_string(), events as i32);
             }

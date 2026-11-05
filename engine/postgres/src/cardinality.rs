@@ -147,9 +147,12 @@ pub struct Catalog {
     pub declared_types: std::collections::HashMap<String, std::collections::HashMap<String, u32>>,
     /// Per relation, the events (`TRIGGER_ROW_INSERT`, `_UPDATE`, `_DELETE` as bits) for which it,
     /// or a partition or an inheritance child of it, has an enabled row trigger that runs BEFORE
-    /// the change or INSTEAD of it. Such a trigger can return NULL and skip the row, so an INSERT
-    /// of one row returns at most one.
+    /// the change or INSTEAD of it, which may return NULL and skip the row, so an INSERT of one row
+    /// returns at most one: all but a PL/pgSQL trigger whose body keeps every row ([`keeps_the_row`]).
     pub skipping_triggers: std::collections::HashMap<String, i32>,
+    /// The same events for every such trigger, one that keeps every row included: it may still change
+    /// a row after the WHERE that read it, or fill a column the statement leaves out.
+    pub row_triggers: std::collections::HashMap<String, i32>,
     /// Per relation, the events (the same bits) a rewrite rule replaces or adds actions to, and
     /// for a view every event it has no INSTEAD OF trigger for, as it hands such a write to a table
     /// whose triggers and rules this catalog did not read. RETURNING then gives any number of rows.
@@ -298,13 +301,15 @@ pub const TRIGGER_ROW_UPDATE: i32 = 16;
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per relation a write
 /// to which may return no row or many, `(the name, the events that may skip the row, the events a
-/// rule rewrites)`, each as tgtype bits. An event may skip the row where the relation, or a
-/// partition or an inheritance child a row is routed to, has an enabled row-level trigger that
-/// runs BEFORE the change or INSTEAD of it (internal triggers, the foreign keys', run AFTER and
-/// skip nothing), or is a foreign table, whose wrapper may write nothing. A rule (`pg_rewrite`) on
-/// the relation rewrites its event, and so does a view every event it has no INSTEAD OF trigger
-/// for, since a write through it reaches a table whose triggers and rules these rows do not cover;
-/// an INSTEAD OF trigger returns its own row or none.
+/// rule rewrites, and per BEFORE row trigger written in PL/pgSQL the events it fires on and its
+/// function's body, in two arrays)`, each event as tgtype bits. An event may skip the row where the
+/// relation, or a partition or an inheritance child a row is routed to, has an enabled row-level
+/// trigger that runs BEFORE the change or INSTEAD of it (internal triggers, the foreign keys', run
+/// AFTER and skip nothing), or is a foreign table, whose wrapper may write nothing; a PL/pgSQL
+/// trigger's body says whether it does ([`keeps_the_row`]), so it counts only in the arrays. A rule
+/// (`pg_rewrite`) on the relation rewrites its event, and so does a view every event it has no
+/// INSTEAD OF trigger for, since a write through it reaches a table whose triggers and rules these
+/// rows do not cover; an INSTEAD OF trigger returns its own row or none.
 pub const TRIGGERS_QUERY: &str = concat!(
     "WITH RECURSIVE rels AS (SELECT c.oid AS root, c.relkind, x.name FROM ",
     names!("$1::pg_catalog.text[]", "$2::pg_catalog.int4", "x"),
@@ -313,10 +318,17 @@ pub const TRIGGERS_QUERY: &str = concat!(
     "), \
     tree(root, rel) AS (SELECT rels.root, rels.root FROM rels \
       UNION SELECT t.root, i.inhrelid FROM tree t JOIN pg_catalog.pg_inherits i ON i.inhparent OPERATOR(pg_catalog.=) t.rel), \
-    found AS (SELECT r.name, \
+    readable AS (SELECT t.root, g.oid AS id, g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28 AS events, p.prosrc FROM tree t \
+      JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) t.rel \
+      JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) g.tgfoid \
+      JOIN pg_catalog.pg_language l ON l.oid OPERATOR(pg_catalog.=) p.prolang \
+      WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
+        AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 3) OPERATOR(pg_catalog.=) 3 AND l.lanname OPERATOR(pg_catalog.=) 'plpgsql'::pg_catalog.name), \
+    found AS (SELECT r.name, r.root, \
       (coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) FROM tree t JOIN pg_catalog.pg_trigger g ON g.tgrelid OPERATOR(pg_catalog.=) t.rel \
           WHERE t.root OPERATOR(pg_catalog.=) r.root AND NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
-            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 66) OPERATOR(pg_catalog.<>) 0), 0) \
+            AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 1) OPERATOR(pg_catalog.=) 1 AND (g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 66) OPERATOR(pg_catalog.<>) 0 \
+            AND NOT EXISTS (SELECT 1 FROM readable x WHERE x.id OPERATOR(pg_catalog.=) g.oid AND x.root OPERATOR(pg_catalog.=) t.root)), 0) \
         OPERATOR(pg_catalog.|) CASE WHEN EXISTS (SELECT 1 FROM tree t JOIN pg_catalog.pg_class f ON f.oid OPERATOR(pg_catalog.=) t.rel \
           WHERE t.root OPERATOR(pg_catalog.=) r.root AND f.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") THEN 28 ELSE 0 END) AS skipping, \
       ((CASE WHEN r.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" THEN 28 OPERATOR(pg_catalog.&) (OPERATOR(pg_catalog.~) coalesce((SELECT pg_catalog.bit_or(g.tgtype::pg_catalog.int4 OPERATOR(pg_catalog.&) 28) \
@@ -325,10 +337,64 @@ pub const TRIGGERS_QUERY: &str = concat!(
         OPERATOR(pg_catalog.|) coalesce((SELECT pg_catalog.bit_or(CASE WHEN w.ev_type OPERATOR(pg_catalog.=) '2'::pg_catalog.\"char\" THEN 16 \
             WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
           WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
-            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten \
+            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten, \
+      ARRAY(SELECT x.events::pg_catalog.int8 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS events, \
+      ARRAY(SELECT x.prosrc FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS bodies \
       FROM rels r) \
-    SELECT f.name, f.skipping, f.rewritten FROM found f WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0"
+    SELECT f.name, f.skipping, f.rewritten, f.events, f.bodies FROM found f \
+    WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0 OR EXISTS (SELECT 1 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) f.root)"
 );
+
+/// Whether a BEFORE row trigger written in PL/pgSQL, with the body `body` and firing on `events`,
+/// keeps every row: only a RETURN of NULL skips one, and a body that ends without a RETURN raises.
+/// So each RETURN must return NEW where the trigger fires on INSERT and UPDATE alone, or OLD where
+/// it fires on UPDATE and DELETE alone: the other is NULL on the events that have none. Nothing may
+/// assign either as a whole, since `new := null` empties it, and a RETURN of the record then
+/// returns NULL; a field's assignment leaves the record a row. A CALL can write either back through
+/// an INOUT parameter. A body the parser does not read says nothing.
+pub fn keeps_the_row(body: &str, events: i32) -> bool {
+    use serde_json::Map;
+    /// `varno` as the dump writes it, which leaves a 0 out.
+    fn number(map: &Map<String, Value>, key: &str) -> i64 {
+        map.get(key).and_then(Value::as_i64).unwrap_or(0)
+    }
+    struct Rules {
+        new: i64,
+        old: i64,
+        may_return: Vec<i64>,
+    }
+    fn holds(v: &Value, rules: &Rules) -> bool {
+        match v {
+            Value::Array(items) => items.iter().all(|i| holds(i, rules)),
+            Value::Object(map) => map.iter().all(|(key, child)| {
+                let own = match (key.as_str(), child.as_object()) {
+                    ("PLpgSQL_stmt_return", Some(s)) => !s.contains_key("expr") && rules.may_return.contains(&number(s, "retvarno")),
+                    ("PLpgSQL_stmt_assign" | "PLpgSQL_stmt_foreach_a", Some(s)) => ![rules.new, rules.old].contains(&number(s, "varno")),
+                    // A record named as a target: `SELECT … INTO new`, `FOR new IN …`, `FETCH c INTO new`.
+                    ("PLpgSQL_rec", Some(r)) => ![rules.new, rules.old].contains(&number(r, "dno")),
+                    ("PLpgSQL_stmt_call" | "PLpgSQL_stmt_return_next" | "PLpgSQL_stmt_return_query", _) => false,
+                    _ => true,
+                };
+                own && holds(child, rules)
+            }),
+            _ => true,
+        }
+    }
+    let statement = format!("CREATE FUNCTION reylo_trigger() RETURNS trigger LANGUAGE plpgsql AS '{}'", body.replace('\'', "''"));
+    let Ok(Value::Array(functions)) = crate::stack::run(|| pg_query::parse_plpgsql(&statement)) else { return false };
+    let [function] = functions.as_slice() else { return false };
+    let Some(function) = function.get("PLpgSQL_function").and_then(Value::as_object) else { return false };
+    let Some(action) = function.get("action") else { return false };
+    let (new, old) = (number(function, "new_varno"), number(function, "old_varno"));
+    let mut may_return = Vec::new();
+    if events & TRIGGER_ROW_DELETE == 0 {
+        may_return.push(new);
+    }
+    if events & TRIGGER_ROW_INSERT == 0 {
+        may_return.push(old);
+    }
+    holds(action, &Rules { new, old, may_return })
+}
 
 /// `$1` is `text[]` of relation names as the statement writes them (`users`, `archive.users`), `$2` how many:
 /// one row per unique index that bounds what a scan of that relation reads, `(the name, key
@@ -521,7 +587,7 @@ fn never_empty(node: &protobuf::Node, s: &SelectStmt, dialect: Dialect, trust: &
                     let enclosed = catalog.enclosed(&with_names(s));
                     let one = match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
                         Some(NodeEnum::SelectStmt(inner)) => exactly_one_select(inner, dialect, trust, &enclosed),
-                        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => match dml_node(body, &enclosed) {
+                        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => match dml_node(body, trust, &enclosed) {
                             Some(Ok(Cardinality::One)) => Ok(()),
                             Some(Ok(Cardinality::AtMostOne)) => Err("the write may change no row".to_string()),
                             Some(Err(why)) => Err(why),
@@ -760,7 +826,7 @@ fn cte_passthrough(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Ca
                 Err(_) => Err(format!("the WITH query `{}` returns any number of rows: {why}", rv.relname)),
             },
         },
-        NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_) => match dml_node(body, catalog) {
+        NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_) => match dml_node(body, trust, catalog) {
             Some(r) => r.map_err(|why| format!("the WITH query `{}` returns any number of rows: {why}", rv.relname)),
             None => return None,
         },
@@ -922,13 +988,18 @@ impl<'a> From<'a> {
         from
     }
 
-    /// One relation alone, as an UPDATE or a DELETE reads its target, with the WHERE's conjuncts.
-    fn single(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>) -> From<'a> {
+    /// An UPDATE's or a DELETE's target, the first item, with what its FROM or USING joins and the
+    /// WHERE's conjuncts.
+    fn target(rv: &'a protobuf::RangeVar, where_clause: Option<&'a protobuf::Node>, with: Option<&'a protobuf::WithClause>, joined: &'a [protobuf::Node]) -> From<'a> {
         let ctes = with.iter().flat_map(|w| w.ctes.iter().filter_map(cte_name).cloned()).collect();
         let (alias, renamed) = rv.alias.as_ref().map_or_else(|| (rv.relname.clone(), false), |a| (a.aliasname.clone(), !a.colnames.is_empty()));
         let item = Item { alias, source: Source::Relation(rv), nullable: false, renamed, columns: Vec::new() };
         let conjuncts = where_clause.into_iter().flat_map(conjuncts_of).map(|node| Conjunct { node, may_pin: None, inner: true }).collect();
-        From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None, with }
+        let mut from = From { items: vec![item], conjuncts, ctes, using: Vec::new(), natural: false, refused: None, with };
+        for item in joined {
+            from.flatten(item, with, false);
+        }
+        from
     }
 
     fn flatten(&mut self, node: &'a protobuf::Node, with: Option<&'a protobuf::WithClause>, nullable: bool) {
@@ -1631,7 +1702,7 @@ impl<'a> From<'a> {
 fn with_query_at_most_one(cte: &protobuf::CommonTableExpr, dialect: Dialect, trust: &Trust, catalog: &Catalog) -> bool {
     match cte.ctequery.as_deref().and_then(|q| q.node.as_ref()) {
         Some(NodeEnum::SelectStmt(inner)) => at_most_one_select(inner, dialect, trust, catalog).is_ok(),
-        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => matches!(dml_node(body, catalog), Some(Ok(_))),
+        Some(body @ (NodeEnum::InsertStmt(_) | NodeEnum::UpdateStmt(_) | NodeEnum::DeleteStmt(_))) => matches!(dml_node(body, trust, catalog), Some(Ok(_))),
         _ => false,
     }
 }
@@ -1788,13 +1859,23 @@ fn projected(sub: &SelectStmt, c: &protobuf::ColumnRef, ctes: &[String], catalog
     catalog.column_types.get(&relation)?.get(column).copied()
 }
 
-/// The type of the output column `name` of a subquery or WITH query over one relation, where the
-/// column is one of the relation's, passed through: `*`, or a plain column under its own name or
-/// an alias. A grouping or an aggregate changes no plain column's type.
+/// The type of the output column `name` of a subquery or WITH query, where the column is one of
+/// the one relation it reads, passed through (`*`, or a plain column under its own name or an
+/// alias), or a value under an alias whose type the SQL names, as the cast of `with input as
+/// (select :id::int as id)`. A grouping or an aggregate changes no plain column's type.
 fn output_type(sub: &SelectStmt, name: &str, ctes: &[String], catalog: &Catalog) -> Option<u32> {
     for target in &sub.target_list {
         let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { continue };
-        let Some(NodeEnum::ColumnRef(c)) = r.val.as_deref().and_then(|v| v.node.as_ref()) else { continue };
+        let Some(value) = r.val.as_deref() else { continue };
+        let Some(NodeEnum::ColumnRef(c)) = value.node.as_ref() else {
+            if r.name == name {
+                return match value_type(value, catalog, &|_| None) {
+                    ValueType::Is(t) => Some(t),
+                    _ => None,
+                };
+            }
+            continue;
+        };
         if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
             let (relation, _) = only_relation(sub, ctes)?;
             if let Some(t) = catalog.column_types.get(&relation).and_then(|types| types.get(name)) {
@@ -2889,12 +2970,16 @@ fn one_row(s: &SelectStmt, dialect: Dialect, trust: &Trust, catalog: &Catalog) -
     Err(from.why_not(&determined, catalog))
 }
 
-/// Whether `where_clause` pins one row of `rv` by a unique key, as the closure over one relation
-/// does ([`From::single`]).
+/// Whether `where_clause` pins one row of `rv`, an UPDATE's or a DELETE's target, by a unique key,
+/// as the closure over the target and what its FROM or USING joins does ([`From::target`]). The
+/// target alone has to be pinned: a target row that joins several rows is written once, and
+/// returned once.
 fn key_bounds(
     rv: &protobuf::RangeVar,
     with: Option<&protobuf::WithClause>,
     where_clause: Option<&protobuf::Node>,
+    joined: &[protobuf::Node],
+    trust: &Trust,
     catalog: &Catalog,
 ) -> Result<(), String> {
     let relation = catalog_name(rv);
@@ -2904,9 +2989,12 @@ fn key_bounds(
             return Err(format!("`{relation}` here is the WITH query of that name, which has no unique index"));
         }
     }
-    let from = From::single(rv, where_clause, with);
-    let determined = from.determined(false, Dialect::Postgres, &Trust::default(), catalog);
-    if determined.iter().all(|d| *d) {
+    let from = From::target(rv, where_clause, with, joined);
+    if from.refused.is_some() {
+        return Err("a write that joins what the engine does not read returns a row per pair it matches".into());
+    }
+    let determined = from.determined(false, Dialect::Postgres, trust, catalog);
+    if determined.first().copied().unwrap_or(false) {
         Ok(())
     } else {
         Err(from.why_not(&determined, catalog))
@@ -2917,35 +3005,59 @@ fn key_bounds(
 /// of one `VALUES` row is one row (or none under `ON CONFLICT DO NOTHING`); an `UPDATE` or
 /// `DELETE` whose `WHERE` pins a unique key of its one target relation is at most one; anything
 /// else is any number. `None` when the statement is not one of these.
-pub fn dml(sql: &str, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
-    crate::stack::run(|| dml_here(sql, catalog))
+pub fn dml(sql: &str, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+    crate::stack::run(|| dml_here(sql, trust, catalog))
 }
 
-fn dml_here(sql: &str, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+fn dml_here(sql: &str, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
     let parsed = crate::stack::parse(sql).ok()?;
     let mut stmts = parsed.protobuf.stmts;
     if stmts.len() != 1 {
         return None;
     }
     let node = stmts.pop().and_then(|s| s.stmt).and_then(|n| n.node)?;
-    dml_node(&node, catalog)
+    dml_node(&node, trust, catalog)
 }
 
-fn dml_node(node: &NodeEnum, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
+/// How many rows an INSERT's SELECT returns, read with the INSERT's WITH queries in its scope:
+/// `with input as (select :id::int as id) insert … select input.id from input` writes one row.
+fn inserted_rows(i: &protobuf::InsertStmt, s: &SelectStmt, trust: &Trust, catalog: &Catalog) -> Result<Cardinality, String> {
+    const WHY: &str = "an INSERT … SELECT returns a row per row the SELECT produces";
+    let own;
+    let select = match i.with_clause.as_ref() {
+        Some(_) if s.with_clause.is_some() => return Err(WHY.into()),
+        Some(with) => {
+            own = SelectStmt { with_clause: Some(with.clone()), ..s.clone() };
+            &own
+        }
+        None => s,
+    };
+    let catalog = Catalog { row_fields: None, ..catalog.clone() };
+    if exactly_one_select(select, Dialect::Postgres, trust, &catalog).is_ok() {
+        return Ok(Cardinality::One);
+    }
+    at_most_one_select(select, Dialect::Postgres, trust, &catalog).map(|()| Cardinality::AtMostOne).map_err(|_| WHY.to_string())
+}
+
+fn dml_node(node: &NodeEnum, trust: &Trust, catalog: &Catalog) -> Option<Result<Cardinality, String>> {
     Some(match node {
         NodeEnum::InsertStmt(i) => {
             let rows = match i.select_stmt.as_deref().and_then(|n| n.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => 1,
-                Some(NodeEnum::SelectStmt(s)) if !s.values_lists.is_empty() => s.values_lists.len(),
+                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => Cardinality::One,
+                Some(NodeEnum::SelectStmt(s)) if !s.values_lists.is_empty() => return Some(Err("a VALUES list returns a row per row it lists".into())),
+                Some(NodeEnum::SelectStmt(s)) => match inserted_rows(i, s, trust, catalog) {
+                    Ok(rows) => rows,
+                    Err(why) => return Some(Err(why)),
+                },
                 // `INSERT … DEFAULT VALUES` has no select at all.
-                None => 1,
+                None => Cardinality::One,
                 _ => return Some(Err("an INSERT … SELECT returns a row per row the SELECT produces".into())),
             };
-            if rows != 1 {
-                return Some(Err("a VALUES list returns a row per row it lists".into()));
-            }
             if rewritten(i.relation.as_ref(), TRIGGER_ROW_INSERT, catalog) {
                 return Some(Err(REWRITTEN.into()));
+            }
+            if rows == Cardinality::AtMostOne {
+                return Some(Ok(Cardinality::AtMostOne));
             }
             // A row trigger that runs BEFORE the insert (or the update ON CONFLICT turns it into)
             // or INSTEAD of it can return NULL, and then the row is neither written nor returned.
@@ -2959,24 +3071,18 @@ fn dml_node(node: &NodeEnum, catalog: &Catalog) -> Option<Result<Cardinality, St
             }
         }
         NodeEnum::UpdateStmt(u) => {
-            if !u.from_clause.is_empty() {
-                return Some(Err("an UPDATE … FROM returns a row per pair it matches".into()));
-            }
             let rv = u.relation.as_ref()?;
             if rewritten(Some(rv), TRIGGER_ROW_UPDATE, catalog) {
                 return Some(Err(REWRITTEN.into()));
             }
-            key_bounds(rv, u.with_clause.as_ref(), u.where_clause.as_deref(), catalog).map(|()| Cardinality::AtMostOne)
+            key_bounds(rv, u.with_clause.as_ref(), u.where_clause.as_deref(), &u.from_clause, trust, catalog).map(|()| Cardinality::AtMostOne)
         }
         NodeEnum::DeleteStmt(d) => {
-            if !d.using_clause.is_empty() {
-                return Some(Err("a DELETE … USING returns a row per pair it matches".into()));
-            }
             let rv = d.relation.as_ref()?;
             if rewritten(Some(rv), TRIGGER_ROW_DELETE, catalog) {
                 return Some(Err(REWRITTEN.into()));
             }
-            key_bounds(rv, d.with_clause.as_ref(), d.where_clause.as_deref(), catalog).map(|()| Cardinality::AtMostOne)
+            key_bounds(rv, d.with_clause.as_ref(), d.where_clause.as_deref(), &d.using_clause, trust, catalog).map(|()| Cardinality::AtMostOne)
         }
         _ => return None,
     })
@@ -3423,6 +3529,47 @@ fn walk(v: &Value, calls: &mut Calls) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_trigger_keeps_the_row_where_every_return_is_a_row() {
+        let (update, insert, delete) = (TRIGGER_ROW_UPDATE, TRIGGER_ROW_INSERT, TRIGGER_ROW_DELETE);
+        // Every RETURN returns the row, whatever else the body does.
+        assert!(keeps_the_row("begin new.at := now(); return new; end", update));
+        assert!(keeps_the_row("begin new.at := now(); return new; end", update | insert));
+        assert!(keeps_the_row("begin if new.a is not distinct from old.a then new.a := now(); end if; return new; end", update));
+        assert!(keeps_the_row("BEGIN RETURN NEW; END", update));
+        assert!(keeps_the_row("declare n alias for new; begin return n; end", update));
+        assert!(keeps_the_row("begin return old; end", update));
+        assert!(keeps_the_row("begin return old; end", delete));
+        assert!(keeps_the_row("begin return old; end", update | delete));
+        // Falling off the end raises, and a raise skips nothing.
+        assert!(keeps_the_row("begin new.at := now(); end", update));
+        assert!(keeps_the_row("begin raise exception 'no'; end", update));
+        // A body in single quotes reads as written.
+        assert!(keeps_the_row("begin new.a := 'it''s'; return new; end", update));
+        // NULL, by name or by value.
+        assert!(!keeps_the_row("begin return null; end", update));
+        assert!(!keeps_the_row("begin if new.a then return null; end if; return new; end", update));
+        assert!(!keeps_the_row("begin perform 1; return new; exception when others then return null; end", update));
+        assert!(!keeps_the_row("declare other record; begin return other; end", update));
+        assert!(!keeps_the_row("begin declare new record; begin return new; end; end", update));
+        assert!(!keeps_the_row("begin return (null::t); end", update));
+        // NEW is NULL on a delete, and OLD on an insert.
+        assert!(!keeps_the_row("begin return new; end", delete));
+        assert!(!keeps_the_row("begin return new; end", update | delete));
+        assert!(!keeps_the_row("begin return old; end", insert));
+        assert!(!keeps_the_row("begin return old; end", insert | update));
+        // The whole record assigned.
+        assert!(!keeps_the_row("begin new := null; return new; end", update));
+        assert!(!keeps_the_row("begin select * into new from t where false; return new; end", update));
+        assert!(!keeps_the_row("begin execute 'select 1' into new; return new; end", update));
+        assert!(!keeps_the_row("begin for new in select * from t loop null; end loop; return new; end", update));
+        assert!(!keeps_the_row("declare c cursor for select 1; begin open c; fetch c into new; return new; end", update));
+        assert!(!keeps_the_row("declare n alias for new; begin n := null; return new; end", update));
+        assert!(!keeps_the_row("begin call p(new); return new; end", update));
+        // What the parser does not read says nothing.
+        assert!(!keeps_the_row("this is not plpgsql", update));
+    }
+
     use super::*;
 
     fn catalog() -> Catalog {
@@ -3615,8 +3762,8 @@ mod tests {
         // A predicate met only in a join's ON clause does not count.
         refused(at("select p.id from users u join posts p on p.score is null where p.title = $1 and u.id = 1"), "of `p`", "the predicate in an ON");
         // A write reads the same keys.
-        assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &c), Some(Ok(_))));
-        assert!(matches!(dml("delete from posts where title = $1 returning id", &c), Some(Err(_))));
+        assert!(matches!(dml("delete from posts where title = $1 and score is null returning id", &Trust::default(), &c), Some(Ok(_))));
+        assert!(matches!(dml("delete from posts where title = $1 returning id", &Trust::default(), &c), Some(Err(_))));
     }
 
     #[test]
@@ -3628,7 +3775,7 @@ mod tests {
         // A function the catalog does not know may be volatile.
         refused(at("select email from users where id = nextval('s')"), "does not equate every column", "nextval");
         refused(at("select author_id, count(*) from posts where author_id = random()::int group by author_id"), "GROUP BY", "group by random");
-        assert!(matches!(dml("delete from users where id = random()::int returning id", &c), Some(Err(_))));
+        assert!(matches!(dml("delete from users where id = random()::int returning id", &Trust::default(), &c), Some(Err(_))));
         assert_eq!(at("select id from users where email = lower($1)"), Ok(()));
     }
 
@@ -3696,28 +3843,28 @@ mod tests {
     #[test]
     fn an_insert_of_one_row_returns_it_unless_something_can_skip_it() {
         let c = catalog();
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &c), Some(Ok(Cardinality::One)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &c), Some(Ok(Cardinality::AtMostOne)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &c), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         // A row trigger that runs BEFORE the insert can return NULL; one on UPDATE matters only
         // where ON CONFLICT turns the insert into an update.
         let mut triggered = catalog();
         triggered.skipping_triggers.insert("users".into(), TRIGGER_ROW_INSERT);
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &triggered), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::AtMostOne)));
         triggered.skipping_triggers.insert("users".into(), TRIGGER_ROW_UPDATE);
-        assert_eq!(dml("insert into users (email) values ($1) returning id", &triggered), Some(Ok(Cardinality::One)));
-        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &triggered), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::One)));
+        assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &triggered), Some(Ok(Cardinality::AtMostOne)));
         // A rewrite rule replaces the write with actions of its own, and a view hands it to a
         // table whose triggers and rules the catalog did not read: any number of rows.
         let mut ruled = catalog();
         ruled.rewritten.insert("users".into(), TRIGGER_ROW_INSERT);
-        assert!(matches!(dml("insert into users (email) values ($1) returning id", &ruled), Some(Err(_))));
-        assert_eq!(dml("delete from users where id = $1 returning id", &ruled), Some(Ok(Cardinality::AtMostOne)));
+        assert!(matches!(dml("insert into users (email) values ($1) returning id", &Trust::default(), &ruled), Some(Err(_))));
+        assert_eq!(dml("delete from users where id = $1 returning id", &Trust::default(), &ruled), Some(Ok(Cardinality::AtMostOne)));
         ruled.rewritten.insert("users".into(), TRIGGER_ROW_DELETE | TRIGGER_ROW_UPDATE);
-        assert!(matches!(dml("delete from users where id = $1 returning id", &ruled), Some(Err(_))));
-        assert!(matches!(dml("update users set email = $2 where id = $1 returning id", &ruled), Some(Err(_))));
+        assert!(matches!(dml("delete from users where id = $1 returning id", &Trust::default(), &ruled), Some(Err(_))));
+        assert!(matches!(dml("update users set email = $2 where id = $1 returning id", &Trust::default(), &ruled), Some(Err(_))));
     }
 
     #[test]

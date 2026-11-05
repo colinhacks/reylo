@@ -128,6 +128,26 @@ diff -ruN a/libpg_query/src/pg_query_internal.h b/libpg_query/src/pg_query_inter
  
  typedef struct
  {
+diff -ruN a/libpg_query/src/pg_query_json_plpgsql.c b/libpg_query/src/pg_query_json_plpgsql.c
+--- a/libpg_query/src/pg_query_json_plpgsql.c
++++ b/libpg_query/src/pg_query_json_plpgsql.c
+@@ -506,7 +506,7 @@
+ 
+ 	WRITE_INT_FIELD(lineno, lineno, lineno);
+ 	WRITE_EXPR_FIELD(expr);
+-	//WRITE_INT_FIELD(retvarno);
++	WRITE_INT_FIELD(retvarno, retvarno, retvarno);
+ }
+ 
+ static void
+@@ -650,6 +650,7 @@
+ 		switch (d->dtype)
+ 		{
+ 			case PLPGSQL_DTYPE_VAR:
++			case PLPGSQL_DTYPE_PROMISE:
+ 				dump_var(out, (PLpgSQL_var *) d);
+ 				break;
+ 			case PLPGSQL_DTYPE_ROW:
 diff -ruN a/libpg_query/src/pg_query_outfuncs_protobuf.c b/libpg_query/src/pg_query_outfuncs_protobuf.c
 --- a/libpg_query/src/pg_query_outfuncs_protobuf.c
 +++ b/libpg_query/src/pg_query_outfuncs_protobuf.c

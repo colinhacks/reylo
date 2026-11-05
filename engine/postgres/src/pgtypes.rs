@@ -17,6 +17,8 @@ pub mod oid {
     pub const INT2: u32 = 21;
     pub const INT4: u32 = 23;
     pub const TEXT: u32 = 25;
+    pub const TEXT_ARRAY: u32 = 1009;
+    pub const VARCHAR_ARRAY: u32 = 1015;
     pub const JSON: u32 = 114;
     pub const UUID: u32 = 2950;
     pub const FLOAT4: u32 = 700;
@@ -471,7 +473,7 @@ impl TypeRegistry {
     /// The string columns of the relation whose row type `oid` is, by relation and attribute: the
     /// ones a CHECK may keep to a list of strings ([`TypeRegistry::values`]).
     pub fn row_string_columns(&self, oid: u32) -> Vec<(u32, i32)> {
-        self.row_columns(oid, &[oid::TEXT, oid::VARCHAR])
+        self.row_columns(oid, &[oid::TEXT, oid::VARCHAR, oid::TEXT_ARRAY, oid::VARCHAR_ARRAY])
     }
 
     /// The array columns of the relation whose row type `oid` is, by relation and attribute: the
@@ -535,6 +537,13 @@ impl TypeRegistry {
         matches!(self.resolve_domain(oid), oid::TEXT | oid::VARCHAR)
     }
 
+    /// Whether type `oid`, through any domain, holds strings a CHECK may keep to a list: a `text` or
+    /// a `varchar`, or an array of them.
+    pub fn holds_strings(&self, oid: u32) -> bool {
+        let base = self.resolve_domain(oid);
+        matches!(base, oid::TEXT | oid::VARCHAR) || self.get(base).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).is_some_and(|e| self.is_string(e))
+    }
+
     /// Whether type `oid` is a float or `numeric`, through any domain: a number a CHECK may keep
     /// NaN or the infinities out of ([`crate::types::NonFinite`]).
     pub fn is_number(&self, oid: u32) -> bool {
@@ -584,7 +593,7 @@ impl TypeRegistry {
                         let document = t.relid.filter(|_| stored).and_then(|r| self.documents.get(&(r, f.attnum)));
                         let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
                         let non_finite = t.relid.filter(|_| stored).and_then(|r| self.non_finite.get(&(r, f.attnum)));
-                        let string = self.is_string(f.type_oid);
+                        let string = self.holds_strings(f.type_oid);
                         let items = t.relid.filter(|_| stored).is_some_and(|r| self.items.contains(&(r, f.attnum)));
                         let ty = crate::postgres::with_items(ty, items.then_some(false));
                         let ty = match (document, values, non_finite) {
@@ -735,6 +744,12 @@ fn interval(duration: DurationType, typmod: i32) -> DurationType {
 pub fn with_values(ty: Type, values: &[String]) -> Type {
     match ty.kind {
         Kind::Text(text) if !values.is_empty() => Type { kind: Kind::Text(TextType { values: Some(values.to_vec()), ..text }), ..ty },
+        // An array a CHECK holds within a list of strings holds no NULL element either: `<@` finds
+        // NULL in no list ([`crate::postgres::check_array_values`]).
+        Kind::Array(array) if !values.is_empty() => {
+            let element = Position::non_null(with_values(array.element.ty, values));
+            Type { kind: Kind::Array(ArrayType { element: Box::new(element), ..array }), ..ty }
+        }
         kind => Type { kind, ..ty },
     }
 }

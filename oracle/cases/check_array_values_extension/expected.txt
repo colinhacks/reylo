@@ -1,0 +1,1 @@
+columns.sql: many () -> { tags: (text('a' | 'b'))[]? }

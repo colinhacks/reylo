@@ -1,0 +1,2 @@
+selected_insert.sql: null value in column "id" of relation "selected" violates not-null constraint (23502)
+with_write_joined_key.sql: duplicate key value violates unique constraint "users_pkey" (23505)

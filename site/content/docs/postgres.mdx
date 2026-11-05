@@ -219,13 +219,13 @@ An interval is an ISO 8601 duration with its sign in front, which `Temporal.Dura
 
 ### JSON
 
-A `json` or `jsonb` column is typed `Json`, any JSON value, unless a JSON Schema `CHECK` constrains it or your query builds the JSON. Reylo exports the type:
+A `json` or `jsonb` column is typed `Json`, any JSON value, unless a `CHECK` constrains it or your query builds the JSON. Reylo exports the type:
 
 ```ts
 type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 ```
 
-Here `payload` is typed by its schema, and `kind` by its `CHECK`:
+A `CHECK` of the value's kind is all it takes for an object or an array: `jsonb_typeof(doc) = 'object'` types `doc` as `{ [key: string]: Json }`, and `= 'array'` as `Json[]`. A JSON Schema `CHECK` says more. Here `payload` is typed by its schema, and `kind` by its `CHECK`:
 
 ```ts twoslash tab="main.ts"
 import events from "./pg_events.sql";
@@ -448,7 +448,7 @@ group by u.id
 
 **`NULL` elements**
 
-Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`.
+Postgres lets any array contain `NULL`, even in a `NOT NULL` column, so a `text[]` column is typed `(string | null)[]`. An array your query builds from non-null values, like `array[id]`, is typed `number[]`, and so are `array(select …)` of a non-null column and `array_remove(tags, null)`.
 
 <Pairs>
 
@@ -484,7 +484,7 @@ A `vector` or `halfvec` comes back as a `number[]`, and a parameter of either ta
 
 ### Enums and domains
 
-An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
+An enum is typed as the union of its labels. So is a `text` column whose `CHECK` limits it to a list (`kind in ('click', 'key')`), and a parameter written into it with no cast, as in `values (:kind)`. A `text[]` column whose `CHECK` holds it within a list (`tags <@ array['a', 'b']`) is an array of that union, with no `null` element, since `<@` finds `NULL` in no list. A domain is typed as its base type: `orders.total` is an `amount`, a `numeric`, so a `string`.
 
 <Pairs>
 
@@ -652,8 +652,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
-| `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row with `values (…)` and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`; or inserts one row with `on conflict do nothing` and `returning` |
+| `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row, with `values (…)` or a `select` of one row, and has `returning`, an `on conflict do update` included |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `on conflict do nothing` and `returning` |
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -669,6 +669,55 @@ A query that compares every column of a primary key or unique index with `=` ret
 select id, name
 from users
 where lower(email) = lower(:email)
+```
+
+</Inferred>
+
+**Writes that read a `with` query**
+
+An `update` or `delete` that joins with `from` or `using` is still a row or `null` when its key is matched, since a row it writes is written once, whatever it joins. The match can be to a `with` query of one row, the usual way to use a parameter twice:
+
+<Inferred>
+
+```sql file="pg_card_with_input.sql"
+with input as (
+  select :id::int as id, :name::text as name
+)
+update users u
+set name = input.name
+from input
+where u.id = input.id and u.name <> input.name
+returning u.id
+```
+
+</Inferred>
+
+**Triggers**
+
+A `BEFORE` row trigger can skip a row by returning `NULL`, so a write it fires on returns a row or `null`. Reylo reads a trigger written in PL/pgSQL: where every `return` returns `new`, or `old` on an update or a delete, it skips nothing, and the write keeps its cardinality. A trigger in another language, or one that assigns `new` as a whole, may skip a row.
+
+<Inferred>
+
+```sql schema
+create table notes (
+  id serial primary key,
+  body text not null,
+  edited_at timestamptz not null default now()
+);
+create function touch_note() returns trigger language plpgsql as $$
+begin
+  new.edited_at := now();
+  return new;
+end $$;
+create trigger touch_note before update on notes
+  for each row execute function touch_note();
+```
+
+```sql file="pg_card_trigger.sql"
+insert into notes (id, body)
+values (:id, :body)
+on conflict (id) do update set body = excluded.body
+returning id, edited_at
 ```
 
 </Inferred>

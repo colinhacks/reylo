@@ -1,0 +1,1 @@
+with p as (insert into accounts (id, name) values (:id, 'new') returning id), u as (insert into users (id, account_id) select 100, p.id from p returning *) select u.id, a.name from u join accounts a on a.id = u.account_id
