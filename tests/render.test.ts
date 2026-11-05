@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import type { EngineType } from "../src/engine.ts";
 import { jsonNumbers, orNull, renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { array, checked, doc, either, enumOf, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
+import { array, checked, doc, enumOf, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 
 // A table's row type as the engine renders it once the catalog gave its columns.
 const users: EngineType = record([field("id", pg("int8")), field("seen", pg("timestamptz"), true), field("tags", array(pg("text")), true), field("mood", enumOf("public.mood", ["ok", "sad"]))], "public.users");
@@ -56,16 +56,16 @@ test("one type per SQL type, on every driver: what the run time returns (src/val
 test("a union is either", () => {
   // What MySQL answers with by what is bound for a placeholder: a BIGINT is a BigInt, a DOUBLE a
   // number; an INT a temporary table may widen to a BIGINT is a BigInt either way.
-  assert.equal(renderType(either(my("bigint"), my("double")), false, "mysql"), "bigint | number");
-  assert.equal(renderType(either(my("bigint"), my("int")), false, "mysql"), "bigint");
-  assert.equal(renderType(either(my("double"), my("decimal")), false, "mysql"), "number | string");
-  assert.equal(renderType(either(my("date"), my("datetime")), false, "mysql"), "string");
-  assert.equal(renderType(array(either(my("double"), my("decimal"))), false, "mysql"), "(number | string | null)[]");
+  assert.equal(renderType(oneOf(my("bigint"), my("double")), false, "mysql"), "bigint | number");
+  assert.equal(renderType(oneOf(my("bigint"), my("int")), false, "mysql"), "bigint");
+  assert.equal(renderType(oneOf(my("double"), my("decimal")), false, "mysql"), "number | string");
+  assert.equal(renderType(oneOf(my("date"), my("datetime")), false, "mysql"), "string");
+  assert.equal(renderType(array(oneOf(my("double"), my("decimal"))), false, "mysql"), "(number | string | null)[]");
   // A truth value a document may hold as `true` or as 1.
   assert.equal(renderType(oneOf({ kind: "boolean" }, my("bigint")), true, "mysql"), "boolean | number");
   assert.equal(renderType(doc({ kind: "array", element: { type: oneOf({ kind: "boolean" }, my("bigint")), nullable: true } }), false, "mysql"), "(boolean | number | null)[]");
   // A member whose JSON form is unknown is nothing known inside a document.
-  assert.equal(renderType(either(my("bigint"), { kind: "opaque", name: "mystery" }), true, "mysql"), "Json");
+  assert.equal(renderType(oneOf(my("bigint"), { kind: "opaque", name: "mystery" }), true, "mysql"), "Json");
 });
 
 test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
@@ -208,7 +208,7 @@ test("parameters take what every driver binds, whatever Reylo returns", () => {
   assert.equal(renderType(doc(record([field("b", pg("bytea")), field("n", pg("numeric"))])), false, "postgres"), "{ b: string; n: number }");
   assert.equal(renderType(doc(record([field("b", my("varbinary")), field("n", my("decimal"))])), false, "mysql"), "{ b: string; n: number }");
   // A union's member keeps the text, which the run time leaves as it is.
-  assert.equal(renderType(doc(record([field("u", either(pg("float8"), pg("int4")))])), false, "postgres"), '{ u: number | "NaN" | "Infinity" | "-Infinity" }');
+  assert.equal(renderType(doc(record([field("u", oneOf(pg("float8"), pg("int4")))])), false, "postgres"), '{ u: number | "NaN" | "Infinity" | "-Infinity" }');
 });
 
 test("the run time converts each float or decimal inside Postgres JSON that may be NaN or an infinity, and only those", () => {
@@ -224,7 +224,7 @@ test("the run time converts each float or decimal inside Postgres JSON that may 
   assert.equal(jsonNumbers(pg("float8")), undefined);
   assert.equal(jsonNumbers(array(pg("float8"))), undefined);
   assert.equal(jsonNumbers(record([field("n", pg("numeric"))])), undefined);
-  assert.equal(jsonNumbers(doc(record([field("f", finite), field("at", pg("point")), field("u", either(pg("float8"), pg("int4")))]))), undefined);
+  assert.equal(jsonNumbers(doc(record([field("f", finite), field("at", pg("point")), field("u", oneOf(pg("float8"), pg("int4")))]))), undefined);
   // Two keys of one name keep the last.
   assert.deepEqual(jsonNumbers(doc(record([field("x", pg("float8")), field("x", pg("int4"))]))), undefined);
 });
@@ -244,7 +244,7 @@ test("every date and time parameter takes a string: a timestamptz one the text t
   }
   for (const name of ["datetime", "timestamp", "date"]) assert.equal(renderParamType(my(name), "mysql"), "string");
   // What MySQL answers by what is bound for a placeholder compared with a DATE and a DATETIME.
-  assert.equal(renderParamType(either(my("date"), my("datetime")), "mysql"), "string");
+  assert.equal(renderParamType(oneOf(my("date"), my("datetime")), "mysql"), "string");
 });
 
 test("a returned array's elements may be NULL unless the statement shows they are not; a parameter's are strict", () => {

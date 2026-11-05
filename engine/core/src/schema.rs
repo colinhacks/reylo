@@ -269,7 +269,7 @@ mod tests {
         ] {
             assert_eq!(ty.json_schema(WIRE), wire, "{ty:?}");
         }
-        let either = Type::union(vec![Type::integer(32), Type::double()], crate::types::Per::Execution);
+        let either = Type::union(vec![Type::integer(32), Type::double()]);
         assert_eq!(either.json_schema(WIRE), json!({"anyOf": [{"type": "integer", "format": "int32"}, {"type": "number", "format": "double"}]}));
     }
 

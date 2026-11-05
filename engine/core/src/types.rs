@@ -346,28 +346,10 @@ pub struct TimePart {
     pub max: Option<String>,
 }
 
-/// One of several types, each value one of them, or with `per: "execution"` every value of one
-/// execution the same one. Flat, its members in kind order ([`Type::union`]).
+/// One of several types, each value one of them. Flat, its members in kind order ([`Type::union`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UnionType {
     pub members: Vec<Type>,
-    /// Written only for `execution`: a union is per value unless it says so.
-    #[serde(default, skip_serializing_if = "Per::is_value")]
-    pub per: Per,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Per {
-    #[default]
-    Value,
-    Execution,
-}
-
-impl Per {
-    fn is_value(&self) -> bool {
-        *self == Per::Value
-    }
 }
 
 /// One of several alternatives, each named by the tag every value carries, in the order the type
@@ -865,14 +847,14 @@ impl Type {
         matches!(self.kind, Kind::Unknown)
     }
 
-    /// A union of `members` as rule 4 spells it: flat (a member that is a union of the same `per`
-    /// gives its members), each member once, in kind order (members of one kind in the order
-    /// given), and a lone member itself. An empty union holds no value.
-    pub fn union(members: Vec<Type>, per: Per) -> Type {
+    /// A union of `members` as rule 4 spells it: flat (a member that is an unnamed union gives its
+    /// members), each member once, in kind order (members of one kind in the order given), and a
+    /// lone member itself. An empty union holds no value.
+    pub fn union(members: Vec<Type>) -> Type {
         let mut flat: Vec<Type> = Vec::new();
         for member in members {
             let inner = match member.kind {
-                Kind::Union(UnionType { members, per: p }) if p == per && member.name.is_none() => members,
+                Kind::Union(UnionType { members }) if member.name.is_none() => members,
                 _ => vec![member],
             };
             for m in inner {
@@ -885,7 +867,7 @@ impl Type {
             return flat.pop().expect("one member");
         }
         flat.sort_by_key(|t| t.kind.rank());
-        Kind::Union(UnionType { members: flat, per }).into()
+        Kind::Union(UnionType { members: flat }).into()
     }
 
     /// A tagged union of `alternatives`, in the order the type declares them.
@@ -934,7 +916,7 @@ impl Type {
             Kind::Set(s) => Kind::Set(SetType { element: Box::new(position(*s.element)), ..s }),
             Kind::Record(r) => Kind::Record(RecordType { fields: r.fields.into_iter().map(|f| Field { ty: f.ty.renamed(rename), ..f }).collect(), ..r }),
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
-            Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect(), ..u }),
+            Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
             Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
             Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
             Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
@@ -965,8 +947,8 @@ impl Type {
     /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
     /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
     /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
-    /// and JSON a schema holds to the schema (`json {"type":"string"}`); a union per value is its
-    /// members between `|` and a union per execution `either(…)`.
+    /// and JSON a schema holds to the schema (`json {"type":"string"}`); a union is its members
+    /// between `|`.
     pub fn short(&self) -> String {
         let label = || self.name.clone().unwrap_or_else(|| self.kind.name().to_string());
         let with = |facts: Vec<String>| if facts.is_empty() { label() } else { format!("{}({})", label(), facts.join(", ")) };
@@ -1027,11 +1009,7 @@ impl Type {
                 (None, None) => label(),
             },
             Kind::Union(u) => {
-                let members: Vec<String> = u.members.iter().map(Type::short).collect();
-                let inner = match u.per {
-                    Per::Value => members.join(" | "),
-                    Per::Execution => format!("either({})", members.join(", ")),
-                };
+                let inner = u.members.iter().map(Type::short).collect::<Vec<_>>().join(" | ");
                 match &self.name {
                     Some(name) => format!("{name}({inner})"),
                     None => inner,
@@ -1281,7 +1259,7 @@ mod tests {
         round_trip(json!({"kind": "duration", "months": {"max": "P2147483648M"}, "days": {"max": "P2147483648D"}, "time": {"tick": "1/1000000", "max": "PT2562047788H54.775808S"}, "infinity": true, "name": "interval"}));
         round_trip(json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
         round_trip(json!({"kind": "range", "subtype": {"kind": "date"}, "name": "daterange"}));
-        round_trip(json!({"kind": "union", "per": "execution", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
+        round_trip(json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
         round_trip(json!({"kind": "set", "size": {"max": 2}, "name": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
         round_trip(json!({"kind": "map", "name": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "geography"}));
@@ -1302,15 +1280,13 @@ mod tests {
     #[test]
     fn a_union_is_flat_once_each_and_in_kind_order() {
         let text = Type::text();
-        let nested = Type::union(vec![Type::bytes(), text.clone()], Per::Value);
-        let u = Type::union(vec![nested, Type::integer(64), text.clone()], Per::Value);
+        let nested = Type::union(vec![Type::bytes(), text.clone()]);
+        let u = Type::union(vec![nested, Type::integer(64), text.clone()]);
         assert_eq!(serde_json::to_value(&u).unwrap(), json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}, {"kind": "bytes"}]}));
-        assert_eq!(Type::union(vec![text.clone(), text.clone()], Per::Value), text);
-        // A union is per value unless it says otherwise, and reads a `per` written as `value`.
-        assert_eq!(serde_json::from_value::<Type>(json!({"kind": "union", "per": "value", "members": [{"kind": "integer", "bits": 64}, {"kind": "text"}]})).unwrap(), Type::union(vec![Type::integer(64), Type::text()], Per::Value));
-        // A union of another `per` stays a member.
-        let per_execution = Type::union(vec![Type::integer(64), Type::double()], Per::Execution);
-        assert_eq!(Type::union(vec![per_execution.clone(), Type::text()], Per::Value).members().len(), 2);
+        assert_eq!(Type::union(vec![text.clone(), text.clone()]), text);
+        // A named union stays a member: its name is the database's type.
+        let named = Type::union(vec![Type::integer(64), Type::double()]).named("NUMERIC");
+        assert_eq!(Type::union(vec![named, Type::text()]).members().len(), 2);
     }
 
     #[test]

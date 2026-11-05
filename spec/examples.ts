@@ -85,7 +85,7 @@ export const mysql_columns: Column[] = [
   { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, name: "varchar" } },
   { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, name: "text" } },
   { name: "tags", nullable: true, type: { kind: "set", size: { max: 2 }, name: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
-  { name: "next", nullable: true, type: { kind: "union", per: "execution", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52 }, { kind: "decimal" }] } },
+  { name: "next", nullable: true, type: { kind: "union", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52 }, { kind: "decimal" }] } },
 ];
 
 /** SQL Server: `create table s (at datetimeoffset(3), label nvarchar(10))`. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate. */

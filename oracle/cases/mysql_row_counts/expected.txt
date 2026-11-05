@@ -15,7 +15,7 @@ aggregate_in_subquery_only.sql: many () -> { n: bigint }
 aggregate_join.sql: one () -> { n: bigint }
 aggregate_json_arrayagg.sql: one () -> { ids: json int[]? }
 aggregate_json_objectagg.sql: one () -> { names: json? }
-aggregate_statistics.sql: one () -> { a: double?, b: double?, c: double?, d: double?, e: double?, f: double?, g: double?, h: decimal?, i: either(int, bigint)? }
+aggregate_statistics.sql: one () -> { a: double?, b: double?, c: double?, d: double?, e: double?, f: double?, g: double?, h: decimal?, i: int | bigint? }
 aggregate_union.sql: many () -> { n: bigint }
 aggregate_window.sql: many () -> { n: bigint }
 count_cast.sql: one () -> { n: varchar? }
@@ -24,7 +24,7 @@ count_into_variable.sql: none () -> {  }
 count_nested.sql: one () -> { n: bigint }
 count_parenthesized.sql: many () -> { n: bigint }
 count_star.sql: one () -> { n: bigint }
-count_where.sql: one (pattern: varchar) -> { n: bigint, oldest: either(int, bigint)? }
+count_where.sql: one (pattern: varchar) -> { n: bigint, oldest: int | bigint? }
 group_by_position.sql: many () -> { name: varchar, n: bigint }
 json_table.sql: many () -> { a: int? }
 key_alias_is_other_table.sql: at_most_one (id: int32) -> { id: int }
@@ -41,8 +41,8 @@ key_group_by_having.sql: at_most_one (id: int32) -> { id: int, n: bigint }
 key_group_by_joined_column.sql: many (id: int32) -> { title: varchar, n: bigint }
 key_group_by_other_column.sql: at_most_one (id: int32) -> { name: varchar, n: bigint }
 key_group_by_position.sql: at_most_one (id: int32) -> { name: varchar, n: bigint }
-key_group_by_rollup.sql: many (id: int32) -> { id: either(int, bigint)?, n: bigint }
-key_group_by_rollup_single.sql: many (id: int32) -> { id: either(int, bigint)?, n: bigint }
+key_group_by_rollup.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
+key_group_by_rollup_single.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
 key_in_subquery.sql: at_most_one (id: int32) -> { id: int }
 key_into_variable.sql: none (id: int32) -> {  }
 key_join.sql: many (id: int32) -> { id: int, title: varchar }
@@ -53,23 +53,23 @@ key_parenthesized.sql: many (id: int32) -> { id: int }
 key_parenthesized_limit.sql: at_most_one () -> { id: int }
 key_partition.sql: at_most_one (id: int32) -> { id: int }
 key_straight_join.sql: at_most_one (id: int32) -> { id: int }
-key_union.sql: many (id: int32, other: int32) -> { id: either(int, bigint) }
-key_view.sql: at_most_one (id: int32) -> { id: either(int, bigint) }
+key_union.sql: many (id: int32, other: int32) -> { id: int | bigint }
+key_view.sql: at_most_one (id: int32) -> { id: int | bigint }
 key_window.sql: at_most_one (id: int32) -> { id: int, r: bigint }
 key_with.sql: at_most_one (id: int32) -> { id: int }
 key_with_shadows_in_subquery.sql: one () -> { n: bigint }
-key_with_shadows_recursive.sql: many (id: int32) -> { id: either(bigint, int) }
-key_with_shadows_table.sql: many (id: int32) -> { id: either(bigint, int) }
+key_with_shadows_recursive.sql: many (id: int32) -> { id: bigint | int }
+key_with_shadows_table.sql: many (id: int32) -> { id: bigint | int }
 lateral.sql: at_most_one (id: int32) -> { id: int, n: bigint }
-no_from.sql: one () -> { one: either(bigint, int) }
-no_from_dual.sql: many () -> { one: either(bigint, int) }
-no_from_dual_where.sql: many () -> { one: either(bigint, int) }
-no_from_having.sql: many () -> { one: either(bigint, int) }
-no_from_now.sql: one (x: int32) -> { at: datetime, next: either(bigint, double, decimal)? }
-no_from_union.sql: many () -> { one: either(bigint, int) }
-no_from_where.sql: many (flag: int32) -> { one: either(bigint, int) }
+no_from.sql: one () -> { one: bigint | int }
+no_from_dual.sql: many () -> { one: bigint | int }
+no_from_dual_where.sql: many () -> { one: bigint | int }
+no_from_having.sql: many () -> { one: bigint | int }
+no_from_now.sql: one (x: int32) -> { at: datetime, next: bigint | double | decimal? }
+no_from_union.sql: many () -> { one: bigint | int }
+no_from_where.sql: many (flag: int32) -> { one: bigint | int }
 sum_no_rows.sql: one () -> { total: decimal? }
 table_limit.sql: many () -> { post_id: int, tag: varchar }
 table_statement.sql: many () -> { post_id: int, tag: varchar }
-values_one.sql: one () -> { column_0: either(bigint, int), column_1: varchar }
-values_two.sql: many () -> { column_0: either(bigint, int), column_1: varchar }
+values_one.sql: one () -> { column_0: bigint | int, column_1: varchar }
+values_two.sql: many () -> { column_0: bigint | int, column_1: varchar }
