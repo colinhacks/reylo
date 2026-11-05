@@ -84,7 +84,7 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 | Queries can't be built at run time | Optional filters are one JSON parameter ([Dynamic filtering](/#dynamic-filtering)), a sort order is a `case` ([Dynamic sorting](/#dynamic-sorting)), and a patch object is one update ([Partial updates](#partial-updates)) |
 | Dates come back as strings | As ISO text in UTC, exact to the microsecond, where a `Date` keeps milliseconds and Prisma's `timestamp(3)` keeps no zone |
 | The build needs a database | Yes: a fresh one, migrated by the build itself ([Build and deploy](#build-and-deploy)) |
-| A migration can break a running deploy | A query refuses a column that changed under it, rather than reading it wrong, so a column changes in two deploys ([Build and deploy](#build-and-deploy)) |
+| A migration can break a running deploy | A query refuses a column dropped, retyped or made nullable under it, rather than reading it wrong; a migration that only adds passes ([Build and deploy](#build-and-deploy)) |
 
 ## Before you start
 
@@ -186,7 +186,7 @@ Reylo types each query against a database with your migrations applied, so every
 
 - **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/#in-ci)).
 - **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
-- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and throws when a column it names has changed its type, its `NOT NULL` or its default. So change a column in two deploys, the new shape before the code that uses it, and roll back by redeploying an older commit, since an older build refuses a newer schema ([Deploying](/#deploying)).
+- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and throws when a column it names is gone, retyped, or nullable where it was not, since its values may then contradict its types. A new column, a new default or a new `NOT NULL` passes. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/#deploying)).
 
 ```yaml title=".reylo.yaml"
 # the type check's database; a build points it at a fresh, migrated one
@@ -309,7 +309,7 @@ returning p.id
 
 The type check can't catch these, so look for each one in the converted code:
 
-- **Instants compared as strings.** An instant's text has as many fraction digits as it needs, so `<`, `>` and `localeCompare` misorder two of them. Compare their `Date.parse`, or sort in SQL.
+- **Instants compared as strings.** Two instants `.run()` returned compare correctly as strings, since each has six fraction digits, but `toISOString()` writes three, so comparing one with the other misorders. Compare their `Date.parse`, or sort in SQL.
 - **Instants passed through a `Date`.** A `Date` keeps milliseconds and Postgres keeps microseconds, so `where "createdAt" > :since` with a rounded value matches the row it came from. Pass back the text `.run()` returned.
 - **A sort that lost its cast.** An enum sorts by the order its labels were declared, and its `::text` sorts by name, so a query that kept one and dropped the other changes its order.
 - **A check of an array as if it were a row.** Where `.run()` returns an array, `if (!rows)` is never true. typescript-eslint's `no-unnecessary-condition` flags it.

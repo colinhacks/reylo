@@ -60,7 +60,7 @@ test("postgres: decode gives each value its kind, and the output its cardinality
   const q = users["~standard"].query;
   assert.deepEqual(q.decode([["1", "2026-10-22 14:46:00.123456+02", "9007199254740993"], ["2", "2026-10-22 00:00:00+00", null]]), [
     { id: 1, at: "2026-10-22T12:46:00.123456Z", big: 9007199254740993n },
-    { id: 2, at: "2026-10-22T00:00:00Z", big: null },
+    { id: 2, at: "2026-10-22T00:00:00.000000Z", big: null },
   ]);
   assert.throws(() => q.decode([["1", "x"]]), /selects 3 columns, and a row has 2/);
   const one = defineQuery<{}, { n: bigint }, "maybeOne", "postgres">({ dialect: "postgres", sql: "select count(*) as n from users", params: [], columns: [["n", "int8"]], cardinality: "maybeOne" });
@@ -89,7 +89,7 @@ test("a row has the columns' names: one named __proto__ is an own property, and 
   const columns = [["id", "int"], ["__proto__", "json"], ["at", "timestamptz"]] as const;
   const def = { dialect: "postgres", sql: "select 1", params: [], columns } as const;
   const rows = [["1", '{"leaked":true}', "2026-10-22 14:46:00.5+02"], ["2", null, null]];
-  const expected = [Object.defineProperty({ id: 1, at: "2026-10-22T12:46:00.5Z" }, "__proto__", { value: { leaked: true }, writable: true, enumerable: true, configurable: true }), Object.defineProperty({ id: 2, at: null }, "__proto__", { value: null, writable: true, enumerable: true, configurable: true })];
+  const expected = [Object.defineProperty({ id: 1, at: "2026-10-22T12:46:00.500000Z" }, "__proto__", { value: { leaked: true }, writable: true, enumerable: true, configurable: true }), Object.defineProperty({ id: 2, at: null }, "__proto__", { value: null, writable: true, enumerable: true, configurable: true })];
   for (const q of [defineQuery(def), defineQuery({ ...def, row: new Function(`return ${rowSource(columns.map(([n]) => n))};`)() as RowBuilder })]) {
     const out = q["~standard"].query.decode(rows) as Record<string, unknown>[];
     assert.deepStrictEqual(out, expected);
@@ -385,8 +385,8 @@ test("postgres: a built import's columns decode the types the database created a
     assert.deepStrictEqual(sq.output(throughColumns(sq, raw)), decoded);
     assert.deepEqual(decoded, await query.run(pool));
     assert.deepEqual(decoded, [
-      { id: 1, mood: "happy", moods: ["happy", null, "sad"], prefs: { a: "1", "b c": null }, history: [{ x: "y" }, null], at: "2026-10-22T12:46:00.5Z", big: 9007199254740993n },
-      { id: 2, mood: "sad", moods: null, prefs: null, history: null, at: "1883-11-18T19:52:58Z", big: null },
+      { id: 1, mood: "happy", moods: ["happy", null, "sad"], prefs: { a: "1", "b c": null }, history: [{ x: "y" }, null], at: "2026-10-22T12:46:00.500000Z", big: 9007199254740993n },
+      { id: 2, mood: "sad", moods: null, prefs: null, history: null, at: "1883-11-18T19:52:58.000000Z", big: null },
     ]);
     // The declaration types each column's decoder by the column's type, without null, and the
     // statement's total order (`order by id`) as the literal `true`.

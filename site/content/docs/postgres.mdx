@@ -153,13 +153,13 @@ If your runtime has `Temporal`, read the instant with `Temporal.Instant.from()`,
 
 **Fractions of a second**
 
-Fractions keep the server's precision, up to microseconds, without trailing zeros.
+A `timestamptz` or `timestamp` always has six fraction digits, the microseconds Postgres keeps, so two of them sort as strings in the order of their times.
 
 <Pairs>
 
 - `'2026-10-20 10:00:00.123456+00'::timestamptz` → `"2026-10-20T10:00:00.123456Z"`
-- `'2026-10-20 10:00:00.5+00'::timestamptz` → `"2026-10-20T10:00:00.5Z"`
-- `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00Z"`
+- `'2026-10-20 10:00:00.5+00'::timestamptz` → `"2026-10-20T10:00:00.500000Z"`
+- `'2026-10-20 10:00:00+00'::timestamptz` → `"2026-10-20T10:00:00.000000Z"`
 
 </Pairs>
 
@@ -186,8 +186,8 @@ A `date`, `timestamp` or `timestamptz` uses ISO 8601's extended year, a sign and
 
 - `'12345-01-01'::date` → `"+012345-01-01"`
 - `'0002-06-01 BC'::date` → `"-000001-06-01"`
-- `'0002-06-01 12:00:00 BC'::timestamp` → `"-000001-06-01T12:00:00"`
-- `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00Z"`
+- `'0002-06-01 12:00:00 BC'::timestamp` → `"-000001-06-01T12:00:00.000000"`
+- `'12344-12-31 18:30:00+00'::timestamptz` → `"+012344-12-31T18:30:00.000000Z"`
 - `'5874897-12-31'::date` → `"+5874897-12-31"`
 
 </Pairs>
@@ -807,8 +807,8 @@ A driver that reads a result value by value can decode each value as it reads it
 import paidOrders from "./pg_columns_orders.sql";
 
 const { columns, output } = paidOrders["~standard"].query;
-columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00Z"
-output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00Z" }]);
+columns[2].decode("2026-10-22 14:46:00+02"); // "2026-10-22T12:46:00.000000Z"
+output([{ id: 1n, total: "12.50", placed_at: "2026-10-22T12:46:00.000000Z" }]);
 ```
 
 ```sql tab="pg_columns_orders.sql"
