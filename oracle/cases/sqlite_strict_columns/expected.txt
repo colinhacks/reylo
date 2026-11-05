@@ -10,7 +10,7 @@ no_alias_desc.sql: many () -> { a: INTEGER(int64 | float(11,52) | text(utf8) | b
 no_alias_int.sql: many () -> { a: INT(int64 | float(11,52) | text(utf8) | bytes)? }
 no_alias_without_rowid.sql: many () -> { a: INTEGER(int64 | float(11,52) | text(utf8) | bytes), b: TEXT(text(utf8) | bytes)? }
 outer_join.sql: many () -> { i: INT?, t: TEXT(utf8)? }
-strict_read.sql: many () -> { id: INTEGER, i: INT, n: INTEGER?, r: REAL?, t: TEXT(utf8)?, b: BLOB?, a: unknown?, g: INTEGER?, h: TEXT(utf8)? }
+strict_read.sql: many () -> { id: INTEGER, i: INT, n: INTEGER?, r: REAL?, t: TEXT(utf8)?, b: BLOB?, a: unknown?, g: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, h: TEXT(text(utf8) | bytes)? }
 strict_rowids.sql: many () -> { a: INTEGER, b: INTEGER, c: INTEGER }
 strict_without_rowid.sql: many () -> { k: TEXT(utf8), v: INTEGER? }
 through_loose_view.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }

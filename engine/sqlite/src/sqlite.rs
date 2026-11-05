@@ -1195,7 +1195,9 @@ impl Analyzer<'_> {
                 break;
             }
         }
-        n.strict || n.rowid
+        // A generated column of a STRICT table is left out: SQLite checks what it computes only
+        // from 3.51, and an app's driver may carry an older SQLite, which stores anything there.
+        (n.strict && !n.generated) || n.rowid
     }
 
     /// Whether column `i` of a select is a truth value in every arm of a compound.
@@ -3516,7 +3518,7 @@ mod tests {
     #[test]
     fn a_strict_column_and_a_rowid_hold_their_declared_type_alone() {
         let ddl = [
-            "create table s (id integer primary key, n int not null, x real, t text, b blob, a any) strict",
+            "create table s (id integer primary key, n int not null, x real, t text, b blob, a any, g integer generated always as (n * 2) virtual) strict",
             "create table loose (id integer primary key, n integer not null, t text)",
             "create table desc_key (a integer primary key desc)",
         ]
@@ -3528,6 +3530,8 @@ mod tests {
         assert_eq!(kinds("select id, n, x, t, b, a from s"), "integer integer float text bytes unknown");
         assert_eq!(kinds("select id, n, t from loose"), "integer union union");
         assert_eq!(kinds("select a from desc_key"), "union");
+        // A generated column keeps its affinity's union: SQLite before 3.51 never checks it.
+        assert_eq!(kinds("select g from s"), "union");
         // Through subqueries, views and every arm of a compound, and no further.
         assert_eq!(kinds("select n, t from (select n, t from s)"), "integer text");
         assert_eq!(kinds("select n from s union all select id from loose"), "integer");

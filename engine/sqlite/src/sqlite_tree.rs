@@ -212,6 +212,8 @@ pub struct Node {
     pub outer: bool,
     /// The column's table is STRICT.
     pub strict: bool,
+    /// The column is generated.
+    pub generated: bool,
     /// The column's collation, which a comparison with it uses where the column decides.
     pub coll: Option<String>,
     pub resolved: Option<bool>,
