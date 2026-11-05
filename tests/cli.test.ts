@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -97,6 +97,15 @@ test("reylo migrate init starts a project: it adds the migrate section the other
   writeFileSync(join(next, ".reylo.yaml"), "strict_params: true");
   assert.equal(reylo(next, ["migrate", "init"]).status, 0);
   assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: true\n");
+  // Files written with no section, as a run that failed partway leaves them, don't strand the project.
+  const stranded = project();
+  mkdirSync(join(stranded, "reylo"));
+  writeFileSync(join(stranded, "reylo", "schema.sql"), "");
+  const again = reylo(stranded, ["migrate", "init"]);
+  assert.equal(again.status, 1);
+  assert.match(again.err, /schema\.sql exists already/);
+  assert.equal(readFileSync(join(stranded, ".reylo.yaml"), "utf8"), "migrate:\n  lock: true\n");
+  assert.equal(reylo(stranded, ["migrate", "check", "--offline"]).err.includes("no migrate section"), false);
   // unlock and lock say so in the file.
   assert.equal(reylo(next, ["migrate", "unlock"]).status, 0);
   assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: false\n");

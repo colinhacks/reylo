@@ -250,10 +250,15 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 other => other,
             },
             "pull" => reylo_migrate::pull(&opts, &mut log).await,
-            "init" => match reylo_migrate::init(&opts, &parsed.schemas, &mut log).await {
-                Ok(0) => add_migrate_section(&opts.root).map(|()| 0).map_err(reylo_migrate::Error),
-                other => other,
-            },
+            // The section follows the files, whatever came of the rest: a run that wrote them and
+            // failed is finished by the commands that need it, and init refuses to write them twice.
+            "init" => {
+                let result = reylo_migrate::init(&opts, &parsed.schemas, &mut log).await;
+                if opts.schema.exists() {
+                    add_migrate_section(&opts.root).map_err(reylo_migrate::Error)?;
+                }
+                result
+            }
             "create" => {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
