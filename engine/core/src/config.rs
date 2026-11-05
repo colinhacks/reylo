@@ -58,34 +58,19 @@ pub struct Project {
     pub api: Option<serde_yaml::Value>,
 }
 
-/// `reylo migrate`'s settings: the database (the type check's connection when absent), a server to
-/// make shadow databases on where the target's refuses `create database`, whether the project is
-/// locked, and the strictness flags. Where the files are is the top-level `dir`.
+/// `reylo migrate`'s settings: a server to make shadow databases on where the database's own refuses
+/// `create database`, and whether the project keeps a lock. The database is the type check's
+/// connection, and where the files are is the top-level `dir`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migrate {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow_url: Option<String>,
-    /// `linear` (locked) when absent.
+    /// Whether `reylo-lock.yaml` sets the order the migrations run in, so that two branches that each
+    /// add one conflict in git, and a migration not in it is a draft only development runs (`true`
+    /// when absent); `false` (`reylo migrate unlock`) runs them by name, with no lock.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub history: Option<History>,
-    /// Compare comments on objects (on when absent).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub strict_comments: Option<bool>,
-}
-
-/// How a project's migrations are ordered. `linear`, the default: the project is locked, and
-/// `reylo-lock.yaml` lists every migration in the order they run, so that two branches that each
-/// add one conflict in git; a migration not in it is a draft only development runs. `loose`
-/// (`reylo migrate unlock`): there is no lock, migrations run by name, and one older than one a
-/// database applied still runs there, once replaying both orders reaches the same schema.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum History {
-    Loose,
-    Linear,
+    pub lock: Option<bool>,
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -128,7 +113,7 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
         project.dir = project.dir.as_deref().map(unmask_placeholders);
         if let Some(m) = project.migrate.as_mut() {
-            for value in [&mut m.url, &mut m.shadow_url].into_iter().flatten() {
+            for value in [&mut m.shadow_url].into_iter().flatten() {
                 *value = unmask_placeholders(value);
             }
         }
@@ -199,13 +184,15 @@ mod tests {
 
     #[test]
     fn reads_the_migrate_section() {
-        let p = parse("dir: db\nmigrate:\n  url: ${MIGRATE_URL}\n  history: loose\n").unwrap();
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "url": "${MIGRATE_URL}", "history": "loose" } }));
+        let p = parse("dir: db\nmigrate:\n  shadow_url: ${SHADOW_URL}\n  lock: false\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "shadow_url": "${SHADOW_URL}", "lock": false } }));
         assert!(parse("migrate:\n  dir: db/migrations\n").is_err(), "the migrations' place is the top-level dir's");
-        assert_eq!(parse("migrate:\n  history: loose\n").unwrap().migrate.and_then(|m| m.history), Some(History::Loose));
+        assert!(parse("migrate:\n  url: x\n").is_err(), "the database is the type check's");
+        assert!(parse("migrate:\n  strict_comments: false\n").is_err(), "comments are schema");
+        assert_eq!(parse("migrate:\n  lock: true\n").unwrap().migrate.and_then(|m| m.lock), Some(true));
         assert_eq!(parse("migrate: {}\n").unwrap().migrate, Some(Migrate::default()));
         assert!(parse("migrate:\n  folder: x\n").is_err());
-        assert!(parse("migrate:\n  history: strict\n").is_err());
+        assert!(parse("migrate:\n  lock: sometimes\n").is_err());
     }
 
     #[test]

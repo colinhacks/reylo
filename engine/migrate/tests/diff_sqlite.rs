@@ -6,7 +6,7 @@
 //! `REYLO_BLESS=1` writes. Every SQLite schema the oracle's cases set up is planned from an empty
 //! database and back to one. SQLite needs no server: every database is in memory.
 
-use reylo_migrate::catalog::{catalog, difference, Scope};
+use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::Db;
 use reylo_migrate::diff::{self, Plan};
 use std::path::{Path, PathBuf};
@@ -94,7 +94,7 @@ async fn sqlite() {
         let plan = plan(&mut from, &mut to).await;
         let text = plan.sql();
         let failed = run(&mut from, &plan).await;
-        let (only_a, only_b) = difference(&catalog(&mut from, Scope::default()).await.unwrap(), &catalog(&mut to, Scope::default()).await.unwrap());
+        let (only_a, only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let after = counts(&mut from).await;
         let mut lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
         // A table that keeps AUTOINCREMENT keeps its counter: no key it handed out is handed out again.
@@ -150,7 +150,7 @@ async fn sqlite_oracle_schemas() {
             let (from, to) = if direction == "from empty" { (&mut empty, &mut full) } else { (&mut full, &mut blank) };
             let plan = plan(from, to).await;
             let failed = run(from, &plan).await;
-            let (only_a, only_b) = difference(&catalog(from, Scope::default()).await.unwrap(), &catalog(to, Scope::default()).await.unwrap());
+            let (only_a, only_b) = difference(&catalog(from).await.unwrap(), &catalog(to).await.unwrap());
             if failed.is_some() || !only_a.is_empty() || !only_b.is_empty() {
                 let mut lines: Vec<String> = failed.into_iter().map(|f| format!("  failed at {f}")).collect();
                 lines.extend(only_a.iter().take(8).map(|l| format!("  - {l}")));

@@ -10,7 +10,7 @@
 //! them themselves. Each case is planned back from v2 to v1 too, which must reach v1 as well
 //! (that plan is not kept). After a plan has run, planning again must find nothing to do. Run against the server `REYLO_TEST_MYSQL` names, and skipped where it is not set.
 
-use reylo_migrate::catalog::{catalog, difference, Scope};
+use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
 use reylo_migrate::diff;
 use std::path::{Path, PathBuf};
@@ -57,7 +57,7 @@ async fn events(db: &mut Db) -> Vec<String> {
 
 /// The lines the two databases differ in, the comparator's and the events'.
 async fn differences(a: &mut Db, b: &mut Db) -> (Vec<String>, Vec<String>) {
-    let (mut only_a, mut only_b) = difference(&catalog(a, Scope::default()).await.unwrap(), &catalog(b, Scope::default()).await.unwrap());
+    let (mut only_a, mut only_b) = difference(&catalog(a).await.unwrap(), &catalog(b).await.unwrap());
     let (ea, eb) = difference(&events(a).await, &events(b).await);
     only_a.extend(ea.into_iter().map(|l| format!("event {l}")));
     only_b.extend(eb.into_iter().map(|l| format!("event {l}")));

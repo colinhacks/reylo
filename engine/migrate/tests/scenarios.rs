@@ -6,7 +6,7 @@
 //! not run. Postgres's and MySQL's run against the servers `REYLO_TEST_PG` and `REYLO_TEST_MYSQL`
 //! name, and are skipped where the variable is not set; SQLite's always run.
 
-use reylo_migrate::catalog::{catalog, Scope};
+use reylo_migrate::catalog::catalog;
 use reylo_migrate::db::{with_database, Db, Row, Server};
 use reylo_migrate::{Dialect, Options};
 use std::path::PathBuf;
@@ -98,7 +98,6 @@ impl P {
             locked: self.strict,
             lock: self.dir.join(reylo_migrate::lock::LOCK),
             cache: self.dir.join(".cache"),
-            comments: true,
             root: self.dir.clone(),
         }
     }
@@ -339,8 +338,8 @@ for_each_dialect!(
     create_lists_every_rename_it_assumes,
     commands_create_prints_for_names_with_spaces_run_as_printed,
     prod_compares_with_what_dev_replayed,
-    changing_strict_comments_is_not_a_change_to_the_database,
     prod_refuses_any_schema_with_no_history,
+    init_on_an_empty_database_writes_only_the_schema_file,
     a_broken_draft_keeps_what_sync_made,
     a_migrations_directory_that_isnt_there_is_refused,
     a_run_cut_off_between_migrations_is_still_compared,
@@ -806,7 +805,7 @@ async fn one_schema_built_two_ways_has_one_catalog(p: P) {
     for sql in &ways {
         let mut s = server.shadow().await.unwrap();
         s.db.script(sql).await.unwrap();
-        out.push(catalog(&mut s.db, Scope::default()).await.unwrap());
+        out.push(catalog(&mut s.db).await.unwrap());
         server.drop_shadow(s).await;
     }
     server.close().await;
@@ -1336,27 +1335,6 @@ async fn prod_compares_with_what_dev_replayed(mut p: P) {
     assert_has!(p.output(), r"^✓ Up to date$");
 }
 
-async fn changing_strict_comments_is_not_a_change_to_the_database(mut p: P) {
-    let id = p.t.id;
-    let comment = match p.d {
-        Dialect::Postgres => format!("create table t (id {id}); comment on table t is 'the t';"),
-        Dialect::Mysql => format!("create table t (id {id}) comment 'the t';"),
-        Dialect::Sqlite => format!("create table t (id {id});"),
-    };
-    p.file("20261027100000_t.sql", &comment);
-    assert_eq!(p.migrate().await, 0, "{}", p.peek());
-    p.output();
-    let without = async |o: &Options, log: &mut dyn FnMut(&str)| {
-        let mut o = o.clone();
-        o.comments = false;
-        reylo_migrate::prod(&o, log).await
-    };
-    assert_eq!(p.run(without).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"no fingerprint of this database[\s\S]*Up to date");
-    assert_eq!(p.run(without).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"^✓ Up to date$");
-}
-
 async fn a_broken_draft_keeps_what_sync_made(mut p: P) {
     let (int, text) = (p.t.int, p.t.text);
     p.strict = true;
@@ -1407,6 +1385,18 @@ async fn a_run_cut_off_between_migrations_is_still_compared(mut p: P) {
     p.exec(&format!("create table stray (id {int})")).await;
     assert_eq!(p.migrate().await, 1);
     assert_has!(p.output(), "changed since Reylo last ran on it");
+}
+
+async fn init_on_an_empty_database_writes_only_the_schema_file(mut p: P) {
+    assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"✓ Wrote \S*schema\.sql: this database is empty, so declare your schema there");
+    assert!(p.files().is_empty(), "{:?}", p.files());
+    assert_eq!(p.history().await, Vec::<String>::new());
+    // The first migration is create's.
+    p.schema(&format!("create table t (id {});", p.t.int));
+    assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0, "{}", p.peek());
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_eq!(p.history().await.len(), 1);
 }
 
 async fn prod_refuses_any_schema_with_no_history(mut p: P) {

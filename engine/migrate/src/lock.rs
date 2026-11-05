@@ -1,4 +1,4 @@
-//! `reylo-lock.yaml`, the lock of a locked project (the default; `history: loose` keeps none): the
+//! `reylo-lock.yaml`, the lock of a locked project (the default; `lock: false` keeps none): the
 //! migrations in the order they run, each its name and a checksum chained to the line before, and
 //! the checksum of `schema.sql` from the last time the migrations were proven to reach it. Two
 //! branches that each add a migration both append to it, so git conflicts on it when the second one

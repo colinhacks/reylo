@@ -13,23 +13,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const HISTORY_TABLE: &str = "__reylo_migrations";
 
-/// What the comparison reads: comments are compared unless `strict_comments` is off.
-#[derive(Clone, Copy, Debug)]
-pub struct Scope {
-    pub comments: bool,
-}
-
-impl Default for Scope {
-    fn default() -> Self {
-        Scope { comments: true }
-    }
-}
-
 /// The database's schema as sorted lines.
-pub async fn catalog(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
+pub async fn catalog(db: &mut Db) -> Result<Vec<String>, Error> {
     let lines = match db.dialect() {
-        Dialect::Postgres => postgres(db, scope).await?,
-        Dialect::Mysql => mysql(db, scope).await?,
+        Dialect::Postgres => postgres(db).await?,
+        Dialect::Mysql => mysql(db).await?,
         Dialect::Sqlite => sqlite(db).await?,
     };
     Ok(lines.into_iter().collect::<BTreeSet<_>>().into_iter().collect())
@@ -188,14 +176,14 @@ fn acl(column: &str, owner: &str, kind: char) -> String {
     )
 }
 
-async fn postgres(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
+async fn postgres(db: &mut Db) -> Result<Vec<String>, Error> {
     db.exec("set search_path = ''").await?;
-    let result = postgres_lines(db, scope).await;
+    let result = postgres_lines(db).await;
     db.exec("reset search_path").await?;
     result
 }
 
-async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
+async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
     let ns = PG_USER_NS;
     let history = HISTORY_TABLE;
@@ -214,7 +202,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant schema {name} {acl}"));
         }
-        if let (Some(comment), true) = (r.get("comment"), scope.comments) {
+        if let Some(comment) = r.get("comment") {
             lines.push(format!("comment schema {name} {}", json(comment)));
         }
     }
@@ -289,7 +277,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant {name} {acl}"));
         }
-        if let (Some(comment), true) = (r.get("comment"), scope.comments) {
+        if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
         }
     }
@@ -329,7 +317,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
             parts.push(format!("collate {collation}"));
         }
         lines.push(parts.join(" "));
-        if let (Some(comment), true) = (r.get("comment"), scope.comments) {
+        if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {column} {}", json(comment)));
         }
     }
@@ -540,7 +528,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant {name} {acl}"));
         }
-        if let (Some(comment), true) = (r.get("comment"), scope.comments) {
+        if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
         }
     }
@@ -605,7 +593,7 @@ async fn postgres_lines(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error>
 // MySQL, from information_schema, with the database's own name taken out of the definitions that
 // carry it (a view's body names its tables with their database).
 
-async fn mysql(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
+async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     let name = db.rows("select database() as name").await?.first().map(|r| r.text("name").to_string()).unwrap_or_default();
     let strip = |s: &str| s.replace(&format!("`{name}`."), "").replace(&format!("{name}."), "");
     let history = HISTORY_TABLE;
@@ -626,7 +614,7 @@ async fn mysql(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
         if !r.text("options").is_empty() {
             line += &format!(" options={}", r.text("options"));
         }
-        if !r.text("comment").is_empty() && scope.comments {
+        if !r.text("comment").is_empty() {
             line += &format!(" comment={}", json(r.text("comment")));
         }
         lines.push(line);
@@ -653,7 +641,7 @@ async fn mysql(db: &mut Db, scope: Scope) -> Result<Vec<String>, Error> {
         if let Some(collation) = r.get("collation") {
             parts.push(format!("collate {collation}"));
         }
-        if !r.text("comment").is_empty() && scope.comments {
+        if !r.text("comment").is_empty() {
             parts.push(format!("comment {}", json(r.text("comment"))));
         }
         if let Some(srs) = r.get("srs") {

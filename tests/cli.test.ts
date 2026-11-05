@@ -82,6 +82,28 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   assert.match(reylo(root, ["migrate", "prod", "--help"]).out, /^Usage: reylo migrate <command> \[flags\]\n/);
 });
 
+test("reylo migrate init starts a project: it adds the migrate section the other commands need", () => {
+  const root = project();
+  const refused = reylo(root, ["migrate", "check"]);
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /no migrate section in \.reylo\.yaml: start with reylo migrate init/);
+  const init = reylo(root, ["migrate", "init"]);
+  assert.equal(init.status, 0, init.err + init.out);
+  assert.match(init.out, /✓ Wrote reylo\/schema\.sql, reylo\/migrations\/init\.sql and reylo\/reylo-lock\.yaml\n[\s\S]*✓ Added migrate to \.reylo\.yaml\n$/);
+  assert.equal(readFileSync(join(root, ".reylo.yaml"), "utf8"), "migrate:\n  lock: true\n");
+  // Beside what the file holds; the section the file has already is left as it is.
+  writeFileSync(join(root, ".reylo.yaml"), "strict_params: true\n");
+  const next = project();
+  writeFileSync(join(next, ".reylo.yaml"), "strict_params: true");
+  assert.equal(reylo(next, ["migrate", "init"]).status, 0);
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: true\n");
+  // unlock and lock say so in the file.
+  assert.equal(reylo(next, ["migrate", "unlock"]).status, 0);
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: false\n");
+  assert.equal(reylo(next, ["migrate", "lock"]).status, 0);
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: true\n");
+});
+
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
   const gone = reylo(project(), ["generate"]);
   assert.equal(gone.status, 2);

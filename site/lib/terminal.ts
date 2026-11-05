@@ -39,8 +39,7 @@ export const terminal: LanguageRegistration = {
     { begin: '^(\\$) ', beginCaptures: { 1: { name: 'comment.prompt' } }, end: '$', patterns: command },
     { match: '^#.*$', name: 'comment.line' },
     // A file tree: its branches, and what follows a name.
-    { match: '^[├└│][─ ].*?(?=\\s+#|$)', name: 'string.path' },
-    { match: '^│\\s+[├└]── .*$', name: 'string.path' },
+    { match: '^[│\\s]*[├└]── .*?(?=\\s+#|$)', name: 'string.path' },
     { match: '(?<=\\s)# .*$', name: 'comment.line' },
     { match: '^✗ .*$', name: 'keyword.error' },
     { match: '^(Applying to|Syncing|Pulling from|Watching) .*$', name: 'comment.heading' },

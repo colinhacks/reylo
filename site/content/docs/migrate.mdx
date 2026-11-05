@@ -5,7 +5,47 @@ description: Put your schema in schema.sql, and Reylo writes, checks and runs ea
 
 <p className="dk-subheader">Put your schema in a SQL file, and Reylo writes the migrations</p>
 
-Your schema lives in one file, `reylo/schema.sql`:
+- **One schema file.** Your schema lives in `schema.sql`, and Reylo writes each migration from your changes to it.
+- **Linear history.** A lockfile lists your migrations in order, so two branches that each add one conflict in git, before anything deploys. Opt out with `lock: false`.
+- **Postgres, MySQL and SQLite.** One set of commands for all three.
+- **No silent data loss.** Nothing is dropped until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
+- **Integrity checks.** Chained hashes in the lock catch a migration edited, deleted or reordered, with no database. A fingerprint on each database catches changes made by hand.
+- **Real dry runs.** Shadow databases replay every migration with `reylo migrate check`, running nothing on yours.
+
+## Basic usage
+
+Install Reylo, and start from your database:
+
+```terminal
+$ npm install reylo
+$ npx reylo migrate init
+✓ Wrote reylo/schema.sql, reylo/migrations/init.sql and reylo/reylo-lock.yaml
+  + init.sql recorded, not run: already in place
+✓ The history lists the 1 migration this database's schema has
+✓ Added migrate to .reylo.yaml
+```
+
+It adds a section to your project file:
+
+```yaml title=".reylo.yaml"
+direct_url: ${DATABASE_URL}
+migrate: # [!code ++]
+  lock: true # [!code ++]
+```
+
+And it writes these files, which you commit, all but the cache:
+
+```terminal
+reylo/
+├── schema.sql              # the schema you want
+├── migrations/             # each change, as plain SQL
+│   └── init.sql
+├── reylo-lock.yaml         # the order they run in
+└── .cache/
+    └── .gitignore          # keeps the cache out of git
+```
+
+Your schema now lives in one file:
 
 ```sql title="schema.sql"
 create table users (
@@ -55,40 +95,21 @@ Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
 
-Migrations work on Postgres, MySQL and SQLite.
+## Configuration
 
-## Setup
-
-Add a `migrate` section to `.reylo.yaml`. Every setting is optional, so `migrate: {}` is enough:
+Every setting is optional.
 
 ```yaml title=".reylo.yaml"
 migrate:
-  # The database to migrate. Default: direct_url.
-  url: ${DATABASE_URL}
   # A server to build shadow databases on, where the database's own
   # refuses create database. Default: the database's own server.
   shadow_url: ${SHADOW_URL}
-  # linear: the lock sets the order. loose: names set it, with no lock.
-  # Default: linear.
-  history: linear
-  # Whether comments on tables and columns count as schema. Default: true.
-  strict_comments: true
+  # Whether the lock sets the order your migrations run in. Without it,
+  # their names do. Default: true.
+  lock: true
 ```
 
-Reylo keeps its files in `reylo/`, or the directory [`dir`](/#configuration) names. Commit everything but the cache:
-
-```terminal
-.reylo.yaml
-reylo/
-├── schema.sql              # the schema you want
-├── migrations/             # each change, as plain SQL
-│   ├── 20261104120000_users.sql
-│   └── 20261104140347_add_bio.sql
-├── reylo-lock.yaml         # the order they run in
-└── .cache/                 # keeps itself out of git
-```
-
-To start from a database you already have, run [`reylo migrate init`](#init).
+Reylo migrates the database your type check reads: [`direct_url`](/#direct_url), else `DATABASE_URL`. It keeps its files in `reylo/`, or the directory [`dir`](/#dir) names.
 
 ## CLI
 
@@ -115,7 +136,7 @@ Commands:
   unlock                  Delete the lock: migrations run by name
 
 Flags:
-  --url <url>             The database, in place of migrate.url
+  --url <url>             The database, in place of direct_url
   --dir <path>            Reylo's directory, in place of dir
   -h, --help              Print this help
 ```
@@ -361,7 +382,7 @@ To stop keeping a lock, unlock the project. Migrations then run by name, and two
 
 ```terminal
 $ reylo migrate unlock
-✓ Unlocked: deleted reylo-lock.yaml; .reylo.yaml says history: loose
+✓ Unlocked: deleted reylo-lock.yaml; .reylo.yaml says lock: false
   reylo migrate lock locks it again, in the order a database applied the migrations
 ```
 

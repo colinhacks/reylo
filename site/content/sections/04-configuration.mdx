@@ -98,12 +98,8 @@ Turns on [migrations](/migrate), and holds their settings:
 
 ```yaml title=".reylo.yaml"
 migrate:
-  # the database to migrate (the default is direct_url)
-  url: ${DATABASE_URL}
   # a server for shadow databases, where the database's own refuses create database
   shadow_url: ${SHADOW_URL}
-  # no lock, and migrations run by name (the default is linear: locked)
-  history: loose
-  # compare comments on tables and columns too (the default is true)
-  strict_comments: true
+  # false: no lock, and migrations run by name (the default is true)
+  lock: true
 ```

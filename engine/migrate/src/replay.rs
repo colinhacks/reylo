@@ -5,7 +5,7 @@
 //! rest. Without the cache, every lane is a new shadow that runs every step, as it always was.
 
 use crate::cache::{count, snapshot, Cache, Hash};
-use crate::catalog::{catalog, Scope};
+use crate::catalog::catalog;
 use crate::commands::{run, Migration};
 use crate::db::{Db, Server, Shadow};
 use crate::{Dialect, Error};
@@ -56,16 +56,15 @@ struct Lane {
 pub(crate) struct Shadows<'s> {
     pub(crate) server: &'s mut Server,
     cache: Option<Cache>,
-    scope: Scope,
     lanes: Vec<Lane>,
 }
 
 impl<'s> Shadows<'s> {
     /// The shadows of one run on `server`, for the target at `url`; `texts` are the SQL of every
     /// step the run may replay.
-    pub(crate) async fn new(server: &'s mut Server, url: &str, root: &Path, cache: &Path, scope: Scope, texts: &[&str]) -> Shadows<'s> {
+    pub(crate) async fn new(server: &'s mut Server, url: &str, root: &Path, cache: &Path, texts: &[&str]) -> Shadows<'s> {
         let cache = Cache::open(server, url, root, cache, texts).await;
-        Shadows { server, cache, scope, lanes: vec![] }
+        Shadows { server, cache, lanes: vec![] }
     }
 
     pub(crate) fn lane(&mut self) -> usize {
@@ -99,12 +98,11 @@ impl<'s> Shadows<'s> {
                 return Ok(Ok(lines.clone()));
             }
         }
-        let comments = self.scope.comments;
         let here = self.lanes[l].shadow.is_some() && self.lanes[l].at == n;
         if let (Some(cache), true, false) = (&self.cache, self.lanes[l].caching, here) {
             // Lines are kept only where the session was as a new one, so the read they stand for
             // left it as it was.
-            if let Some(lines) = cache.read_lines(&self.lanes[l].keys[n], comments) {
+            if let Some(lines) = cache.read_lines(&self.lanes[l].keys[n]) {
                 count(|s| s.lines += 1);
                 self.lanes[l].memo = Some((n, lines.clone()));
                 return Ok(Ok(lines));
@@ -117,7 +115,7 @@ impl<'s> Shadows<'s> {
         if self.cache.is_some() && self.lanes[l].caching && clean(&mut self.lanes[l]).await {
             keep = true;
             if here {
-                if let Some(lines) = self.cache.as_ref().and_then(|c| c.read_lines(&self.lanes[l].keys[n], comments)) {
+                if let Some(lines) = self.cache.as_ref().and_then(|c| c.read_lines(&self.lanes[l].keys[n])) {
                     count(|s| s.lines += 1);
                     self.lanes[l].memo = Some((n, lines.clone()));
                     return Ok(Ok(lines));
@@ -126,10 +124,10 @@ impl<'s> Shadows<'s> {
         }
         let lane = &mut self.lanes[l];
         let Some(shadow) = lane.shadow.as_mut() else { return Err(Error("a lane with no shadow".into())) };
-        let lines = catalog(&mut shadow.db, self.scope).await?;
+        let lines = catalog(&mut shadow.db).await?;
         if keep {
             if let Some(cache) = &self.cache {
-                cache.write_lines(&lane.keys[n], comments, &lines);
+                cache.write_lines(&lane.keys[n], &lines);
             }
         }
         lane.memo = Some((n, lines.clone()));

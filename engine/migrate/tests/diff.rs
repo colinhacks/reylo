@@ -6,7 +6,7 @@
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
 
-use reylo_migrate::catalog::{catalog, difference, Scope};
+use reylo_migrate::catalog::{catalog, difference};
 use reylo_migrate::db::{with_database, Db};
 use reylo_migrate::diff;
 use std::path::{Path, PathBuf};
@@ -109,7 +109,7 @@ async fn postgres() {
         }
         plan.statements.splice(0..0, moves);
         let text = plan.sql();
-        let (mut only_a, mut only_b) = difference(&catalog(&mut from, Scope::default()).await.unwrap(), &catalog(&mut to, Scope::default()).await.unwrap());
+        let (mut only_a, mut only_b) = difference(&catalog(&mut from).await.unwrap(), &catalog(&mut to).await.unwrap());
         let (pa, pb) = (unread(&mut from).await, unread(&mut to).await);
         only_a.extend(pa.iter().filter(|l| !pb.contains(l)).cloned());
         only_b.extend(pb.iter().filter(|l| !pa.contains(l)).cloned());
@@ -199,7 +199,7 @@ async fn postgres_oracle_schemas() {
                         break;
                     }
                 }
-                let (mut only_a, mut only_b) = difference(&catalog(from, Scope::default()).await.unwrap(), &catalog(to, Scope::default()).await.unwrap());
+                let (mut only_a, mut only_b) = difference(&catalog(from).await.unwrap(), &catalog(to).await.unwrap());
                 let (pa, pb) = (unread(from).await, unread(to).await);
                 only_a.extend(pa.iter().filter(|l| !pb.contains(l)).cloned());
                 only_b.extend(pb.iter().filter(|l| !pa.contains(l)).cloned());

@@ -57,7 +57,7 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 
 ## Migrations
 
-A project whose `.reylo.yaml` has a `migrate` section keeps its schema in `reylo/schema.sql` and each change to it in `reylo/migrations/<YYYYMMDDHHMMSS>_<name>.sql`, in the order `reylo/reylo-lock.yaml` lists (https://reylo.dev/migrate). Commit all three.
+A project starts with `reylo migrate init`, which writes its files from the database and adds a `migrate` section to `.reylo.yaml`. It keeps its schema in `reylo/schema.sql` and each change to it in `reylo/migrations/<YYYYMMDDHHMMSS>_<name>.sql`, in the order `reylo/reylo-lock.yaml` lists (https://reylo.dev/migrate). Commit all three.
 
 - To change the schema, edit `reylo/schema.sql`, then `reylo migrate create <name>`: Reylo writes the migration, checked in a shadow database. Read the file it writes, and add the data changes a schema can't say. Never write a migration's DDL by hand where `create` can write it.
 - `create` refuses a change that drops a table or a column, or changes a column's type so that values are lost, until `--drop <table or table.column>` names it. Name only what the change is meant to lose. A column or table that goes while one identical but for its name comes is renamed, keeping its rows. One that also changes is refused, with one command for a rename (`--rename <table.old>=<new>`) and one for a drop: read the two names, and pick by what they mean.

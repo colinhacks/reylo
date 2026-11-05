@@ -2,7 +2,7 @@
 //! writes its lines to, and answers the process's exit code; an `Err` is a refusal to start (a
 //! setting, a file or a connection), which the command line prints.
 
-use crate::catalog::{catalog, difference, Scope, HISTORY_TABLE};
+use crate::catalog::{catalog, difference, HISTORY_TABLE};
 use crate::db::{shown_url, wipe, Db, Server};
 use crate::lock;
 use crate::replay::{Shadows, Step};
@@ -21,7 +21,7 @@ pub struct Options {
     pub shadow_url: Option<String>,
     pub dir: PathBuf,
     pub schema: PathBuf,
-    /// A locked project (the default; `history: loose` turns it off): the lock lists the migrations
+    /// A locked project (the default; `lock: false` turns it off): the lock lists the migrations
     /// in the order they run, a migration not in it is a draft only development runs, and two
     /// branches that add migrations conflict on it. Unlocked, migrations run by name, and one that
     /// lands older than one already applied runs only where both orders end the same.
@@ -30,16 +30,8 @@ pub struct Options {
     pub lock: PathBuf,
     /// The cache of replays and the SQLite lock files, `reylo/.cache/`.
     pub cache: PathBuf,
-    /// Whether comments on objects are compared (`strict_comments`, on by default).
-    pub comments: bool,
     /// The project's directory: a relative SQLite path is its.
     pub root: PathBuf,
-}
-
-impl Options {
-    fn scope(&self) -> Scope {
-        Scope { comments: self.comments }
-    }
 }
 
 pub type Log<'a> = &'a mut dyn FnMut(&str);
@@ -211,13 +203,13 @@ async fn ensure_history(db: &mut Db) -> Result<(), Error> {
 /// The live schema's fingerprint: a digest of its catalog as the comparator reads it, with the
 /// server's version and this build's catalog code, which both change what the catalog reads as. A
 /// database whose fingerprint equals the one its last run stored has not been changed since.
-async fn fingerprint(db: &mut Db, scope: Scope) -> Result<String, Error> {
-    let lines = catalog(db, scope).await?;
-    fingerprint_of(db, &lines, scope).await
+async fn fingerprint(db: &mut Db) -> Result<String, Error> {
+    let lines = catalog(db).await?;
+    fingerprint_of(db, &lines).await
 }
 
 /// The fingerprint of catalog lines already read from `db`.
-async fn fingerprint_of(db: &mut Db, lines: &[String], scope: Scope) -> Result<String, Error> {
+async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> {
     // The server's major version: a minor release fixes bugs and leaves the catalog's text alone, so
     // that an upgrade a managed host makes on its own leaves the fingerprint comparable.
     let version = match db.dialect() {
@@ -231,8 +223,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String], scope: Scope) -> Result<S
     for line in crate::catalog::without_children(lines) {
         digest.part(line.as_bytes());
     }
-    let read = if scope.comments { "comments" } else { "no comments" };
-    Ok(format!("{}:{version}:{read}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
+    Ok(format!("{}:{version}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
 }
 
 async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Error> {
@@ -671,7 +662,6 @@ fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
 /// database that no longer has it is refused, and what the fingerprint can't speak to is `check`'s.
 pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, log: Log<'_>) -> Result<Plan, Error> {
     let d = db.dialect();
-    let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
     let mut problems = Vec::new();
     for s in &strays {
@@ -754,13 +744,12 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, log
     // An index a cut-off `create index concurrently` left invalid is dropped before its migration
     // runs again, so it is compared as gone.
     let leftovers = leftovers(db, &history).await?;
-    let live: Vec<String> = catalog(db, scope).await?.into_iter().filter(|l| !leftovers.iter().any(|x| l.starts_with(&x.line))).collect();
+    let live: Vec<String> = catalog(db).await?.into_iter().filter(|l| !leftovers.iter().any(|x| l.starts_with(&x.line))).collect();
     let stored = applied.last().and_then(|r| r.fingerprint.clone());
     let unchanged = match stored {
         Some(stored) => {
-            let now = fingerprint_of(db, &live, scope).await?;
-            // Only a fingerprint read the same way says anything: the reader, what it compares, and
-            // the server's version.
+            let now = fingerprint_of(db, &live).await?;
+            // Only a fingerprint read the same way says anything: the reader and the server's version.
             let how = |f: &str| f.rsplit_once(':').map(|(how, _)| how.to_string());
             (how(&stored) == how(&now)).then_some(stored == now)
         }
@@ -774,8 +763,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, log
             return Ok(Plan { problems: vec![problem], ..Plan::default() });
         }
         // A first run is on an empty database: there is no history to say what else this one holds.
-        const EMPTY: [&str; 4] = ["schema ", "grant schema ", "comment schema ", "extension "];
-        if history.is_empty() && live.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind))) {
+        if history.is_empty() && holds_a_schema(&live) {
             let problem = Problem::new("This database has a schema, and no migration history")
                 .fix("Where the migrations describe it, record them, running nothing", &["reylo migrate sync-history"])
                 .fix("Or start the project's migrations from it", &["reylo migrate init"]);
@@ -784,7 +772,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options, log
         return Ok(Plan { pending, unchanged, leftovers, late, ..Plan::default() });
     };
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     // A lone statement cut off before its row was finished did run, or did not: the database says
     // which, and one that landed is recorded, as the row it started says it ran.
     let started: Vec<String> = history.iter().filter(|r| !r.applied).map(|r| r.name.clone()).collect();
@@ -1076,6 +1064,12 @@ fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
         .fix("On a development database, run it again as it now reads", &["reylo migrate dev"])
 }
 
+/// Whether a database's catalog lines hold more than an empty database's do.
+fn holds_a_schema(lines: &[String]) -> bool {
+    const EMPTY: [&str; 4] = ["schema ", "grant schema ", "comment schema ", "extension "];
+    lines.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind)))
+}
+
 /// Whether a migration that fails can leave part of what it did: on MySQL, whose statements commit as
 /// they go, and a statement that runs outside a transaction.
 fn may_leave_part(sql: &str, d: Dialect) -> bool {
@@ -1118,7 +1112,7 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
         if plan.unchanged.is_none() {
             if let Some(last) = history.iter().rfind(|r| r.applied) {
                 ensure_history(db).await?;
-                let value = fingerprint(db, opts.scope()).await?;
+                let value = fingerprint(db).await?;
                 set_fingerprint(db, &last.name, &value).await?;
             }
         }
@@ -1140,7 +1134,7 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
                 rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", at.elapsed().as_millis()))));
                 // On its own row as it finishes, so that a run cut off after it, or a migration
                 // after it that fails and leaves part of itself, is seen by the next run.
-                let value = fingerprint(db, opts.scope()).await?;
+                let value = fingerprint(db).await?;
                 set_fingerprint(db, &m.name, &value).await?;
             }
             Err(e) => {
@@ -1381,7 +1375,6 @@ pub async fn sync_history(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
 async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let _held = lock(db, opts).await?;
     let d = db.dialect();
-    let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
     let before_rows = read_history(db).await?;
     let mut problems = file_problems(opts, &files, &strays, None, d);
@@ -1406,9 +1399,9 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     } else {
         files.clone()
     };
-    let live = catalog(db, scope).await?;
+    let live = catalog(db).await?;
     let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     // The replay after each migration, from none: the longest run that equals the database, and
     // else the one closest to it.
     let replayed = async {
@@ -1420,7 +1413,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         let mut matches: Vec<usize> = Vec::new();
         let mut closest: (usize, usize, Vec<String>) = (usize::MAX, 0, vec![]);
         for k in 0..=order.len() {
-            let now = catalog(shadows.db(lane), scope).await?;
+            let now = catalog(shadows.db(lane)).await?;
             if crate::catalog::without_extra_children(&live, &now) == now {
                 matches.push(k);
             } else {
@@ -1479,7 +1472,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         return Err(e);
     }
     if let Some(last) = read_history(db).await?.iter().rfind(|r| r.applied) {
-        let value = fingerprint(db, scope).await?;
+        let value = fingerprint(db).await?;
         set_fingerprint(db, &last.name, &value).await?;
     }
     for f in recorded {
@@ -1986,9 +1979,8 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
     db.close().await;
-    let scope = opts.scope();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
-    let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
+    let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
     let result = async {
         let a = shadows.lane();
         shadows.push(a, [Step::script("schema.sql", schema_sql)]);
@@ -2140,7 +2132,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
             Ok(lines) => lines,
             Err((_, e)) => return Err(Error(format!("schema.sql fails on an empty database: {e}"))),
         };
-        let reached = catalog(shadows.db(c), scope).await?;
+        let reached = catalog(shadows.db(c)).await?;
         plan.statements.splice(0..0, moves);
         let mut texts = plan_files(&plan, d);
         for loss in &plan.losses {
@@ -2273,6 +2265,18 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     if !read_migrations(&opts.dir)?.0.is_empty() {
         return Err(Error(format!("{} holds migrations already: init starts a project's history", shown(&opts.dir))));
     }
+    // An empty database has no history to start: the first migration is `create`'s.
+    let mut db = Db::connect(&opts.url, &opts.root).await?;
+    let lines = catalog(&mut db).await;
+    db.close().await;
+    if !holds_a_schema(&lines?) {
+        if let Some(home) = opts.schema.parent() {
+            std::fs::create_dir_all(home)?;
+        }
+        std::fs::write(&opts.schema, "")?;
+        log(&format!("{} Wrote {}: this database is empty, so declare your schema there", paint("green", "✓"), shown(&opts.schema)));
+        return Ok(0);
+    }
     let sql = dump(opts, schemas).await?;
     std::fs::create_dir_all(&opts.dir)?;
     std::fs::write(&opts.schema, &sql)?;
@@ -2283,9 +2287,9 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
         let entries = lock::chain([(INIT, sql.as_str())]);
         let schema = Some(lock::schema_sum(&entries[0].sum, &sql));
         lock::write(&opts.lock, &lock::Lock { schema, entries })?;
-        log(&format!("Wrote {}, {} and {}", shown(&opts.schema), shown(&init), shown(&opts.lock)));
+        log(&format!("{} Wrote {}, {} and {}", paint("green", "✓"), shown(&opts.schema), shown(&init), shown(&opts.lock)));
     } else {
-        log(&format!("Wrote {} and {}", shown(&opts.schema), shown(&init)));
+        log(&format!("{} Wrote {} and {}", paint("green", "✓"), shown(&opts.schema), shown(&init)));
     }
     sync_history(opts, log).await
 }
@@ -2298,7 +2302,7 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 /// and keeps the result only if the database then reads as `expect`; `Ok(Err(lines))` says how it
 /// differs. Where the database has transactional DDL, it is all one transaction, rolled back on a
 /// difference, so nothing has changed; on MySQL, which commits each statement, it is checked after.
-async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String], scope: Scope) -> Result<Result<(), Vec<String>>, Error> {
+async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]) -> Result<Result<(), Vec<String>>, Error> {
     let d = db.dialect();
     let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).chain(then.iter().cloned()).collect();
     let differs = |now: &[String]| describe_diff("this database", now, "the target", expect);
@@ -2306,7 +2310,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         for s in &statements {
             db.script(s).await?;
         }
-        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
+        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
         return Ok(if now == expect { Ok(()) } else { Err(differs(&now)) });
     }
     if d == Dialect::Sqlite {
@@ -2318,7 +2322,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
+        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
         if now != expect {
             return Ok(Err(differs(&now)));
         }
@@ -2340,7 +2344,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
 /// history's own). Kept only if the database then reads as `expect`, all in one transaction where
 /// the database has transactional DDL, so nothing has changed otherwise; on MySQL, which commits
 /// each statement, checked after. Gives the renames and the plan it ran.
-async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String], scope: Scope) -> Result<Result<(Vec<String>, crate::diff::Plan), Vec<String>>, Error> {
+async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String]) -> Result<Result<(Vec<String>, crate::diff::Plan), Vec<String>>, Error> {
     let d = db.dialect();
     let transactional = d != Dialect::Mysql;
     if d == Dialect::Sqlite {
@@ -2357,7 +2361,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, expect);
+        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
         if now != expect {
             return Ok(Err(describe_diff("this database", &now, "the target", expect)));
         }
@@ -2460,7 +2464,6 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
-    let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
     let mut problems = file_problems(opts, &files, &strays, None, d);
     let history = read_history(db).await?;
@@ -2490,17 +2493,17 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     } else {
         applied.iter().take_while(|r| files.iter().any(|f| f.name == r.name && same_statements(&f.sql, &r.sql, d))).count()
     };
-    let live = catalog(db, scope).await?;
+    let live = catalog(db).await?;
     let schema_sql = std::fs::read_to_string(&opts.schema).ok();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain(history.iter().map(|r| r.sql.as_str())).chain(schema_sql.as_deref()).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     let result = dev_in_shadows(&mut shadows, db, opts, &files, &applied, agree, &live, log).await;
     let result = match result {
         Ok(0) => async {
             if opts.locked {
                 relock(&mut shadows, db, opts, &files, schema_sql.as_deref(), log).await?;
             }
-            replayed_fingerprint(&mut shadows, db, opts, &files).await?;
+            replayed_fingerprint(&mut shadows, db, &files).await?;
             Ok(0)
         }
         .await,
@@ -2512,14 +2515,14 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
 
 /// What `dev` leaves for `prod` to compare with: the fingerprint of what the migrations make, not of
 /// this database, which may hold more that no migration made.
-async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &[Migration]) -> Result<(), Error> {
+async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, files: &[Migration]) -> Result<(), Error> {
     let history = read_history(db).await?;
     let Some(last) = history.iter().rfind(|r| r.applied) else { return Ok(()) };
     let ran: Vec<&Migration> = history.iter().filter(|r| r.applied).filter_map(|r| files.iter().find(|f| f.name == r.name)).collect();
     let lane = shadows.lane();
     shadows.push(lane, ran.iter().map(|m| Step::of(m)));
     if let Ok(Ok(lines)) = shadows.lines(lane).await {
-        let value = fingerprint_of(db, &lines, opts.scope()).await?;
+        let value = fingerprint_of(db, &lines).await?;
         ensure_history(db).await?;
         set_fingerprint(db, &last.name, &value).await?;
     }
@@ -2631,7 +2634,6 @@ async fn relock(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &
 #[allow(clippy::too_many_arguments)]
 async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, files: &[Migration], applied: &[&HistoryRow], agree: usize, live: &[String], log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
-    let scope = opts.scope();
     let fail = |m: &str, error: String, log: Log<'_>| {
         print_problems(&[Problem::new(m.to_string()).note(error)], log);
         Ok(1)
@@ -2715,7 +2717,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 let (only_h, only_k) = difference(&at_applied, &at_kept);
                 let expect: Vec<String> = live.iter().filter(|l| !only_h.contains(l)).cloned().chain(only_k).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 let statements: Vec<String> = renames.iter().cloned().chain(plan.runnable().cloned()).collect();
-                if let Ok(Ok(())) = run_to(db, &statements, &forget, &expect, scope).await {
+                if let Ok(Ok(())) = run_to(db, &statements, &forget, &expect).await {
                     base = expect;
                     undone = Some(plan);
                 }
@@ -2725,7 +2727,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         // undoes the changes no migration made too.
         let plan = match undone {
             Some(plan) => plan,
-            None => match take_to(db, &k_target, &forget, &at_kept, scope).await {
+            None => match take_to(db, &k_target, &forget, &at_kept).await {
                 Err(e) => return fail("Rewinding this database failed", e.0, log),
                 Ok(Err(lines)) => return refused("Rewinding this database wouldn't reach what its migrations make", lines, log),
                 Ok(Ok((_, plan))) => {
@@ -2777,7 +2779,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 shadows.taint(lane);
                 let plan = plan_between(shadows.db(lane), db, None).await?;
                 let statements: Vec<String> = plan.runnable().cloned().collect();
-                if let Ok(Ok(())) = run_to(shadows.db(lane), &statements, &[], &base, scope).await {
+                if let Ok(Ok(())) = run_to(shadows.db(lane), &statements, &[], &base).await {
                     runs = true;
                     for m in &pending {
                         if run(shadows.db(lane), m, false).await.is_err() {
@@ -2807,7 +2809,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
                 return fail("The history fails when replayed in a shadow database", e, log);
             }
             let target = read_target(shadows.db(lane), None).await?;
-            match take_to(db, &target, &[], &expect, scope).await {
+            match take_to(db, &target, &[], &expect).await {
                 Err(e) => return fail("Undoing changes no migration made failed", e.0, log),
                 Ok(Err(lines)) => return refused("Undoing changes no migration made wouldn't reach what the migrations make", lines, log),
                 Ok(Ok((_, plan))) => {
@@ -2921,7 +2923,6 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
     let d = db.dialect();
-    let scope = opts.scope();
     let (files, strays) = read_migrations(&opts.dir)?;
     let schema_sql = std::fs::read_to_string(&opts.schema).ok();
     let mut problems = file_problems(opts, &files, &strays, schema_sql.as_deref(), d);
@@ -2962,7 +2963,7 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
     }
     let schema_sql = schema_sql.unwrap_or_default();
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql.as_str()]).collect();
-    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, scope, &texts).await;
+    let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     let in_order: Vec<Migration> = applied.iter().filter_map(|r| files.iter().find(|f| f.name == r.name).cloned()).collect();
     let result = sync_in_shadows(&mut shadows, db, opts, &in_order, &schema_sql, log).await;
     shadows.finish().await;
@@ -2973,7 +2974,6 @@ async fn sync_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options,
 /// migrations in the order the database ran them.
 async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, applied: &[Migration], schema_sql: &str, log: Log<'_>) -> Result<i32, Error> {
     let d = db.dialect();
-    let scope = opts.scope();
     let fail = |m: &str, error: String, log: Log<'_>| {
         print_problems(&[Problem::new(m.to_string()).note(error)], log);
         Ok(1)
@@ -2984,12 +2984,12 @@ async fn sync_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options,
         Err((_, e)) => return fail("schema.sql fails on an empty database", e, log),
         Ok(()) => shadows.taint(s_lane),
     }
-    let wanted = catalog(shadows.db(s_lane), scope).await?;
-    let now = crate::catalog::without_extra_children(&catalog(db, scope).await?, &wanted);
+    let wanted = catalog(shadows.db(s_lane)).await?;
+    let now = crate::catalog::without_extra_children(&catalog(db).await?, &wanted);
     let pushed = if now != wanted {
         let target = read_target(shadows.db(s_lane), Some(schema_sql)).await?;
         let counts = table_rows(db).await?;
-        let (renames, plan) = match take_to(db, &target, &[], &wanted, scope).await {
+        let (renames, plan) = match take_to(db, &target, &[], &wanted).await {
             Err(e) => return fail("Taking this database to schema.sql failed", e.0, log),
             Ok(Err(lines)) => {
                 let problem = Problem::new("Reylo can't take this database the rest of the way to schema.sql").lines(lines);

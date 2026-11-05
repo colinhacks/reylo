@@ -270,22 +270,22 @@ impl Cache {
         Sha256::new().part(prev).part(if schema { b"script" } else { b"migration" }).part(label.as_bytes()).part(sql.as_bytes()).finish()
     }
 
-    fn lines_file(&self, key: &Hash, comments: bool) -> PathBuf {
-        let k = Sha256::new().part(key).part(b"lines").part(&[comments as u8]).finish();
+    fn lines_file(&self, key: &Hash) -> PathBuf {
+        let k = Sha256::new().part(key).part(b"lines").finish();
         self.dir.join("lines").join(format!("{}.json", hex(&k[..20])))
     }
 
     /// The catalog's lines at the prefix `key`, where a run kept them.
-    pub(crate) fn read_lines(&self, key: &Hash, comments: bool) -> Option<Vec<String>> {
-        let file = self.lines_file(key, comments);
+    pub(crate) fn read_lines(&self, key: &Hash) -> Option<Vec<String>> {
+        let file = self.lines_file(key);
         let text = std::fs::read_to_string(&file).ok()?;
         let lines: Vec<String> = serde_json::from_str(&text).ok()?;
         touch(&file);
         Some(lines)
     }
 
-    pub(crate) fn write_lines(&self, key: &Hash, comments: bool, lines: &[String]) {
-        let file = self.lines_file(key, comments);
+    pub(crate) fn write_lines(&self, key: &Hash, lines: &[String]) {
+        let file = self.lines_file(key);
         if let Ok(text) = serde_json::to_string(lines) {
             write_atomically(&self.dir, &file, text.as_bytes());
         }

@@ -30,8 +30,8 @@ const USAGE: &str = "Usage: reylo <command>
 const RUN_USAGE: &str = "Usage: reylo run \"<sql>\"… [--file <path>]…
 
 Runs SQL on the database as written, outside any migration's history: inline text, and the files
---file names (-f), in the order given. The database is migrate.url, else the type check's
-connection; --url names another.";
+--file names (-f), in the order given. The database is the type check's connection; --url names
+another.";
 
 const MIGRATE_USAGE: &str = "Usage: reylo migrate <command> [flags]
 
@@ -55,7 +55,7 @@ Commands:
   unlock                  Delete the lock: migrations run by name
 
 Flags:
-  --url <url>             The database, in place of migrate.url
+  --url <url>             The database, in place of direct_url
   --dir <path>            Reylo's directory, in place of dir
   -h, --help              Print this help";
 
@@ -142,16 +142,15 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
     let m = project.config.migrate.clone();
     if m.is_none() && require && !args.values.contains_key("url") {
         let file = project.file.as_deref().map(|f| f.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(|| ".reylo.yaml".into());
-        return Err(format!("no migrate section in {file}: add one (migrate: {{}}) to use reylo migrate"));
+        return Err(format!("no migrate section in {file}: start with reylo migrate init"));
     }
     let m = m.unwrap_or_default();
-    let url = match (args.values.get("url"), &m.url) {
-        (Some(url), _) => url.clone(),
-        (None, Some(url)) => project.expand("migrate.url", url)?,
-        (None, None) => project.type_check_url().unwrap_or_default().unwrap_or_default(),
+    let url = match args.values.get("url") {
+        Some(url) => url.clone(),
+        None => project.type_check_url().unwrap_or_default().unwrap_or_default(),
     };
     if url.is_empty() && need_url {
-        return Err("no database: set migrate.url or direct_url in .reylo.yaml, or DATABASE_URL".into());
+        return Err("no database: set direct_url in .reylo.yaml, or DATABASE_URL".into());
     }
     if !url.is_empty() {
         reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
@@ -167,10 +166,9 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
         shadow_url,
         dir: home.join("migrations"),
         schema: home.join("schema.sql"),
-        locked: m.history != Some(reylo_engine_core::config::History::Loose),
+        locked: m.lock != Some(false),
         lock: home.join(reylo_migrate::lock::LOCK),
         cache: home.join(".cache"),
-        comments: m.strict_comments != Some(false),
         root: project.root.clone(),
     })
 }
@@ -225,7 +223,8 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
         return refused(word);
     }
     let offline = command == "check" && has("offline");
-    let opts = settings_with(&parsed, true, !offline && command != "unlock")?;
+    // init is how a project starts: it adds the section the rest need.
+    let opts = settings_with(&parsed, command != "init", !offline && command != "unlock")?;
     if offline {
         return reylo_migrate::check_offline(&opts, &mut print).map_err(|e| e.0);
     }
@@ -247,11 +246,14 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
             "check" => reylo_migrate::check_command(&opts, &mut log).await,
             "sync-history" => reylo_migrate::sync_history(&opts, &mut log).await,
             "lock" => match reylo_migrate::lock_command(&opts, &mut log).await {
-                Ok(0) => set_history(&opts.root, false).map(|()| 0).map_err(reylo_migrate::Error),
+                Ok(0) => set_lock(&opts.root, true).map(|()| 0).map_err(reylo_migrate::Error),
                 other => other,
             },
             "pull" => reylo_migrate::pull(&opts, &mut log).await,
-            "init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
+            "init" => match reylo_migrate::init(&opts, &parsed.schemas, &mut log).await {
+                Ok(0) => add_migrate_section(&opts.root).map(|()| 0).map_err(reylo_migrate::Error),
+                other => other,
+            },
             "create" => {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
@@ -262,31 +264,35 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
     result.map_err(|e| e.0)
 }
 
-/// `reylo migrate unlock`: deletes the lock and writes `history: loose` into .reylo.yaml, so the
+/// `reylo migrate unlock`: deletes the lock and writes `lock: false` into .reylo.yaml, so the
 /// migrations run by name, and one older than one applied runs where both orders end the same.
 fn unlock(opts: &Options) -> Result<i32, String> {
-    set_history(&opts.root, true)?;
+    set_lock(&opts.root, false)?;
     let had = opts.lock.exists();
     if had {
         std::fs::remove_file(&opts.lock).map_err(|e| format!("cannot delete {}: {e}", opts.lock.display()))?;
     }
     let name = opts.lock.file_name().unwrap_or_default().to_string_lossy();
-    println!("✓ Unlocked: {}.reylo.yaml says history: loose", if had { format!("deleted {name}; ") } else { String::new() });
+    println!("✓ Unlocked: {}.reylo.yaml says lock: false", if had { format!("deleted {name}; ") } else { String::new() });
     println!("  reylo migrate lock locks it again, in the order a database applied the migrations");
     Ok(0)
 }
 
-/// Sets `history` in the migrate section of the project's .reylo.yaml: `loose`, or, for a locked
-/// project (the default), no line at all. Edits the one line, keeping the rest as written.
-fn set_history(root: &Path, loose: bool) -> Result<(), String> {
-    let file = [".reylo.yaml", ".reylo.yml"].iter().map(|n| root.join(n)).find(|p| p.exists()).ok_or("no .reylo.yaml in the project")?;
-    let text = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-    let by_hand = || format!("couldn't edit the migrate section of {}: set migrate.history{} by hand", file.display(), if loose { ": loose" } else { " to linear" });
-    let edited = with_history(&text, loose).ok_or_else(by_hand)?;
+/// The project's file: the one there is, else where a new one goes.
+fn project_file(root: &Path) -> std::path::PathBuf {
+    [".reylo.yaml", ".reylo.yml"].iter().map(|n| root.join(n)).find(|p| p.exists()).unwrap_or_else(|| root.join(".reylo.yaml"))
+}
+
+/// Sets `lock` in the migrate section of the project's .reylo.yaml. Edits the one line, keeping the
+/// rest as written.
+fn set_lock(root: &Path, on: bool) -> Result<(), String> {
+    let file = project_file(root);
+    let text = std::fs::read_to_string(&file).map_err(|_| "no .reylo.yaml in the project: start with reylo migrate init".to_string())?;
+    let by_hand = || format!("couldn't edit the migrate section of {}: set migrate.lock to {on} by hand", file.display());
+    let edited = with_lock(&text, on).ok_or_else(by_hand)?;
     // The edit stands only where the file then reads as asked.
-    let history = reylo_engine_core::config::parse(&edited).ok().and_then(|p| p.migrate).map(|m| m.history);
-    let wanted = if loose { Some(Some(reylo_engine_core::config::History::Loose)) } else { Some(None) };
-    if history != wanted {
+    let read = reylo_engine_core::config::parse(&edited).ok().and_then(|p| p.migrate).and_then(|m| m.lock);
+    if read != Some(on) {
         return Err(by_hand());
     }
     if edited != text {
@@ -295,9 +301,24 @@ fn set_history(root: &Path, loose: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// The text of a .reylo.yaml with its migrate section's `history` line set as `set_history` says;
-/// None where the section isn't one a line edit can change (missing, or written inline with keys).
-fn with_history(text: &str, loose: bool) -> Option<String> {
+/// Adds the migrate section to the project's .reylo.yaml, making the file where there is none; a
+/// section already there is left as it is.
+fn add_migrate_section(root: &Path) -> Result<(), String> {
+    let file = project_file(root);
+    let text = std::fs::read_to_string(&file).unwrap_or_default();
+    if reylo_engine_core::config::parse(&text).map_err(|e| e.message)?.migrate.is_some() {
+        return Ok(());
+    }
+    let gap = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+    std::fs::write(&file, format!("{text}{gap}migrate:\n  lock: true\n")).map_err(|e| e.to_string())?;
+    let name = file.file_name().unwrap_or_default().to_string_lossy();
+    println!("{} Added migrate to {name}", reylo_migrate::commands::paint("green", "✓"));
+    Ok(())
+}
+
+/// The text of a .reylo.yaml with its migrate section's `lock` line set; None where the section
+/// isn't one a line edit can change (missing, or written inline with keys).
+fn with_lock(text: &str, on: bool) -> Option<String> {
     let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
     let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
     let header = regex::Regex::new(r"^migrate:\s*(\{\s*\})?\s*(#.*)?$").unwrap();
@@ -311,22 +332,12 @@ fn with_history(text: &str, loose: bool) -> Option<String> {
     // The section's lines: indented ones, and blank lines and comments between them.
     let inside = |l: &str| l.trim().is_empty() || l.starts_with([' ', '\t']) || l.trim_start().starts_with('#');
     let end = (at + 1..lines.len()).find(|&k| !inside(&lines[k])).unwrap_or(lines.len());
-    let key = regex::Regex::new(r"^(\s+)history:").unwrap();
+    let key = regex::Regex::new(r"^(\s+)lock:").unwrap();
     let found = (at + 1..end).find(|&k| key.is_match(&lines[k]));
     let indent = (at + 1..end).find(|&k| lines[k].starts_with([' ', '\t']) && !lines[k].trim().is_empty() && !lines[k].trim_start().starts_with('#')).map(|k| lines[k][..lines[k].len() - lines[k].trim_start().len()].to_string()).unwrap_or_else(|| "  ".into());
-    match (found, loose) {
-        (Some(k), true) => lines[k] = format!("{indent}history: loose"),
-        (Some(k), false) => {
-            lines.remove(k);
-        }
-        (None, true) => lines.insert(at + 1, format!("{indent}history: loose")),
-        (None, false) => {}
-    }
-    // A section left with no keys stays a section.
-    let keys = (at + 1..lines.len()).take_while(|&k| inside(&lines[k])).any(|k| lines[k].starts_with([' ', '\t']) && !lines[k].trim().is_empty() && !lines[k].trim_start().starts_with('#'));
-    if !loose && !keys {
-        let comment = lines[at].find('#').map(|c| format!(" {}", &lines[at][c..])).unwrap_or_default();
-        lines[at] = format!("migrate: {{}}{comment}");
+    match found {
+        Some(k) => lines[k] = format!("{indent}lock: {on}"),
+        None => lines.insert(at + 1, format!("{indent}lock: {on}")),
     }
     let mut out = lines.join(newline);
     if text.ends_with('\n') {
@@ -416,7 +427,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{painted_usage, with_history, MIGRATE_USAGE};
+    use super::{painted_usage, with_lock, MIGRATE_USAGE};
 
     #[test]
     fn the_help_is_its_text_when_nothing_paints_it() {
@@ -424,20 +435,17 @@ mod tests {
     }
 
     #[test]
-    fn history_is_set_in_the_migrate_section_and_taken_out_again() {
-        let file = "# the project\nmigrate:\n  url: ${DATABASE_URL}   # the app's\n\nqueries: src\n";
-        let loose = with_history(file, true).unwrap();
-        assert_eq!(loose, "# the project\nmigrate:\n  history: loose\n  url: ${DATABASE_URL}   # the app's\n\nqueries: src\n");
-        assert_eq!(with_history(&loose, true).unwrap(), loose);
-        assert_eq!(with_history(&loose, false).unwrap(), file);
-        assert_eq!(with_history("migrate: {}\n", true).unwrap(), "migrate:\n  history: loose\n");
-        assert_eq!(with_history("migrate:\n  history: loose\n", false).unwrap(), "migrate: {}\n");
-        assert_eq!(with_history("migrate:\n    history: linear\n", true).unwrap(), "migrate:\n    history: loose\n");
-        assert_eq!(with_history("queries: src\n", true), None);
+    fn lock_is_set_in_the_migrate_section() {
+        let file = "# the project\nmigrate:\n  shadow_url: ${SHADOW_URL}   # the CI server's\n\nqueries: src\n";
+        let off = with_lock(file, false).unwrap();
+        assert_eq!(off, "# the project\nmigrate:\n  lock: false\n  shadow_url: ${SHADOW_URL}   # the CI server's\n\nqueries: src\n");
+        assert_eq!(with_lock(&off, false).unwrap(), off);
+        assert_eq!(with_lock(&off, true).unwrap(), off.replace("lock: false", "lock: true"));
+        assert_eq!(with_lock("migrate: {}\n", false).unwrap(), "migrate:\n  lock: false\n");
+        assert_eq!(with_lock("migrate:\n    lock: true\n", false).unwrap(), "migrate:\n    lock: false\n");
+        assert_eq!(with_lock("queries: src\n", true), None);
         // A comment at the start of a line inside the section is the section's.
-        assert_eq!(with_history("migrate:\n# the shadow server\n  shadow_url: x\n  history: loose\n", false).unwrap(), "migrate:\n# the shadow server\n  shadow_url: x\n");
-        assert_eq!(with_history("migrate:\n  url: x\n# loose for now\n  history: loose\n", true).unwrap(), "migrate:\n  url: x\n# loose for now\n  history: loose\n");
-        assert_eq!(with_history("migrate: {} # opt in\n", true).unwrap(), "migrate: # opt in\n  history: loose\n");
-        assert_eq!(with_history("migrate: # opt in\n  history: loose\n", false).unwrap(), "migrate: {} # opt in\n");
+        assert_eq!(with_lock("migrate:\n# the shadow server\n  shadow_url: x\n  lock: false\n", true).unwrap(), "migrate:\n# the shadow server\n  shadow_url: x\n  lock: true\n");
+        assert_eq!(with_lock("migrate: {} # opt in\n", false).unwrap(), "migrate: # opt in\n  lock: false\n");
     }
 }
