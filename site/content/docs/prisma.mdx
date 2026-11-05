@@ -108,7 +108,7 @@ Prisma Client did four things your database never saw. Move each into the databa
 | A `DateTime`, stored as `timestamp(3)` and read as UTC | `timestamptz`, which is `@db.Timestamptz` in `schema.prisma` |
 | `@default(cuid())` and `@default(uuid())` | `@default(dbgenerated("(gen_random_uuid())::text"))` |
 | `@updatedAt` | `@default(now())`, and a trigger that sets it on every update |
-| A `String[]` that is never null | `NOT NULL`, once its nulls are filled |
+| A `String[]`, and no `null` element in it, which Prisma Client refuses to read | `NOT NULL`, once its nulls are filled, and `check (array_position(tags, null) is null)` |
 
 ### Timestamps
 
