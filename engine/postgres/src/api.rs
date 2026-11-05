@@ -64,6 +64,11 @@ impl Database for Postgres {
         crate::errors::errors(analysis, host)
     }
 
+    /// Whether the statement is certain to write nothing.
+    fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+        crate::errors::read_only(analysis, host)
+    }
+
     /// One round of the replay, through the server's extension where there is one: the
     /// whole analysis from a server with this engine inside, a round's needs in one query from a
     /// server with another build, and the needs as they are otherwise.

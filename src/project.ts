@@ -163,6 +163,47 @@ type UrlPart = { text: string } | { command: string };
  * `direct_url` cut into its text and its `$(command)`s. A command ends at the `)` that balances
  * its `$(`, outside quotes, as in a shell. A `$(` left open is the offset it opens at.
  */
+/**
+ * `text` with each `${VAR}` replaced by `required(VAR)`, and each `${VAR:-fallback}` by `set(VAR)`,
+ * or where that is unset or empty by its fallback, read the same way, as a shell reads one. A
+ * `${` that opens neither stays as written.
+ */
+function interpolate(text: string, set: (name: string) => string | undefined, required: (name: string) => string): string {
+  let out = "";
+  let rest = text;
+  for (;;) {
+    const at = rest.indexOf("${");
+    if (at < 0) return out + rest;
+    out += rest.slice(0, at);
+    const after = rest.slice(at + 2);
+    const opened = /^([A-Za-z_][A-Za-z0-9_]*)(\}|:-)/.exec(after);
+    if (!opened) {
+      out += "${";
+      rest = after;
+    } else if (opened[2] === "}") {
+      out += required(opened[1]!);
+      rest = after.slice(opened[0].length);
+    } else {
+      const body = after.slice(opened[0].length);
+      let depth = 1;
+      let end = 0;
+      for (; end < body.length; end++) {
+        if (body.startsWith("${", end)) {
+          depth++;
+          end++;
+        } else if (body[end] === "}" && --depth === 0) break;
+      }
+      if (depth !== 0) {
+        out += "${";
+        rest = after;
+      } else {
+        out += set(opened[1]!) || interpolate(body.slice(0, end), set, required);
+        rest = body.slice(end + 1);
+      }
+    }
+  }
+}
+
 function urlParts(written: string): UrlPart[] | { open: number } {
   const parts: UrlPart[] = [];
   let text = "";
@@ -313,7 +354,11 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
       // the `.env` files'.
       const texts = parts.map((part) =>
         "text" in part
-          ? part.text.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_, name: string) => {
+          ? interpolate(part.text, (name) => {
+              const hit = lookup(name);
+              if (hit?.value) sources.push(hit.source);
+              return hit?.value;
+            }, (name) => {
               const hit = lookup(name);
               if (!hit) missing.push(name);
               else sources.push(hit.source);

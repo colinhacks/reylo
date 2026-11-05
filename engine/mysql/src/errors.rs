@@ -97,6 +97,18 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     Some(narrowed(&rows))
 }
 
+/// Whether the statement is certain to write nothing: a SELECT that runs no stored function, as
+/// [`errors`] says, with no locking clause, no `INTO` and no variable assigned, that calls none of
+/// the built-ins that change something (a lock, the session's last insert id).
+pub fn read_only(analysis: &Analysis) -> bool {
+    let sql = &analysis.rewritten.sql;
+    analysis.kind == Some(StatementKind::Select)
+        && analysis.errors.is_some()
+        && !has_word(sql, Dialect::Mysql, &["for", "lock", "into"])
+        && !sql.contains(":=")
+        && !called(sql, Dialect::Mysql).iter().any(|f| ["get_lock", "release_lock", "release_all_locks", "last_insert_id"].contains(&f.as_str()))
+}
+
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement.
 fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
     let text = |row: &[Value], k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);

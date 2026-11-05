@@ -50,6 +50,8 @@ export type Analysis = {
    * the statement may run a user's code, which may raise any error.
    */
   errors?: Record<string, Record<string, string[]>>;
+  /** Whether the statement is certain to write nothing. */
+  readOnly?: boolean;
 };
 
 export type Lexed = {

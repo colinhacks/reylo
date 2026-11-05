@@ -80,7 +80,9 @@ macro_rules! relname {
 /// a column's type, a row type, a type the statement names or a function it calls returns, a
 /// preferred type or one a built-in type casts to implicitly, and what those are built of (a
 /// domain's base, an array's element and its array, a composite's fields, a range's subtype).
-/// A server newer than 18 may raise a code the run time's list lacks. One row `('present', oid)` for
+/// A server newer than 18 may raise a code the run time's list lacks. An `open` row's last column is
+/// `reads` where what it finds cannot write ([`read_only`]): a type's input and output, or a function
+/// that is not volatile. One row `('present', oid)` for
 /// each type of a user's present, which [`OPERATORS_QUERY`] takes.
 pub const ERRORS_QUERY: &str = concat!(
     "WITH RECURSIVE \
@@ -140,7 +142,12 @@ pub const ERRORS_QUERY: &str = concat!(
       WHERE q.rulename OPERATOR(pg_catalog.<>) '_RETURN'::pg_catalog.name AND q.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
     UNION ALL SELECT 'open', 'foreign table', c.relname::pg_catalog.text, NULL FROM pg_catalog.pg_class c JOIN rel ON c.oid OPERATOR(pg_catalog.=) rel.oid \
       WHERE c.relkind OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
-    UNION ALL SELECT 'open', 'depends on', pg_catalog.textin(pg_catalog.oidout(d.refobjid)), NULL FROM pg_catalog.pg_depend d \
+    UNION ALL SELECT 'open', 'depends on', pg_catalog.textin(pg_catalog.oidout(d.refobjid)), \
+        CASE WHEN d.refclassid OPERATOR(pg_catalog.=) ANY (ARRAY[", catalog!("pg_opclass"), ", ", catalog!("pg_opfamily"), "]) \
+          OR NOT EXISTS (SELECT 1 FROM pg_catalog.pg_proc p WHERE p.provolatile OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" AND ( \
+            (d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_proc"), " AND p.oid OPERATOR(pg_catalog.=) d.refobjid) \
+            OR (d.refclassid OPERATOR(pg_catalog.=) ", catalog!("pg_operator"), " AND p.oid OPERATOR(pg_catalog.=) (SELECT o.oprcode::pg_catalog.oid FROM pg_catalog.pg_operator o WHERE o.oid OPERATOR(pg_catalog.=) d.refobjid)))) \
+          THEN 'reads'::pg_catalog.text END FROM pg_catalog.pg_depend d \
       WHERE d.refclassid OPERATOR(pg_catalog.=) ANY (ARRAY[", catalog!("pg_proc"), ", ", catalog!("pg_operator"), ", ", catalog!("pg_opclass"), ", ", catalog!("pg_opfamily"), "]) \
         AND d.refobjid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND ( \
         (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_type"), " AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT dom.oid FROM dom)) \
@@ -155,14 +162,15 @@ pub const ERRORS_QUERY: &str = concat!(
           AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT p.oid FROM pg_catalog.pg_policy p JOIN rel ON p.polrelid OPERATOR(pg_catalog.=) rel.oid)) \
         OR (d.classid OPERATOR(pg_catalog.=) ", catalog!("pg_rewrite"), " \
           AND d.objid OPERATOR(pg_catalog.=) ANY (SELECT q.oid FROM pg_catalog.pg_rewrite q JOIN rel ON q.ev_class OPERATOR(pg_catalog.=) rel.oid))) \
-    UNION ALL SELECT 'open', 'column type', t.typname::pg_catalog.text, NULL FROM pg_catalog.pg_attribute a JOIN rel ON a.attrelid OPERATOR(pg_catalog.=) rel.oid \
+    UNION ALL SELECT 'open', 'column type', t.typname::pg_catalog.text, 'reads' FROM pg_catalog.pg_attribute a JOIN rel ON a.attrelid OPERATOR(pg_catalog.=) rel.oid \
       JOIN pg_catalog.pg_type t ON t.oid OPERATOR(pg_catalog.=) a.atttypid \
       WHERE a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped AND t.oid OPERATOR(pg_catalog.=) ANY (SELECT coded.oid FROM coded) \
-    UNION ALL SELECT 'open', 'function', p.proname::pg_catalog.text, NULL FROM pg_catalog.pg_proc p \
+    UNION ALL SELECT 'open', 'function', p.proname::pg_catalog.text, 'reads' FROM pg_catalog.pg_proc p \
       WHERE p.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND p.proname OPERATOR(pg_catalog.=) ANY ($3::pg_catalog.text[]) \
-    UNION ALL SELECT 'open', 'type', t.typname::pg_catalog.text, NULL FROM pg_catalog.pg_type t \
+    UNION ALL SELECT 'open', 'type', t.typname::pg_catalog.text, 'reads' FROM pg_catalog.pg_type t \
       WHERE t.typname OPERATOR(pg_catalog.=) ANY ($4::pg_catalog.text[]) AND t.oid OPERATOR(pg_catalog.=) ANY (SELECT coded.oid FROM coded) \
-    UNION ALL SELECT 'open', 'cast', pg_catalog.textin(pg_catalog.oidout(c.oid)), NULL FROM pg_catalog.pg_cast c \
+    UNION ALL SELECT 'open', 'cast', pg_catalog.textin(pg_catalog.oidout(c.oid)), \
+        CASE WHEN (SELECT p.provolatile FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.=) c.castfunc) OPERATOR(pg_catalog.<>) 'v'::pg_catalog.\"char\" THEN 'reads'::pg_catalog.text END FROM pg_catalog.pg_cast c \
       WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\" \
       AND ((c.castsource OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid) \
         OR c.castsource OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present) OR c.casttarget OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
@@ -213,7 +221,8 @@ pub const USER_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_catalog.te
 /// statement, which few statements differ in.
 pub const OPERATORS_QUERY: &str = concat!(
     "WITH present(oid) AS (SELECT ($2::pg_catalog.oid[])[n] FROM pg_catalog.generate_series(1, $3::pg_catalog.int4) AS n) \
-    SELECT 'open'::pg_catalog.text, 'operator'::pg_catalog.text, o.oprname::pg_catalog.text FROM pg_catalog.pg_operator o \
+    SELECT 'open'::pg_catalog.text, 'operator'::pg_catalog.text, o.oprname::pg_catalog.text, \
+        CASE WHEN (SELECT p.provolatile FROM pg_catalog.pg_proc p WHERE p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid) OPERATOR(pg_catalog.<>) 'v'::pg_catalog.\"char\" THEN 'reads'::pg_catalog.text END FROM pg_catalog.pg_operator o \
       WHERE o.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND o.oprname OPERATOR(pg_catalog.=) ANY ($1::pg_catalog.text[]) \
       AND ((o.oprleft OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprleft OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
           AND (o.oprright OPERATOR(pg_catalog.<) '16384'::pg_catalog.oid OR o.oprright OPERATOR(pg_catalog.=) ANY (SELECT present.oid FROM present)) \
@@ -301,6 +310,41 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     }
     let Some(request) = request(&analysis.rewritten.sql) else { return Some(None) };
     Some(catalog_rows(request, host)?.and_then(|rows| narrowed(&rows)))
+}
+
+/// The volatile built-ins that write nothing, only answering anew for each call.
+const VOLATILE_READS: &[&str] = &["random", "random_normal", "gen_random_uuid", "uuidv4", "uuidv7", "clock_timestamp", "timeofday"];
+
+/// Whether the statement is certain to write nothing: a SELECT with no data-modifying WITH query,
+/// no locking clause and no `INTO`, which calls nothing volatile by name, what a built-in that
+/// writes must be (`nextval`, `set_config`, `pg_advisory_lock`), and sets off nothing of a user's or an
+/// extension's that is: a function behind a view, a policy, a default, an operator or a cast. A
+/// user's function that is not volatile cannot write, as Postgres refuses it, and a type's input
+/// and output write nothing.
+pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+    use pg_query::protobuf::node::Node as N;
+    if !analysis.diagnostics.is_empty() {
+        return Some(false);
+    }
+    let Ok(parsed) = analyze::analyze(&analysis.rewritten.sql) else { return Some(false) };
+    let Ok(tree) = crate::stack::parse(&analysis.rewritten.sql) else { return Some(false) };
+    let Some(N::SelectStmt(select)) = tree.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Some(false) };
+    if parsed.kind != analyze::StatementKind::Query || parsed.has_locking || select.into_clause.is_some() {
+        return Some(false);
+    }
+    let Some(request) = request(&analysis.rewritten.sql) else { return Some(false) };
+    let rows = catalog_rows(request, host);
+    let mut called = names(&parsed.functions);
+    called.retain(|f| !VOLATILE_READS.contains(f));
+    called.sort_unstable();
+    called.dedup();
+    let functions = host.query_each(crate::cardinality::FUNCTIONS_QUERY, called.iter().map(|f| vec![json!([f])]), Scope::Statement);
+    let (rows, functions) = (rows?, functions?);
+    let (Some(rows), Ok(functions)) = (rows, functions) else { return Some(false) };
+    let reads = rows.iter().all(|row| row.first().and_then(Value::as_str) != Some("open") || row.get(3).and_then(Value::as_str) == Some("reads"));
+    // Each is in the catalog, none of them volatile.
+    let not_volatile = called.iter().all(|f| functions.iter().any(|row| row.first().and_then(Value::as_str) == Some(f) && row.get(2).and_then(reylo_engine_core::host::as_bool) == Some(false)));
+    Some(reads && not_volatile)
 }
 
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement.

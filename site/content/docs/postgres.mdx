@@ -1066,7 +1066,7 @@ await client.query("commit");
 client.release();
 ```
 
-A client created with `binary: true` isn't supported.
+A client created with `binary: true` isn't supported. A wrapper around a `Pool`, such as one that retries, needs to stay a `Pool`, as a subclass or a proxy, since Reylo tells one by its shape.
 
 ### postgres.js
 

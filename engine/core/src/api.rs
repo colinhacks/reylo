@@ -243,6 +243,10 @@ pub struct Analysis {
     /// own code ([`crate::errors`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub errors: Option<crate::errors::Errors>,
+    /// Whether the statement is certain to write nothing, so that a caller may run it again after
+    /// a lost connection ([`crate::database::Database::read_only`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only: bool,
     /// Each domain a type of the statement is named by, with the name of the base type it is made
     /// from: a client decodes a domain's values as its base type's (a Postgres domain over
     /// pgvector's `vector` comes as the vector's text), which the format leaves to the catalog.

@@ -932,6 +932,7 @@ impl<'a> Engine<'a> {
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            read_only: false,
             tables: None,
             domains: Default::default(),
         };
@@ -1040,6 +1041,7 @@ impl<'a> Engine<'a> {
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            read_only: false,
             tables: None,
             domains: Default::default(),
         })

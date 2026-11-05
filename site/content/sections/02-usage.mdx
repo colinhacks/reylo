@@ -389,6 +389,19 @@ Each driver's error is read into the same fields, and the driver's own error is 
 
 On Postgres, an error aborts the transaction it is in, even an error `.try()` returned: every later statement in it fails, and the transaction rolls back. MySQL and SQLite keep it open after most errors. The [Postgres page](/postgres#database-errors) shows how to carry on after an error.
 
+### `.readOnly`
+
+To tell whether a query writes nothing, read `.readOnly`. It is `true` only where Reylo is certain, so it's safe to run the query again after a lost connection:
+
+```ts twoslash
+import getUser from "./get_user.sql";
+
+getUser.readOnly;
+//      ^?
+```
+
+A write is `false`, and so is a query that locks rows or may call a volatile function, directly or through a view, a policy or an operator.
+
 ### `.with()`
 
 To bind the query to a client, call `.with()`. It returns a function that takes the parameters:

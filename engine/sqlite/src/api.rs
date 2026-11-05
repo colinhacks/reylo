@@ -37,6 +37,11 @@ impl Database for Sqlite {
     fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<reylo_engine_core::errors::Errors>> {
         crate::errors::errors(analysis, host)
     }
+
+    /// A SELECT writes nothing on SQLite, which has no writing function and no locking clause.
+    fn read_only(analysis: &Analysis, _host: &Host) -> Lazy<bool> {
+        Some(analysis.kind == Some(reylo_engine_core::types::StatementKind::Select))
+    }
 }
 
 #[cfg(test)]

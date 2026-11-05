@@ -279,6 +279,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             structured: Vec::new(),
             fresh: None,
             errors: None,
+            read_only: false,
             tables: None,
             domains: Default::default(),
         };
@@ -325,6 +326,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         structured: Vec::new(),
         fresh: None,
         errors: None,
+        read_only: false,
         tables: Some(tables(&t)),
         domains: Default::default(),
     };

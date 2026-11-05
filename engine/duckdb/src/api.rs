@@ -94,6 +94,12 @@ impl Database for Duckdb {
     fn analyze(sql: &str, host: &Host) -> Lazy<Analysis> {
         host.on_engine_stack(|host| crate::duckdb::analyze_text(sql, host))
     }
+
+    /// A SELECT that moves no sequence writes nothing on DuckDB.
+    fn read_only(analysis: &Analysis, _host: &Host) -> Lazy<bool> {
+        let called = reylo_engine_core::errors::called(&analysis.rewritten.sql, Dialect::Duckdb);
+        Some(analysis.kind == Some(reylo_engine_core::types::StatementKind::Select) && !called.iter().any(|f| f == "nextval" || f == "setval"))
+    }
 }
 
 #[cfg(test)]
