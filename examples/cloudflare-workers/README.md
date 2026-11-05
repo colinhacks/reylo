@@ -58,7 +58,7 @@ To deploy, with an account: `wrangler d1 create reylo-example`, put the `databas
 ## In your own project
 
 - Install from npm instead of the `link:` dependencies: `npm install reylo` and `npm install -D typescript@beta vite @cloudflare/vite-plugin @cloudflare/vitest-plugin @cloudflare/workers-types @types/node vitest wrangler`.
-- The `.npmrc` file (`minimumReleaseAge=0`) exists only because this machine holds fresh releases back; drop it.
+- The `.npmrc` file (`minimumReleaseAgeExclude=typescript,@typescript/*`) lets this repository install a TypeScript build on the day it is published, inside the package manager's release-age window; drop it.
 
 ## Notes
 
