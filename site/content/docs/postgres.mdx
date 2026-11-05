@@ -163,8 +163,6 @@ A `timestamptz` or `timestamp` always has six fraction digits, the microseconds 
 
 </Pairs>
 
-So two instants don't sort as strings: `"…10:00:00Z"` sorts after `"…10:00:00.5Z"`, and `<`, `>` and `localeCompare` all read them that way. Sort in SQL, or compare their `Date.parse()`.
-
 A `Date` keeps milliseconds, so a value passed through one loses its microseconds, and `where placed_at > :since` can then match the row it came from. Pass back the text `.run()` returned.
 
 **Infinity**

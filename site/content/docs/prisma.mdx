@@ -116,7 +116,7 @@ Prisma's drift check ignores triggers and check constraints, and accepts `NOT NU
 
 ### Timestamps
 
-Prisma's `DateTime` is a `timestamp(3)`, a time with no zone, which Prisma Client writes and reads as UTC. Nothing in the column says so, so Reylo returns it without a zone, as `"2026-10-30T09:00:00.123"`, and `new Date()` reads that in the machine's own zone: on a laptop in Los Angeles, it's seven hours off. A `timestamptz` comes back as `"…Z"`, which every reader reads the same. You can keep `timestamp(3)` if your server runs in UTC and your code treats each value as UTC, but the retype removes the question.
+Prisma's `DateTime` is a `timestamp(3)`, a time with no zone, which Prisma Client writes and reads as UTC. Nothing in the column says so, so Reylo returns it without a zone, as `"2026-10-30T09:00:00.123000"`, and `new Date()` reads that in the machine's own zone: on a laptop in Los Angeles, it's seven hours off. A `timestamptz` comes back as `"…Z"`, which every reader reads the same. You can keep `timestamp(3)` if your server runs in UTC and your code treats each value as UTC, but the retype removes the question.
 
 Retype every `timestamp(3)` column in UTC, one table per migration:
 
