@@ -41,3 +41,6 @@ pg-extension/test/log/
 
 # Python bytecode
 __pycache__/
+
+# The comparison lab's servers, builds and scratch files
+lab/compare/.out/

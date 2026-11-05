@@ -18,7 +18,7 @@ A maintainer may keep local notes beside this file, which are never committed; w
 | `tests/` | The loader's node tests; `tests/helpers.ts` holds what they share: the test databases and a database of a test's own on each, the drivers, and the content mapper's and the language server's clients |
 | `site/` | The docs site, reylo.dev: Vite, React Router and MDX; its design is docs-kit, copied into `site/docs-kit/` |
 | `examples/` | One complete project per setup the docs describe, the models to copy when setting Reylo up elsewhere ([examples/README.md](./examples/README.md)); each is checked |
-| `lab/` | End-to-end check projects: one per dialect, the bundlers, Jest, Next.js, the drivers and the driver matrix |
+| `lab/` | End-to-end check projects: one per dialect, the bundlers, Jest, Next.js, the drivers and the driver matrix, and `lab/compare`, which runs other SQL typing tools on the same queries for the docs' comparison |
 | `skills/using-reylo/` | The agent skill for projects that use Reylo; not instructions for work here, but kept current with what users see |
 | `scripts/build.ts` | `nub run build`: writes every publishable package to `dist/`, `reylo` and the platform package of this machine (`--binaries <dir>` packages all eight) |
 | `.github/workflows/` | `test.yml` (CI on every push and pull request), `windows.yml` (the type check on Windows, which `test.yml` runs on each push to `main` and each release), `binaries.yml` (each platform's binary built, installed and run on that platform, on a pull request that changes how it is built or found, and within each release), `release.yml` (the staged npm release, which a maintainer dispatches), `pullfrog.yml` |
