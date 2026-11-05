@@ -917,15 +917,16 @@ Each of these is one statement in place of code around one.
 
 **Fill only what is still empty**
 
-Write a value only where the column is still null, in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says whether this one wrote:
+To write each column only where it is still null, use `coalesce` in one statement, rather than reading the row and then updating it. Two callers can't overwrite each other, and `returning` says what the row holds now:
 
 <Inferred>
 
-```sql file="pg_set_email_once.sql"
-update users
-set email = coalesce(email, :email::text)
-where id = :id and email is null
-returning id, email
+```sql file="pg_fill_order.sql"
+update orders
+set ships_on = coalesce(ships_on, :ships_on::date),
+    receipt = coalesce(receipt, :receipt::bytea)
+where id = :id and (ships_on is null or receipt is null)
+returning id, ships_on, receipt
 ```
 
 </Inferred>
