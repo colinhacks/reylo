@@ -137,6 +137,9 @@ pub struct TypeRegistry {
     /// relation to, which a stored row of it holds ([`TypeRegistry::render_row`]) as a bare read of
     /// the column does.
     pub values: HashMap<(u32, i32), Vec<String>>,
+    /// By relation and attribute, the array columns of a composite's relation a CHECK keeps every
+    /// element of non-null, which a stored row of it holds as a bare read of the column does.
+    pub items: std::collections::HashSet<(u32, i32)>,
     /// By relation and attribute, the non-finite values a CHECK keeps out of a float or `numeric`
     /// column of a composite's relation, which a stored row of it holds no more.
     pub non_finite: HashMap<(u32, i32), crate::types::NonFinite>,
@@ -471,6 +474,15 @@ impl TypeRegistry {
         self.row_columns(oid, &[oid::TEXT, oid::VARCHAR])
     }
 
+    /// The array columns of the relation whose row type `oid` is, by relation and attribute: the
+    /// ones a CHECK may keep every element of non-null ([`TypeRegistry::items`]).
+    pub fn row_array_columns(&self, oid: u32) -> Vec<(u32, i32)> {
+        let oid = self.get(oid).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).unwrap_or(oid);
+        let Some(t) = self.get(oid).filter(|t| t.kind == TypeKind::Composite) else { return Vec::new() };
+        let Some(relid) = t.relid else { return Vec::new() };
+        t.fields.iter().filter(|f| f.attnum > 0 && self.get(self.resolve_domain(f.type_oid)).is_some_and(|t| t.kind == TypeKind::Array)).map(|f| (relid, f.attnum)).collect()
+    }
+
     /// The float and `numeric` columns of the relation whose row type `oid` is, by relation and
     /// attribute: the ones a CHECK may keep NaN or the infinities out of ([`TypeRegistry::non_finite`]).
     pub fn row_number_columns(&self, oid: u32) -> Vec<(u32, i32)> {
@@ -573,6 +585,8 @@ impl TypeRegistry {
                         let values = t.relid.filter(|_| stored).and_then(|r| self.values.get(&(r, f.attnum)));
                         let non_finite = t.relid.filter(|_| stored).and_then(|r| self.non_finite.get(&(r, f.attnum)));
                         let string = self.is_string(f.type_oid);
+                        let items = t.relid.filter(|_| stored).is_some_and(|r| self.items.contains(&(r, f.attnum)));
+                        let ty = crate::postgres::with_items(ty, items.then_some(false));
                         let ty = match (document, values, non_finite) {
                             (Some(schema), _, _) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema.clone()).kind, ..ty },
                             (_, Some(values), _) if string => with_values(ty, values),
