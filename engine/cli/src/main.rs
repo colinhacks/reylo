@@ -40,7 +40,7 @@ const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
     --rename <old>=<new>  Say a table or column was renamed
 
   dev                     Take this database to the migrations, and lock them
-  sync                    Make what schema.sql adds, unrecorded
+  sync                    Take this database to schema.sql, unrecorded
     --watch               Again on each change
   reset                   Drop everything, then run every migration
   wipe                    Delete every row
@@ -75,11 +75,19 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut k = 0;
     while k < args.len() {
         let a = &args[k];
+        // A flag's value may follow an `=`: --url=<url>, --rename=<old>=<new>.
+        let (a, inline) = match a.split_once('=') {
+            Some((flag, v)) if flag.starts_with("--") => (flag, Some(v.to_string())),
+            _ => (a.as_str(), None),
+        };
         let mut value = || -> Result<String, String> {
+            if let Some(v) = &inline {
+                return Ok(v.clone());
+            }
             k += 1;
             args.get(k).cloned().ok_or_else(|| format!("{a} needs a value"))
         };
-        match a.as_str() {
+        match a {
             "--url" | "--dir" => {
                 let v = value()?;
                 out.values.insert(a[2..].to_string(), v);
@@ -92,8 +100,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 let (old, new) = v.split_once('=').ok_or_else(|| format!("--rename takes <table>.<column>=<new name>, not {v}"))?;
                 out.renames.push((old.trim().to_string(), new.trim().to_string()));
             }
-            s if s.starts_with("--") => out.switches.push(s[2..].to_string()),
-            _ => out.rest.push(a.clone()),
+            s if s.starts_with("--") => out.switches.push(args[k][2..].to_string()),
+            _ => out.rest.push(args[k].clone()),
         }
         k += 1;
     }
@@ -159,20 +167,41 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
         println!("{MIGRATE_USAGE}");
         return Ok(0);
     };
-    if matches!(command.as_str(), "--help" | "-h" | "help") {
+    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) || command == "help" {
         println!("{MIGRATE_USAGE}");
         return Ok(0);
     }
+    if !["create", "dev", "sync", "reset", "wipe", "check", "prod", "sync-history", "init", "lock", "unlock"].contains(&command.as_str()) {
+        eprintln!("reylo migrate: unknown command {command}\n\n{MIGRATE_USAGE}");
+        return Ok(2);
+    }
     let parsed = parse(&args[1..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
-    // A flag a command doesn't take is refused, never passed over: prod --dev must not run prod.
+    // What a command doesn't take is refused, never passed over: prod --dev must not run prod, and
+    // sync --rename must not leave its guess unsaid.
     let takes: &[&str] = match command.as_str() {
         "sync" => &["watch"],
         "check" => &["offline"],
         _ => &[],
     };
+    let refused = |flag: &str| Err(format!("{command} doesn't take {flag} (reylo migrate --help)"));
     if let Some(flag) = parsed.switches.iter().find(|s| !takes.contains(&s.as_str())) {
-        return Err(format!("{command} doesn't take --{flag} (reylo migrate --help)"));
+        return refused(&format!("--{flag}"));
+    }
+    if command != "create" && !parsed.drops.is_empty() {
+        return refused("--drop");
+    }
+    if command != "create" && !parsed.renames.is_empty() {
+        return refused("--rename");
+    }
+    if command != "init" && !parsed.schemas.is_empty() {
+        return refused("--schema");
+    }
+    if !parsed.files.is_empty() {
+        return refused("--file");
+    }
+    if let Some(word) = parsed.rest.get(if command == "create" { 1 } else { 0 }) {
+        return refused(word);
     }
     let offline = command == "check" && has("offline");
     let opts = settings_with(&parsed, true, !offline && command != "unlock")?;
@@ -205,10 +234,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
             }
-            other => {
-                eprintln!("reylo migrate: unknown command {other}\n\n{MIGRATE_USAGE}");
-                Ok(2)
-            }
+            other => Err(reylo_migrate::Error(format!("unknown command {other}"))),
         }
     });
     result.map_err(|e| e.0)
@@ -293,6 +319,12 @@ fn run_command(args: &[String]) -> Result<i32, String> {
         return Ok(0);
     }
     let parsed = parse(args)?;
+    if let Some(flag) = parsed.switches.first() {
+        return Err(format!("run doesn't take --{flag}"));
+    }
+    if !parsed.drops.is_empty() || !parsed.renames.is_empty() || !parsed.schemas.is_empty() {
+        return Err("run takes SQL, --file and --url".into());
+    }
     let opts = settings(&parsed, false)?;
     let mut items: Vec<(String, String)> = parsed.rest.iter().map(|sql| (if sql.chars().count() > 60 { format!("{}…", sql.chars().take(57).collect::<String>()) } else { sql.clone() }, sql.clone())).collect();
     for f in &parsed.files {

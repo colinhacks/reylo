@@ -240,11 +240,19 @@ impl Db {
 
 pub const SHADOW_PREFIX: &str = "reylo_shadow_";
 
+/// Where the host starts in what follows a URL's `://`: past the credentials, whose password may
+/// hold a `#`. A `/` or `?` ends them, so an `@` in the path or the settings is no part of them.
+fn host_start(rest: &str) -> usize {
+    let head = &rest[..rest.find(['/', '?']).unwrap_or(rest.len())];
+    head.rfind('@').map_or(0, |at| at + 1)
+}
+
 /// The URL with its database replaced by `name`.
 pub fn with_database(url: &str, name: &str) -> String {
     let Some(scheme_end) = url.find("://") else { return url.to_string() };
     let rest = &url[scheme_end + 3..];
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let start = host_start(rest);
+    let authority_end = rest[start..].find(['/', '?', '#']).map_or(rest.len(), |at| start + at);
     let (authority, tail) = rest.split_at(authority_end);
     let query = match tail.find(['?', '#']) {
         Some(at) => &tail[at..],
@@ -253,12 +261,26 @@ pub fn with_database(url: &str, name: &str) -> String {
     format!("{}://{authority}/{name}{query}", &url[..scheme_end])
 }
 
+/// A URL as a heading says it: no credentials and no settings. Whatever is before the last `@` is
+/// taken for credentials, so that a password never shows, even in a form no driver reads.
+pub fn shown_url(url: &str) -> String {
+    let bare = &url[..url.find('?').unwrap_or(url.len())];
+    match bare.split_once("://") {
+        Some((scheme, rest)) => {
+            let host = rest.rsplit_once('@').map_or(rest, |(_, host)| host);
+            format!("{scheme}://{}", &host[..host.find('#').unwrap_or(host.len())])
+        }
+        None => bare.to_string(),
+    }
+}
+
 /// The database a URL names.
 pub fn database_of(url: &str) -> String {
     let Some(scheme_end) = url.find("://") else { return String::new() };
     let rest = &url[scheme_end + 3..];
-    let Some(slash) = rest.find('/') else { return String::new() };
-    let path = &rest[slash + 1..];
+    let start = host_start(rest);
+    let Some(slash) = rest[start..].find('/') else { return String::new() };
+    let path = &rest[start + slash + 1..];
     let end = path.find(['?', '#']).unwrap_or(path.len());
     crate::percent_decode(&path[..end])
 }
@@ -626,5 +648,30 @@ pub async fn wipe(db: &mut Db) -> Result<(), Error> {
             }
             db.exec("pragma foreign_keys = on").await
         }
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn a_password_holding_a_hash_stays_a_password() {
+        let url = "postgres://postgres:pa#ss@localhost:5432/app?sslmode=require";
+        assert_eq!(with_database(url, "shadow"), "postgres://postgres:pa#ss@localhost:5432/shadow?sslmode=require");
+        assert_eq!(database_of(url), "app");
+        assert_eq!(shown_url(url), "postgres://localhost:5432/app");
+    }
+
+    #[test]
+    fn a_heading_never_shows_credentials_or_settings() {
+        assert_eq!(shown_url("postgres://u:p@db.example.com/app"), "postgres://db.example.com/app");
+        assert_eq!(shown_url("mysql://root@127.0.0.1:3306/app?ssl=true"), "mysql://127.0.0.1:3306/app");
+        assert_eq!(shown_url("postgres://u:pa/ss@host/app"), "postgres://host/app");
+        assert_eq!(shown_url("postgres://host/app?password=secret"), "postgres://host/app");
+        assert_eq!(shown_url("sqlite:./app.db?mode=rwc"), "sqlite:./app.db");
+        // An @ past the host is no part of the credentials, where a connection is made.
+        assert_eq!(with_database("postgres://u@host/d@b", "x"), "postgres://u@host/x");
+        assert_eq!(with_database("postgres://host/app?application_name=a@b", "x"), "postgres://host/x?application_name=a@b");
     }
 }

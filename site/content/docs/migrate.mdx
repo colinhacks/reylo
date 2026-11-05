@@ -109,7 +109,7 @@ Usage: reylo migrate <command>
     --rename <old>=<new>  Say a table or column was renamed
 
   dev                     Take this database to the migrations, and lock them
-  sync                    Make what schema.sql adds, unrecorded
+  sync                    Take this database to schema.sql, unrecorded
     --watch               Again on each change
   reset                   Drop everything, then run every migration
   wipe                    Delete every row
@@ -223,7 +223,7 @@ When two branches each add a migration, git conflicts on the lock, before anythi
 
 ### `sync`
 
-Makes what `schema.sql` adds on your development database without writing a migration, to try a change:
+Takes your development database to `schema.sql` without writing a migration, to try a change. What the file no longer has is dropped, with its rows:
 
 ```sql title="schema.sql"
 create table users (
@@ -307,7 +307,7 @@ Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
 
-It builds no shadow database, so it needs no permission to create one. After each run it stores a fingerprint of the schema, and it refuses a database that no longer has it:
+It builds no shadow database, so it needs no permission to create one. Each run stores a fingerprint of the schema, and it refuses a database that no longer has it:
 
 ```text
 ✗ This database changed since Reylo last ran on it

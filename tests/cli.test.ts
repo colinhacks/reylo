@@ -60,6 +60,12 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   const db = new DatabaseSync(join(root, "app.db"));
   assert.deepEqual({ ...db.prepare("select count(*) as n from users").get() }, { n: 2 });
   db.close();
+  // A flag's value after an `=` is its value, so that this runs on the database it names.
+  const other = join(root, "other.db");
+  assert.equal(reylo(root, ["run", `--url=sqlite:${other}`, "create table here (id integer)"]).status, 0);
+  const elsewhere = new DatabaseSync(other);
+  assert.deepEqual({ ...elsewhere.prepare("select count(*) as n from sqlite_schema where name = 'here'").get() }, { n: 1 });
+  elsewhere.close();
   const missing = reylo(root, ["run", "--file", "nope.sql"]);
   assert.equal(missing.status, 1);
   assert.match(missing.err, /^reylo run: cannot read nope\.sql: /);
@@ -68,6 +74,12 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   const flag = reylo(root, ["migrate", "prod", "--dev"]);
   assert.equal(flag.status, 1);
   assert.match(flag.err, /^reylo migrate: prod doesn't take --dev/);
+  for (const [args, said] of [[["migrate", "sync", "--rename", "users.a=b"], /sync doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "prod", "--schema", "x"], /prod doesn't take --schema/], [["migrate", "prod", "-f", "x.sql"], /prod doesn't take --file/], [["migrate", "prod", "dev"], /prod doesn't take dev/], [["migrate", "create", "a", "b"], /create doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/]] as const) {
+    const r = reylo(root, [...args]);
+    assert.equal(r.status, 1, args.join(" "));
+    assert.match(r.err, said);
+  }
+  assert.match(reylo(root, ["migrate", "prod", "--help"]).out, /^Usage: reylo migrate <command>\n/);
 });
 
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {

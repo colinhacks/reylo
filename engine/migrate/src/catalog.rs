@@ -44,7 +44,12 @@ fn children(lines: &[String]) -> Vec<(String, String)> {
         .filter_map(|l| l.strip_prefix("table "))
         .filter_map(|l| {
             let name = name_at(l);
-            let parent = l[name.len()..].split_once(" partition of ").or_else(|| l[name.len()..].split_once(" inherits ")).map(|(_, rest)| name_at(rest))?;
+            let tail = &l[name.len()..];
+            // MySQL's line goes on to the table's comment, whose words are no clause of it.
+            if tail.starts_with(" engine=") {
+                return None;
+            }
+            let parent = tail.split_once(" partition of ").or_else(|| tail.split_once(" inherits ")).map(|(_, rest)| name_at(rest))?;
             tables.contains(parent).then(|| (name.to_string(), parent.to_string()))
         })
         .collect()
@@ -63,10 +68,35 @@ fn name_at(text: &str) -> &str {
     text
 }
 
-/// Whether the line is one of the table `name`'s: the table, its columns, and what is on it.
+/// What follows the first `word` in `text` that is outside quotes: the table an index, trigger or
+/// rule is on, in the server's own text of it.
+fn after_word<'a>(text: &'a str, word: &str) -> Option<&'a str> {
+    let mut quoted = false;
+    for (k, c) in text.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            ' ' if !quoted && text[k..].starts_with(word) => return Some(&text[k + word.len()..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether the line is one of the table `name`'s: the table, its columns, and what is on it. Read
+/// from where each kind of line names its table, so that a view or function that mentions the table,
+/// a key that references it, or a schema that shares its name is none of its own.
 fn of_table(line: &str, name: &str) -> bool {
-    let ident = |c: char| c.is_alphanumeric() || c == '_' || c == '$' || c == '"';
-    line.match_indices(name).any(|(at, _)| !line[..at].ends_with(ident) && !line[at + name.len()..].starts_with(ident))
+    let Some((kind, rest)) = line.split_once(' ') else { return false };
+    let first = name_at(rest);
+    let column = first.strip_prefix(name).is_some_and(|tail| tail.starts_with('.'));
+    match kind {
+        "table" | "constraint" | "policy" => first == name,
+        "column" => column,
+        "grant" | "comment" => first == name || column,
+        "index" | "trigger" => after_word(rest, " ON ").is_some_and(|on| name_at(on.strip_prefix("ONLY ").unwrap_or(on)) == name),
+        "rule" => after_word(rest, " TO ").is_some_and(|on| name_at(on) == name),
+        _ => false,
+    }
 }
 
 /// `live` without the partitions (and inheriting children) of a table `reference` has too that

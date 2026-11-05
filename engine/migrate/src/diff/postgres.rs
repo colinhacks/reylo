@@ -85,7 +85,7 @@ async fn builtin_names(db: &mut Db) -> Result<BTreeSet<String>, Error> {
         .collect())
 }
 
-async fn first_schema(db: &mut Db) -> Result<String, Error> {
+pub async fn first_schema(db: &mut Db) -> Result<String, Error> {
     Ok(db.rows("select coalesce(current_schema(), '') as s").await?.first().map(|r| r.text("s").to_string()).unwrap_or_default())
 }
 
@@ -1690,8 +1690,7 @@ impl Alterer for PostgresAlterer {
 
     fn rename(&self, from: &Object, to: &Object) -> Option<Vec<String>> {
         let table = to.owner.as_deref()?.strip_prefix("table ")?;
-        let old = from.id.rsplit('.').next()?;
-        let new = to.id.rsplit('.').next()?;
+        let (old, new) = (super::last_written(&from.id), super::last_written(&to.id));
         Some(vec![format!("alter table {table} rename column {old} to {new}")])
     }
 
@@ -1699,8 +1698,8 @@ impl Alterer for PostgresAlterer {
         let (table, name) = match to.kind? {
             Kind::Column => {
                 let rest = to.id.strip_prefix("column ")?;
-                let (table, name) = rest.rsplit_once('.')?;
-                (table.to_string(), name.to_string())
+                let name = super::last_written(rest);
+                (rest.strip_suffix(name.as_str())?.strip_suffix('.')?.to_string(), name)
             }
             _ => (String::new(), String::new()),
         };

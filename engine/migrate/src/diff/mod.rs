@@ -285,6 +285,22 @@ fn with_owned<'a>(schema: &'a Schema, id: &'a str) -> Vec<&'a str> {
     out
 }
 
+/// A dotted name's last part, as written, quotes and all: `"Accounts"` of `public."Accounts"`.
+pub fn last_written(name: &str) -> String {
+    let mut quote: Option<char> = None;
+    let mut at = 0;
+    for (k, ch) in name.char_indices() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => {}
+            None if ch == '"' || ch == '`' => quote = Some(ch),
+            None if ch == '.' => at = k + 1,
+            None => {}
+        }
+    }
+    name[at..].to_string()
+}
+
 /// `text` with the name `old` (a table's) written `new` wherever it stands as a name or as the start
 /// of one (`users` in `users_pkey`, `nextval('users_id_seq')`), ignoring case.
 pub fn swap_name(text: &str, old: &str, new: &str) -> String {
@@ -493,7 +509,31 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             decided.insert(new_id.clone(), (old_id.clone(), true));
         }
     }
-    let stated: BTreeSet<String> = decided.values().map(|(old, _)| old.clone()).collect();
+    // A child table's column follows its parent's, which the server renames with it.
+    let mut followers: BTreeSet<String> = BTreeSet::new();
+    let follow = |decided: &mut BTreeMap<String, (String, bool)>, followers: &mut BTreeSet<String>| loop {
+        let mut more = Vec::new();
+        for (new_id, (old_id, was_stated)) in decided.iter() {
+            let Some(parent) = from.objects[old_id].owner.as_deref() else { continue };
+            let (old_name, new_name) = (last_written(old_id), last_written(new_id));
+            for child in from.objects.values().filter(|o| o.kind == Some(Kind::Table) && parent_of(o).as_deref() == Some(parent)) {
+                let table = child.id.strip_prefix("table ").unwrap_or(&child.id);
+                let (old, new) = (format!("column {table}.{old_name}"), format!("column {table}.{new_name}"));
+                if !followers.contains(&new) && from.objects.contains_key(&old) && to.objects.contains_key(&new) && !from.objects.contains_key(&new) && !to.objects.contains_key(&old) {
+                    more.push((new, old, *was_stated));
+                }
+            }
+        }
+        if more.is_empty() {
+            break;
+        }
+        for (new, old, was_stated) in more {
+            followers.insert(new.clone());
+            decided.insert(new, (old, was_stated));
+        }
+    };
+    follow(&mut decided, &mut followers);
+    let stated: BTreeSet<String> = decided.values().filter(|(_, was_stated)| *was_stated).map(|(old, _)| old.clone()).collect();
     let taken: BTreeSet<String> = decided.keys().cloned().collect();
     for (old_id, (table, def)) in gone.iter().filter(|(id, _)| !stated.contains(id) && !dropped.contains(id)) {
         if !to.objects.contains_key(table) {
@@ -517,6 +557,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             decided.insert(came[0].clone(), (left[0].clone(), false));
         }
     }
+    follow(&mut decided, &mut followers);
     alterer.decide(&decided.iter().map(|(new, (old, _))| (old.clone(), new.clone())).collect::<Vec<_>>());
 
     // A partition, or a table inheriting another, of a table the target keeps, which the target
@@ -565,6 +606,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     for (new_id, (old_id, was_stated)) in &decided {
         let table = from.objects[old_id].owner.clone().unwrap_or_default();
         if drops.contains(&table) {
+            continue;
+        }
+        if followers.contains(new_id) {
+            renames.insert(new_id.clone(), (old_id.clone(), vec![]));
             continue;
         }
         let Some(mut statements) = alterer.rename(&from.objects[old_id], &to.objects[new_id]) else { continue };
@@ -766,6 +811,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // A column kept, or renamed, whose type changes so that values are lost without failing.
     for (id, a) in from.objects.iter().filter(|(_, o)| o.kind == Some(Kind::Column)) {
         let to_id = renames.iter().find(|(_, (old, _))| old == id).map(|(new, _)| new).unwrap_or(id);
+        if followers.contains(to_id) {
+            continue;
+        }
         let Some(b) = to.objects.get(to_id) else { continue };
         if a.def != b.def && !(drops.contains(id) && creates.contains(id)) {
             if let Some(why) = alterer.narrows(a, b) {
@@ -789,10 +837,10 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
                 plan.statements.extend(o.drop.iter().cloned());
             }
             Op::Alter(id) => {
-                if let Some((old_id, _)) = renames.get(id).filter(|(old_id, _)| !stated.contains(old_id)) {
+                if let Some((old_id, _)) = renames.get(id).filter(|(old_id, _)| !stated.contains(old_id) && !followers.contains(id)) {
                     // The guess is written down with what to write instead, should the two columns
                     // be two: the old one's drop and the new one's add.
-                    let new_name = id.rsplit('.').next().unwrap_or_default().to_string();
+                    let new_name = last_written(id);
                     let old_name = old_id.trim_start_matches("column ");
                     let instead: Vec<&String> = from.objects[old_id].drop.iter().chain(&to.objects[id].create).collect();
                     if instead.is_empty() {

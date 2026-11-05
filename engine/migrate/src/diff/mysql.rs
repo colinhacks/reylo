@@ -322,7 +322,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     let first = |rows: Vec<Row>, name: &str| rows.first().map(|r| r.text(name).to_string()).unwrap_or_default();
     let ctx = Ctx {
         db: first(db.rows("select database() as n").await?, "n"),
-        reserved: db.rows("select word from information_schema.keywords where reserved = 1").await?.iter().map(|r| r.text("word").to_ascii_uppercase()).collect(),
+        reserved: db.rows("select word as word from information_schema.keywords where reserved = 1").await?.iter().map(|r| r.text("word").to_ascii_uppercase()).collect(),
         user: first(db.rows("select current_user() as u").await?, "u"),
         engine: first(db.rows("select @@default_storage_engine as e").await?, "e"),
         collation: first(db.rows("select @@collation_database as c").await?, "c"),
