@@ -248,8 +248,10 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
 /**
  * The project `projectDir` belongs to. `engine` reads the project file: any database's engine does
  * (src/engine.ts, `anyEngine`), and where reylo has none to run a project file is the project's error.
+ * With `urlGiven`, a caller has named its own database, so the project's connection is left unread,
+ * and neither a command in `direct_url` nor a variable it names can fail.
  */
-export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env): ResolvedProject {
+export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env, options: { urlGiven?: boolean } = {}): ResolvedProject {
   const file = findProjectFile(projectDir, env);
   const root = file ? dirname(file) : packageDir(projectDir);
   const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
@@ -296,7 +298,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const missingUrl = urlAlone
     ? `No database URL: ${shown(file!)} sets url, which Reylo does not read; set direct_url there, or DATABASE_URL in the environment, .env.local or .env.`
     : `No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in ${file ? shown(file) : PROJECT_FILE}.`;
-  const written = config.direct_url;
+  const written = options.urlGiven ? undefined : config.direct_url;
   let refreshUrl: (() => string | undefined) | undefined;
   if (written !== undefined) {
     const missing: string[] = [];
@@ -352,7 +354,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
         }
       } else url = texts.join("");
     }
-  } else {
+  } else if (!options.urlGiven) {
     const hit = lookup("DATABASE_URL");
     url = hit?.value;
     if (hit) urlSource = hit.source;

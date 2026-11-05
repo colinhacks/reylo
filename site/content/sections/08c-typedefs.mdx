@@ -1,0 +1,78 @@
+---
+title: "Type Defs"
+---
+
+## Type Defs [#typedefs]
+
+Reylo Type Defs (RTD) are what Reylo infers about a statement as plain JSON, for a code generator, a linter or a tool in another language.
+
+<Callout title="Experimental">
+
+Reylo Type Defs is at version 0.1.0. Until 1.0.0, any release may change the format, and each descriptor names the version it is written in as `$schema`, the URL of that version's JSON Schema.
+
+</Callout>
+
+Pass `analyze()` a statement, with `:name` parameters on every database:
+
+```ts
+import { analyze } from "reylo";
+
+const defs = await analyze({
+  sql: "select id, name, email, role from users where id = :id",
+});
+```
+
+It returns its parameters, columns, types, nullability and cardinality, as data:
+
+```json
+{
+  "$schema": "https://reylo.dev/typedefs/0.1.0.json",
+  "dialect": { "name": "postgres", "version": "18.6" },
+  "sql": "select id, name, email, role from users where id = $1",
+  "kind": "select",
+  "params": [
+    { "name": "id", "type": { "kind": "integer", "bits": 32, "name": "int4" } }
+  ],
+  "columns": [
+    {
+      "name": "id",
+      "type": { "kind": "integer", "bits": 32, "name": "int4" }
+    },
+    {
+      "name": "name",
+      "type": { "kind": "text", "name": "text" }
+    },
+    {
+      "name": "email",
+      "type": { "kind": "text", "name": "text" },
+      "nullable": true
+    },
+    {
+      "name": "role",
+      "type": {
+        "kind": "text",
+        "enum": ["admin", "member"],
+        "name": "public.user_role"
+      }
+    }
+  ],
+  "cardinality": "at_most_one",
+  "diagnostics": []
+}
+```
+
+It reads your project as the type check does: the database from [`direct_url`](#direct_url) or `DATABASE_URL`, and your [`strict_params`](#strict_params). To read another database, pass its `url`:
+
+```ts
+await analyze({ sql, url: "postgres://localhost/staging" });
+```
+
+A statement the database refuses comes back with its diagnostics, each at its place in the statement, and no columns. The call rejects only when it cannot analyze at all, as when it cannot reach the database. It runs on Node and Bun, and an app that doesn't call it bundles none of it.
+
+From a shell, `reylo analyze` prints the same thing, one line of JSON per statement:
+
+```sh
+npx reylo analyze queries/
+```
+
+Name another database with `--url`, and pass a statement inline with `--sql`. The format is a [JSON Schema](/typedefs/0.1.0.json) that defines every kind, with [the rules a reader follows](https://github.com/colinhacks/reylo/blob/release/spec/README.md), and `reylo` exports its TypeScript types as `TypeDefs`, as `TypeDefs.StatementDescriptor`.

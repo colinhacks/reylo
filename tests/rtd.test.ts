@@ -1,5 +1,5 @@
-// `reylo/rtd`: each statement's descriptor in Reylo Type Defs, from `analyze({ url, sql })`, the
-// same as `reylo analyze` prints for it.
+// The root module's `analyze`: each statement's descriptor in Reylo Type Defs, the same as
+// `reylo analyze` prints for it, from the database the project names or the one the caller does.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -7,9 +7,12 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync, existsSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { analyze, type StatementDescriptor } from "../src/rtd.ts";
+import { build } from "esbuild";
+import { analyze, type TypeDefs } from "../src/index.ts";
 import { nativeBinary } from "../src/native.ts";
-import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase } from "./helpers.ts";
+import { DRIVERS, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, ROOT } from "./helpers.ts";
+
+type StatementDescriptor = TypeDefs.StatementDescriptor;
 
 /** What `reylo analyze --url <url> --sql <sql>` prints for one statement, run from a directory of its own. */
 function cli(url: string, sql: string): StatementDescriptor {
@@ -66,9 +69,9 @@ test("analyze returns a SQLite statement's descriptor in Reylo Type Defs, as rey
 });
 
 test("analyze rejects a URL of no database it reads, and a database it cannot reach", async () => {
-  await assert.rejects(analyze({ url: "redis://localhost", sql: "select 1" }), /cannot tell the database from the URL/);
+  await assert.rejects(analyze({ url: "redis://localhost", sql: "select 1" }), /Cannot tell the database from the URL/);
   await assert.rejects(analyze({ url: "postgres://postgres@127.0.0.1:1/none", sql: "select 1" }), /^Error: Cannot reach the database/);
-  await assert.rejects(analyze({ sql: "select 1" } as never), TypeError);
+  await assert.rejects(analyze({ url: "file:app.db" } as never), TypeError);
 });
 
 test("analyze reads Postgres, its server's version, comments and the server's own error codes", { skip: pgLive }, async () => {
@@ -129,5 +132,106 @@ test("analyze reads DuckDB through the project's own @duckdb/node-api", { skip: 
     assert.deepEqual(td.params.map((p) => p.name), ["name"]);
   } finally {
     process.chdir(cwd);
+  }
+});
+
+/** A package with `files` written into it, and the SQLite databases `databases` names, each holding one table of its name. */
+function project(files: Record<string, string>, databases: string[] = []): string {
+  const root = mkdtempSync(join(tmpdir(), "reylo-rtd-project-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(root, name), text);
+  for (const name of databases) {
+    const db = new DatabaseSync(join(root, `${name}.db`));
+    db.exec(`create table ${name} (id integer primary key)`);
+    db.close();
+  }
+  return root;
+}
+
+/** `work`, run from `dir` with no connection of the developer's own in the environment, as a script in that project runs. */
+async function inProject<T>(dir: string, work: () => Promise<T>): Promise<T> {
+  const cwd = process.cwd();
+  const saved = { DATABASE_URL: process.env.DATABASE_URL, REYLO_CONFIG: process.env.REYLO_CONFIG };
+  delete process.env.DATABASE_URL;
+  delete process.env.REYLO_CONFIG;
+  process.chdir(dir);
+  try {
+    return await work();
+  } finally {
+    process.chdir(cwd);
+    for (const [name, value] of Object.entries(saved)) if (value !== undefined) process.env[name] = value;
+  }
+}
+
+/** What `reylo analyze --sql <sql>` prints from `cwd`, with no connection of the developer's own in its environment. */
+function cliIn(cwd: string, sql: string, ...args: string[]): StatementDescriptor {
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name !== "DATABASE_URL" && name !== "REYLO_CONFIG"));
+  const run = spawnSync(nativeBinary(), ["analyze", "--sql", sql, ...args], { cwd, env, encoding: "utf8" });
+  assert.ok(run.status === 0 || run.status === 1, run.stderr);
+  return JSON.parse(run.stdout.trim().split("\n")[0]!);
+}
+
+test("analyze reads the database the project names when no url is given, as the type check and reylo analyze do", async () => {
+  // The project file's direct_url, from the project's root, over DATABASE_URL in its .env.
+  const named = project({ ".reylo.yaml": "direct_url: file:./named.db\n", ".env": "DATABASE_URL=file:./other.db\n" }, ["named", "other"]);
+  const fromFile = await inProject(named, () => analyze({ sql: "select id from named" }));
+  assert.deepEqual(fromFile.diagnostics, []);
+  assert.deepEqual(fromFile, cliIn(named, "select id from named"));
+  // DATABASE_URL from a .env file, with no project file.
+  const dotenv = project({ ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
+  const fromEnv = await inProject(dotenv, () => analyze({ sql: "select id from other" }));
+  assert.deepEqual(fromEnv.diagnostics, []);
+  assert.deepEqual(fromEnv, cliIn(dotenv, "select id from other"));
+  // A url given wins, and its relative path is read from the working directory.
+  const given = await inProject(named, () => analyze({ sql: "select id from other", url: "file:./other.db" }));
+  assert.deepEqual(given.diagnostics, []);
+  assert.deepEqual(given, cliIn(named, "select id from other", "--url", "file:./other.db"));
+});
+
+test("analyze with a url leaves the project's connection unread, so a command in it never runs", async () => {
+  const root = project({ ".reylo.yaml": "direct_url: $(exit 7)\n" }, ["other"]);
+  await inProject(root, async () => {
+    await assert.rejects(analyze({ sql: "select id from other" }), /direct_url/);
+    assert.deepEqual((await analyze({ sql: "select id from other", url: "file:./other.db" })).diagnostics, []);
+  });
+});
+
+test("analyze says where to set a database when none is named, and what is wrong with a project file it cannot read", async () => {
+  await inProject(project({}), async () => {
+    await assert.rejects(analyze({ sql: "select 1" }), /^Error: No database URL: set DATABASE_URL in the environment, \.env\.local or \.env, or "direct_url" in \.reylo\.yaml\.$/);
+  });
+  await inProject(project({ ".reylo.yaml": "nope: 1\n" }, ["other"]), async () => {
+    await assert.rejects(analyze({ sql: "select 1", url: "file:./other.db" }), /\.reylo\.yaml:1:1/);
+  });
+});
+
+test("analyze holds an untyped parameter to the project file's strict_params, with a url given too", async () => {
+  const strict = project({ ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
+  const refused = await inProject(strict, () => analyze({ sql: "select :x as x" }));
+  assert.deepEqual(refused.diagnostics.map((d) => d.message), ["Nothing in the statement gives the parameter :x a type; cast it, as in :x::text, or set strict_params: false in .reylo.yaml."]);
+  assert.deepEqual(refused, cliIn(strict, "select :x as x"));
+  const lax = project({ ".reylo.yaml": "strict_params: false\n", ".env": "DATABASE_URL=file:./other.db\n" }, ["other"]);
+  for (const input of [{ sql: "select :x as x" }, { sql: "select :x as x", url: "file:./other.db" }]) {
+    const found = await inProject(lax, () => analyze(input));
+    assert.deepEqual(found.diagnostics, []);
+    assert.deepEqual(found.params, [{ name: "x", type: { kind: "unknown" } }]);
+  }
+  assert.deepEqual(await inProject(lax, () => analyze({ sql: "select :x as x" })), cliIn(lax, "select :x as x"));
+});
+
+test("an app's bundle of the root module holds none of the build-time half, and calling analyze where there is no Node says so", async () => {
+  const { outputFiles, warnings, metafile } = await build({ entryPoints: [join(ROOT, "src", "index.ts")], bundle: true, platform: "browser", format: "esm", write: false, metafile: true, logLevel: "silent" });
+  assert.deepEqual(warnings, []);
+  const inputs = Object.keys(metafile.inputs);
+  for (const part of ["src/tooling.ts", "src/rtd.ts", "src/engine.ts", "src/analyze.ts", "src/duckdb.ts", "src/project.ts"]) assert.ok(!inputs.includes(part), `${part} is in the bundle`);
+  assert.ok(inputs.includes("src/build-time.ts"));
+  assert.doesNotMatch(outputFiles[0]!.text, /child_process|import\.meta/);
+  // A browser, or a Worker without nodejs_compat: no `process` to reach Node through.
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "process")!;
+  Object.defineProperty(globalThis, "process", { value: undefined, configurable: true });
+  try {
+    await assert.rejects(analyze({ sql: "select 1" }), /needs Node 24 or later, or Bun/);
+  } finally {
+    Object.defineProperty(globalThis, "process", saved);
   }
 });
