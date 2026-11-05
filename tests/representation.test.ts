@@ -70,16 +70,16 @@ const PG_ROWS = [
     id: 1, created_by: 9007199254740993n, b: true, i2: 2, f4: 1.5, f8: 2.2, n: "12345678901234567890.123456789", d: "2026-10-20", ts: "2026-10-20T10:00:00.123456",
     tstz: "2026-10-20T08:00:00.123456Z", tm: "10:00:00", iv: "P1Y2M3DT4H5M6.789S", j: { a: 1 }, jb: { big: 1 }, by: { bytes: [1, 2, 255] }, e: "sad",
     u: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11", p: '(1,"x,y")', r: "[1,5)", a_i4: [1, null, 3], a_i8: [9007199254740993n], a_n: ["1.5", "12345678901234567890.1"],
-    a_tx: ["a", null, "NULL", "b,c"], a_e: ["ok", "sad"], a_dom: [1, 2], a_p: '{"(1,x)"}', a_ts: ["2026-10-20T10:00:00.5"], a_tstz: ["2026-10-20T10:00:00Z"], a_by: [{ bytes: [1] }], a_iv: ["P1D"],
+    a_tx: ["a", null, "NULL", "b,c"], a_e: ["ok", "sad"], a_dom: [1, 2], a_p: '{"(1,x)"}', a_ts: ["2026-10-20T10:00:00.500000"], a_tstz: ["2026-10-20T10:00:00.000000Z"], a_by: [{ bytes: [1] }], a_iv: ["P1D"],
   },
   {
-    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "-000043-03-15T12:00:00", tstz: "0001-01-01T00:00:00Z", tm: null, iv: null,
+    id: 2, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "infinity", ts: "-000043-03-15T12:00:00.000000", tstz: "0001-01-01T00:00:00.000000Z", tm: null, iv: null,
     j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null, a_ts: null, a_tstz: null, a_by: null, a_iv: null,
   },
   {
-    id: 3, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "-000001-06-01", ts: "+010000-01-01T00:00:00", tstz: null, tm: null, iv: null,
+    id: 3, created_by: null, b: null, i2: null, f4: null, f8: null, n: null, d: "-000001-06-01", ts: "+010000-01-01T00:00:00.000000", tstz: null, tm: null, iv: null,
     j: null, jb: null, by: null, e: null, u: null, p: null, r: null, a_i4: null, a_i8: null, a_n: null, a_tx: null, a_e: null, a_dom: null, a_p: null,
-    a_ts: ["-000001-06-01T12:00:00", "+012345-01-01T00:00:00.5", "infinity"], a_tstz: null, a_by: null, a_iv: null,
+    a_ts: ["-000001-06-01T12:00:00.000000", "+012345-01-01T00:00:00.500000", "infinity"], a_tstz: null, a_by: null, a_iv: null,
   },
 ];
 

@@ -309,7 +309,7 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
       const decode = decoders[i]!;
       for (const row of rows) {
         const v = row[f.name];
-        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name);
+        if (v !== null && v !== undefined) row[f.name] = typeof v === "string" ? decode(v) : coerce(kinds[i]!, v, f.name, ",", true);
       }
     }
   }
@@ -333,7 +333,7 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
   // as one behind a pooler in transaction mode is, still prepares nothing: its option wins.
   const pending = c.unsafe(text, params, { prepare: true });
   // A client whose query has no raw() (a wrapper of postgres.js's shape): its values, given their kinds.
-  if (typeof pending?.raw !== "function") return bunRows(await pending, columns);
+  if (typeof pending?.raw !== "function") return bunRows(await pending, columns, true);
   const raw = await pending.raw();
   const fields: Field[] = (raw.columns ?? []).map((f: { name: string; type: number }) => ({ name: f.name, oid: f.type }));
   if (!raw.length) return [];
@@ -377,7 +377,7 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  */
 const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore)$|\[\]$|\|/;
 
-export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[] {
+export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
   const first = rows[0] as Record<string, unknown>;
   // A query defined by hand carries no kinds: only what Bun's own types say is converted.
@@ -387,16 +387,16 @@ export function bunRows(rows: unknown[], columns: Columns | undefined): unknown[
     for (const [name, kind, delim] of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
-      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim);
+      row[name] = kind === "unknown" ? byType(v, name) : bunValue(kind, v, name, delim, postgres);
     }
   }
   return rows;
 }
 
 /** A value of `kind` as Bun.sql gave it: an either's digits are a MySQL BIGINT's, which Bun gives as a string. */
-function bunValue(kind: Kind, v: unknown, name: string, delim?: string): unknown {
+function bunValue(kind: Kind, v: unknown, name: string, delim: string | undefined, postgres: boolean): unknown {
   if (typeof v === "string" && kind.includes("|") && kind.split("|").includes("int8") && /^[+-]?\d+$/.test(v)) return BigInt(v);
-  return coerce(kind, v, name, delim);
+  return coerce(kind, v, name, delim, postgres);
 }
 
 /** A value whose kind is not known: a typed array an array, and a Date, which no kind is, the instant's text. */
@@ -534,7 +534,7 @@ function slonikValue(kind: Kind, v: unknown, name: string, delim?: string): unkn
   if (SLONIK_STRICT.test(kind)) {
     throw new DecodeError(`Column "${name}" reached Reylo already converted by Slonik's driver (${v instanceof Date ? "a Date" : typeof v}), which ignored the query's type parsers, as a custom driverFactory may: Reylo refuses it rather than return a value that may have been rounded.`);
   }
-  return coerce(kind, v, name, delim);
+  return coerce(kind, v, name, delim, true);
 }
 
 const refuseSlonikRows = () =>

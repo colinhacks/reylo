@@ -48,7 +48,9 @@ create table "Odd" ("Id" int8 primary key, v text not null);
 create schema other;
 create table other.items (id int8 primary key, label text not null);
 create schema "dot.ted";
-create table "dot.ted".items (id int8 primary key, label text not null);`;
+create table "dot.ted".items (id int8 primary key, label text not null);
+create function reads_like(text, text) returns boolean language sql immutable as 'select true';
+create operator ~~~ (leftarg = text, rightarg = text, function = reads_like);`;
 
 const STATEMENTS = [
   "select u.id, u.email, u.name, u.kind, u.c, u.p, u.m, u.n, u.tags, u.data, u.seen from users u where u.id = :id",
@@ -69,6 +71,7 @@ const STATEMENTS = [
   "select n.id, n.email from named n join posts p on p.author = n.id where p.id = :id",
   "select p.title, n.email from posts p left join named n on n.id = p.author",
   `select u.id, i.label from users u left join "dot.ted".items i on i.id = u.id`,
+  "select id from users where name ~~~ :q::text",
 ];
 
 /** The built-in types the hostile objects shadow with a domain of the same name. */
@@ -81,6 +84,8 @@ const OWN_FUNCTIONS = ["stamp", "pairs"];
 const KINDS: [string, RegExp][] = [
   ["TRUST_QUERY", /users\(kind, name, args/],
   ["ERRORS_QUERY", /named\(oid, written\)/],
+  ["OPERATORS_QUERY", /'operator'::pg_catalog\.text/],
+  ["USER_OPERATORS_QUERY", /SELECT DISTINCT o\.oprname::pg_catalog\.text FROM pg_catalog\.pg_operator o WHERE/],
   ["REFUSES_NULL_QUERY", /domains\(attrelid, attnum, oid\)/],
   ["CHECKS_QUERY", /standard_conforming_strings/],
   ["COMMENTS_QUERY", /d\.description FROM/],
@@ -231,19 +236,21 @@ test("every catalog query answers the same rows under a search path that puts a 
         // The trust query reports the user's operators and casts by design (the oracle's trust_*
         // cases check it); the errors query opens on them and on functions of the names the
         // statement calls, and names a domain of a type name the statement writes.
-        if (kind === "TRUST_QUERY") continue;
+        if (kind === "TRUST_QUERY" || kind === "OPERATORS_QUERY" || kind === "USER_OPERATORS_QUERY") continue;
         let again = await captured.query(sql, params);
         if (kind === "ERRORS_QUERY") {
           const theirs = (r: unknown[]) =>
-            r[0] === "open"
-              ? r[1] === "operator" || r[1] === "cast" || (r[1] === "function" && !OWN_FUNCTIONS.includes(r[2] as string))
-              : SHADOW_TYPES.some((t) => r[3] === t || r[3] === `${t}_check`);
+            r[0] === "present" ||
+            (r[0] === "open"
+              ? r[1] === "cast" || (r[1] === "function" && !OWN_FUNCTIONS.includes(r[2] as string))
+              : SHADOW_TYPES.some((t) => r[3] === t || r[3] === `${t}_check`));
           again = again.filter((r) => !theirs(r));
         }
         // Postgres's own pg_get_viewdef reads the view's rule through a query of bare operators
         // (ruleutils.c's query_getviewrule), which a user's `=` captures: the view's text is then
         // NULL, which leaves the view unread, never misread.
         let expected = rows;
+        if (kind === "ERRORS_QUERY") expected = rows.filter((r) => r[0] !== "present");
         if (kind === "RELATION_COLUMNS_QUERY") {
           const unread = new Set(again.filter((r) => r[4] === null).map((r) => `${r[0]} ${r[2]}`));
           expected = rows.map((r) => (unread.has(`${r[0]} ${r[2]}`) ? [...r.slice(0, 4), null, ...r.slice(5)] : r));

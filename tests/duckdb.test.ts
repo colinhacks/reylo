@@ -179,6 +179,31 @@ test("DuckDB: an error DuckDB raises is placed where its caret points", { skip }
   assert.equal(sql.slice(d!.start, d!.start + d!.length), "nope");
 });
 
+test("DuckDB: a SELECT is read-only unless it may move a sequence, itself or through a view or a macro", { skip }, async () => {
+  const root = await project(`create sequence s;
+    create table t (id integer);
+    create view plain_view as select id from t;
+    create view moving_view as select nextval('s') as id;
+    create view moving_again as select id from moving_view;
+    create macro moving_macro() as nextval('s');
+    create macro moving_table() as table select nextval('s') as id;
+    create macro plain_macro(a) as a + 1;`);
+  const cases: [string, boolean][] = [
+    ["select id from t", true],
+    ["select id from plain_view", true],
+    ["select plain_macro(id) from t", true],
+    ["insert into t values (1)", false],
+    ["select nextval('s')", false],
+    ["select id from moving_view", false],
+    ["select id from moving_again", false],
+    ["select moving_macro()", false],
+    ["select id from moving_table()", false],
+    ["select * from query('select nextval(''s'')')", false],
+  ];
+  for (const [sql, expected] of cases) assert.equal((await analyze(root, sql)).readOnly ?? false, expected, sql);
+  await closeSessions();
+});
+
 test("DuckDB: a project without @duckdb/node-api is told to install it, and a missing file cannot be reached", { skip }, async () => {
   const root = await project(SCHEMA, false);
   const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });

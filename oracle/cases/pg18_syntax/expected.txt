@@ -30,7 +30,7 @@ returning_table_named_old_alias.sql: one (id: int4, name: text) -> { old_name: t
 returning_target_alias_new.sql: at_most_one (id: int4) -> { from_table: text, old_name: text }
 returning_target_alias_old.sql: one (id: int4, name: text) -> { from_table: text, new_name: text }
 returning_update_named_old.sql: at_most_one (name: text, id: int4) -> { from_table: text, new_name: text }
-returning_using.sql: many (id: int4) -> { other_name: text, old_name: text, new_name: text?, name: text }
+returning_using.sql: at_most_one (id: int4) -> { other_name: text, old_name: text, new_name: text?, name: text }
 returning_with_query.sql: at_most_one (id: int4) -> { was: text?, now: text? }
 returning_with_query_json.sql: many () -> { j: json { now: text?, was: text? }, up: text?, was: text? }
 returning_with_query_param.sql: at_most_one (id: int4) -> { j: json { now: text?, was: text? }, up: text? }

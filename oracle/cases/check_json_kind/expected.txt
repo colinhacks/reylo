@@ -1,0 +1,6 @@
+columns.sql: at_most_one (id: int4) -> { o: jsonb {"type":"object"}, a: jsonb {"type":"array"}?, reversed: jsonb {"type":"object"}?, plain: json {"type":"array"}?, and_more: jsonb {"type":"object"}?, or_null: jsonb {"type":"array"}?, d: jsonb {"type":"object"}?, loose: jsonb?, or_other: jsonb?, not_kind: jsonb?, number: jsonb? }
+elements.sql: many () -> { first: jsonb? }
+key.sql: many () -> { x: jsonb?, x_text: text? }
+returning.sql: one (id: int4, o: jsonb {"type":"object"}) -> { o: jsonb {"type":"object"} }
+row.sql: many () -> { doc: jsonb? }
+shadowed.sql: many () -> { doc: jsonb? }

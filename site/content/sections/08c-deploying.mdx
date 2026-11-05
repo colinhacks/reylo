@@ -24,26 +24,26 @@ A host that builds before it migrates, such as Vercel, can build against a datab
 
 ### The freshness check [#freshness-check]
 
-Each query carries the schema it was typed against. Before it runs, `.run()` reads that schema again through your client, and throws if it changed:
+Each query carries the schema it was typed against. Before it runs, `.run()` reads that schema again through your client, and throws if its values could now contradict its types:
 
 ```text
 The database changed after get_user.sql was built: users.email was text not null and is now text. Build it again and deploy the new build.
 ```
 
-- **What it compares:** each column the query names, or every column after a `*`: its type, whether it is `NOT NULL`, and whether it has a default. An insert also fails on a new `NOT NULL` column with no default, which it doesn't write.
-- **What it leaves alone:** anything the query doesn't name, so a new column, table or index changes nothing.
+- **What fails the call:** a column the query names, or every column after a `*`, that is gone, retyped, or nullable where it was not.
+- **What passes:** a new column, table or index; a new default; and a new `NOT NULL`, since the database refuses a row the column refuses itself.
 - **When it runs:** on a query's first run in a process, and again once its last check is a minute old. Each check is one catalog query on your client.
 - **Where it can't run:** a role that can't read the catalog checks nothing, and the query runs.
 
 ### Changing a column [#deploy-migrations]
 
-Your migration and your new build don't go live at the same moment, so change a column that queries name in two deploys: first the new shape beside the old, then the code that uses it, and only then drop the old.
+Your migration and your new build don't go live at the same moment, so add before you remove: the new column, then the code that uses it, and only then the drop. A migration that only adds leaves a running build alone.
 
 | While | What fails |
 | --- | --- |
-| A migration has run and the new build isn't live | Each query in the old build that names a changed column |
-| You roll back to a build from before a migration | Each query in that build that names a column changed since |
-| Someone alters a column by hand | Each query that names it, until you build again |
+| A migration has dropped, retyped or loosened a column and the new build isn't live | Each query in the old build that names it |
+| You roll back to a build from before such a migration | Each query in that build that names it |
+| Someone makes such a change by hand | Each query that names it, until you build again |
 
 To roll back across a migration, redeploy the older commit, so that it builds against the schema you have now.
 
@@ -51,7 +51,7 @@ To roll back across a migration, redeploy the older commit, so that it builds ag
 
 The database that types a query and the database it runs on are separate: the type check reads [`direct_url`](#direct_url), and `.run()` uses the client you pass it. Reylo reads your `.env` files itself, and the environment wins over them.
 
-A script that runs against production is typed on your dev database by default, and its queries fail the freshness check wherever the two differ. To run one against a database that is behind your branch, type it on that database too:
+A script that runs against production is typed on your dev database by default, and its queries fail the freshness check where the two differ in a way that breaks their types. To run one against a database that is behind your branch, type it on that database too:
 
 ```sh
 DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts

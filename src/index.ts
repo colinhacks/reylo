@@ -104,6 +104,11 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
    */
   readonly source: string | undefined;
   readonly cardinality: C;
+  /**
+   * Whether the engine finds nothing in the statement that could write, so that it can be run again after a lost
+   * connection. False for any write, and for a query that locks rows or may call a volatile function.
+   */
+  readonly readOnly: boolean;
   /** The JSON Schema (2020-12) of the parameters, as the object `run` takes. */
   readonly inputSchema: Record<string, unknown>;
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
@@ -172,6 +177,8 @@ export type QueryDefinition = {
   /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
+  /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
+  readOnly?: boolean;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
   /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
   checks?: Checks;
@@ -217,6 +224,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     params: def.params,
     source: def.source,
     cardinality,
+    readOnly: def.readOnly ?? false,
     get inputSchema() {
       return def.jsonSchema?.input ?? missingSchema();
     },

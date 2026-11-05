@@ -36,7 +36,7 @@ async function built(root: string, url: string, name: string, sql: string) {
   return (await import(`${pathToFileURL(out).href}?${Math.random()}`)).default;
 }
 
-test("a difference is a change: a column gone, retyped, made nullable or given a default, and a column an insert must now fill; rows of another shape check nothing", () => {
+test("a change fails where the types may not hold: a column gone, retyped or made nullable; one made not null, given a default, or added, does not; rows of another shape check nothing", () => {
   const fresh: Fresh = {
     query: "…",
     rows: [
@@ -48,7 +48,10 @@ test("a difference is a change: a column gone, retyped, made nullable or given a
   assert.deepEqual(differences(fresh, [["users", "id", "integer", "true", "true"], ["users", "email", "text", "true", "false"], ["users", "bio", "text", "false", "false"]]), []);
   assert.deepEqual(differences(fresh, [{ fresh_table: "users", fresh_column: "id", fresh_type: "integer", fresh_not_null: true, fresh_default: true }]), ["users.email was text not null and no longer exists"]);
   assert.deepEqual(differences(fresh, [["users", "id", "bigint", "true", "true"], ["users", "email", "text", "false", "false"]]), ["users.id was integer not null with a default and is now bigint not null with a default", "users.email was text not null and is now text"]);
-  assert.deepEqual(differences(fresh, [...fresh.rows, ["users", "tenant", "integer", "true", "false"]]), ["users.tenant is now integer not null, which the insert does not write"]);
+  // The types still hold: the database refuses a row the column refuses itself.
+  assert.deepEqual(differences(fresh, [["users", "id", "integer", "true", "false"], ["users", "email", "text", "true", "true"]]), []);
+  assert.deepEqual(differences(fresh, [...fresh.rows, ["users", "tenant", "integer", "true", "false"]]), []);
+  assert.deepEqual(differences({ ...fresh, rows: [["users", "bio", "text", "false", "false"]] }, [["users", "bio", "text", "true", "false"]]), []);
   // A client that answers every query with a row of its own, as lab/nextjs's edge stub does, is no catalog.
   assert.equal(differences(fresh, [{ id: 1, name: "stub", email: null, role: "member", big: "7" }]), undefined);
   assert.equal(differences(fresh, [["users", "id", "integer"]]), undefined);
@@ -69,8 +72,8 @@ test("a default a structured insert copied is a fact by its text: changed, given
   assert.deepEqual(differences(fresh, now("'member'::text", "", "'x'::text")), []);
   assert.deepEqual(differences(fresh, now("'guest'::text", "")), ["accounts.role had the default 'member'::text, which the insert writes for a row that leaves its key out, and now has the default 'guest'::text"]);
   assert.deepEqual(differences(fresh, [{ fresh_table: "accounts", fresh_column: "name", fresh_type: "text", fresh_not_null: true, fresh_default: false, fresh_expr: null }, { fresh_table: "accounts", fresh_column: "role", fresh_type: "text", fresh_not_null: true, fresh_default: true, fresh_expr: "'member'::text" }, { fresh_table: "accounts", fresh_column: "email", fresh_type: "text", fresh_not_null: false, fresh_default: false, fresh_expr: null }]), []);
-  // A default given to a column that had none is a change of the facts the module already compares.
-  assert.deepEqual(differences(fresh, now("'member'::text", "'a@x'::text")), ["accounts.email was text and is now text with a default"]);
+  // A default given to a column that had none: the insert would write NULL for a row that leaves the key out.
+  assert.deepEqual(differences(fresh, now("'member'::text", "'a@x'::text")), ["accounts.email had no default, which the insert writes for a row that leaves its key out, and now has the default 'a@x'::text"]);
   // Rows of five values are not this module's catalog query.
   assert.equal(differences(fresh, [["accounts", "role", "text", "true", "true"]]), undefined);
 });
@@ -90,7 +93,7 @@ test("a SQLite type is compared without its case, as SQLite reads one; a Postgre
   // SQLite's pragma_table_xinfo upper-cases a type name it knows; Turso's engine gives it as declared.
   const turso = [["t", "id", "integer", "0", "1"], ["t", "n", "bigint", "1", "0"]];
   assert.deepEqual(differences(fresh, turso, "sqlite"), []);
-  assert.deepEqual(differences(fresh, [["t", "id", "integer", "1", "1"], ["t", "n", "text", "1", "0"]], "sqlite"), ["t.id was INTEGER with a default and is now integer not null with a default", "t.n was bigInt not null and is now text not null"]);
+  assert.deepEqual(differences(fresh, [["t", "id", "integer", "1", "1"], ["t", "n", "text", "1", "0"]], "sqlite"), ["t.n was bigInt not null and is now text not null"]);
   assert.deepEqual(differences(fresh, turso, "postgres"), ["t.id was INTEGER with a default and is now integer with a default", "t.n was bigInt not null and is now bigint not null"]);
   assert.equal(differences(fresh, turso, "mysql")?.length, 2);
   // SQLite folds ASCII letters alone.
@@ -200,7 +203,7 @@ test("Postgres: a default a structured insert copied, changed after the build, f
     // A default given to a nullable column whose missing key wrote NULL.
     const stale2 = await built(root, url.href, "insert_accounts3", insert);
     await sql.unsafe(`alter table accounts alter column note set default 'n/a'`);
-    await assert.rejects(stale2.run(sql, { a: [{ name: "Linus" }] }), /accounts\.note was text and is now text with a default/);
+    await assert.rejects(stale2.run(sql, { a: [{ name: "Linus" }] }), /accounts\.note had no default, which the insert writes for a row that leaves its key out, and now has the default 'n\/a'::text/);
     assert.deepEqual([...(await sql.unsafe("select count(*)::int as n from accounts"))].map((r) => ({ ...r })), [{ n: 2 }]);
   } finally {
     await closeSessions();
@@ -208,7 +211,7 @@ test("Postgres: a default a structured insert copied, changed after the build, f
   }
 });
 
-test("Postgres: a retyped column fails the call, a new nullable one does not, and a new required one fails an insert", { skip: pgLive }, async () => {
+test("Postgres: a retyped column fails the call, a new nullable one does not, and a new required one is the database's to refuse", { skip: pgLive }, async () => {
   const own = await postgresDatabase("reylo_fresh");
   const url = new URL(own.url);
   const sql = own.sql;
@@ -223,10 +226,12 @@ test("Postgres: a retyped column fails the call, a new nullable one does not, an
     const read2 = await built(root, url.href, "read_users2", `select id, email from "Users" order by id`);
     await sql.unsafe(`alter table "Users" alter column email type varchar(100)`);
     await assert.rejects(read2.run(sql), /Users\.email was text not null and is now character varying\(100\) not null/);
+    // Built again on the new schema, by a session of its own.
+    await closeSessions();
     const insert2 = await built(root, url.href, "insert_user2", `insert into "Users" (email) values (:email) returning id`);
     // Rows exist, so the column takes a default to be added, which then goes.
     await sql.unsafe(`alter table "Users" add column tenant int not null default 0; alter table "Users" alter column tenant drop default`);
-    await assert.rejects(insert2.run(sql, { email: "b@x" }), /Users\.tenant is now integer not null, which the insert does not write/);
+    await assert.rejects(insert2.run(sql, { email: "b@x" }), /null value in column "tenant"/);
   } finally {
     await closeSessions();
     await own.drop();

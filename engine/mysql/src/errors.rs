@@ -97,6 +97,39 @@ pub fn errors(analysis: &Analysis, host: &Host) -> Lazy<Option<Errors>> {
     Some(narrowed(&rows))
 }
 
+/// The built-ins that change something: a lock, the session's last insert id.
+const CHANGES_SOMETHING: [&str; 4] = ["get_lock", "release_lock", "release_all_locks", "last_insert_id"];
+
+/// One row per view a read of `{read}` reaches, the tables of a view of another schema among what it
+/// reaches: its definition as the server normalizes it, NULL where this session may not read it or
+/// it is of another schema, which [`ERRORS_QUERY`] does not look into.
+const VIEWS_QUERY: &str = "with recursive r(s, t) as ( \
+      select table_schema, table_name from information_schema.tables where table_schema = database() and table_name in ({read}) \
+      union select u.table_schema, u.table_name from information_schema.view_table_usage u join r on u.view_schema = r.s and u.view_name = r.t) \
+    select case when v.table_schema = database() then cast(v.view_definition as char) end from r \
+    join information_schema.views v on v.table_schema = r.s and v.table_name = r.t";
+
+/// Whether the engine finds nothing in the statement that could write: a SELECT that runs no stored function, as
+/// [`errors`] says, with no locking clause, no `INTO` and no variable assigned, that calls none of
+/// the built-ins that change something, itself or through a view, and reads nothing of another
+/// schema by name.
+pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
+    let sql = &analysis.rewritten.sql;
+    let Some(tables) = &analysis.tables else { return Some(false) };
+    let changes = |sql: &str| called(sql, Dialect::Mysql).iter().any(|f| CHANGES_SOMETHING.contains(&f.as_str()));
+    if analysis.kind != Some(StatementKind::Select) || analysis.errors.is_none() || has_word(sql, Dialect::Mysql, &["for", "lock", "into"]) || sql.contains(":=") || changes(sql) {
+        return Some(false);
+    }
+    if tables.read.iter().any(|t| t.contains('.') || t.contains('\\')) {
+        return Some(false);
+    }
+    if tables.read.is_empty() {
+        return Some(true);
+    }
+    let Ok(views) = host.query(&VIEWS_QUERY.replace("{read}", &list(tables.read.iter().map(String::as_str))), Vec::new(), Scope::Statement)? else { return Some(false) };
+    Some(views.iter().all(|row| row.first().and_then(Value::as_str).is_some_and(|definition| !definition.is_empty() && !changes(definition))))
+}
+
 /// What [`ERRORS_QUERY`]'s rows say: nothing where one opens the statement.
 fn narrowed(rows: &[Vec<Value>]) -> Option<Errors> {
     let text = |row: &[Value], k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);

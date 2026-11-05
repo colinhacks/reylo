@@ -1,11 +1,15 @@
-// The schema freshness check at run time (wiki/structured-params.md §6):
-// any change fails. A module a build step writes carries the catalog facts its
+// The schema freshness check at run time (wiki/structured-params.md §6): a change fails where
+// the query's results could contradict its types, and nothing else does. A module a build step writes carries the catalog facts its
 // statement relied on, the columns it names with their types, whether each is not null and whether
 // it has a default, for an insert's table the columns that need a value, and on Postgres and SQLite
 // the text of each default a structured insert copied into its statement, beside the catalog query
 // that read them (engine/core/src/fresh.rs). Before a query runs, the run time runs that query
-// through the caller's own client and compares: any difference fails the call, naming the table
-// and the column, rather than letting the query run against a schema its types were not made for.
+// through the caller's own client and compares. A column gone, retyped, or nullable where it was
+// not fails the call, naming the table and the column, rather than letting the query return values
+// its types do not allow; so does a default an insert copied, which it would write as it was. A
+// column made NOT NULL, or given a default or none, passes: the types still hold, and the database
+// refuses a row the column now refuses itself. So a migration that only adds to the schema leaves a
+// running build alone.
 //
 // A query is checked on its first run in a process, and again when its last check is a minute old,
 // so a long-running server notices a migration that lands while it runs. A catalog query that
@@ -56,8 +60,8 @@ const table = (name: string) => name.replace(/^"|"$/g, "").replace(/"\."/g, ".")
 const COLUMNS = ["fresh_table", "fresh_column", "fresh_type", "fresh_not_null", "fresh_default", "fresh_expr"] as const;
 
 /**
- * The differences between the facts the build saw and the rows the catalog query returns now, one
- * line each; none when the schema still holds what the query relied on, and `undefined` when the
+ * The changes that break the facts the build saw, between them and the rows the catalog query
+ * returns now, one line each; none when the query's types still hold, and `undefined` when the
  * rows are not the catalog query's: each is an object with its five or six columns, as many as
  * the module's facts have, or an array of as many values where a driver hands rows back as arrays.
  * A default the statement copied is compared by its text.
@@ -88,13 +92,10 @@ export function differences(fresh: Fresh, rows: readonly unknown[], dialect?: "p
     seen.add(key);
     const is = now.get(key);
     if (!is) out.push(`${table(was[0]!)}.${was[1]} was ${describe(was)} and no longer exists`);
-    else if (!sameType(is[2]!, was[2]!) || yes(is[3]!) !== yes(was[3]!) || yes(is[4]!) !== yes(was[4]!)) out.push(`${table(was[0]!)}.${was[1]} was ${describe(was)} and is now ${describe(is)}`);
+    // Retyped, or nullable where it was not: a value may contradict the types.
+    else if (!sameType(is[2]!, was[2]!) || (yes(was[3]!) && !yes(is[3]!))) out.push(`${table(was[0]!)}.${was[1]} was ${describe(was)} and is now ${describe(is)}`);
     // The insert writes the default as the build read it, for a row that leaves the key out.
     else if (copied.has(key) && !sameDefault(is[5]!, was[5]!)) out.push(`${table(was[0]!)}.${was[1]} had ${was[5] ? `the default ${was[5]}` : "no default"}, which the insert writes for a row that leaves its key out, and now has ${is[5] ? `the default ${is[5]}` : "none"}`);
-  }
-  // A column an insert must now fill, which the build did not see.
-  for (const [key, is] of now) {
-    if (!seen.has(key) && fresh.inserts.includes(is[0]!) && yes(is[3]!) && !yes(is[4]!)) out.push(`${table(is[0]!)}.${is[1]} is now ${describe(is)}, which the insert does not write`);
   }
   return out;
 }

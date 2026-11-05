@@ -22,7 +22,7 @@ To type a query, Reylo has your live database prepare it, without running it, an
 
 <Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. An instant's fraction varies in width on Postgres, so sort instants in SQL or compare their `Date.parse()`, and pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
 
 <DialectTabs>
 <Dialect value="Postgres">

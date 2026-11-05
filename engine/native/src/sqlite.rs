@@ -50,7 +50,7 @@ impl Session {
     pub fn open(path: &str) -> Result<Session, crate::Failure> {
         let file = File::new(path);
         file.open().map_err(|e| crate::Failure::Unreachable(e.to_string()))?;
-        Ok(Session { connection: Connection { file, answers: AnswerCache::default() }, version: rusqlite::version().to_string() })
+        Ok(Session { connection: Connection { file, answers: AnswerCache::until_cleared() }, version: rusqlite::version().to_string() })
     }
 
     pub fn analyze(&mut self, sql: &str) -> Result<reylo_engine_core::api::Analysis, crate::Failure> {
@@ -75,7 +75,7 @@ impl Program for Sqlite {
                 match file.open() {
                     Ok(_) => {
                         self.next += 1;
-                        self.connections.insert(self.next, Connection { file, answers: AnswerCache::default() });
+                        self.connections.insert(self.next, Connection { file, answers: AnswerCache::until_cleared() });
                         json!({ "status": "opened", "conn": self.next, "version": rusqlite::version() })
                     }
                     // A file that cannot be opened is a database that cannot be reached: a build runs on `reylo/.cache/`.

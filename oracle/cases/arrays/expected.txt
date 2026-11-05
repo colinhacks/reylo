@@ -3,8 +3,8 @@ agg_left.sql: many () -> { id: int4, emails: text?[] } key (id)
 any_param.sql: many (emails: text?[]) -> { id: int4 } key (id)
 columns.sql: at_most_one (id: int4) -> { tags: text?[], scores: int4?[]? }
 constructors.sql: at_most_one (id: int4) -> { nicks: text?[], emails: text[], nums: int4[] }
-deeper.sql: many () -> { cube: int4?[][][], rows_agg: int4[][], rows_built: int4?[][], wrapped: int4?[][], scalars: int4[] }
+deeper.sql: many () -> { cube: int4?[][][], rows_agg: int4[][], rows_built: int4[][], wrapped: int4?[][], scalars: int4[] }
 json_nested.sql: many () -> { doc: json { stacked: int4?[][], pair: int4?[][] } }
 nested.sql: at_most_one (id: int4) -> { stacked: int4?[][], pair: int4?[][], literal: int4?[][], rows_of: int4?[][] }
 slices.sql: at_most_one (i: int4, id: int4) -> { head: text?[]?, head2: text?[]?, one: text? }
-subqueries.sql: one () -> { emails: text?[], nicks: text?[] }
+subqueries.sql: one () -> { emails: text[], nicks: text?[] }

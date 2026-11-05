@@ -65,7 +65,7 @@ test("the representation, value by value", () => {
   assert.equal(d("numeric", "12345678901234567890.123456789"), "12345678901234567890.123456789");
   assert.equal(d("date", "2026-10-20"), "2026-10-20");
   assert.equal(d("timestamp", "2026-10-20 10:00:00.123456"), "2026-10-20T10:00:00.123456");
-  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "-000043-03-15T12:00:00");
+  assert.equal(d("timestamp", "0044-03-15 12:00:00 BC"), "-000043-03-15T12:00:00.000000");
   assert.equal(d("timestamp", "infinity"), "infinity");
   assert.equal(d("interval", "1 year 2 mons"), "P1Y2M");
   assert.deepEqual(d("bytea", "\\x0102ff"), Buffer.from([1, 2, 255]));
@@ -113,10 +113,12 @@ test("interval: an ISO 8601 duration with its sign in front, which Temporal read
 });
 
 test("date and timestamp: a year outside 0000 to 9999 in ISO 8601's extended form, as timestamptz's, which Temporal reads and a parameter takes back", () => {
-  type PlainFrom = { from(text: string): { toString(): string } };
+  type PlainFrom = { from(text: string): { toString(options?: { fractionalSecondDigits?: number }): string } };
   const Temporal = (globalThis as unknown as { Temporal: { PlainDate: PlainFrom; PlainDateTime: PlainFrom } }).Temporal;
   const date = textDecoder("date");
   const timestamp = textDecoder("timestamp");
+  // A server text as `.run()` gives it back for a parameter: a T, and six fraction digits.
+  const padded = (t: string) => t.replace(" ", "T").replace(/(\d\d:\d\d:\d\d)(\.\d+)?/, (_, hms: string, f?: string) => `${hms}.${(f ?? ".").slice(1).padEnd(6, "0")}`);
   for (const [text, iso] of [
     ["2026-10-20", "2026-10-20"],
     ["0001-01-01", "0001-01-01"],
@@ -136,15 +138,15 @@ test("date and timestamp: a year outside 0000 to 9999 in ISO 8601's extended for
   for (const [text, iso] of [
     ["2026-10-20 10:00:00.123456", "2026-10-20T10:00:00.123456"],
     ["0001-12-31 23:59:59.999999 BC", "0000-12-31T23:59:59.999999"],
-    ["0002-06-01 12:00:00 BC", "-000001-06-01T12:00:00"],
-    ["4714-11-24 00:00:00 BC", "-004713-11-24T00:00:00"],
-    ["10000-01-01 00:00:00", "+010000-01-01T00:00:00"],
-    ["123456-01-01 00:00:00.5", "+123456-01-01T00:00:00.5"],
-    ["275760-09-13 00:00:00", "+275760-09-13T00:00:00"],
+    ["0002-06-01 12:00:00 BC", "-000001-06-01T12:00:00.000000"],
+    ["4714-11-24 00:00:00 BC", "-004713-11-24T00:00:00.000000"],
+    ["10000-01-01 00:00:00", "+010000-01-01T00:00:00.000000"],
+    ["123456-01-01 00:00:00.5", "+123456-01-01T00:00:00.500000"],
+    ["275760-09-13 00:00:00", "+275760-09-13T00:00:00.000000"],
   ] as const) {
     assert.equal(timestamp(text), iso, text);
-    assert.equal(Temporal.PlainDateTime.from(iso).toString(), iso, iso);
-    assert.equal(postgresYear(iso), text.replace(" ", "T"), iso);
+    assert.equal(Temporal.PlainDateTime.from(iso).toString({ fractionalSecondDigits: 6 }), iso, iso);
+    assert.equal(postgresYear(iso), padded(text), iso);
   }
   // A date past 999999 AD, which only Postgres's date reaches (5874897), keeps a sign before the
   // digits it needs; Temporal holds no such date, and the parameter still reads it back.
@@ -158,36 +160,36 @@ test("date and timestamp: a year outside 0000 to 9999 in ISO 8601's extended for
   }
   // Arrays: each element as a scalar's, a BC element quoted in Postgres's text.
   assert.deepEqual(textDecoder("date[]")('{"0002-06-01 BC",12345-01-01,2026-10-20,NULL,infinity}'), ["-000001-06-01", "+012345-01-01", "2026-10-20", null, "infinity"]);
-  assert.deepEqual(textDecoder("timestamp[]")('{"0002-06-01 12:00:00 BC","10000-01-01 00:00:00",-infinity}'), ["-000001-06-01T12:00:00", "+010000-01-01T00:00:00", "-infinity"]);
+  assert.deepEqual(textDecoder("timestamp[]")('{"0002-06-01 12:00:00 BC","10000-01-01 00:00:00",-infinity}'), ["-000001-06-01T12:00:00.000000", "+010000-01-01T00:00:00.000000", "-infinity"]);
   // A driver's Date (Bun.sql's, read as UTC) gives the same text as the server's.
   assert.equal(coerce("date", new Date("+012345-01-01T00:00:00Z"), "d"), "+012345-01-01");
   assert.equal(coerce("timestamp", new Date("+010000-01-01T00:00:00.250Z"), "t"), "+010000-01-01T00:00:00.25");
   assert.equal(coerce("timestamp", new Date("-000001-06-01T12:00:00Z"), "t"), "-000001-06-01T12:00:00");
 });
 
-test("timestamptz: the instant's ISO 8601 text in UTC, the server's fraction kept, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
-  const Temporal = (globalThis as unknown as { Temporal: { Instant: { from(text: string): { toString(): string; epochNanoseconds: bigint } } } }).Temporal;
+test("timestamptz: the instant's ISO 8601 text in UTC, the fraction in six digits, which new Date(text) gets wrong for BC, year 1 and offsets with seconds", () => {
+  const Temporal = (globalThis as unknown as { Temporal: { Instant: { from(text: string): { toString(options?: { fractionalSecondDigits?: number }): string; epochNanoseconds: bigint } } } }).Temporal;
   for (const [text, iso] of [
     ["2026-10-20 03:03:00.123456-07", "2026-10-20T10:03:00.123456Z"],
-    ["2026-10-20 10:00:00+00", "2026-10-20T10:00:00Z"],
-    ["2026-10-20 10:00:00.5+05:30", "2026-10-20T04:30:00.5Z"],
-    ["2026-12-31 23:30:00-01", "2027-01-01T00:30:00Z"],
-    ["0001-01-01 00:00:00+00", "0001-01-01T00:00:00Z"],
-    ["0001-01-01 00:30:00+01", "0000-12-31T23:30:00Z"],
-    ["1883-11-18 12:00:00-07:52:58", "1883-11-18T19:52:58Z"],
-    ["1900-01-01 00:00:00+00:00:36", "1899-12-31T23:59:24Z"],
+    ["2026-10-20 10:00:00+00", "2026-10-20T10:00:00.000000Z"],
+    ["2026-10-20 10:00:00.5+05:30", "2026-10-20T04:30:00.500000Z"],
+    ["2026-12-31 23:30:00-01", "2027-01-01T00:30:00.000000Z"],
+    ["0001-01-01 00:00:00+00", "0001-01-01T00:00:00.000000Z"],
+    ["0001-01-01 00:30:00+01", "0000-12-31T23:30:00.000000Z"],
+    ["1883-11-18 12:00:00-07:52:58", "1883-11-18T19:52:58.000000Z"],
+    ["1900-01-01 00:00:00+00:00:36", "1899-12-31T23:59:24.000000Z"],
     ["0001-12-31 23:59:59.999999+00 BC", "0000-12-31T23:59:59.999999Z"],
-    ["0002-06-01 12:00:00+00 BC", "-000001-06-01T12:00:00Z"],
-    ["0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00Z"],
-    ["4713-11-24 00:00:00+00 BC", "-004712-11-24T00:00:00Z"],
+    ["0002-06-01 12:00:00+00 BC", "-000001-06-01T12:00:00.000000Z"],
+    ["0044-03-15 12:00:00+00 BC", "-000043-03-15T12:00:00.000000Z"],
+    ["4713-11-24 00:00:00+00 BC", "-004712-11-24T00:00:00.000000Z"],
     ["9999-12-31 23:59:59.999999-01", "+010000-01-01T00:59:59.999999Z"],
-    ["12345-01-01 00:00:00+05:30", "+012344-12-31T18:30:00Z"],
-    ["2000-02-29 12:00:00+00", "2000-02-29T12:00:00Z"],
-    ["1900-03-01 00:00:00+01", "1900-02-28T23:00:00Z"],
+    ["12345-01-01 00:00:00+05:30", "+012344-12-31T18:30:00.000000Z"],
+    ["2000-02-29 12:00:00+00", "2000-02-29T12:00:00.000000Z"],
+    ["1900-03-01 00:00:00+01", "1900-02-28T23:00:00.000000Z"],
   ] as const) {
     assert.equal(instant(text), iso, text);
     // Temporal reads each back to the same text: an ISO 8601 instant, the year extended outside 0000 to 9999.
-    assert.equal(Temporal.Instant.from(iso).toString(), iso, iso);
+    assert.equal(Temporal.Instant.from(iso).toString({ fractionalSecondDigits: 6 }), iso, iso);
   }
   // Each to the nanosecond against Temporal's own reading of the server's offset (its microseconds kept).
   assert.equal(Temporal.Instant.from(instant("2026-10-20 03:03:00.123456-07")).epochNanoseconds, Temporal.Instant.from("2026-10-20T03:03:00.123456-07:00").epochNanoseconds);
@@ -233,7 +235,7 @@ test("timestamptz: the text read by position is the pattern's, for every server 
     const days = Math.floor(seconds / 86400);
     const s = seconds - days * 86400;
     const [y, mo, d] = civilFromDays(days);
-    return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${m[7] ?? ""}Z`;
+    return `${isoYear(y)}-${pad(mo)}-${pad(d)}T${pad(Math.floor(s / 3600))}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}${m[7] ? m[7].padEnd(7, "0") : ".000000"}Z`;
   };
   // A seeded generator, so that a failure names a text that fails again.
   let seed = 0x2545f491;
@@ -331,8 +333,10 @@ test("coerce: a value a driver decoded, given its kind; an integer a number cann
   assert.equal(coerce("timestamptz", Infinity, "c"), "infinity");
   assert.equal(coerce("timestamptz", -Infinity, "c"), "-infinity");
   assert.equal(coerce("timestamp", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.5");
-  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.5Z", "Bun.sql's Date, to its millisecond");
-  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00Z"), "c"), "2026-10-20T10:00:00Z");
+  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00.500Z"), "c"), "2026-10-20T10:00:00.500000Z", "Bun.sql's Date, to its millisecond");
+  assert.equal(coerce("timestamptz", new Date("2026-10-20T10:00:00Z"), "c"), "2026-10-20T10:00:00.000000Z");
+  // A Postgres timestamp from a Date takes six digits too; a MySQL DATETIME keeps the driver's.
+  assert.equal(coerce("timestamp", new Date("2026-10-20T10:00:00.500Z"), "c", ",", true), "2026-10-20T10:00:00.500000");
   assert.equal(coerce("timestamptz", "2026-10-20 10:00:00.123456+02", "c"), "2026-10-20T08:00:00.123456Z");
   assert.equal(coerce("timestamptz", -Infinity, "c"), "-infinity");
   assert.deepEqual(coerce("int[]", Int32Array.of(1, 2), "c"), [1, 2]);
