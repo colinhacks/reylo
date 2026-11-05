@@ -1523,7 +1523,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reylo"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "regex",
  "reylo-engine-core",
@@ -1554,7 +1554,7 @@ version = "0.0.0"
 
 [[package]]
 name = "reylo-engine-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "libc",
  "reylo-engine-build",

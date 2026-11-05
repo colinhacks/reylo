@@ -1,8 +1,8 @@
-columns.sql: at_most_one (id: int4) -> { status: text('active' | 'banned'), tier: varchar('free' | 'pro')?, m: text('ok' | 'sad')?, legacy: text? }
+columns.sql: at_most_one (id: int4) -> { status: text('active' | 'banned'), tier: varchar(≤10, 'free' | 'pro')?, m: text('ok' | 'sad')?, legacy: text? }
 expression.sql: many () -> { l: text }
 left_join.sql: many () -> { id: int4, status: text('active' | 'banned')? } key (id)
 not_valid.sql: many () -> { legacy: text? }
-padded.sql: many () -> { c: bpchar? }
+padded.sql: many () -> { c: bpchar(=3)? }
 union.sql: many () -> { status: text }
 write_cast_params.sql: one (id: int4, status: text, tier: varchar) -> { id: int4 }
 write_params.sql: one (id: int4, status: text('active' | 'banned'), tier: varchar('free' | 'pro')?, m: public.mood('ok' | 'sad')?, legacy: text?, new_status: text('active' | 'banned')) -> { status: text('active' | 'banned') }

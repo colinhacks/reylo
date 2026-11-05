@@ -615,10 +615,43 @@ export function parseArray(text: string, element: (text: string) => unknown, del
   return level();
 }
 
+/**
+ * A Postgres array held to the dimensions its kind declares, one per `[]`. Postgres lets an array
+ * column hold any number of dimensions, whatever it declares (one `int4[]` column holds `{1,2}` and
+ * `{{1,2},{3,4}}`), and Reylo types a column's value as one dimension, which nearly every array
+ * column holds, so a value of more is refused, naming the column. An array the statement builds
+ * of arrays (`array_agg` over an array column) is declared with a `[]` per level, and holds them.
+ * Postgres's arrays are rectangular, so the depth of the first element at each level is every one's.
+ * A vector element is an array itself, one level more; a JSON element may be one at any depth,
+ * which its type holds whatever the dimensions around it.
+ */
+export function withinDimensions(v: unknown, kind: Kind, column: string): unknown {
+  const element = elementKind(kind);
+  if (!Array.isArray(v) || element === "json") return v;
+  const declared = (kind.length - element.length) / 2;
+  let depth = element === "vector" ? -1 : 0;
+  for (let level: unknown = v; Array.isArray(level); level = level.find((e) => e !== null)) depth++;
+  if (depth <= declared) return v;
+  // An array built of arrays is too deep only where an array column it collects is.
+  throw new DecodeError(
+    declared === 1
+      ? `Column "${column}" holds an array of ${depth} dimensions, and its type has one: Reylo types a Postgres array column with one dimension, which Postgres doesn't enforce. Select to_jsonb(${column}) to read it as JSON.`
+      : `Column "${column}" holds an array of ${depth} dimensions, and its type has ${declared}: an array column it collects holds more than one dimension, which Postgres doesn't enforce. Collect to_jsonb(<that column>) instead to read it as JSON.`,
+  );
+}
+
+/**
+ * The kind of an array's innermost elements, `int` for `int[][]`: Postgres's text of an array
+ * nests its levels itself, so every element it spells is one of these.
+ */
+export function elementKind(kind: Kind): Kind {
+  return kind.replace(/(?:\[\])+$/, "") as Kind;
+}
+
 /** The decoder of a Postgres value of `kind` from its text; `delim` is an array's (`;` for `box[]`). */
 export function textDecoder(kind: Kind, delim = ","): Decoder {
   if (kind.endsWith("[]")) {
-    const element = textDecoder(kind.slice(0, -2), delim);
+    const element = textDecoder(elementKind(kind), delim);
     return (x) => parseArray(x, element, delim);
   }
   return TEXT_DECODERS[kind as ScalarKind] ?? identity;
@@ -772,7 +805,7 @@ export function float32s(bytes: Uint8Array, column: string): number[] {
 export function coerce(kind: Kind, v: unknown, column: string, delim = ","): unknown {
   if (v === null || v === undefined) return null;
   if (kind.endsWith("[]")) {
-    const element = kind.slice(0, -2);
+    const element = elementKind(kind);
     if (typeof v === "string") return parseArray(v, (s) => coerce(element, s, column), delim);
     if (Array.isArray(v)) return v.map((e) => (Array.isArray(e) ? coerce(kind, e, column, delim) : coerce(element, e, column)));
     // A MySQL VECTOR's bytes: no driver gives any other array of floats as bytes.

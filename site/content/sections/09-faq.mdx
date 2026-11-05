@@ -25,6 +25,11 @@ Start the database, apply the migrations, and run `tsc --noEmit --runExternalCod
 Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.sql` file. [Migrating from Prisma](/prisma) covers the schema changes to make first, the build, each call as SQL, and what to check before you finish.
 
 </Accordion>
+<Accordion title="Can another tool read the types Reylo infers?" id="faq-rtd">
+
+Yes, as [Reylo Type Defs](/rtd): each statement's parameters, columns, types and cardinality as JSON, from `reylo analyze` in a shell or `analyze()` from `reylo/rtd`. The format is experimental, and may change in any release until 1.0.
+
+</Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
 
 It holds your [migrations](/migrations), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.

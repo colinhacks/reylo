@@ -9,7 +9,8 @@ import type { EngineType } from "./engine-type.ts";
 export type { EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
-export type Diagnostic = { message: string; start: number; length: number; code: number };
+/** A diagnostic as Reylo's own tools read it: its place in UTF-8 bytes, Reylo's code, and the database's own code where the database raised it (`server_code`). */
+export type Diagnostic = { message: string; start: number; length: number; code: number; server_code?: string };
 
 /**
  * What the engine answers for a statement: the format's statement descriptor (spec/type-descriptor.ts,
@@ -63,7 +64,7 @@ export type Need =
   | { kind: "describe"; id: string; sql: string }
   | { kind: "query"; id: string; sql: string; params: unknown[]; scope: "session" | "statement" };
 
-export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number }[] };
+export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number; typmod?: number }[] };
 /** MySQL's prepare metadata: the protocol type code, the flags (bit 1 is NOT NULL), the charset (63 is binary), the display length and the table the column is one of (empty for an expression). */
 export type MysqlDescribed = { kind: "mysql"; columns: { name: string; type: number; flags: number; charset: number; length: number; org_table: string; org_name: string }[]; params: { type: number; flags: number; charset: number }[] };
 /** A DuckDB logical type as the engine reads it (engine/duckdb/src/api.rs): its id, its text, and what the id says more of. */
