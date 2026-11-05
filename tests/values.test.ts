@@ -4,9 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import { execute, type QueryModule } from "../src/execute.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
-import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, postgresInterval, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
+import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder } from "../src/values.ts";
 import type { EngineType } from "../src/engine-type.ts";
-import { array, lite, my, oneOf, pg } from "./descriptors.ts";
+import { array, field, lite, my, oneOf, pg, record } from "./descriptors.ts";
 import type { Columns } from "../src/values.ts";
 
 // The one table (src/values.ts): the kind of each SQL type, the TypeScript type the module declares
@@ -27,7 +27,7 @@ const TEXTS: Record<string, string> = {
   bool: "t", int2: "2", int4: "4", oid: "26", float4: "1.1", float8: "2.2", int8: "9007199254740993", numeric: "1.100000000000000001",
   money: "$1.50", date: "2026-10-20", timestamp: "2026-10-20 10:00:00.123456", timestamptz: "2026-10-20 10:00:00.123456+02",
   time: "10:00:00", timetz: "10:00:00+02", interval: "1 day", json: '{"a":1}', jsonb: "[1,2]", bytea: "\\x0102ff", uuid: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
-  text: "hi", point: "(1,2)", int4range: "[1,5)", xid: "7", void: "",
+  text: "hi", xid: "7", void: "",
 };
 
 test("every Postgres type's decoded value is the type the module declares for it, and its JSON form is its schema's", () => {
@@ -54,6 +54,132 @@ test("every Postgres type's decoded value is the type the module declares for it
       assert.ok([schema.type].flat().some((t) => jsonType.includes(t)), `${name}: ${JSON.stringify(json)} against ${JSON.stringify(schema)}`);
     }
   }
+});
+
+// Postgres's geometric types, each as the server writes it and as the object `.run()` gives it.
+const SHAPES: [name: string, text: string, value: unknown][] = [
+  ["point", "(1.5,-2)", { x: 1.5, y: -2 }],
+  ["line", "{1,-1,0}", { a: 1, b: -1, c: 0 }],
+  ["lseg", "[(0,0),(1,1e+300)]", [{ x: 0, y: 0 }, { x: 1, y: 1e300 }]],
+  ["box", "(3,4),(1,2)", { high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }],
+  ["path", "[(0,0),(1,1),(2,0)]", { closed: false, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }] }],
+  ["path", "((0,0),(1,1))", { closed: true, points: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }],
+  ["polygon", "((0,0),(1,1),(2,0))", [{ x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 }]],
+  ["circle", "<(1,2),Infinity>", { center: { x: 1, y: 2 }, radius: Infinity }],
+];
+
+test("a geometric type is an object of its fields, declared and decoded alike, and goes back as the text it came from", () => {
+  for (const [name, text, value] of SHAPES) {
+    const t = pg(name);
+    const kind = columnKind(t, "postgres");
+    assert.equal(kind, name);
+    assert.deepEqual(textDecoder(kind)(text), value, name);
+    assert.deepEqual(coerce(kind, text, "c"), value, `${name}: from the text a driver gave`);
+    assert.equal(postgresLiteral(t, value, (m) => assert.fail(m)), text.replace("1e+300", "1e+300"), `${name}: back as its text`);
+    // The type the module declares, the parameter's and the JSON Schema of the JSON form all say the same object.
+    const declared = renderType(t, false, "postgres");
+    assert.equal(renderParamType(t, "postgres"), declared, name);
+    assert.equal(declared, kindType(kind), name);
+    assert.equal((typeSchema(t, "postgres") as { type: string }).type, Array.isArray(value) ? "array" : "object", name);
+  }
+  assert.equal(renderType(pg("point"), false, "postgres"), "{ x: number; y: number }");
+  assert.equal(renderType(pg("circle"), false, "postgres"), "{ center: { x: number; y: number }; radius: number }");
+  assert.deepEqual(typeSchema(pg("point"), "postgres"), { type: "object", properties: { x: { type: "number", format: "double" }, y: { type: "number", format: "double" } }, required: ["x", "y"] });
+  // Inside a document Postgres writes a geometric type as its text.
+  assert.equal(renderType(pg("box"), true, "postgres"), "string");
+  // An array of boxes is written with a semicolon between them, since a box's own text holds commas.
+  assert.deepEqual(textDecoder("box[]", ";")("{(3,4),(1,2);(1,1),(0,0)}"), [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }, { high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }]);
+  assert.deepEqual(textDecoder(columnKind(array(pg("lseg")), "postgres"))('{"[(0,0),(1,1)]",NULL}'), [[{ x: 0, y: 0 }, { x: 1, y: 1 }], null]);
+  // Anything but the type's own object is refused, naming what it takes.
+  for (const [name, v] of [["point", "(1,2)"], ["point", { x: 1 }], ["point", { x: 1, y: "2" }], ["point", { x: 1, y: 2, z: 3 }], ["lseg", [{ x: 0, y: 0 }]], ["path", { closed: 1, points: [{ x: 0, y: 0 }] }], ["polygon", []]] as [string, unknown][]) {
+    assert.throws(() => postgresLiteral(pg(name), v, (m) => { throw new TypeError(m); }), new RegExp(`^TypeError: a ${name}, `), JSON.stringify(v));
+  }
+});
+
+test("a Postgres row value is an object of its fields, each decoded and bound as a column of its type is", () => {
+  const address = record([field("street", pg("text"), true), field("zip", pg("int4"), true), field("tags", array(pg("text")), true), field("at", pg("timestamptz"), true), field("spot", pg("point"), true), field("boxes", array(pg("box")), true)], "public.address");
+  const kind = columnKind(address, "postgres");
+  assert.equal(kind, '(["street","text"],["zip","int"],["tags","text[]"],["at","timestamptz"],["spot","point"],["boxes","box[]",";"])');
+  // record_out's quoting: a field with a comma, a quote, a parenthesis or a space is quoted, a quote inside doubled, an empty field NULL.
+  const text = '("1 ""Main"", St",12345,"{a,""b c""}","2026-10-20 01:00:00-07","(1,2)",)';
+  assert.deepEqual(parseRow(text, 6), ['1 "Main", St', "12345", '{a,"b c"}', "2026-10-20 01:00:00-07", "(1,2)", null]);
+  const value = { street: '1 "Main", St', zip: 12345, tags: ["a", "b c"], at: "2026-10-20T08:00:00.000000Z", spot: { x: 1, y: 2 }, boxes: null };
+  assert.deepEqual(textDecoder(kind)(text), value);
+  assert.deepEqual(parseRow(String.raw`(,"","\\",a\,b,"x""y")`, 5), [null, "", "\\", "a,b", 'x"y']);
+  assert.deepEqual(parseRow("()", 1), [null]);
+  assert.deepEqual(textDecoder(`${kind}[]`)(`{${JSON.stringify(text)},NULL}`), [value, null]);
+  assert.equal(renderType(address, false, "postgres"), "{ street: string | null; zip: number | null; tags: (string | null)[] | null; at: string | null; spot: { x: number; y: number } | null; boxes: ({ high: { x: number; y: number }; low: { x: number; y: number } } | null)[] | null }");
+  // Back as the text record_in reads: every field quoted, NULL empty, and a field left out NULL.
+  const literal = postgresLiteral(address, { ...value, tags: ["a", null], boxes: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }] }, (m) => assert.fail(m));
+  assert.equal(literal, String.raw`("1 \"Main\", St","12345","{\"a\",NULL}","2026-10-20T08:00:00.000000Z","(1,2)","{\"(3,4),(1,2)\"}")`);
+  assert.equal(postgresLiteral(address, { zip: 1 }, (m) => assert.fail(m)), '(,"1",,,,)');
+  const refuse = (v: unknown, expected: RegExp) => assert.throws(() => postgresLiteral(address, v, (m) => { throw new TypeError(m); }), expected);
+  refuse("(x,1)", /^TypeError: public\.address, an object of its fields \(street, zip, tags, at, spot, boxes\); got "\(x,1\)"\.$/);
+  refuse({ stret: "x" }, /^TypeError: public\.address, which has no field "stret"; its fields are street, zip, tags, at, spot, boxes\.$/);
+  refuse({ spot: "(1,2)" }, /^TypeError: public\.address, whose field "spot" is a point, \{ x: number; y: number \}; got "\(1,2\)"\.$/);
+});
+
+test("a range is an object of its bounds and their brackets, each bound in its subtype's form, and goes back as the text it came from", () => {
+  const cases: [name: string, text: string, value: unknown, literal: string][] = [
+    ["int4range", "[1,5)", { lower: 1, upper: 5, bounds: "[)" }, '["1","5")'],
+    ["numrange", "(1.5,5]", { lower: "1.5", upper: "5", bounds: "(]" }, '("1.5","5"]'],
+    ["int8range", "[9007199254740993,)", { lower: 9007199254740993n, bounds: "[)" }, '["9007199254740993",)'],
+    ["int4range", "(,)", { bounds: "()" }, "(,)"],
+    ["int4range", "empty", { empty: true }, "empty"],
+    ["tstzrange", '["2026-10-20 01:00:00-07",)', { lower: "2026-10-20T08:00:00.000000Z", bounds: "[)" }, '["2026-10-20T08:00:00.000000Z",)'],
+    // An infinite bound is a bound, unlike an unbounded end.
+    ["daterange", "[2026-10-20,infinity)", { lower: "2026-10-20", upper: "infinity", bounds: "[)" }, '["2026-10-20","infinity")'],
+    ["int4multirange", "{[1,3),[5,7)}", [{ lower: 1, upper: 3, bounds: "[)" }, { lower: 5, upper: 7, bounds: "[)" }], '{["1","3"),["5","7")}'],
+    ["int4multirange", "{}", [], "{}"],
+  ];
+  for (const [name, text, value, literal] of cases) {
+    const t = pg(name);
+    const kind = columnKind(t, "postgres");
+    assert.deepEqual(textDecoder(kind)(text), value, `${name} ${text}`);
+    assert.deepEqual(coerce(kind, text, "c"), value, `${name} ${text}: from the text a driver gave`);
+    assert.equal(postgresLiteral(t, value, (m) => assert.fail(m)), literal, `${name} ${text}: back as text`);
+  }
+  // A parameter that leaves its brackets out takes Postgres's constructors' `[)`.
+  assert.equal(postgresLiteral(pg("int4range"), { lower: 1, upper: 5 }, (m) => assert.fail(m)), '["1","5")');
+  assert.deepEqual(textDecoder(columnKind(array(pg("tstzrange")), "postgres"))(String.raw`{"[\"2026-10-20 08:00:00+00\",)",empty}`), [{ lower: "2026-10-20T08:00:00.000000Z", bounds: "[)" }, { empty: true }]);
+  const brackets = `"[)" | "[]" | "(]" | "()"`;
+  assert.equal(renderType(pg("int4range"), false, "postgres"), `{ empty: true } | { lower?: number; upper?: number; bounds: ${brackets} }`);
+  assert.equal(renderType(pg("int4multirange"), false, "postgres"), `({ empty: true } | { lower?: number; upper?: number; bounds: ${brackets} })[]`);
+  assert.equal(renderParamType(pg("int8range"), "postgres"), `{ empty: true } | { lower?: number | bigint | string; upper?: number | bigint | string; bounds?: ${brackets} }`);
+  // Inside a document Postgres writes a range as its text.
+  assert.equal(renderType(pg("int4range"), true, "postgres"), "string");
+  // A null bound, an unknown key, brackets of another shape and anything but an object are refused.
+  for (const v of [{ lower: null }, { min: 1 }, { empty: true, lower: 1 }, { lower: 1, bounds: "[[" }, "[1,5)"]) {
+    assert.throws(() => postgresLiteral(pg("int4range"), v, (m) => { throw new TypeError(m); }), /^TypeError: int4range, \{ empty: true \} or \{ lower, upper, bounds \}/, JSON.stringify(v));
+  }
+});
+
+test("a MySQL ENUM of known labels is refused the '' MySQL stores for any other value, unless it lists one", () => {
+  const labelled = (...labels: string[]) => ({ kind: "text", enum: labels, name: "enum" }) as EngineType;
+  assert.equal(columnKind(labelled("a", "b"), "mysql"), "enum");
+  assert.equal(renderType(labelled("a", "b"), false, "mysql"), '"a" | "b"');
+  assert.equal(coerce("enum", "a", "kind"), "a");
+  assert.throws(() => coerce("enum", "", "kind"), (e: Error) => e instanceof DecodeError && /^Column "kind" holds "", which is none of its ENUM's labels.*nullif\(kind, ''\)/.test(e.message));
+  // One that lists '' holds it as any other label, and one whose labels are not known is its text.
+  assert.equal(columnKind(labelled("", "a"), "mysql"), "text");
+  assert.equal(columnKind({ kind: "text", name: "enum" }, "mysql"), "text");
+  // Postgres enforces an enum's labels itself.
+  assert.equal(columnKind({ kind: "text", enum: ["a"], name: "enum" }, "postgres"), "text");
+});
+
+test("a MySQL SET is a Set of its members, declared and decoded alike, and is its text inside JSON", () => {
+  const t = my("set");
+  assert.equal(columnKind(t, "mysql"), "set");
+  assert.deepEqual(coerce("set", "a,c", "tags"), new Set(["a", "c"]));
+  assert.deepEqual(coerce("set", "", "tags"), new Set());
+  // mariadb gives an array of its members.
+  assert.deepEqual(coerce("set", ["a", "c"], "tags"), new Set(["a", "c"]));
+  assert.equal(renderType(t, false, "mysql"), "Set<string>");
+  assert.equal(renderParamType(t, "mysql"), "Set<string>");
+  assert.deepEqual(typeSchema(t, "mysql"), { type: "array", items: { type: "string" }, uniqueItems: true });
+  // MySQL writes a SET inside a document as its text.
+  assert.equal(renderType(t, true, "mysql"), "string");
+  assert.deepEqual(typeSchema(t, "mysql", false, true), { type: "string" });
 });
 
 test("the representation, value by value", () => {

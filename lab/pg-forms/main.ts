@@ -31,10 +31,10 @@ const jsonAgg4: JsonAggParams = null! as { id: number };
 import arrays from "./arrays.sql";
 type ArraysRow = {
   id: number;
-  // An ARRAY subquery is never NULL: an empty subquery is `{}`. Its elements may be NULL, as any
-  // array's may, where the engine does not show otherwise.
-  post_ids: (number | null)[];
-  post_titles: (string | null)[];
+  // An ARRAY subquery is never NULL: an empty subquery is `{}`. Its elements are its column's, and
+  // these columns are NOT NULL.
+  post_ids: number[];
+  post_titles: string[];
   // array_agg over no rows is NULL.
   agg_ids: (number | null)[] | null;
   // `record[]` has no driver parser, so the value arrives as the text Postgres prints,
@@ -49,10 +49,10 @@ const arrays2: Awaited<ReturnType<typeof arrays.run>> = null! as ArraysRow | nul
 // ---------------------------------------------------------------------------
 import rows from "./rows.sql";
 type RowsRow = {
-  // A row value is unparsed text on the wire (`(1,ada)`), and a row constructor is never NULL,
-  // cast to a composite type or not.
+  // A row constructor is never NULL, cast to a composite type or not. Uncast, its fields have no
+  // names, so it is the text Postgres prints (`(1,ada)`); cast, it is an object of its fields.
   pair_anon: string;
-  pair_typed: string;
+  pair_typed: { a: number | null; b: string | null };
   // Right: to_jsonb(t) gets the whole row's shape, with the JSON twin of every scalar
   // (numeric and int8 as numbers, bytea as text, timestamptz as text). A numeric's NaN and
   // infinities have no JSON number, so to_jsonb writes them as strings, which the run time gives
@@ -71,9 +71,22 @@ type RowsRow = {
     blob: string | null;
     created_at: string;
   };
-  // A whole-row reference arrives as the row's text form; `u` is not on the nullable side of a
-  // join, so its row is never NULL.
-  whole_row: string;
+  // A whole-row reference is an object of the table's columns, each as a column of its type is;
+  // `u` is not on the nullable side of a join, so its row is never NULL.
+  whole_row: {
+    id: number;
+    uid: string;
+    name: string;
+    email: string | null;
+    slug: string;
+    role: "admin" | "member";
+    tags: (string | null)[];
+    meta: Json;
+    score: string | null;
+    big: bigint;
+    blob: Uint8Array | null;
+    created_at: string;
+  };
 };
 const rows1: RowsRow | null = null! as Awaited<ReturnType<typeof rows.run>>;
 const rows2: Awaited<ReturnType<typeof rows.run>> = null! as RowsRow | null;
@@ -387,16 +400,17 @@ const casts4: CastsParams = null! as { since: string; id: number };
 import types from "./types.sql";
 type TypesRow = {
   id: number;
-  // Ranges, network addresses, money, bit strings, xml, tsvector and composites all arrive as
-  // the text Postgres prints. An enum array is parsed, and its elements are the labels.
-  span: string;
-  during: string | null;
+  // A range is an object of its bounds, and a composite of its fields. Network addresses, money,
+  // bit strings, xml and tsvector arrive as the text Postgres prints. An enum array is parsed, and
+  // its elements are the labels.
+  span: { empty: true } | { lower?: number; upper?: number; bounds: "[)" | "[]" | "(]" | "()" };
+  during: { empty: true } | { lower?: string; upper?: string; bounds: "[)" | "[]" | "(]" | "()" } | null;
   addr: string;
   price: string | null;
   bits: string | null;
   doc: string | null;
   search: string | null;
-  pair: string | null;
+  pair: { a: number | null; b: string | null } | null;
   roles: ("admin" | "member" | null)[];
 };
 const types1: TypesRow | null = null! as Awaited<ReturnType<typeof types.run>>;

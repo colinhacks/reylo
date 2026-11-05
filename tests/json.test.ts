@@ -20,12 +20,18 @@ const TSC = join(ROOT, "node_modules", "typescript", "bin", "tsc");
 
 const QUERY_ONLY = `import type { Query } from "reylo";`;
 const WITH_JSON = `import type { Json, Query } from "reylo";`;
+// A JSON parameter with no schema takes whatever JSON.stringify writes: JsonInput.
+const WITH_INPUT = `import type { JsonInput, Query } from "reylo";`;
+const WITH_BOTH = `import type { Json, JsonInput, Query } from "reylo";`;
 
 test("a module imports Json from reylo only where one of its types names it", () => {
   assert.equal(reyloImport("{ stage: Json }", "{ id: number }"), WITH_JSON);
   assert.equal(reyloImport("Record<never, never>", "{ tags: Json[]; doc: Record<string, Json>; g: { type: string; [key: string]: Json | undefined } }"), WITH_JSON);
   // A key of that name, a string literal type and a column's comment name no type.
   assert.equal(reyloImport("{ Json: number; Jsonb?: string }", `{ kind: "Json" | "a Json b" }`), QUERY_ONLY);
+  assert.equal(reyloImport("{ p: JsonInput }", "{ r: Json }"), WITH_BOTH);
+  assert.equal(reyloImport("{ p: JsonInput }", "never"), WITH_INPUT);
+  assert.equal(reyloImport("{ JsonInput: number }", "never"), QUERY_ONLY);
   assert.equal(reyloImport("Record<never, never>", "{\n  /** the Json payload */\n  id: number;\n}"), QUERY_ONLY);
   // A comment's delimiter inside a quoted name starts no comment, and a quote inside a comment no string.
   assert.equal(reyloImport("Record<never, never>", `{ "/*": number; data: Json; "*/": number }`), WITH_JSON);
@@ -75,7 +81,7 @@ test("SQLite: a value nothing types inside JSON the statement builds is Json, wh
   assert.equal(r.stdout + r.stderr, "");
   assert.equal(r.status, 0);
   const keep = `select coalesce(:doc::json, json('"kept"')) as doc, coalesce(:keep::nullable(json), json('"kept"')) as keep\n`;
-  assert.deepEqual(types((await declarations(root, { "keep.sql": keep }))["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: string; keep: string };"]);
+  assert.deepEqual(types((await declarations(root, { "keep.sql": keep }))["keep.sql"]!), [WITH_INPUT, "export type Params = { doc: JsonInput; keep?: JsonInput };", "export type Row = { doc: string; keep: string };"]);
   await closeSessions();
   const lite = new DatabaseSync(join(root, "app.db"));
   try {
@@ -121,9 +127,9 @@ test("Postgres: a jsonb value nothing constrains is Json, and its parameter's nu
   const keep = `select coalesce(:doc::jsonb, '"kept"') as doc, coalesce(:keep::nullable(jsonb), '"kept"') as keep\n`;
   try {
     const declared = await declarations(root, { "stage.sql": stage, "insert.sql": insert, "keep.sql": keep });
-    assert.deepEqual(types(declared["stage.sql"]!), [WITH_JSON, "export type Params = { stage: Json };", "export type Row = { stage: Json; a: Json };"]);
-    assert.deepEqual(types(declared["insert.sql"]!), [WITH_JSON, "export type Params = { payload: Json; meta?: Json };", "export type Row = { id: number };"]);
-    assert.deepEqual(types(declared["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: Json; keep: Json };"]);
+    assert.deepEqual(types(declared["stage.sql"]!), [WITH_BOTH, "export type Params = { stage: JsonInput };", "export type Row = { stage: Json; a: Json };"]);
+    assert.deepEqual(types(declared["insert.sql"]!), [WITH_INPUT, "export type Params = { payload: JsonInput; meta?: JsonInput };", "export type Row = { id: number };"]);
+    assert.deepEqual(types(declared["keep.sql"]!), [WITH_BOTH, "export type Params = { doc: JsonInput; keep?: JsonInput };", "export type Row = { doc: Json; keep: Json };"]);
     await closeSessions();
     const write = await built(root, "insert", insert);
     // payload, a NOT NULL column, takes JSON's null; meta, which takes SQL NULL, takes it for null.
@@ -206,9 +212,9 @@ test("MySQL: a JSON value nothing constrains is Json, and its parameter's null i
   const keep = `select coalesce(:doc::json, cast('"kept"' as json)) as doc, coalesce(:keep::nullable(json), cast('"kept"' as json)) as keep\n`;
   try {
     const declared = await declarations(root, { "insert.sql": insert, "read.sql": read, "keep.sql": keep });
-    assert.deepEqual(types(declared["insert.sql"]!), [WITH_JSON, "export type Params = { payload: Json; meta?: Json };", "export type Row = never;"]);
+    assert.deepEqual(types(declared["insert.sql"]!), [WITH_INPUT, "export type Params = { payload: JsonInput; meta?: JsonInput };", "export type Row = never;"]);
     assert.deepEqual(types(declared["read.sql"]!), [WITH_JSON, "export type Params = Record<never, never>;", "export type Row = { payload: Json; meta: Json; a: Json };"]);
-    assert.deepEqual(types(declared["keep.sql"]!), [WITH_JSON, "export type Params = { doc: Json; keep?: Json };", "export type Row = { doc: Json; keep: Json };"]);
+    assert.deepEqual(types(declared["keep.sql"]!), [WITH_BOTH, "export type Params = { doc: JsonInput; keep?: JsonInput };", "export type Row = { doc: Json; keep: Json };"]);
     await closeSessions();
     const write = await built(root, "insert", insert);
     await write.run(own.db, { payload: null, meta: null });

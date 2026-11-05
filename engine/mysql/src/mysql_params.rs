@@ -130,6 +130,9 @@ pub(crate) struct Typed {
     /// Per column of the tables the result columns read ([`traced_from`]), by table and column in
     /// lower case, its comment where it has one.
     pub columns: HashMap<(String, String), String>,
+    /// Per `ENUM` and `SET` column of those tables, by table and column in lower case, its type
+    /// with the labels it declares, which the prepare does not give.
+    pub labelled: HashMap<(String, String), crate::types::Type>,
 }
 
 /// The type of each parameter whose column the statement names directly, where it differs from
@@ -153,17 +156,27 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
     for row in rows.unwrap_or_default() {
         let (Some(table), Some(column), Some(data_type), Some(column_type)) = (row.first().and_then(as_str), row.get(1).and_then(as_str), row.get(2).and_then(as_str), row.get(3).and_then(as_str)) else { continue };
         let invisible = row.get(4).and_then(as_str).is_some_and(|extra| extra.to_ascii_uppercase().contains("INVISIBLE"));
+        // An ENUM's and a SET's labels keep their case.
+        let labels = crate::mysql_types::labels(column_type);
         let column_type = column_type.to_ascii_lowercase();
         // The column's own type: a BIGINT's is 64 bits, a TINYINT(1)'s the integer a client reads
-        // as a truth value, and a BIT's its width in bits.
+        // as a truth value, a BIT's its width in bits, an ENUM's one of its labels, and a SET's its
+        // members, each one of its labels, which the prepare types as text.
         let unsigned = if column_type.contains("unsigned") { 32 } else { 0 };
         let width = column_type.split_once('(').and_then(|(_, rest)| rest.split(')').next()).and_then(|n| n.trim().parse::<u32>().ok());
         let ty = match data_type.to_ascii_lowercase().as_str() {
             "bigint" => Some(crate::mysql_types::of(8, unsigned, 0, None)),
             "tinyint" if column_type.starts_with("tinyint(1)") => Some(crate::mysql_types::of(1, unsigned, 0, Some(1))),
             "bit" => Some(crate::mysql_types::bits(width)),
+            "enum" => Some(crate::mysql_types::enumeration(labels)),
+            "set" => Some(crate::mysql_types::set_of(labels)),
             _ => None,
         };
+        if matches!(data_type.to_ascii_lowercase().as_str(), "enum" | "set") {
+            if let Some(ty) = &ty {
+                out.labelled.insert((table.to_ascii_lowercase(), column.to_ascii_lowercase()), ty.clone());
+            }
+        }
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
         if let Some(comment) = &comment {
             out.columns.insert((table.to_ascii_lowercase(), column.to_ascii_lowercase()), comment.clone());

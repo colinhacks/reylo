@@ -16,6 +16,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
+import type { Codecs } from "./codecs.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
@@ -27,6 +28,7 @@ export type ProjectFile = {
   env?: string[];
   strict_params?: boolean;
   sqlcommenter?: boolean;
+  js?: { codecs?: Codecs };
 };
 
 export type ResolvedProject = {
@@ -39,6 +41,8 @@ export type ResolvedProject = {
   strictParams: boolean;
   /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
+  /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
+  codecs: Codecs;
   /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
@@ -412,7 +416,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   // (src/analyze.ts), do where they are all of one dialect.
   const cached = url ? [] : cachedDialects(root);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  return { file, root, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */

@@ -22,7 +22,7 @@ To type a query, Reylo has your live database prepare it, without running it, an
 
 <Details summary="The TypeScript type of each SQL type, in each dialect" id="data-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, a decimal its exact text, and an instant its ISO 8601 text in UTC: no value is a `Date`. On Postgres, an instant always has six fraction digits, so two of them sort as strings. Pass back the text `.run()` returned, since a `Date` drops microseconds ([Dates and times](/postgres#dates-and-times)). To give a family another type, such as a `Temporal.Instant`, set [`js.codecs`](#jscodecs).
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -46,10 +46,12 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | An array | an array of its element type, a `NULL` element `null` |
 | An enum | the union of its labels |
 | A domain | its base type |
-| A row value | `string` |
+| A row value of a table or composite type | an object of its fields |
+| `point`, `box`, `circle` and the other geometric types | an object of its fields, as `{ x, y }` |
+| A range | an object of its bounds, as `{ lower: 1, upper: 5, bounds: "[)" }`; a multirange an array of them |
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | `Record<string, string \| null>` |
-| Every other type (`inet`, `cidr`, ranges, `point`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
+| Every other type (`inet`, `cidr`, `tsvector`, `xml`, …) | a `string`, as the database writes it |
 
 </Dialect>
 <Dialect value="MySQL">
@@ -63,8 +65,8 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | `DECIMAL` | `string` |
 | `FLOAT`, `DOUBLE` | `number` |
 | `CHAR`, `VARCHAR`, `TEXT` | `string` |
-| `ENUM` | `string` |
-| `SET` | `string`, as `a,b` |
+| `ENUM` | the union of its labels |
+| `SET` | a `Set` of its labels |
 | `DATE` | `string`, as `2026-10-20` |
 | `DATETIME`, `TIMESTAMP` | `string`, as `2026-10-20T10:00:00.123` |
 | `TIME` | `string` |

@@ -8,11 +8,14 @@ import { serve } from "./rpc.ts";
 import { anyEngine, type Lexed } from "./engine.ts";
 import { moduleTypes, queryErrorType, reyloImport, withinFile } from "./module-types.ts";
 import { PROJECT_FILE, PROJECT_FILES, resolveProject } from "./project.ts";
+import type { Codecs } from "./codecs.ts";
 import { Session } from "./analyze.ts";
 import { docComment, leadingComment, statementAfter } from "./doc-comment.ts";
 
 type Project = {
   strictParams: boolean;
+  /** The project file's `js.codecs` (src/codecs.ts). */
+  codecs: Codecs;
   /** The project file as its messages name it: relative to the project, or `.reylo.yaml` where there is none. */
   projectFile: string;
   session: Promise<Session>;
@@ -67,8 +70,8 @@ export function mapperHandlers(): MapperHandlers {
       const resolved = resolveProject(await anyEngine(), projectDir);
       const projectFile = resolved.file ? relative(projectDir, resolved.file).split(sep).join("/") || resolved.file : PROJECT_FILE;
       const optionDiagnostics = Object.keys(p.options ?? {}).map((key) => ({ path: [key], messageText: `reylo reads its settings from ${projectFile}, not from the content mapper's options; move "${key}" there.`, code: 104 }));
-      projects.set(p.projectHandle, { strictParams: resolved.strictParams, projectFile, session: Session.open(projectDir) });
-      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
+      projects.set(p.projectHandle, { strictParams: resolved.strictParams, codecs: resolved.codecs, projectFile, session: Session.open(projectDir) });
+      const configIdentity = createHash("sha1").update(JSON.stringify([resolved.file ?? null, resolved.dialect, resolved.strictParams, resolved.codecs, resolved.url ?? null, resolved.error ?? null, p.options ?? null])).digest("hex");
       return { configIdentity, watchedFiles: resolved.watched, optionDiagnostics };
     },
     async transform(params) {
@@ -147,7 +150,7 @@ export function mapperHandlers(): MapperHandlers {
       const { analysis } = outcome;
       // The types, the diagnostics the analysis gives and the untyped parameters' are one function
       // the docs site's playground shares (src/module-types.ts).
-      const types = moduleTypes(sql, analysis, dialect, lexed, project.strictParams, project.projectFile);
+      const types = moduleTypes(sql, analysis, dialect, lexed, project.strictParams, project.projectFile, project.codecs);
       diagnostics.push(...types.diagnostics.map((d) => diag(size, d.message, d.start, d.length, d.code)));
       // The compiled statement, without the comment naming its file, which the run time adds where
       // it sends the statement (src/sqlcommenter.ts).
