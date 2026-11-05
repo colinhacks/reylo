@@ -77,6 +77,7 @@ fn run_script(file: &Path, text: &str, path: &Path, timeout_ms: u64, t: &mut Tal
                     continue;
                 }
             };
+            t.typed(&name, &sql, &analysis);
             if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
                 t.with_params += 1;
                 continue;
