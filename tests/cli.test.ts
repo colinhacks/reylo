@@ -52,7 +52,7 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
   for (const usage of ["  migrate <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
   const migrate = reylo(root, ["migrate", "--help"]);
   assert.equal(migrate.status, 0, migrate.err);
-  assert.match(migrate.out, /^Usage: reylo migrate <command>\n/);
+  assert.match(migrate.out, /^Usage: reylo migrate <command> \[flags\]\n/);
   // The docs show the help as it is.
   assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").includes(`\`\`\`text\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
@@ -79,7 +79,7 @@ test("reylo migrate and reylo run are the binary's, with their output and exit c
     assert.equal(r.status, 1, args.join(" "));
     assert.match(r.err, said);
   }
-  assert.match(reylo(root, ["migrate", "prod", "--help"]).out, /^Usage: reylo migrate <command>\n/);
+  assert.match(reylo(root, ["migrate", "prod", "--help"]).out, /^Usage: reylo migrate <command> \[flags\]\n/);
 });
 
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {

@@ -33,30 +33,31 @@ Runs SQL on the database as written, outside any migration's history: inline tex
 --file names (-f), in the order given. The database is migrate.url, else the type check's
 connection; --url names another.";
 
-const MIGRATE_USAGE: &str = "Usage: reylo migrate <command>
+const MIGRATE_USAGE: &str = "Usage: reylo migrate <command> [flags]
 
+Commands:
   create <name>           Write a migration from your change to schema.sql
     --drop <names>        Accept what it drops: tables and columns
     --rename <old>=<new>  Say a table or column was renamed
-
   dev                     Take this database to the migrations, and lock them
   sync                    Take this database to schema.sql, unrecorded
     --watch               Again on each change
-  reset                   Drop everything, then run every migration
-  wipe                    Delete every row
-
+  reset                   Drop everything in this database
+  wipe                    Delete every row, keeping the schema
   check                   Check the migrations, schema.sql and this database
     --offline             Check only what needs no database
   prod                    Run what the lock lists, with no shadow database
-
+  pull                    Write the migrations this database ran into files
   sync-history            Record what this database's schema already has
   init                    Start from this database
     --schema <name>       A schema to read (Postgres; public by default)
   lock                    Write the lock from what this database ran
   unlock                  Delete the lock: migrations run by name
 
+Flags:
   --url <url>             The database, in place of migrate.url
-  --dir <path>            Reylo's directory, in place of dir";
+  --dir <path>            Reylo's directory, in place of dir
+  -h, --help              Print this help";
 
 /// The arguments after a command: flags with values, lists, switches and the rest.
 #[derive(Default)]
@@ -171,7 +172,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
         println!("{MIGRATE_USAGE}");
         return Ok(0);
     }
-    if !["create", "dev", "sync", "reset", "wipe", "check", "prod", "sync-history", "init", "lock", "unlock"].contains(&command.as_str()) {
+    if !["create", "dev", "sync", "reset", "wipe", "check", "prod", "pull", "sync-history", "init", "lock", "unlock"].contains(&command.as_str()) {
         eprintln!("reylo migrate: unknown command {command}\n\n{MIGRATE_USAGE}");
         return Ok(2);
     }
@@ -229,6 +230,7 @@ fn migrate_command(args: &[String]) -> Result<i32, String> {
                 Ok(0) => set_history(&opts.root, false).map(|()| 0).map_err(reylo_migrate::Error),
                 other => other,
             },
+            "pull" => reylo_migrate::pull(&opts, &mut log).await,
             "init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
             "create" => {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };

@@ -296,7 +296,6 @@ for_each_dialect!(
     a_late_migration_runs_when_both_orders_agree,
     a_late_migration_whose_order_matters_is_refused,
     a_rebased_migration_drifts_and_a_reset_replays_it,
-    a_reset_that_cant_run_drops_nothing,
     a_hotfix_by_hand_is_recorded_once_it_is_a_migration,
     sync_history_follows_a_renamed_migration,
     a_failed_migration_leaves_nothing,
@@ -338,7 +337,6 @@ for_each_dialect!(
     create_renames_a_table_keeping_its_rows,
     create_lists_every_rename_it_assumes,
     commands_create_prints_for_names_with_spaces_run_as_printed,
-    a_reset_takes_a_locked_migration_this_database_ran_as_dev_does,
     prod_compares_with_what_dev_replayed,
     changing_strict_comments_is_not_a_change_to_the_database,
     prod_refuses_any_schema_with_no_history,
@@ -424,21 +422,27 @@ async fn an_edited_migration_is_refused(mut p: P) {
     p.schema(&format!("create table users (id {int}, email {text});"));
     assert_eq!(p.migrate().await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ 20261027100000_users\.sql changed after this database applied it\n\n    --- as applied\n    \+\+\+ on disk\n    - create table users \(id [^\n]+\);\n    \+ create table users \(id [^\n]+, email [^\n]+\);\n\n  Undo the edit, and write the change as a new migration\.\n\n  On a development database, run it again as it now reads:\n    reylo migrate dev");
+    assert_has!(&out, r"✗ 20261027100000_users\.sql changed after this database applied it\n\n    --- as applied\n    \+\+\+ on disk\n    - create table users \(id [^\n]+\);\n    \+ create table users \(id [^\n]+, email [^\n]+\);\n\n  Write the change as a new migration\.\n\n  Take back the text this database ran:\n    reylo migrate pull\n  On a development database, run it again as it now reads:\n    reylo migrate dev");
     p.exec(&format!("alter table users add column email {text}")).await;
     assert_eq!(p.migrate().await, 1, "a database that matches the edit records nothing without being told: {}", p.peek());
     assert_has!(p.output(), "changed after this database applied it");
     p.exec("alter table users drop column email").await;
-    // The edit undone, it runs.
-    p.file("20261027100000_users.sql", &original);
+    // pull takes back the text it ran.
+    assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"Pulling from [^\n]+\n  ↓ 20261027100000_users\.sql  written over: it differed from what ran");
+    assert_eq!(std::fs::read_to_string(p.dir.join("migrations").join("20261027100000_users.sql")).unwrap(), original);
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), "Up to date");
-    // A deleted migration's refusal holds the text it ran, to put back.
+    // A deleted one is written again; a draft is left as it is.
     std::fs::remove_file(p.dir.join("migrations").join("20261027100000_users.sql")).unwrap();
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"This database applied 20261027100000_users\.sql, which isn't in [^\n]*migrations\n\n    create table users \(id [^\n]+\);\n\n  Put the file back: that is the text it ran\.\n\n  On a development database, undo it instead:\n    reylo migrate dev");
-    p.file("20261027100000_users.sql", &original);
-    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"This database applied 20261027100000_users\.sql, which isn't in [^\n]*migrations\n\n    create table users \(id [^\n]+\);\n\n  Write it back as it ran:\n    reylo migrate pull\n  On a development database, undo it instead:\n    reylo migrate dev");
+    p.file("20261027110000_draft.sql", "select 1;");
+    assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"↓ 20261027100000_users\.sql  written: it wasn't here\nNot run on this database, and left as they are: 20261027110000_draft\.sql");
+    assert_eq!(std::fs::read_to_string(p.dir.join("migrations").join("20261027100000_users.sql")).unwrap(), original);
+    assert_eq!(p.run(async |o, log| reylo_migrate::pull(o, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"^✓ \S*migrations holds every migration this database ran, as it ran it\n");
 }
 
 async fn ddl_run_by_hand_then_written_is_recorded(mut p: P) {
@@ -557,23 +561,11 @@ async fn a_rebased_migration_drifts_and_a_reset_replays_it(mut p: P) {
     assert_has!(p.output(), "which isn't in");
     p.exec("insert into a values (1)").await;
     assert_eq!(p.run(async |o, log| reylo_migrate::reset(o, false, log).await).await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"^✓ Dropped everything in \S+$");
+    assert_eq!(p.try_rows("select * from a").await.map(|r| r.len()).ok(), None, "a reset drops the tables");
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
     assert_eq!(p.history().await, ["20261027100000_a.sql".to_string(), "20261027120000_theirs.sql".to_string(), files[2].clone()]);
     assert!(p.rows("select * from a").await.is_empty(), "a reset loses data");
-}
-
-async fn a_reset_that_cant_run_drops_nothing(mut p: P) {
-    let int = p.t.int;
-    p.strict = true;
-    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
-    assert_eq!(p.dev().await, 0, "{}", p.peek());
-    p.exec("insert into a values (1)").await;
-    let lock = p.dir.join(reylo_migrate::lock::LOCK);
-    let text = std::fs::read_to_string(&lock).unwrap();
-    std::fs::write(&lock, format!("<<<<<<< ours\n{text}=======\n{text}>>>>>>> theirs\n")).unwrap();
-    p.output();
-    assert_eq!(p.run(async |o, log| reylo_migrate::reset(o, false, log).await).await, 1);
-    assert_has!(p.output(), r"has a merge conflict[\s\S]*Nothing was changed\.$");
-    assert_eq!(p.rows("select * from a").await.len(), 1);
 }
 
 async fn a_hotfix_by_hand_is_recorded_once_it_is_a_migration(mut p: P) {
@@ -1288,21 +1280,6 @@ async fn commands_create_prints_for_names_with_spaces_run_as_printed(mut p: P) {
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
 }
 
-async fn a_reset_takes_a_locked_migration_this_database_ran_as_dev_does(mut p: P) {
-    let (int, text) = (p.t.int, p.t.text);
-    p.strict = true;
-    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
-    assert_eq!(p.dev().await, 0, "{}", p.peek());
-    p.exec("insert into a values (1)").await;
-    p.output();
-    // Edited after it was locked here: no other branch's, as this database's history says.
-    p.file("20261027100000_a.sql", &format!("create table a (id {int}, note {text});"));
-    assert_eq!(p.run(async |o, log| reylo_migrate::reset(o, false, log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Dropped everything[\s\S]*✓ 20261027100000_a\.sql +applied");
-    assert!(p.rows("select * from a").await.is_empty());
-    assert_eq!(p.rows("select note from a").await.len(), 0);
-}
-
 async fn prod_compares_with_what_dev_replayed(mut p: P) {
     let (int, text) = (p.t.int, p.t.text);
     p.strict = true;
@@ -1385,8 +1362,6 @@ async fn a_migrations_directory_that_isnt_there_is_refused(mut p: P) {
     };
     assert_eq!(p.run(async |o, log| reylo_migrate::dev(&elsewhere(o), false, log).await).await, 1);
     assert_has!(p.output(), r"reylo-typo/migrations doesn't exist\n  This database ran 1 migration from it");
-    assert_eq!(p.run(async |o, log| reylo_migrate::reset(&elsewhere(o), false, log).await).await, 1);
-    assert_has!(p.output(), r"doesn't exist[\s\S]*Nothing was changed\.$");
     assert_eq!(p.run(async |o, log| reylo_migrate::sync_history(&elsewhere(o), log).await).await, 1);
     assert_has!(p.output(), "doesn't exist");
     assert_eq!(p.rows("select * from a").await.len(), 1);
@@ -1424,7 +1399,7 @@ async fn create_renames_a_table_keeping_its_rows(mut p: P) {
     // One table goes while one of its columns comes: renamed, and the foreign key on it follows.
     p.schema(&format!("create table accounts (id {id}, email {text}); create table posts (id {int}, user_id {int}, foreign key (user_id) references accounts (id));"));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "accounts", &Default::default(), log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"! Renames, keeping rows:\n    users → accounts\n  If they are two, state it: --drop users\n");
+    assert_has!(p.output(), r"! Renames, keeping rows:\n    users → accounts\n  If they are two, state it: --drop users\n✓ Wrote ");
     let sql = sql_of(&p, "accounts");
     assert!(sql.contains("rename to accounts") && !sql.contains("drop table"), "{sql}");
     assert_eq!(p.migrate().await, 0, "{}", p.peek());

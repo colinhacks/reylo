@@ -22,7 +22,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{check_command, check_offline, create, dev, init, lock_command, prod, reset, run_sql, sync, sync_history, sync_watch, wipe_rows, Choices, Options};
+pub use commands::{check_command, check_offline, create, dev, init, lock_command, prod, pull, reset, run_sql, sync, sync_history, sync_watch, wipe_rows, Choices, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
