@@ -58,7 +58,6 @@ app/page.tsx(24,40): error TS2551: Property 'authr' does not exist on type '{ id
 
 - Install from npm instead of the `link:` dependencies: `npm install reylo postgres` and `npm install -D typescript@beta`.
 - Drop `turbopack.root` from `next.config.ts`. Turbopack resolves nothing outside its root, and the `link:` dependency's real path is this repository's `dist/`, outside this directory; an app that installs `reylo` keeps the default root.
-- The `.npmrc` file (`minimumReleaseAgeExclude=typescript,@typescript/*`) lets this repository install a TypeScript build on the day it is published, inside the package manager's release-age window; drop it.
 
 ## Notes
 

@@ -54,7 +54,6 @@ Misspell a column in `queries/get_user.sql` and run `nub run typecheck` again: t
 ## In your own project
 
 - Install from npm instead of the `link:` dependencies: `npm install reylo postgres` and `npm install -D esbuild typescript@beta @types/node`.
-- The `.npmrc` file (`minimumReleaseAgeExclude=typescript,@typescript/*`) lets this repository install a TypeScript build on the day it is published, inside the package manager's release-age window; drop it.
 
 ## Notes
 

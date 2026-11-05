@@ -26,7 +26,7 @@ npm install reylo
 npm install -D typescript@beta
 ```
 
-Each README's "In your own project" lists anything else that exists only because the example lives in this repository: `.npmrc` (`minimumReleaseAgeExclude=typescript,@typescript/*`, so this repository can install a TypeScript build on the day it is published), and in Next.js the Turbopack root.
+Each README's "In your own project" lists anything else that exists only because the example lives in this repository, such as the Turbopack root in Next.js.
 
 The examples pin TypeScript to `7.1.0-beta` exactly: a range such as `^7.1.0-beta`, which `npm install -D typescript@beta` writes, also takes the 7.1 nightlies, which sort above the beta.
 
