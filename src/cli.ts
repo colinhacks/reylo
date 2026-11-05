@@ -7,7 +7,7 @@
 // the binary. It waits for the binary rather than replacing itself, which Node cannot do: a signal
 // that ends this process (Ctrl-C, a container's stop) is passed on to the binary, and the binary's
 // own end is this process's, a signal's as 128 and its number, as a shell reports it.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { constants } from "node:os";
 import { nativeBinary } from "./native.ts";
 
@@ -24,11 +24,15 @@ if (args[0] === "play") {
     console.error(`reylo: ${(e as Error).message}`);
     process.exit(1);
   }
-  const child = spawn(binary, args, { stdio: "inherit", windowsHide: true });
+  // The handlers go in before the binary starts: once it can answer, a signal has to reach it, rather
+  // than end this process and leave it running. A handler runs on a later turn of the event loop, by
+  // which time `child` is set.
+  let child: ChildProcess;
   const forward = (signal: NodeJS.Signals) => {
     if (child.exitCode === null && child.signalCode === null) child.kill(signal);
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, forward);
+  child = spawn(binary, args, { stdio: "inherit", windowsHide: true });
   child.on("error", (e) => {
     console.error(`reylo: cannot start ${binary}: ${e.message}`);
     process.exit(1);
