@@ -2029,7 +2029,7 @@ on!(
     a_migrations_session_setting_is_never_carried_by_the_cache,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
-on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on);
+on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_prod);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
 on!(Mysql, a_reserved_word_stays_quoted);
@@ -2615,6 +2615,7 @@ create index kids_parent on kids (parent_id);
 create table pets (id integer primary key, parent_id integer references parents (id) on delete set null);
 create table chores (id integer primary key, kid_id integer references kids (id));
 create table toys (kid_id integer references kids (id) on delete cascade, name text);
+create table a_links (parent_id integer references parents (id), kid_id integer references kids (id));
 create view kid_names as select kids.note, parents.name from kids join parents on parents.id = kids.parent_id;
 create trigger kids_note after insert on kids begin update parents set name = name where id = new.parent_id; end;"
             )
@@ -2622,7 +2623,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.schema(&tables(""));
         p.file("20261027100000_t.sql", &tables(""));
         assert_eq!(p.dev().await, 0, "{}", p.peek());
-        p.exec("insert into parents values (1, null, 'a'), (2, 1, 'b'); insert into kids values (7, 1, 'x'), (8, 2, 'y'), (9, 2, 'z'); insert into pets values (1, 1), (2, 2); insert into chores values (1, 7), (2, 8); insert into toys values (9, 'ball')").await;
+        p.exec("insert into parents values (1, null, 'a'), (2, 1, 'b'); insert into kids values (7, 1, 'x'), (8, 2, 'y'), (9, 2, 'z'); insert into pets values (1, 1), (2, 2); insert into chores values (1, 7), (2, 8); insert into toys values (9, 'ball'); insert into a_links values (1, 7)").await;
         p.output();
         // A check forces the parent's rebuild.
         p.schema(&tables(", check (length(name) > 0)"));
@@ -2639,7 +2640,7 @@ create trigger kids_note after insert on kids begin update parents set name = na
         db.exec("commit").await.unwrap();
         assert!(db.rows("pragma foreign_key_check").await.unwrap().is_empty());
         let count = |name: String, rows: Vec<Row>| (name, rows[0].text("n").to_string());
-        for (table, n) in [("parents", "2"), ("kids", "3"), ("pets", "2"), ("chores", "2"), ("toys", "1")] {
+        for (table, n) in [("parents", "2"), ("kids", "3"), ("pets", "2"), ("chores", "2"), ("toys", "1"), ("a_links", "1")] {
             let rows = db.rows(&format!("select count(*) as n from {table}")).await.unwrap();
             assert_eq!(count(table.into(), rows), (table.to_string(), n.to_string()), "{sql}");
         }
@@ -2653,6 +2654,32 @@ create trigger kids_note after insert on kids begin update parents set name = na
         db.exec("delete from kids where note = 'next'").await.unwrap();
         db.close().await;
         // The database reads as the file says, and as schema.sql does.
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_rebuild_keeps_tables_that_reference_each_other(mut p: P) {
+        let tables = |check: &str| format!("create table a (id integer primary key, b_id integer references b (id), name text{check}); create table b (id integer primary key, a_id integer references a (id) on delete cascade);");
+        p.schema(&tables(""));
+        p.file("20261027100000_t.sql", &tables(""));
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.exec("insert into a values (1, null, 'x'); insert into b values (1, 1); update a set b_id = 1").await;
+        p.output();
+        p.schema(&tables(", check (length(name) > 0)"));
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "check_name", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        let made = p.files().into_iter().find(|f| f.ends_with("_check_name.sql")).unwrap();
+        let sql = std::fs::read_to_string(p.dir.join("migrations").join(&made)).unwrap();
+        assert!(sql.contains("pragma defer_foreign_keys = on"), "{sql}");
+        let mut db = Db::connect(&p.url, &p.dir).await.unwrap();
+        db.exec("begin").await.unwrap();
+        db.script(&sql).await.unwrap_or_else(|e| panic!("{e}\n{sql}"));
+        db.exec("commit").await.unwrap();
+        assert!(db.rows("pragma foreign_key_check").await.unwrap().is_empty());
+        assert_eq!(db.rows("select b_id from a").await.unwrap()[0].text("b_id"), "1", "{sql}");
+        assert_eq!(db.rows("select a_id from b").await.unwrap()[0].text("a_id"), "1", "{sql}");
+        db.close().await;
         assert_eq!(p.dev().await, 0, "{}", p.peek());
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());

@@ -9,8 +9,10 @@
 //! the new table made under another name, the rows copied, the old one dropped, the new one renamed,
 //! and the indexes, triggers and views that went with the old one made again. Dropping a table where
 //! foreign keys are on deletes its rows first, which fires the actions of the tables that reference
-//! it, so those tables are rebuilt with it, at any depth, referencing the new one: the file keeps
-//! every row on whatever runs it, foreign keys on or off, with no pragma of its own.
+//! it, so those tables are rebuilt with it, at any depth, referencing the new one, each filled after
+//! and dropped before what it references: the file keeps every row on whatever runs it, foreign keys
+//! on or off. Only tables that reference each other have no such order, and defer their keys to the
+//! commit, for the one transaction.
 
 use super::{Alterer, Change, Kind, Object, Schema};
 use crate::catalog::HISTORY_TABLE;
@@ -658,8 +660,8 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
         return Some(out);
     }
 
-    // The tables that reference it, at any depth, as they are on both sides, parents first.
-    let children: Vec<(&Object, &Object)> = schemas.map_or_else(Vec::new, |(f, t)| children_of(f, t, &from.id));
+    // The tables that reference it, at any depth, as they are on both sides, each after what it references.
+    let (children, cycle) = schemas.map_or_else(|| (Vec::new(), false), |(f, t)| children_of(f, t, &from.id));
     let family: Vec<(Info, Info)> = std::iter::once((Info::of(from), Info::of(to))).chain(children.iter().map(|(x, y)| (Info::of(x), Info::of(y)))).collect();
 
     // What goes with them and the planner leaves be: the same on both sides.
@@ -687,6 +689,10 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
         if find(&old_parts, c).is_none() && flag(c, 'n') {
             out.push(format!("-- {} is not null with no default, so the copy fails on a table that has rows: give it a default, or add it nullable, fill it, then make it not null", p.tokens[0].text));
         }
+    }
+    if cycle {
+        out.push("-- these tables reference each other, so no order fills them: their keys wait for the commit".to_string());
+        out.push("pragma defer_foreign_keys = on".to_string());
     }
     // Each table's new name, and the tables that reference one of them referencing that.
     let mut scratches: BTreeMap<String, (String, String)> = BTreeMap::new();
@@ -742,24 +748,40 @@ fn alter_table(from: &Object, to: &Object, decided: Option<Vec<(String, String)>
     Some(out)
 }
 
-/// The tables of `from` that reference the table `id`, at any depth, parents first, each with itself
-/// in `to`: one the plan drops is no part of a rebuild, since the plan drops it first.
-fn children_of<'a>(from: &'a Schema, to: &'a Schema, id: &str) -> Vec<(&'a Object, &'a Object)> {
+/// The tables of `from` that reference the table `id`, at any depth, each with itself in `to`: one
+/// the plan drops is no part of a rebuild, since the plan drops it first. Each comes after every one
+/// of them it references, and the answer's second part says whether some reference each other, so
+/// that no order has that.
+fn children_of<'a>(from: &'a Schema, to: &'a Schema, id: &str) -> (Vec<(&'a Object, &'a Object)>, bool) {
+    let table = |o: &&Object| o.kind == Some(Kind::Table) && !Info::of(o).virtual_table && to.objects.contains_key(&o.id);
+    let mut family: Vec<&Object> = Vec::new();
     let mut seen: Vec<String> = vec![id.to_string()];
-    let mut out = Vec::new();
     let mut k = 0;
     while k < seen.len() {
         let parent = seen[k].clone();
         k += 1;
-        for o in from.objects.values().filter(|o| o.kind == Some(Kind::Table) && o.deps.contains(&parent) && !Info::of(o).virtual_table) {
-            let Some(there) = to.objects.get(&o.id) else { continue };
+        for o in from.objects.values().filter(table).filter(|o| o.deps.contains(&parent)) {
             if !seen.contains(&o.id) {
                 seen.push(o.id.clone());
-                out.push((o, there));
+                family.push(o);
             }
         }
     }
-    out
+    // Filled in this order, and dropped in the reverse. The rebuilt table comes first: where it
+    // references one of the others, they reference each other.
+    let mut cycle = from.objects.get(id).is_some_and(|o| o.deps.iter().any(|d| seen.contains(d)));
+    let mut placed: BTreeSet<&str> = BTreeSet::from([id]);
+    let mut ordered: Vec<(&Object, &Object)> = Vec::new();
+    while !family.is_empty() {
+        let at = family.iter().position(|o| o.deps.iter().all(|d| !seen.contains(d) || placed.contains(d.as_str()))).unwrap_or_else(|| {
+            cycle = true;
+            0
+        });
+        let o = family.remove(at);
+        placed.insert(o.id.as_str());
+        ordered.push((o, &to.objects[&o.id]));
+    }
+    (ordered, cycle)
 }
 
 /// What copies a table's rows into its rebuild, named `scratch`: the columns `copied` names, its
