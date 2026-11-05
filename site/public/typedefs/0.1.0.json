@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://reylo.dev/typedefs/0.1.0.json",
   "title": "Reylo Type Defs 0.1.0",
-  "description": "What introspecting one SQL statement returns, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. The rules every descriptor follows are at https://reylo.dev/typedefs.",
+  "description": "What introspecting one SQL statement returns, and the type descriptor of each parameter and column in it: which values the position can hold, across relational databases. The format's reference is at https://reylo.dev/typedefs.",
   "$ref": "#/$defs/StatementDescriptor",
   "$defs": {
     "Type": {
@@ -1149,7 +1149,7 @@
       "type": "object",
       "properties": {
         "$schema": {
-          "description": "The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads (rule 8 of the format's rules, at https://reylo.dev/typedefs).",
+          "description": "The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything.",
           "const": "https://reylo.dev/typedefs/0.1.0.json"
         },
         "dialect": {
