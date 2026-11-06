@@ -23,6 +23,7 @@
 // MySQL has no boolean type: a TINYINT(1), a BIT(1) and a comparison are integers to every driver,
 // and a column whose kind is `bool` (src/values.ts) is made a boolean after the driver, a value
 // other than 0 or 1 refused (`truth`).
+import { rowOf } from "./row.ts";
 import { bigInteger, coerce, truth, utf8, type Columns, type Kind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
@@ -191,7 +192,8 @@ type MariadbColumn = { type?: string; columnType?: number; name?: string | (() =
 
 /** mariadb's query(), on its promise or its callback API, with Reylo's options. */
 export async function mariadb(c: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  const options = { sql: text, ...MARIADB_OPTIONS, ...(columns?.some(([, kind]) => kind === "unknown") ? { typeCast: mariadbGeometry } : {}) };
+  // By position where the module declares the columns: mariadb writes each value into the statement's text, so MySQL names a column with no alias after it (`select :x::int + 1` is `CAST(5 AS SIGNED) + 1`), and two of them may share a name.
+  const options = { sql: text, ...MARIADB_OPTIONS, rowsAsArray: Boolean(columns?.length), ...(columns?.some(([, kind]) => kind === "unknown") ? { typeCast: mariadbGeometry } : {}) };
   // The promise API resolves to the rows with their `meta`; the callback API hands the meta over as a third argument.
   let callbackMeta: MariadbColumn[] | undefined;
   const result = await new Promise((resolve, reject) => {
@@ -199,6 +201,7 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
     if (typeof returned?.then === "function") returned.then(resolve, reject);
   });
   if (!Array.isArray(result)) return [];
+  const rows = declared(result, columns);
   // A DATETIME and a TIMESTAMP with `T`, and a SET's members joined as MySQL writes them: by the
   // module's kinds, else by the columns' metadata (mariadb 2 has no isSet()).
   const work: { name: string; date: boolean }[] = columns
@@ -208,9 +211,9 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
         .filter((m): m is { name: string; type: string | undefined; set: boolean } => m.name !== undefined && (m.set || m.type === "DATETIME" || m.type === "TIMESTAMP"))
         .map((m) => ({ name: m.name, date: !m.set }));
   // A truth value a boolean; an INT a temporary table may widen to a BIGINT a BigInt, as the BIGINT is.
-  fixRows(result as Record<string, unknown>[], columnFixes(columns));
-  if (!work.length) return result;
-  for (const row of result as Record<string, unknown>[]) {
+  fixRows(rows, columnFixes(columns));
+  if (!work.length) return rows;
+  for (const row of rows) {
     for (const { name, date } of work) {
       const v = row[name];
       if (v === null || v === undefined) continue;
@@ -218,7 +221,13 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
       else if (date && typeof v === "string") row[name] = v.replace(" ", "T");
     }
   }
-  return result;
+  return rows;
+}
+
+/** Rows a driver gave as arrays, as objects under the names the module declares; a client that took no such option gives objects already, kept as they are. */
+function declared(rows: unknown[], columns: Columns | undefined): Record<string, unknown>[] {
+  if (!columns?.length || !Array.isArray(rows[0]) || rows[0].length !== columns.length) return rows as Record<string, unknown>[];
+  return (rows as unknown[][]).map(rowOf(columns.map(([name]) => name)));
 }
 
 /** The fixes the module's kinds call for, for a driver that tells each type by its value. */
@@ -278,7 +287,8 @@ function planetscaleCast(field: PlanetscaleField, value: string | null): unknown
 
 /** PlanetScale's execute(): 1.x binds parameters; 2.0 takes none, and its options come second. */
 export async function planetscale(m: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  const options = { as: "object", cast: planetscaleCast };
+  // By position where the module declares the columns: the driver writes each value into the statement's text, so MySQL names a column with no alias after it, as on mariadb, and Vitess in front of a PlanetScale database writes such a name its own way.
+  const options = { as: columns?.length ? "array" : "object", cast: planetscaleCast };
   let result;
   try {
     result = await m.execute(text, values.length ? values : null, options);
@@ -291,6 +301,7 @@ export async function planetscale(m: AnyClient, text: string, values: unknown[],
   // none. Another driver's execute() (TiDB Cloud's answers with the rows themselves) would read
   // as no rows at all.
   if (!Array.isArray(result?.rows)) throw new TypeError(`reylo ran this statement through execute(), as on PlanetScale's @planetscale/database, and the client answered with ${Array.isArray(result) ? "an array" : result === null || typeof result !== "object" ? String(result) : "an object"} rather than a result with rows. It takes execute(text, values) as on mysql2 and PlanetScale, or a Drizzle database over one of them.`);
-  fixRows(result.rows, columnFixes(columns));
-  return result.rows;
+  const rows = declared(result.rows, columns);
+  fixRows(rows, columnFixes(columns));
+  return rows;
 }
