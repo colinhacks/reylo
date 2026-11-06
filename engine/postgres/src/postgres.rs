@@ -947,7 +947,7 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Row count.
-        let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let (cardinality, reason) = self.cardinality(&rewritten.sql, &lex::first_word(sql, lexed), parsed.as_ref(), &described, &trust, &catalog);
         let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
@@ -1091,10 +1091,12 @@ impl<'a> Engine<'a> {
         })
     }
 
-    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
+    fn cardinality(&self, sql: &str, first_word: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
         let Some(parsed) = parsed else {
-            // Syntax of a server newer than the parser, such as `REPACK`: what returns no columns returns no rows.
-            return if described.columns.is_empty() { (Cardinality::None, None) } else { (Cardinality::Many, Some("the statement did not parse locally".into())) };
+            // Syntax of a server newer than the parser. A command with no columns, such as `REPACK`, returns no rows; a query with none, such as `SELECT FROM t`, returns an empty row per row it reads, and one in parentheses has no first word.
+            let query = matches!(first_word, "" | "select" | "with" | "values" | "table");
+            let rows = if described.columns.is_empty() && !query { Cardinality::None } else { Cardinality::Many };
+            return (rows, Some("the statement did not parse locally".into()));
         };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
@@ -5060,7 +5062,10 @@ mod tests {
     #[test]
     fn syntax_past_the_parser_is_typed_from_the_describe() {
         let repack = replay_users("REPACK users", &[]);
-        assert_eq!((repack.cardinality, repack.columns.len()), (Cardinality::None, 0));
+        assert_eq!((repack.cardinality, repack.columns.len(), repack.cardinality_reason.as_deref()), (Cardinality::None, 0, Some("the statement did not parse locally")));
+        for query in ["SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ()", "(SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ())"] {
+            assert_eq!((replay_users(query, &[]).cardinality, replay_users(query, &[]).columns.len()), (Cardinality::Many, 0), "{query}");
+        }
         let window = replay_users("SELECT first_value(id) IGNORE NULLS OVER (ORDER BY id) AS f FROM users", &["f"]);
         assert_eq!((window.cardinality, window.cardinality_reason.as_deref()), (Cardinality::Many, Some("the statement did not parse locally")));
         assert!(window.columns[0].nullable);
