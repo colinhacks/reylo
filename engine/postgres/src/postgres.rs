@@ -1092,7 +1092,10 @@ impl<'a> Engine<'a> {
     }
 
     fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
-        let Some(parsed) = parsed else { return (Cardinality::Many, Some("the statement did not parse locally".into())) };
+        let Some(parsed) = parsed else {
+            // Syntax of a server newer than the parser, such as `REPACK`: what returns no columns returns no rows.
+            return if described.columns.is_empty() { (Cardinality::None, None) } else { (Cardinality::Many, Some("the statement did not parse locally".into())) };
+        };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
         if parsed.statement != "select" {
@@ -5052,6 +5055,15 @@ mod tests {
         let refused = analyzed(sql);
         let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
         assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
+    }
+
+    #[test]
+    fn syntax_past_the_parser_is_typed_from_the_describe() {
+        let repack = replay_users("REPACK users", &[]);
+        assert_eq!((repack.cardinality, repack.columns.len()), (Cardinality::None, 0));
+        let window = replay_users("SELECT first_value(id) IGNORE NULLS OVER (ORDER BY id) AS f FROM users", &["f"]);
+        assert_eq!((window.cardinality, window.cardinality_reason.as_deref()), (Cardinality::Many, Some("the statement did not parse locally")));
+        assert!(window.columns[0].nullable);
     }
 
     #[test]
