@@ -35,6 +35,8 @@ export type Analysis = {
   key?: string[];
   /** Every set of output columns no two rows agree on all of, as `key` is, a table's primary key first where the result holds it. */
   unique?: string[][];
+  /** The columns of the result its ORDER BY sorts on, as far as its keys are such columns. */
+  order?: { column: string; desc?: true; nulls: "first" | "last" }[];
   /** Whether the statement's ORDER BY orders its rows totally: no two rows of a result tie on every sort key, so the order is the same on every run. Only for a result that can hold more than one row, as `key` is (engine/core/src/api.rs). */
   ordered?: true;
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */

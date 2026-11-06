@@ -52,6 +52,28 @@ const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x",
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
 
 /** Postgres: the sets of columns no two rows agree on, a table's primary key first. A nullable column of a unique index is not one, since NULLs may repeat there. */
+/** Postgres: the columns the rows are sorted on. `id` follows `at`, and NULLs sort first when descending unless the key says otherwise. */
+export const sorted_rows: Example = {
+  database: "postgres",
+  setup: "create table events (id int8 primary key, at timestamptz)",
+  statement: "select id, at from events order by at desc, id",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, name: "timestamptz" } },
+      ],
+      unique: [["id"]],
+      order: [
+        { column: "at", desc: true, nulls: "first" },
+        { column: "id", nulls: "last" },
+      ],
+    },
+  },
+};
+
 export const unique_columns: Example = {
   database: "postgres",
   setup: "create table accounts (id int8 primary key, email text not null unique, handle text unique)",

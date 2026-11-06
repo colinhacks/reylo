@@ -175,7 +175,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
                 kind: None,
                 comment: None,
                 params: Vec::new(),
-                result: RowsType { cardinality: Cardinality::Many, columns: Vec::new(), unique: Vec::new() }.into(),
+                result: RowsType { cardinality: Cardinality::Many, columns: Vec::new(), unique: Vec::new(), order: Vec::new() }.into(),
                 diagnostics: vec![Diagnostic { message, start: 0, end: utf16_offset(&input.sql, input.sql.len()), code: None }],
             },
         };

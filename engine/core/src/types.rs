@@ -532,6 +532,29 @@ pub struct RowsType {
     /// a table's primary key first where the rows hold it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unique: Vec<Vec<String>>,
+    /// The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the
+    /// result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<OrderColumn>,
+}
+
+/// A column rows are sorted on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OrderColumn {
+    pub column: String,
+    /// Sorted from the highest value down.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub desc: bool,
+    /// Where NULLs sort.
+    pub nulls: NullsOrder,
+}
+
+/// Where NULLs sort among a column's values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NullsOrder {
+    First,
+    Last,
 }
 
 /// What a statement returns: a [`RowsType`], with what every type may carry. It reads and writes as a [`Type`] of kind `rows`, and refuses any other kind, as the format does.
@@ -1190,6 +1213,12 @@ impl Type {
                 if !r.unique.is_empty() && r.cardinality != Cardinality::Many {
                     return fail("unique is only for rows that can be more than one".into());
                 }
+                if !r.order.is_empty() && r.cardinality != Cardinality::Many {
+                    return fail("order is only for rows that can be more than one".into());
+                }
+                if let Some(o) = r.order.iter().find(|o| !r.columns.iter().any(|c| c.name == o.column)) {
+                    return fail(format!("order column {:?} is not a column", o.column));
+                }
                 for key in &r.unique {
                     if key.is_empty() {
                         return fail("a set of unique columns holds at least one".into());
@@ -1452,6 +1481,9 @@ mod tests {
         refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "unique": [["id"]]}));
         refused(json!({"kind": "rows", "cardinality": "one", "columns": [id], "unique": [["id"]]}));
         serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "missing", "nulls": "last"}]}));
+        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "order": [{"column": "id", "nulls": "last"}]}));
+        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "desc": true, "nulls": "first"}]})).unwrap().check().unwrap();
     }
 
     #[test]

@@ -2593,6 +2593,56 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
     from_ordered(s, &from, &sorted_inputs, trust, catalog)
 }
 
+/// The columns of one rewritten SELECT's result its ORDER BY sorts on, in order, with each one's
+/// direction and where its NULLs sort: ascending and last unless the key says otherwise, and
+/// descending first. The list ends at the first key that is no output column of a name of its own,
+/// since a later key sorts only among rows that tie on that one: an expression, a column the
+/// result doesn't hold, a `USING` operator or a `COLLATE`, under which the values aren't sorted
+/// as the column's own collation sorts them. A later key on a column already listed sorts nothing.
+/// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
+/// for is returned with its new values, in the place its old ones sorted to, so such a statement
+/// has no order to state.
+pub fn result_order(sql: &str, catalog: &Catalog, columns: &[(String, bool)]) -> Vec<crate::types::OrderColumn> {
+    use crate::types::{NullsOrder, OrderColumn};
+    use protobuf::{SortByDir, SortByNulls};
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        if !s.locking_clause.is_empty() {
+            return Vec::new();
+        }
+        let catalog = with_fields(&s, catalog);
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
+        let positions = target_positions(&s);
+        let mut order: Vec<OrderColumn> = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
+            let Some(e) = by.node.as_deref() else { break };
+            if !by.use_op.is_empty() || by.sortby_dir == SortByDir::SortbyUsing as i32 {
+                break;
+            }
+            let (Some(at), _) = sort_target(&s, from.as_ref(), e, &positions, &catalog, columns) else { break };
+            let Some((name, _)) = columns.get(at) else { break };
+            if columns.iter().filter(|(other, _)| other == name).count() != 1 {
+                break;
+            }
+            if order.iter().any(|o| o.column == *name) {
+                continue;
+            }
+            let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
+            let first = if by.sortby_nulls == SortByNulls::SortbyNullsFirst as i32 {
+                true
+            } else if by.sortby_nulls == SortByNulls::SortbyNullsLast as i32 {
+                false
+            } else {
+                desc
+            };
+            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+        }
+        order
+    })
+}
+
 /// What one sort key of a SELECT names: the output column, by position, and the FROM's column, by
 /// item and name. A position counts output columns, a `*`'s included; a bare name is an output
 /// column's before a column of the FROM, as Postgres reads ORDER BY.

@@ -948,6 +948,7 @@ impl<'a> Engine<'a> {
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
         let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+        let order = result_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &catalog);
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
@@ -960,6 +961,7 @@ impl<'a> Engine<'a> {
             cardinality_reason: reason,
             key,
             unique,
+            order,
             ordered,
             rewritten,
             style: lexed.style,
@@ -1075,6 +1077,7 @@ impl<'a> Engine<'a> {
             cardinality_reason: None,
             key: None,
             unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten,
             style: lexed.style,
@@ -4308,6 +4311,16 @@ fn identifies(ty: &Type) -> bool {
         TyKind::Opaque => ty.name.as_deref() != Some("record"),
         _ => true,
     }
+}
+
+/// The columns of a statement's result its ORDER BY sorts on ([`Analysis::order`]), for a SELECT
+/// that can return more than one row, as [`cardinality::result_order`] reads them.
+fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], catalog: &Catalog) -> Vec<crate::types::OrderColumn> {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
+        return Vec::new();
+    }
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::result_order(sql, catalog, &named)
 }
 
 /// Whether a statement's ORDER BY orders its rows totally ([`Analysis::ordered`]): for a SELECT that
