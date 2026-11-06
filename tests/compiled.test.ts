@@ -201,7 +201,7 @@ test("Postgres: the hover says where a function's volatile label keeps Postgres 
       "definer.sql": "select id, body from comments_definer(:p::int8)\n",
       "scalar.sql": "select count_for(:p::int8) as n\n",
     });
-    assert.ok(declared["reads.sql"]!.includes(note), declared["reads.sql"]);
+    assert.ok(declared["reads.sql"]!.includes(note), declared["reads.sql"]!);
     for (const file of ["seen.sql", "stable.sql", "definer.sql", "scalar.sql"]) assert.ok(!declared[file]!.includes("is volatile"), file);
   } finally {
     await closeSessions();
