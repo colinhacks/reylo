@@ -966,7 +966,7 @@ mod tests {
             name: name.into(),
             current: true,
             current_database: true,
-            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None, rows: None }).collect(),
+            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None }).collect(),
             keys: keys.iter().map(|k| k.iter().map(|c| c.to_string()).collect()).collect(),
         }
     }

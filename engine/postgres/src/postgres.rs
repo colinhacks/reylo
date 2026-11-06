@@ -1925,7 +1925,7 @@ impl<'a> Engine<'a> {
         // Following an item can prefetch a relation its statement reads, which writes the cache:
         // the borrow is let go for it and taken again after.
         drop(known);
-        let item_columns = if grouping { Some(Vec::new()) } else { self.item_columns(sql, raw.columns.len(), trust) };
+        let item_columns = if grouping { Some(Vec::new()) } else { self.item_columns(sql, &raw.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), trust) };
         let Some(item_columns) = item_columns else { return None };
         let known = self.relations.borrow();
         let registry = self.registry.borrow();
@@ -2006,8 +2006,11 @@ impl<'a> Engine<'a> {
     /// nothing changes. What survives holds by induction over the iterations: the rows of the
     /// non-recursive arm are non-null on their own account, each later row is non-null given
     /// the rows it was computed from, and a UNION is non-null only where both arms are.
-    fn item_columns(&self, sql: &str, count: usize, trust: &Trust) -> Lazy<Vec<Option<(Option<String>, ItemColumn)>>> {
+    fn item_columns(&self, sql: &str, names: &[&str], trust: &Trust) -> Lazy<Vec<Option<(Option<String>, ItemColumn)>>> {
         use infer::ItemRead;
+        let count = names.len();
+        // The subqueries that read the items before them, of which only the columns shown non-null are settled.
+        let mut partly: HashSet<usize> = HashSet::new();
         let Some((reads, queries)) = infer::item_reads(sql) else { return Some(Vec::new()) };
         // One `*` at most: its width is what the other targets leave of the result's columns.
         let stars = reads.iter().filter(|r| matches!(r, ItemRead::Star { .. } | ItemRead::TableStar)).count();
@@ -2060,11 +2063,13 @@ impl<'a> Engine<'a> {
                                 break;
                             }
                             Some(Some(columns)) => {
+                                partly.insert(i);
                                 settled.insert(i, columns);
                                 break;
                             }
                             Some(None) => {}
                         }
+                        partly.insert(i);
                         let proven = self.lateral_expressions(query, trust)?;
                         if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
                             let columns = columns.into_iter().enumerate().map(|(at, (name, non_null))| (at, (name, non_null || proven.get(at).copied().unwrap_or(false)))).filter(|(_, (_, non_null))| *non_null);
@@ -2138,7 +2143,20 @@ impl<'a> Engine<'a> {
                         out.extend(columns.iter().map(|c| Some(answer(item, c))));
                         out.extend(std::iter::repeat_n(None, queries[item].extra));
                     }
-                    None => out.extend(std::iter::repeat_n(None, width)),
+                    // A subquery settled in part: each column by its name, the others left to their provenance.
+                    None => match item.filter(|item| partly.contains(item)).and_then(|item| Some((item, settled.get(&item)?))) {
+                        Some((item, columns)) => {
+                            let at = out.len();
+                            for name in names[at..].iter().take(width) {
+                                let mut named = columns.iter().filter(|c| c.name == *name);
+                                out.push(match (named.next(), named.next()) {
+                                    (Some(found), None) => Some(answer(item, found)),
+                                    _ => None,
+                                });
+                            }
+                        }
+                        None => out.extend(std::iter::repeat_n(None, width)),
+                    },
                 },
                 ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
             }

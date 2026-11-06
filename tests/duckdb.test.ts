@@ -107,7 +107,7 @@ test("DuckDB: an array of a subquery's whole rows is never NULL, nor is its elem
   const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "record" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);
   const column = async (sql: string) => {
     const [, c] = (await analyze(root, sql)).columns;
-    return { nullable: c!.nullable, ...(fields(c!.type) as object) };
+    return { nullable: c!.nullable ?? false, ...(fields(c!.type) as object) };
   };
   assert.deepEqual(await column("select p.id, array(select c from (select id, body from comments where post_id = p.id) c) as comments from posts p"), {
     nullable: false,

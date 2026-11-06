@@ -1,6 +1,6 @@
 a_derived_all_types.sql: one () -> { comments: (record{ id: int8, body: text?, big: int8, amount: numeric, at: timestamptz, d: date?, raw: bytea?, m: public.mood('ok' | 'sad, "very"')?, p: int4?, j: jsonb?, tags: text?[]?, a: public.addr{ street: text?, zip: int4? }?, f: float8?, iv: interval?, ok: bool? })[] }
 a_derived_expr_nested.sql: many () -> { id: int8, comments: (record{ id: int8, more: int8, loud: text?, text: text, rs: (record{ id: int8 })[] })[] } key (id)
-a_derived_expr.sql: many () -> { id: int8, comments: (record{ id: int8, more: int8?, loud: text?, n: int8? })[] } key (id)
+a_derived_expr.sql: many () -> { id: int8, comments: (record{ id: int8, more: int8, loud: text?, n: int8 })[] } key (id)
 a_derived_json.sql: many () -> { id: int8, comments: (record{ id: int8, doc: jsonb? })[] } key (id)
 a_derived_ordered.sql: many () -> { id: int8, comments: (record{ id: int8, body: text? })[] } key (id)
 a_derived_outer.sql: many () -> { id: int8, comments: (record{ id: int8, reply: text? })[] } key (id)
@@ -15,7 +15,7 @@ c_row_cast.sql: one () -> { addrs: (public.addr{ street: text?, zip: int4? })[] 
 c_row_implicit.sql: many () -> { id: int8, comments: record[] } key (id)
 c_row_star.sql: many () -> { id: int8, comments: record[] } key (id)
 c_row.sql: many () -> { id: int8, comments: record[] } key (id)
-d_nested_table.sql: many () -> { id: int8, comments: (record{ id: int8, replies: (record{ id: int8, comment_id: int8, body: text })[] })[] } key (id)
+d_nested_table.sql: many () -> { id: int8, comments: (record{ id: int8, replies: (public.replies{ id: int8, comment_id: int8, body: text })[] })[] } key (id)
 d_nested.sql: many () -> { id: int8, comments: (record{ id: int8, replies: (record{ id: int8, body: text })[] })[] } key (id)
 d_nested3.sql: many () -> { id: int8, posts: (record{ id: int8, comments: (record{ id: int8, replies: (record{ id: int8, body: text })[] })[] })[] } key (id)
 e_array_agg_coalesce.sql: many () -> { id: int8, comments: (record{ id: int8, big: int8 })[] } key (id)
