@@ -197,7 +197,7 @@ fn analyze_ddl_here(sql: &str, ddl: &[String], extras: &Extras) -> SqliteAnalysi
 /// columns it names. `None` for a write without `RETURNING`.
 fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
     // `RETURNING`'s names are not resolved yet where the serializer reads them.
-    let target = |c: &tree::Col| if c.named || matches!(c.expr.op.as_str(), "column" | "id" | "dot") { ResultTarget::Named } else { ResultTarget::Unnamed };
+    let target = |c: &tree::Col| if c.named || matches!(c.expr.op.as_str(), "column" | "id" | "dot") { ResultTarget::Named } else { ResultTarget::Unnamed(None) };
     if let Some(returning) = &t.returning {
         return Some(returning.iter().map(target).collect());
     }
@@ -207,7 +207,7 @@ fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
     }
     // `values (1, 2)`: named column1 and column2 by SQLite, by nothing in the statement.
     if first.values {
-        return Some(vec![ResultTarget::Unnamed; first.columns.len()]);
+        return Some(vec![ResultTarget::Unnamed(None); first.columns.len()]);
     }
     Some(first.columns.iter().map(target).collect())
 }

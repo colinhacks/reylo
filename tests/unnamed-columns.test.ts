@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sqlModule } from "../src/loader.ts";
+import { defineQuery } from "../src/index.ts";
 import { DRIVERS, INDEX, closeSessions, driver, mysqlDatabase, mysqlLive, pgLive, postgresDatabase, transform } from "./helpers.ts";
 
 // A statement whose one column is an expression with no alias gives that column's values, since the
@@ -136,6 +137,12 @@ test("Standard Query: `decode` and `output` give the values, each column keeps i
   assert.equal(names["~standard"].query.cardinality, "many");
   assert.deepEqual(names["~standard"].query.decode([["a"], ["b"]]), ["a", "b"]);
   await closeSessions();
+});
+
+test("a query's type carries its cardinality in its Standard Query, which an output of an array can't say", () => {
+  const query = defineQuery<Record<never, never>, number[], "one", "sqlite">({ dialect: "sqlite", sql: "select 1", params: [], cardinality: "one" });
+  const cardinality: "one" = query["~standard"].query.cardinality;
+  assert.equal(cardinality, "one");
 });
 
 test("the output's JSON Schema is the value's", async () => {

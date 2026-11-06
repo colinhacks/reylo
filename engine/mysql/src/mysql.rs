@@ -22,7 +22,7 @@ use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, MysqlText, Style, Target};
 use crate::types::{Cardinality, Field, Kind as TyKind, Position, StatementKind, Type};
 use serde_json::{json, Value};
-use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Statement, TableFactor};
+use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Spanned, Statement, TableFactor};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
@@ -540,6 +540,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         None if raw.columns.is_empty() && opens_without_result_sets(&rewritten.sql) => (Cardinality::None, None),
         None => (Cardinality::Many, Some(misread.unwrap_or_else(|| "the engine could not parse the statement, so nothing bounds its rows".into()))),
     };
+    let targets = read.as_ref().and_then(|statement| result_targets(statement, &rewritten));
     let rewritten = vectors_as_text(rewritten, &raw);
     let mut analysis = Analysis {
         kind,
@@ -568,43 +569,49 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         tables: read.as_ref().map(crate::mysql_params::tables),
         domains: Default::default(),
     };
-    crate::analysis::names(sql, &mut analysis, read.as_ref().and_then(result_targets).as_deref(), &|_| None);
+    crate::analysis::names(sql, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
 }
 
 /// How a query writes its result columns: its select list, the first arm's of a set operation, whose
 /// names are the result's. `None` for any statement but a query, which has none on MySQL.
-fn result_targets(statement: &Statement) -> Option<Vec<ResultTarget>> {
-    fn body(set: &SetExpr) -> Option<Vec<ResultTarget>> {
+fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
         match set {
-            SetExpr::Select(s) => Some(s.projection.iter().map(item).collect()),
-            SetExpr::Query(q) => body(&q.body),
-            SetExpr::SetOperation { left, .. } => body(left),
+            SetExpr::Select(s) => Some(s.projection.iter().map(|i| item(i, rewritten)).collect()),
+            SetExpr::Query(q) => body(&q.body, rewritten),
+            SetExpr::SetOperation { left, .. } => body(left, rewritten),
             // `values row(1, 2)`: named column_0 and column_1 by the server.
-            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed; values.rows.first()?.len()]),
+            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn item(item: &SelectItem) -> ResultTarget {
+    fn item(item: &SelectItem, rewritten: &lex::Rewritten) -> ResultTarget {
         match item {
             SelectItem::UnnamedExpr(e) if read_as_it_is(e) => ResultTarget::Named,
-            SelectItem::UnnamedExpr(_) => ResultTarget::Unnamed,
+            SelectItem::UnnamedExpr(e) => {
+                let span = e.span();
+                ResultTarget::Unnamed(crate::analysis::written_span(rewritten, (span.start.line, span.start.column), (span.end.line, span.end.column)))
+            }
             SelectItem::ExprWithAlias { .. } | SelectItem::ExprWithAliases { .. } => ResultTarget::Named,
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => ResultTarget::Star,
         }
     }
-    // A user variable or a system variable (`@n`, `@@version`) reads as an identifier to the parser.
+    // Whether the words read as a column. The parser reads a variable (`@n`, `@@version`,
+    // `@@session.sql_mode`) and a word MySQL reserves for a function it calls without parentheses as
+    // identifiers; quoted, each is a column's name.
     fn read_as_it_is(e: &Expr) -> bool {
+        const CALLED_BARE: [&str; 4] = ["current_user", "utc_date", "utc_time", "utc_timestamp"];
         match e {
-            Expr::Identifier(i) => !i.value.starts_with('@'),
-            Expr::CompoundIdentifier(_) => true,
+            Expr::Identifier(i) => i.quote_style.is_some() || !(i.value.starts_with('@') || CALLED_BARE.iter().any(|f| i.value.eq_ignore_ascii_case(f))),
+            Expr::CompoundIdentifier(parts) => parts.first().is_none_or(|p| p.quote_style.is_some() || !p.value.starts_with('@')),
             Expr::Nested(e) => read_as_it_is(e),
             _ => false,
         }
     }
     match statement {
-        Statement::Query(q) => body(&q.body),
+        Statement::Query(q) => body(&q.body, rewritten),
         _ => None,
     }
 }

@@ -1048,7 +1048,7 @@ impl<'a> Engine<'a> {
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
-        let targets = result_targets(&rewritten);
+        let targets = result_targets(sql, &rewritten);
         let mut analysis = Analysis {
             kind: parsed.as_ref().map(|p| StatementKind::of(p.statement)),
             comment: None,
@@ -4270,7 +4270,7 @@ fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
 /// How the top statement writes its result columns: its target list, the first arm's of a set
 /// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
 /// and for one the parser does not read.
-fn result_targets(rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
+fn result_targets(sql: &str, rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
     let parsed = crate::stack::parse(&rewritten.sql).ok()?;
     let top = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()?;
     let items = match top {
@@ -4285,7 +4285,7 @@ fn result_targets(rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
                     NodeEnum::List(list) => list.items.len(),
                     _ => return None,
                 };
-                return Some(vec![ResultTarget::Unnamed; width]);
+                return Some(vec![ResultTarget::Unnamed(None); width]);
             }
             first.target_list.clone()
         }
@@ -4304,13 +4304,20 @@ fn result_targets(rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
             }
             let val = rt.val.as_deref()?;
             Some(match val.node.as_ref()? {
-                _ if jsonshape::is_star(val) => ResultTarget::Star,
-                NodeEnum::AIndirection(a) if a.indirection.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_)))) => ResultTarget::Star,
+                _ if expands(val) => ResultTarget::Star,
                 NodeEnum::ColumnRef(_) => ResultTarget::Named,
-                _ => ResultTarget::Unnamed,
+                _ => {
+                    let start = rewritten.to_original(rt.location.max(0) as usize).min(sql.len());
+                    ResultTarget::Unnamed(Some((start, sql[start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"')).count().max(1))))
+                }
             })
         })
         .collect()
+}
+
+/// Whether a target stands for any number of columns: `*`, `t.*` or `(t).*`.
+fn expands(val: &pg_query::protobuf::Node) -> bool {
+    jsonshape::is_star(val) || matches!(val.node.as_ref(), Some(NodeEnum::AIndirection(a)) if a.indirection.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_)))))
 }
 
 /// Where each result column is written, by its index, as far as the top statement's target list
@@ -4327,7 +4334,7 @@ fn column_spans(sql: &str, rewritten: &Rewritten) -> Vec<(usize, usize)> {
     let starts: Vec<usize> = targets.iter().map(|rt| rewritten.to_original(rt.location.max(0) as usize).min(sql.len())).collect();
     let mut spans = Vec::new();
     for (k, rt) in targets.iter().enumerate() {
-        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+        if rt.val.as_deref().is_some_and(expands) {
             break;
         }
         let start = starts[k];

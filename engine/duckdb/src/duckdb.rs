@@ -13,7 +13,7 @@ use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
 use reylo_engine_core::types::{Cardinality, StatementKind, Type};
-use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SelectItem, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, OutputClause, Query, SelectItem, SetExpr, SetQuantifier, Spanned, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
@@ -181,6 +181,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
     let rewritten_sql = rewritten.sql.clone();
+    let targets = shaped.as_deref().and_then(|statement| result_targets(statement, &rewritten));
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -205,53 +206,81 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
-    reylo_engine_core::analysis::names(sql, &mut analysis, shaped.as_deref().and_then(result_targets).as_deref(), &|_| None);
+    reylo_engine_core::analysis::names(sql, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
 }
 
 /// How the statement writes its result columns: a query's select list, the first arm's of a set
 /// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
 /// and for a select list the tree does not say the columns of.
-fn result_targets(statement: &Statement) -> Option<Vec<ResultTarget>> {
-    fn body(set: &SetExpr) -> Option<Vec<ResultTarget>> {
+fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
         match set {
             // `from t` alone selects every column.
             SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
-            SetExpr::Select(s) => list(&s.projection),
-            SetExpr::Query(q) => body(&q.body),
-            SetExpr::SetOperation { left, .. } => body(left),
+            SetExpr::Select(s) => list(&s.projection, rewritten),
+            SetExpr::Query(q) => body(&q.body, rewritten),
+            // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
+            SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
+            SetExpr::SetOperation { left, .. } => body(left, rewritten),
             // `values (1, 2)`: named col0 and col1 by DuckDB.
-            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed; values.rows.first()?.len()]),
+            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn list(items: &[SelectItem]) -> Option<Vec<ResultTarget>> {
+    fn list(items: &[SelectItem], rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
         items
             .iter()
             .map(|item| match item {
-                SelectItem::UnnamedExpr(e) if read_as_it_is(e) => Some(ResultTarget::Named),
-                // `columns('a.*')` stands for the columns it matches, as a `*` does.
-                SelectItem::UnnamedExpr(Expr::Function(f)) if f.name.to_string().eq_ignore_ascii_case("columns") => Some(ResultTarget::Star),
-                SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed),
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e) || prefix_alias(e) => Some(ResultTarget::Named),
+                SelectItem::UnnamedExpr(e) if holds_columns(e) => Some(ResultTarget::Star),
+                SelectItem::UnnamedExpr(e) => {
+                    let span = e.span();
+                    Some(ResultTarget::Unnamed(reylo_engine_core::analysis::written_span(rewritten, (span.start.line, span.start.column), (span.end.line, span.end.column))))
+                }
                 SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
                 SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => Some(ResultTarget::Star),
                 _ => None,
             })
             .collect()
     }
+    // A word: a column, or a function DuckDB calls without parentheses (`current_date`), which it
+    // reads as a column of that name where one exists, and names after itself otherwise.
     fn read_as_it_is(e: &Expr) -> bool {
         match e {
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None),
             Expr::Nested(e) => read_as_it_is(e),
             _ => false,
         }
     }
+    // DuckDB's `y: x + 1`, an alias written first, which the parser reads as its JSON access at the
+    // expression's head, since DuckDB has no such operator.
+    fn prefix_alias(e: &Expr) -> bool {
+        match e {
+            Expr::JsonAccess { .. } => true,
+            Expr::BinaryOp { left, .. } => prefix_alias(left),
+            Expr::Cast { expr, .. } | Expr::Collate { expr, .. } | Expr::Between { expr, .. } | Expr::InList { expr, .. } | Expr::Like { expr, .. } | Expr::ILike { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => prefix_alias(expr),
+            _ => false,
+        }
+    }
+    // `columns('a.*')`, alone or inside an expression, stands for as many columns as it matches.
+    fn holds_columns(e: &Expr) -> bool {
+        sqlparser::ast::visit_expressions(e, |e| match e {
+            Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns") => ControlFlow::Break(()),
+            _ => ControlFlow::Continue(()),
+        })
+        .is_break()
+    }
     match statement {
-        Statement::Query(q) => body(&q.body),
-        Statement::Insert(i) => list(i.returning.as_deref()?),
-        Statement::Update(u) => list(u.returning.as_deref()?),
-        Statement::Delete(d) => list(d.returning.as_deref()?),
+        Statement::Query(q) => body(&q.body, rewritten),
+        Statement::Insert(i) => list(i.returning.as_deref()?, rewritten),
+        Statement::Update(u) => list(u.returning.as_deref()?, rewritten),
+        Statement::Delete(d) => list(d.returning.as_deref()?, rewritten),
+        Statement::Merge(m) => match m.output.as_ref()? {
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, rewritten),
+        },
         _ => None,
     }
 }

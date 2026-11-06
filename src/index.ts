@@ -125,7 +125,7 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
   readonly outputSchema: Record<string, unknown>;
   /** Standard JSON Schema's `jsonSchema` and Standard Query's `query`: a driver that supports Standard Query runs the import with the same input and output as `.run()`. */
-  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
+  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { readonly cardinality: C; output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
   readonly "~reylo": ReyloTypes<Params, Row, C>;
   /**
    * Runs the statement on the client, or on a transaction or connection taken from it. The
@@ -264,7 +264,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         input: () => def.jsonSchema?.input ?? missingSchema(),
         output: () => def.jsonSchema?.output ?? missingSchema(),
       },
-      query: standardQuery(module, (rows) => materialize(rows as Row[])),
+      query: standardQuery(module, (rows) => materialize(rows as Row[])) as ReturnType<typeof standardQuery<D, Materialize<Row, C>>> & { readonly cardinality: C },
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
