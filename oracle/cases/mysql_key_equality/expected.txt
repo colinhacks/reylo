@@ -4,7 +4,7 @@ bigint_param.sql: at_most_one (id: bigint) -> { id: bigint }
 bigint_param_scan.sql: at_most_one (id: bigint) -> { id: bigint }
 bigint_unsigned.sql: at_most_one (u: bigint) -> { u: bigint }
 bigint_unsigned_scan.sql: at_most_one (u: bigint) -> { u: bigint }
-binary_param.sql: at_most_one (fixed: varbinary) -> { fixed: binary }
+binary_param.sql: at_most_one (fixed: varbinary) -> { fixed: binary(=2) }
 bit64_arithmetic.sql: at_most_one (n: int32) -> { bits64: bit(boolean[64]) }
 bit64_float.sql: at_most_one () -> { bits64: bit(boolean[64]) }
 bit64_param.sql: at_most_one (bits: bit(boolean[64])) -> { bits64: bit(boolean[64]) }
@@ -13,23 +13,23 @@ bit_literal.sql: many () -> { bits: bit(boolean[8]) }
 bit_number.sql: at_most_one () -> { bits: bit(boolean[8]) }
 bit_param.sql: at_most_one (bits: bit(boolean[8])) -> { bits: bit(boolean[8]) }
 bit_scan.sql: at_most_one (bits: bit(boolean[8])) -> { bits: bit(boolean[8]) }
-char_padded.sql: at_most_one (v: varchar) -> { c: char }
-char_padded_scan.sql: at_most_one (v: varchar) -> { c: char }
-collation_bin.sql: at_most_one (v: varchar) -> { bin: varchar }
-collation_bin_convert.sql: many (v: varchar) -> { bin: varchar }
-collation_bin_explicit.sql: many (v: varchar) -> { bin: varchar }
-collation_bin_introducer.sql: many () -> { bin: varchar }
-collation_bin_lower.sql: at_most_one (v: varchar) -> { bin: varchar }
-collation_bin_scan.sql: at_most_one (v: varchar) -> { bin: varchar }
-collation_ci.sql: at_most_one (v: varchar) -> { ci: varchar }
-collation_ci_scan.sql: at_most_one (v: varchar) -> { ci: varchar }
-collation_cs.sql: at_most_one (v: varchar) -> { cs: varchar }
-collation_cs_scan.sql: at_most_one (v: varchar) -> { cs: varchar }
-collation_cs_user.sql: many () -> { cs: varchar }
-collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar }
-collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar }
-collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar }
-collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar }
+char_padded.sql: at_most_one (v: varchar) -> { c: char(≤5) }
+char_padded_scan.sql: at_most_one (v: varchar) -> { c: char(≤5) }
+collation_bin.sql: at_most_one (v: varchar) -> { bin: varchar(≤20) }
+collation_bin_convert.sql: many (v: varchar) -> { bin: varchar(≤20) }
+collation_bin_explicit.sql: many (v: varchar) -> { bin: varchar(≤20) }
+collation_bin_introducer.sql: many () -> { bin: varchar(≤20) }
+collation_bin_lower.sql: at_most_one (v: varchar) -> { bin: varchar(≤20) }
+collation_bin_scan.sql: at_most_one (v: varchar) -> { bin: varchar(≤20) }
+collation_ci.sql: at_most_one (v: varchar) -> { ci: varchar(≤20) }
+collation_ci_scan.sql: at_most_one (v: varchar) -> { ci: varchar(≤20) }
+collation_cs.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
+collation_cs_scan.sql: at_most_one (v: varchar) -> { cs: varchar(≤20) }
+collation_cs_user.sql: many () -> { cs: varchar(≤20) }
+collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar(≤20) }
+collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar(≤20) }
+collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
+collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 composite_both.sql: at_most_one (tenant: int32, slug: varchar) -> { id: int }
 composite_first.sql: many (tenant: int32) -> { id: int }
 composite_mixed_class.sql: many (tenant: int32) -> { id: int }
@@ -54,15 +54,15 @@ datetime_pipes.sql: many (at: datetime) -> { at: datetime }
 datetime_string.sql: at_most_one () -> { at: datetime }
 datetime_sysdate.sql: many () -> { at: datetime }
 datetime_text_function.sql: at_most_one (s: varchar) -> { at: datetime }
-decimal_arithmetic.sql: at_most_one (amount: int32) -> { amount: decimal }
-decimal_float_literal.sql: at_most_one () -> { amount: decimal }
-decimal_float_small.sql: at_most_one () -> { amount: decimal }
-decimal_param.sql: at_most_one (amount: decimal) -> { amount: decimal }
-decimal_param_scan.sql: at_most_one (amount: decimal) -> { amount: decimal }
-decimal_string_literal.sql: many () -> { amount: decimal }
-decimal_whole.sql: at_most_one (whole: decimal) -> { whole: decimal }
-decimal_whole_float.sql: at_most_one () -> { whole: decimal }
-decimal_whole_scan.sql: at_most_one (whole: decimal) -> { whole: decimal }
+decimal_arithmetic.sql: at_most_one (amount: int32) -> { amount: decimal(30,20) }
+decimal_float_literal.sql: at_most_one () -> { amount: decimal(30,20) }
+decimal_float_small.sql: at_most_one () -> { amount: decimal(30,20) }
+decimal_param.sql: at_most_one (amount: decimal) -> { amount: decimal(30,20) }
+decimal_param_scan.sql: at_most_one (amount: decimal) -> { amount: decimal(30,20) }
+decimal_string_literal.sql: many () -> { amount: decimal(30,20) }
+decimal_whole.sql: at_most_one (whole: decimal) -> { whole: decimal(20,0) }
+decimal_whole_float.sql: at_most_one () -> { whole: decimal(20,0) }
+decimal_whole_scan.sql: at_most_one (whole: decimal) -> { whole: decimal(20,0) }
 double_decimal_literal.sql: at_most_one () -> { d: double }
 double_param.sql: at_most_one (d: double) -> { d: double }
 double_string_literal.sql: many () -> { d: double }
@@ -77,7 +77,7 @@ functional_key.sql: many (email: varchar) -> { id: int }
 functional_key_column.sql: many (email: varchar) -> { id: int }
 int_abs.sql: at_most_one (id: int32) -> { id: int }
 int_alias.sql: at_most_one (id: int32) -> { id: int }
-int_and_more.sql: at_most_one (id: int32, skip: varchar) -> { id: int, name: varchar }
+int_and_more.sql: at_most_one (id: int32, skip: varchar) -> { id: int, name: varchar(≤20) }
 int_arithmetic.sql: at_most_one (id: int32) -> { id: int }
 int_between.sql: many (lo: int32, hi: int32) -> { id: int }
 int_cast_char.sql: many (id: varchar) -> { id: int }
@@ -85,7 +85,7 @@ int_cast_signed.sql: at_most_one (id: int32) -> { id: int }
 int_coalesce.sql: many (a: int32, b: int32) -> { id: int }
 int_date_literal.sql: many () -> { id: int }
 int_decimal_literal.sql: at_most_one () -> { id: int }
-int_distinct.sql: at_most_one (id: int32) -> { name: varchar }
+int_distinct.sql: at_most_one (id: int32) -> { name: varchar(≤20) }
 int_div.sql: at_most_one (a: int32, b: int32) -> { id: int }
 int_division.sql: at_most_one (a: int32, b: int32) -> { id: int }
 int_double_ampersand.sql: many (id: int32) -> { id: int }
@@ -104,9 +104,9 @@ int_nested.sql: at_most_one (id: int32) -> { id: int }
 int_not.sql: many (id: int32) -> { id: int }
 int_null_safe.sql: many (id: int32) -> { id: int }
 int_or.sql: many (id: int32, name: varchar) -> { id: int }
-int_param.sql: at_most_one (id: int32) -> { id: int, name: varchar }
-int_param_reversed.sql: at_most_one (id: int32) -> { id: int, name: varchar }
-int_param_scan.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+int_param.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
+int_param_reversed.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
+int_param_scan.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
 int_pipes.sql: many (id: int32) -> { id: int }
 int_product.sql: at_most_one (id: decimal) -> { id: int }
 int_rand.sql: many () -> { id: int }
@@ -117,8 +117,8 @@ int_true.sql: at_most_one () -> { id: int }
 int_twice.sql: at_most_one (a: int32, b: int32) -> { id: int }
 int_view.sql: at_most_one (id: int32) -> { id: int | bigint }
 int_xor.sql: many (id: int32) -> { id: int }
-prefix_key.sql: at_most_one (name: varchar) -> { name: varchar }
-prefix_key_scan.sql: at_most_one (name: varchar) -> { name: varchar }
+prefix_key.sql: at_most_one (name: varchar) -> { name: varchar(≤20) }
+prefix_key_scan.sql: at_most_one (name: varchar) -> { name: varchar(≤20) }
 set_param.sql: at_most_one (flags: set{text('x' | 'y')}) -> { flags: set{text('x' | 'y')} }
 set_scan.sql: at_most_one (flags: set{text('x' | 'y')}) -> { flags: set{text('x' | 'y')} }
 system_variable_key.sql: many () -> { id: int }
@@ -158,10 +158,10 @@ timestamp_param.sql: many (ts: datetime) -> { ts: timestamp }
 timestamp_param_scan.sql: many (ts: datetime) -> { ts: timestamp }
 timestamp_string.sql: many () -> { ts: timestamp }
 timestamp_string_scan.sql: many () -> { ts: timestamp }
-varbinary_literal.sql: at_most_one () -> { raw: varbinary }
-varbinary_number.sql: many () -> { raw: varbinary }
-varbinary_param.sql: at_most_one (raw: varbinary) -> { raw: varbinary }
-varbinary_scan.sql: at_most_one (raw: varbinary) -> { raw: varbinary }
+varbinary_literal.sql: at_most_one () -> { raw: varbinary(≤8) }
+varbinary_number.sql: many () -> { raw: varbinary(≤8) }
+varbinary_param.sql: at_most_one (raw: varbinary) -> { raw: varbinary(≤8) }
+varbinary_scan.sql: at_most_one (raw: varbinary) -> { raw: varbinary(≤8) }
 variable_integer_key.sql: many () -> { id: int }
 variable_quoted_text_key.sql: many () -> { id: int }
 variable_text_key.sql: many () -> { id: int }

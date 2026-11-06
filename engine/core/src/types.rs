@@ -1265,38 +1265,57 @@ mod tests {
         ty
     }
 
+    /// The examples of spec/examples.ts, which `nub run typedefs` copies into spec/examples.json: each descriptor, whole or in part, reads and writes back as itself, and every type in it passes rule 7.
     #[test]
-    fn every_kind_reads_and_writes_as_the_spec_spells_it() {
-        round_trip(json!({"kind": "integer", "bits": 64, "name": "int8"}));
-        round_trip(json!({"kind": "integer", "bits": 8, "unsigned": true, "max": "32"}));
+    fn the_spec_examples_read_and_write_as_they_are_written() {
+        let examples: Value = serde_json::from_str(include_str!("../../../spec/examples.json")).unwrap();
+        let examples = examples.as_object().unwrap();
+        assert!(!examples.is_empty());
+        let mut types = 0;
+        for (name, example) in examples {
+            let descriptor = &example["descriptor"];
+            for value in descriptor["params"].as_array().into_iter().flatten() {
+                let param: Param = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&param).unwrap(), *value, "{name}");
+                param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
+                types += 1;
+            }
+            for value in descriptor["columns"].as_array().into_iter().flatten() {
+                let column: Column = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
+                column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
+                types += 1;
+            }
+            // A whole descriptor, which names the format's version.
+            if descriptor.get("$schema").is_some() {
+                let whole: StatementDescriptor = serde_json::from_value(descriptor.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(serde_json::to_value(&whole).unwrap(), *descriptor, "{name}");
+                assert_eq!(whole.schema, SCHEMA, "{name}");
+            }
+        }
+        assert!(types > 0);
+    }
+
+    /// The kinds and fields no example in spec/examples.ts shows, and a tagged union's short form.
+    #[test]
+    fn what_no_example_shows_reads_and_writes_as_the_spec_spells_it() {
         let tagged = round_trip(json!({"kind": "tagged_union", "name": "union", "alternatives": [{"tag": "num", "nullable": true, "type": {"kind": "integer", "bits": 32}}, {"tag": "str", "type": {"kind": "text"}}]}));
         assert_eq!(tagged.short(), "union<num: int32? | str: text>");
         assert!(serde_json::from_value::<Type>(json!({"kind": "tagged_union", "alternatives": [{"tag": "a", "type": {"kind": "text"}}, {"tag": "a", "type": {"kind": "text"}}]})).unwrap().check().is_err());
-        round_trip(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "name": "float8"}));
-        round_trip(json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "name": "numeric"}));
         round_trip(json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "name": "text"}));
-        round_trip(json!({"kind": "text", "enum": ["sad", "ok", "happy"], "name": "public.mood"}));
         round_trip(json!({"kind": "text", "size": {"max": 255}, "pattern": {"dialect": "like", "source": "%@%"}, "name": "public.email"}));
-        round_trip(json!({"kind": "text", "ill_formed": "utf8"}));
-        round_trip(json!({"kind": "array", "any_depth": true, "name": "_varchar", "element": {"nullable": true, "type": {"kind": "text", "size": {"max": 20}, "name": "varchar"}}}));
-        round_trip(json!({"kind": "array", "size": {"exact": 7}, "name": "bit", "element": {"type": {"kind": "boolean"}}}));
-        round_trip(json!({"kind": "json", "name": "json", "content": {"type": {"kind": "array", "element": {"type": {"kind": "text", "name": "text"}}}}}));
-        round_trip(json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "name": "timestamptz"}));
-        round_trip(json!({"kind": "duration", "max": "P2147483648M2147483648DT2562047788H54.775808S", "tick": "1/1000000", "infinity": true, "name": "interval"}));
         round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "name": "time"}));
         round_trip(json!({"kind": "duration", "max": "P1199M"}));
         round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
-        round_trip(json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
-        round_trip(json!({"kind": "range", "subtype": {"kind": "date"}, "name": "daterange"}));
-        round_trip(json!({"kind": "range", "subtype": {"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": {"kind": "integer", "bits": 32, "name": "int4"}}}, "name": "public.arrayrange"}));
-        round_trip(json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
         round_trip(json!({"kind": "set", "size": {"max": 2}, "name": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
         round_trip(json!({"kind": "map", "name": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "geography"}));
         round_trip(json!({"kind": "xml", "fragment": true, "name": "xml"}));
         round_trip(json!({"kind": "opaque", "name": "ltree"}));
-        round_trip(json!({"kind": "record", "name": "point", "fields": [{"name": "x", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}}, {"name": "at", "nullable": true, "optional": true, "type": {"kind": "uuid"}}]}));
-        round_trip(json!({"kind": "unknown"}));
+        round_trip(json!({"kind": "uuid", "name": "uuid"}));
+        round_trip(json!({"kind": "datetime", "tick": "1/1000000", "name": "timestamp"}));
+        round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "name": "int4"}, "name": "int4multirange"}));
+        round_trip(json!({"kind": "any"}));
     }
 
     #[test]
@@ -1347,26 +1366,5 @@ mod tests {
         let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
         assert_eq!(spec["$id"], SCHEMA);
         assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
-    }
-
-    #[test]
-    fn a_statement_descriptor_reads_and_writes_as_the_spec_spells_it() {
-        let value = json!({
-            "$schema": SCHEMA,
-            "dialect": {"name": "postgres", "version": "18.1"},
-            "sql": "select id, email, bio from users where id = $1",
-            "kind": "select",
-            "comment": "One user, by id.",
-            "params": [{"name": "id", "type": {"kind": "integer", "bits": 64, "name": "int8"}}],
-            "columns": [
-                {"name": "id", "type": {"kind": "integer", "bits": 64, "name": "int8"}},
-                {"name": "email", "type": {"kind": "text", "size": {"max": 255}, "name": "varchar"}},
-                {"name": "bio", "nullable": true, "type": {"kind": "text", "name": "text"}, "comment": "Shown on the profile page"}
-            ],
-            "cardinality": "at_most_one",
-            "diagnostics": []
-        });
-        let d: StatementDescriptor = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&d).unwrap(), value);
     }
 }

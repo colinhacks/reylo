@@ -22,8 +22,10 @@
 // A built-in type (an oid below 10000, the same in every database and version) has its kind here.
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
-// those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, DecodeError, elementKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
+// those oids are arrays, cached in a WeakMap keyed by the app's object. A row value the module knows
+// the fields of has the kind of its column whatever its oid: `record` is one oid for every shape of
+// row, and a built-in catalog table's row type is below 10000 too.
+import { coerce, DecodeError, elementKind, isRowKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
 
@@ -42,7 +44,8 @@ const SCALAR_OIDS: Readonly<Record<number, Kind>> = {
 };
 
 // Every built-in array type and its element, as Postgres 18's pg_type lists them (none was ever
-// renumbered): `_record` is left out, since an array of row values is its text.
+// renumbered): `_record` is left out, since an array of row values is its text until its column's
+// kind says what its fields are.
 const ARRAY_OIDS = new Map<number, number>([
   [143, 142], [199, 114], [271, 5069], [629, 628], [651, 650], [719, 718], [775, 774], [791, 790], [1000, 16], [1001, 17],
   [1002, 18], [1003, 19], [1005, 21], [1006, 22], [1007, 23], [1008, 24], [1009, 25], [1010, 27], [1011, 28], [1012, 29],
@@ -149,8 +152,9 @@ async function learn(key: object, oids: Iterable<number>, load: Load): Promise<v
 }
 
 /**
- * The decoder of each field a result named: a built-in type's by its oid, a created type's by the
- * module's column (when the module's columns match the result's) or by what the catalog said.
+ * The decoder of each field a result named: a row value's by the module's column, a built-in type's
+ * by its oid, a created type's by the module's column (when the module's columns match the result's)
+ * or by what the catalog said.
  */
 async function fieldDecoders(fields: Field[], columns: Columns | undefined, key: object, load: Load): Promise<Decoder[]> {
   const byColumn = columns && columns.length === fields.length ? columns : undefined;
@@ -158,7 +162,9 @@ async function fieldDecoders(fields: Field[], columns: Columns | undefined, key:
   const known = learnedOf(key);
   if (byColumn) created.forEach((f) => known.has(f.oid) || known.set(f.oid, { kind: byColumn[fields.indexOf(f)]![1], delim: byColumn[fields.indexOf(f)]![2] ?? "," }));
   else if (created.length) await learn(key, created.map((f) => f.oid), load);
-  return fields.map((f) => {
+  return fields.map((f, i) => {
+    const column = byColumn?.[i];
+    if (column && isRowKind(column[1])) return textDecoder(column[1], column[2]);
     const b = builtinDecoder(f.oid);
     if (b) return b;
     const k = known.get(f.oid) ?? { kind: "text", delim: "," };
@@ -217,6 +223,17 @@ async function pgFamily(key: object, run: (types: object) => Promise<PgResult>, 
   const result = await run(types.table);
   const rows = Array.isArray(result) ? (result as Record<string, unknown>[]) : result.rows;
   if (types.sawBinary()) throw refuseBinary();
+  // The table goes by oid, which says nothing of a built-in row's fields, so those are still text.
+  const rowColumns = columns?.filter(([, kind]) => isRowKind(kind));
+  if (rowColumns?.length) {
+    const decoders = rowColumns.map(([name, kind, delim]) => [name, textDecoder(kind, delim)] as const);
+    for (const row of rows) {
+      for (const [name, decode] of decoders) {
+        const v = row[name];
+        if (typeof v === "string") row[name] = decode(v);
+      }
+    }
+  }
   if (!types.sawPending()) return rows;
   // Learned from the module's columns where the result has their fields, else from the catalog.
   if (result.fields && !Array.isArray(result)) await fieldDecoders(result.fields.map((f) => ({ name: f.name, oid: f.dataTypeID })), columns, key, load);
@@ -319,13 +336,14 @@ async function pglite(db: AnyClient, text: string, values: unknown[], columns: C
   const result = await db.query(text, values, { rowMode: "object", parsers });
   const rows: Record<string, unknown>[] = result.rows;
   const fields: Field[] = (result.fields ?? []).map((f: { name: string; dataTypeID: number }) => ({ name: f.name, oid: f.dataTypeID }));
-  // Created types, which the table kept as text, and an oid the table did not name, which went
-  // through the instance's parser.
-  const after = fields.map((f, i) => [f, i] as const).filter(([f]) => f.oid >= FIRST_USER_OID || !oids.has(f.oid));
+  // Created types, which the table kept as text, an oid the table did not name, which went through
+  // the instance's parser, and a row value, whose oid says nothing of its fields.
+  const byColumn = columns && columns.length === fields.length ? columns : undefined;
+  const after = fields.map((f, i) => [f, i] as const).filter(([f, i]) => f.oid >= FIRST_USER_OID || !oids.has(f.oid) || (byColumn !== undefined && isRowKind(byColumn[i]![1])));
   if (after.length) {
     const load: Load = async (sql) => (await db.query(sql, [], { rowMode: "array", parsers: { 25: keepText } })).rows;
     const decoders = await fieldDecoders(fields, columns, db, load);
-    const kinds = fields.map((f, i) => (columns && columns.length === fields.length ? columns[i]![1] : (builtin(f.oid)?.kind ?? learnedOf(db).get(f.oid)?.kind ?? "text")));
+    const kinds = fields.map((f, i) => byColumn?.[i]![1] ?? builtin(f.oid)?.kind ?? learnedOf(db).get(f.oid)?.kind ?? "text");
     for (const [f, i] of after) {
       const decode = decoders[i]!;
       for (const row of rows) {

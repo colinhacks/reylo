@@ -381,6 +381,8 @@ export function queries(d: Dialect, typed = true) {
     farInstants: q(`select '10000-01-01 00:00:00+00'::timestamptz as far, '0002-01-01 00:00:00+00 BC'::timestamptz as bc`, [], "one", { columns: [["far", "timestamptz"], ["bc", "timestamptz"]] }),
     farBack: q(`select :far::timestamptz = '10000-01-01 00:00:00+00'::timestamptz as far, :bc::timestamptz = '0002-01-01 00:00:00+00 BC'::timestamptz as bc`, ["far", "bc"], "one", { inputs: { far: { type: T.timestamptz }, bc: { type: T.timestamptz } }, columns: [["far", "bool"], ["bc", "bool"]] }),
     typedBig: q(`select id, big from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["big", d === "sqlite" ? "int" : "int8"]] }),
+    // A row of no type the catalog has, and an array of them, whose oids say nothing of their fields.
+    anonymousRows: q(`select s, array[s] as many from (select id, big from ${t("typed")} where id = 1) s`, [], "one", { columns: [["s", ANONYMOUS_ROW], ["many", `${ANONYMOUS_ROW}[]`]] }),
     // SQLite's column declared BIGINT, which the engine types int8.
     typedWide: q(`select id, wide from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["wide", "int8"]] }),
     // SQLite: JSON the statement builds, with the kinds the loader writes from the engine's types
@@ -406,6 +408,8 @@ export function queries(d: Dialect, typed = true) {
 }
 
 // Reylo's one representation per SQL type (src/values.ts) of the `typed` fixture's row, on every driver.
+const ANONYMOUS_ROW = `(${JSON.stringify(["id", "int"])},${JSON.stringify(["big", "int8"])})`;
+
 const TYPED: Record<Dialect, Record<string, unknown>> = {
   postgres: {
     id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123000", stamp: "2026-10-20T08:00:00.123000Z",
@@ -999,6 +1003,11 @@ export const SCENARIOS: Scenario[] = [
       typedEq(await call(ctx, q.typed, client), TYPED[d], "row");
       if (d !== "sqlite") {
         typedEq(await call(ctx, q.typedBig, client), { id: 1, big: TYPED[d].big }, "an int8 past 2^53");
+        if (d === "postgres") {
+          const row = { id: 1, big: TYPED[d].big };
+          // Twice: PGlite names a statement's oids from its earlier runs.
+          for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.anonymousRows, client), { s: row, many: [row] }, "a row of no catalog type");
+        }
         return;
       }
       // A column declared BIGINT is a BigInt, exact past 2^53 where the driver reads the integer

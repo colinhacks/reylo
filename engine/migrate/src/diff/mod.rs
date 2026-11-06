@@ -4,7 +4,7 @@
 //! from the server's own dependency records. The plan is then the same for every database: drop
 //! what the target lacks, create what the source lacks, change what differs (in place, or by
 //! dropping and creating it again, with everything that depends on it), in an order the
-//! dependencies allow. Nothing here trusts the plan: `reylo migrate create` runs it on a shadow
+//! dependencies allow. Nothing here trusts the plan: `reylo migration create` runs it on a shadow
 //! of the migrations and compares the result with `schema.sql` before it writes the file.
 
 pub mod mysql;

@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(wrapper(&q, &columns, false), "SELECT reylo_derived.reylo_0 AS `id`, coalesce(reylo_derived.reylo_1, 0) AS `n` FROM (SELECT id, (SELECT count(*) FROM posts) AS n FROM users) AS reylo_derived (reylo_0, reylo_1)");
         assert!(wrapper(&q, &columns, true).contains("coalesce(reylo_derived.reylo_1, 0) AS reylo_1"));
         assert!(wrapper(&q, &[("a`b".to_string(), None)], false).contains("AS `a``b`"));
-        let column = |r#type: u32, charset: u32| MysqlColumn { name: String::new(), r#type, flags: 0, charset, length: None, org_table: None, org_name: None };
+        let column = |r#type: u32, charset: u32| MysqlColumn { name: String::new(), r#type, flags: 0, charset, length: None, decimals: None, schema: None, org_table: None, org_name: None };
         assert_eq!(filler(&column(8, 63)), Some("0"));
         assert_eq!(filler(&column(253, 255)), Some("''"));
         assert_eq!(filler(&column(252, 63)), Some("X''"));

@@ -1,5 +1,5 @@
 //! Scenarios for `reylo migrate`: each builds a project and a fresh database, then does what teams
-//! do (apply, edit, drift, a branch switch, sync-history, reset, migrations that cannot be atomic, a run cut off
+//! do (apply, edit, drift, a branch switch, history push, migrations that cannot be atomic, a run cut off
 //! halfway) and checks what the command refuses and what the database ends up as. The adversarial
 //! ones are chosen to break it: ways a shadow can differ from the target that are not the
 //! migrations' doing, objects the comparison does not read, and commands that record what they did
@@ -736,7 +736,7 @@ async fn a_lone_statement_cut_off(mut p: P, landed: bool) {
     p.output();
     if landed {
         // Its change is in place, so this database isn't as Reylo's last finished run left it: prod
-        // refuses, check says what happened, and sync-history records it.
+        // refuses, a dry run says what happened, and history push records it.
         assert_eq!(p.migrate().await, 1);
         assert_has!(p.output(), "changed since Reylo last ran on it");
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
@@ -2211,7 +2211,7 @@ mod adversarial {
         p.output();
         assert_eq!(p.history_push().await, 0, "{}", p.peek());
         assert_has!(p.output(), r"1 pending, which reylo migrate prod runs: 20261027110000_backfill\.sql");
-        assert_eq!(p.rows("select x from t").await[0].text("x"), "1", "sync-history ran nothing");
+        assert_eq!(p.rows("select x from t").await[0].text("x"), "1", "history push ran nothing");
     }
 
     pub async fn a_platforms_default_privileges_are_not_drift(mut p: P) {

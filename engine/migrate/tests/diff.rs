@@ -79,7 +79,7 @@ async fn postgres() {
         };
         let mut before = counts(&mut from).await;
         // The target's objects are created from the text v2.sql declares them with, as
-        // `reylo migrate create` creates them from schema.sql's.
+        // `reylo migration create` creates them from schema.sql's.
         let mut target = diff::postgres::read(&mut to).await.unwrap();
         diff::postgres::declare(&mut to, &mut target, &read(&case.join("v2.sql"))).await.unwrap();
         // A table moved to another schema is moved first, and the plan read from there: a moved

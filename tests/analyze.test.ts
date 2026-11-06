@@ -11,7 +11,7 @@ import { mapperHandlers } from "../src/mapper-server.ts";
 import { mysqlStandIn } from "./mysql-stand-in.ts";
 import { refusedLogin, Unreachable } from "../src/connection.ts";
 import { defineQuery } from "../src/index.ts";
-import { DRIVERS, PG, postgresDatabase } from "./helpers.ts";
+import { DRIVERS, PG, mysqlDatabase, mysqlLive, postgresDatabase } from "./helpers.ts";
 
 // A throwaway Postgres server for the tests that need one, never a database anyone uses: each such
 // test makes a database of its own there and drops it after. The driver is the labs', never the
@@ -432,6 +432,38 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "alter table m alter column n type numeric(10,2)",
     ]) {
       await db.unsafe(change);
+      const next = await fingerprint();
+      assert.notEqual(next, last, change);
+      assert.equal(await fingerprint(), next, change);
+      last = next;
+    }
+  } finally {
+    await own.drop();
+  }
+});
+
+test("the MySQL fingerprint holds while nothing changes, and moves with a column's length, precision and scale, fractional seconds and character set, which its type carries", { skip: mysqlLive }, async () => {
+  const own = await mysqlDatabase("reylo_fingerprint", "create table m (v varchar(20), n decimal(10,2), at datetime(3), body text character set latin1)");
+  const root = mkdtempSync(join(tmpdir(), "reylo-fingerprint-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(join(DRIVERS, "mysql2"), join(root, "node_modules", "mysql2"));
+  // A session per call, as a process of its own, so that none answers from a fingerprint it took.
+  const fingerprint = async () => {
+    const session = await Session.open(root, { DATABASE_URL: own.url });
+    try {
+      return (await session.schema()).value;
+    } finally {
+      await session.close();
+    }
+  };
+  try {
+    let last = await fingerprint();
+    assert.match(last ?? "", /^[0-9a-f]{16}$/);
+    assert.equal(await fingerprint(), last);
+    // A TEXT's character set decides whether its size counts the bytes a client receives.
+    for (const change of ["alter table m modify v varchar(50)", "alter table m modify n decimal(12,4)", "alter table m modify at datetime(6)", "alter table m modify body text character set utf8mb4"]) {
+      await own.db.query(change);
       const next = await fingerprint();
       assert.notEqual(next, last, change);
       assert.equal(await fingerprint(), next, change);

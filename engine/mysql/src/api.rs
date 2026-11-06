@@ -16,8 +16,8 @@ pub type Answers = reylo_engine_core::api::Answers<MysqlDescribe>;
 
 /// MySQL's prepare metadata as mysql2 reports it: the protocol type code, the flags (bit 1 is
 /// NOT NULL) and the charset (63 is binary) per result column, and the server's type guess per `?`.
-/// A column also carries its display length and the table and column it is a column of, which
-/// are empty for an expression; a host that sends none of them gets the answer that holds
+/// A column also carries its length, its decimals and the schema, table and column it is a column
+/// of, which are empty for an expression; a host that sends none of them gets the answer that holds
 /// whatever they are.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MysqlDescribe {
@@ -32,8 +32,19 @@ pub struct MysqlColumn {
     pub flags: u32,
     #[serde(default)]
     pub charset: u32,
+    /// The column's length in the protocol's own terms: a string's in bytes of the character set
+    /// it is sent in (`varchar(20)` sent as utf8mb4 is 80), a DECIMAL's in digits with its point
+    /// and sign, a binary string's in bytes.
     #[serde(default)]
     pub length: Option<u32>,
+    /// The digits after the point: a DECIMAL's scale, a DATETIME's, TIMESTAMP's or TIME's
+    /// fractional seconds (`datetime(3)` is 3), and 31 where none is fixed.
+    #[serde(default)]
+    pub decimals: Option<u32>,
+    /// The schema of the table the column is a column of: empty for an expression, whether or not
+    /// `org_table` names a table.
+    #[serde(default)]
+    pub schema: Option<String>,
     #[serde(default)]
     pub org_table: Option<String>,
     /// The column's own name in `org_table`, whatever the statement calls it.

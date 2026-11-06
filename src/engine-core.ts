@@ -67,8 +67,8 @@ export type Need =
   | { kind: "query"; id: string; sql: string; params: unknown[]; scope: "session" | "statement" };
 
 export type Described = { params: { oid: number }[]; columns: { name: string; oid: number; table: number; attnum: number; typmod?: number }[] };
-/** MySQL's prepare metadata: the protocol type code, the flags (bit 1 is NOT NULL), the charset (63 is binary), the display length and the table the column is one of (empty for an expression). */
-export type MysqlDescribed = { kind: "mysql"; columns: { name: string; type: number; flags: number; charset: number; length: number; org_table: string; org_name: string }[]; params: { type: number; flags: number; charset: number }[] };
+/** MySQL's prepare metadata: the protocol type code, the flags (bit 1 is NOT NULL), the charset (63 is binary), the length, the decimals (a DECIMAL's scale, a time's fractional digits) and the schema and table the column is one of (empty for an expression). */
+export type MysqlDescribed = { kind: "mysql"; columns: { name: string; type: number; flags: number; charset: number; length: number; decimals?: number; schema?: string; org_table: string; org_name: string }[]; params: { type: number; flags: number; charset: number }[] };
 /** A DuckDB logical type as the engine reads it (engine/duckdb/src/api.rs): its id, its text, and what the id says more of. */
 export type DuckdbType = { id: string; text: string; alias?: string; width?: number; scale?: number; child?: DuckdbType; size?: number; fields?: { name: string; type: DuckdbType }[]; key?: DuckdbType; value?: DuckdbType; values?: string[] };
 /** What DuckDB's prepared statement reports: its statement type, each parameter's type (null where DuckDB cannot tell it), each result column's name and type. */
