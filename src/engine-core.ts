@@ -147,7 +147,7 @@ export class EngineCore {
   /** Analyze one statement, fulfilling the engine's needs through `io` until it answers. */
   async analyze(sql: string, dialect: Dialect, io: EngineIo, cache = new AnswerCache()): Promise<Analysis> {
     const answers: Record<string, Answer> = {};
-    for (let round = 0; round < 16; round++) {
+    for (let round = 0; round < 32; round++) {
       const r = await this.ask({ op: "analyze", sql, dialect, answers });
       if (r.status === "analysis") return r.analysis;
       if (r.status !== "need") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);
