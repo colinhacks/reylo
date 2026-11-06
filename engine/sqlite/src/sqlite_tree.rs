@@ -250,7 +250,7 @@ pub struct Node {
 }
 
 extern "C" {
-    fn reylo_sqlite_analyze(ddl: *const *const c_char, n: c_int, sql: *const c_char, functions: *const *const c_char, arities: *const c_int, n_functions: c_int, host: *const *const c_char, host_arities: *const c_int, host_kinds: *const c_char, n_host: c_int) -> *mut c_char;
+    fn reylo_sqlite_analyze(ddl: *const *const c_char, n: c_int, sql: *const c_char, sent: *const c_char, functions: *const *const c_char, arities: *const c_int, n_functions: c_int, host: *const *const c_char, host_arities: *const c_int, host_kinds: *const c_char, n_host: c_int) -> *mut c_char;
     fn reylo_sqlite_free(p: *mut c_char);
 }
 
@@ -264,8 +264,9 @@ pub type Listed<'a> = (&'a str, i32, char);
 /// replay registers a stub for each, so a statement that calls one prepares. `host` is every
 /// function the host's SQLite has, when the host could list them: the replay registers a stub for
 /// one the embedded build has no function of that name for, and the prepare refuses a call to one
-/// the embedded build has and the host does not.
-pub fn analyze(ddl: &[String], sql: &str, functions: &[(&str, i32)], host: Option<&[Listed]>) -> Result<Tree, String> {
+/// the embedded build has and the host does not. `sent` is the statement as the application runs it,
+/// whose text names the columns.
+pub fn analyze(ddl: &[String], sql: &str, sent: &str, functions: &[(&str, i32)], host: Option<&[Listed]>) -> Result<Tree, String> {
     let owned: Vec<CString> = ddl.iter().map(|d| CString::new(d.replace('\0', " ")).unwrap()).collect();
     let pointers: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
     let names: Vec<CString> = functions.iter().map(|(n, _)| CString::new(n.replace('\0', " ")).unwrap()).collect();
@@ -278,9 +279,10 @@ pub fn analyze(ddl: &[String], sql: &str, functions: &[(&str, i32)], host: Optio
     let host_kinds: Vec<c_char> = listed.iter().map(|(_, _, k)| if k.is_ascii() { *k as u8 as c_char } else { b's' as c_char }).collect();
     let n_host = if host.is_some() { listed.len() as c_int } else { -1 };
     let sql = CString::new(sql.replace('\0', " ")).map_err(|e| e.to_string())?;
+    let sent = CString::new(sent.replace('\0', " ")).map_err(|e| e.to_string())?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let json = unsafe {
-        let p = reylo_sqlite_analyze(pointers.as_ptr(), pointers.len() as c_int, sql.as_ptr(), name_pointers.as_ptr(), arities.as_ptr(), name_pointers.len() as c_int, host_pointers.as_ptr(), host_arities.as_ptr(), host_kinds.as_ptr(), n_host);
+        let p = reylo_sqlite_analyze(pointers.as_ptr(), pointers.len() as c_int, sql.as_ptr(), sent.as_ptr(), name_pointers.as_ptr(), arities.as_ptr(), name_pointers.len() as c_int, host_pointers.as_ptr(), host_arities.as_ptr(), host_kinds.as_ptr(), n_host);
         if p.is_null() {
             return Err("the embedded SQLite returned nothing".into());
         }

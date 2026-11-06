@@ -1193,6 +1193,14 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                 let width = pools.iter().map(Vec::len).max().unwrap_or(1).max(1);
                 let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
                 let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+                // A driver's row holds each value under the name the statement it ran gives it, which is the key the type must declare.
+                if let Ok(stmt) = db.prepare(&text) {
+                    let named: Vec<&str> = stmt.column_names();
+                    let declared: Vec<&str> = columns.iter().map(|c| c["name"].as_str().unwrap_or("?")).collect();
+                    if named != declared {
+                        problems.push(format!("{file}: columns are declared {declared:?} and run as {named:?}"));
+                    }
+                }
                 // Each `?` is the n-th name of `order`, and the value is that parameter's.
                 let bind = |values: &[rusqlite::types::Value]| -> Vec<rusqlite::types::Value> {
                     order.iter().map(|name| params.iter().position(|p| p["name"].as_str() == Some(name)).and_then(|i| values.get(i).cloned()).unwrap_or(rusqlite::types::Value::Null)).collect()

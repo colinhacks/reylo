@@ -205,13 +205,14 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // dot, so `:auth.user_id` survives only as a number. `?n` is the lexer's n-th parameter, which
     // is how `params` matches them back, and an error offset maps back through the rewrite.
     let numbered = lex::rewrite(sql, lexed, Target::Numbered);
+    let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
     // Triggers are not replayed (a body may call a function only the application registers);
     // their headers say which statements a trigger can skip a row of.
     let (triggers, replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
     let skipping = skipping_triggers(&triggers);
     let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
-    let t = match tree::analyze(&replay, &numbered.sql, &functions, listed.as_deref()) {
+    let t = match tree::analyze(&replay, &numbered.sql, &rewritten.sql, &functions, listed.as_deref()) {
         Ok(t) => t,
         Err(message) => return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 6)])),
     };
@@ -272,7 +273,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             cardinality_reason: None,
             key: None,
             ordered: false,
-            rewritten: lex::rewrite(sql, lexed, Target::Question),
+            rewritten,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
@@ -320,7 +321,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         cardinality_reason: reason,
         key: None,
         ordered: false,
-        rewritten: lex::rewrite(sql, lexed, Target::Question),
+        rewritten,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
@@ -3185,7 +3186,7 @@ mod tests {
         // before the serializer lists the tables: read then, a recursive one nested in another,
         // whose memory SQLite had reused, ended the analysis in a crash.
         let described = |sql: &str| {
-            let t = tree::analyze(&ddl(), sql, &[], None).expect("the tree parses");
+            let t = tree::analyze(&ddl(), sql, sql, &[], None).expect("the tree parses");
             assert!(t.error.is_none(), "{sql}: {:?}", t.error);
             let mut names = t.tables.into_keys().collect::<Vec<_>>();
             names.sort();
@@ -4048,6 +4049,16 @@ mod tests {
         let a = full("select id from users order by :sort::text");
         assert_eq!(a.columns.len(), 1);
         assert_eq!(affinity_of(&a.params[0].ty), Some("text"));
+    }
+
+    #[test]
+    fn names_a_column_as_the_statement_is_sent() {
+        // The tree is read over `?1`; the statement runs with `?`, and a driver's row holds the name that text gives.
+        let names = |sql: &str| analysis(sql).columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("select id + :a::int, name from users"), ["id + CAST(? AS INTEGER)", "name"]);
+        assert_eq!(names("select * from (select id + :a::int from users)"), ["id + CAST(? AS INTEGER)"]);
+        assert_eq!(names("update users set name = name returning id + :a::int"), ["id + CAST(? AS INTEGER)"]);
+        assert_eq!(names("select :a::int as a"), ["a"]);
     }
 
     #[test]
