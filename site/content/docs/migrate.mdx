@@ -130,7 +130,7 @@ Reylo migrates the database your type check reads: [`direct_url`](/#direct_url),
 
 Reylo reads your SQL with a real database.
 
-It builds a throwaway database beside yours, runs your migrations on it and reads the schema they make. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. Writing and repairing migrations needs one, and a deploy doesn't:
+It builds a throwaway database beside yours, runs your migrations on it and reads the schema they make. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. Writing and repairing migrations need one, and a deploy doesn't:
 
 ```text
 Builds one     migration init (on a database with a schema)
