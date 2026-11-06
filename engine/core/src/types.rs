@@ -929,7 +929,8 @@ impl Type {
     /// The type in one short line, as the oracle's `expected.txt` and the engines' tests print it:
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
     /// (`varchar('a' | 'b')`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's precision and
-    /// scale (`numeric(10,2)`), an integer's bounds (`int16(0..2155)`). An array is its element and
+    /// scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`) and divisor
+    /// (`int4(×5)`). An array is its element and
     /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
     /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
     /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
@@ -943,20 +944,25 @@ impl Type {
             Kind::Integer(i) => {
                 let label = self.name.clone().unwrap_or_else(|| format!("{}int{}", if i.unsigned { "u" } else { "" }, i.bits));
                 let mut facts = Vec::new();
-                if !i.bounds.is_empty() {
-                    facts.push(format!("{}..{}", i.bounds.min.as_deref().unwrap_or(""), i.bounds.max.as_deref().unwrap_or("")));
-                }
+                facts.extend(short_bounds(&i.bounds));
+                facts.extend(i.multiple_of.as_ref().map(|m| format!("×{m}")));
                 if let Some(values) = &i.values {
                     facts.push(values.join(" | "));
                 }
                 if facts.is_empty() { label } else { format!("{label}({})", facts.join(", ")) }
             }
             Kind::Float(f) if self.name.is_none() => format!("float({},{})", f.exponent_bits, f.mantissa_bits),
-            Kind::Decimal(d) => match (d.precision, d.min_scale, d.max_scale) {
-                (Some(p), Some(min), Some(max)) if min == max => with(vec![format!("{p},{min}")]),
-                (Some(p), _, _) => with(vec![p.to_string()]),
-                _ => label(),
-            },
+            Kind::Float(f) => with(short_bounds(&f.bounds).into_iter().collect()),
+            Kind::Decimal(d) => {
+                let mut facts = match (d.precision, d.min_scale, d.max_scale) {
+                    (Some(p), Some(min), Some(max)) if min == max => vec![format!("{p},{min}")],
+                    (Some(p), _, _) => vec![p.to_string()],
+                    _ => Vec::new(),
+                };
+                facts.extend(short_bounds(&d.bounds));
+                facts.extend(d.multiple_of.as_ref().map(|m| format!("×{m}")));
+                with(facts)
+            }
             Kind::Text(t) => {
                 let mut facts = size(&t.size);
                 if let Some(values) = &t.values {
@@ -1167,6 +1173,18 @@ fn check_order(b: &Bounds, order: fn(&str, &str) -> Option<std::cmp::Ordering>) 
         }
     }
     Ok(())
+}
+
+/// A number's bounds in the short notation (`0..150`, `>0..<1`), but for those an exponent writes:
+/// the reach of the type itself (`numeric`'s `1e131072`), which says nothing of the column.
+fn short_bounds(b: &Bounds) -> Option<String> {
+    let side = |inclusive: &Option<String>, exclusive: &Option<String>, mark: &str| match (inclusive, exclusive) {
+        (Some(v), _) if !v.contains('e') => v.clone(),
+        (_, Some(v)) if !v.contains('e') => format!("{mark}{v}"),
+        _ => String::new(),
+    };
+    let (low, high) = (side(&b.min, &b.exclusive_min, ">"), side(&b.max, &b.exclusive_max, "<"));
+    (!low.is_empty() || !high.is_empty()).then(|| format!("{low}..{high}"))
 }
 
 /// Two numbers in canonical decimal text, compared, where both read as `f64` without loss of
