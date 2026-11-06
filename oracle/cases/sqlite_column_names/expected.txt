@@ -1,6 +1,6 @@
 aliased.sql: many (x: int64) -> { named: text(utf8), also_named: int64 }
-no_parameter.sql: one () -> { 1 + 1: int64 }
-parameter.sql: one (x: int64) -> { CAST(? AS INTEGER) + 1: int64 }
-parameter_first.sql: many (x: int64) -> { a + CAST(? AS INTEGER): int64, b: TEXT(text(utf8) | bytes) }
-parameter_in_returning.sql: many (x: int64) -> { a + CAST(? AS INTEGER): int64 }
+no_parameter.sql: one () -> { 1 + 1: int64 } value
+parameter.sql: one (x: int64) -> { CAST(? AS INTEGER) + 1: int64 } value
+parameter_first.sql: many (x: int64) -> { a + CAST(? AS INTEGER): int64, b: TEXT(text(utf8) | bytes) } !! reylo23: Column 1 has no name: the database calls it "a + CAST(? AS INTEGER)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+parameter_in_returning.sql: many (x: int64) -> { a + CAST(? AS INTEGER): int64 } value
 parameter_in_subquery.sql: many (x: int64) -> { a + CAST(? AS INTEGER): int64 }

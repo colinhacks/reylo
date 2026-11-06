@@ -36,9 +36,10 @@ async function built(root: string, raw: string) {
   return { query, columns: query["~standard"].query.columns.map((c: { name: string }) => c.name) as string[] };
 }
 
-/** One row as a list of its values under the columns declared, for a statement `.run()` gives rows of. */
-function row(value: unknown): Record<string, unknown> {
-  return { ...(Array.isArray(value) ? value[0] : value) };
+/** One row under the columns declared. A statement whose one column has no alias gives the value alone, which stands under that column here. */
+function row(value: unknown, columns: readonly string[] = []): Record<string, unknown> {
+  const first = Array.isArray(value) ? value[0] : value;
+  return first === null || typeof first !== "object" ? { [columns[0]!]: first } : { ...first };
 }
 
 const sorted = (names: string[]) => [...names].sort();
@@ -92,8 +93,8 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
       const { query, columns } = await built(root, raw);
       assert.deepEqual(columns, names, raw);
       for (const [name, client, sync] of clients) {
-        assert.deepEqual(row(await query.run(client, params)), expected, `${name}: ${raw}`);
-        if (sync) assert.deepEqual(row(query.runSync(client, params)), expected, `${name}, runSync: ${raw}`);
+        assert.deepEqual(row(await query.run(client, params), names), expected, `${name}: ${raw}`);
+        if (sync) assert.deepEqual(row(query.runSync(client, params), names), expected, `${name}, runSync: ${raw}`);
       }
     }
     // A column named `length`, which a libSQL row also holds its width under.
@@ -152,7 +153,7 @@ test("MySQL: a row holds the columns its type declares, where the driver writes 
       const { query, columns } = await built(root, raw);
       assert.deepEqual(columns, names, raw);
       for (const [name, client] of [["mysql2", own.db], ["mariadb", maria]] as const) {
-        const got = row(await query.run(client, params));
+        const got = row(await query.run(client, params), names);
         assert.deepEqual(sorted(Object.keys(got)), sorted(names), `${name}: ${raw}`);
         // A value of the session's own, known only by its being there.
         assert.deepEqual(names.map((n, i) => (values[i] === undefined ? undefined : got[n])), values, `${name}: ${raw}`);
@@ -230,7 +231,7 @@ test("Postgres: a column with no alias is named by the expression's form, with n
     ] as const) {
       const { query, columns } = await built(root, raw);
       assert.deepEqual(columns, names, raw);
-      assert.deepEqual(row(await query.run(own.sql, params)), expected, raw);
+      assert.deepEqual(row(await query.run(own.sql, params), names), expected, raw);
     }
   } finally {
     await closeSessions();
@@ -253,7 +254,7 @@ test("DuckDB: a column with no alias is named by the statement as DuckDB reads i
     ] as const) {
       const { query, columns } = await built(root, raw);
       assert.deepEqual(columns, names, raw);
-      assert.deepEqual(row(await query.run(connection, params)), expected, raw);
+      assert.deepEqual(row(await query.run(connection, params), names), expected, raw);
     }
   } finally {
     connection.closeSync();

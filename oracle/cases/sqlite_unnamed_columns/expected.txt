@@ -1,0 +1,39 @@
+many_aggregate.sql: many () -> { id: INTEGER, count(*): int64 } !! reylo23: Column 2 has no name: the database calls it "count(*)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_alias.sql: many () -> { id: INTEGER, next: int64 }
+many_call.sql: many () -> { id: INTEGER, lower(name): text(utf8) } !! reylo23: Column 2 has no name: the database calls it "lower(name)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expression.sql: many () -> { id: INTEGER, id + 1: int64 } !! reylo23: Column 2 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expression_then_star.sql: many () -> { x + 1: int64, x: INT(int64 | float(11,52) | text(utf8) | bytes) } !! reylo23: Column 1 has no name: the database calls it "x + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expressions.sql: many () -> { id + 1: int64, id + 2: int64 } !! reylo23: Column 1 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 2 has no name: the database calls it "id + 2", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_named.sql: many () -> { id: INTEGER, n: TEXT(text(utf8) | bytes) }
+many_star_then_alias.sql: many () -> { x: INT(int64 | float(11,52) | text(utf8) | bytes), next: int64 }
+many_star_then_expression.sql: many () -> { x: INT(int64 | float(11,52) | text(utf8) | bytes), x + 1: int64 } !! reylo23: Column 2 has no name: the database calls it "x + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
+row_alias.sql: one () -> { total: int64 }
+row_alias_without_as.sql: one () -> { total: int64 }
+row_column.sql: many () -> { id: INTEGER }
+row_delete_star.sql: many () -> { x: INT(int64 | float(11,52) | text(utf8) | bytes) }
+row_first_arm.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+row_insert.sql: one () -> { id: INTEGER }
+row_insert_alias.sql: one () -> { next: int64 }
+row_nullable_at_most_one.sql: at_most_one () -> { email: TEXT(text(utf8) | bytes)? }
+row_parenthesized.sql: many () -> { id: INTEGER }
+row_qualified.sql: many () -> { id: INTEGER }
+row_qualified_star.sql: many () -> { x: INT(int64 | float(11,52) | text(utf8) | bytes) }
+row_rowid.sql: many () -> { id: INTEGER }
+row_star.sql: many () -> { x: INT(int64 | float(11,52) | text(utf8) | bytes) }
+row_update.sql: at_most_one () -> { name: TEXT(text(utf8) | bytes) }
+row_with_query.sql: one () -> { c: int64 }
+value_aggregate.sql: one () -> { count(*): int64 } value
+value_call.sql: many () -> { lower(name): text(utf8) } value
+value_case.sql: many () -> { case when id > 1 then 'a' else 'b' end: text(utf8) } value
+value_cast.sql: many () -> { cast(id as text): text(utf8) } value
+value_delete.sql: at_most_one () -> { id + 1: int64 } value
+value_expression.sql: many () -> { id + 1: int64 } value
+value_first_arm.sql: many () -> { 1: int64 } value
+value_insert.sql: one () -> { id + 1: int64 } value
+value_json.sql: at_most_one () -> { json_object('id', id): json { id: int64 } } value
+value_literal.sql: one () -> { 1: int64 } value
+value_nullable_at_most_one.sql: at_most_one () -> { lower(email): text(utf8)? } value
+value_subquery.sql: one () -> { (select count(*) from users): int64 } value
+value_update.sql: at_most_one () -> { lower(name): text(utf8) } value
+value_values.sql: many () -> { column1: int64 } value
+value_with_query.sql: one () -> { c + 1: int64 } value

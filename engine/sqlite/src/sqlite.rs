@@ -205,6 +205,10 @@ fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
     while let Some(prior) = first.prior.as_deref() {
         first = prior;
     }
+    // `values (1, 2)`: named column1 and column2 by SQLite, by nothing in the statement.
+    if first.values {
+        return Some(vec![ResultTarget::Unnamed; first.columns.len()]);
+    }
     Some(first.columns.iter().map(target).collect())
 }
 

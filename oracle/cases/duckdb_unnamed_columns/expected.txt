@@ -1,0 +1,41 @@
+many_aggregate.sql: many () -> { id: integer, count_star(): bigint } !! reylo23: Column 2 has no name: the database calls it "count_star()", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_alias.sql: many () -> { id: integer, next: integer }
+many_call.sql: many () -> { id: integer, lower("name"): varchar } !! reylo23: Column 2 has no name: the database calls it "lower("name")", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expression.sql: many () -> { id: integer, (id + 1): integer } !! reylo23: Column 2 has no name: the database calls it "(id + 1)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expression_then_star.sql: many () -> { (x + 1): integer, x: integer } !! reylo23: Column 1 has no name: the database calls it "(x + 1)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_expressions.sql: many () -> { (id + 1): integer, (id + 2): integer } !! reylo23: Column 1 has no name: the database calls it "(id + 1)", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 2 has no name: the database calls it "(id + 2)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_named.sql: many () -> { id: integer, n: varchar }
+many_star_then_alias.sql: many () -> { x: integer, next: integer }
+many_star_then_expression.sql: many () -> { x: integer, (x + 1): integer } !! reylo23: Column 2 has no name: the database calls it "(x + 1)", which is no identifier and may differ on another driver or server. Give it one with `as`.
+row_alias.sql: one () -> { total: bigint }
+row_alias_without_as.sql: one () -> { total: bigint }
+row_column.sql: many () -> { id: integer }
+row_columns_function.sql: many () -> { x: integer? }
+row_delete_star.sql: many () -> { x: integer }
+row_exclude.sql: many () -> { kept: integer }
+row_first_arm.sql: many () -> { id: integer }
+row_from_alone.sql: many () -> { x: integer }
+row_insert.sql: one () -> { id: integer }
+row_insert_alias.sql: one () -> { next: integer }
+row_nullable_at_most_one.sql: at_most_one () -> { email: varchar? }
+row_parenthesized.sql: many () -> { id: integer }
+row_qualified.sql: many () -> { id: integer }
+row_qualified_star.sql: many () -> { x: integer }
+row_star.sql: many () -> { x: integer }
+row_update.sql: at_most_one () -> { name: varchar }
+row_with_query.sql: many () -> { c: bigint }
+value_aggregate.sql: one () -> { count_star(): bigint } value
+value_call.sql: many () -> { lower("name"): varchar } value
+value_case.sql: many () -> { CASE  WHEN ((id > 1)) THEN ('a') ELSE 'b' END: varchar } value
+value_cast.sql: many () -> { CAST(id AS BIGINT): bigint } value
+value_delete.sql: at_most_one () -> { (id + 1): integer } value
+value_expression.sql: many () -> { (id + 1): integer } value
+value_first_arm.sql: many () -> { 1: integer } value
+value_from_first.sql: one () -> { count_star(): bigint } value
+value_insert.sql: one () -> { (id + 1): integer } value
+value_literal.sql: one () -> { 1: integer } value
+value_nullable_at_most_one.sql: at_most_one () -> { lower(email): varchar? } value
+value_subquery.sql: one () -> { (SELECT count_star() FROM users): bigint? } value
+value_update.sql: at_most_one () -> { lower(name): varchar } value
+value_values.sql: many () -> { col0: integer } value
+value_with_query.sql: many () -> { (c + 1): bigint } value
