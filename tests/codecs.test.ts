@@ -30,7 +30,7 @@ const declared = (name: string): EngineType => ({ ...(lite("numeric") as Extract
 const duck = (name: string): EngineType => (({
   bigint: { kind: "integer", bits: 64 }, hugeint: { kind: "integer", bits: 128 }, decimal: { kind: "decimal", precision: 18, min_scale: 3, max_scale: 3 },
   timestamptz: { kind: "instant", tick: "1/1000000" }, timestamp_ns: { kind: "datetime", tick: "1/1000000000" }, date: { kind: "date" }, time: { kind: "time", tick: "1/1000000" },
-  interval: { kind: "duration", months: {}, days: {}, time: { tick: "1/1000000" } }, blob: { kind: "bytes" }, varchar: { kind: "text" },
+  interval: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000" }, blob: { kind: "bytes" }, varchar: { kind: "text" },
 }) as Record<string, EngineType>)[name]!;
 /** DuckDB's UNION, as the engine writes it: a tagged union of its alternatives, each value of which may be null. */
 const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", name: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });

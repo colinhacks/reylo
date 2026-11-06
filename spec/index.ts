@@ -244,18 +244,19 @@ export interface InstantType extends Base, Bounds {
 export type Zone = "offset" | "region" | "region_or_offset";
 
 /**
- * A length of time, in the parts it has, each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time: Postgres adds `1 month` to January 31 as February 28, and `1 day` across a clock change as 23 or 25 hours.
- *   - Postgres `interval` has all three (`1 mon -1 day`, which `Temporal.Duration` refuses).
- *   - Oracle's `INTERVAL YEAR TO MONTH` has `months`, and its `INTERVAL DAY TO SECOND` `time`, since it holds a day as 24 hours.
- *   - MySQL `TIME` is a `time` part, up to 838:59:59.
+ * A length of time, in the parts it has (months, days and time), each signed on its own. A month and a day have no fixed length (a month is 28 to 31 days, and a day 23 to 25 hours across a clock change), so a duration that counts them keeps them apart from its time: Postgres adds `1 month` to January 31 as February 28, and `1 day` across a clock change as 23 or 25 hours.
+ *   - Postgres `interval` has all three (`1 mon -1 day`, which `Temporal.Duration` refuses): `P2147483648M2147483648DT2562047788H54.775808S`.
+ *   - Oracle's `INTERVAL YEAR TO MONTH` has months alone (`P1199M`), and its `INTERVAL DAY TO SECOND` time alone (`PT2399H59M59.999999S`), since it holds a day as 24 hours.
+ *   - MySQL `TIME` is time alone: `PT838H59M59S`.
  *
- * A part's `max` bounds its magnitude, of either sign, as an ISO 8601 duration (`P2147483648M`, `PT838H59M59S`). A two's complement part reaches one unit further below zero than above it, so its `max` is the negative side's magnitude: Postgres's `months` reaches -2147483648 and +2147483647, and is `P2147483648M`. SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.
+ * SQL calls this kind an interval; ISO 8601's intervals are a start and an end, which is a `range` here.
  */
 export interface DurationType extends Base {
   kind: "duration";
-  months?: { max?: string; };
-  days?: { max?: string; };
-  time?: { tick: string; max?: string; };
+  /** The parts its values have, each at the largest magnitude it reaches, of either sign, as one ISO 8601 duration: months in `M`, days in `D`, then time in `H`, `M` and `S`, its minutes and seconds below 60. A part the type lacks is left out, and a part it has is never 0. A two's complement part reaches one unit further below zero than above it, so it is written at the negative side's magnitude: Postgres's months reach -2147483648 and +2147483647, and are `2147483648M`. */
+  max: string;
+  /** The time part's smallest step, written exactly when `max` has a time part. */
+  tick?: string;
   /** Also holds infinity and -infinity: Postgres's, from version 17. */
   infinity?: true;
 }
@@ -285,30 +286,16 @@ export interface MapType extends Base {
   value: Position;
 }
 
-/** The kinds that have an order, so the only ones a range can span. */
-export type OrderedType =
-  | IntegerType
-  | FloatType
-  | DecimalType
-  | TextType
-  | BytesType
-  | UuidType
-  | DateType
-  | TimeType
-  | DateTimeType
-  | InstantType
-  | DurationType;
-
-/** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
+/** A range of `subtype`, with an empty range and unbounded ends: Postgres ranges, Teradata `PERIOD`, and ISO 8601's intervals, a start and an end. Its subtype is any type the database orders, which on Postgres takes in an array, a composite and a `boolean`. Over a discrete subtype, such as integers or dates, `[1,3]` and `[1,4)` are one range. An unbounded end lies beyond the subtype's infinities, so `[x,)` holds infinity and `[x,infinity)` does not. */
 export interface RangeType extends Base {
   kind: "range";
-  subtype: OrderedType;
+  subtype: Type;
 }
 
 /** An ordered set of non-overlapping ranges: Postgres multiranges. */
 export interface MultirangeType extends Base {
   kind: "multirange";
-  subtype: OrderedType;
+  subtype: Type;
 }
 
 /** An OGC simple feature: PostGIS `geometry` and `geography` (`geodetic`), and the spatial types of MySQL, SQL Server and Oracle. */
@@ -396,7 +383,7 @@ export interface Position {
   nullable?: true;
 }
 
-/** A result's column. A row always has every column, so none is optional. Columns can share a name (`select a.id, b.id`), so a row is a list of columns, not an object. */
+/** A result's column. A row always has every column, so none is optional. A row is an object keyed by its columns' names, which keeps only the last of two with one name, so a statement whose result repeats a name (`select a.id, b.id`) has a diagnostic at each later column of it, asking for another name with `as`. */
 export interface Column extends Position {
   /** The name the database gives the column: Postgres calls `select 1`'s `?column?`, and SQL Server leaves it empty. */
   name: string;

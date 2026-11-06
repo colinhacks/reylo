@@ -36,7 +36,7 @@ export function pg(name: string): EngineType {
     timestamptz: { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true },
     time: { kind: "time", tick: "1/1000000", max: "24:00:00" },
     timetz: { kind: "time", tick: "1/1000000", zone: "offset", max: "24:00:00" },
-    interval: { kind: "duration", months: { max: "P2147483648M" }, days: { max: "P2147483648D" }, time: { tick: "1/1000000", max: "PT2562047788H54.775808S" }, infinity: true },
+    interval: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true },
     json: { kind: "json" }, jsonb: { kind: "json" },
     xml: { kind: "xml", fragment: true },
     ...geometric,
@@ -75,7 +75,7 @@ export function my(name: string, length?: number): EngineType {
     date: { kind: "date" },
     datetime: { kind: "datetime", tick: "1/1000000" },
     timestamp: { kind: "instant", tick: "1/1000000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999999Z" },
-    time: { kind: "duration", time: { tick: "1/1000000", max: "PT838H59M59S" } },
+    time: { kind: "duration", max: "PT838H59M59S", tick: "1/1000000" },
     json: { kind: "json" },
     set: { kind: "set", element: { type: { kind: "text" } } },
   };

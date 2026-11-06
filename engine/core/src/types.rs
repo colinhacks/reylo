@@ -319,31 +319,16 @@ pub enum Zone {
     RegionOrOffset,
 }
 
-/// A length of time in the parts it has, each signed on its own.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// A length of time in the parts it has, each signed on its own: `max` writes each part (months,
+/// days, time) at the magnitude it reaches, as one ISO 8601 duration, and `tick` is the time
+/// part's step, present exactly when `max` has a time part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DurationType {
+    pub max: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub months: Option<Part>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub days: Option<Part>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub time: Option<TimePart>,
+    pub tick: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub infinity: bool,
-}
-
-/// A duration's `months` or `days`: its magnitude's bound, of either sign, as an ISO 8601 duration.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Part {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TimePart {
-    pub tick: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max: Option<String>,
 }
 
 /// One of several types, each value one of them. Flat, its members in kind order ([`Type::union`]).
@@ -474,7 +459,8 @@ impl Position {
     }
 }
 
-/// A result's column: a row always has every column, and columns can share a name.
+/// A result's column: a row always has every column, and a statement whose result repeats a name
+/// has a diagnostic at each later column of it ([`crate::analysis::clashes`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
@@ -1131,11 +1117,11 @@ impl Type {
                 check_tick(&t.tick).or_else(fail)?;
                 check_bounds(&t.bounds, text_order).or_else(fail)?;
             }
-            Kind::Duration(d) => {
-                if let Some(time) = &d.time {
-                    check_tick(&time.tick).or_else(fail)?;
-                }
-            }
+            Kind::Duration(d) => match (duration_has_time(&d.max).map_err(|why| format!("{here}: {why}"))?, &d.tick) {
+                (true, Some(tick)) => check_tick(tick).or_else(fail)?,
+                (false, None) => {}
+                _ => return fail("a duration has a tick exactly when its max has a time part".into()),
+            },
             Kind::Union(u) => {
                 for (i, m) in u.members.iter().enumerate() {
                     m.check_at(&format!("{at}|{i}"))?;
@@ -1218,6 +1204,46 @@ fn check_size(size: &Size, unicode: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Whether a duration's `max` has a time part, once it reads as the spec writes it: `P`, then
+/// months in `M` and days in `D`, then `T` and time in `H`, `M` and `S`, each part at most once,
+/// in that order, above zero and with no leading zero, only the seconds with a fraction, the
+/// minutes and seconds below 60, and at least one part.
+fn duration_has_time(max: &str) -> Result<bool, String> {
+    let refused = || format!("the duration's max {max:?} is not one ISO 8601 duration in the spec's units and order");
+    let rest = max.strip_prefix('P').ok_or_else(refused)?;
+    let (date, time) = match rest.split_once('T') {
+        Some((date, time)) => (date, Some(time)),
+        None => (rest, None),
+    };
+    let mut parts = 0;
+    for (text, units) in [(date, &['M', 'D'][..]), (time.unwrap_or_default(), &['H', 'M', 'S'][..])] {
+        let mut next = 0;
+        let mut start = 0;
+        for (i, unit) in text.char_indices().filter(|(_, c)| !c.is_ascii_digit() && *c != '.') {
+            let at = next + units[next..].iter().position(|&u| u == unit).ok_or_else(refused)?;
+            let number = &text[start..i];
+            let (whole, fraction) = number.split_once('.').map_or((number, None), |(w, f)| (w, Some(f)));
+            let canonical = !whole.is_empty()
+                && whole.bytes().all(|b| b.is_ascii_digit())
+                && (whole == "0" || !whole.starts_with('0'))
+                && fraction.is_none_or(|f| unit == 'S' && !f.is_empty() && f.bytes().all(|b| b.is_ascii_digit()) && !f.ends_with('0'))
+                && (whole != "0" || fraction.is_some())
+                && (unit == 'H' || units.len() == 2 || whole.parse::<u8>().is_ok_and(|n| n < 60));
+            if !canonical {
+                return Err(refused());
+            }
+            (next, start, parts) = (at + 1, i + 1, parts + 1);
+        }
+        if start != text.len() {
+            return Err(refused());
+        }
+    }
+    if parts == 0 || time == Some("") {
+        return Err(refused());
+    }
+    Ok(time.is_some())
+}
+
 fn check_tick(tick: &str) -> Result<(), String> {
     let (n, d) = tick.split_once('/').unwrap_or((tick, "1"));
     match (n.parse::<u64>(), d.parse::<u64>()) {
@@ -1256,9 +1282,13 @@ mod tests {
         round_trip(json!({"kind": "array", "size": {"exact": 7}, "name": "bit", "element": {"type": {"kind": "boolean"}}}));
         round_trip(json!({"kind": "json", "name": "json", "content": {"type": {"kind": "array", "element": {"type": {"kind": "text", "name": "text"}}}}}));
         round_trip(json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "name": "timestamptz"}));
-        round_trip(json!({"kind": "duration", "months": {"max": "P2147483648M"}, "days": {"max": "P2147483648D"}, "time": {"tick": "1/1000000", "max": "PT2562047788H54.775808S"}, "infinity": true, "name": "interval"}));
+        round_trip(json!({"kind": "duration", "max": "P2147483648M2147483648DT2562047788H54.775808S", "tick": "1/1000000", "infinity": true, "name": "interval"}));
+        round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "name": "time"}));
+        round_trip(json!({"kind": "duration", "max": "P1199M"}));
+        round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
         round_trip(json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
         round_trip(json!({"kind": "range", "subtype": {"kind": "date"}, "name": "daterange"}));
+        round_trip(json!({"kind": "range", "subtype": {"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": {"kind": "integer", "bits": 32, "name": "int4"}}}, "name": "public.arrayrange"}));
         round_trip(json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
         round_trip(json!({"kind": "set", "size": {"max": 2}, "name": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
         round_trip(json!({"kind": "map", "name": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
@@ -1301,6 +1331,12 @@ mod tests {
         refused(json!({"kind": "bytes", "size": {"unit": "byte", "max": 4}}));
         refused(json!({"kind": "text", "ill_formed": "utf8", "size": {"unit": "byte", "encoding": "UTF-8", "max": 4}}));
         refused(json!({"kind": "time", "tick": "0"}));
+        // A duration's max: its tick exactly with a time part, and only the spec's units, in order, above zero.
+        refused(json!({"kind": "duration", "max": "PT838H59M59S"}));
+        refused(json!({"kind": "duration", "max": "P1199M", "tick": "1"}));
+        for max in ["P", "PT", "P1MT", "P99Y11M", "P2W", "P1D1M", "PT1H1H", "PT90M", "PT1M60S", "PT01H", "P0D", "P1.5D", "PT1.50S", "-P1D", "P1M2"] {
+            refused(json!({"kind": "duration", "max": max, "tick": "1"}));
+        }
         refused(json!({"kind": "decimal", "min_scale": 3, "max_scale": 2}));
         refused(json!({"kind": "opaque"}));
         refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));

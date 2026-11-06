@@ -866,23 +866,25 @@ fn fraction_contradiction(tick: &str, text: &str) -> Option<String> {
 
 /// Why an interval's text has a part its type leaves out, or is finer than its tick, if it does.
 fn interval_contradiction(duration: &DurationType, text: &str) -> Option<String> {
-    if duration.days.is_none() && text.contains("day") {
+    let has_days = duration.max.split('T').next().is_some_and(|date| date.contains('D'));
+    if !has_days && text.contains("day") {
         return Some(format!("typed without days holds {text}"));
     }
     let Some((hours, minutes, seconds)) = clock(text) else { return None };
     // Postgres prints a zero interval as `00:00:00`, whatever its fields.
     let zero = hours.trim_start_matches('-').chars().all(|c| c == '0') && minutes == "00" && seconds.chars().all(|c| c == '0' || c == '.');
-    let Some(time) = &duration.time else {
+    // A duration has a tick exactly when it has a time part.
+    let Some(tick) = &duration.tick else {
         return (!zero).then(|| format!("typed without a time holds {text}"));
     };
     let fraction = seconds.split_once('.').map_or(0, |(_, f)| f.len());
     let whole_seconds = seconds.split('.').next().unwrap_or("");
-    let coarse = match time.tick.as_str() {
+    let coarse = match tick.as_str() {
         "3600" => minutes != "00" || whole_seconds != "00" || fraction > 0,
         "60" => whole_seconds != "00" || fraction > 0,
         tick => tick_digits(tick).is_some_and(|allowed| fraction > allowed),
     };
-    coarse.then(|| format!("ticking by {} holds {text}", time.tick))
+    coarse.then(|| format!("ticking by {tick} holds {text}"))
 }
 
 /// Whether a type structured as an array is one in Postgres's text too: a type written otherwise
