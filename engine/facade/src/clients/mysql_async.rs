@@ -29,7 +29,7 @@ impl AsyncAnswerer<Describe> for Answers<'_> {
         async move {
             match conn.prep(sql).await {
                 Ok(statement) => {
-                    let columns: Vec<Value> = statement.columns().iter().map(|c| json!({ "name": c.name_str(), "type": c.column_type() as u8, "flags": c.flags().bits(), "charset": c.character_set(), "length": c.column_length(), "org_table": c.org_table_str(), "org_name": c.org_name_str() })).collect();
+                    let columns: Vec<Value> = statement.columns().iter().map(|c| json!({ "name": c.name_str(), "type": c.column_type() as u8, "flags": c.flags().bits(), "charset": c.character_set(), "length": c.column_length(), "decimals": c.decimals(), "schema": c.schema_str(), "org_table": c.org_table_str(), "org_name": c.org_name_str() })).collect();
                     let params: Vec<Value> = statement.params().iter().map(|p| json!({ "type": p.column_type() as u8, "flags": p.flags().bits(), "charset": p.character_set() })).collect();
                     conn.close(statement).await.map_err(|e| HostError(e.to_string()))?;
                     serde_json::from_value(json!({ "columns": columns, "params": params })).map(Ok).map_err(|e| HostError(e.to_string()))

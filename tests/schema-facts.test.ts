@@ -1,8 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import { Session } from "../src/analyze.ts";
 import { validate } from "../src/json-schema.ts";
+import { sqlModule } from "../src/loader.ts";
 import { querySchemas, typeSchema } from "../src/schema.ts";
 import type { EngineType } from "../src/engine-type.ts";
+import { DRIVERS, INDEX, MYSQL, driver, mysqlDatabase, mysqlLive } from "./helpers.ts";
 
 const int4 = (facts: object): EngineType => ({ kind: "integer", bits: 32, name: "int4", ...facts }) as EngineType;
 const varchar = (facts: object): EngineType => ({ kind: "text", name: "varchar", ...facts }) as EngineType;
@@ -96,4 +104,90 @@ test("a time with no zone and MySQL's TIME take no format their values would fai
   const span = schema({ kind: "duration", max: "PT838H59M59S", tick: "1/10000", name: "time" }, "mysql");
   assert.equal(span.format, undefined);
   for (const value of ["-838:59:59.0000", "838:59:59", "12:00:00.1235"]) assert.equal(validate(span, value), undefined);
+});
+
+test("MySQL: a column's definition reaches a query's JSON Schema as a length in code points alone, and every row `.run()` returns holds to it, on mysql2 and mariadb", { skip: mysqlLive, timeout: 60_000 }, async () => {
+  // Each column at its longest in characters of the most bytes it stores, and each decimal at its most digits.
+  const own = await mysqlDatabase(
+    "reylo_schema_facts",
+    `create table sized (id int primary key, name varchar(20) not null, code char(5), legacy varchar(10) character set latin1, body text, old_body text character set latin1, price decimal(10,2), part decimal(5,5), at datetime(3), span time(4));
+    insert into sized values
+      (1, repeat('😀', 20), 'abcde', repeat('é', 10), repeat('😀', 16383), repeat('é', 65535), 99999999.99, 0.99999, '2026-01-01 12:00:00.123', '-838:59:59.0000'),
+      (2, '', 'ab   ', 'a', repeat('z', 65535), '', -99999999.99, -0.00001, '2026-01-01 12:00:00', '12:00:00.1235'),
+      (3, 'x', null, null, null, null, null, null, null, null)`,
+  );
+  const root = mkdtempSync(join(tmpdir(), "reylo-schema-facts-"));
+  writeFileSync(join(root, "package.json"), "{}");
+  writeFileSync(join(root, ".env"), `DATABASE_URL=${own.url}\n`);
+  mkdirSync(join(root, "node_modules"));
+  for (const name of ["mysql2", "mariadb"]) symlinkSync(join(DRIVERS, name), join(root, "node_modules", name));
+  const built = async (name: string, sql: string) => {
+    const file = join(root, `${name}.sql`);
+    writeFileSync(file, sql);
+    const { code } = await sqlModule(file, sql);
+    const out = join(root, `${name}.mjs`);
+    writeFileSync(out, code.replace(`from "reylo"`, `from ${JSON.stringify(INDEX)}`));
+    return (await import(pathToFileURL(out).href)).default;
+  };
+  const u = new URL(MYSQL!);
+  const mysql2 = await driver("mysql2/promise").createConnection(own.url);
+  const mariadb = await driver("mariadb").createConnection({ host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", database: own.url.split("/").pop() });
+  try {
+    const columns = await built("columns", "select name, code, legacy, body, old_body, price, part, at, span from sized order by id");
+    const derived = await built("derived", "select d.body from (select id, body from sized) d order by d.id");
+    const document = await built("document", "select json_object('name', name, 'code', code, 'body', body, 'price', price) as doc from sized order by id");
+    const names = await built("names", "select json_arrayagg(name) as names from sized");
+    const nullable = (schema: object) => ({ anyOf: [schema, { type: "null" }] });
+    const column = columns.outputSchema.items.properties;
+    assert.deepEqual(column.name, { type: "string", maxLength: 20 });
+    // Neither is exact: MySQL strips a CHAR's padding as it reads one.
+    assert.deepEqual(column.code, nullable({ type: "string", maxLength: 5 }));
+    assert.deepEqual(column.legacy, nullable({ type: "string", maxLength: 10 }));
+    // A TEXT that stores UTF-8 is sized in bytes, which JSON Schema has no keyword for; any other, and
+    // one read through a derived table, in code points.
+    assert.deepEqual(column.body, { type: ["string", "null"] });
+    assert.deepEqual(column.old_body, nullable({ type: "string", maxLength: 65535 }));
+    assert.deepEqual(derived.outputSchema.items.properties.body, nullable({ type: "string", maxLength: 65535 }));
+    // A decimal's precision and scale have no keyword, as its text or inside a document.
+    assert.deepEqual(column.price, nullable({ type: "string", format: "decimal" }));
+    assert.deepEqual(column.part, nullable({ type: "string", format: "decimal" }));
+    const leaf = document.outputSchema.items.properties.doc.properties;
+    assert.deepEqual(leaf.name, { type: "string", maxLength: 20 });
+    assert.deepEqual(leaf.code, nullable({ type: "string", maxLength: 5 }));
+    assert.deepEqual(leaf.body, nullable({ type: "string", maxLength: 65535 }));
+    assert.deepEqual(leaf.price, nullable({ type: "number", format: "decimal" }));
+    assert.deepEqual(names.outputSchema.properties.names, nullable({ type: "array", items: { type: "string", maxLength: 20 } }));
+
+    // The schema a client holds a row to reads it once JSON. A validator counts a length in code
+    // points, as JSON Schema says, so twenty emoji are twenty.
+    const ajv = new Ajv2020({ strict: false, validateFormats: false, logger: false });
+    const holds = async (client: object) => {
+      for (const query of [columns, derived, document, names]) {
+        const result = JSON.parse(JSON.stringify(await query.run(client)));
+        assert.equal(validate(query.outputSchema, result), undefined);
+        assert.ok(ajv.validate(query.outputSchema, result), ajv.errorsText());
+      }
+    };
+    for (const client of [mysql2, mariadb]) {
+      await holds(client);
+      const rows = await columns.run(client);
+      assert.deepEqual(rows.map((r: { code: string | null }) => r.code), ["abcde", "ab", null]);
+      assert.equal([...rows[0].name].length, 20);
+      assert.equal(rows[0].old_body.length, 65535);
+      assert.deepEqual(rows.map((r: { price: string | null }) => r.price), ["99999999.99", "-99999999.99", null]);
+    }
+    // A row past a bound is refused, so the rows above were held to it.
+    const [first] = await columns.run(mysql2);
+    assert.equal(validate(columns.outputSchema, [{ ...first, name: "x".repeat(21) }])?.path, "/0/name");
+    assert.notEqual(validate(columns.outputSchema, [{ ...first, code: "abcdef" }]), undefined);
+    // A session that keeps a CHAR's padding gets it to exactly its length, which is within it.
+    await mysql2.query("set session sql_mode = concat(@@session.sql_mode, ',PAD_CHAR_TO_FULL_LENGTH')");
+    assert.equal((await columns.run(mysql2))[1].code, "ab   ");
+    await holds(mysql2);
+  } finally {
+    await mysql2.end();
+    await mariadb.end();
+    for (const session of Session.opened()) await session.close();
+    await own.drop();
+  }
 });

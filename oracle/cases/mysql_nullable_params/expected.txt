@@ -1,4 +1,4 @@
-coalesce_direct.sql: many (email: varchar?, bio: varchar?) -> { id: int, name: varchar }
+coalesce_direct.sql: many (email: varchar?, bio: varchar?) -> { id: int, name: varchar(≤20) }
 compared_not_written.sql: at_most_one (email: varchar) -> { id: int }
 guard_derived.sql: many (tag: varchar) -> { id: int, tag: text? }
 guard_nullable.sql: many (q: varchar?) -> { id: int }

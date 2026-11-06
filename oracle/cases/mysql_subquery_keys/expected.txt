@@ -1,56 +1,56 @@
-alias_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text }
-alias_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text }
-bare_name.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-comma_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
-compared_as_number.sql: many () -> { email: varchar }
+alias_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text(≤65535) }
+alias_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text(≤65535) }
+bare_name.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+comma_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+compared_as_number.sql: many () -> { email: varchar(≤200) }
 cross_join.sql: many (id: bigint) -> { id: bigint }
 distinct.sql: at_most_one (a: bigint) -> { author_id: bigint }
 distinct_expression.sql: many (a: bigint) -> { author_id: bigint, t: text? }
 double_key_exact_literal.sql: at_most_one () -> { id: bigint }
 except_left_keys.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-expression.sql: many (id: int32) -> { id: bigint, title: text }
-filtered_inside.sql: at_most_one (a: bigint, id: bigint) -> { id: bigint, title: text }
+expression.sql: many (id: int32) -> { id: bigint, title: text(≤65535) }
+filtered_inside.sql: at_most_one (a: bigint, id: bigint) -> { id: bigint, title: text(≤65535) }
 group_by.sql: at_most_one (a: bigint) -> { author_id: bigint, n: bigint }
 group_by_ordinal.sql: at_most_one (a: bigint) -> { author_id: bigint, n: bigint }
 group_key_hidden.sql: many (n: int32) -> { author_id: bigint, n: bigint }
 intersect_left_keys.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-join_double_column.sql: many (id: bigint) -> { name: varchar }
-join_many.sql: many (id: bigint) -> { id: bigint, tag: varchar }
-join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
-join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text, name: varchar }
-join_text_column.sql: many (id: bigint) -> { title: text, name: varchar }
-join_unpinned.sql: many (id: bigint) -> { title: text, name: varchar }
-joined_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
+join_double_column.sql: many (id: bigint) -> { name: varchar(≤200) }
+join_many.sql: many (id: bigint) -> { id: bigint, tag: varchar(≤100) }
+join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535), name: varchar(≤200) }
+join_text_column.sql: many (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+join_unpinned.sql: many (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+joined_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535), name: varchar(≤200) }
 key_double_arithmetic.sql: many (x: double) -> { id: bigint }
 key_double_cast.sql: many (x: double) -> { id: bigint }
 key_double_constant_cast.sql: at_most_one () -> { id: bigint }
 key_double_function.sql: many (x: double) -> { id: bigint }
 key_double_literal.sql: at_most_one () -> { id: bigint }
-key_dropped.sql: many (t: text) -> { title: text }
+key_dropped.sql: many (t: text) -> { title: text(≤65535) }
 key_exact_function.sql: at_most_one (x: int32) -> { id: bigint }
-key_fixed_inside.sql: at_most_one (p: bigint, t: varchar) -> { tag: varchar }
-key_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-key_not_fixed_inside.sql: many (p: bigint, t: varchar) -> { tag: varchar }
-lateral_pinned.sql: at_most_one (u: bigint, p: int32) -> { name: varchar, title: text }
+key_fixed_inside.sql: at_most_one (p: bigint, t: varchar) -> { tag: varchar(≤100) }
+key_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+key_not_fixed_inside.sql: many (p: bigint, t: varchar) -> { tag: varchar(≤100) }
+lateral_pinned.sql: at_most_one (u: bigint, p: int32) -> { name: varchar(≤200), title: text(≤65535) }
 lateral_source.sql: many (id: int32) -> { id: bigint }
 left_join_many.sql: many (id: bigint) -> { id: bigint }
-left_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar? }
-left_join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text, name: varchar? }
-limit_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-nested.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-not_a_key.sql: many (e: varchar) -> { id: bigint, email: varchar }
-null_extended_side.sql: many (id: bigint) -> { id: bigint?, name: varchar }
+left_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200)? }
+left_join_pinned.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535), name: varchar(≤200)? }
+limit_inside.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+nested.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+not_a_key.sql: many (e: varchar) -> { id: bigint, email: varchar(≤200) }
+null_extended_side.sql: many (id: bigint) -> { id: bigint?, name: varchar(≤200) }
 recursive.sql: many (id: int32) -> { id: bigint }
-renamed.sql: at_most_one (id: bigint) -> { post_id: bigint, title: text }
-right_join_on_key.sql: at_most_one (id: bigint) -> { title: text, name: varchar? }
+renamed.sql: at_most_one (id: bigint) -> { post_id: bigint, title: text(≤65535) }
+right_join_on_key.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200)? }
 rollup.sql: many (a: bigint) -> { author_id: bigint?, n: bigint }
-second_key.sql: at_most_one (e: varchar) -> { id: bigint, email: varchar }
+second_key.sql: at_most_one (e: varchar) -> { id: bigint, email: varchar(≤200) }
 self_join_nonkey.sql: many (id: bigint) -> { id: bigint }
-star.sql: at_most_one (id: bigint) -> { id: bigint, author_id: bigint, title: text }
-straight_join.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
-subquery.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-two_subqueries.sql: at_most_one (id: bigint) -> { title: text, name: varchar }
-two_withs.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+star.sql: at_most_one (id: bigint) -> { id: bigint, author_id: bigint, title: text(≤65535) }
+straight_join.sql: at_most_one (id: bigint) -> { title: text(≤65535 bytes UTF-8), name: varchar(≤200) }
+subquery.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+two_subqueries.sql: at_most_one (id: bigint) -> { title: text(≤65535), name: varchar(≤200) }
+two_withs.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 union_all.sql: many (id: bigint) -> { id: bigint }
 union_distinct.sql: at_most_one (id: bigint) -> { id: bigint }
 union_text.sql: many (k: varchar) -> { k: varchar }
@@ -63,11 +63,11 @@ view_merged.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
 view_of_view.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
 view_swapped_columns.sql: many (id: text) -> { title: bigint, id: text }
 view_swapped_key.sql: at_most_one (id: bigint) -> { title: bigint, id: text }
-view_temptable.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+view_temptable.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 window_inside.sql: at_most_one (id: bigint) -> { id: bigint, rn: bigint }
-with_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text }
-with_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text }
-with_joined.sql: at_most_one (u: bigint, id: bigint) -> { title: text, name: varchar }
-with_query.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
-with_shadows_table.sql: at_most_one (id: bigint) -> { id: bigint, title: text }
+with_column_list.sql: at_most_one (id: bigint) -> { pid: bigint, t: text(≤65535) }
+with_column_list_swapped.sql: many (t: text) -> { title: bigint, id: text(≤65535) }
+with_joined.sql: at_most_one (u: bigint, id: bigint) -> { title: text(≤65535), name: varchar(≤200) }
+with_query.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
+with_shadows_table.sql: at_most_one (id: bigint) -> { id: bigint, title: text(≤65535) }
 with_sibling_shadow.sql: at_most_one (id: bigint) -> { id: bigint }

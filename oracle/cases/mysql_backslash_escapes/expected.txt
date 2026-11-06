@@ -1,4 +1,4 @@
-backquoted_backslash.sql: at_most_one (id: int32) -> { a\: int, name: varchar }
+backquoted_backslash.sql: at_most_one (id: int32) -> { a\: int, name: varchar(≤40) }
 block_comment_unnested.sql: at_most_one (x: int32) -> { id: int }
 dash_with_space.sql: at_most_one (a: int32) -> { id: int }
 dash_with_tab.sql: at_most_one (a: int32) -> { id: int }
@@ -8,10 +8,10 @@ double_quoted_escape.sql: many (id: int32) -> { id: int }
 escaped_backslash.sql: at_most_one (x: int32) -> { id: int }
 escaped_backslash_twice.sql: many (x: int32) -> { id: int }
 escaped_in_comment_and_string.sql: at_most_one (id: int32) -> { id: int }
-escaped_json_key.sql: at_most_one (id: int32) -> { o: json { it's: int, say "hi": varchar } }
+escaped_json_key.sql: at_most_one (id: int32) -> { o: json { it's: int, say "hi": varchar(≤40) } }
 escaped_like.sql: at_most_one (id: int32) -> { id: int }
 escaped_newline.sql: at_most_one (id: int32) -> { s: varchar, n: bigint, t: varchar, id: int }
 escaped_quote.sql: many (id: int32) -> { id: int }
-escaped_quote_key.sql: at_most_one () -> { id: int, name: varchar }
+escaped_quote_key.sql: at_most_one () -> { id: int, name: varchar(≤40) }
 hash_comment.sql: at_most_one (id: int32) -> { id: int }
 hash_comment_lines.sql: at_most_one (id: int32) -> { id: int }

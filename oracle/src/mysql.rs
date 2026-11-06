@@ -2,8 +2,8 @@
 //!
 //! The host is the loader's engine's own (`reylo_engine::clients::mysql_async`). A describe is
 //! a server-side prepare, and the answer is the prepare's own column and parameter definitions:
-//! the protocol type code, the flags and the character set of each, and a column's display length
-//! and the table it is a column of, untouched. A catalog query is
+//! the protocol type code, the flags and the character set of each, and a column's length, its
+//! decimals and the schema and table it is a column of, untouched. A catalog query is
 //! sent as text with its values written into it the way mysql2's `query()` writes them, and each
 //! value comes back as mysql2 decodes it: a number for an integer or a float, a string for
 //! anything else. The session is mysql2's too: `utf8mb4` with `utf8mb4_unicode_ci` as the
@@ -29,7 +29,9 @@
 //! the session's own mode. A column's pool is its type's: an integer's bounds, signed or unsigned,
 //! the two 64-bit integers one double stands for, a DECIMAL's largest value and two that differ
 //! past a double's precision, strings that differ by case, by an accent and by a trailing space,
-//! every ENUM label, a SET of none and of two, the zero dates, JSON `null`, a BIT of ones. An
+//! the longest text a column takes in characters of one, two and four bytes, the longest string of
+//! bytes, a time of six fractional digits, every ENUM label, a SET of none and of two, the zero
+//! dates, JSON `null`, a BIT of ones. An
 //! AUTO_INCREMENT column never takes its type's largest value: the next INSERT without a key
 //! would find no value left.
 //!
@@ -55,7 +57,9 @@
 //! they may differ from the prepare's: the engine's type of each column must be the type of what
 //! came back. And every value inside a JSON document must be of its field's type: a number, a
 //! string, a boolean, an object or a list. Where the engine types a column or a field as either
-//! of two types (`int8|float8`), the value must be of one of them.
+//! of two types (`int8|float8`), the value must be of one of them. Each value, in a column or a
+//! document, must also be as long as its type's size allows, of no more digits than its precision
+//! and scale, and no finer than its tick.
 //!
 //! The server types some values by the plan: an integer it computes is an INT or a BIGINT in a
 //! temporary table by its display length, whatever the prepare said, and a truth value copied
@@ -64,8 +68,8 @@
 //! a second time with SQL_BUFFER_RESULT, which puts the whole result in a temporary table and
 //! changes nothing else; a problem found there says so.
 
-use reylo_engine_core::types::{JsonType, Kind, Type};
-use crate::seed::{report, Report, Scenario, Tally, EMPTY, SCENARIOS};
+use reylo_engine_core::types::{BytesType, DateTimeType, DecimalType, DurationType, InstantType, JsonType, Kind, Size, SizeUnit, TextType, Type};
+use crate::seed::{decimal_contradiction, length_contradiction, report, tick_digits, Report, Scenario, Tally, EMPTY, SCENARIOS};
 use mysql_async::prelude::Queryable;
 use mysql_async::{Conn, Opts, OptsBuilder, Statement, Value as My};
 use reylo_engine::clients::mysql_async::{message, quote};
@@ -393,8 +397,22 @@ fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
                 push(&[if col.data_type == "float" { "3.402823466e38" } else { "1.7976931348623157e308" }]);
             }
         }
-        "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" => push(&["'a'", "'A'", "'b'", "''", "'a '", "'1'", "'01'", "'1x'", "'á'"]),
-        "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => push(&["x'61'", "x'41'", "x''", "x'00'", "x'6100'", "x'ff'"]),
+        "char" | "varchar" | "tinytext" | "text" | "mediumtext" | "longtext" => {
+            push(&["'a'", "'A'", "'b'", "''", "'a '", "'1'", "'01'", "'1x'", "'á'"]);
+            // The longest text the column takes, of one, two and four bytes a character in UTF-8:
+            // a column that stores another character set refuses the last, or the last two.
+            if edges && col.length > 0 {
+                let n = col.length.min(65_535);
+                push(&[&format!("repeat('z', {n})"), &format!("repeat('á', {n})"), &format!("repeat('😀', {n})"), &format!("repeat('😀', {})", n / 4)]);
+            }
+        }
+        "binary" | "varbinary" | "tinyblob" | "blob" | "mediumblob" | "longblob" => {
+            push(&["x'61'", "x'41'", "x''", "x'00'", "x'6100'", "x'ff'"]);
+            // The longest string of bytes the column takes.
+            if edges && col.length > 0 {
+                push(&[&format!("repeat(x'ff', {})", col.length.min(65_535))]);
+            }
+        }
         "enum" => out.extend(col.labels.iter().map(|l| quote(l))),
         "set" => {
             out.push("''".into());
@@ -416,6 +434,8 @@ fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
                 if col.fraction == 6 {
                     push(&MICROSECONDS);
                 }
+                // Six fractional digits, which a column of fewer rounds to its own.
+                push(&["'2026-01-01 12:00:00.123456'", "'2026-01-01 12:00:00.999999'"]);
                 if col.data_type == "timestamp" {
                     push(&REPEATED_HOURS);
                 }
@@ -424,7 +444,7 @@ fn pool(col: &Column, scenario: Scenario) -> Vec<String> {
         "time" => {
             push(&["'12:00:00'", "'00:00:00'", "'01:02:03'"]);
             if edges {
-                push(&["'-838:59:59'", "'838:59:59'"]);
+                push(&["'-838:59:59'", "'838:59:59'", "'-12:00:00.123456'", "'838:59:58.999999'"]);
                 if col.fraction == 6 {
                     push(&["'12:00:00.000001'", "'12:00:00.000002'"]);
                 }
@@ -820,6 +840,7 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
             let params = analysis["params"].as_array().cloned().unwrap_or_default();
             let cardinality = analysis["cardinality"].as_str().unwrap_or("many");
             let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
+            let types: Vec<Option<Type>> = columns.iter().map(|c| serde_json::from_value(c["type"].clone()).ok()).collect();
             // A SELECT runs once more through a temporary table, where a plan the seeded tables
             // do not bring out would put it: the types and the documents are then the copies'.
             let mut forms = vec![(text.clone(), "", false)];
@@ -921,6 +942,12 @@ async fn check(server: &mut Server, state: &mut State<'_>, statements: &[(String
                                 Some(value) if col["type"]["kind"] == "boolean" && !matches!(value, My::NULL) && !is_truth(value) => found.push(format!("{file}: column {name} typed bool holds {value:?} with ({shown})")),
                                 Some(My::Bytes(bytes)) if returned.get(i).is_some_and(|c| c.code == 245) => {
                                     if let Some(why) = serde_json::from_slice::<Value>(bytes).ok().and_then(|document| json_contradiction(&col["type"], &document, col["nullable"].as_bool().unwrap_or(false), "")) {
+                                        found.push(format!("{file}: column {name} {why} with ({shown})"));
+                                    }
+                                }
+                                // A value longer, finer or of more digits than its type says.
+                                Some(value) => {
+                                    if let Some(why) = types.get(i).and_then(Option::as_ref).and_then(|ty| value_contradiction(ty, value)) {
                                         found.push(format!("{file}: column {name} {why} with ({shown})"));
                                     }
                                 }
@@ -1185,6 +1212,75 @@ fn type_contradiction(ty: &Value, code: u8, charset: u16) -> Option<String> {
     (!typed.contains(&returned)).then(|| format!("typed {} came back as {returned} (protocol type {code})", typed.join(" or ")))
 }
 
+/// Why a value a run returned contradicts the engine's type for its column, if it does: text or
+/// bytes of another length than the size says (text counted in the unit the size names, in the
+/// session's UTF-8), a DECIMAL of more digits than its precision or scale, or a time finer than
+/// its tick. The text protocol sends each value as its text, and the binary one a DATETIME, a
+/// TIMESTAMP or a TIME as its parts and anything else as bytes.
+fn value_contradiction(ty: &Type, value: &My) -> Option<String> {
+    let text = || match value {
+        My::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+        _ => None,
+    };
+    match (&ty.kind, value) {
+        (Kind::Text(TextType { size: Some(size), .. }), My::Bytes(_)) => {
+            let (n, unit) = text_length(size, text()?);
+            length_contradiction(size, n, unit)
+        }
+        (Kind::Bytes(BytesType { size: Some(size) }), My::Bytes(bytes)) => length_contradiction(size, bytes.len() as u64, "bytes"),
+        (Kind::Decimal(decimal), My::Bytes(_)) => decimal_contradiction(decimal, text()?),
+        (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }), My::Date(.., micros)) => micros_contradiction(tick, *micros),
+        (Kind::Duration(DurationType { tick: Some(tick), .. }), My::Time(.., micros)) => micros_contradiction(tick, *micros),
+        (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }) | Kind::Duration(DurationType { tick: Some(tick), .. }), My::Bytes(_)) => fraction_contradiction(tick, text()?),
+        _ => None,
+    }
+}
+
+/// A text's length in the unit its size counts, and that unit's name.
+fn text_length(size: &Size, text: &str) -> (u64, &'static str) {
+    match size.unit {
+        Some(SizeUnit::Byte) => (text.len() as u64, "bytes"),
+        Some(SizeUnit::Utf16Unit) => (text.encode_utf16().count() as u64, "UTF-16 units"),
+        None => (text.chars().count() as u64, "code points"),
+    }
+}
+
+/// Why a time's microseconds are finer than its tick, if they are.
+fn micros_contradiction(tick: &str, micros: u32) -> Option<String> {
+    let allowed = tick_digits(tick)?;
+    (allowed < 6 && micros % 10u32.pow(6 - allowed as u32) != 0).then(|| format!("ticking by {tick} holds {micros} microseconds"))
+}
+
+/// Why a time's text, `2026-01-01 12:00:00.500` or `-838:59:59.000000`, is finer than its tick, if
+/// it is: MySQL writes a fraction of as many digits as the column's decimals, or six inside a
+/// document, so the zeros that end it count for nothing.
+fn fraction_contradiction(tick: &str, text: &str) -> Option<String> {
+    let allowed = tick_digits(tick)?;
+    let fraction = text.rsplit_once('.').map_or("", |(_, f)| f).trim_end_matches('0');
+    (fraction.chars().all(|c| c.is_ascii_digit()) && fraction.len() > allowed).then(|| format!("ticking by {tick} holds {text}"))
+}
+
+/// Why a scalar inside a document contradicts its type's narrowing, if it does: a string longer
+/// than its text's size, bytes (`"base64:type15:…"`) of another length, a time finer than its tick,
+/// or a DECIMAL of more digits than its type's, read where the number survives a double (a
+/// precision of at most 15 digits).
+fn scalar_contradiction(ty: &Type, json: &Value) -> Option<String> {
+    match (&ty.kind, json) {
+        (Kind::Text(TextType { size: Some(size), .. }), Value::String(text)) => {
+            let (n, unit) = text_length(size, text);
+            length_contradiction(size, n, unit)
+        }
+        (Kind::Bytes(BytesType { size: Some(size) }), Value::String(text)) => {
+            let encoded: String = text.strip_prefix("base64:")?.split_once(':')?.1.chars().filter(|c| !c.is_whitespace()).collect();
+            let n = encoded.len() / 4 * 3 - encoded.chars().rev().take_while(|&c| c == '=').count();
+            length_contradiction(size, n as u64, "bytes")
+        }
+        (Kind::Decimal(decimal @ DecimalType { precision: Some(p), .. }), Value::Number(n)) if *p <= 15 => decimal_contradiction(decimal, &n.to_string()),
+        (Kind::DateTime(DateTimeType { tick, .. }) | Kind::Instant(InstantType { tick, .. }) | Kind::Duration(DurationType { tick: Some(tick), .. }), Value::String(text)) => fraction_contradiction(tick, text),
+        _ => None,
+    }
+}
+
 /// Why a JSON document contradicts the type the engine gave it, if it does: a null where the type
 /// has none, a missing key, or a value of another JSON type than its field's.
 fn json_contradiction(ty: &Value, json: &Value, nullable: bool, path: &str) -> Option<String> {
@@ -1246,7 +1342,10 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
                     _ => return None,
                 });
             }
-            (!wanted.contains(&kind)).then(|| format!("holds {kind} at {at}, typed {}", ty.short()))
+            if !wanted.contains(&kind) {
+                return Some(format!("holds {kind} at {at}, typed {}", ty.short()));
+            }
+            scalar_contradiction(ty, json).map(|why| format!("{why} at {at}"))
         }
     }
 }
@@ -1351,6 +1450,42 @@ mod tests {
         // The NULL type carries no value, and an unknown type claims nothing.
         assert_eq!(type_contradiction(&bigint, 6, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "unknown" }), 8, 63), None);
+    }
+
+    #[test]
+    fn a_value_is_held_against_its_length_digits_and_tick() {
+        let ty = |json: Value| serde_json::from_value::<Type>(json).unwrap();
+        let bytes = |text: &str| My::Bytes(text.as_bytes().to_vec());
+        let varchar = ty(json!({ "kind": "text", "size": { "max": 2 }, "name": "varchar" }));
+        assert_eq!(value_contradiction(&varchar, &bytes("😀😀")), None);
+        assert!(value_contradiction(&varchar, &bytes("abc")).is_some());
+        let text = ty(json!({ "kind": "text", "size": { "unit": "byte", "encoding": "UTF-8", "max": 4 }, "name": "text" }));
+        assert_eq!(value_contradiction(&text, &bytes("😀")), None);
+        assert!(value_contradiction(&text, &bytes("ááa")).is_some());
+        let binary = ty(json!({ "kind": "bytes", "size": { "exact": 3 }, "name": "binary" }));
+        assert_eq!(value_contradiction(&binary, &My::Bytes(vec![0x61, 0, 0])), None);
+        assert!(value_contradiction(&binary, &My::Bytes(vec![0x61])).is_some());
+        let decimal = ty(json!({ "kind": "decimal", "precision": 4, "min_scale": 2, "max_scale": 2, "name": "decimal" }));
+        assert_eq!(value_contradiction(&decimal, &bytes("-99.99")), None);
+        assert!(value_contradiction(&decimal, &bytes("100.00")).is_some());
+        // A DATETIME(3) in either protocol, and a TIME(0).
+        let datetime = ty(json!({ "kind": "datetime", "tick": "1/1000", "name": "datetime" }));
+        assert_eq!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_000)), None);
+        assert!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_400)).is_some());
+        assert_eq!(value_contradiction(&datetime, &bytes("2026-01-01 12:00:00.120")), None);
+        assert!(value_contradiction(&datetime, &bytes("2026-01-01 12:00:00.1234")).is_some());
+        let time = ty(json!({ "kind": "duration", "max": "PT838H59M59S", "tick": "1", "name": "time" }));
+        assert_eq!(value_contradiction(&time, &My::Time(true, 34, 22, 59, 59, 0)), None);
+        assert!(value_contradiction(&time, &My::Time(false, 0, 12, 0, 0, 500_000)).is_some());
+        assert_eq!(value_contradiction(&time, &bytes("-838:59:59")), None);
+        // Inside a document: MySQL writes six fractional digits, and bytes in base64.
+        assert_eq!(scalar_contradiction(&datetime, &json!("2026-01-01 12:00:00.123000")), None);
+        assert!(scalar_contradiction(&datetime, &json!("2026-01-01 12:00:00.123400")).is_some());
+        assert_eq!(scalar_contradiction(&binary, &json!("base64:type254:YQAA")), None);
+        assert!(scalar_contradiction(&binary, &json!("base64:type254:YQ==")).is_some());
+        assert!(scalar_contradiction(&varchar, &json!("abc")).is_some());
+        assert_eq!(scalar_contradiction(&decimal, &json!(99.5)), None);
+        assert!(scalar_contradiction(&decimal, &json!(99.125)).is_some());
     }
 
     #[test]

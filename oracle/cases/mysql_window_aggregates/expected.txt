@@ -1,11 +1,11 @@
-aggregate_family.sql: many () -> { mean: decimal, first_title: varchar, bits: bigint, notes: json varchar?[], by_title: json }
+aggregate_family.sql: many () -> { mean: decimal, first_title: varchar, bits: bigint, notes: json varchar(≤20)?[], by_title: json }
 around_current.sql: many () -> { rows_around: decimal, rest: decimal, running: decimal, least_id: int | bigint, mean: decimal }
 chained_windows.sql: many () -> { total: decimal, ahead: decimal? }
 copied_window.sql: many () -> { around: decimal, before_row: decimal? }
 count_window.sql: many () -> { n: bigint }
 following_frame.sql: many () -> { ahead: decimal? }
 grouped_sum.sql: many () -> { user_id: int, total: decimal }
-left_joined.sql: many () -> { name: varchar, total: decimal? }
+left_joined.sql: many () -> { name: varchar(≤40), total: decimal? }
 monthly_running.sql: many () -> { month: varchar?, running: decimal }
 named_window.sql: many () -> { total: decimal, last_title: varchar }
 named_window_framed.sql: many () -> { ahead: decimal? }
@@ -18,6 +18,6 @@ preceding_end.sql: many () -> { before_row: decimal? }
 range_offsets.sql: many () -> { by_day: decimal?, by_score: decimal?, by_weight: decimal? }
 rollup_window.sql: many () -> { user_id: int | bigint?, running: decimal?, top_user: int | bigint? }
 running_sum.sql: many () -> { running: decimal }
-subquery_window.sql: many () -> { name: varchar, own: decimal? }
+subquery_window.sql: many () -> { name: varchar(≤40), own: decimal? }
 where_tested.sql: many () -> { last_note: varchar }
 whole_sum.sql: many () -> { total: decimal }
