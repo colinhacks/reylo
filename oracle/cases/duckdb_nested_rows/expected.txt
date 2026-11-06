@@ -1,0 +1,4 @@
+all_null_field.sql: one () -> { rows: (struct{ n: int4? })[] }
+column_named_as_alias.sql: many () -> { rows: text?[]? }
+derived.sql: many () -> { id: int8, comments: (struct{ id: int8, body: text?, big: int128 })[] }
+empty.sql: one () -> { rows: (struct{ id: int8 })[] }

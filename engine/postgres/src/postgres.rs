@@ -845,7 +845,8 @@ impl<'a> Engine<'a> {
             let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
             // A whole row of no type the catalog has, or an array of them, whose shape reads to
             // the row's fields; else the describe's type stands.
-            let row = shape.filter(|_| record(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params));
+            let rows_of_table = |c: &DescribedColumn| registry.get(c.type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite));
+            let row = shape.filter(|_| record(col) || rows_of_table(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params)).map(|r| jsonshape::Resolved { ty: named_as(r.ty, col.type_oid, &registry), ..r });
             let (ty, nullable) = match (shape, built) {
                 (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
                     shapes_used.insert(i);
@@ -1344,11 +1345,15 @@ impl<'a> Engine<'a> {
     /// result holds twice finds none.
     fn built(&self, sql: &str, described: &[DescribedColumn], trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Vec<Option<jsonshape::Built>>> {
         let none = vec![None; described.len()];
-        let json = |c: &DescribedColumn| jsonshape::is_json(&self.registry.borrow(), c.type_oid);
+        let json = |c: &DescribedColumn| jsonshape::is_json(&self.registry.borrow(), c.type_oid) || self.row_or_rows(c.type_oid);
         if depth == 0 || !described.iter().any(json) {
             return Some(none);
         }
-        let Some((reads, queries)) = infer::item_reads(sql).filter(|(reads, _)| reads.len() == described.len()) else { return Some(none) };
+        // A probe of a whole row, `c.*`, reads each of the item's columns by its name.
+        let Some((reads, queries)) = infer::item_reads(sql).map(|(reads, queries)| match reads.as_slice() {
+            [infer::ItemRead::Star { item: Some(item) }] => (described.iter().map(|c| if self.row_or_rows(c.type_oid) { infer::ItemRead::Column { item: *item, column: c.name.clone() } } else { infer::ItemRead::Other }).collect(), queries),
+            _ => (reads, queries),
+        }).filter(|(reads, _): &(Vec<infer::ItemRead>, _)| reads.len() == described.len()) else { return Some(none) };
         let mut out = Vec::with_capacity(described.len());
         let mut pending = false;
         for (read, col) in reads.into_iter().zip(described) {
@@ -1360,7 +1365,7 @@ impl<'a> Engine<'a> {
                     continue;
                 }
             };
-            match self.item_built(&queries[item], &column, trust, columns, params, depth) {
+            match self.item_built(&queries[item], &column, self.row_or_rows(col.type_oid), trust, columns, params, depth) {
                 Some(found) => out.push(found.and_then(|b| match defaulted {
                     false => Some(b),
                     true => jsonshape::is_list(&b.ty).then_some(jsonshape::Built { non_null: true, ..b }),
@@ -1378,11 +1383,28 @@ impl<'a> Engine<'a> {
     }
 
     /// The JSON one item's column `column` holds ([`Engine::built`]).
-    fn item_built(&self, query: &infer::ItemQuery, column: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Option<jsonshape::Built>> {
+    /// Whether a type is a row, or an array of rows, as opposed to anything else a probe's column holds.
+    fn row_or_rows(&self, type_oid: u32) -> bool {
+        if matches!(type_oid, crate::pgtypes::oid::RECORD | crate::pgtypes::oid::RECORD_ARRAY) {
+            return true;
+        }
+        let registry = self.registry.borrow();
+        registry.get(type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite))
+    }
+
+    fn item_built(&self, query: &infer::ItemQuery, column: &str, rows: bool, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<Option<jsonshape::Built>> {
         if query.sql.is_empty() || query.known.is_some() {
             return Some(None);
         }
-        let Some(described) = self.probe(&query.sql, trust)? else { return Some(None) };
+        // A subquery that reads the items before it describes over them.
+        let described = match self.probe(&query.sql, trust)? {
+            Some(described) => described,
+            None => {
+                let Some(around) = query.around.as_ref().filter(|_| rows) else { return Some(None) };
+                let Some(described) = self.probe(&around.with(&query.sql), trust)? else { return Some(None) };
+                described
+            }
+        };
         let named = |i: usize, c: &DescribedColumn| query.columns.get(i).cloned().unwrap_or_else(|| c.name.clone());
         let mut at = described.columns.iter().enumerate().filter(|(i, c)| named(*i, c) == column).map(|(i, _)| i);
         let (Some(at), None) = (at.next(), at.next()) else { return Some(None) };
@@ -1399,7 +1421,14 @@ impl<'a> Engine<'a> {
         jsonshape::oids(shape, &outcomes, params, &mut oids);
         self.types(&oids)?;
         self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()), trust)?;
-        let resolved = jsonshape::resolve(shape, &outcomes, &self.registry.borrow(), params);
+        let is_record = self.row_or_rows(described.columns[at].type_oid);
+        let resolved = if is_record {
+            let registry = self.registry.borrow();
+            let Some(row) = jsonshape::resolve_row(shape, &outcomes, &registry, params) else { return Some(None) };
+            jsonshape::Resolved { ty: named_as(row.ty, described.columns[at].type_oid, &registry), ..row }
+        } else {
+            jsonshape::resolve(shape, &outcomes, &self.registry.borrow(), params)
+        };
         Some(Some(jsonshape::Built { ty: resolved.ty, non_null: resolved.non_null, unresolved: resolved.unresolved }))
     }
 
@@ -2036,8 +2065,9 @@ impl<'a> Engine<'a> {
                             }
                             Some(None) => {}
                         }
+                        let proven = self.lateral_expressions(query, trust)?;
                         if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
-                            let columns = columns.into_iter().enumerate().filter(|(_, (_, non_null))| *non_null);
+                            let columns = columns.into_iter().enumerate().map(|(at, (name, non_null))| (at, (name, non_null || proven.get(at).copied().unwrap_or(false)))).filter(|(_, (_, non_null))| *non_null);
                             settled.insert(i, columns.map(|(at, (name, _))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or(name), nullable: false, document: None, values: None }).collect());
                         }
                         break;
@@ -2228,6 +2258,16 @@ impl<'a> Engine<'a> {
     /// What a LATERAL set operation that reads the items before it says of its columns, the ones it
     /// keeps non-null: each arm is described over those items, as the set operation is not alone.
     /// `None` inside where it is no set operation, or an arm cannot be described.
+    /// Per column of a subquery that reads the items before it, whether its expression is non-null by what the columns it reads hold: the leaves are described over those items, where the subquery alone cannot be. Empty where it can't be told.
+    fn lateral_expressions(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<Vec<bool>> {
+        let Some(around) = &query.around else { return Some(Vec::new()) };
+        let columns = level_columns(&query.sql, self.host)?;
+        let plan = infer::plan(&query.sql, Dialect::Postgres, trust, &columns);
+        let Some(leaves) = plan.leaves.as_ref().filter(|_| plan.set_op.is_none() && !plan.star && plan.reads_leaves()) else { return Some(Vec::new()) };
+        let Some(described) = self.probe(&around.with(leaves), trust)? else { return Some(Vec::new()) };
+        Some(plan.head.iter().map(|claim| claim.as_ref().is_some_and(|e| infer::resolve(e, Some(&described.columns)).non_null)).collect())
+    }
+
     fn lateral_arms(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<Option<Vec<ItemColumn>>> {
         let Some(around) = &query.around else { return Some(None) };
         let Some(set) = infer::plan(&query.sql, Dialect::Postgres, trust, &Columns::default()).set_op else { return Some(None) };
@@ -4020,10 +4060,21 @@ fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, col
 /// extension's own type are each read from their text. A SQL array (`{1}` and `[0:0]={1}` read
 /// alike), a JSON document (two large numbers read alike) or a row value may not be, so no key
 /// holds one.
+/// A row's or an array of rows' type under the names its oid has: a table's row keeps the table's name at every depth, and one of no catalog type stays `record`.
+fn named_as(mut ty: Type, type_oid: u32, registry: &TypeRegistry) -> Type {
+    let Some(array) = registry.get(type_oid).filter(|t| t.kind == crate::pgtypes::TypeKind::Array) else { return ty };
+    let element = array.elem.map(|e| registry.render(e).name);
+    ty.name = registry.render(type_oid).name;
+    if let (TyKind::Array(a), Some(name)) = (&mut ty.kind, element) {
+        a.element.ty.name = name;
+    }
+    ty
+}
+
 fn identifies(ty: &Type) -> bool {
     match &ty.kind {
         TyKind::Json(_) | TyKind::Unknown | TyKind::Any => false,
-        TyKind::Array(array) => !array.any_depth,
+        TyKind::Array(array) => !array.any_depth && identifies(&array.element.ty),
         TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
         TyKind::Opaque => ty.name.as_deref() != Some("record"),
         _ => true,

@@ -1,0 +1,32 @@
+a_derived_all_types.sql: one () -> { comments: (record{ id: int8, body: text?, big: int8, amount: numeric, at: timestamptz, d: date?, raw: bytea?, m: public.mood('ok' | 'sad, "very"')?, p: int4?, j: jsonb?, tags: text?[]?, a: public.addr{ street: text?, zip: int4? }?, f: float8?, iv: interval?, ok: bool? })[] }
+a_derived_expr_nested.sql: many () -> { id: int8, comments: (record{ id: int8, more: int8, loud: text?, text: text, rs: (record{ id: int8 })[] })[] } key (id)
+a_derived_expr.sql: many () -> { id: int8, comments: (record{ id: int8, more: int8?, loud: text?, n: int8? })[] } key (id)
+a_derived_json.sql: many () -> { id: int8, comments: (record{ id: int8, doc: jsonb? })[] } key (id)
+a_derived_ordered.sql: many () -> { id: int8, comments: (record{ id: int8, body: text? })[] } key (id)
+a_derived_outer.sql: many () -> { id: int8, comments: (record{ id: int8, reply: text? })[] } key (id)
+a_derived_param.sql: many (min: int8) -> { id: int8, comments: (record{ id: int8, big: int8 })[] } key (id)
+a_derived.sql: many () -> { id: int8, comments: (record{ id: int8, big: int8, at: timestamptz })[] } key (id)
+b_function.sql: many () -> { id: int8, comments: record?[] } key (id)
+b_table.sql: many () -> { id: int8, comments: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, amount: numeric, at: timestamptz, d: date?, raw: bytea?, m: public.mood('ok' | 'sad, "very"')?, p: public.pos?, j: jsonb?, tags: text?[]?, a: public.addr{ street: text?, zip: int4? }?, f: float8?, iv: interval?, ok: bool? })[] } key (id)
+b_values.sql: one () -> { vals: (record{ n: int4, s: text? })[] }
+b_view.sql: many () -> { id: int8, comments: (public.comment_view{ id: int8?, post_id: int8?, body: text? })[] } key (id)
+b_with.sql: one () -> { comments: (record{ id: int8, big: int8 })[] }
+c_row_cast.sql: one () -> { addrs: (public.addr{ street: text?, zip: int4? })[] }
+c_row_implicit.sql: many () -> { id: int8, comments: record[] } key (id)
+c_row_star.sql: many () -> { id: int8, comments: record[] } key (id)
+c_row.sql: many () -> { id: int8, comments: record[] } key (id)
+d_nested_table.sql: many () -> { id: int8, comments: (record{ id: int8, replies: (record{ id: int8, comment_id: int8, body: text })[] })[] } key (id)
+d_nested.sql: many () -> { id: int8, comments: (record{ id: int8, replies: (record{ id: int8, body: text })[] })[] } key (id)
+d_nested3.sql: many () -> { id: int8, posts: (record{ id: int8, comments: (record{ id: int8, replies: (record{ id: int8, body: text })[] })[] })[] } key (id)
+e_array_agg_coalesce.sql: many () -> { id: int8, comments: (record{ id: int8, big: int8 })[] } key (id)
+e_array_agg_group.sql: many () -> { post_id: int8, comments: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, amount: numeric, at: timestamptz, d: date?, raw: bytea?, m: public.mood('ok' | 'sad, "very"')?, p: public.pos?, j: jsonb?, tags: text?[]?, a: public.addr{ street: text?, zip: int4? }?, f: float8?, iv: interval?, ok: bool? })[] } key (post_id)
+e_array_agg.sql: many () -> { id: int8, comments: (record{ id: int8, big: int8 })[]? } key (id)
+e_lateral.sql: many () -> { id: int8, comments: record?[]? } key (id)
+f_one_lateral.sql: many () -> { id: int8, u: record{ id: int8, name: text }? }
+f_one_table.sql: many () -> { id: int8, author: public.users{ id: int8, name: text }? } key (id)
+f_one.sql: many () -> { id: int8, author: record{ id: int8, name: text }? } key (id)
+g_case_element.sql: one () -> { els: record?[] }
+g_duplicate_names.sql: one () -> { dup: (record{ a: int4, a: int4 })[] }
+g_empty.sql: one () -> { none: (record{ id: int8 })[] }
+g_outer_element.sql: one () -> { els: (record{ n: int4 }?)[] }
+h_distinct_rows.sql: many () -> { rows: (record{ id: int8 })[] }
