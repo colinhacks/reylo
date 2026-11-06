@@ -127,6 +127,7 @@ fn run_file(file: &Path, dir: &Path, timeout_ms: u64, t: &mut Tally) -> Result<(
                 continue;
             }
         };
+        t.typed(&format!("{shown}:{}", r.line), &sql, &analysis);
         if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
             t.with_params += 1;
             let _ = db.exec(&sql);

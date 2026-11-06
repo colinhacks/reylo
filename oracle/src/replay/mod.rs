@@ -47,6 +47,13 @@ pub struct Returned {
 }
 
 impl Tally {
+    /// Holds every type of a statement's analysis to the format's rules (`validity.rs`), whether the statement runs or not: each type that breaks one is a contradiction.
+    pub fn typed(&mut self, at: &str, sql: &str, analysis: &Value) {
+        for v in crate::validity::violations(analysis) {
+            self.contradictions.push(format!("{at}: {} -- {v}", one_line(sql)));
+        }
+    }
+
     /// Holds what a statement returned against its analysis. `at` places the statement in its file.
     pub fn judge(&mut self, at: &str, sql: &str, analysis: &Value, returned: &Returned) {
         self.ran += 1;
