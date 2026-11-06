@@ -463,7 +463,7 @@ A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `u
 
 **Several dimensions**
 
-An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) to type every array column at any depth. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
 
 <Pairs>
 
@@ -1311,7 +1311,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
-| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) |
+| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select its fields as columns |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
