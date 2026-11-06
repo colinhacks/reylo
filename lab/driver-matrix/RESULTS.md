@@ -226,7 +226,7 @@ Deliberately broken clients (drivers/control.ts). Every row marked FAIL here is 
 
 ## Type check
 
-`tsc` Version 7.1.0-dev.20260918.1 over typecheck/cases.ts: every client and transaction object passed to a query's run (ClientFor<D>), and the type run returns. Details in [typecheck/RESULTS.md](typecheck/RESULTS.md).
+`tsc` Version 7.1.0-dev.20261104.1 over typecheck/cases.ts: every client and transaction object passed to a query's run (ClientFor<D>), and the type run returns. Details in [typecheck/RESULTS.md](typecheck/RESULTS.md).
 
 732 cases over 124 client types: 732 as expected, 0 wrongly accepted, 0 wrongly rejected.
 
