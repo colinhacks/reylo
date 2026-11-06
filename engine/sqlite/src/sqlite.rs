@@ -343,6 +343,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,

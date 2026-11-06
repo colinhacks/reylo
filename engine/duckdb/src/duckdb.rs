@@ -13,7 +13,7 @@ use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
 use reylo_engine_core::types::{Cardinality, StatementKind, Type};
-use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SelectItem, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;

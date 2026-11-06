@@ -586,11 +586,11 @@ fn result_targets(statement: &Statement) -> Option<Vec<ResultTarget>> {
             _ => None,
         }
     }
-    fn item(item: &SelectItem) -> Target {
+    fn item(item: &SelectItem) -> ResultTarget {
         match item {
             SelectItem::UnnamedExpr(e) if read_as_it_is(e) => ResultTarget::Named,
             SelectItem::UnnamedExpr(_) => ResultTarget::Unnamed,
-            SelectItem::ExprWithAlias { .. } => ResultTarget::Named,
+            SelectItem::ExprWithAlias { .. } | SelectItem::ExprWithAliases { .. } => ResultTarget::Named,
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => ResultTarget::Star,
         }
     }
