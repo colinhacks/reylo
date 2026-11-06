@@ -184,6 +184,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                         },
                         comment: None,
                         name: a.name,
+                        rows: None,
                     })
                     .collect(),
             )
