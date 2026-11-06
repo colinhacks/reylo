@@ -155,7 +155,7 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
     if !url.is_empty() {
         reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
     }
-    let shadow_url = m.shadow_url.as_deref().map(|u| project.expand("migrate.shadow_url", u)).transpose()?;
+    let shadow_url = project.config.shadow_url.as_deref().map(|u| project.expand("shadow_url", u)).transpose()?;
     // The project's own files, in the directory `dir` names (`reylo`), or --dir for a run.
     let home = match args.values.get("dir") {
         Some(v) => cwd.join(v),
@@ -441,16 +441,16 @@ mod tests {
 
     #[test]
     fn lock_is_set_in_the_migrate_section() {
-        let file = "# the project\nmigrate:\n  shadow_url: ${SHADOW_URL}   # the CI server's\n\nqueries: src\n";
+        let file = "# the project\nmigrate:\n  # the order the migrations run in\n\nqueries: src\n";
         let off = with_lock(file, false).unwrap();
-        assert_eq!(off, "# the project\nmigrate:\n  lock: false\n  shadow_url: ${SHADOW_URL}   # the CI server's\n\nqueries: src\n");
+        assert_eq!(off, "# the project\nmigrate:\n  lock: false\n  # the order the migrations run in\n\nqueries: src\n");
         assert_eq!(with_lock(&off, false).unwrap(), off);
         assert_eq!(with_lock(&off, true).unwrap(), off.replace("lock: false", "lock: true"));
         assert_eq!(with_lock("migrate: {}\n", false).unwrap(), "migrate:\n  lock: false\n");
         assert_eq!(with_lock("migrate:\n    lock: true\n", false).unwrap(), "migrate:\n    lock: false\n");
         assert_eq!(with_lock("queries: src\n", true), None);
         // A comment at the start of a line inside the section is the section's.
-        assert_eq!(with_lock("migrate:\n# the shadow server\n  shadow_url: x\n  lock: false\n", true).unwrap(), "migrate:\n# the shadow server\n  shadow_url: x\n  lock: true\n");
+        assert_eq!(with_lock("migrate:\n# the order\n  lock: false\n", true).unwrap(), "migrate:\n# the order\n  lock: true\n");
         assert_eq!(with_lock("migrate: {} # opt in\n", false).unwrap(), "migrate: # opt in\n  lock: false\n");
     }
 }

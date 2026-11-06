@@ -5,12 +5,38 @@ description: Put your schema in schema.sql, and Reylo writes, checks and runs ea
 
 <p className="dk-subheader">Put your schema in a SQL file, and Reylo writes the migrations</p>
 
-- **One schema file.** Your schema lives in `schema.sql`, and Reylo writes each migration from your changes to it.
-- **Linear history.** A lockfile lists your migrations in order, so two branches that each add one conflict in git, before anything deploys. Opt out with `lock: false`.
-- **Postgres, MySQL and SQLite.** One set of commands for all three.
-- **No silent data loss.** Nothing is dropped until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
-- **Integrity checks.** Chained hashes in the lock catch a migration edited, deleted or reordered, with no database. A fingerprint on each database catches changes made by hand.
-- **Real dry runs.** Shadow databases replay every migration with `reylo migrate check`, running nothing on yours.
+<Features>
+<Feature icon="file" title="One schema file">
+
+Your schema lives in `schema.sql`, and Reylo writes each migration from your changes to it.
+
+</Feature>
+<Feature icon="branch" title="Linear history">
+
+A lockfile lists your migrations in order, so two branches that each add one conflict in git, before anything deploys. Opt out with `lock: false`.
+
+</Feature>
+<Feature icon="database" title="Postgres, MySQL and SQLite">
+
+One set of commands for all three.
+
+</Feature>
+<Feature icon="shield" title="No silent data loss">
+
+Nothing is dropped until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
+
+</Feature>
+<Feature icon="hash" title="Integrity checks">
+
+Chained hashes in the lock catch a migration edited, deleted or reordered, with no database. A fingerprint on each database catches changes made by hand.
+
+</Feature>
+<Feature icon="layers" title="Real dry runs">
+
+Shadow databases replay every migration with `reylo migrate check`, running nothing on yours.
+
+</Feature>
+</Features>
 
 ## Basic usage
 
@@ -100,10 +126,11 @@ Applying to postgres://db.example.com/app
 Every setting is optional.
 
 ```yaml title=".reylo.yaml"
+# A server to build shadow databases on, where the database's own
+# refuses create database. Default: the database's own server.
+shadow_url: ${SHADOW_URL}
+
 migrate:
-  # A server to build shadow databases on, where the database's own
-  # refuses create database. Default: the database's own server.
-  shadow_url: ${SHADOW_URL}
   # Whether the lock sets the order your migrations run in. Without it,
   # their names do. Default: true.
   lock: true
@@ -112,6 +139,8 @@ migrate:
 Reylo migrates the database your type check reads: [`direct_url`](/#direct_url), else `DATABASE_URL`. It keeps its files in `reylo/`, or the directory [`dir`](/#dir) names.
 
 ## CLI
+
+Every command and flag:
 
 ```terminal
 Usage: reylo migrate <command> [flags]
@@ -301,6 +330,8 @@ $ reylo migrate check
 ✓ This database matches its history
 ✓ Nothing is pending
 ```
+
+Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard is no drift, and stops no deploy.
 
 With `--offline`, it checks what needs no database: the lock against the files, and `schema.sql` against the checksum the lock holds.
 

@@ -848,3 +848,53 @@ a.reylo-compare-name:hover {
   content: '-';
   color: var(--color-fd-error, #f85149);
 }
+
+/* The feature cards under a page's title (components/feature-cards.tsx). */
+.reylo-features {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+
+.reylo-feature {
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.75rem;
+  background: var(--color-fd-card);
+  padding: 1rem 1.1rem 1.1rem;
+}
+
+.reylo-feature svg {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+  color: var(--color-fd-primary);
+}
+
+.reylo-feature-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-fd-foreground);
+}
+
+#nd-page .prose .reylo-feature p {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose .reylo-feature code {
+  white-space: nowrap;
+}
+
+@media (max-width: 639px) {
+  .reylo-features {
+    grid-template-columns: 1fr;
+  }
+}

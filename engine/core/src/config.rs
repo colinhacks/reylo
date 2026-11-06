@@ -29,6 +29,10 @@ pub struct Project {
     /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
+    /// A server to make `reylo migrate`'s shadow databases on, where the database's own refuses
+    /// `create database`; the database's own server when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shadow_url: Option<String>,
     /// The `.env` files the importer and every other host read, relative to the project file
     /// (`.env.local`, then `.env`, when absent); the first that sets a variable wins, and the
     /// process environment wins over all of them.
@@ -65,14 +69,12 @@ pub struct Project {
     pub api: Option<serde_yaml::Value>,
 }
 
-/// `reylo migrate`'s settings: a server to make shadow databases on where the database's own refuses
-/// `create database`, and whether the project keeps a lock. The database is the type check's
-/// connection, and where the files are is the top-level `dir`.
+/// `reylo migrate`'s settings: whether the project keeps a lock. The database is the type check's
+/// connection, the server for shadow databases the top-level `shadow_url`, and where the files are
+/// the top-level `dir`.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Migrate {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shadow_url: Option<String>,
     /// Whether `reylo-lock.yaml` sets the order the migrations run in, so that two branches that each
     /// add one conflict in git, and a migration not in it is a draft only development runs (`true`
     /// when absent); `false` (`reylo migrate unlock`) runs them by name, with no lock.
@@ -243,11 +245,7 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
         project.url = project.url.as_deref().map(unmask_placeholders);
         project.direct_url = project.direct_url.as_deref().map(unmask_placeholders);
         project.dir = project.dir.as_deref().map(unmask_placeholders);
-        if let Some(m) = project.migrate.as_mut() {
-            for value in [&mut m.shadow_url].into_iter().flatten() {
-                *value = unmask_placeholders(value);
-            }
-        }
+        project.shadow_url = project.shadow_url.as_deref().map(unmask_placeholders);
         for item in project.env.iter_mut().flatten() {
             *item = unmask_placeholders(item);
         }
@@ -316,8 +314,9 @@ mod tests {
 
     #[test]
     fn reads_the_migrate_section() {
-        let p = parse("dir: db\nmigrate:\n  shadow_url: ${SHADOW_URL}\n  lock: false\n").unwrap();
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "migrate": { "shadow_url": "${SHADOW_URL}", "lock": false } }));
+        let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\nmigrate:\n  lock: false\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}", "migrate": { "lock": false } }));
+        assert!(parse("migrate:\n  shadow_url: x\n").is_err(), "the server for shadow databases is the top-level shadow_url");
         assert!(parse("migrate:\n  dir: db/migrations\n").is_err(), "the migrations' place is the top-level dir's");
         assert!(parse("migrate:\n  url: x\n").is_err(), "the database is the type check's");
         assert!(parse("migrate:\n  strict_comments: false\n").is_err(), "comments are schema");

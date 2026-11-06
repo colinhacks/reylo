@@ -113,14 +113,21 @@ The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `
 dir: db
 ```
 
+### `shadow_url`
+
+The server where [migrations](/migrate) build their shadow databases, for a database whose own server refuses `create database`:
+
+```yaml title=".reylo.yaml"
+# the default is the database's own server
+shadow_url: ${SHADOW_URL}
+```
+
 ### `migrate`
 
 Turns on [migrations](/migrate), and holds their settings:
 
 ```yaml title=".reylo.yaml"
 migrate:
-  # a server for shadow databases, where the database's own refuses create database
-  shadow_url: ${SHADOW_URL}
   # false: no lock, and migrations run by name (the default is true)
   lock: true
 ```

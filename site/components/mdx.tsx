@@ -3,6 +3,7 @@ import type { MDXComponents } from 'mdx/types';
 import type { ReactNode } from 'react';
 import { CompareTable } from './compare-table';
 import { Dialect, DialectSwitch, DialectTabs } from './dialect-tabs';
+import { Feature, Features } from './feature-cards';
 import { HeroActions, HeroDemo } from './hero';
 import { HowItWorksDiagram } from './how-it-works-diagram';
 import { Inferred, InferredRow, InferredTypes } from './inferred';
@@ -35,6 +36,9 @@ export function getMDXComponents(components?: MDXComponents) {
     Inferred,
     InferredRow,
     InferredTypes,
+    // The cards under /migrate's title (components/feature-cards.tsx).
+    Features,
+    Feature,
     // The marks on /compare (components/compare-table.tsx).
     CompareTable,
     // The card that links the playground, /play (components/playground-link.tsx).
