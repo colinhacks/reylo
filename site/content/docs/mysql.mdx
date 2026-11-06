@@ -308,7 +308,7 @@ MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`
 
 An `ENUM` is the union of its labels, and a `SET` a JavaScript `Set` of them.
 
-MySQL keeps a `SET`'s members once each, in the order the column declares them. A parameter written to a `SET` column, or compared with one, takes a `Set` too. `JSON.stringify` writes a `Set` as `{}`, so spread it into an array before sending it as JSON.
+MySQL keeps a `SET`'s members once each, in the order the column declares them. A parameter written to a `SET` column, or compared with one, takes a `Set` too, and [`js.codecs`](/#jscodecs) can make both an array. `JSON.stringify` writes a `Set` as `{}`, so spread it into an array before sending it as JSON.
 
 <Pairs>
 
