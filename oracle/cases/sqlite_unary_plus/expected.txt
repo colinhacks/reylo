@@ -1,6 +1,6 @@
-in_one_integer.sql: at_most_one (ids: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-in_one_text.sql: many (n: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-in_two.sql: many (n: text(utf8), m: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+in_one_integer.sql: at_most_one (ids: int64) -> { id: INTEGER }
+in_one_text.sql: many (n: text(utf8)) -> { id: INTEGER }
+in_two.sql: many (n: text(utf8), m: text(utf8)) -> { id: INTEGER }
 plus_and_minus.sql: at_most_one (n: text(utf8), i: int64) -> { p: text(utf8), m: int64? }
 plus_column.sql: many () -> { p: text(utf8) }
 signs.sql: many () -> { minus: int64?, plus: int64? }

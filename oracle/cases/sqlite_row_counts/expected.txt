@@ -19,10 +19,10 @@ join_on_condition.sql: at_most_one () -> { n: int64, m: int64 }
 join_on_equal.sql: one () -> { n: int64, m: int64 }
 join_on_false.sql: at_most_one () -> { n: int64, m: int64 }
 json_each.sql: many () -> { n: int64, value: unknown? }
-key_limit_5.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-key_limit_comma.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-key_limit_offset.sql: at_most_one (id: int64, n: int64, skip: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-key_limit_param.sql: at_most_one (id: int64, n: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_5.sql: at_most_one (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_comma.sql: at_most_one (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_offset.sql: at_most_one (id: int64, n: int64, skip: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+key_limit_param.sql: at_most_one (id: int64, n: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
 left_join.sql: one (id: int64) -> { n: int64, name: TEXT(text(utf8) | bytes)? }
 left_join_one_row.sql: at_most_one (id: int64) -> { n: int64?, name: TEXT(text(utf8) | bytes) }
 left_join_table_first.sql: at_most_one (id: int64) -> { n: int64?, name: TEXT(text(utf8) | bytes) }
@@ -31,12 +31,12 @@ many_side.sql: many () -> { n: int64, name: TEXT(text(utf8) | bytes) }
 outer_aggregate_derived.sql: many () -> { n: int64? }
 outer_aggregate_limit.sql: many () -> { n: int64? }
 outer_aggregate_scalar.sql: many () -> { n: int64? }
-own_aggregate_derived.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
-own_aggregate_limit.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+own_aggregate_derived.sql: many () -> { id: INTEGER, n: int64 }
+own_aggregate_limit.sql: many () -> { id: INTEGER, n: int64 }
 own_aggregate_limited.sql: many () -> { n: int64 }
-scan_limit_1.sql: at_most_one () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-scan_limit_5.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-scan_limit_negative.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+scan_limit_1.sql: at_most_one () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+scan_limit_5.sql: many () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+scan_limit_negative.sql: many () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
 values.sql: many () -> { column1: int64 }
 values_joined.sql: many () -> { n: int64, column1: int64 }
 values_rows.sql: many () -> { column1: int64 }

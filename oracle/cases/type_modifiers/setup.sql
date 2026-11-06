@@ -2,6 +2,8 @@
 -- the catalog report them, through a cast, a domain, a composite type, an array, a view and an
 -- interval's fields. The rows hold each type's edges: the longest text, the most digits, the finest
 -- tick.
+-- A parameter written whole to a column takes its type modifier, which the server describes the
+-- parameter without; a cast one, or one only compared with a column, keeps its own type.
 create domain email as varchar(255) check (value like '%@%');
 create type address as (street text, zip varchar(10));
 create table typed (

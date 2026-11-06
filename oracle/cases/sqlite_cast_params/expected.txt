@@ -1,6 +1,6 @@
-coalesced.sql: many (n: int64?, doc: json?, guard: json?, id: int64) -> { n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, doc: TEXT(text(utf8) | bytes)? }
-update_row_value.sql: at_most_one (name: text(utf8), email: text(utf8), id: int64) -> { name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
-update_set.sql: at_most_one (email: text(utf8), name: text(utf8), n: int64, doc: text(utf8), id: int64) -> { email: TEXT(text(utf8) | bytes)?, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, doc: TEXT(text(utf8) | bytes)? }
-upsert.sql: one (name: text(utf8), email: text(utf8)) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-upsert_set.sql: one (email: text(utf8), n: int64, name: text(utf8)) -> { email: TEXT(text(utf8) | bytes)?, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
-values_rows.sql: many (name: text(utf8), email: text(utf8), score: float(11,52), n: int64, name2: text(utf8), email2: text(utf8), score2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), n2: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), email: TEXT(text(utf8) | bytes)?, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+coalesced.sql: many (n: int64?, doc: json?, guard: json?, id: int64) -> { n: INTEGER?, doc: TEXT(utf8)? }
+update_row_value.sql: at_most_one (name: text(utf8), email: text(utf8), id: int64) -> { name: TEXT(utf8), email: TEXT(utf8)? }
+update_set.sql: at_most_one (email: text(utf8), name: text(utf8), n: int64, doc: text(utf8), id: int64) -> { email: TEXT(utf8)?, n: INTEGER?, doc: TEXT(utf8)? }
+upsert.sql: one (name: text(utf8), email: text(utf8)) -> { id: INTEGER }
+upsert_set.sql: one (email: text(utf8), n: int64, name: text(utf8)) -> { email: TEXT(utf8)?, n: INTEGER? }
+values_rows.sql: many (name: text(utf8), email: text(utf8), score: float(11,52), n: int64, name2: text(utf8), email2: text(utf8), score2: NUMERIC(int64 | float(11,52) | text(utf8) | bytes), n2: int64) -> { id: INTEGER, email: TEXT(utf8)?, n: INTEGER? }

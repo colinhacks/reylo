@@ -1,15 +1,15 @@
 comma_join.sql: at_most_one (id: int64) -> { title: TEXT(text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
-delete_volatile.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+delete_volatile.sql: many () -> { id: INTEGER }
 derived_aggregate_column.sql: many (n: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
 derived_distinct_key.sql: at_most_one (u: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
 derived_group_key.sql: at_most_one (u: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
-derived_join_key.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
-derived_key.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+derived_join_key.sql: at_most_one (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
+derived_key.sql: at_most_one (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
 derived_key_computed.sql: many (id: int64) -> { id: int64 }
-derived_key_nested.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
-derived_key_renamed.sql: at_most_one (id: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+derived_key_nested.sql: at_most_one (id: int64) -> { id: INTEGER }
+derived_key_renamed.sql: at_most_one (id: int64) -> { user_id: INTEGER }
 derived_no_key.sql: many (n: text(utf8)) -> { name: TEXT(text(utf8) | bytes) }
-derived_union_all.sql: many (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+derived_union_all.sql: many (id: int64) -> { id: INTEGER }
 distinct_pinned.sql: at_most_one (u: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
 except_pinned.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
 except_unpinned.sql: many (id: int64) -> { user_id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
@@ -25,4 +25,4 @@ right_after_inner.sql: many () -> { email: TEXT(text(utf8) | bytes)?, title: TEX
 self_join.sql: at_most_one (id: int64) -> { name: TEXT(text(utf8) | bytes) }
 subquery_pinned.sql: at_most_one (id: int64) -> { name: TEXT(text(utf8) | bytes) }
 volatile.sql: many () -> { name: TEXT(text(utf8) | bytes) }
-with_key.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes) }
+with_key.sql: at_most_one (id: int64) -> { id: INTEGER, name: TEXT(text(utf8) | bytes) }
