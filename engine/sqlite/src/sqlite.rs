@@ -556,8 +556,8 @@ fn text() -> Type {
     Type::new(Kind::Text(TextType { ill_formed: Some(IllFormed::Utf8), ..TextType::default() }))
 }
 
-/// What a column of an affinity holds outside a STRICT table: an INTEGER, NUMERIC or untyped one
-/// any storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
+/// What a column of an affinity holds outside a STRICT table: an INTEGER or NUMERIC one any
+/// storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
 fn stored(aff: &str) -> Type {
     let members = match aff {
         "real" => vec![real(), text(), Type::bytes()],
