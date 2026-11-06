@@ -105,7 +105,7 @@ pub struct Codecs {
     /// `Temporal.Duration` refuses one whose parts differ in sign, which it cannot hold.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<DurationCodec>,
-    /// A set of members: MySQL's `SET`, a `Set` by default, or an `array` of its members.
+    /// A set of members: MySQL's `SET`, a `Set` by default, or an `Array` of its members.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub set: Option<SetCodec>,
 }
