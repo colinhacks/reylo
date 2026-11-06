@@ -1265,9 +1265,7 @@ mod tests {
         ty
     }
 
-    /// The examples of spec/examples.ts, which `nub run typedefs` copies into spec/examples.json:
-    /// each descriptor, whole or in part, reads and writes back as itself, and every type in it
-    /// passes rule 7.
+    /// The examples of spec/examples.ts, which `nub run typedefs` copies into spec/examples.json: each descriptor, whole or in part, reads and writes back as itself, and every type in it passes rule 7.
     #[test]
     fn the_spec_examples_read_and_write_as_they_are_written() {
         let examples: Value = serde_json::from_str(include_str!("../../../spec/examples.json")).unwrap();

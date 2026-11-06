@@ -1,8 +1,4 @@
-// The examples of the type descriptor format (spec/examples.ts) held to the engine: each example of
-// a database Reylo runs has its setup run on an empty database of its own and its statement analyzed
-// there by the root module's `analyze`, which returns what `reylo analyze` prints, and every field
-// the example shows must be what the engine writes, all but the server's version, which is the test
-// server's own. Reylo runs no SQL Server or Oracle, so their examples are written by hand.
+// The examples of the type descriptor format (spec/examples.ts) held to the engine: each example of a database Reylo runs has its setup run on an empty database of its own and its statement analyzed there by the root module's `analyze`, which returns what `reylo analyze` prints, and every field the example shows must be what the engine writes, all but the server's version, which is the test server's own. Reylo runs no SQL Server or Oracle, so their examples are written by hand.
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";

@@ -156,6 +156,10 @@
           "name": "status",
           "type": {
             "kind": "text",
+            "enum": [
+              "b",
+              "a"
+            ],
             "name": "enum"
           }
         },
@@ -191,7 +195,11 @@
             "name": "set",
             "element": {
               "type": {
-                "kind": "text"
+                "kind": "text",
+                "enum": [
+                  "a",
+                  "b"
+                ]
               }
             }
           }
@@ -709,27 +717,9 @@
           "name": "n",
           "nullable": true,
           "type": {
-            "kind": "union",
-            "name": "INTEGER",
-            "members": [
-              {
-                "kind": "integer",
-                "bits": 64
-              },
-              {
-                "kind": "float",
-                "exponent_bits": 11,
-                "mantissa_bits": 52,
-                "infinity": true
-              },
-              {
-                "kind": "text",
-                "ill_formed": "utf8"
-              },
-              {
-                "kind": "bytes"
-              }
-            ]
+            "kind": "integer",
+            "bits": 64,
+            "name": "INTEGER"
           }
         }
       ]

@@ -1,13 +1,7 @@
 /**
- * Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database: each a
- * statement, the schema it reads, and what introspecting it gives, whole or the part the example is
- * about. `nub run typecheck` checks each against the types, and `tests/typedefs.test.ts` against the
- * JSON Schema.
+ * Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database: each a statement, the schema it reads, and what introspecting it gives, whole or the part the example is about. `nub run typecheck` checks each against the types, and `tests/typedefs.test.ts` against the JSON Schema.
  *
- * Those of Postgres, MySQL, SQLite and DuckDB are what Reylo's engine writes: `tests/spec-examples.test.ts`
- * runs each one's setup and statement on its database and compares every field the example shows,
- * all but the server's version. Reylo runs no SQL Server or Oracle, so those two are written by hand.
- * `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
+ * Those of Postgres, MySQL, SQLite and DuckDB are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no SQL Server or Oracle, so those two are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
  */
 
 import type { FloatType, InstantType, IntegerType, RecordType, StatementDescriptor, TextType } from "./index.ts";
@@ -111,7 +105,7 @@ export const json_column: Example = {
   },
 };
 
-/** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. The engine does not read MySQL's type modifiers, so these types leave out what they state: `at` holds whole milliseconds alone, `name` 100 characters at most, `body` 65,535 bytes, `status` its two labels and `tags` its two members. */
+/** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. The engine does not read MySQL's type modifiers, so these types leave out what they state: `at` holds whole milliseconds alone, `name` 100 characters at most and `body` 65,535 bytes. */
 export const mysql_columns: Example = {
   database: "mysql",
   setup: "create table m (id bigint unsigned primary key, flag boolean not null, at timestamp(3) null, status enum('b','a') not null, born date, name varchar(100), body text, tags set('a','b'))",
@@ -121,11 +115,11 @@ export const mysql_columns: Example = {
       { name: "id", type: { kind: "integer", bits: 64, unsigned: true, name: "bigint" } },
       { name: "flag", type: { kind: "integer", bits: 8, name: "tinyint(1)" } },
       { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999999Z", name: "timestamp" } },
-      { name: "status", type: { kind: "text", name: "enum" } },
+      { name: "status", type: { kind: "text", enum: ["b", "a"], name: "enum" } },
       { name: "born", nullable: true, type: { kind: "date", name: "date" } },
       { name: "name", nullable: true, type: { kind: "text", name: "varchar" } },
       { name: "body", nullable: true, type: { kind: "text", name: "text" } },
-      { name: "tags", nullable: true, type: { kind: "set", name: "set", element: { type: { kind: "text" } } } },
+      { name: "tags", nullable: true, type: { kind: "set", name: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
       { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, name: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "double" }, { kind: "decimal", name: "decimal" }] } },
     ],
   },
@@ -155,11 +149,7 @@ export const range_over_array: Example = {
 };
 
 /**
- * SQLite. A NUMERIC column stores `'0012'` as 12, `'abc'` as text and a blob as a blob; a TEXT
- * column stores 12 as `'12'`. A type is named as SQLite reports the column's declared type: one of
- * its own words (`INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB`) in capitals, any other as written. The
- * engine leaves `x`, declared with no type, `unknown`, though it holds what a NUMERIC column does,
- * and types `n` as a column that is not STRICT, though a STRICT column holds its declared type alone.
+ * SQLite. A NUMERIC column stores `'0012'` as 12, `'abc'` as text and a blob as a blob; a TEXT column stores 12 as `'12'`. A type is named as SQLite reports the column's declared type: one of its own words (`INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB`) in capitals, any other as written. The engine leaves `x`, declared with no type, `unknown`, though it holds what a NUMERIC column does. In the STRICT table, `n` is an integer alone.
  */
 export const sqlite_columns: Example = {
   database: "sqlite",
@@ -170,7 +160,7 @@ export const sqlite_columns: Example = {
       { name: "price", nullable: true, type: { kind: "union", name: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
       { name: "name", nullable: true, type: { kind: "union", name: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
       { name: "x", nullable: true, type: { kind: "unknown" } },
-      { name: "n", nullable: true, type: { kind: "union", name: "INTEGER", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
+      { name: "n", nullable: true, type: { ...int64, name: "INTEGER" } },
     ],
   },
 };
