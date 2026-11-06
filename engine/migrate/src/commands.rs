@@ -202,7 +202,8 @@ async fn ensure_history(db: &mut Db) -> Result<(), Error> {
 
 /// The live schema's fingerprint: a digest of its catalog as the comparator reads it, with the
 /// server's version and this build's catalog code, which both change what the catalog reads as. A
-/// database whose fingerprint equals the one its last run stored has not been changed since.
+/// database whose fingerprint equals the one its last run stored has not been changed since, its
+/// comments aside.
 async fn fingerprint(db: &mut Db) -> Result<String, Error> {
     let lines = catalog(db).await?;
     fingerprint_of(db, &lines).await
@@ -220,7 +221,7 @@ async fn fingerprint_of(db: &mut Db, lines: &[String]) -> Result<String, Error> 
     let version = db.rows(version).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
     let mut digest = crate::cache::Sha256::new();
     // A child table may have been made at run time, as data: only a replay can tell.
-    for line in crate::catalog::without_children(lines) {
+    for line in crate::catalog::without_children(&crate::catalog::without_comments(lines)) {
         digest.part(line.as_bytes());
     }
     Ok(format!("{}:{version}:{}", crate::cache::code_id(), crate::cache::hex(&digest.finish())))
@@ -804,7 +805,7 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         let lane = shadows.lane();
         shadows.push(lane, run.applied_files.iter().chain(&run.records).chain(&landed).map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(lane).await {
-            if crate::catalog::without_extra_children(run.live, &lines) == lines {
+            if crate::catalog::same_schema(run.live, &lines) {
                 run.pending.retain(|m| !landed.contains(m));
                 run.landed = landed.iter().map(|m| m.name.clone()).collect();
                 run.records.extend(landed);
@@ -823,7 +824,7 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
         Ok(lines) => lines,
         Err((m, error)) => return Ok(vec![Problem::new(format!("{m} fails when replayed in a shadow database")).note(error)]),
     };
-    if crate::catalog::without_extra_children(run.live, &checkpoint) != checkpoint {
+    if !crate::catalog::same_schema(run.live, &checkpoint) {
         return drift(shadows, target, run, &checkpoint).await;
     }
     shadows.push(b_lane, run.pending.iter().map(Step::of));
@@ -878,15 +879,16 @@ async fn check_in_shadows(shadows: &mut Shadows<'_>, target: &mut Db, run: &mut 
 /// history makes to what the database has, and the ways out. Where the next pending migrations,
 /// none of which changes data, make exactly the change, recording them is named.
 async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkpoint: &[String]) -> Result<Vec<Problem>, Error> {
-    // Partitions made at run time are data, and no part of what differs.
-    let live = &crate::catalog::without_extra_children(run.live, checkpoint)[..];
-    let (only_history, only_live) = difference(checkpoint, live);
+    // Partitions made at run time are data, and comments aren't compared: no part of what differs.
+    let checkpoint = crate::catalog::without_comments(checkpoint);
+    let live = crate::catalog::without_comments(&crate::catalog::without_extra_children(run.live, &checkpoint));
+    let (only_history, only_live) = difference(&checkpoint, &live);
     if !run.records.is_empty() {
         let names = run.records.iter().map(|m| m.name.as_str()).collect::<Vec<_>>().join(", ");
         let without = shadows.lane();
         shadows.push(without, run.applied_files.iter().map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(without).await {
-            if lines == live {
+            if crate::catalog::without_comments(&lines) == live {
                 return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate prod"])]);
             }
         }
@@ -899,7 +901,7 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         let lane = shadows.lane();
         shadows.push(lane, run.applied_files.iter().chain(&run.records).chain(&run.pending[..j]).map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(lane).await {
-            if lines == live {
+            if crate::catalog::without_comments(&lines) == live {
                 hint = run.pending[..j].iter().map(|m| m.name.clone()).collect();
                 break;
             }
@@ -1399,7 +1401,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     } else {
         files.clone()
     };
-    let live = catalog(db).await?;
+    let live = crate::catalog::without_comments(&catalog(db).await?);
     let texts: Vec<&str> = order.iter().map(|f| f.sql.as_str()).collect();
     let mut shadows = Shadows::new(server, &opts.url, &opts.root, &opts.cache, &texts).await;
     // The replay after each migration, from none: the longest run that equals the database, and
@@ -1413,7 +1415,7 @@ async fn sync_history_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
         let mut matches: Vec<usize> = Vec::new();
         let mut closest: (usize, usize, Vec<String>) = (usize::MAX, 0, vec![]);
         for k in 0..=order.len() {
-            let now = catalog(shadows.db(lane)).await?;
+            let now = crate::catalog::without_comments(&catalog(shadows.db(lane)).await?);
             if crate::catalog::without_extra_children(&live, &now) == now {
                 matches.push(k);
             } else {
@@ -2304,13 +2306,15 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
 /// difference, so nothing has changed; on MySQL, which commits each statement, it is checked after.
 async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]) -> Result<Result<(), Vec<String>>, Error> {
     let d = db.dialect();
+    let expect = crate::catalog::without_comments(expect);
+    let expect = &expect[..];
     let statements: Vec<String> = plan.iter().filter(|s| !s.starts_with("--")).map(|s| format!("{};", s.trim_end().trim_end_matches(';'))).chain(then.iter().cloned()).collect();
     let differs = |now: &[String]| describe_diff("this database", now, "the target", expect);
     if d == Dialect::Mysql || statements.iter().any(|s| runs_alone(s, d)) {
         for s in &statements {
             db.script(s).await?;
         }
-        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
+        let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         return Ok(if now == expect { Ok(()) } else { Err(differs(&now)) });
     }
     if d == Dialect::Sqlite {
@@ -2322,7 +2326,7 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
+        let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         if now != expect {
             return Ok(Err(differs(&now)));
         }
@@ -2346,6 +2350,8 @@ async fn run_to(db: &mut Db, plan: &[String], then: &[String], expect: &[String]
 /// each statement, checked after. Gives the renames and the plan it ran.
 async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String]) -> Result<Result<(Vec<String>, crate::diff::Plan), Vec<String>>, Error> {
     let d = db.dialect();
+    let expect = crate::catalog::without_comments(expect);
+    let expect = &expect[..];
     let transactional = d != Dialect::Mysql;
     if d == Dialect::Sqlite {
         db.exec("pragma foreign_keys = off").await?;
@@ -2361,7 +2367,7 @@ async fn take_to(db: &mut Db, target: &Target, then: &[String], expect: &[String
         if d == Dialect::Sqlite && !db.rows("pragma foreign_key_check").await?.is_empty() {
             return Err(Error("rows would break a foreign key".into()));
         }
-        let now = crate::catalog::without_extra_children(&catalog(db).await?, expect);
+        let now = crate::catalog::without_comments(&crate::catalog::without_extra_children(&catalog(db).await?, expect));
         if now != expect {
             return Ok(Err(describe_diff("this database", &now, "the target", expect)));
         }
@@ -2670,8 +2676,11 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         Ok(lines) => lines,
         Err((m, e)) => return fail(&format!("{m} fails when replayed in a shadow database"), e, log),
     };
-    // Children of a table made at run time are data: never compared, never rewound.
-    let live = &crate::catalog::without_extra_children(live, &at_kept)[..];
+    // Children of a table made at run time are data: never compared, never rewound. Comments are
+    // written by what runs, and aren't compared with this database either.
+    let at_kept = crate::catalog::without_comments(&at_kept);
+    let live = crate::catalog::without_comments(&crate::catalog::without_extra_children(live, &at_kept));
+    let live = &live[..];
     let mut pending: Vec<Migration> = files.iter().filter(|f| !kept.iter().any(|k| k.name == f.name)).cloned().collect();
     let rewind_rows: Vec<&&HistoryRow> = applied[keep..].iter().collect();
     let mut rows = Rows::new(format!("Applying to {}", shown_url(&opts.url)), rewind_rows.iter().map(|r| r.name.as_str()).chain(pending.iter().map(|m| m.name.as_str())));
@@ -2714,7 +2723,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             if let Ok(()) = shadows.open(h_lane).await? {
                 shadows.taint(h_lane);
                 let (renames, plan) = plan_to(shadows.db(h_lane), &k_target, false).await?;
-                let (only_h, only_k) = difference(&at_applied, &at_kept);
+                let (only_h, only_k) = difference(&crate::catalog::without_comments(&at_applied), &at_kept);
                 let expect: Vec<String> = live.iter().filter(|l| !only_h.contains(l)).cloned().chain(only_k).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
                 let statements: Vec<String> = renames.iter().cloned().chain(plan.runnable().cloned()).collect();
                 if let Ok(Ok(())) = run_to(db, &statements, &forget, &expect).await {
@@ -2763,7 +2772,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
             let lane = shadows.lane();
             shadows.push(lane, kept.iter().chain(&pending[..j]).map(Step::of));
             if let Ok(Ok(lines)) = shadows.lines(lane).await {
-                let (added, removed) = difference(&lines, &at_kept);
+                let (added, removed) = difference(&crate::catalog::without_comments(&lines), &at_kept);
                 if (!added.is_empty() || !removed.is_empty()) && added.iter().all(|l| base.contains(l)) && !removed.iter().any(|l| base.contains(l)) {
                     records = pending.drain(..j).collect();
                     break;

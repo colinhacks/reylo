@@ -2025,10 +2025,16 @@ on!(
     sync_history_leaves_a_data_migration_pending,
     a_platforms_default_privileges_are_not_drift,
     function_privileges_and_index_comments_are_compared,
+    a_comment_made_by_hand_stops_nothing,
+    a_comment_in_schema_sql_is_written,
     a_server_setting_change_misses_the_cache,
     a_migrations_session_setting_is_never_carried_by_the_cache,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
+mod on_mysql {
+    use super::*;
+    on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written);
+}
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
 on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_prod);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
@@ -2210,6 +2216,51 @@ mod adversarial {
         let out = p.output();
         assert!(has(&out, r"revoke execute on function f\(\) from public"), "{out}");
         assert!(has(&out, r"comment on index t_x is 'by x'"), "{out}");
+    }
+
+    pub async fn a_comment_made_by_hand_stops_nothing(mut p: P) {
+        let by_hand = if p.d == Dialect::Mysql { "alter table t comment = 'by hand'" } else { "comment on table t is 'by hand'" };
+        p.schema("create table t (id int);");
+        p.file("20261027100000_t.sql", "create table t (id int);");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.output();
+        p.exec(by_hand).await;
+        // No drift: the next deploy runs, the replay agrees, the history stands and development leaves it be.
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.output();
+        let (code, out) = p.check_every_way().await;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(p.sync_history().await, 0, "{}", p.peek());
+        p.output();
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    }
+
+    pub async fn a_comment_in_schema_sql_is_written(mut p: P) {
+        let declared = |text: &str| if p.d == Dialect::Mysql { format!("create table t (id int) comment '{text}';") } else { format!("create table t (id int); comment on table t is '{text}';") };
+        let (first, second) = (declared("the table"), declared("the only table"));
+        p.schema("create table t (id int);");
+        p.file("20261027100000_t.sql", "create table t (id int);");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        // In a migration, and until one writes it, the migrations don't reach schema.sql.
+        p.schema(&first);
+        assert_eq!(p.dry_run().await, 1, "{}", p.peek());
+        p.output();
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "doc", &Default::default(), log).await).await, 0, "{}", p.peek());
+        p.output();
+        let written = p.files().into_iter().find(|f| f.ends_with("_doc.sql")).unwrap();
+        let text = std::fs::read_to_string(p.dir.join("migrations").join(&written)).unwrap();
+        assert!(has(&text, "the table"), "{text}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        p.output();
+        let (code, out) = p.check_every_way().await;
+        assert_eq!(code, 0, "{out}");
+        // And by sync, which takes the database to schema.sql, a comment alone included.
+        p.schema(&second);
+        assert_eq!(p.sync_only().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "the only table");
     }
 
     pub async fn a_server_setting_change_misses_the_cache(mut p: P) {

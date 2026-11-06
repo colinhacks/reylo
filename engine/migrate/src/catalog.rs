@@ -33,7 +33,7 @@ fn children(lines: &[String]) -> Vec<(String, String)> {
         .filter_map(|l| {
             let name = name_at(l);
             let tail = &l[name.len()..];
-            // MySQL's line goes on to the table's comment, whose words are no clause of it.
+            // MySQL's line goes on to its engine and options, whose words are no clause of it.
             if tail.starts_with(" engine=") {
                 return None;
             }
@@ -105,6 +105,18 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
 pub fn without_children(lines: &[String]) -> Vec<String> {
     let kids: Vec<String> = children(lines).into_iter().map(|(name, _)| name).collect();
     lines.iter().filter(|l| !kids.iter().any(|name| of_table(l, name))).cloned().collect()
+}
+
+/// `lines` without comments. A migration writes a comment, and two replays compare theirs, but a
+/// live database's is never compared: one added in a dashboard changes nothing the app runs on, so
+/// it is no drift and stops no deploy.
+pub fn without_comments(lines: &[String]) -> Vec<String> {
+    lines.iter().filter(|l| !l.starts_with("comment ")).cloned().collect()
+}
+
+/// Whether the live database has what `reference` lists: comments, and children made at run time, aside.
+pub fn same_schema(live: &[String], reference: &[String]) -> bool {
+    without_comments(&without_extra_children(live, reference)) == without_comments(reference)
 }
 
 /// The lines only in `a`, and those only in `b`.
@@ -614,10 +626,10 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         if !r.text("options").is_empty() {
             line += &format!(" options={}", r.text("options"));
         }
-        if !r.text("comment").is_empty() {
-            line += &format!(" comment={}", json(r.text("comment")));
-        }
         lines.push(line);
+        if !r.text("comment").is_empty() {
+            lines.push(format!("comment {} {}", r.text("name"), json(r.text("comment"))));
+        }
     }
 
     for r in db
@@ -642,7 +654,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
             parts.push(format!("collate {collation}"));
         }
         if !r.text("comment").is_empty() {
-            parts.push(format!("comment {}", json(r.text("comment"))));
+            lines.push(format!("comment {}.{} {}", r.text("t"), r.text("c"), json(r.text("comment"))));
         }
         if let Some(srs) = r.get("srs") {
             parts.push(format!("srid {srs}"));
