@@ -4055,10 +4055,10 @@ mod tests {
     fn names_a_column_as_the_statement_is_sent() {
         // The tree is read over `?1`; the statement runs with `?`, and a driver's row holds the name that text gives.
         let names = |sql: &str| analysis(sql).columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names("select id + :a::int, name from users"), ["id + CAST(? AS INTEGER)", "name"]);
-        assert_eq!(names("select * from (select id + :a::int from users)"), ["id + CAST(? AS INTEGER)"]);
-        assert_eq!(names("update users set name = name returning id + :a::int"), ["id + CAST(? AS INTEGER)"]);
-        assert_eq!(names("select :a::int as a"), ["a"]);
+        assert_eq!(names("select id + cast(:a as integer), name from users"), ["id + cast(? as integer)", "name"]);
+        assert_eq!(names("select * from (select id + cast(:a as integer) from users)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("update users set name = name returning id + cast(:a as integer)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("select cast(:a as integer) as a"), ["a"]);
     }
 
     #[test]
