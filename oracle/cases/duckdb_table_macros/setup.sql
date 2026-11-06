@@ -35,8 +35,21 @@ create macro echoed_row(x) as table select x as v, id from comments;
 create macro unnested(l) as table select unnest(l) as v;
 create macro one_per_element(p) as table select id, unnest([1, 2]) as v from comments where id = p;
 
--- A key compared with an argument of another type.
+-- A key compared with a value of another type: DuckDB converts one side, and two keys may become one value.
 create macro by_code(c) as table select code, n from codes where code = c;
+create macro through_code(x) as table select code, n from by_code(x);
+create macro by_code_as_number(c) as table select code, n from codes where code = c::int8;
+create table amounts (amount decimal(38,2) primary key, n int not null);
+insert into amounts values (9007199254740992.00, 1), (9007199254740992.01, 2);
+create table big_ids (id bigint primary key, n int not null);
+insert into big_ids values (9007199254740992, 1), (9007199254740993, 2);
+create type mood as enum ('1', '01');
+create table moods (m mood primary key, n int not null);
+insert into moods values ('1', 1), ('01', 2);
+
+-- A key under a collation holds values that compare equal.
+create table ci_codes (code varchar collate nocase primary key, n int not null);
+insert into ci_codes values ('a', 1), ('A', 2);
 
 -- Several macros of one name, and one that shares a built-in's: neither is read.
 create macro overloaded(a) as table select id from comments where id = a, (a, b) as table select id from comments where id = a and post_id = b;

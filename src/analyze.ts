@@ -643,6 +643,7 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   duckdb: `select md5(coalesce(string_agg(x, chr(10) order by x), '')) from (
     select concat_ws(' ', 'v', version()) as x
     union all select concat_ws(' ', 'c', database_name, schema_name, table_name, column_index, column_name, data_type, is_nullable, coalesce(column_default, ''), md5(coalesce(comment, ''))) from duckdb_columns() where not internal
+    union all select concat_ws(' ', 'b', database_name, schema_name, table_name, md5(coalesce(sql, ''))) from duckdb_tables() where not internal
     union all select concat_ws(' ', 'k', database_name, schema_name, table_name, constraint_type, constraint_text) from duckdb_constraints()
     union all select concat_ws(' ', 'w', database_name, schema_name, view_name, md5(coalesce(sql, ''))) from duckdb_views() where not internal
     union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type) from duckdb_types() where not internal

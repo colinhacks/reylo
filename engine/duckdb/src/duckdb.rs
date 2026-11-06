@@ -324,7 +324,7 @@ fn keyed(name: &sqlparser::ast::ObjectName, alias: &Option<sqlparser::ast::Table
     let parts = nulls::parts(name);
     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts.last().cloned());
     match ctx.catalog.table(&parts) {
-        Some(table) if nulls::key_equal(filter, &table.keys, qualifier.as_deref(), &[]) => ("maybeOne", None),
+        Some(table) if nulls::key_equal(filter, table, qualifier.as_deref(), &[]) => ("maybeOne", None),
         _ => ("many", Some("nothing bounds its rows to one".into())),
     }
 }
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn a_write_with_queries_feed_is_read_as_the_write() {
         use crate::catalog::{Table, TableColumn};
-        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None }], keys: vec![vec!["id".into()]] };
+        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None, ty: "BIGINT".into() }], keys: vec![vec!["id".into()]], collated: false };
         let catalog = catalog::of(vec![table]);
         let nullable = HashSet::new();
         let ctx = Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 };

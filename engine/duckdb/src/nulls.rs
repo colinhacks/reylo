@@ -16,7 +16,7 @@
 //! column's own name, an alias), and the caller holds those against the describe's: where they
 //! differ, the tree is not the statement DuckDB read, and nothing is proven.
 
-use crate::catalog::{body_relations, Catalog, TableMacro, MAX_MACRO_LEVELS};
+use crate::catalog::{body_relations, Catalog, Table, TableMacro, MAX_MACRO_LEVELS};
 use sqlparser::ast::{
     BinaryOperator, CastKind, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator,
     TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value,
@@ -28,8 +28,9 @@ use std::collections::HashSet;
 pub struct Ctx<'a> {
     pub catalog: &'a Catalog,
     pub nullable_params: &'a HashSet<String>,
-    /// Inside a table macro's body, its parameters' names, lowercased; none outside one.
-    pub macro_params: &'a [String],
+    /// Inside a table macro's body read for its rows, the parameters the call gives a value, by name
+    /// lowercased, with what each value compares as; none elsewhere.
+    pub macro_params: &'a [(String, ValueKind)],
     /// How many table macros' bodies this is read inside.
     pub macro_level: usize,
 }
@@ -52,10 +53,98 @@ impl<'a> Ctx<'a> {
         clear.then_some(found)
     }
 
-    /// This context for the body of `found`, whose names are its own: no WITH query reaches it.
-    fn within(&self, found: &'a TableMacro) -> Ctx<'a> {
-        Ctx { catalog: self.catalog, nullable_params: self.nullable_params, macro_params: &found.params, macro_level: self.macro_level + 1 }
+    /// This context for the body of a table macro, whose names are its own: no WITH query reaches it.
+    fn within<'b>(&'b self, arguments: &'b [(String, ValueKind)]) -> Ctx<'b> {
+        Ctx { catalog: self.catalog, nullable_params: self.nullable_params, macro_params: arguments, macro_level: self.macro_level + 1 }
     }
+}
+
+/// What a value is compared as beside a key, as far as the statement says. DuckDB converts one side
+/// of a comparison of two types: a text key beside a number is compared as numbers, so that `'1'` and
+/// `'01'` both match `1`, and a number key beside a float as floats, where two keys may round to one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValueKind {
+    /// An integer or a decimal.
+    Exact,
+    /// A float or a double, and a number too long for a decimal, which DuckDB reads as a double.
+    Float,
+    Text,
+    /// A parameter with no cast, which the prepared statement types as the column beside it.
+    Parameter,
+    Other,
+}
+
+/// What a type compares as, from the name DuckDB or a cast writes for it.
+fn type_kind(ty: &str) -> ValueKind {
+    let upper = ty.to_ascii_uppercase();
+    match upper.split(['(', ' ']).next().unwrap_or("") {
+        "TINYINT" | "SMALLINT" | "INTEGER" | "BIGINT" | "HUGEINT" | "UTINYINT" | "USMALLINT" | "UINTEGER" | "UBIGINT" | "UHUGEINT" | "INT" | "INT1" | "INT2" | "INT4" | "INT8" | "INT16" | "INT32" | "INT64" | "INT128" | "BYTEINT" | "SHORT" | "LONG" | "SIGNED" | "DECIMAL" | "NUMERIC" | "DEC" => ValueKind::Exact,
+        "FLOAT" | "FLOAT4" | "FLOAT8" | "REAL" | "DOUBLE" => ValueKind::Float,
+        "VARCHAR" | "TEXT" | "STRING" | "CHAR" | "BPCHAR" => ValueKind::Text,
+        _ => ValueKind::Other,
+    }
+}
+
+/// What a value is compared as: `arguments` are the table macro's it stands in.
+fn value_kind(e: &Expr, arguments: &[(String, ValueKind)]) -> ValueKind {
+    match e {
+        Expr::Value(v) => match &v.value {
+            Value::Number(n, _) if n.len() > 38 || n.contains(['e', 'E']) => ValueKind::Float,
+            Value::Number(..) => ValueKind::Exact,
+            Value::SingleQuotedString(_) | Value::DollarQuotedString(_) | Value::EscapedStringLiteral(_) => ValueKind::Text,
+            Value::Placeholder(_) => ValueKind::Parameter,
+            _ => ValueKind::Other,
+        },
+        Expr::Identifier(id) => arguments.iter().find(|(name, _)| *name == id.value.to_lowercase()).map_or(ValueKind::Other, |(_, kind)| *kind),
+        Expr::Nested(inner) => value_kind(inner, arguments),
+        Expr::Cast { data_type, .. } => type_kind(&data_type.to_string()),
+        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => value_kind(expr, arguments),
+        _ => ValueKind::Other,
+    }
+}
+
+/// Whether a value keeps a key of the type `column` to one row: a text key, or an enum's, takes no
+/// number; a number key takes no float, and nothing it can't tell the type of.
+fn holds_to_one(value: ValueKind, column: ValueKind) -> bool {
+    match column {
+        _ if value == ValueKind::Parameter => true,
+        ValueKind::Text => value == ValueKind::Text,
+        ValueKind::Exact => matches!(value, ValueKind::Exact | ValueKind::Text),
+        ValueKind::Float => value != ValueKind::Other,
+        _ => matches!(value, ValueKind::Text | ValueKind::Other),
+    }
+}
+
+/// Whether an expression is one value whatever the row, so that a key equal to it is one key.
+fn constant(e: &Expr, arguments: &[(String, ValueKind)]) -> bool {
+    match e {
+        Expr::Value(v) => !matches!(v.value, Value::Null),
+        Expr::TypedString(_) => true,
+        Expr::Identifier(id) => arguments.iter().any(|(name, _)| *name == id.value.to_lowercase()),
+        Expr::Nested(inner) => constant(inner, arguments),
+        Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr, arguments),
+        Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr, arguments),
+        _ => false,
+    }
+}
+
+/// The parameters of a table macro that a call gives one value, with what each is compared as. Any
+/// other argument is left out: DuckDB writes it in at each place the parameter stands, so `random()`
+/// is a new value on every row, and a parameter a default fills is not known here.
+fn macro_arguments(params: &[String], args: &[FunctionArg], outer: &[(String, ValueKind)]) -> Vec<(String, ValueKind)> {
+    let mut out = Vec::new();
+    for (i, arg) in args.iter().enumerate() {
+        let (name, value) = match arg {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) => (params.get(i).cloned(), e),
+            FunctionArg::Named { name, arg: FunctionArgExpr::Expr(e), .. } => (Some(name.value.to_lowercase()), e),
+            FunctionArg::ExprNamed { name: Expr::Identifier(name), arg: FunctionArgExpr::Expr(e), .. } => (Some(name.value.to_lowercase()), e),
+            _ => continue,
+        };
+        if let Some(name) = name.filter(|_| constant(value, outer)) {
+            out.push((name, value_kind(value, outer)));
+        }
+    }
+    out
 }
 
 /// One result column: the name DuckDB gives it where the tree says (an alias, a column's own
@@ -498,7 +587,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
                 // read as a derived table of its own. Its parameters are names no table has there,
                 // which read as nothing known; any other table function's columns are unknown.
                 let with: Vec<&str> = ctes.iter().map(|(n, _)| n.as_str()).collect();
-                let columns = ctx.table_macro(&parts, &with).and_then(|m| query(&m.body, &ctx.within(m), &Vec::new())).map(|cs| cs.into_iter().map(|c| Out { comment: None, ..c }).collect::<Vec<_>>());
+                let columns = ctx.table_macro(&parts, &with).and_then(|m| query(&m.body, &ctx.within(&[]), &Vec::new())).map(|cs| cs.into_iter().map(|c| Out { comment: None, ..c }).collect::<Vec<_>>());
                 let columns = match (columns, alias) {
                     (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
                     (cs, _) => cs,
@@ -894,10 +983,11 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     // A table macro alone in the FROM returns what its body returns, or fewer under a filter or a
     // grouping.
     if let [item] = s.from.as_slice() {
-        if let (true, TableFactor::Table { name, args: Some(_), .. }) = (item.joins.is_empty(), &item.relation) {
+        if let (true, TableFactor::Table { name, args: Some(args), .. }) = (item.joins.is_empty(), &item.relation) {
             let with: Vec<&str> = ctes.iter().map(String::as_str).collect();
             if let Some(found) = ctx.table_macro(&parts(name), &with) {
-                return match cardinality_in(&found.body, &ctx.within(found), &[]) {
+                let arguments = macro_arguments(&found.params, &args.args, ctx.macro_params);
+                return match cardinality_in(&found.body, &ctx.within(&arguments), &[]) {
                     ("one", _) if !filtered && ungrouped => ("one", None),
                     ("one" | "maybeOne", _) => ("maybeOne", None),
                     (_, why) => ("many", why),
@@ -914,8 +1004,8 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
                 if let Some(table) = ctx.catalog.table(&parts(name)).filter(|_| !shadowed) {
                     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts(name).pop());
                     // A column beats a parameter of the same name, as it does when DuckDB binds the body.
-                    let arguments: Vec<String> = ctx.macro_params.iter().filter(|p| !table.columns.iter().any(|c| c.name.eq_ignore_ascii_case(p))).cloned().collect();
-                    if key_equal(selection, &table.keys, qualifier.as_deref(), &arguments) {
+                    let arguments: Vec<(String, ValueKind)> = ctx.macro_params.iter().filter(|(p, _)| !table.columns.iter().any(|c| c.name.eq_ignore_ascii_case(p))).cloned().collect();
+                    if key_equal(selection, table, qualifier.as_deref(), &arguments) {
                         return ("maybeOne", None);
                     }
                 }
@@ -927,7 +1017,13 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
 
 /// Whether the AND-ed parts of `filter` hold every column of one of `keys` equal to a value that
 /// reads no column: a literal or a parameter, cast or not, or one of a table macro's `arguments`.
-pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>, arguments: &[String]) -> bool {
+pub fn key_equal(filter: &Expr, table: &Table, qualifier: Option<&str>, arguments: &[(String, ValueKind)]) -> bool {
+    let keys = &table.keys;
+    let is_argument = |id: &str| arguments.iter().any(|(name, _)| *name == id.to_lowercase());
+    let holds = |column: &str, value: &Expr| {
+        let kind = table.columns.iter().find(|c| c.name.eq_ignore_ascii_case(column)).map_or(ValueKind::Other, |c| type_kind(&c.ty));
+        !(table.collated && kind == ValueKind::Text) && holds_to_one(value_kind(value, arguments), kind)
+    };
     let mut equal: Vec<String> = Vec::new();
     fn conjuncts<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         match e {
@@ -939,20 +1035,9 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>, a
             other => out.push(other),
         }
     }
-    fn constant(e: &Expr, arguments: &[String]) -> bool {
-        match e {
-            Expr::Value(v) => !matches!(v.value, Value::Null),
-            Expr::TypedString(_) => true,
-            Expr::Identifier(id) => arguments.contains(&id.value.to_lowercase()),
-            Expr::Nested(inner) => constant(inner, arguments),
-            Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr, arguments),
-            Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr, arguments),
-            _ => false,
-        }
-    }
     let column = |e: &Expr| -> Option<String> {
         match e {
-            Expr::Identifier(id) if arguments.contains(&id.value.to_lowercase()) => None,
+            Expr::Identifier(id) if is_argument(&id.value) => None,
             Expr::Identifier(id) => Some(id.value.to_lowercase()),
             Expr::CompoundIdentifier(ids) if ids.len() >= 2 => {
                 let rel = &ids[ids.len() - 2].value;
@@ -970,8 +1055,8 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>, a
     for p in parts {
         if let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = p {
             match (column(left), column(right)) {
-                (Some(c), None) if constant(right, arguments) => equal.push(c),
-                (None, Some(c)) if constant(left, arguments) => equal.push(c),
+                (Some(c), None) if constant(right, arguments) && holds(&c, right) => equal.push(c),
+                (None, Some(c)) if constant(left, arguments) && holds(&c, left) => equal.push(c),
                 _ => {}
             }
         }
@@ -994,8 +1079,9 @@ mod tests {
             name: name.into(),
             current: true,
             current_database: true,
-            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None }).collect(),
+            columns: columns.iter().map(|(c, nn)| TableColumn { name: c.to_string(), not_null: *nn, comment: None, ty: "BIGINT".into() }).collect(),
             keys: keys.iter().map(|k| k.iter().map(|c| c.to_string()).collect()).collect(),
+            collated: false,
         }
     }
 
@@ -1025,6 +1111,30 @@ mod tests {
         let catalog = catalog();
         let nullable = HashSet::new();
         super::cardinality(&query(sql), &Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 }).0
+    }
+
+    /// A value holds a key to one row only where DuckDB compares the two without losing a difference.
+    #[test]
+    fn a_value_of_another_type_does_not_pin_a_key() {
+        use super::{holds_to_one, ValueKind::*};
+        // Text beside a number is compared as numbers: `'1'` and `'01'` both match `1`.
+        assert!(holds_to_one(Text, Text));
+        assert!(!holds_to_one(Exact, Text));
+        assert!(!holds_to_one(Float, Text));
+        assert!(!holds_to_one(Other, Text));
+        // A number beside a float is compared as floats, where two keys may round to one.
+        assert!(holds_to_one(Exact, Exact));
+        assert!(holds_to_one(Text, Exact));
+        assert!(!holds_to_one(Float, Exact));
+        assert!(!holds_to_one(Other, Exact));
+        // An enum beside a number is compared as text beside a number.
+        assert!(holds_to_one(Text, Other));
+        assert!(holds_to_one(Other, Other));
+        assert!(!holds_to_one(Exact, Other));
+        // A float key holds each value once, and a parameter takes the column's own type.
+        assert!(holds_to_one(Exact, Float));
+        assert!(holds_to_one(Parameter, Text));
+        assert!(holds_to_one(Parameter, Exact));
     }
 
     #[test]

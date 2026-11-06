@@ -14,10 +14,12 @@ use std::collections::HashSet;
 
 /// One row per column of every table and view whose name is one of `{names}`, in each one's
 /// order: where it is, whether it may be NULL, its comment, whether it is in the database and
-/// schema an unqualified name reads first, and whether it is in that database.
-const COLUMNS_QUERY: &str = "select database_name, schema_name, table_name, column_name, is_nullable, comment, \
-    database_name = current_database() and schema_name = current_schema() as current, database_name = current_database() as current_database \
-    from duckdb_columns() where lower(table_name) in ({names}) order by database_name, schema_name, table_name, column_index";
+/// schema an unqualified name reads first, whether it is in that database, its type, and whether
+/// its table was made with a collation, which only the table's own text says.
+const COLUMNS_QUERY: &str = "select c.database_name, c.schema_name, c.table_name, c.column_name, c.is_nullable, c.comment, \
+    c.database_name = current_database() and c.schema_name = current_schema() as current, c.database_name = current_database() as current_database, c.data_type, \
+    exists (select 1 from duckdb_tables() t where t.database_name = c.database_name and t.schema_name = c.schema_name and t.table_name = c.table_name and t.sql ilike '%collate%') as collated \
+    from duckdb_columns() c where lower(c.table_name) in ({names}) order by c.database_name, c.schema_name, c.table_name, c.column_index";
 
 /// One row per primary key and UNIQUE constraint of every table whose name is one of `{names}`,
 /// its columns as JSON text, which every host reads alike.
@@ -86,6 +88,9 @@ pub struct Table {
     pub columns: Vec<TableColumn>,
     /// Each primary key and UNIQUE constraint, its columns lowercased.
     pub keys: Vec<Vec<String>>,
+    /// Whether it was made with a collation: a key under one holds `'a'` and `'A'`, which compare
+    /// equal, so its text keys say nothing of how many rows a value matches.
+    pub collated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +98,8 @@ pub struct TableColumn {
     pub name: String,
     pub not_null: bool,
     pub comment: Option<String>,
+    /// Its type as DuckDB writes it, empty where the catalog does not say.
+    pub ty: String,
 }
 
 /// The catalog's answers for the tables a statement names, and the functions that make rows.
@@ -239,14 +246,15 @@ pub fn read(host: &Host, names: &[Vec<String>]) -> Lazy<Catalog> {
             None => {
                 let current = row.get(6).and_then(as_bool).unwrap_or(false);
                 let current_database = row.get(7).and_then(as_bool).unwrap_or(false);
-                tables.push(Table { database, schema, name, current, current_database, ..Table::default() });
+                let collated = row.get(9).and_then(as_bool).unwrap_or(false);
+                tables.push(Table { database, schema, name, current, current_database, collated, ..Table::default() });
                 tables.len() - 1
             }
         };
         // A column the catalog does not say is NOT NULL may hold NULL.
         let not_null = row.get(4).and_then(as_bool).map(|nullable| !nullable).unwrap_or(false);
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
-        tables[at].columns.push(TableColumn { name: text(&row, 3), not_null, comment });
+        tables[at].columns.push(TableColumn { name: text(&row, 3), not_null, comment, ty: text(&row, 8) });
     }
     for row in keys.unwrap_or_default() {
         let (database, schema, name) = (text(&row, 0), text(&row, 1), text(&row, 2));
