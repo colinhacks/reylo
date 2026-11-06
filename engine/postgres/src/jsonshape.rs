@@ -31,8 +31,8 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 /// `json_build_object(k, v, …)` and its jsonb twin: the main case. `json_object` is SQLite's
-/// spelling of it; Postgres's own `json_object` takes arrays, whose arguments are never the
-/// literal keys this reads, so it falls through unrecognised there.
+/// spelling of it; Postgres's own `json_object` takes arrays, whose string literals are no keys, so
+/// the build reads it there as one value.
 const OBJECT_FNS: &[&str] = &["json_build_object", "jsonb_build_object", "json_object"];
 /// `json_agg(x)` and its jsonb twin: the same shape, as an array. `json_group_array` is
 /// SQLite's, and it answers `[]` rather than NULL over an empty group.
@@ -245,7 +245,7 @@ fn plan_with(sql: &str, dialect: Dialect, trust: &Trust, columns: &Columns, ahea
 /// Turn one shape plus its probes' describes into the column's type.
 pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Resolved {
     let mut unresolved = Vec::new();
-    let ctx = ResolveCtx { probes, registry, param_oids };
+    let ctx = ResolveCtx { probes, registry, param_oids, document: true };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     Resolved { ty: document(ty), non_null, unresolved }
 }
@@ -256,7 +256,7 @@ pub fn resolve(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistr
 /// shape resolves to no row's fields, or to no array of them: the describe's type stands then.
 pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeRegistry, param_oids: &[u32]) -> Option<Resolved> {
     let mut unresolved = Vec::new();
-    let ctx = ResolveCtx { probes, registry, param_oids };
+    let ctx = ResolveCtx { probes, registry, param_oids, document: false };
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     let ty = match ty.kind {
         Kind::Record(_) => ty.named("record"),
@@ -469,6 +469,10 @@ impl Builder<'_> {
                 // else's function, and so may be an unqualified one a user also defined
                 // (`jsonb_build_object(text, text)` matches a call better than the built-in).
                 let Some(name) = crate::infer::builtin_name(&f.funcname).filter(|n| self.trust.builtin(n)) else { return self.leaf(expr) };
+                // Postgres's own `json_object` takes arrays of keys and values, or one array of both.
+                if self.dialect == Dialect::Postgres && name == "json_object" {
+                    return self.leaf(expr);
+                }
                 if OBJECT_FNS.contains(&name.as_str()) {
                     if f.args.len() % 2 != 0 {
                         return Shape::Unknown;
@@ -476,7 +480,8 @@ impl Builder<'_> {
                     let mut fields = Vec::with_capacity(f.args.len() / 2);
                     for pair in f.args.chunks(2) {
                         let Some(key) = string_const(&pair[0]) else { return Shape::Unknown };
-                        fields.push((key, self.walk(&pair[1])));
+                        let value = self.walk(&pair[1]);
+                        set_field(&mut fields, key, value);
                     }
                     Shape::Object { fields, non_null: true }
                 } else if AGG_FNS.contains(&name.as_str()) || (self.dialect == Dialect::Postgres && name == ARRAY_AGG && f.args.len() == 1 && !f.agg_star && !f.func_variadic && self.anonymous_row(&f.args[0])) {
@@ -538,7 +543,8 @@ impl Builder<'_> {
                 for pair in &c.exprs {
                     let Some(NodeEnum::JsonKeyValue(kv)) = pair.node.as_ref() else { return Shape::Unknown };
                     let (Some(key), Some(value)) = (kv.key.as_deref().and_then(string_const), kv.value.as_deref()) else { return Shape::Unknown };
-                    fields.push((key, self.json_value(value)));
+                    let value = self.json_value(value);
+                    set_field(&mut fields, key, value);
                 }
                 Shape::Object { fields, non_null: true }
             }
@@ -1470,6 +1476,21 @@ struct ResolveCtx<'a> {
     probes: &'a [Option<Outcome>],
     registry: &'a TypeRegistry,
     param_oids: &'a [u32],
+    /// Whether the shape is read as JSON, where a row is an object, which keeps the last of two
+    /// fields of one name; a row at a SQL position is read by position, every field in its place.
+    document: bool,
+}
+
+/// `fields` with the last of each name, where the first of it stood.
+fn last_of_each_name(fields: Vec<Field>) -> Vec<Field> {
+    let mut out: Vec<Field> = Vec::with_capacity(fields.len());
+    for field in fields {
+        match out.iter_mut().find(|f| f.name == field.name) {
+            Some(first) => *first = field,
+            None => out.push(field),
+        }
+    }
+    out
 }
 
 impl ResolveCtx<'_> {
@@ -1571,6 +1592,7 @@ impl ResolveCtx<'_> {
                             Field::new(col.name.clone(), ty, col.nullable && present)
                         })
                         .collect();
+                    let fields = if self.document { last_of_each_name(fields) } else { fields };
                     // An outer join can null the whole row, which is then every column NULL: a
                     // column the probe proved non-null says the row is there.
                     (Type::record(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
@@ -1754,6 +1776,15 @@ pub(crate) fn is_star(node: &Node) -> bool {
             c.fields.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_))))
         }
         _ => false,
+    }
+}
+
+/// A key and its value added to an object's fields. A key given twice holds the last value given
+/// for it: `jsonb` keeps that pair alone, and `json` writes both, of which a parser keeps the last.
+fn set_field(fields: &mut Vec<(String, Shape)>, key: String, value: Shape) {
+    match fields.iter_mut().find(|(k, _)| *k == key) {
+        Some(field) => field.1 = value,
+        None => fields.push((key, value)),
     }
 }
 
@@ -2068,6 +2099,20 @@ mod tests {
             assert!(resolve_row(shape, &[None], &registry, &[]).is_none(), "{shape:?}");
             assert!(resolve_row(shape, &[], &registry, &[]).is_none(), "{shape:?}");
         }
+    }
+
+    #[test]
+    fn a_key_given_twice_holds_its_last_value() {
+        let column = |index| Shape::Column { probe: 0, index };
+        let fields = vec![("id".to_string(), column(2)), ("name".to_string(), column(1))];
+        for sql in ["SELECT jsonb_build_object('id', u.id, 'name', u.name, 'id', u.email) AS o FROM users u", "SELECT json_build_object('id', u.id, 'name', u.name, 'id', u.email) AS o FROM users u", "SELECT JSON_OBJECT('id': u.id, 'name': u.name, 'id': u.email) AS o FROM users u"] {
+            assert_eq!(shapes(sql).columns[0].1, Shape::Object { fields: fields.clone(), non_null: true }, "{sql}");
+        }
+    }
+
+    #[test]
+    fn postgres_own_json_object_reads_its_strings_as_no_keys() {
+        assert_eq!(shapes("SELECT json_object('{a}', '{b}') AS o").columns[0].1, Shape::Column { probe: 0, index: 0 });
     }
 
     #[test]
@@ -2432,7 +2477,7 @@ mod tests {
     #[test]
     fn a_column_sqlite_cannot_type_is_reported_not_guessed() {
         let registry = TypeRegistry::with_builtins();
-        let p = shapes("SELECT json_object('id', c.id, 'n', length(c.body)) AS x FROM comments c");
+        let p = shapes("SELECT json_build_object('id', c.id, 'n', length(c.body)) AS x FROM comments c");
         let outcome = Outcome {
             columns: vec![column("a0", oid::UUID, "uuid", false), column("a1", oid::UNKNOWN, "unknown", true)],
             outer_join: false,

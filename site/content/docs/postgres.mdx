@@ -259,6 +259,8 @@ from orders o
 join users u on u.id = o.user_id
 ```
 
+A key given twice holds its last value, as `jsonb` keeps it and as a parser reads the two a `json` value holds.
+
 A schema's type carries through an aggregate, and `to_jsonb` of a row is typed column by column, enums included:
 
 ```ts twoslash tab="main.ts"
