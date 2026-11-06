@@ -1,0 +1,37 @@
+coalesced.sql: many () -> { id: int4 } key (id)
+column.sql: many () -> { id: int4 } key (id)
+column_left.sql: many () -> { id: int4 } key (id)
+concatenated.sql: many () -> { id: int4 } key (id)
+delete_using.sql: many () -> { id: int4 }
+derived.sql: many () -> { id: int4 } key (id)
+derived_collate.sql: many () -> { id: int4 } key (id)
+domain_cast.sql: many (x: public.ci_text) -> { id: int4 } key (id)
+domain_column.sql: many () -> { id: int4 } key (id)
+domain_function.sql: many () -> { id: int4 } key (id)
+domain_literal.sql: many () -> { id: int4 } key (id)
+field_of_row.sql: many () -> { id: int4 } key (id)
+function_of.sql: many () -> { id: int4 } key (id)
+join_on.sql: many () -> { id: int4 } key (id)
+keep_built_in_call.sql: at_most_one (x: text) -> { id: int4 }
+keep_ci_literal.sql: at_most_one () -> { id: int4 }
+keep_default_beside_ci.sql: at_most_one () -> { id: int4 }
+keep_derived_deterministic.sql: at_most_one () -> { id: int4 }
+keep_deterministic_column.sql: at_most_one () -> { id: int4 }
+keep_deterministic_view.sql: at_most_one () -> { id: int4 }
+keep_integer_key.sql: at_most_one () -> { id: int4 }
+keep_literal.sql: at_most_one () -> { id: int4 }
+keep_own_collation.sql: at_most_one () -> { id: int4 }
+keep_param.sql: at_most_one (x: text) -> { id: int4 }
+keep_pinned_distinct.sql: at_most_one () -> { d: text }
+keep_text_cast.sql: at_most_one (x: text) -> { id: int4 }
+keep_with_param.sql: at_most_one (x: text) -> { id: int4 }
+lateral.sql: many () -> { id: int4 }
+left_join.sql: many () -> { id: int4? }
+pinned_distinct.sql: many () -> { d: text } key (d)
+pinned_group.sql: many () -> { d: text, n: int8 } key (d)
+relabeled.sql: many () -> { id: int4 } key (id)
+scalar_subquery.sql: many () -> { id: int4 } key (id)
+update_from.sql: many () -> { id: int4 }
+using_merged.sql: many () -> { id: int4 } key (id)
+view.sql: many () -> { id: int4 } key (id)
+with_query.sql: many () -> { id: int4 } key (id)

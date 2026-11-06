@@ -30,6 +30,7 @@ collation_latin.sql: at_most_one (v: varchar) -> { latin: varchar(≤20) }
 collation_latin_scan.sql: at_most_one (v: varchar) -> { latin: varchar(≤20) }
 collation_pad.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
 collation_pad_scan.sql: at_most_one (v: varchar) -> { pad: varchar(≤20) }
+column_of_another_collation.sql: many (x: varchar) -> { bin: varchar(≤20) }
 composite_both.sql: at_most_one (tenant: int32, slug: varchar) -> { id: int }
 composite_first.sql: many (tenant: int32) -> { id: int }
 composite_mixed_class.sql: many (tenant: int32) -> { id: int }
@@ -73,6 +74,7 @@ enum_scan.sql: at_most_one (kind: enum('a' | 'b' | 'c')) -> { kind: enum('a' | '
 float_decimal_literal.sql: at_most_one () -> { f: float }
 float_param.sql: at_most_one (f: double) -> { f: float }
 float_scan.sql: at_most_one (f: double) -> { f: float }
+function_of_another_collation.sql: many (x: varchar) -> { latin: varchar(≤20) }
 functional_key.sql: many (email: varchar) -> { id: int }
 functional_key_column.sql: many (email: varchar) -> { id: int }
 int_abs.sql: at_most_one (id: int32) -> { id: int }

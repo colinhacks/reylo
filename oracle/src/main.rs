@@ -50,6 +50,11 @@
 //! code), every error a run raises must be one its database defines, naming only what the
 //! narrowing lists. A case's `errors.txt`, where it has one, holds each statement's narrowing, and
 //! is compared and blessed like `expected.txt`.
+//!
+//! Every parameter's and column's type an analysis gives holds to the format's own rules: it is a
+//! `Type` of the format's JSON Schema, reads as the format's type and writes again as the same JSON,
+//! and passes the validity rules of spec/README.md (`validity.rs`). A type that breaks one fails its
+//! case.
 
 #[cfg(feature = "duckdb")]
 mod duckdb;
@@ -57,6 +62,7 @@ mod errors;
 mod mysql;
 mod replay;
 mod seed;
+mod validity;
 
 use reylo_engine_core::types::Type;
 use reylo_engine::AnswerCache;
@@ -212,6 +218,10 @@ async fn oracle() -> ExitCode {
             }
             run_postgres(case, client, config, keep, timeout_ms, &given, &mut dumped).await
         };
+        // Every type the case's statements were given holds to the format's rules, whatever else
+        // fails the case.
+        let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+        let typed = validity::check(case, &files, &dumped);
         match outcome {
             Ok((lines, unchecked)) => {
                 never_ran += unchecked.len();
@@ -221,9 +231,8 @@ async fn oracle() -> ExitCode {
                 print_unchecked(case, lines.len(), &unchecked);
                 // Every verdict is printed, whichever fails the case.
                 let matched = check(case, &lines, bless);
-                let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
                 let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed {
+                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed || !typed {
                     failed += 1;
                 }
             }
@@ -525,9 +534,10 @@ fn line(analysis: &Value) -> String {
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let columns: Vec<String> = analysis["columns"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let mut out = format!("{} ({}) -> {{ {} }}", analysis["cardinality"].as_str().unwrap_or("?"), params.join(", "), columns.join(", "));
-    // The result key, which a result of more than one row may have.
-    if let Some(key) = analysis["key"].as_array() {
-        out.push_str(&format!(" key ({})", key.iter().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", ")));
+    // The result keys, which a result of more than one row may have.
+    if let Some(keys) = analysis["unique"].as_array().filter(|k| !k.is_empty()) {
+        let shown: Vec<String> = keys.iter().map(|key| format!("({})", key.as_array().into_iter().flatten().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", "))).collect();
+        out.push_str(&format!(" key {}", shown.join(", ")));
     }
     // An ORDER BY that orders the rows totally.
     if analysis["ordered"].as_bool() == Some(true) {

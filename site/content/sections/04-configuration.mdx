@@ -101,37 +101,3 @@ sqlcommenter: false
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
 ```
-
-### `js.codecs`
-
-The TypeScript type `.run()` gives a family of values, and that its parameters take. A family you leave out keeps [its default](#data-types):
-
-```yaml title=".reylo.yaml"
-js:
-  codecs:
-    decimal: number  # or string (the default)
-    bytes: string  # base64, or Uint8Array (the default)
-    date: Temporal.PlainDate  # or string (the default)
-    time: Temporal.PlainTime  # or string (the default)
-    datetime: Temporal.PlainDateTime  # or string (the default)
-    instant: Temporal.Instant  # or string (the default)
-    duration: Temporal.Duration  # or string (the default)
-    set: array  # or Set (the default)
-```
-
-| Family | Postgres | MySQL | SQLite | DuckDB |
-| --- | --- | --- | --- | --- |
-| `decimal` | `numeric` | `DECIMAL` | | `DECIMAL` |
-| `bytes` | `bytea` | `BINARY`, `VARBINARY`, `BLOB` | `BLOB` | `BLOB` |
-| `date` | `date` | `DATE` | a column declared `DATE` | `DATE` |
-| `time` | `time` | | a column declared `TIME` | `TIME` |
-| `datetime` | `timestamp` | `DATETIME`, `TIMESTAMP` | a column declared `DATETIME` or `TIMESTAMP` | `TIMESTAMP` |
-| `instant` | `timestamptz` | | | `TIMESTAMPTZ` |
-| `duration` | `interval` | `TIME` | | `INTERVAL` |
-| `set` | | `SET` | | |
-
-- Every codec is exact. A number refuses a decimal a double cannot hold, and a Temporal class refuses a value it has no form for, such as Postgres's `infinity` or an interval of one month less a day, so the error names the column instead of returning a wrong value.
-- A parameter takes the codec's type: a `Temporal.Instant` where the column is an `instant`, so a row goes back in as it came out.
-- A codec reaches every value Reylo decodes: an array's elements, a Postgres row value's fields, a DuckDB struct's fields, a map's keys and values, a union's value, and the members of a structured parameter. A value inside JSON the query builds keeps its JSON type.
-- A 64-bit integer is always a `bigint`, its one exact type. Cast it in the query where you want a `number` or text, as `count(*)::int`.
-- A Temporal codec needs a runtime with a global `Temporal`, and TypeScript's `esnext` lib.

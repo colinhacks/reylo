@@ -163,6 +163,44 @@ test("a MySQL SET is a Set of its members on mysql2 and mariadb, and a parameter
   }
 });
 
+test("a row value of no type the catalog has, and a built-in catalog table's row, are objects of their fields on every run, on pg, postgres.js, pg-promise and PGlite", { skip: pgLive, timeout: 60_000 }, async () => {
+  const schema = "create table items (id int primary key, big int8, price numeric); insert into items values (1, 9007199254740993, 1.5), (2, 2, null)";
+  const own = await postgresDatabase("reylo_records_anonymous", schema);
+  const root = project(own.url, "js:\n  codecs:\n    decimal: number\n");
+  const pg = driver("pg");
+  const client = new pg.Client({ connectionString: own.url });
+  await client.connect();
+  const pool = new pg.Pool({ connectionString: own.url });
+  const postgres = driver("postgres")(own.url);
+  const pgp = driver("pg-promise")();
+  const promised = pgp(own.url);
+  const { PGlite } = driver("@electric-sql/pglite");
+  const lite = new PGlite();
+  await lite.exec(schema);
+  const rows = [{ id: 1, big: 9007199254740993n, price: 1.5 }, { id: 2, big: 2n, price: null }];
+  try {
+    const each = await built(root, "each_row", "select s, 'plain' as note from (select id, big, price from items) s order by (s).id");
+    const all = await built(root, "all_rows", "select array_agg(s order by (s).id) as many from (select id, big, price from items) s");
+    const catalog = await built(root, "catalog_row", "select t from pg_catalog.pg_type t where t.typname = 'int4'");
+    for (const db of [client, pool, postgres, promised, lite]) {
+      // Twice: PGlite names a statement's oids from its earlier runs.
+      for (let run = 0; run < 2; run++) {
+        assert.deepEqual(await each.run(db), rows.map((s) => ({ s, note: "plain" })));
+        assert.deepEqual(await all.run(db), { many: rows });
+        assert.equal(((await catalog.run(db)) as any)[0].t.typname, "int4");
+      }
+    }
+  } finally {
+    await client.end();
+    await pool.end();
+    await postgres.end();
+    pgp.end();
+    await lite.close();
+    for (const session of Session.opened()) await session.close();
+    await own.drop();
+  }
+});
+
 test("a MySQL ENUM column is the union of its labels, and the '' MySQL stores for any other value is refused, naming the column", { skip: mysqlLive, timeout: 60_000 }, async () => {
   const own = await mysqlDatabase("reylo_records_enum", "create table moods (id int primary key, mood enum('ok','sad') not null); insert into moods values (1, 'sad'); insert ignore into moods values (2, 'nope')");
   const root = project(own.url, undefined, ["mysql2", "mariadb"]);

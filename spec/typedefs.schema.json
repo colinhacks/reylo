@@ -78,13 +78,13 @@
           "$ref": "#/$defs/OpaqueType"
         },
         {
-          "$ref": "#/$defs/AnyType"
-        },
-        {
           "$ref": "#/$defs/UnknownType"
         },
         {
           "$ref": "#/$defs/TaggedUnionType"
+        },
+        {
+          "$ref": "#/$defs/RowsType"
         }
       ]
     },
@@ -734,7 +734,7 @@
         "max": {
           "description": "The parts its values have, each at the largest magnitude it reaches, of either sign, as one ISO 8601 duration: months in `M`, days in `D`, then time in `H`, `M` and `S`, its minutes and seconds below 60. A part the type lacks is left out, and a part it has is never 0. A two's complement part reaches one unit further below zero than above it, so it is written at the negative side's magnitude: Postgres's months reach -2147483648 and +2147483647, and are `2147483648M`.",
           "type": "string",
-          "pattern": "^P(?=[0-9.]*[MDT])(?:[0-9]+M)?(?:[0-9]+D)?(?:T(?=[0-9.]*[HMS])(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?)?$"
+          "pattern": "^P(?:[0-9]+M(?:[0-9]+D)?(?:T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))?|[0-9]+D(?:T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))?|T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))$"
         },
         "tick": {
           "description": "The time part's smallest step, written exactly when `max` has a time part.",
@@ -984,7 +984,7 @@
       "unevaluatedProperties": false
     },
     "OpaqueType": {
-      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide.",
+      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `name` is all the format says; what a value looks like is the driver's to decide.",
       "type": "object",
       "allOf": [
         {
@@ -1002,24 +1002,6 @@
       "required": [
         "kind",
         "name"
-      ],
-      "unevaluatedProperties": false
-    },
-    "AnyType": {
-      "description": "The database's own type admits a value of any type, each carrying its type, which is one of this format's types: SQL Server `sql_variant`, Oracle `ANYDATA`.",
-      "type": "object",
-      "allOf": [
-        {
-          "$ref": "#/$defs/Base"
-        }
-      ],
-      "properties": {
-        "kind": {
-          "const": "any"
-        }
-      },
-      "required": [
-        "kind"
       ],
       "unevaluatedProperties": false
     },
@@ -1079,6 +1061,53 @@
       ],
       "unevaluatedProperties": false
     },
+    "RowsType": {
+      "description": "Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "rows"
+        },
+        "cardinality": {
+          "description": "How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`).",
+          "enum": [
+            "one",
+            "at_most_one",
+            "many",
+            "none"
+          ]
+        },
+        "columns": {
+          "description": "In order; empty where there are no rows.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Column"
+          }
+        },
+        "unique": {
+          "description": "Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[[\"id\"], [\"email\"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known.",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "cardinality",
+        "columns"
+      ],
+      "unevaluatedProperties": false
+    },
     "StatementDescriptor": {
       "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from.",
       "type": "object",
@@ -1115,21 +1144,9 @@
             "$ref": "#/$defs/Param"
           }
         },
-        "columns": {
-          "description": "In order; empty when the statement returns no rows.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Column"
-          }
-        },
-        "cardinality": {
-          "description": "How many rows the statement returns: exactly one, at most one, any number, or none (a write without `RETURNING`).",
-          "enum": [
-            "one",
-            "at_most_one",
-            "many",
-            "none"
-          ]
+        "result": {
+          "description": "What the statement returns.",
+          "$ref": "#/$defs/RowsType"
         },
         "diagnostics": {
           "description": "What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns.",
@@ -1144,8 +1161,7 @@
         "dialect",
         "sql",
         "params",
-        "columns",
-        "cardinality",
+        "result",
         "diagnostics"
       ]
     },

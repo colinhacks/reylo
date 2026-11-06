@@ -61,13 +61,13 @@ pub enum Kind {
     Xml(XmlType),
     /// A type the database knows and the format does not structure; its `name` is all it says.
     Opaque,
-    /// A value of any type, each carrying its type: SQL Server `sql_variant`, Oracle `ANYDATA`.
-    Any,
     /// Nothing is known about the values.
     Unknown,
     /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
     /// Appended, as a new kind is, so the order of the kinds never changes.
     TaggedUnion(TaggedUnionType),
+    /// Rows of columns: what a statement returns, and a relation nested in a value.
+    Rows(RowsType),
 }
 
 /// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
@@ -522,6 +522,50 @@ pub struct Param {
 /// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
 pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
+/// Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's
+/// `MULTISET` or an Oracle nested table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowsType {
+    pub cardinality: Cardinality,
+    pub columns: Vec<Column>,
+    /// Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, and
+    /// a table's primary key first where the rows hold it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+}
+
+/// What a statement returns: a [`RowsType`], with what every type may carry. It reads and writes as a [`Type`] of kind `rows`, and refuses any other kind, as the format does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Type", into = "Type")]
+pub struct ResultRows {
+    pub rows: RowsType,
+    pub name: Option<String>,
+    pub comment: Option<String>,
+}
+
+impl From<RowsType> for ResultRows {
+    fn from(rows: RowsType) -> Self {
+        ResultRows { rows, name: None, comment: None }
+    }
+}
+
+impl TryFrom<Type> for ResultRows {
+    type Error = String;
+
+    fn try_from(ty: Type) -> Result<Self, String> {
+        match ty.kind {
+            Kind::Rows(rows) => Ok(ResultRows { rows, name: ty.name, comment: ty.comment }),
+            other => Err(format!("a statement's result is of kind rows, not {}", other.name())),
+        }
+    }
+}
+
+impl From<ResultRows> for Type {
+    fn from(result: ResultRows) -> Self {
+        Type { kind: Kind::Rows(result.rows), name: result.name, comment: result.comment }
+    }
+}
+
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
@@ -539,8 +583,8 @@ pub struct StatementDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub params: Vec<Param>,
-    pub columns: Vec<Column>,
-    pub cardinality: Cardinality,
+    /// What the statement returns.
+    pub result: ResultRows,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -664,9 +708,9 @@ impl Kind {
             Kind::Geometry(_) => 20,
             Kind::Xml(_) => 21,
             Kind::Opaque => 22,
-            Kind::Any => 23,
-            Kind::Unknown => 24,
-            Kind::TaggedUnion(_) => 25,
+            Kind::Unknown => 23,
+            Kind::TaggedUnion(_) => 24,
+            Kind::Rows(_) => 25,
         }
     }
 
@@ -696,9 +740,9 @@ impl Kind {
             Kind::Geometry(_) => "geometry",
             Kind::Xml(_) => "xml",
             Kind::Opaque => "opaque",
-            Kind::Any => "any",
             Kind::Unknown => "unknown",
             Kind::TaggedUnion(_) => "tagged_union",
+            Kind::Rows(_) => "rows",
         }
     }
 }
@@ -881,6 +925,7 @@ impl Type {
             Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
             Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
             Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
+            Kind::Rows(r) => r.columns.iter().for_each(|c| c.ty.collect_names(out)),
             Kind::Map(m) => {
                 m.key.collect_names(out);
                 m.value.ty.collect_names(out);
@@ -904,6 +949,7 @@ impl Type {
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
             Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
+            Kind::Rows(r) => Kind::Rows(RowsType { columns: r.columns.into_iter().map(|c| Column { ty: c.ty.renamed(rename), ..c }).collect(), ..r }),
             Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
             Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
             Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
@@ -929,7 +975,8 @@ impl Type {
     /// The type in one short line, as the oracle's `expected.txt` and the engines' tests print it:
     /// its name (else its kind), then what narrows it in parentheses: an enum's values
     /// (`varchar('a' | 'b')`), a size (`varchar(≤255)`, `bytes(=6)`), a decimal's precision and
-    /// scale (`numeric(10,2)`), an integer's bounds (`int16(0..2155)`). An array is its element and
+    /// scale (`numeric(10,2)`), a number's bounds (`int16(0..2155)`, `numeric(>0..<1)`) and divisor
+    /// (`int4(×5)`). An array is its element and
     /// `[]`, `?` after an element that may be null (`text?[]`); a record is its fields
     /// (`point{ x: float8, y: float8 }`, `?` after a field that may be null and before one that
     /// may be absent); JSON a statement built is its content after its name (`json { id: int4 }`),
@@ -943,20 +990,25 @@ impl Type {
             Kind::Integer(i) => {
                 let label = self.name.clone().unwrap_or_else(|| format!("{}int{}", if i.unsigned { "u" } else { "" }, i.bits));
                 let mut facts = Vec::new();
-                if !i.bounds.is_empty() {
-                    facts.push(format!("{}..{}", i.bounds.min.as_deref().unwrap_or(""), i.bounds.max.as_deref().unwrap_or("")));
-                }
+                facts.extend(short_bounds(&i.bounds));
+                facts.extend(i.multiple_of.as_ref().map(|m| format!("×{m}")));
                 if let Some(values) = &i.values {
                     facts.push(values.join(" | "));
                 }
                 if facts.is_empty() { label } else { format!("{label}({})", facts.join(", ")) }
             }
             Kind::Float(f) if self.name.is_none() => format!("float({},{})", f.exponent_bits, f.mantissa_bits),
-            Kind::Decimal(d) => match (d.precision, d.min_scale, d.max_scale) {
-                (Some(p), Some(min), Some(max)) if min == max => with(vec![format!("{p},{min}")]),
-                (Some(p), _, _) => with(vec![p.to_string()]),
-                _ => label(),
-            },
+            Kind::Float(f) => with(short_bounds(&f.bounds).into_iter().collect()),
+            Kind::Decimal(d) => {
+                let mut facts = match (d.precision, d.min_scale, d.max_scale) {
+                    (Some(p), Some(min), Some(max)) if min == max => vec![format!("{p},{min}")],
+                    (Some(p), _, _) => vec![p.to_string()],
+                    _ => Vec::new(),
+                };
+                facts.extend(short_bounds(&d.bounds));
+                facts.extend(d.multiple_of.as_ref().map(|m| format!("×{m}")));
+                with(facts)
+            }
             Kind::Text(t) => {
                 let mut facts = size(&t.size);
                 if let Some(values) = &t.values {
@@ -1004,6 +1056,10 @@ impl Type {
             Kind::TaggedUnion(t) => {
                 let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
                 format!("{}<{}>", self.name.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
+            }
+            Kind::Rows(r) => {
+                let columns: Vec<String> = r.columns.iter().map(|c| format!("{}: {}", c.name, position_short(&Position::new(c.ty.clone(), c.nullable)))).collect();
+                format!("{}<{}>{{ {} }}", self.kind.name(), r.cardinality.as_str(), columns.join(", "))
             }
             Kind::Set(set) => format!("{}{{{}}}", label(), position_short(&set.element)),
             Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
@@ -1127,6 +1183,22 @@ impl Type {
                     m.check_at(&format!("{at}|{i}"))?;
                 }
             }
+            Kind::Rows(r) => {
+                for c in &r.columns {
+                    c.ty.check_at(&format!("{at}.{}", c.name))?;
+                }
+                if !r.unique.is_empty() && r.cardinality != Cardinality::Many {
+                    return fail("unique is only for rows that can be more than one".into());
+                }
+                for key in &r.unique {
+                    if key.is_empty() {
+                        return fail("a set of unique columns holds at least one".into());
+                    }
+                    if let Some(k) = key.iter().find(|k| !r.columns.iter().any(|c| &c.name == *k)) {
+                        return fail(format!("unique column {k:?} is not a column"));
+                    }
+                }
+            }
             Kind::TaggedUnion(t) => {
                 let mut tags = std::collections::HashSet::new();
                 for a in &t.alternatives {
@@ -1167,6 +1239,18 @@ fn check_order(b: &Bounds, order: fn(&str, &str) -> Option<std::cmp::Ordering>) 
         }
     }
     Ok(())
+}
+
+/// A number's bounds in the short notation (`0..150`, `>0..<1`), but for those an exponent writes:
+/// the reach of the type itself (`numeric`'s `1e131072`), which says nothing of the column.
+fn short_bounds(b: &Bounds) -> Option<String> {
+    let side = |inclusive: &Option<String>, exclusive: &Option<String>, mark: &str| match (inclusive, exclusive) {
+        (Some(v), _) if !v.contains('e') => v.clone(),
+        (_, Some(v)) if !v.contains('e') => format!("{mark}{v}"),
+        _ => String::new(),
+    };
+    let (low, high) = (side(&b.min, &b.exclusive_min, ">"), side(&b.max, &b.exclusive_max, "<"));
+    (!low.is_empty() || !high.is_empty()).then(|| format!("{low}..{high}"))
 }
 
 /// Two numbers in canonical decimal text, compared, where both read as `f64` without loss of
@@ -1265,38 +1349,60 @@ mod tests {
         ty
     }
 
+    /// The examples of spec/examples.ts, which `nub run typedefs` copies into spec/examples.json: each descriptor, whole or in part, reads and writes back as itself, and every type in it passes rule 7.
     #[test]
-    fn every_kind_reads_and_writes_as_the_spec_spells_it() {
-        round_trip(json!({"kind": "integer", "bits": 64, "name": "int8"}));
-        round_trip(json!({"kind": "integer", "bits": 8, "unsigned": true, "max": "32"}));
+    fn the_spec_examples_read_and_write_as_they_are_written() {
+        let examples: Value = serde_json::from_str(include_str!("../../../spec/examples.json")).unwrap();
+        let examples = examples.as_object().unwrap();
+        assert!(!examples.is_empty());
+        let mut types = 0;
+        for (name, example) in examples {
+            let descriptor = &example["descriptor"];
+            for value in descriptor["params"].as_array().into_iter().flatten() {
+                let param: Param = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&param).unwrap(), *value, "{name}");
+                param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
+                types += 1;
+            }
+            for value in descriptor["result"]["columns"].as_array().into_iter().flatten() {
+                let column: Column = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
+                assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
+                column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
+                types += 1;
+            }
+            // The rows themselves, whose `unique` sets rule 7 holds to their columns.
+            if let Some(result) = descriptor.get("result") {
+                round_trip(result.clone());
+            }
+            // A whole descriptor, which names the format's version.
+            if descriptor.get("$schema").is_some() {
+                let whole: StatementDescriptor = serde_json::from_value(descriptor.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+                assert_eq!(serde_json::to_value(&whole).unwrap(), *descriptor, "{name}");
+                assert_eq!(whole.schema, SCHEMA, "{name}");
+            }
+        }
+        assert!(types > 0);
+    }
+
+    /// The kinds and fields no example in spec/examples.ts shows, and a tagged union's short form.
+    #[test]
+    fn what_no_example_shows_reads_and_writes_as_the_spec_spells_it() {
         let tagged = round_trip(json!({"kind": "tagged_union", "name": "union", "alternatives": [{"tag": "num", "nullable": true, "type": {"kind": "integer", "bits": 32}}, {"tag": "str", "type": {"kind": "text"}}]}));
         assert_eq!(tagged.short(), "union<num: int32? | str: text>");
         assert!(serde_json::from_value::<Type>(json!({"kind": "tagged_union", "alternatives": [{"tag": "a", "type": {"kind": "text"}}, {"tag": "a", "type": {"kind": "text"}}]})).unwrap().check().is_err());
-        round_trip(json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "name": "float8"}));
-        round_trip(json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "name": "numeric"}));
         round_trip(json!({"kind": "text", "size": {"unit": "byte", "encoding": "UTF-8", "max": 65535}, "name": "text"}));
-        round_trip(json!({"kind": "text", "enum": ["sad", "ok", "happy"], "name": "public.mood"}));
         round_trip(json!({"kind": "text", "size": {"max": 255}, "pattern": {"dialect": "like", "source": "%@%"}, "name": "public.email"}));
-        round_trip(json!({"kind": "text", "ill_formed": "utf8"}));
-        round_trip(json!({"kind": "array", "any_depth": true, "name": "_varchar", "element": {"nullable": true, "type": {"kind": "text", "size": {"max": 20}, "name": "varchar"}}}));
-        round_trip(json!({"kind": "array", "size": {"exact": 7}, "name": "bit", "element": {"type": {"kind": "boolean"}}}));
-        round_trip(json!({"kind": "json", "name": "json", "content": {"type": {"kind": "array", "element": {"type": {"kind": "text", "name": "text"}}}}}));
-        round_trip(json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "name": "timestamptz"}));
-        round_trip(json!({"kind": "duration", "max": "P2147483648M2147483648DT2562047788H54.775808S", "tick": "1/1000000", "infinity": true, "name": "interval"}));
         round_trip(json!({"kind": "duration", "max": "PT838H59M59S", "tick": "1/1000000", "name": "time"}));
         round_trip(json!({"kind": "duration", "max": "P1199M"}));
         round_trip(json!({"kind": "duration", "max": "PT0.5S", "tick": "1/1000"}));
-        round_trip(json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
-        round_trip(json!({"kind": "range", "subtype": {"kind": "date"}, "name": "daterange"}));
-        round_trip(json!({"kind": "range", "subtype": {"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": {"kind": "integer", "bits": 32, "name": "int4"}}}, "name": "public.arrayrange"}));
-        round_trip(json!({"kind": "union", "members": [{"kind": "integer", "bits": 64}, {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}, {"kind": "decimal"}]}));
         round_trip(json!({"kind": "set", "size": {"max": 2}, "name": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}}));
         round_trip(json!({"kind": "map", "name": "hstore", "key": {"kind": "text"}, "value": {"nullable": true, "type": {"kind": "text"}}}));
         round_trip(json!({"kind": "geometry", "model": "geodetic", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "geography"}));
         round_trip(json!({"kind": "xml", "fragment": true, "name": "xml"}));
         round_trip(json!({"kind": "opaque", "name": "ltree"}));
-        round_trip(json!({"kind": "record", "name": "point", "fields": [{"name": "x", "type": {"kind": "float", "exponent_bits": 11, "mantissa_bits": 52}}, {"name": "at", "nullable": true, "optional": true, "type": {"kind": "uuid"}}]}));
-        round_trip(json!({"kind": "unknown"}));
+        round_trip(json!({"kind": "uuid", "name": "uuid"}));
+        round_trip(json!({"kind": "datetime", "tick": "1/1000000", "name": "timestamp"}));
+        round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "name": "int4"}, "name": "int4multirange"}));
     }
 
     #[test]
@@ -1340,6 +1446,22 @@ mod tests {
         refused(json!({"kind": "decimal", "min_scale": 3, "max_scale": 2}));
         refused(json!({"kind": "opaque"}));
         refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));
+        let id = json!({"name": "id", "type": {"kind": "integer", "bits": 32}});
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["missing"]]}));
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [[]]}));
+        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "unique": [["id"]]}));
+        refused(json!({"kind": "rows", "cardinality": "one", "columns": [id], "unique": [["id"]]}));
+        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
+    }
+
+    #[test]
+    fn a_statements_result_is_rows_and_nothing_else() {
+        let result = |result: Value| serde_json::from_value::<StatementDescriptor>(json!({"$schema": SCHEMA, "dialect": {"name": "postgres", "version": "18"}, "sql": "select 1", "params": [], "result": result, "diagnostics": []}));
+        assert!(result(json!({"kind": "integer", "bits": 32})).is_err());
+        let rows = json!({"kind": "rows", "cardinality": "one", "columns": []});
+        let read = result(rows.clone()).unwrap();
+        assert_eq!(read.result.rows.cardinality, Cardinality::One);
+        assert_eq!(serde_json::to_value(&read).unwrap()["result"], rows);
     }
 
     #[test]
@@ -1347,26 +1469,5 @@ mod tests {
         let spec: serde_json::Value = serde_json::from_str(include_str!("../../../spec/typedefs.schema.json")).unwrap();
         assert_eq!(spec["$id"], SCHEMA);
         assert_eq!(spec["$defs"]["StatementDescriptor"]["properties"]["$schema"]["const"], SCHEMA);
-    }
-
-    #[test]
-    fn a_statement_descriptor_reads_and_writes_as_the_spec_spells_it() {
-        let value = json!({
-            "$schema": SCHEMA,
-            "dialect": {"name": "postgres", "version": "18.1"},
-            "sql": "select id, email, bio from users where id = $1",
-            "kind": "select",
-            "comment": "One user, by id.",
-            "params": [{"name": "id", "type": {"kind": "integer", "bits": 64, "name": "int8"}}],
-            "columns": [
-                {"name": "id", "type": {"kind": "integer", "bits": 64, "name": "int8"}},
-                {"name": "email", "type": {"kind": "text", "size": {"max": 255}, "name": "varchar"}},
-                {"name": "bio", "nullable": true, "type": {"kind": "text", "name": "text"}, "comment": "Shown on the profile page"}
-            ],
-            "cardinality": "at_most_one",
-            "diagnostics": []
-        });
-        let d: StatementDescriptor = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(&d).unwrap(), value);
     }
 }

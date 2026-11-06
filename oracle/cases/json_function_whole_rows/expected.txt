@@ -1,0 +1,26 @@
+bare_alias.sql: many (p: int8) -> { doc: jsonb? }
+built_in_series.sql: many () -> { doc: jsonb int4? }
+from_a_subquery.sql: many () -> { doc: jsonb text? }
+grouped.sql: many () -> { doc: jsonb text?, n: int8 }
+in_an_object.sql: many (p: int8) -> { doc: jsonb { a: text? } }
+json_agg_filter.sql: one () -> { doc: json text?[]? }
+outer_joined.sql: many () -> { doc: jsonb text? }
+renamed_column.sql: many (p: int8) -> { doc: jsonb text? }
+row_column_definitions.sql: many () -> { doc: jsonb { a: int4?, b: text? } }
+row_of_a_table.sql: many () -> { doc: jsonb { id: int8?, post_id: int8?, body: text? } }
+row_of_one_field.sql: many () -> { doc: jsonb { x: int4? } }
+row_of_one_field_domain.sql: many () -> { doc: jsonb { x: int4? } }
+row_outer_joined.sql: many () -> { doc: jsonb { id: int8?, body: text? }? }
+row_rows_from_two.sql: many () -> { doc: jsonb { many_bodies: text?, generate_series: int4? } }
+row_two_columns.sql: many () -> { doc: jsonb { id: int8?, body: text? } }
+row_with_ordinality.sql: many () -> { doc: jsonb { t: text?, ordinality: int8 } }
+rows_from_one.sql: many () -> { doc: jsonb text? }
+setof_text.sql: many (p: int8) -> { doc: jsonb text? }
+setof_text_by_name.sql: many (p: int8) -> { doc: jsonb text? }
+single_out_parameter.sql: one (x: int8) -> { doc: jsonb int8? }
+sql_value_function.sql: one () -> { doc: jsonb date? }
+table_one_column.sql: many (p: int8) -> { doc: jsonb text? }
+table_one_column_aggregate.sql: one (p: int8) -> { doc: jsonb text?[]? }
+table_one_column_by_name.sql: many (p: int8) -> { doc: jsonb text? }
+to_json.sql: many () -> { doc: json text? }
+unnest.sql: many () -> { doc: jsonb text? }

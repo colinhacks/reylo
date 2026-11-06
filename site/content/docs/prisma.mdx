@@ -89,7 +89,7 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 ## Before you start
 
 - **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules: `npx skills add colinhacks/reylo --skill using-reylo`.
-- **Set Reylo up** as [Setup](/#setup) shows. TypeScript 7 refuses `baseUrl` in `tsconfig.json`, so write your `paths` relative to the file.
+- **Set Reylo up** as [Setup](/#setup) shows.
 - **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
 - **Keep the branch short.** A long-lived branch pays for `main` at each sync: new Prisma calls to convert, and re-indented code that reads as conflict. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
 - **Give your pool an error listener**, on the pool and on each connection a transaction takes. Prisma's adapter had both, and without them Node exits when the database drops an idle connection.
