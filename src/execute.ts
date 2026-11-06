@@ -7,7 +7,7 @@
 
 import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
-import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
+import { libsqlRows, normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
 import { columnKind, describe, hstoreText, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
@@ -428,7 +428,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // The driver's rows, each value given its kind (decode-sqlite.ts).
       const columns = query.columns;
       if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
-      if (typeof c.execute === "function") return normalize((await c.execute({ sql: text, args: values })).rows, columns);
+      if (typeof c.execute === "function") return normalize(libsqlRows((await c.execute({ sql: text, args: values })).rows, columns), columns);
       if (isTurso(c)) return await runTurso(c, text, values, columns);
       // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
       if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
