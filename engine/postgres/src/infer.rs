@@ -547,6 +547,9 @@ pub struct Trust {
     /// is every PostgreSQL before 18 ([`POSTGRES_JSONB_NULL_CASTS`]). A host that did not ask
     /// leaves it unset, and a cast of a `jsonb` value then proves nothing.
     pub jsonb_casts_raise: bool,
+    /// Whether the database holds no nondeterministic collation, so no value can bring one to a
+    /// comparison. A host that did not ask leaves it unset.
+    pub deterministic_only: bool,
 }
 
 impl Trust {

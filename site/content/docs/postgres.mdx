@@ -859,6 +859,8 @@ returning id
 
 </Inferred>
 
+A comparison under another collation doesn't count either. A column under the default collation compared with a value that carries a nondeterministic one compares under that one, where `'a'` can equal both `'a'` and `'A'`, so a unique key on the column bounds nothing. In a database that holds such a collation, a key is matched by a parameter, a literal, a built-in call or cast of those, or a column Reylo reads as carrying none; a subquery or your own function counts only in a database that holds none.
+
 **Result key**
 
 A query that can return more than one row may also have a result key: the columns that identify each row, since no two rows of a result agree on all of them. Anything that compares two results of the same query can match each row to its earlier version by them. Reylo lists them on the query's Standard Query object, as `query["~standard"].query.key`.
