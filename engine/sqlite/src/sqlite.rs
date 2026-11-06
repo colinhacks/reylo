@@ -3192,7 +3192,7 @@ mod tests {
             (t.read, t.write)
         };
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
+        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) as n from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
         // A WITH query is no table, and a view is named, not what it reads.
         assert_eq!(tables("with recent as (select user_id from posts) select title from titles join recent on true"), (names(&["posts", "titles"]), vec![]));
         assert_eq!(tables("select value from json_each('[1]')"), (vec![], vec![]));

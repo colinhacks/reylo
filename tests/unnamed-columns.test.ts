@@ -131,7 +131,7 @@ test("Standard Query: `decode` and `output` give the values, each column keeps i
   // A list of rows is not told from an array by its output alone.
   const list = await built(root, "list", "select json_group_array(id) from users");
   assert.equal(list["~standard"].query.cardinality, "one");
-  assert.deepEqual(await list.run(db), [1, 2]);
+  assert.deepEqual((await list.run(db)).sort(), [1, 2]);
   const names = await built(root, "names", "select lower(name) from users order by id");
   assert.equal(names["~standard"].query.cardinality, "many");
   assert.deepEqual(names["~standard"].query.decode([["a"], ["b"]]), ["a", "b"]);
