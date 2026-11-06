@@ -173,7 +173,6 @@ pub enum DurationCodec {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum SetCodec {
     Set,
-    #[serde(rename = "array")]
     Array,
 }
 
@@ -315,13 +314,13 @@ mod tests {
 
     #[test]
     fn js_codecs_name_a_typescript_type_per_family() {
-        let text = "js:\n  codecs:\n    decimal: number\n    bytes: string\n    date: Temporal.PlainDate\n    time: Temporal.PlainTime\n    datetime: Temporal.PlainDateTime\n    instant: Temporal.Instant\n    duration: Temporal.Duration\n    set: array\n";
+        let text = "js:\n  codecs:\n    decimal: number\n    bytes: string\n    date: Temporal.PlainDate\n    time: Temporal.PlainTime\n    datetime: Temporal.PlainDateTime\n    instant: Temporal.Instant\n    duration: Temporal.Duration\n    set: Array\n";
         let p = parse(text).unwrap();
         assert_eq!(p.js.codecs.instant, Some(InstantCodec::Temporal));
         assert_eq!(p.js.codecs.set, Some(SetCodec::Array));
         assert_eq!(
             serde_json::to_value(&p).unwrap(),
-            serde_json::json!({ "js": { "codecs": { "decimal": "number", "bytes": "string", "date": "Temporal.PlainDate", "time": "Temporal.PlainTime", "datetime": "Temporal.PlainDateTime", "instant": "Temporal.Instant", "duration": "Temporal.Duration", "set": "array" } } })
+            serde_json::json!({ "js": { "codecs": { "decimal": "number", "bytes": "string", "date": "Temporal.PlainDate", "time": "Temporal.PlainTime", "datetime": "Temporal.PlainDateTime", "instant": "Temporal.Instant", "duration": "Temporal.Duration", "set": "Array" } } })
         );
         // A default spelled out is a setting like any other; an empty section reads back as none.
         assert_eq!(serde_json::to_value(parse("js:\n  codecs:\n    set: Set\n    bytes: Uint8Array\n").unwrap()).unwrap(), serde_json::json!({ "js": { "codecs": { "set": "Set", "bytes": "Uint8Array" } } }));

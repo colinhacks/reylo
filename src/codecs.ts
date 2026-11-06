@@ -31,7 +31,7 @@ export type Codecs = {
   readonly datetime?: "string" | "Temporal.PlainDateTime";
   readonly instant?: "string" | "Temporal.Instant";
   readonly duration?: "string" | "Temporal.Duration";
-  readonly set?: "Set" | "array";
+  readonly set?: "Set" | "Array";
 };
 
 type Family = keyof Codecs;
@@ -123,7 +123,7 @@ export function leafCodec(t: EngineType, dialect: Dialect, codecs: Codecs): Code
   const v = f === undefined ? undefined : codecs[f];
   switch (f) {
     case "set":
-      return v === "array" ? "set:array" : undefined;
+      return v === "Array" ? "set:array" : undefined;
     case "decimal":
       return v === "number" ? "decimal:number" : undefined;
     case "bytes":
