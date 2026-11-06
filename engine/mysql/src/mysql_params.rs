@@ -236,7 +236,8 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
                 Target::Name(column) => known.iter().find(|(c, _, _, _)| c == column),
                 Target::Position(i) => known.iter().filter(|(_, _, invisible, _)| !invisible).nth(*i),
             };
-            column.map(|(column, _, _, _)| (name.clone(), column.clone()))
+            // A column the rule above narrows keeps that rule, whatever else the parameter is compared with.
+            column.filter(|(_, ty, _, _)| ty.is_none()).map(|(column, _, _, _)| (name.clone(), column.clone()))
         });
         written.entry(param).and_modify(|seen| if *seen != place { *seen = None }).or_insert(place);
     }
