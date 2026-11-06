@@ -1,7 +1,7 @@
 // The type check on Windows (windows.yml), through the packages `nub run build` writes: one project
 // links dist/reylo, which finds the engine where an install puts it (dist/reylo/node_modules, a
 // junction to dist/engine-win32-x64), and for each way a URL can name its database the loader
-// analyzes its query as the type check does, `reylo compile` through the package's command does
+// analyzes its query as the type check does, `reylo analyze` through the package's command does
 // too, and `tsc` types it. The engine opens the files a URL names itself, so each case names its
 // database differently: relative, absolute, as a file URL, on another drive, on a `subst` drive,
 // through a share, through a short (8.3) name, beside a writer holding a WAL open; a
@@ -91,7 +91,7 @@ const loaderAnalysis = [
 const sessionModule = pathToFileURL(join(project, "node_modules", "reylo", "src", "analyze.js")).href;
 
 /**
- * One way to name the database: the loader must type the query, and so must `reylo compile`, the
+ * One way to name the database: the loader must type the query, and so must `reylo analyze`, the
  * native binary's own reading of the project, which the package's command runs (a DuckDB database
  * runs inside the app, and the binary refuses it); for SQLite `tsc` must too.
  */
@@ -106,9 +106,9 @@ function check(name: string, url: string, { env = {}, tsc = true, analyze = !url
   }
   if (loader.status !== 0) failures.push(`${name}: the loader's analysis exited ${loader.status}`);
   if (analyze) {
-    const compiled = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "compile", "queries/get_user.sql"], project, false, env);
-    console.log(`reylo compile: ${compiled.status}\n${compiled.out.trim()}`);
-    if (compiled.status !== 0 || !compiled.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo compile exited ${compiled.status}`);
+    const analyzed = run(process.execPath, [join(project, "node_modules", "reylo", "src", "cli.js"), "analyze", "queries/get_user.sql"], project, false, env);
+    console.log(`reylo analyze: ${analyzed.status}\n${analyzed.out.trim()}`);
+    if (analyzed.status !== 0 || !analyzed.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo analyze exited ${analyzed.status}`);
   }
   if (!tsc) return;
   rmSync(join(project, ".reylo"), { recursive: true, force: true });

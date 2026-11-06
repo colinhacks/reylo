@@ -348,7 +348,7 @@ export interface Alternative extends Position {
   tag: string;
 }
 
-/** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo compile` writes the file a statement was read from. */
+/** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
   /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
   $schema: "https://reylo.dev/typedefs/0.1.0.json";

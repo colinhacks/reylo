@@ -1,5 +1,5 @@
 // How the root module reaches the build-time half (src/tooling.ts) when a project calls one of its
-// build-time functions, as `compile`. The root is in every app's bundle, on every runtime, so nothing
+// build-time functions, as `analyze`. The root is in every app's bundle, on every runtime, so nothing
 // here may reach a bundler or fail on load. It imports no `node:` module and touches `process` only
 // when called. It never writes `import.meta`, which is a syntax error in Jest's CommonJS mode and the
 // build machine's path in a webpack bundle. And it loads the half with a `require` of a computed
@@ -7,8 +7,8 @@
 // `require` loads an ES module that has no top-level await.
 import type { StatementDescriptor } from "../spec/index.ts";
 
-/** What `compile` reads: the statement, and the database where it is not the project's. */
-export interface CompileInput {
+/** What `analyze` reads: the statement, and the database where it is not the project's. */
+export interface AnalyzeInput {
   /** One statement, with `:name` placeholders on every database. */
   sql: string;
   /**
@@ -24,8 +24,8 @@ export type { StatementDescriptor };
 
 /** The part of the build-time half the root module calls, named here so that a project's type check, which reads the root, never reads the half's Node imports. */
 export type BuildTime = {
-  /** One statement's descriptor in Reylo Type Defs (src/compile.ts). */
-  compile(input: CompileInput): Promise<StatementDescriptor>;
+  /** One statement's descriptor in Reylo Type Defs (src/analyze-api.ts). */
+  analyze(input: AnalyzeInput): Promise<StatementDescriptor>;
 };
 
 type NodeRequire = ((id: string) => unknown) & { resolve?(id: string): string };

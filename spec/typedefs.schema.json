@@ -1080,7 +1080,7 @@
       "unevaluatedProperties": false
     },
     "StatementDescriptor": {
-      "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo compile` writes the file a statement was read from.",
+      "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from.",
       "type": "object",
       "properties": {
         "$schema": {
