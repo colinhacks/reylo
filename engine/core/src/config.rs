@@ -29,7 +29,7 @@ pub struct Project {
     /// pooler can fail. The importer's alone: a host that serves the queries runs them through `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub direct_url: Option<String>,
-    /// A server to make `reylo migrate`'s shadow databases on, where the database's own refuses
+    /// A server to make the migrations' shadow databases on, where the database's own refuses
     /// `create database`; the database's own server when absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shadow_url: Option<String>,
@@ -56,9 +56,6 @@ pub struct Project {
     /// `.cache/`, which the type check and the migrations keep there, out of git.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dir: Option<String>,
-    /// `reylo migrate`'s settings; the section's presence opts the project in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub migrate: Option<Migrate>,
     /// How the importer represents values in JavaScript and TypeScript.
     #[serde(default, skip_serializing_if = "Js::is_empty")]
     pub js: Js,
@@ -67,19 +64,6 @@ pub struct Project {
     /// The settings of a host that serves the queries, which that host parses.
     #[serde(default, skip_serializing)]
     pub api: Option<serde_yaml::Value>,
-}
-
-/// `reylo migrate`'s settings: whether the project keeps a lock. The database is the type check's
-/// connection, the server for shadow databases the top-level `shadow_url`, and where the files are
-/// the top-level `dir`.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Migrate {
-    /// Whether `reylo-lock.yaml` sets the order the migrations run in, so that two branches that each
-    /// add one conflict in git, and a migration not in it is a draft only development runs (`true`
-    /// when absent); `false` (`reylo migrate unlock`) runs them by name, with no lock.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub lock: Option<bool>,
 }
 
 /// The importer's JavaScript settings.
@@ -313,17 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_migrate_section() {
-        let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\nmigrate:\n  lock: false\n").unwrap();
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}", "migrate": { "lock": false } }));
-        assert!(parse("migrate:\n  shadow_url: x\n").is_err(), "the server for shadow databases is the top-level shadow_url");
-        assert!(parse("migrate:\n  dir: db/migrations\n").is_err(), "the migrations' place is the top-level dir's");
-        assert!(parse("migrate:\n  url: x\n").is_err(), "the database is the type check's");
-        assert!(parse("migrate:\n  strict_comments: false\n").is_err(), "comments are schema");
-        assert_eq!(parse("migrate:\n  lock: true\n").unwrap().migrate.and_then(|m| m.lock), Some(true));
-        assert_eq!(parse("migrate: {}\n").unwrap().migrate, Some(Migrate::default()));
-        assert!(parse("migrate:\n  folder: x\n").is_err());
-        assert!(parse("migrate:\n  lock: sometimes\n").is_err());
+    fn reads_the_migrations_keys() {
+        let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\n").unwrap();
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}" }));
+        assert!(parse("migrate:\n  lock: true\n").is_err(), "the lock is always kept, and needs no setting");
     }
 
     #[test]

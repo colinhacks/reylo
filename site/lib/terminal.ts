@@ -14,7 +14,7 @@ const command = [
  * `$ ` is a command, after a dim prompt; a line that opens with `# ` is a
  * comment; every other line is what the command printed, coloured as `reylo` paints it in a
  * terminal (engine/migrate/src/commands.rs): its marks (✓ green, ↺ and ! yellow, ✗ and its heading
- * red), the dim headings and timings, the statements `sync` ran and the commands a refusal names.
+ * red), the dim headings and timings, the statements `schema push` ran and the commands a refusal names.
  * From a `Usage:` line on, it is help, as `reylo migrate --help` paints it (engine/cli/src/main.rs):
  * bold headings, commands, flags and the dim values they take.
  * The scopes are ones the GitHub themes colour without a background.
@@ -33,7 +33,7 @@ export const terminal: LanguageRegistration = {
       patterns: [
         { match: '^[A-Z][a-z]+:$', name: 'markup.bold' },
         { match: '^(\\s+)(--?[a-z-]+(?:, --[a-z-]+)?)( <\\S+)?(?=\\s{2})', captures: { 2: { name: 'variable.flag' }, 3: { name: 'comment.placeholder' } } },
-        { match: '^(\\s+)([a-z][a-z-]*)( <\\S+)?(?=\\s{2})', captures: { 2: { name: 'support.function.command' }, 3: { name: 'comment.placeholder' } } },
+        { match: '^(\\s+)([a-z][a-z -]*?)( <\\S+)?(?=\\s{2})', captures: { 2: { name: 'support.function.command' }, 3: { name: 'comment.placeholder' } } },
       ],
     },
     { begin: '^(\\$) ', beginCaptures: { 1: { name: 'comment.prompt' } }, end: '$', patterns: command },
@@ -42,13 +42,13 @@ export const terminal: LanguageRegistration = {
     { match: '^[│\\s]*[├└]── .*?(?=\\s+#|$)', name: 'string.path' },
     { match: '(?<=\\s)# .*$', name: 'comment.line' },
     { match: '^✗ .*$', name: 'keyword.error' },
-    { match: '^(Applying to|Syncing|Pulling from|Watching) .*$', name: 'comment.heading' },
+    { match: '^(Applying to|Pushing|Pulling from|Watching) .*$', name: 'comment.heading' },
     { match: '^(Nothing was (applied|changed)|No migration was written)\\.$', name: 'comment.outcome' },
     { match: '^Not run on this database.*$', name: 'comment.outcome' },
     { match: '^(\\s*)(✓)', captures: { 2: { name: 'entity.name.tag.ok' } } },
     { match: '^(\\s*)([↺!↓])', captures: { 2: { name: 'variable.warn' } } },
     { match: '^\\s+Dropped .*$', name: 'variable.warn' },
-    // A migration recorded or taken out of the history, by name; then a statement `sync` ran.
+    // A migration recorded or taken out of the history, by name; then a statement `schema push` ran.
     { match: '^(\\s+)(\\+) (?=\\S+\\.sql )', captures: { 2: { name: 'entity.name.tag.ok' } } },
     { match: '^(\\s+)(-) (?=\\S+\\.sql )', captures: { 2: { name: 'keyword.error' } } },
     { match: '^(\\s+)(\\+) (.*)$', captures: { 2: { name: 'entity.name.tag.ok' }, 3: { patterns: [{ include: 'source.sql' }] } } },

@@ -1,12 +1,11 @@
-//! `reylo-lock.yaml`, the lock of a locked project (the default; `lock: false` keeps none): the
-//! migrations in the order they run, each its name and a checksum chained to the line before, and
+//! `reylo-lock.yaml`, the project's lock: the migrations in the order they run, each its name and a checksum chained to the line before, and
 //! the checksum of `schema.sql` from the last time the migrations were proven to reach it. Two
 //! branches that each add a migration both append to it, so git conflicts on it when the second one
 //! merges, which is the point: before anything is deployed, one branch's migrations must move after
 //! the other's (keep main's lines, then `reylo migrate dev`). The chain makes an edit, a
 //! deletion or a reordering visible without a database: a wrong "accept both" breaks it at the
 //! first line out of place. Only Reylo writes it, after applying what it lists to a development
-//! database (`dev`) or reading what a database applied (`lock`), so its checksums certify
+//! database (`dev`) or reading what a database applied (`history pull`), so its checksums certify
 //! what ran.
 
 use crate::cache::{hex, Sha256};
@@ -17,7 +16,7 @@ use std::sync::LazyLock;
 
 pub const LOCK: &str = "reylo-lock.yaml";
 
-const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate dev and reylo migrate lock.
+const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate dev and reylo migration history pull.
 # A merge conflict here means another branch added migrations too: keep main's lines, then
 # run reylo migrate dev, which runs this branch's after them and adds them back.
 ";

@@ -587,7 +587,7 @@ fn ensure_dir(root: &Path, dir: &Path) {
     if let Some(cache) = root.parent() {
         let ignore = cache.join(".gitignore");
         if !ignore.exists() {
-            let _ = std::fs::write(ignore, "# reylo's cache: written by the type check, the build steps and reylo migrate; never committed.\n*\n");
+            let _ = std::fs::write(ignore, "# reylo's cache: written by the type check, the build steps and the migrations; never committed.\n*\n");
         }
     }
 }

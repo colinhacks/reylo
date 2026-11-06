@@ -1,16 +1,15 @@
-//! `reylo migrate`: migrations written by hand (or by an agent), checked against the declared
-//! schema. `reylo migrate check` builds three shadows beside the target: A runs `schema.sql`; B
-//! replays what the target applied, in the order it applied them, is compared with the live target
-//! (the drift check), and then runs what is pending; C replays every migration by time, as a fresh
-//! database would. A, B and C must agree. `reylo migrate prod` builds none, and trusts the
-//! fingerprint its last run stored. Every migration file runs atomically with its history row, so
-//! a file that cannot (a statement that cannot run in a transaction beside others; MySQL's DDL
-//! beside anything) is refused.
+//! `reylo migrate` and its neighbours: migrations written by hand (or by an agent), checked against
+//! the declared schema. `reylo migrate prod --dry-run` builds shadows beside the target: one runs
+//! `schema.sql`; the other replays what the target applied, is compared with the live target (the
+//! drift check), and then runs what is pending; the two must agree. `reylo migrate prod` builds none,
+//! and trusts the fingerprint its last run stored. Every migration file runs atomically with its
+//! history row, so a file that cannot (a statement that cannot run in a transaction beside others;
+//! MySQL's DDL beside anything) is refused.
 //!
 //! Postgres, MySQL and SQLite. The commands are in `commands`; the comparator is `catalog`; the
 //! lexer that splits and classifies statements is `sql`; the connections and shadows are `db`; the
 //! replays the shadows run are `replay`, which the cache of what they reached (`cache`) shortens;
-//! `lock` is the lock file a locked project keeps.
+//! `lock` is the project's lock file.
 
 pub mod cache;
 pub mod catalog;
@@ -22,7 +21,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{check_command, check_offline, create, dev, init, lock_command, prod, pull, reset, run_sql, sync, sync_history, sync_watch, wipe_rows, Choices, Options};
+pub use commands::{create, db_wipe, dev, dry_run, history_pull, history_push, init, lint, prod, run_sql, schema_pull, schema_push, schema_push_watch, Choices, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]

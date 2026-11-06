@@ -91,7 +91,7 @@ const dialectOf = (value: unknown): Dialect | undefined => (typeof value === 'st
 
 /** The file whose blocks hold each dialect's schema, in the accordion near the top of a page. */
 export const SCHEMA_FILE = 'schema.sql';
-/** A migration's file name, as `reylo migrate create` writes it: a file the page shows, never a statement. */
+/** A migration's file name, as `reylo migration create` writes it: a file the page shows, never a statement. */
 export const MIGRATION_FILE = /^(\d{14}_[a-z0-9_]+|init)\.sql$/;
 
 export type Block = {

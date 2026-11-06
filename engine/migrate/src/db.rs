@@ -593,64 +593,6 @@ async fn default_privileges(target: &mut Db) -> Result<Vec<String>, Error> {
     Ok(out)
 }
 
-/// Drops every object in the database that its migrations could have made, Reylo's history table
-/// included: on Postgres the schemas the connection's role owns and everything in `public`, which is
-/// made again as a new database has it; on MySQL every table, view, routine and event; on SQLite
-/// every table, view, index and trigger.
-pub async fn wipe(db: &mut Db) -> Result<(), Error> {
-    match db.dialect() {
-        Dialect::Postgres => {
-            let schemas = db
-                .rows(
-                    r"select n.nspname from pg_namespace n
-                    where n.nspname not in ('pg_catalog', 'information_schema', 'public') and n.nspname not like 'pg\_%'
-                      and pg_get_userbyid(n.nspowner) = current_user
-                      and not exists (select 1 from pg_depend d where d.classid = 'pg_namespace'::regclass and d.objid = n.oid and d.deptype = 'e')",
-                )
-                .await?;
-            for row in schemas {
-                db.exec(&format!("drop schema \"{}\" cascade", row.text("nspname").replace('"', "\"\""))).await?;
-            }
-            // `public` is made again as a new database has it: its owner, its grant and its comment.
-            let comment = db.rows("select obj_description(oid, 'pg_namespace') as c from pg_namespace where nspname = 'public'").await?.first().and_then(|r| r.get("c").map(String::from));
-            db.exec("drop schema if exists public cascade; create schema public; alter schema public owner to pg_database_owner; grant usage on schema public to public").await?;
-            if let Some(comment) = comment {
-                db.exec(&format!("comment on schema public is {}", literal(&comment))).await?;
-            }
-            Ok(())
-        }
-        Dialect::Mysql => {
-            let objects = db
-                .rows(
-                    "select table_type as kind, table_name as name from information_schema.tables where table_schema = database()
-                    union all select routine_type, routine_name from information_schema.routines where routine_schema = database()
-                    union all select 'EVENT', event_name from information_schema.events where event_schema = database()",
-                )
-                .await?;
-            db.exec("set foreign_key_checks = 0").await?;
-            for o in objects {
-                let kind = match o.text("kind") {
-                    "VIEW" => "view".to_string(),
-                    "BASE TABLE" => "table".to_string(),
-                    other => other.to_ascii_lowercase(),
-                };
-                db.exec(&format!("drop {kind} if exists `{}`", o.text("name").replace('`', "``"))).await?;
-            }
-            db.exec("set foreign_key_checks = 1").await
-        }
-        Dialect::Sqlite => {
-            let objects = db
-                .rows("select type, name from sqlite_schema where name not like 'sqlite_%' and type in ('view', 'trigger', 'table', 'index') order by case type when 'view' then 0 when 'trigger' then 1 when 'index' then 2 else 3 end")
-                .await?;
-            db.exec("pragma foreign_keys = off").await?;
-            for o in objects {
-                let _ = db.exec(&format!("drop {} if exists \"{}\"", o.text("type"), o.text("name").replace('"', "\"\""))).await;
-            }
-            db.exec("pragma foreign_keys = on").await
-        }
-    }
-}
-
 #[cfg(test)]
 mod url_tests {
     use super::*;

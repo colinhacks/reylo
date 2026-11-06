@@ -1,7 +1,7 @@
 //! `reylo`, one program for every database: the analysis engine a language's frontend talks to over
 //! standard input and output (`reylo engine <database>`, one JSON request per line, one answer per
 //! line), each statement's type descriptor on the command line (`reylo analyze`), and the
-//! migrations (`reylo migrate`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
+//! migrations (`reylo migration`, `reylo migrate`, `reylo schema`, `reylo db`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
 //! `reylo play`, the playground's server, which renders TypeScript and so runs in JavaScript.
 
 mod analyze;
@@ -17,7 +17,11 @@ const USAGE: &str = "Usage: reylo <command>
 
   analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
                             statement, read from the project's database
-  migrate <command>         Write, check and apply migrations (reylo migrate --help)
+  migration <command>       Write and lint migrations, and repair their history
+  migrate <command>         Run migrations on a database
+  schema <command>          Copy the schema between schema.sql and a database
+  db <command>              Delete every row of a database
+                            (reylo migrate --help lists all four's commands)
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
@@ -33,37 +37,38 @@ Runs SQL on the database as written, outside any migration's history: inline tex
 --file names (-f), in the order given. The database is the type check's connection; --url names
 another.";
 
-const MIGRATE_USAGE: &str = "Usage: reylo migrate <command> [flags]
+const MIGRATE_USAGE: &str = "Usage: reylo <group> <command> [flags]
 
 Commands:
-  init                    Start from this database
-    --schema <name>       A schema to read (Postgres; public by default)
-  create <name>           Write a migration from your change to schema.sql
-    --drop <names>        Accept what it drops: tables and columns
-    --rename <old>=<new>  Say a table or column was renamed
-  dev                     Take this database to the migrations, and lock them
-  prod                    Run what the lock lists, with no shadow database
-  sync                    Take this database to schema.sql, unrecorded
-    --watch               Again on each change
-  check                   Check the migrations, schema.sql and this database
-    --offline             Check only what needs no database
-  reset                   Drop everything in this database
-  wipe                    Delete every row, keeping the schema
-  pull                    Write the migrations this database ran into files
-  sync-history            Record what this database's schema already has
-  lock                    Write the lock from what this database ran
-  unlock                  Delete the lock: migrations run by name
+  migration init           Start from this database
+    --schema <name>        A schema to read (Postgres; public by default)
+  migration create <name>  Write a migration from your change to schema.sql
+    --drop <names>         Accept what it drops: tables and columns
+    --rename <old>=<new>   Say a table or column was renamed
+  migration lint           Check the migrations and schema.sql, with no database
+  migration history push   Record the migrations this database's schema has
+  migration history pull   Write the migrations this database ran into files
+  migrate dev              Take this database to the migrations, and lock them
+  migrate prod             Run what the lock lists, with no shadow database
+    --dry-run              Try it on a shadow database, running nothing here
+  schema push              Take this database to schema.sql, unrecorded
+    --watch                Again on each change
+  schema pull              Write schema.sql from this database
+    --schema <name>        A schema to read (Postgres; public by default)
+  db wipe                  Delete every row, keeping the schema
 
 Flags:
-  --url <url>             The database, in place of direct_url
-  --dir <path>            Reylo's directory, in place of dir
-  -h, --help              Print this help";
+  --url <url>              The database, in place of direct_url
+  -h, --help               Print this help";
+
+/// Every command of those groups, as it's typed.
+const COMMANDS: [&str; 10] = ["migration init", "migration create", "migration lint", "migration history push", "migration history pull", "migrate dev", "migrate prod", "schema push", "schema pull", "db wipe"];
 
 /// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
 /// it takes dim. Piped, it is the text alone.
 fn painted_usage() -> String {
     use reylo_migrate::commands::paint;
-    let name = regex::Regex::new(r"^(\s+)(--?[a-z-]+(?:, --[a-z-]+)?|[a-z][a-z-]*)( <\S+)?(\s{2}.*)$").unwrap();
+    let name = regex::Regex::new(r"^(\s+)(--?[a-z-]+(?:, --[a-z-]+)?|[a-z][a-z -]*?)( <\S+)?(\s{2}.*)$").unwrap();
     let lines = MIGRATE_USAGE.lines().map(|line| {
         if let Some(rest) = line.strip_prefix("Usage: ") {
             return format!("{} {rest}", paint("bold", "Usage:"));
@@ -109,7 +114,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             args.get(k).filter(|v| !v.starts_with("--")).cloned().ok_or_else(|| format!("{a} needs a value"))
         };
         match a {
-            "--url" | "--dir" => {
+            "--url" => {
                 let v = value()?;
                 out.values.insert(a[2..].to_string(), v);
             }
@@ -129,22 +134,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(out)
 }
 
-/// The project's `migrate` settings, flags over the file. `require` refuses a project with no
-/// `migrate` section, whose presence opts the project in.
-fn settings(args: &Args, require: bool) -> Result<Options, String> {
-    settings_with(args, require, true)
-}
-
-/// As `settings`, where `need_url` says whether a command can't run without a database.
-fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, String> {
+/// The project's settings for these commands, `--url` over the file. `need_url` says whether the
+/// command can't run without a database.
+fn settings(args: &Args, need_url: bool) -> Result<Options, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let project = Project::resolve(&cwd, std::env::vars().collect())?;
-    let m = project.config.migrate.clone();
-    if m.is_none() && require && !args.values.contains_key("url") {
-        let file = project.file.as_deref().map(|f| f.file_name().unwrap_or_default().to_string_lossy().into_owned()).unwrap_or_else(|| ".reylo.yaml".into());
-        return Err(format!("no migrate section in {file}: start with reylo migrate init"));
-    }
-    let m = m.unwrap_or_default();
     let url = match args.values.get("url") {
         Some(url) => url.clone(),
         None => project.type_check_url().unwrap_or_default().unwrap_or_default(),
@@ -156,17 +150,13 @@ fn settings_with(args: &Args, require: bool, need_url: bool) -> Result<Options, 
         reylo_migrate::Dialect::of_url(&url).map_err(|e| e.0)?;
     }
     let shadow_url = project.config.shadow_url.as_deref().map(|u| project.expand("shadow_url", u)).transpose()?;
-    // The project's own files, in the directory `dir` names (`reylo`), or --dir for a run.
-    let home = match args.values.get("dir") {
-        Some(v) => cwd.join(v),
-        None => project.root.join(project.config.dir.as_deref().unwrap_or("reylo")),
-    };
+    // The project's own files, in the directory `dir` names (`reylo`).
+    let home = project.root.join(project.config.dir.as_deref().unwrap_or("reylo"));
     Ok(Options {
         url,
         shadow_url,
         dir: home.join("migrations"),
         schema: home.join("schema.sql"),
-        locked: m.lock != Some(false),
         lock: home.join(reylo_migrate::lock::LOCK),
         cache: home.join(".cache"),
         root: project.root.clone(),
@@ -181,174 +171,89 @@ fn print(line: &str) {
     println!("{line}");
 }
 
-fn migrate_command(args: &[String]) -> Result<i32, String> {
-    let Some(command) = args.first() else {
-        println!("{}", painted_usage());
-        return Ok(0);
-    };
-    if args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) || command == "help" {
+/// The commands of `reylo migration`, `reylo migrate`, `reylo schema` and `reylo db`.
+fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
+    if args.is_empty() || args[0] == "help" || args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
         println!("{}", painted_usage());
         return Ok(0);
     }
-    if !["create", "dev", "sync", "reset", "wipe", "check", "prod", "pull", "sync-history", "init", "lock", "unlock"].contains(&command.as_str()) {
-        eprintln!("reylo migrate: unknown command {command}\n\n{MIGRATE_USAGE}");
+    // The words that name the command: `migration history` takes one more.
+    let words = if group == "migration" && args[0] == "history" { args.len().min(2) } else { 1 };
+    let command = format!("{group} {}", args[..words].join(" "));
+    if !COMMANDS.contains(&command.as_str()) {
+        // A command of another group, whose names are near each other's, is named.
+        let word = args[words - 1].as_str();
+        let theirs: Vec<String> = COMMANDS.iter().filter(|c| c.rsplit(' ').next() == Some(word)).map(|c| format!("reylo {c}")).collect();
+        if !theirs.is_empty() {
+            eprintln!("reylo {group} has no {word}: it's {}", theirs.join(", or "));
+            return Ok(2);
+        }
+        eprintln!("reylo {group}: unknown command {word}\n\n{MIGRATE_USAGE}");
         return Ok(2);
     }
-    let parsed = parse(&args[1..])?;
+    let command = command.as_str();
+    let parsed = parse(&args[words..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     // What a command doesn't take is refused, never passed over: prod --dev must not run prod, and
-    // sync --rename must not leave its guess unsaid.
-    let takes: &[&str] = match command.as_str() {
-        "sync" => &["watch"],
-        "check" => &["offline"],
+    // schema push --rename must not leave its guess unsaid.
+    let takes: &[&str] = match command {
+        "schema push" => &["watch"],
+        "migrate prod" => &["dry-run"],
         _ => &[],
     };
-    let refused = |flag: &str| Err(format!("{command} doesn't take {flag} (reylo migrate --help)"));
+    let short = args[..words].join(" ");
+    let refused = |flag: &str| Err(format!("{short} doesn't take {flag} (reylo {group} --help)"));
     if let Some(flag) = parsed.switches.iter().find(|s| !takes.contains(&s.as_str())) {
         return refused(&format!("--{flag}"));
     }
-    if command != "create" && !parsed.drops.is_empty() {
+    if command != "migration create" && !parsed.drops.is_empty() {
         return refused("--drop");
     }
-    if command != "create" && !parsed.renames.is_empty() {
+    if command != "migration create" && !parsed.renames.is_empty() {
         return refused("--rename");
     }
-    if command != "init" && !parsed.schemas.is_empty() {
+    if !matches!(command, "migration init" | "schema pull") && !parsed.schemas.is_empty() {
         return refused("--schema");
     }
     if !parsed.files.is_empty() {
         return refused("--file");
     }
-    if let Some(word) = parsed.rest.get(if command == "create" { 1 } else { 0 }) {
+    if let Some(word) = parsed.rest.get(if command == "migration create" { 1 } else { 0 }) {
         return refused(word);
     }
-    let offline = command == "check" && has("offline");
-    // init is how a project starts: it adds the section the rest need.
-    let opts = settings_with(&parsed, command != "init", !offline && command != "unlock")?;
-    if offline {
-        return reylo_migrate::check_offline(&opts, &mut print).map_err(|e| e.0);
+    let opts = settings(&parsed, command != "migration lint")?;
+    // These start from the database; the rest need a project to work on.
+    if !matches!(command, "migration init" | "migration history pull" | "schema pull" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
+        let home = opts.schema.parent().unwrap_or(&opts.root);
+        return Err(format!("no {} here: check dir in .reylo.yaml, or start with reylo migration init", home.strip_prefix(&opts.root).unwrap_or(home).display()));
     }
-    if command == "unlock" {
-        return unlock(&opts);
+    if command == "migration lint" {
+        return reylo_migrate::lint(&opts, &mut print).map_err(|e| e.0);
     }
     // The development commands change a database in ways no deploy wants.
     let in_ci = std::env::var_os("CI").is_some();
     let mut log = print;
     let rt = runtime();
     let result = rt.block_on(async {
-        match command.as_str() {
-            "prod" => reylo_migrate::prod(&opts, &mut log).await,
-            "dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
-            "reset" => reylo_migrate::reset(&opts, in_ci, &mut log).await,
-            "wipe" => reylo_migrate::wipe_rows(&opts, in_ci, &mut log).await,
-            "sync" if has("watch") => reylo_migrate::sync_watch(&opts, in_ci, None, &mut log).await,
-            "sync" => reylo_migrate::sync(&opts, in_ci, &mut log).await,
-            "check" => reylo_migrate::check_command(&opts, &mut log).await,
-            "sync-history" => reylo_migrate::sync_history(&opts, &mut log).await,
-            "lock" => match reylo_migrate::lock_command(&opts, &mut log).await {
-                Ok(0) => set_lock(&opts.root, true).map(|()| 0).map_err(reylo_migrate::Error),
-                other => other,
-            },
-            "pull" => reylo_migrate::pull(&opts, &mut log).await,
-            // The section follows the files, whatever came of the rest: a run that wrote them and
-            // failed is finished by the commands that need it, and init refuses to write them twice.
-            "init" => {
-                let result = reylo_migrate::init(&opts, &parsed.schemas, &mut log).await;
-                if opts.schema.exists() {
-                    add_migrate_section(&opts.root).map_err(reylo_migrate::Error)?;
-                }
-                result
-            }
-            "create" => {
+        match command {
+            "migration init" => reylo_migrate::init(&opts, &parsed.schemas, &mut log).await,
+            "migration create" => {
                 let choices = reylo_migrate::Choices { drop: parsed.drops.clone(), rename: parsed.renames.clone() };
                 reylo_migrate::create(&opts, parsed.rest.first().map(String::as_str).unwrap_or_default(), &choices, &mut log).await
             }
+            "migration history push" => reylo_migrate::history_push(&opts, &mut log).await,
+            "migration history pull" => reylo_migrate::history_pull(&opts, &mut log).await,
+            "migrate dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
+            "migrate prod" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
+            "migrate prod" => reylo_migrate::prod(&opts, &mut log).await,
+            "schema push" if has("watch") => reylo_migrate::schema_push_watch(&opts, in_ci, None, &mut log).await,
+            "schema push" => reylo_migrate::schema_push(&opts, in_ci, &mut log).await,
+            "schema pull" => reylo_migrate::schema_pull(&opts, &parsed.schemas, &mut log).await,
+            "db wipe" => reylo_migrate::db_wipe(&opts, in_ci, &mut log).await,
             other => Err(reylo_migrate::Error(format!("unknown command {other}"))),
         }
     });
     result.map_err(|e| e.0)
-}
-
-/// `reylo migrate unlock`: deletes the lock and writes `lock: false` into .reylo.yaml, so the
-/// migrations run by name, and one older than one applied runs where both orders end the same.
-fn unlock(opts: &Options) -> Result<i32, String> {
-    set_lock(&opts.root, false)?;
-    let had = opts.lock.exists();
-    if had {
-        std::fs::remove_file(&opts.lock).map_err(|e| format!("cannot delete {}: {e}", opts.lock.display()))?;
-    }
-    let name = opts.lock.file_name().unwrap_or_default().to_string_lossy();
-    println!("✓ Unlocked: {}.reylo.yaml says lock: false", if had { format!("deleted {name}; ") } else { String::new() });
-    println!("  reylo migrate lock locks it again, in the order a database applied the migrations");
-    Ok(0)
-}
-
-/// The project's file: the one there is, else where a new one goes.
-fn project_file(root: &Path) -> std::path::PathBuf {
-    [".reylo.yaml", ".reylo.yml"].iter().map(|n| root.join(n)).find(|p| p.exists()).unwrap_or_else(|| root.join(".reylo.yaml"))
-}
-
-/// Sets `lock` in the migrate section of the project's .reylo.yaml. Edits the one line, keeping the
-/// rest as written.
-fn set_lock(root: &Path, on: bool) -> Result<(), String> {
-    let file = project_file(root);
-    let text = std::fs::read_to_string(&file).map_err(|_| "no .reylo.yaml in the project: start with reylo migrate init".to_string())?;
-    let by_hand = || format!("couldn't edit the migrate section of {}: set migrate.lock to {on} by hand", file.display());
-    let edited = with_lock(&text, on).ok_or_else(by_hand)?;
-    // The edit stands only where the file then reads as asked.
-    let read = reylo_engine_core::config::parse(&edited).ok().and_then(|p| p.migrate).and_then(|m| m.lock);
-    if read != Some(on) {
-        return Err(by_hand());
-    }
-    if edited != text {
-        std::fs::write(&file, edited).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
-/// Adds the migrate section to the project's .reylo.yaml, making the file where there is none; a
-/// section already there is left as it is.
-fn add_migrate_section(root: &Path) -> Result<(), String> {
-    let file = project_file(root);
-    let text = std::fs::read_to_string(&file).unwrap_or_default();
-    if reylo_engine_core::config::parse(&text).map_err(|e| e.message)?.migrate.is_some() {
-        return Ok(());
-    }
-    let gap = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
-    std::fs::write(&file, format!("{text}{gap}migrate:\n  lock: true\n")).map_err(|e| e.to_string())?;
-    let name = file.file_name().unwrap_or_default().to_string_lossy();
-    println!("{} Added migrate to {name}", reylo_migrate::commands::paint("green", "✓"));
-    Ok(())
-}
-
-/// The text of a .reylo.yaml with its migrate section's `lock` line set; None where the section
-/// isn't one a line edit can change (missing, or written inline with keys).
-fn with_lock(text: &str, on: bool) -> Option<String> {
-    let newline = if text.contains("\r\n") { "\r\n" } else { "\n" };
-    let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
-    let header = regex::Regex::new(r"^migrate:\s*(\{\s*\})?\s*(#.*)?$").unwrap();
-    let at = lines.iter().position(|l| header.is_match(l))?;
-    if lines[at].contains('{') {
-        lines[at] = match lines[at].find('#') {
-            Some(c) => format!("migrate: {}", &lines[at][c..]),
-            None => "migrate:".into(),
-        };
-    }
-    // The section's lines: indented ones, and blank lines and comments between them.
-    let inside = |l: &str| l.trim().is_empty() || l.starts_with([' ', '\t']) || l.trim_start().starts_with('#');
-    let end = (at + 1..lines.len()).find(|&k| !inside(&lines[k])).unwrap_or(lines.len());
-    let key = regex::Regex::new(r"^(\s+)lock:").unwrap();
-    let found = (at + 1..end).find(|&k| key.is_match(&lines[k]));
-    let indent = (at + 1..end).find(|&k| lines[k].starts_with([' ', '\t']) && !lines[k].trim().is_empty() && !lines[k].trim_start().starts_with('#')).map(|k| lines[k][..lines[k].len() - lines[k].trim_start().len()].to_string()).unwrap_or_else(|| "  ".into());
-    match found {
-        Some(k) => lines[k] = format!("{indent}lock: {on}"),
-        None => lines.insert(at + 1, format!("{indent}lock: {on}")),
-    }
-    let mut out = lines.join(newline);
-    if text.ends_with('\n') {
-        out.push_str(newline);
-    }
-    Some(out)
 }
 
 fn run_command(args: &[String]) -> Result<i32, String> {
@@ -363,7 +268,7 @@ fn run_command(args: &[String]) -> Result<i32, String> {
     if !parsed.drops.is_empty() || !parsed.renames.is_empty() || !parsed.schemas.is_empty() {
         return Err("run takes SQL, --file and --url".into());
     }
-    let opts = settings(&parsed, false)?;
+    let opts = settings(&parsed, true)?;
     let mut items: Vec<(String, String)> = parsed.rest.iter().map(|sql| (if sql.chars().count() > 60 { format!("{}…", sql.chars().take(57).collect::<String>()) } else { sql.clone() }, sql.clone())).collect();
     for f in &parsed.files {
         let sql = std::fs::read_to_string(Path::new(f)).map_err(|e| format!("cannot read {f}: {e}"))?;
@@ -414,8 +319,8 @@ fn main() {
             eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
             2
         }
-        Some("migrate") => migrate_command(&args[1..]).unwrap_or_else(|e| {
-            eprintln!("reylo migrate: {e}");
+        Some(group @ ("migration" | "migrate" | "schema" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
+            eprintln!("reylo {group}: {e}");
             1
         }),
         Some("run") => run_command(&args[1..]).unwrap_or_else(|e| {
@@ -432,7 +337,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{painted_usage, with_lock, MIGRATE_USAGE};
+    use super::{painted_usage, COMMANDS, MIGRATE_USAGE};
 
     #[test]
     fn the_help_is_its_text_when_nothing_paints_it() {
@@ -440,17 +345,9 @@ mod tests {
     }
 
     #[test]
-    fn lock_is_set_in_the_migrate_section() {
-        let file = "# the project\nmigrate:\n  # the order the migrations run in\n\nqueries: src\n";
-        let off = with_lock(file, false).unwrap();
-        assert_eq!(off, "# the project\nmigrate:\n  lock: false\n  # the order the migrations run in\n\nqueries: src\n");
-        assert_eq!(with_lock(&off, false).unwrap(), off);
-        assert_eq!(with_lock(&off, true).unwrap(), off.replace("lock: false", "lock: true"));
-        assert_eq!(with_lock("migrate: {}\n", false).unwrap(), "migrate:\n  lock: false\n");
-        assert_eq!(with_lock("migrate:\n    lock: true\n", false).unwrap(), "migrate:\n    lock: false\n");
-        assert_eq!(with_lock("queries: src\n", true), None);
-        // A comment at the start of a line inside the section is the section's.
-        assert_eq!(with_lock("migrate:\n# the order\n  lock: false\n", true).unwrap(), "migrate:\n# the order\n  lock: true\n");
-        assert_eq!(with_lock("migrate: {} # opt in\n", false).unwrap(), "migrate: # opt in\n  lock: false\n");
+    fn the_help_lists_every_command() {
+        for command in COMMANDS {
+            assert!(MIGRATE_USAGE.contains(&format!("  {command}  ")) || MIGRATE_USAGE.contains(&format!("  {command} <")), "{command}");
+        }
     }
 }

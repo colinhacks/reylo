@@ -122,16 +122,6 @@ The server where [migrations](/migrate) build their shadow databases, for a data
 shadow_url: ${SHADOW_URL}
 ```
 
-### `migrate`
-
-Turns on [migrations](/migrate), and holds their settings:
-
-```yaml title=".reylo.yaml"
-migrate:
-  # false: no lock, and migrations run by name (the default is true)
-  lock: true
-```
-
 ### `js.codecs`
 
 The TypeScript type `.run()` gives a family of values, and that its parameters take. A family you leave out keeps [its default](#data-types):
