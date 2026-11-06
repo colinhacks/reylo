@@ -201,12 +201,13 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
     if (typeof returned?.then === "function") returned.then(resolve, reject);
   });
   if (!Array.isArray(result)) return [];
-  const rows = declared(result, columns);
+  const meta = () => ((result as { meta?: MariadbColumn[] }).meta ?? callbackMeta ?? []) as MariadbColumn[];
+  const rows = declared(result, columns, () => meta().map((m) => (typeof m.name === "function" ? m.name() : m.name) as string));
   // A DATETIME and a TIMESTAMP with `T`, and a SET's members joined as MySQL writes them: by the
   // module's kinds, else by the columns' metadata (mariadb 2 has no isSet()).
   const work: { name: string; date: boolean }[] = columns
     ? columns.filter(([, kind]) => kind === "text" || kind.split("|").includes("timestamp")).map(([name, kind]) => ({ name, date: kind !== "text" }))
-    : (((result as { meta?: MariadbColumn[] }).meta ?? callbackMeta ?? []) as MariadbColumn[])
+    : meta()
         .map((m) => ({ name: typeof m.name === "function" ? m.name() : m.name, type: m.type, set: (typeof m.isSet === "function" && m.isSet()) || m.type === "SET" }))
         .filter((m): m is { name: string; type: string | undefined; set: boolean } => m.name !== undefined && (m.set || m.type === "DATETIME" || m.type === "TIMESTAMP"))
         .map((m) => ({ name: m.name, date: !m.set }));
@@ -224,10 +225,10 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
   return rows;
 }
 
-/** Rows a driver gave as arrays, as objects under the names the module declares; a client that took no such option gives objects already, kept as they are. */
-function declared(rows: unknown[], columns: Columns | undefined): Record<string, unknown>[] {
-  if (!columns?.length || !Array.isArray(rows[0]) || rows[0].length !== columns.length) return rows as Record<string, unknown>[];
-  return (rows as unknown[][]).map(rowOf(columns.map(([name]) => name)));
+/** Rows a driver gave as arrays, as objects under the names the module declares, or the driver's where the row's width is not the module's, as after a migration that adds a column under `select *`; a client that took no such option gives objects already, kept as they are. */
+function declared(rows: unknown[], columns: Columns | undefined, driver: () => string[]): Record<string, unknown>[] {
+  if (!Array.isArray(rows[0])) return rows as Record<string, unknown>[];
+  return (rows as unknown[][]).map(rowOf(columns?.length === rows[0].length ? columns.map(([name]) => name) : driver()));
 }
 
 /** The fixes the module's kinds call for, for a driver that tells each type by its value. */
@@ -301,7 +302,7 @@ export async function planetscale(m: AnyClient, text: string, values: unknown[],
   // none. Another driver's execute() (TiDB Cloud's answers with the rows themselves) would read
   // as no rows at all.
   if (!Array.isArray(result?.rows)) throw new TypeError(`reylo ran this statement through execute(), as on PlanetScale's @planetscale/database, and the client answered with ${Array.isArray(result) ? "an array" : result === null || typeof result !== "object" ? String(result) : "an object"} rather than a result with rows. It takes execute(text, values) as on mysql2 and PlanetScale, or a Drizzle database over one of them.`);
-  const rows = declared(result.rows, columns);
+  const rows = declared(result.rows, columns, () => (result.fields as { name: string }[]).map((f) => f.name));
   fixRows(rows, columnFixes(columns));
   return rows;
 }

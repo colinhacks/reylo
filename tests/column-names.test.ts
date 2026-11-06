@@ -161,6 +161,12 @@ test("PlanetScale: rows are read by position under the names declared, and a que
   const byHand = defineQuery({ dialect: "mysql", sql: "select CAST(:x AS SIGNED) + 1", params: ["x"], cardinality: "many" } as never) as any;
   assert.deepEqual(await byHand.run(conn, { x: 5 }), [{ "CAST(5 AS SIGNED) + 1": 6n }]);
   assert.equal(as, "object");
+  // A row wider than the module knows, as after a migration that adds a column under `select *`: objects under the driver's names.
+  const wider = { execute: async () => ({ rows: [[1, "x"]], fields: [{ name: "a" }, { name: "added" }], statement: "" }) };
+  const narrow = defineQuery({ dialect: "mysql", sql: "select * from t", params: [], cardinality: "many", columns: [["a", "int"]] } as never) as any;
+  assert.deepEqual(await narrow.run(wider), [{ a: 1, added: "x" }]);
+  const mariadb = { batch: async () => ({}), query: async () => Object.assign([[1, "x"]], { meta: [{ name: () => "a" }, { name: () => "added" }] }) };
+  assert.deepEqual(await narrow.run(mariadb), [{ a: 1, added: "x" }]);
 });
 
 test("Postgres: a column with no alias is named by the expression's form, with no text of the statement in it", { skip: pgLive }, async () => {
