@@ -154,6 +154,7 @@ pub async fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, 
         dumped.insert(format!("{name}/{file}"), analysis.clone());
         analyzed.push((file, sql, analysis));
     }
+    same_under_other_settings(server, &db, mode.as_deref(), &name, &analyzed, given).await?;
     // A value that contradicts a type is a failure whatever expected.txt says.
     let mut state = State { db: &db, setup: &setup, mode: mode.as_deref(), conn, tables: Vec::new(), counters: HashMap::new() };
     let report = check(server, &mut state, &analyzed, timeout_ms).await;
@@ -163,6 +164,33 @@ pub async fn run(case: &Path, server: &mut Server, keep: bool, timeout_ms: u64, 
     }
     let unchecked = crate::seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
+}
+
+/// What another MySQL session sets that no statement's types turn on: the time zone and the names
+/// of months a value is printed in, and a `sql_mode` flag that only changes how a write rounds.
+const OTHER_SETTINGS: &str = "SET SESSION time_zone = '+05:30', lc_time_names = 'de_DE', sql_mode = concat_ws(',', nullif(@@session.sql_mode, ''), 'TIME_TRUNCATE_FRACTIONAL')";
+
+/// Each statement analyzed again on a session of other settings, which must change nothing: a
+/// descriptor is written in canonical text, never the session's.
+async fn same_under_other_settings(server: &Server, db: &str, mode: Option<&str>, case: &str, analyzed: &[(String, String, Value)], given: &Map<String, Value>) -> Result<(), String> {
+    let mut conn = session(&server.opts, Some(db), mode).await?;
+    conn.query_drop(OTHER_SETTINGS).await.map_err(|e| e.to_string())?;
+    let mut outcome = Ok(());
+    for (file, sql, analysis) in analyzed.iter().filter(|(file, _, _)| !given.contains_key(&format!("{case}/{file}"))) {
+        match analyze(&mut conn, sql).await {
+            Ok(again) if again == *analysis => {}
+            Ok(again) => {
+                outcome = Err(format!("{file}: another session's settings change its analysis: {} became {}", crate::line(analysis), crate::line(&again)));
+                break;
+            }
+            Err(e) => {
+                outcome = Err(format!("{file}: under another session's settings: {e}"));
+                break;
+            }
+        }
+    }
+    let _ = conn.disconnect().await;
+    outcome
 }
 
 // ---------------------------------------------------------------------------------------------
