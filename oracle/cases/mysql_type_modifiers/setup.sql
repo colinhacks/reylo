@@ -5,6 +5,8 @@
 -- be display widths. The seeding
 -- fills each column to its longest value in characters of one, two and four bytes, and each time
 -- with six fractional digits, which a column of fewer rounds to its own.
+-- A parameter written whole to a column takes its definition; a cast one, or one only compared with
+-- a column, keeps the prepare's type.
 create table sized (
   id int primary key,
   name varchar(20) not null,
