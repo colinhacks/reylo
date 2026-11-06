@@ -13,6 +13,7 @@
 // TIME's fraction digits as the driver read them, which are the column's own over the text
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
+import { decodePlan } from "./codecs.ts";
 import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
@@ -150,7 +151,12 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // is `.run()`'s own reading, its refusals of a storage class the column's type does not allow
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
-  const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)));
+  const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
+    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
+    const plan = module.codecs?.[name];
+    return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);
+  });
   const columns = module.columns?.map(([name], i) => Object.freeze({ name, decode: decoders![i]! }) as StandardQueryV1.Column<D>);
   // A closure, not `this`: a driver may take `encode` off the object.
   // The statement as Reylo sends it, the comment naming its file included, as `.run()` sends it.

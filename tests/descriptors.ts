@@ -5,6 +5,17 @@ import type { EngineType, Field } from "../src/engine-type.ts";
 const float = (exponent_bits: number, mantissa_bits: number, special = true): EngineType => ({ kind: "float", exponent_bits, mantissa_bits, ...(special ? { infinity: true, nan: true } : {}) });
 const float8 = { ...float(11, 52), name: "float8" } as EngineType;
 const point: EngineType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
+const points = (min: number, exact?: number): EngineType => ({ kind: "array", element: { type: point }, size: exact === undefined ? { min } : { exact } });
+/** Postgres's geometric types, as the registry structures them: each an object of its fields, a segment and a polygon arrays of points. */
+const geometric: Record<string, EngineType> = {
+  point,
+  line: { kind: "record", fields: [{ name: "a", type: float8 }, { name: "b", type: float8 }, { name: "c", type: float8 }] },
+  lseg: points(0, 2),
+  box: { kind: "record", fields: [{ name: "high", type: point }, { name: "low", type: point }] },
+  path: { kind: "record", fields: [{ name: "closed", type: { kind: "boolean" } }, { name: "points", type: points(1) }] },
+  polygon: points(1),
+  circle: { kind: "record", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] },
+};
 
 /** A Postgres type by its catalog name, as the engine's registry writes it (engine/postgres `pgtypes.rs`); an extension's under the schema `public`. */
 export function pg(name: string): EngineType {
@@ -28,8 +39,13 @@ export function pg(name: string): EngineType {
     interval: { kind: "duration", months: { max: "P2147483648M" }, days: { max: "P2147483648D" }, time: { tick: "1/1000000", max: "PT2562047788H54.775808S" }, infinity: true },
     json: { kind: "json" }, jsonb: { kind: "json" },
     xml: { kind: "xml", fragment: true },
-    point,
+    ...geometric,
     int4range: { kind: "range", subtype: { kind: "integer", bits: 32, name: "int4" } },
+    int8range: { kind: "range", subtype: { kind: "integer", bits: 64, name: "int8" } },
+    numrange: { kind: "range", subtype: { kind: "decimal", min_scale: 0, max_scale: 16383, infinity: true, nan: true, name: "numeric" } },
+    tstzrange: { kind: "range", subtype: { kind: "instant", tick: "1/1000000", infinity: true, name: "timestamptz" } },
+    daterange: { kind: "range", subtype: { kind: "date", infinity: true, name: "date" } },
+    int4multirange: { kind: "multirange", subtype: { kind: "integer", bits: 32, name: "int4" } },
     bit: { kind: "array", element: { type: { kind: "boolean" } } },
     macaddr: { kind: "bytes", size: { exact: 6 } },
   };
@@ -61,6 +77,7 @@ export function my(name: string, length?: number): EngineType {
     timestamp: { kind: "instant", tick: "1/1000000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999999Z" },
     time: { kind: "duration", time: { tick: "1/1000000", max: "PT838H59M59S" } },
     json: { kind: "json" },
+    set: { kind: "set", element: { type: { kind: "text" } } },
   };
   return { ...known[name]!, name } as EngineType;
 }

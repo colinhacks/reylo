@@ -8,7 +8,8 @@
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
 import { bareName, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
-import { columnKind, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
+import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
+import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
 type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 type Schema = { [key: string]: unknown };
@@ -110,6 +111,8 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
     if (kind === "decimal") return { type: "string", format: "decimal" };
     if (kind === "timestamp") return { type: "string", format: "date-time" };
   }
+  // A SET inside a document is its text, its members joined by commas.
+  if (inJson && t.kind === "set") return { type: "string" };
   if (kind.includes("|")) return { anyOf: kind.split("|").map((k) => kindSchema(k as ScalarKind, t, dialect)) };
   const schema = kindSchema(kind as ScalarKind, t, dialect);
   if (kind !== "text") return schema;
@@ -144,6 +147,11 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     case "text": return { type: "string" };
     case "json": return {};
     case "unknown": return {};
+    case "enum": return { type: "string" };
+    // A Set's members, which a Set holds once each; `JSON.stringify` writes a Set itself as `{}`.
+    case "set": return { type: "array", items: { type: "string" }, uniqueItems: true };
+    // A geometric type is an object of its fields, which `typeSchema` writes from its descriptor.
+    case "point": case "line": case "lseg": case "box": case "path": case "polygon": case "circle": return { type: kind === "lseg" || kind === "polygon" ? "array" : "object" };
   }
 }
 
@@ -162,7 +170,11 @@ function object(fields: readonly { name: string }[], field: (f: number) => Schem
 }
 
 /** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true), or a structured parameter's member (`inRow`); `members`, a structured parameter's column list as written. */
-export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false, members?: readonly { written: string; schema?: JsonSchema }[]): Schema | JsonSchema {
+export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false, members?: readonly { written: string; schema?: JsonSchema }[], codecs: Codecs = {}): Schema | JsonSchema {
+  // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
+  const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
+  if (codec === "set:array" && t.kind === "set") return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
+  if (codec !== undefined) return CODEC_SCHEMA[codec];
   const name = bareName(t);
   const kind = columnKind(t, dialect);
   // What the caller passes for a structured parameter: each key as a parameter of its type takes it.
@@ -170,7 +182,7 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
     const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
     if (record !== undefined) {
       // A JSON member's schema as written, with its defaults and formats.
-      const row = object(record.fields, (i) => (record.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(members[i]?.schema ?? typeSchema(record.fields[i]!.type, dialect, true, false, true)), (i) => record.fields[i]!.optional === true, true);
+      const row = object(record.fields, (i) => (record.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(members[i]?.schema ?? typeSchema(record.fields[i]!.type, dialect, true, false, true, undefined, codecs)), (i) => record.fields[i]!.optional === true, true);
       return t.kind === "record" ? row : { type: "array", items: row };
     }
   }
@@ -181,20 +193,35 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
     case "array": {
       // A type Postgres writes as its text inside a document, or a client gets as its own (a
       // bit string, a vector), is no array here.
-      if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]")) break;
+      // A segment and a polygon are arrays of their points outside JSON.
+      if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
       // A result's elements may be null unless the statement shows they are not; a parameter's
       // are strict, but a structured parameter's member keeps them (src/render.ts).
-      const items = typeSchema(t.element.type, dialect, input, inJson, inRow);
+      const items = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
       return { type: "array", items: (input ? inRow : t.element.nullable) ? nullable(items) : items };
     }
     case "record": {
       // A DuckDB struct's fields stand as a row's values do, each may be null.
       if (dialect === "duckdb" && !inJson) {
-        return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input)));
+        return object(t.fields, (i) => nullable(typeSchema(t.fields[i]!.type, dialect, input, false, false, undefined, codecs)));
       }
-      // A built-in geometric type is its text, inside a document too.
-      if (dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
-      return inJson ? object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, true))) : { type: "string", description: `the row value of ${name && name !== "record" ? name : "a record"} as Postgres prints it` };
+      // A built-in geometric type is its text inside a document.
+      if (inJson && dialect === "postgres" && ["point", "line", "box", "path", "circle"].includes(name)) break;
+      // A row value is an object of its fields, and so is a geometric type outside a document.
+      return object(t.fields, (i) => (t.fields[i]!.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(t.fields[i]!.type, dialect, input, inJson, false, undefined, codecs)));
+    }
+    case "set":
+      // A MySQL SET's members, each one of its labels where the column declares them; inside a
+      // document it is its text.
+      if (inJson || dialect !== "mysql") break;
+      return { type: "array", items: typeSchema(t.element.type, dialect, input), uniqueItems: true };
+    case "range":
+    case "multirange": {
+      // A Postgres range is an object of its bounds outside a document, where it is its text.
+      if (inJson || dialect !== "postgres") break;
+      const bound = typeSchema(t.subtype, dialect, input, false, false, undefined, codecs);
+      const range: Schema = { anyOf: [{ type: "object", properties: { empty: { const: true } }, required: ["empty"], additionalProperties: false }, { type: "object", properties: { lower: bound, upper: bound, bounds: { enum: [...RANGE_BOUNDS] } }, required: input ? [] : ["bounds"], additionalProperties: false }] };
+      return t.kind === "range" ? range : { type: "array", items: range };
     }
     case "json":
       // What a statement built: its keys and items are inside the document.
@@ -205,13 +232,13 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       return schemaOf(t) ?? {};
     case "map":
       // A DuckDB map as its entries, each a key and its value, in order.
-      if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input) : nullable(typeSchema(t.value.type, dialect, input)))) };
+      if (dialect === "duckdb") return { type: "array", items: object([{ name: "key" }, { name: "value" }], (i) => (i === 0 ? typeSchema(t.key, dialect, input, false, false, undefined, codecs) : nullable(typeSchema(t.value.type, dialect, input, false, false, undefined, codecs)))) };
       break;
     case "tagged_union":
       // A tagged union as its tag and its value; inside a document, whose form of it the engine
       // does not read, any JSON.
       if (inJson) return {};
-      return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input))))) };
+      return { anyOf: t.alternatives.map((a) => object([{ name: "tag" }, { name: "value" }], (i) => (i === 0 ? { const: a.tag } : (a.nullable ? nullable : (s: Schema | JsonSchema) => s)(typeSchema(a.type, dialect, input, false, false, undefined, codecs))))) };
     case "unknown":
       return {};
   }
@@ -219,11 +246,25 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
 }
 
 /** The query's input and output schemas: the parameters as an object, and the result as `run` returns it once JSON. */
-export function querySchemas(analysis: Analysis, dialect: Dialect): { input: Schema; output: Schema } {
+/** The JSON form of each codec's value: what `JSON.stringify` writes of it, a Temporal value's being its ISO 8601 text, which a SQLite column declared as a date gives where it otherwise holds any storage class. */
+const CODEC_SCHEMA: Readonly<Record<Codec, Schema>> = {
+  "decimal:number": { type: "number" },
+  "bytes:string": { type: "string", format: "byte", contentEncoding: "base64" },
+  date: { type: "string", format: "date" },
+  time: { type: "string", description: "a time of day without a time zone (10:00:00.5)" },
+  datetime: { type: "string", description: "a date and time without a time zone (2026-10-20T10:00:00.123456)" },
+  instant: { type: "string", format: "date-time" },
+  // RFC 3339's duration, which JSON Schema's `duration` format names, has no sign.
+  duration: { type: "string", description: "an ISO 8601 duration with its sign in front (P1Y2M3DT4H5M6.789S, -P1D)" },
+  // A SET's members, each once; `typeSchema` gives its items the members' own schema.
+  "set:array": { type: "array", items: { type: "string" }, uniqueItems: true },
+};
+
+export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codecs = {}): { input: Schema; output: Schema } {
   // A typed JSON parameter's schema as written, with its defaults; one with a `default` at its root may be left out, as may one that takes null.
   const input = object(analysis.params, (i) => {
     const p = analysis.params[i]!;
-    const s = p.schema ?? typeSchema(p.type, dialect, true, false, false, p.members);
+    const s = p.schema ?? typeSchema(p.type, dialect, true, false, false, p.members, codecs);
     return p.nullable ? nullable(s) : s;
   }, (i) => {
     const p = analysis.params[i]!;
@@ -232,7 +273,7 @@ export function querySchemas(analysis: Analysis, dialect: Dialect): { input: Sch
   }, true);
   const row = object(analysis.columns, (i) => {
     const c = analysis.columns[i]!;
-    const s = typeSchema(c.type, dialect);
+    const s = typeSchema(c.type, dialect, false, false, false, undefined, codecs);
     return c.nullable ? nullable(s) : s;
   });
   const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? { anyOf: [row, { type: "null" }] } : { type: "null" };

@@ -13,10 +13,14 @@ const built = doc(object);
 
 const inJson = `{ id: number; seen: string | null; tags: (string | null)[] | null; mood: "ok" | "sad" }`;
 
-test("a composite is its row's text on the wire", () => {
-  assert.equal(renderType(users, false, "postgres"), "string");
-  assert.equal(renderType(array(users), false, "postgres"), "string");
-  assert.equal(renderParamType(users, "postgres"), "string");
+const onWire = `{ id: bigint; seen: string | null; tags: (string | null)[] | null; mood: "ok" | "sad" }`;
+
+test("a composite is an object of its fields, each as a column of its type is, and a parameter takes the same object", () => {
+  assert.equal(renderType(users, false, "postgres"), onWire);
+  assert.equal(renderType(array(users), false, "postgres"), `(${onWire} | null)[]`);
+  assert.equal(renderParamType(users, "postgres"), `{ id: number | bigint | string; seen: string | null; tags: (string | null)[] | null; mood: "ok" | "sad" }`);
+  // A row whose fields are not known stays the text Postgres prints.
+  assert.equal(renderType(pg("record"), false, "postgres"), "string");
 });
 
 test("inside a JSON document a composite is an object of its JSON-encoded fields", () => {
@@ -37,7 +41,7 @@ test("one type per SQL type, on every driver: what the run time returns (src/val
   assert.equal(wire("bytea"), "Uint8Array");
   assert.equal(renderType({ kind: "json" }), "Json");
   // Every other type is its text: Reylo owns every oid, so no driver parses one.
-  assert.deepEqual(["point", "xid", "int4range", "void", "record", "tsvector", "citext"].map((n) => wire(n)), Array(7).fill("string"));
+  assert.deepEqual(["xid", "void", "record", "tsvector", "citext"].map((n) => wire(n)), Array(5).fill("string"));
   // An array of each, an enum's labels, a row value's array its text.
   assert.equal(renderType(array(pg("timestamptz"))), "(string | null)[]");
   assert.equal(renderType(array(pg("int8"))), "(bigint | null)[]");
@@ -105,9 +109,9 @@ test("inside a document an oid is its text, a geometry its GeoJSON, and an exten
   for (const name of ["vector", "halfvec", "sparsevec", "geography", "cube", "seg", "isbn", "semver", "ulid", "point"]) assert.equal(renderType(pg(name), true, "postgres"), "string", name);
 });
 
-test("a composite with no columns inside a document is an empty object", () => {
+test("a composite with no columns is an empty object", () => {
   assert.equal(renderType(record([], "public.empty"), true), "Record<never, never>");
-  assert.equal(renderType(record([], "public.empty"), false), "string");
+  assert.equal(renderType(record([], "public.empty"), false), "Record<never, never>");
 });
 
 test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the row stored; a column with no type unknown", () => {
@@ -161,6 +165,8 @@ const ROUND_TRIPS: Record<"postgres" | "mysql" | "sqlite", [column: EngineType, 
     [my("bit", 8), my("bit", 8)],
     ...["decimal", "double", "varchar", "date", "datetime", "timestamp", "time"].map((n): [EngineType, EngineType] => [my(n), my(n)]),
     [my("json"), my("json")],
+    // A SET column's parameter is typed by the column, as the engine's catalog reads it (engine/mysql `mysql_params.rs`).
+    [my("set"), my("set")],
   ],
   sqlite: [
     ...["integer", "int8", "real", "text", "blob", "numeric"].map((n): [EngineType, EngineType] => [lite(n), lite(n)]),
@@ -184,6 +190,8 @@ function admits(column: EngineType, param: EngineType, dialect: "postgres" | "my
   const members = (ts: string) => ts.split(" | ");
   const [returnedElement, takenElement] = [element(returned), element(taken)];
   if (returnedElement !== undefined && takenElement !== undefined) return members(returnedElement).filter((m) => m !== "null").every((m) => members(takenElement).includes(m) || members(takenElement).includes("unknown"));
+  // A JSON parameter with no schema takes whatever `JSON.stringify` writes, every `Json` among it.
+  if (taken === "JsonInput") return returned === "Json";
   return members(taken).includes("unknown") || members(returned).every((member) => members(taken).includes(member));
 }
 
@@ -273,13 +281,14 @@ test("a returned array's elements may be NULL unless the statement shows they ar
   assert.deepEqual(typeSchema(member, "postgres", true, false, false, members), { type: "object", properties: { tags: { type: "array", items: { type: ["string", "null"] } } }, required: ["tags"], additionalProperties: false });
 });
 
-test("a JSON value nothing constrains is any JSON value, Json, and so is a value nothing types inside JSON the statement builds", () => {
+test("a JSON value nothing constrains is any JSON value, Json, and so is a value nothing types inside JSON the statement builds; its parameter takes whatever JSON.stringify writes", () => {
   for (const dialect of ["postgres", "mysql", "sqlite", "duckdb"] as const) {
     assert.equal(renderType({ kind: "json" }, false, dialect), "Json");
-    assert.equal(renderParamType({ kind: "json" }, dialect), "Json");
+    assert.equal(renderParamType({ kind: "json" }, dialect), "JsonInput");
   }
-  // Json admits null, which a NOT NULL jsonb column can hold, so a nullable one reads the same.
+  // Json admits null, which a NOT NULL jsonb column can hold, so a nullable one reads the same; so does JsonInput.
   assert.equal(orNull("Json"), "Json");
+  assert.equal(orNull("JsonInput"), "JsonInput");
   assert.equal(orNull("string"), "string | null");
   assert.equal(renderType(array(pg("jsonb"))), "Json[]");
   assert.equal(renderType(doc({ kind: "array", element: { type: { kind: "unknown" }, nullable: true } })), "Json[]");

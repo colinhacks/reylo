@@ -401,6 +401,14 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         }
         typed.columns.get(&(table.to_ascii_lowercase(), column.to_ascii_lowercase())).cloned()
     };
+    // A result column that is an ENUM or a SET column itself has the labels its column declares.
+    let labelled_of = |c: &crate::api::MysqlColumn| -> Option<Type> {
+        let (table, column) = (c.org_table.as_deref()?, c.org_name.as_deref()?);
+        if column.is_empty() || !traced.as_ref()?.iter().any(|t| t.eq_ignore_ascii_case(table)) {
+            return None;
+        }
+        typed.labelled.get(&(table.to_ascii_lowercase(), column.to_ascii_lowercase())).cloned()
+    };
     // What the engine knows of each column being NULL: the server's flags, read where merging
     // could make them wrong with every derived table materialized, and what the engine proves
     // beyond them.
@@ -467,6 +475,11 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
                     _ => ty,
                 },
             };
+            // The prepare names an ENUM or a SET column without its labels.
+            let ty = match labelled_of(c) {
+                Some(labelled) if matches!(ty.name.as_deref(), Some("enum" | "set")) => labelled,
+                _ => ty,
+            };
             Column { comment: comment_of(c), ..Column::new(c.name.clone(), ty, !not_null) }
         })
         .collect();
@@ -478,9 +491,12 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let index = rewritten.order.iter().position(|n| n == name);
             let described = index.and_then(|i| raw.params.get(i));
             let ty = described.map_or_else(Type::unknown, |p| param_type(p.r#type, p.charset));
-            // Only an integer or a BIT context is narrowed: those are the ones the prepare describes alike for every column.
+            // Only an integer or a BIT context is narrowed: those are the ones the prepare describes alike for every column. So are
+            // an ENUM's and a SET's, which the prepare describes as a string, the text a label and members are bound as.
+            let labelled = |t: &Type| matches!(&t.kind, TyKind::Set(_)) || matches!(&t.kind, TyKind::Text(text) if text.values.is_some());
             let ty = match (described, typed.types.get(name)) {
                 (Some(p), Some(column)) if matches!(p.r#type, 1 | 2 | 3 | 8 | 9 | 13 | 16) => column.clone(),
+                (Some(p), Some(column)) if labelled(column) && matches!(p.r#type, 15 | 253 | 254) => column.clone(),
                 _ => ty,
             };
             Param { nullable: nullable.contains(name), comment: typed.comments.get(name).cloned(), ..Param::new(name.clone(), ty) }

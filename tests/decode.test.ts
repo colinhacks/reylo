@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { execute, type QueryModule } from "../src/execute.ts";
-import { parseArray } from "../src/decode.ts";
+import { bunRows, parseArray } from "../src/decode.ts";
 import type { Columns } from "../src/values.ts";
 
 // Fakes of the Postgres drivers that decode as the real ones do (checked against
@@ -70,7 +70,7 @@ const declared = {
   doc: { a: [1, 2] },
   bytes: Uint8Array.from([1, 2, 255]),
   flag: true,
-  boxes: ["(1,1),(0,0)", "(2,2),(1,1)"],
+  boxes: [{ high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }, { high: { x: 2, y: 2 }, low: { x: 1, y: 1 } }],
   shapes: ["0101", null, "0102"],
   embedding: [1, 2.5, -3, 1e-7],
   embeddings: [[1, 2], null, [3]],
@@ -81,7 +81,7 @@ const declared = {
 /** The module's columns for the same statement, as a build step writes them (src/loader.ts). */
 const columns: Columns = [
   ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"],
-  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "text[]"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
+  ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "box[]", ";"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
 ];
 
 // The catalog, as decode.ts reads it: [array oid, element's base oid, a row type's array (kept as
@@ -156,6 +156,20 @@ function pgClient(db: Db, options: { binary?: boolean } = {}) {
 const probe: QueryModule<"postgres"> = { dialect: "postgres", sql: "select * from probe where id = :id", params: ["id"] };
 const built: QueryModule<"postgres"> = { ...probe, columns };
 const lateProbe: QueryModule<"postgres"> = { dialect: "postgres", sql: "select *, late from probe where id = :id", params: ["id"] };
+
+test("Bun.sql: a row value, a geometric type, a range and a MySQL SET are their text, which Reylo reads by the module's kinds", () => {
+  const row = { pair: "(1,x)", pt: "(1.5,-2)", boxes: "{(3,4),(1,2)}", seats: "[1,5)", many: "{[1,3)}", tags: "a,c", name: "(not,a,row)" };
+  const kinds: Columns = [["pair", '(["a","int"],["b","text"])'], ["pt", "point"], ["boxes", "box[]", ";"], ["seats", "range:int"], ["many", "multirange:int8"], ["tags", "set"], ["name", "text"]];
+  assert.deepEqual(bunRows([row], kinds), [{
+    pair: { a: 1, b: "x" },
+    pt: { x: 1.5, y: -2 },
+    boxes: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }],
+    seats: { lower: 1, upper: 5, bounds: "[)" },
+    many: [{ lower: 1n, upper: 3n, bounds: "[)" }],
+    tags: new Set(["a", "c"]),
+    name: "(not,a,row)",
+  }]);
+});
 
 test("parseArray: quoting, escapes, NULL, nesting, bounds and box's delimiter", () => {
   assert.deepEqual(parseArray("{}", String), []);

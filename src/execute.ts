@@ -9,7 +9,7 @@ import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./deco
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
-import { columnKind, describe, hstoreText, numbersInJson, ParameterError, postgresInterval, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
+import { columnKind, describe, hstoreText, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
@@ -18,6 +18,7 @@ import type { Checks } from "./checks.ts";
 import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
 import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
+import { decodeCodecs, encodePlan, type Plan } from "./codecs.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
@@ -172,6 +173,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly key?: readonly string[] | undefined;
   /** Whether the statement's ORDER BY orders its rows totally, where the analysis proves it. */
   readonly ordered?: boolean | undefined;
+  /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts). */
+  readonly codecs?: Readonly<Record<string, Plan>> | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
   readonly structured?: readonly Structured[] | undefined;
   /** The catalog facts the statement relied on, checked before it runs (src/fresh.ts). */
@@ -194,7 +197,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
  * then refuses, given or left out, except that a JSON parameter's null there is JSON's null; a
  * query defined by hand without it binds what it is given.
  */
-export type Inputs = Readonly<Record<string, { readonly type: EngineType; readonly schema?: JsonSchema; readonly cast?: string; readonly members?: Members; readonly delimiter?: string; readonly nullable?: boolean }>>;
+export type Inputs = Readonly<Record<string, { readonly type: EngineType; readonly schema?: JsonSchema; readonly cast?: string; readonly members?: Members; readonly delimiter?: string; readonly nullable?: boolean; readonly codec?: Plan }>>;
 
 type AnyClient = Record<string, any> & ((...args: any[]) => any);
 
@@ -216,19 +219,26 @@ export function execute<D extends Dialect>(
   params: ParamsInput = {},
 ): unknown[] | Promise<unknown[]> {
   const c = underneath(client as AnyClient);
-  if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return executeSyncSqlite(c, query, params);
+  if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return withCodecs(query, executeSyncSqlite(c, query, params));
   const nonFinite = query.dialect === "postgres" && query.nonFinite !== undefined && query.columns !== undefined ? rowMasks(query.columns, query.nonFinite) : [];
   // A Postgres array column holds the dimensions its type declares and no more (src/values.ts, `withinDimensions`).
   const arrays = query.dialect === "postgres" ? (query.columns ?? []).filter(([, kind]) => kind.endsWith("[]")) : [];
-  if (!nonFinite.length && !arrays.length) return executeAsync(c, query, params);
-  return executeAsync(c, query, params).then((rows) => {
+  if (!nonFinite.length && !arrays.length) return withCodecs(query, executeAsync(c, query, params));
+  return withCodecs(query, executeAsync(c, query, params).then((rows) => {
     for (const row of rows as Record<string, unknown>[]) {
       // Postgres writes a non-finite float or decimal inside JSON as text, whichever driver reads it.
       for (const [name, at] of nonFinite) row[name] = numbersInJson(row[name], at);
       for (const [name, kind] of arrays) withinDimensions(row[name], kind, name);
     }
     return rows;
-  });
+  }));
+}
+
+/** The rows with the codecs of the module's columns applied where they stand (src/codecs.ts): one pass, where a column holds one. */
+function withCodecs(query: QueryModule, rows: unknown[] | Promise<unknown[]>): unknown[] | Promise<unknown[]> {
+  const codecs = query.codecs;
+  if (codecs === undefined || Object.keys(codecs).length === 0) return rows;
+  return Array.isArray(rows) ? decodeCodecs(rows, codecs) : rows.then((r) => decodeCodecs(r, codecs));
 }
 
 /**
@@ -254,7 +264,7 @@ export function executeSync<D extends Dialect>(client: SyncClientFor<D>, query: 
   if (query.dialect !== "sqlite") throw refuse(`a ${query.dialect} statement has none`);
   if (!isSyncSqlite(c) && !isDurableObjectSql(c)) throw refuse("this client answers through a promise");
   const rows = executeSyncSqlite(c, query, params);
-  if (Array.isArray(rows)) return rows;
+  if (Array.isArray(rows)) return withCodecs(query, rows) as unknown[];
   rows.catch(() => {});
   throw refuse("this client's statement answered with a promise");
 }
@@ -477,6 +487,10 @@ function statement(query: QueryModule, params: ParamsInput) {
       bound.values[i] = v === undefined ? null : v;
       return;
     }
+    // A value of a family the project file's `js.codecs` gives another type takes that type alone,
+    // wherever it stands in the parameter, a structured parameter's members among them, and is
+    // bound as the text or the bytes its type reads (src/codecs.ts).
+    if (input?.codec !== undefined) bound.values[i] = encodePlan(input.codec, bound.values[i], name, query.dialect);
     // A structured parameter is checked against its column list and written as the JSON the
     // statement reads; in an insert, its lists name only the keys the call carries. It refuses
     // null itself, saying what to pass.
@@ -693,9 +707,22 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (type === undefined || v == null) return v;
   if (dialect === "duckdb") return encodeDuckdb(type, v, name);
   if (dialect === "sqlite") return typeof v === "boolean" ? (v ? 1 : 0) : v;
-  if (dialect === "mysql") return type.kind === "array" && bareName(type) === "vector" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
+  if (dialect === "mysql") {
+    // A SET goes as its members joined by commas, in the order its column declares them: MySQL
+    // stores a SET in that order, and compares one with a parameter's text as it is written.
+    if (type.kind === "set" && v instanceof Set) {
+      const labels = type.element.type.kind === "text" ? type.element.type.enum : undefined;
+      return (labels === undefined ? [...v] : [...v].sort((a, b) => labels.indexOf(a as string) - labels.indexOf(b as string))).join(",");
+    }
+    return type.kind === "array" && bareName(type) === "vector" && Array.isArray(v) ? vectorText(v, name, "a VECTOR") : v;
+  }
   const kind = columnKind(type, dialect);
-  if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && columnKind(type.element.type, dialect) !== "vector" ? type : type.element.type, e, dialect, name)) : v;
+  // A row value, a geometric type and a range go as the text Postgres reads, from the object
+  // `.run()` returns for them, and an array of them as an array of those texts (below).
+  if (!kind.endsWith("[]") && (isRowKind(kind) || GEOMETRIC_KINDS.has(kind) || isRangeKind(kind) || isMultirangeKind(kind))) return postgresLiteral(type, v, (message) => {
+    throw new ParameterError(`Parameter "${name}" is ${message}`);
+  });
+  if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !ARRAY_VALUED.has(columnKind(type.element.type, dialect)) ? type : type.element.type, e, dialect, name)) : v;
   if (kind === "vector" && Array.isArray(v)) {
     if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${bareName(type)}, which has one dimension at least; got an empty array.`);
     return vectorText(v, name, `a pgvector ${bareName(type)}`);
@@ -707,6 +734,11 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (isTime(type, dialect)) return postgresYear(v);
   return kind === "interval" ? postgresInterval(v) : v;
 }
+
+/** Postgres's geometric types' kinds (src/values.ts). */
+const GEOMETRIC_KINDS: ReadonlySet<string> = new Set(["point", "line", "lseg", "box", "path", "polygon", "circle"]);
+/** The kinds whose one value is a JavaScript array, so an array of them is no deeper dimension. */
+const ARRAY_VALUED: ReadonlySet<string> = new Set(["vector", "lseg", "polygon"]);
 
 /** A vector's floats as the text a VECTOR's `to_vector` and pgvector's input read; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
 function vectorText(v: readonly unknown[], name: string, what: string): string {
