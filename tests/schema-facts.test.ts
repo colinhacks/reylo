@@ -131,7 +131,7 @@ test("MySQL: a column's definition reaches a query's JSON Schema as a length in 
   };
   const u = new URL(MYSQL!);
   const mysql2 = await driver("mysql2/promise").createConnection(own.url);
-  const mariadb = await driver("mariadb").createConnection({ host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", database: own.url.split("/").pop() });
+  const mariadb = await driver("mariadb").createConnection({ host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: own.url.split("/").pop() });
   try {
     const columns = await built("columns", "select name, code, legacy, body, old_body, price, part, at, span from sized order by id");
     const derived = await built("derived", "select d.body from (select id, body from sized) d order by d.id");
