@@ -465,7 +465,8 @@ pub const UNIQUE_KEYS_QUERY: &str = concat!(
             AND d.refobjsubid OPERATOR(pg_catalog.>) 0 AND NOT o.collisdeterministic)) \
       ELSE i.indcollation[k] OPERATOR(pg_catalog.=) a.attcollation OR ( \
         coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) i.indcollation[k]), true) \
-        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END)"
+        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END) \
+    ORDER BY x.name, i.indisprimary DESC, i.indexrelid"
 );
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: every column of each, `(the
@@ -2266,12 +2267,12 @@ fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialec
     names.len() == others.len() && left_type.is_some() && left_type == ty(right, other)
 }
 
-/// The result key of one rewritten SELECT: output columns, by name, no two of its rows agree on
-/// all of, a NULL counting as equal to another NULL. `columns` are the statement's output columns
-/// in order, each with whether it may be NULL. Of the keys proven, the one of fewest columns, the
-/// earliest columns breaking a tie, in output order; `None` where none is proven, or where a key's
-/// column shares its name with another output column, or is one `identifies` marks false: of a
-/// type two of whose values may read alike.
+/// The result keys of one rewritten SELECT: each set of output columns, by name, no two of its rows
+/// agree on all of, a NULL counting as equal to another NULL. `columns` are the statement's output
+/// columns in order, each with whether it may be NULL. Each key in output order, none inside
+/// another, a table's primary key before its other keys; none where none is proven, or where a
+/// key's column shares its name with another output column, or is one `identifies` marks false: of
+/// a type two of whose values may read alike.
 ///
 /// - Without ALL, UNION, INTERSECT and EXCEPT return distinct rows: the whole output is a key.
 ///   INTERSECT and EXCEPT, with ALL or without, return only rows of their left side, which keep its
@@ -2288,25 +2289,34 @@ fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialec
 /// - A LIMIT or an OFFSET only removes rows, and keeps every key.
 ///
 /// None at all for a VALUES list, or a set-returning call at this level, which repeats a row.
-pub fn result_key(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Option<Vec<String>> {
+pub fn result_keys(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Vec<Vec<String>> {
     crate::stack::run(|| {
-        let s = one_select(sql, Dialect::Postgres).ok()?;
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
         let keys = select_keys(&s, trust, &with_fields(&s, catalog), columns);
         // A column whose name another output column also has is not one a row can be read by.
         let named = |i: usize| columns.get(i).filter(|(name, _)| identifies.get(i) == Some(&true) && columns.iter().filter(|(other, _)| other == name).count() == 1).map(|(name, _)| name.clone());
-        keys.into_iter()
+        let readable: Vec<Vec<usize>> = keys
+            .into_iter()
             .filter_map(|mut key| {
                 key.sort_unstable();
                 key.dedup();
-                let names = key.iter().map(|&i| named(i)).collect::<Option<Vec<String>>>()?;
-                Some((key, names))
+                (!key.is_empty() && key.iter().all(|&i| named(i).is_some())).then_some(key)
             })
-            .min_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
-            .map(|(_, names)| names)
+            .collect();
+        // A key another key lies inside says nothing more, and one repeated says it once. The rest
+        // keep the order they were found in, a table's primary key before its other keys.
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for key in &readable {
+            let holds = |other: &Vec<usize>| other.len() < key.len() && other.iter().all(|i| key.contains(i));
+            if !readable.iter().any(holds) && !out.contains(key) {
+                out.push(key.clone());
+            }
+        }
+        out.into_iter().map(|key| key.into_iter().filter_map(named).collect()).collect()
     })
 }
 
-/// The keys of a SELECT's rows as [`result_key`] reads them, each a list of output positions.
+/// The keys of a SELECT's rows as [`result_keys`] reads them, each a list of output positions.
 fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> Vec<Vec<usize>> {
     if s.limit_count.is_some() || s.limit_offset.is_some() {
         return select_keys(&unlimited(s), trust, catalog, columns);
@@ -2344,14 +2354,7 @@ fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(Str
         keys.extend(s.group_clause.iter().map(|g| clause_column(s, &from, g, KeyClause::GroupBy, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
         return keys;
     }
-    if !s.distinct_clause.is_empty() {
-        if s.distinct_clause.iter().all(|d| d.node.is_none()) {
-            keys.push(whole);
-        } else {
-            keys.extend(s.distinct_clause.iter().map(|d| clause_column(s, &from, d, KeyClause::DistinctOn, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
-        }
-    }
-    // The keys of the FROM's rows, which DISTINCT only thins out.
+    // The keys of the FROM's rows, which DISTINCT only thins out, a table's primary key first.
     let plain = SelectStmt { distinct_clause: Vec::new(), ..s.clone() };
     let at = |name: &str| {
         let mut found = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
@@ -2373,6 +2376,13 @@ fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(Str
                 .min_by_key(|key| key.len())
         });
         keys.extend(each.collect::<Option<Vec<Vec<usize>>>>().map(|parts| parts.concat()));
+    }
+    if !s.distinct_clause.is_empty() {
+        if s.distinct_clause.iter().all(|d| d.node.is_none()) {
+            keys.push(whole);
+        } else {
+            keys.extend(s.distinct_clause.iter().map(|d| clause_column(s, &from, d, KeyClause::DistinctOn, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
+        }
     }
     keys
 }
@@ -2524,7 +2534,7 @@ fn clause_column(s: &SelectStmt, from: &From, e: &protobuf::Node, clause: KeyCla
 ///
 /// The sort keys must hold every column of a unique key of the rows being sorted:
 ///
-/// - a result key ([`result_key`]'s rules), each column an output column the ORDER BY names, by
+/// - a result key ([`result_keys`]'s rules), each column an output column the ORDER BY names, by
 ///   position, by its output name or as the FROM's column the select list holds;
 /// - a unique key of a FROM item's rows (a table's, or one a view, a WITH query or a subquery keeps
 ///   from its statement), every column of it a table's `NOT NULL` column passed through unchanged,
@@ -4666,10 +4676,11 @@ mod tests {
         }
     }
 
-    /// The result key of `sql` over `joined()`, its output columns named and nullable as given.
+    /// The result key of `sql` over `joined()` of fewest columns, its output columns named and
+    /// nullable as given.
     fn key_of(sql: &str, columns: &[(&str, bool)]) -> Option<Vec<String>> {
         let columns: Vec<(String, bool)> = columns.iter().map(|(n, nullable)| (n.to_string(), *nullable)).collect();
-        result_key(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()])
+        result_keys(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()]).into_iter().min_by_key(Vec::len)
     }
 
     #[test]

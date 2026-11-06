@@ -314,6 +314,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "opaque":
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
+    case "rows":
       return "unknown";
     default:
       return "text";

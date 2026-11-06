@@ -946,7 +946,8 @@ impl<'a> Engine<'a> {
 
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
-        let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
@@ -958,6 +959,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: reason,
             key,
+            unique,
             ordered,
             rewritten,
             style: lexed.style,
@@ -1072,6 +1074,7 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: None,
             key: None,
+            unique: Vec::new(),
             ordered: false,
             rewritten,
             style: lexed.style,
@@ -4272,17 +4275,24 @@ fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
 }
 
-/// The result key of a statement ([`Analysis::key`]): for a SELECT that can return more than one
-/// row, the columns [`cardinality::result_key`] proves identify its rows. None where the
-/// cardinality already says the result holds one row at most or none, and none for the rows of a
-/// write's RETURNING.
-fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
+/// The key Standard Query publishes: the fewest columns, then the earliest in the output, whatever
+/// order `unique` lists them in.
+fn shortest_key(unique: &[Vec<String>], columns: &[&str]) -> Option<Vec<String>> {
+    let position = |name: &String| columns.iter().position(|c| c == name);
+    unique.iter().min_by_key(|key| (key.len(), key.iter().map(position).collect::<Vec<_>>())).cloned()
+}
+
+/// The result keys of a statement ([`Analysis::unique`]): for a SELECT that can return more than
+/// one row, each set of columns [`cardinality::result_keys`] proves identify its rows. None where
+/// the cardinality already says the result holds one row at most or none, and none for the rows of
+/// a write's RETURNING.
+fn result_keys(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<Vec<String>> {
     if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
-        return None;
+        return Vec::new();
     }
     let identifies: Vec<bool> = columns.iter().map(|c| identifies(&c.ty)).collect();
     let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
-    cardinality::result_key(sql, trust, catalog, &named, &identifies).filter(|key| !key.is_empty())
+    cardinality::result_keys(sql, trust, catalog, &named, &identifies)
 }
 
 /// Whether a value of `ty` is read whole as a number, a string or an enum's label, and so stays as
@@ -4416,6 +4426,15 @@ mod tests {
         // The fix reads the value from a WITH.
         let a = replay("with input as (select concat('%', :q::text, '%') as pattern) select 1 as one from input where input.pattern like input.pattern");
         assert!(a.diagnostics.iter().all(|d| d.code != 3), "{:?}", a.diagnostics);
+    }
+
+    #[test]
+    fn the_published_key_is_the_shortest_then_the_earliest_in_the_output() {
+        let key = |sets: &[&[&str]], columns: &[&str]| shortest_key(&sets.iter().map(|s| s.iter().map(|c| c.to_string()).collect()).collect::<Vec<Vec<String>>>(), columns);
+        // `select email, id from users`, whose primary key `unique` lists first.
+        assert_eq!(key(&[&["id"], &["email"]], &["email", "id"]), Some(vec!["email".to_string()]));
+        assert_eq!(key(&[&["a", "b"], &["id"]], &["a", "b", "id"]), Some(vec!["id".to_string()]));
+        assert_eq!(key(&[], &["a"]), None);
     }
 
     #[test]

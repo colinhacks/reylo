@@ -27,7 +27,8 @@ export type Type =
   | XmlType
   | OpaqueType
   | UnknownType
-  | TaggedUnionType;
+  | TaggedUnionType
+  | RowsType;
 
 /** What every type may carry. */
 export interface Base {
@@ -342,6 +343,17 @@ export interface Alternative extends Position {
   tag: string;
 }
 
+/** Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name. */
+export interface RowsType extends Base {
+  kind: "rows";
+  /** How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`). */
+  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** In order; empty where there are no rows. */
+  columns: Column[];
+  /** Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known. */
+  unique?: string[][];
+}
+
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
 export interface StatementDescriptor {
   /** The version of the format the descriptor is written in, as the URL of that version's JSON Schema, which a validator or an editor reads. Versions are semantic, and until 1.0.0 a new minor version may change anything. */
@@ -354,10 +366,8 @@ export interface StatementDescriptor {
   /** The prose written in comments before the statement: its summary, as an editor's hover shows it. */
   comment?: string;
   params: Param[];
-  /** In order; empty when the statement returns no rows. */
-  columns: Column[];
-  /** How many rows the statement returns: exactly one, at most one, any number, or none (a write without `RETURNING`). */
-  cardinality: "one" | "at_most_one" | "many" | "none";
+  /** What the statement returns. */
+  result: RowsType;
   /** What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns. */
   diagnostics: Diagnostic[];
 }

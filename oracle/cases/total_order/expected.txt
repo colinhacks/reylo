@@ -6,7 +6,7 @@ by_primary_key.sql: many () -> { id: int8, name: text? } key (id) ordered
 by_unique_desc.sql: many () -> { email: text, name: text? } key (email) ordered
 cte.sql: many (min: int4) -> { title: text? } ordered
 distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id) ordered
-explicit_collation.sql: many () -> { id: int8, email: text } key (id) ordered
+explicit_collation.sql: many () -> { id: int8, email: text } key (id), (email) ordered
 explicit_collation_only.sql: many () -> { email: text } key (email)
 expression.sql: many () -> { id: int8, title: text? } key (id)
 group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
@@ -26,7 +26,7 @@ offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) order
 parameter_sort.sql: many (sort: text) -> { id: int8, name: text? } key (id) ordered
 position.sql: many () -> { title: text?, id: int8 } key (id) ordered
 probe_alias.sql: many () -> { reylo_sort_0: text? } ordered
-star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id) ordered
+star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id), (email), (tag) ordered
 subquery.sql: many () -> { title: text? } ordered
 to_many_both_keys.sql: many () -> { name: text?, title: text? } ordered
 to_many_join.sql: many () -> { name: text?, title: text? }

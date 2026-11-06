@@ -66,6 +66,8 @@ pub enum Kind {
     /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
     /// Appended, as a new kind is, so the order of the kinds never changes.
     TaggedUnion(TaggedUnionType),
+    /// Rows of columns: what a statement returns, and a relation nested in a value.
+    Rows(RowsType),
 }
 
 /// Bounds on an ordered kind's finite values, each a value in its kind's canonical text. A side
@@ -520,6 +522,50 @@ pub struct Param {
 /// [`StatementDescriptor`] names in `$schema`: the `$id` of `spec/typedefs.schema.json`.
 pub const SCHEMA: &str = "https://reylo.dev/typedefs/0.1.0.json";
 
+/// Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's
+/// `MULTISET` or an Oracle nested table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowsType {
+    pub cardinality: Cardinality,
+    pub columns: Vec<Column>,
+    /// Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, and
+    /// a table's primary key first where the rows hold it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+}
+
+/// What a statement returns: a [`RowsType`], with what every type may carry. It reads and writes as a [`Type`] of kind `rows`, and refuses any other kind, as the format does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Type", into = "Type")]
+pub struct ResultRows {
+    pub rows: RowsType,
+    pub name: Option<String>,
+    pub comment: Option<String>,
+}
+
+impl From<RowsType> for ResultRows {
+    fn from(rows: RowsType) -> Self {
+        ResultRows { rows, name: None, comment: None }
+    }
+}
+
+impl TryFrom<Type> for ResultRows {
+    type Error = String;
+
+    fn try_from(ty: Type) -> Result<Self, String> {
+        match ty.kind {
+            Kind::Rows(rows) => Ok(ResultRows { rows, name: ty.name, comment: ty.comment }),
+            other => Err(format!("a statement's result is of kind rows, not {}", other.name())),
+        }
+    }
+}
+
+impl From<ResultRows> for Type {
+    fn from(result: ResultRows) -> Self {
+        Type { kind: Kind::Rows(result.rows), name: result.name, comment: result.comment }
+    }
+}
+
 /// What introspecting one statement returns.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StatementDescriptor {
@@ -537,8 +583,8 @@ pub struct StatementDescriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comment: Option<String>,
     pub params: Vec<Param>,
-    pub columns: Vec<Column>,
-    pub cardinality: Cardinality,
+    /// What the statement returns.
+    pub result: ResultRows,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -664,6 +710,7 @@ impl Kind {
             Kind::Opaque => 22,
             Kind::Unknown => 23,
             Kind::TaggedUnion(_) => 24,
+            Kind::Rows(_) => 25,
         }
     }
 
@@ -695,6 +742,7 @@ impl Kind {
             Kind::Opaque => "opaque",
             Kind::Unknown => "unknown",
             Kind::TaggedUnion(_) => "tagged_union",
+            Kind::Rows(_) => "rows",
         }
     }
 }
@@ -877,6 +925,7 @@ impl Type {
             Kind::Json(JsonType { content: Some(c), .. }) => c.ty.collect_names(out),
             Kind::Union(u) => u.members.iter().for_each(|m| m.collect_names(out)),
             Kind::TaggedUnion(t) => t.alternatives.iter().for_each(|a| a.ty.collect_names(out)),
+            Kind::Rows(r) => r.columns.iter().for_each(|c| c.ty.collect_names(out)),
             Kind::Map(m) => {
                 m.key.collect_names(out);
                 m.value.ty.collect_names(out);
@@ -900,6 +949,7 @@ impl Type {
             Kind::Json(JsonType { content: Some(c), schema }) => Kind::Json(JsonType { content: Some(Box::new(position(*c))), schema }),
             Kind::Union(u) => Kind::Union(UnionType { members: u.members.into_iter().map(|m| m.renamed(rename)).collect() }),
             Kind::TaggedUnion(t) => Kind::TaggedUnion(TaggedUnionType { alternatives: t.alternatives.into_iter().map(|a| Alternative { ty: a.ty.renamed(rename), ..a }).collect() }),
+            Kind::Rows(r) => Kind::Rows(RowsType { columns: r.columns.into_iter().map(|c| Column { ty: c.ty.renamed(rename), ..c }).collect(), ..r }),
             Kind::Map(m) => Kind::Map(MapType { key: Box::new(m.key.renamed(rename)), value: Box::new(position(*m.value)), ..m }),
             Kind::Range(r) => Kind::Range(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
             Kind::Multirange(r) => Kind::Multirange(RangeType { subtype: Box::new(r.subtype.renamed(rename)), ..r }),
@@ -1006,6 +1056,10 @@ impl Type {
             Kind::TaggedUnion(t) => {
                 let alternatives: Vec<String> = t.alternatives.iter().map(|a| format!("{}: {}", a.tag, position_short(&a.position()))).collect();
                 format!("{}<{}>", self.name.as_deref().unwrap_or("tagged"), alternatives.join(" | "))
+            }
+            Kind::Rows(r) => {
+                let columns: Vec<String> = r.columns.iter().map(|c| format!("{}: {}", c.name, position_short(&Position::new(c.ty.clone(), c.nullable)))).collect();
+                format!("{}<{}>{{ {} }}", self.kind.name(), r.cardinality.as_str(), columns.join(", "))
             }
             Kind::Set(set) => format!("{}{{{}}}", label(), position_short(&set.element)),
             Kind::Map(m) => format!("{}({} => {})", label(), m.key.short(), position_short(&m.value)),
@@ -1127,6 +1181,22 @@ impl Type {
             Kind::Union(u) => {
                 for (i, m) in u.members.iter().enumerate() {
                     m.check_at(&format!("{at}|{i}"))?;
+                }
+            }
+            Kind::Rows(r) => {
+                for c in &r.columns {
+                    c.ty.check_at(&format!("{at}.{}", c.name))?;
+                }
+                if !r.unique.is_empty() && r.cardinality != Cardinality::Many {
+                    return fail("unique is only for rows that can be more than one".into());
+                }
+                for key in &r.unique {
+                    if key.is_empty() {
+                        return fail("a set of unique columns holds at least one".into());
+                    }
+                    if let Some(k) = key.iter().find(|k| !r.columns.iter().any(|c| &c.name == *k)) {
+                        return fail(format!("unique column {k:?} is not a column"));
+                    }
                 }
             }
             Kind::TaggedUnion(t) => {
@@ -1294,11 +1364,15 @@ mod tests {
                 param.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", param.name));
                 types += 1;
             }
-            for value in descriptor["columns"].as_array().into_iter().flatten() {
+            for value in descriptor["result"]["columns"].as_array().into_iter().flatten() {
                 let column: Column = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{name}: {value}: {e}"));
                 assert_eq!(serde_json::to_value(&column).unwrap(), *value, "{name}");
                 column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
                 types += 1;
+            }
+            // The rows themselves, whose `unique` sets rule 7 holds to their columns.
+            if let Some(result) = descriptor.get("result") {
+                round_trip(result.clone());
             }
             // A whole descriptor, which names the format's version.
             if descriptor.get("$schema").is_some() {
@@ -1372,6 +1446,22 @@ mod tests {
         refused(json!({"kind": "decimal", "min_scale": 3, "max_scale": 2}));
         refused(json!({"kind": "opaque"}));
         refused(json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 0, "mantissa_bits": 3}}}));
+        let id = json!({"name": "id", "type": {"kind": "integer", "bits": 32}});
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["missing"]]}));
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [[]]}));
+        refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "unique": [["id"]]}));
+        refused(json!({"kind": "rows", "cardinality": "one", "columns": [id], "unique": [["id"]]}));
+        serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
+    }
+
+    #[test]
+    fn a_statements_result_is_rows_and_nothing_else() {
+        let result = |result: Value| serde_json::from_value::<StatementDescriptor>(json!({"$schema": SCHEMA, "dialect": {"name": "postgres", "version": "18"}, "sql": "select 1", "params": [], "result": result, "diagnostics": []}));
+        assert!(result(json!({"kind": "integer", "bits": 32})).is_err());
+        let rows = json!({"kind": "rows", "cardinality": "one", "columns": []});
+        let read = result(rows.clone()).unwrap();
+        assert_eq!(read.result.rows.cardinality, Cardinality::One);
+        assert_eq!(serde_json::to_value(&read).unwrap()["result"], rows);
     }
 
     #[test]

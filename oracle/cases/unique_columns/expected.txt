@@ -1,0 +1,12 @@
+composite_key.sql: many () -> { code: text, x: int4, y: int4 } key (x, y), (code)
+distinct.sql: many () -> { a: int4 } key (a)
+group_by.sql: many () -> { a: int4, b: int4, n: int8 } key (a, b)
+inside_another.sql: many () -> { a: int4, b: int4, email: text } key (email), (a, b)
+joined.sql: many () -> { user_id: int4, post_id: int4 } key (post_id)
+no_key.sql: many () -> { a: int4 }
+nullable_unique.sql: many () -> { id: int4, handle: text? } key (id)
+one_row.sql: at_most_one () -> { id: int4, email: text }
+partial_key.sql: many () -> { a: int4, id: int4 } key (id)
+primary_absent.sql: many () -> { email: text, handle: text? } key (email)
+primary_first.sql: many () -> { email: text, id: int4 } key (id), (email)
+written_returning.sql: many () -> { id: int4, email: text }
