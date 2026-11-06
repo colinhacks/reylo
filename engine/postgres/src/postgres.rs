@@ -4285,7 +4285,7 @@ fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, col
 /// holds one.
 fn identifies(ty: &Type) -> bool {
     match &ty.kind {
-        TyKind::Json(_) | TyKind::Unknown | TyKind::Any => false,
+        TyKind::Json(_) | TyKind::Unknown => false,
         TyKind::Array(array) => !array.any_depth,
         TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
         TyKind::Opaque => ty.name.as_deref() != Some("record"),
