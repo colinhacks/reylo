@@ -736,7 +736,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row, with `values (…)` or a `select` of one row, and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `on conflict do nothing` and `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `returning` and `on conflict do nothing`, or `on conflict do update` beside a `with` query that writes, which may have updated that row already |
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 

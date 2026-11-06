@@ -90,6 +90,8 @@ pub struct Catalog {
     pub set_returning: HashSet<String>,
     /// Operator names some set-returning function implements, in any schema.
     pub set_returning_operators: HashSet<String>,
+    /// Names of set-returning functions one argument can call, in any schema: `(x).f` and `t.f` call `f` where `x` or `t` has no field of the name.
+    pub set_returning_attributes: HashSet<String>,
     /// Per relation, the column lists of its unique keys: every unique, valid, non-partial index
     /// over plain columns. This is the fact [`at_most_one`] rests on, and it is a fact about the
     /// database rather than about the statement — adding an index makes a read provably single
@@ -504,6 +506,10 @@ pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog
 /// Every operator some set-returning function implements.
 pub const SET_RETURNING_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_catalog.text FROM pg_catalog.pg_operator o \
     JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid WHERE p.proretset";
+
+/// Every set-returning function one argument can call, as `(x).f` and `t.f` do.
+pub const SET_RETURNING_ATTRIBUTES_QUERY: &str = "SELECT DISTINCT p.proname::pg_catalog.text FROM pg_catalog.pg_proc p \
+    WHERE p.proretset AND p.pronargs OPERATOR(pg_catalog.>=) '1'::pg_catalog.int2 AND p.pronargs OPERATOR(pg_catalog.-) p.pronargdefaults OPERATOR(pg_catalog.<=) '1'::pg_catalog.int2";
 
 /// Prove that one rewritten statement (placeholders already `$n` or `?n`) returns exactly one
 /// row, or say why the build cannot, worded to finish a sentence: "a WHERE with no FROM can
@@ -3201,10 +3207,12 @@ fn dml_node(node: &NodeEnum, trust: &Trust, catalog: &Catalog) -> Option<Result<
             // A row trigger that runs BEFORE the insert (or the update ON CONFLICT turns it into)
             // or INSTEAD of it can return NULL, and then the row is neither written nor returned.
             let skipped = |events: i32| i.relation.as_ref().and_then(|rv| catalog.skipping_triggers.get(&catalog_name(rv))).is_some_and(|mask| mask & events != 0);
+            // A `WITH` query that writes may have updated the conflicting row already, and `DO UPDATE` leaves a row this statement has written alone, and returns nothing for it.
+            let written_before = i.with_clause.as_ref().is_some_and(|w| w.ctes.iter().any(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(cte)) if !matches!(cte.ctequery.as_deref().and_then(|q| q.node.as_ref()), Some(NodeEnum::SelectStmt(_))))));
             match i.on_conflict_clause.as_deref() {
                 Some(c) if c.action == protobuf::OnConflictAction::OnconflictNothing as i32 => Ok(Cardinality::AtMostOne),
                 // `DO UPDATE … WHERE` leaves a conflicting row alone, and returns nothing for it.
-                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
+                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || written_before || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
                 _ if skipped(TRIGGER_ROW_INSERT) => Ok(Cardinality::AtMostOne),
                 _ => Ok(Cardinality::One),
             }
@@ -3594,6 +3602,8 @@ fn not_one_row_shaped(s: &SelectStmt) -> &'static str {
 struct Calls {
     functions: Vec<String>,
     operators: Vec<String>,
+    /// The last names of `(x).f` and `t.f`, each a field or, where the value has no such field, a call of `f`.
+    attributes: Vec<String>,
 }
 
 impl Calls {
@@ -3606,6 +3616,9 @@ impl Calls {
             if !catalog.functions.contains(name) {
                 return Some(format!("the function {name} is not in the catalog, so the build cannot rule out that it returns a set"));
             }
+        }
+        if let Some(name) = self.attributes.iter().find(|name| catalog.set_returning_attributes.contains(name.as_str())) {
+            return Some(format!("{name} may be a call of the set-returning function of that name, which returns a row per value, and none for an empty set"));
         }
         self.operators
             .iter()
@@ -3651,6 +3664,15 @@ fn walk(v: &Value, calls: &mut Calls) {
                             calls.functions.push(name);
                         }
                         walk(child, calls);
+                    }
+                    "AIndirection" => {
+                        calls.attributes.extend(child.get("indirection").and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.pointer("/node/String/sval")?.as_str().map(String::from)));
+                        walk(child, calls);
+                    }
+                    "ColumnRef" => {
+                        if child.get("fields").and_then(Value::as_array).is_some_and(|fields| fields.len() > 1) {
+                            calls.attributes.extend(last_name(child.get("fields")));
+                        }
                     }
                     "AExpr" => {
                         match last_name(child.get("name")) {
@@ -4033,6 +4055,8 @@ mod tests {
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
+        assert_eq!(dml("with u as (update users set email = $1 returning id) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("with u as (select 1) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         // A row trigger that runs BEFORE the insert can return NULL; one on UPDATE matters only
         // where ON CONFLICT turns the insert into an update.
@@ -4273,6 +4297,16 @@ mod tests {
         assert!(at_most_one("SELECT relkind, count(*) AS n FROM pg_class GROUP BY relkind, ()", Dialect::Postgres, &Trust::default(), &c).is_err());
         // Without an aggregate it reads as ungrouped: many rows, never fewer than it returns.
         assert!(at_most_one("SELECT 1 AS x FROM pg_class GROUP BY ()", Dialect::Postgres, &Trust::default(), &c).is_err());
+    }
+
+    #[test]
+    fn an_attribute_may_be_a_call_of_a_set_returning_function() {
+        let mut catalog = stock();
+        catalog.set_returning_attributes.insert("jsonb_object_keys".into());
+        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &Trust::default(), &catalog);
+        refused(one("SELECT ('{}'::jsonb).jsonb_object_keys AS k"), "set-returning function", "field notation");
+        refused(one("SELECT count(*) AS n, t.jsonb_object_keys AS k FROM t"), "set-returning function", "a qualified name");
+        assert!(one("SELECT ('{}'::jsonb).other AS k").is_ok());
     }
 
     #[test]
