@@ -86,6 +86,8 @@ function markNesting(t: Type): Type {
       return t.any_depth ? Object.assign(marked, { [NESTS]: true }) : marked;
     }
     case "record": return { ...t, fields: t.fields.map((f) => ({ ...f, type: markNesting(f.type) })) };
+    // A document a statement builds holds its arrays as the statement's columns do.
+    case "json": return t.content === undefined ? t : { ...t, content: { ...t.content, type: markNesting(t.content.type) } };
     default: return t;
   }
 }

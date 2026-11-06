@@ -99,4 +99,5 @@ object_truth_values.sql: many () -> { o: json { lit: boolean, cmp: boolean, eq: 
 object_two_same_alias.sql: many () -> { o: json { id: int }, o: json { name: varchar(≤20) } } !! reylo14: Columns 1 and 2 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
 object_unaliased.sql: many () -> { json_object('id', id): json? }
 object_window.sql: many () -> { o: json { id: int, rank: bigint, previous: boolean | int? } }
+repeated_key.sql: one () -> { v: json { a: unknown? } }
 scalar_guarded_by_object.sql: one () -> { o: text? }

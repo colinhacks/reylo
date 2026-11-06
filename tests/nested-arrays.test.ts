@@ -40,3 +40,11 @@ test("a query's output schema lets an array nest under allow_nested_arrays", () 
   const items = (a: Analysis) => (querySchemas(a, "postgres").output as { items: { properties: { cells: { items: unknown } } } }).items.properties.cells.items;
   assert.deepEqual(items(analysisWithNestedArrays(analysis)), { anyOf: [items(analysis), { type: "array" }] });
 });
+
+test("an array column inside JSON a statement builds is typed at any depth under allow_nested_arrays", () => {
+  const built = { ...analysis, columns: [{ name: "doc", nullable: false, type: { kind: "json", name: "jsonb", content: { type: { kind: "record", fields: [{ name: "cells", type: analysis.columns[0]!.type }] } } } }] } as unknown as Analysis;
+  assert.match(moduleTypes("", built, "postgres", undefined, true).row, /cells: \(number \| null\)\[\]/);
+  const nested = moduleTypes("", built, "postgres", undefined, true, ".reylo.yaml", {}, true);
+  assert.match(nested.row, /cells: NestedArray<number \| null>/);
+  assert.equal(reyloImport(nested.row), `import type { NestedArray, Query } from "reylo";`);
+});

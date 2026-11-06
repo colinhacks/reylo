@@ -269,6 +269,7 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   cast to it from any other built-in type is a built-in one.
 /// - `raise`, from a server before 18, whose cast of a JSON null to a number or a boolean raises
 ///   an error where 18 answers NULL ([`JSONB_CASTS_RAISE`]).
+/// - `deterministic`, from a database that holds no nondeterministic collation ([`DETERMINISTIC_ONLY`]).
 ///
 /// Every operator, function and type the query calls or names is spelled as `pg_catalog`'s
 /// (`OPERATOR(pg_catalog.=)`, parenthesized, since that spelling takes no operator's precedence):
@@ -401,9 +402,13 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
     UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL \
-    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
+    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric \
+    UNION ALL SELECT 'deterministic', NULL, NULL, NULL, NULL \
+    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_collation c WHERE NOT c.collisdeterministic)";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
+/// The tag of [`TRUST_QUERY`]'s row that says the database holds no nondeterministic collation.
+const DETERMINISTIC_ONLY: &str = "deterministic";
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per unique index of
 /// each that is a plain or a partitioned table, `(the name, the index's key columns with NULL for
@@ -487,6 +492,7 @@ pub fn trust(host: &Host) -> Lazy<Trust> {
                         }
                     }
                     Some(JSONB_CASTS_RAISE) => trust.jsonb_casts_raise = true,
+                    Some(DETERMINISTIC_ONLY) => trust.deterministic_only = true,
                     _ => {}
                 }
             }
@@ -554,6 +560,7 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.user_operators = trust.shadowed.clone();
     catalog.cast_targets = trust.cast_targets.clone();
     catalog.overloads = trust.overloads.clone();
+    catalog.deterministic_only = trust.deterministic_only;
 }
 
 fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
@@ -5075,11 +5082,13 @@ mod tests {
         assert!(!before.shadowed.contains("raise") && !before.cast_targets.as_ref().unwrap().contains("raise"));
         let later = read(Ok(vec![shadow, row("cast", json!("int4"))]));
         assert!(!later.jsonb_casts_raise && later.overloads.is_some());
+        // A database that holds no nondeterministic collation says so with one row.
+        assert!(!later.deterministic_only && read(Ok(vec![row("deterministic", Value::Null)])).deterministic_only);
         // A server that refuses the query shadows every name, and no cast keeps its argument's
         // nullability.
         let refused = read(Err(DbError { message: "permission denied".into(), code: None, position: None }));
         assert!(refused.shadowed.contains("=") && refused.shadowed.contains("count") && refused.overloads.is_none());
-        assert!(refused.cast_targets.as_ref().unwrap().is_empty());
+        assert!(refused.cast_targets.as_ref().unwrap().is_empty() && !refused.deterministic_only);
     }
 
     #[test]

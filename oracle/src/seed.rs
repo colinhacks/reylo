@@ -1093,7 +1093,9 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]")) {
+                // An `any_depth` array holds arrays of itself, where its element is no array itself.
+                let nested = array.any_depth && item.is_array() && !matches!(array.element.ty.kind, Kind::Array(_) | Kind::Json(_));
+                if let Some(why) = json_contradiction(if nested { ty } else { &array.element.ty }, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
