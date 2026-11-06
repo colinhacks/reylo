@@ -89,6 +89,7 @@ pub async fn run(url: &str, regress: &Path, timeout_ms: u64) -> Result<bool, Str
                             continue;
                         }
                     };
+                    t.typed(&format!("{name}.sql"), &sql, &analysis);
                     if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
                         t.with_params += 1;
                         continue;

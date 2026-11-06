@@ -163,7 +163,7 @@ impl Type {
             // The values a CHECK's JSON Schema admits, as the engine reduced it; else any JSON,
             // null included.
             Kind::Json(JsonType { schema: Some(_), .. }) => self.schema().unwrap_or(Value::Bool(true)),
-            Kind::Json(_) | Kind::Unknown | Kind::Any => json!({}),
+            Kind::Json(_) | Kind::Unknown => json!({}),
             // An hstore is an object of its keys inside a document, each value text or null.
             Kind::Map(_) if bare_name(self) == "hstore" && opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
             Kind::Map(_) if bare_name(self) == "hstore" => text_of(self),

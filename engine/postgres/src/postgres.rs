@@ -20,7 +20,7 @@ use crate::levels::Columns;
 use crate::lex::{self, Lexed, Rewritten, Target};
 use crate::pgtypes::{not_null_rows, TypeRegistry, RELATION_TYPES_QUERY, TYPE_QUERY};
 use crate::returning::Rows;
-use crate::types::{Cardinality, DescribedColumn, DescribedStatement, Kind as TyKind, NonFinite, StatementKind, Type};
+use crate::types::{Cardinality, CheckFacts, DescribedColumn, DescribedStatement, Kind as TyKind, NonFinite, Pattern, PatternDialect, StatementKind, Type};
 use pg_query::protobuf::node::Node as NodeEnum;
 use serde_json::{json, Value};
 use std::cell::{Cell, RefCell};
@@ -99,7 +99,7 @@ macro_rules! base_type {
 /// `$1` is a relation's oid:
 /// one row per validated, enforced CHECK on a column of it, the table's on that column alone (and
 /// inherited by any child a scan reads) or the column's domain's, where the column holds `text`
-/// or `varchar` under a deterministic collation, `json` or `jsonb`, a float or `numeric`, or an
+/// or `varchar` under a deterministic collation, `json` or `jsonb`, an integer, a float or `numeric`, or an
 /// array: `(relation, attnum, the column's name, the CHECK as the server prints it, and per
 /// function the CHECK calls, its name, its extension's name and that extension's version, in three
 /// arrays, then the column's type and that type's base type, and whether its collation is
@@ -137,7 +137,7 @@ pub const CHECKS_QUERY: &str = concat!(
     " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.json'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.jsonb'::pg_catalog.regtype::pg_catalog.oid]) \
         OR ",
     base_type!(),
-    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.float4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.numeric'::pg_catalog.regtype::pg_catalog.oid]) \
+    " OPERATOR(pg_catalog.=) ANY (ARRAY['pg_catalog.int2'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.int8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float4'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.float8'::pg_catalog.regtype::pg_catalog.oid, 'pg_catalog.numeric'::pg_catalog.regtype::pg_catalog.oid]) \
         OR t.typcategory OPERATOR(pg_catalog.=) 'A'::pg_catalog.\"char\")"
 );
 /// Whether each column of the named relations refuses null, for a parameter written to it
@@ -660,6 +660,8 @@ struct Engine<'a> {
     /// The strings the CHECKs of each column a parameter is written to keep it to
     /// ([`check_values`]).
     written_values: RefCell<HashMap<(u32, i32), Vec<String>>>,
+    /// What the CHECKs of each column a parameter is written to hold it to ([`check_facts`]).
+    written_facts: RefCell<HashMap<(u32, i32), CheckFacts>>,
     /// The comment of each result column of the main statement and of each column it writes a
     /// parameter to ([`Engine::comments`]).
     comments: RefCell<Comments>,
@@ -682,7 +684,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -876,7 +878,7 @@ impl<'a> Engine<'a> {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
-                    (col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.holds_strings(col.type_oid)), col.document.as_ref())), col.nullable)
+                    (col.facts.apply(col.non_finite.apply(with_document(with_values(with_items(ty, items), col.values.as_deref(), registry.holds_strings(col.type_oid)), col.document.as_ref()))), col.nullable)
                 }
             };
             let comment = comments.columns.get(position).cloned().flatten();
@@ -920,11 +922,19 @@ impl<'a> Engine<'a> {
                     first.filter(|m| *m >= 0 && typmods.all(|other| other == Some(*m)))
                 };
                 let ty = modified.map_or_else(|| registry.render(o), |m| registry.render_typmod(o, m));
+                // A bare parameter written whole to a column the CHECKs hold to bounds, a divisor or a
+                // pattern takes them, as it takes the strings above.
+                let held = self.written_facts.borrow();
+                let facts = written
+                    .iter()
+                    .filter(|(n, _, _)| bare && *n == i as i32 + 1)
+                    .filter_map(|(_, rel, att)| held.get(&(*rel, *att)))
+                    .fold(CheckFacts::default(), |known, facts| known.and(facts.clone()));
                 // A parameter written to columns that share one comment carries it.
                 let mut noted = written.iter().filter(|(n, _, _)| *n == i as i32 + 1).map(|(_, rel, att)| comments.written.get(&(*rel, *att)));
                 let first = noted.next().flatten();
                 let comment = first.filter(|c| noted.all(|other| other == Some(*c))).cloned();
-                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), with_document(with_values(ty, values.as_deref(), registry.holds_strings(o)), document.as_ref())) }
+                Param { nullable, comment, delimiter: registry.delimiter(o), ..Param::new(name.clone(), facts.apply(with_document(with_values(ty, values.as_deref(), registry.holds_strings(o)), document.as_ref()))) }
             })
             .collect();
 
@@ -1458,6 +1468,7 @@ impl<'a> Engine<'a> {
             registry.values.extend(checks.values);
             registry.items.extend(checks.items);
             registry.non_finite.extend(checks.non_finite);
+            registry.facts.extend(checks.facts);
         }
         Some(())
     }
@@ -1598,9 +1609,13 @@ impl<'a> Engine<'a> {
             if let Some(kept_out) = checks.non_finite.get(&(raw.table, raw.attnum)) {
                 col.non_finite = *kept_out;
             }
+            if let Some(facts) = checks.facts.get(&(raw.table, raw.attnum)) {
+                col.facts = facts.clone();
+            }
         }
         *self.written.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.sources.get(key)?.clone()))).collect();
         *self.written_values.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.values.get(key)?.clone()))).collect();
+        *self.written_facts.borrow_mut() = written.iter().filter_map(|key| Some((*key, checks.facts.get(key)?.clone()))).collect();
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed, &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed, &raw, &mut described);
@@ -1719,8 +1734,8 @@ impl<'a> Engine<'a> {
     /// ([`Engine::checks`]). The strings a CHECK keeps a column to only where each `=` it compares
     /// them with is the built-in one: where no user defined an `=`, or where the types of its
     /// operands, as the server prints them, resolve it to the built-in ([`check_values`]); the
-    /// non-finite values it keeps out of a number only where each comparison is too
-    /// ([`check_non_finite`]).
+    /// non-finite values it keeps out of a number, and the bounds, the divisor and the pattern it
+    /// holds a value to, only where each comparison is too ([`check_non_finite`], [`check_facts`]).
     fn check_rows(&self, pairs: &[(u32, i32)], trust: &Trust) -> Lazy<Checks> {
         if pairs.is_empty() {
             return Some(Checks::default());
@@ -1741,6 +1756,10 @@ impl<'a> Engine<'a> {
             if let Some(kept_out) = check_non_finite(text, name, types, trust).filter(|k| !k.is_none()) {
                 let known = out.non_finite.entry(key).or_default();
                 *known = known.and(kept_out);
+            }
+            if let Some(facts) = check_facts(text, name, types, deterministic, trust).filter(|f| !f.is_none()) {
+                let known = out.facts.remove(&key).unwrap_or_default();
+                out.facts.insert(key, known.and(facts));
             }
             let calls: Vec<(String, String, String)> = match (row.get(4).and_then(as_strings), row.get(5).and_then(as_strings), row.get(6).and_then(as_strings)) {
                 (Some(names), Some(extensions), Some(versions)) => names.into_iter().zip(extensions).zip(versions).map(|((n, e), v)| (n, e, v)).collect(),
@@ -1969,7 +1988,7 @@ impl<'a> Engine<'a> {
                     _ => false,
                 };
                 let whole_row = from_view || own_row;
-                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, nested: None, values: None, document, non_finite: Default::default(), whole_row }
+                DescribedColumn { name: col.name.clone(), type_oid: col.oid, typmod: col.typmod, type_name: registry.name(col.oid), nullable, nullable_items: None, nested: None, values: None, document, non_finite: Default::default(), facts: Default::default(), whole_row }
             })
             .collect();
         let columns = columns
@@ -2070,7 +2089,10 @@ impl<'a> Engine<'a> {
                             Some(None) => {}
                         }
                         partly.insert(i);
-                        let proven = self.lateral_expressions(query, trust)?;
+                        let Some(proven) = self.lateral_expressions(query, trust) else {
+                            pending = true;
+                            break;
+                        };
                         if let Some(columns) = infer::lateral_columns(&query.sql, trust) {
                             let columns = columns.into_iter().enumerate().map(|(at, (name, non_null))| (at, (name, non_null || proven.get(at).copied().unwrap_or(false)))).filter(|(_, (_, non_null))| *non_null);
                             settled.insert(i, columns.map(|(at, (name, _))| ItemColumn { name: query.columns.get(at).cloned().unwrap_or(name), nullable: false, document: None, values: None }).collect());
@@ -2279,6 +2301,10 @@ impl<'a> Engine<'a> {
     /// Per column of a subquery that reads the items before it, whether its expression is non-null by what the columns it reads hold: the leaves are described over those items, where the subquery alone cannot be. Empty where it can't be told.
     fn lateral_expressions(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<Vec<bool>> {
         let Some(around) = &query.around else { return Some(Vec::new()) };
+        // Most select lists need no question: their columns are plain, or non-null whatever they read, as an array of rows is.
+        if infer::plan(&query.sql, Dialect::Postgres, trust, &Columns::default()).head.iter().flatten().all(|e| infer::resolve(e, None).non_null) {
+            return Some(Vec::new());
+        }
         let columns = level_columns(&query.sql, self.host)?;
         let plan = infer::plan(&query.sql, Dialect::Postgres, trust, &columns);
         let Some(leaves) = plan.leaves.as_ref().filter(|_| plan.set_op.is_none() && !plan.star && plan.reads_leaves()) else { return Some(Vec::new()) };
@@ -2467,6 +2493,9 @@ impl<'a> Engine<'a> {
             }
             if let Some(kept_out) = checks.non_finite.get(&(raw.table, raw.attnum)) {
                 col.non_finite = *kept_out;
+            }
+            if let Some(facts) = checks.facts.get(&(raw.table, raw.attnum)) {
+                col.facts = facts.clone();
             }
         }
         self.refine(sql, &mut described, trust)?;
@@ -2934,6 +2963,8 @@ struct Checks {
     items: HashSet<(u32, i32)>,
     documents: HashMap<(u32, i32), Value>,
     non_finite: HashMap<(u32, i32), NonFinite>,
+    /// The bounds, the divisor and the pattern a CHECK holds each column's values to.
+    facts: HashMap<(u32, i32), CheckFacts>,
     /// The schemas behind each document, which a parameter written to several columns meets all of.
     sources: HashMap<(u32, i32), Vec<(String, Validators)>>,
 }
@@ -3532,6 +3563,245 @@ pub fn check_non_finite(text: &str, column: &str, types: (Option<u32>, Option<u3
     compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
 }
 
+/// The bounds, the divisor and the pattern a CHECK, as the server prints it, holds the column
+/// `column` to (`VALUE` in a domain's), whose type and base type `types` names: from each conjunct
+/// of an AND, each of which restricts, or the one test beside `column IS NULL` under an OR, which only
+/// lets NULL through as well. A bound compares the bare column with a number (`age >= 0`), a
+/// divisor is `qty % 5 = 0`, and a pattern is `~~`, `~~*`, `~` or `~*` of a string column, whose cast
+/// to `text` the server prints, with a string. Anything else in the CHECK says nothing here, and
+/// may stand beside these. A pattern needs a `text` or a `varchar` under a deterministic collation:
+/// `char(n)` reads its padding back, and a nondeterministic collation matches other than the bytes.
+/// Only where each operator resolves to the built-in for the types its operands print with, as
+/// [`check_values`] asks of `=`.
+pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), deterministic: bool, trust: &Trust) -> Option<CheckFacts> {
+    use crate::pgtypes::oid;
+    use crate::resolution::{Kind, Operand};
+    use pg_query::protobuf::node::Node as N;
+    use pg_query::protobuf::{a_const::Val, AExprKind, BoolExprType, Node, NullTestType};
+    let parsed = crate::stack::parse(&format!("SELECT {text}")).ok()?;
+    let Some(N::SelectStmt(select)) = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref() else { return None };
+    let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
+    let check = target.val.as_deref()?;
+
+    // A number type, but for one with a modifier, whose cast rounds (`2.55::numeric(3,1)`).
+    fn number_type(cast: &pg_query::protobuf::TypeCast) -> Option<u32> {
+        let name = cast.type_name.as_ref()?;
+        if !name.typmods.is_empty() {
+            return None;
+        }
+        match crate::infer::builtin_name(&name.names)?.as_str() {
+            "numeric" => Some(oid::NUMERIC),
+            "float8" => Some(oid::FLOAT8),
+            "float4" => Some(oid::FLOAT4),
+            "int2" => Some(oid::INT2),
+            "int4" => Some(oid::INT4),
+            "int8" => Some(oid::INT8),
+            _ => None,
+        }
+    }
+    // A number's canonical text: no sign but a minus, no zeros but the ones it needs, and no
+    // exponent, which a non-finite value or a literal past a plain decimal leaves out.
+    fn canonical(text: &str) -> Option<String> {
+        let text = text.trim();
+        let (minus, body) = match text.strip_prefix('-') {
+            Some(body) => (true, body),
+            None => (false, text.strip_prefix('+').unwrap_or(text)),
+        };
+        let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+        if whole.is_empty() && fraction.is_empty() || !whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let whole = whole.trim_start_matches('0');
+        let fraction = fraction.trim_end_matches('0');
+        let digits = match (whole.is_empty(), fraction.is_empty()) {
+            (true, true) => return Some("0".to_string()),
+            (false, true) => whole.to_string(),
+            (true, false) => format!("0.{fraction}"),
+            (false, false) => format!("{whole}.{fraction}"),
+        };
+        Some(if minus { format!("-{digits}") } else { digits })
+    }
+    // Whether a float reads back as `text`, which a value of that float prints as.
+    fn prints_as_real(text: &str) -> bool {
+        text.parse::<f32>().is_ok_and(|f| f.to_string() == text)
+    }
+    fn prints_as_double(text: &str) -> bool {
+        text.parse::<f64>().is_ok_and(|f| f.to_string() == text)
+    }
+    // Whether a `real` holds `text` exactly, so that widening it to a `double precision` keeps what it
+    // prints as: 0.5 does, and 0.1 widens to 0.10000000149011612.
+    fn exact_in_real(text: &str) -> bool {
+        prints_as_real(text) && text.parse::<f32>().ok().map(f64::from) == text.parse::<f64>().ok()
+    }
+    // A number and its type, through the casts between number types the server prints
+    // (`'1000000000'::numeric::double precision`) where each keeps the value it is given: the
+    // outermost cast's type, or a bare literal's own. A cast to a whole number rounds a fraction, a
+    // cast to a float rounds what it cannot print, and a float's cast to `numeric` drops digits.
+    fn number(node: &Node) -> Option<(String, Operand)> {
+        fn text(node: &Node) -> Option<String> {
+            match node.node.as_ref()? {
+                N::TypeCast(t) => {
+                    let inner = t.arg.as_deref()?;
+                    let value = text(inner)?;
+                    let from = match inner.node.as_ref() {
+                        Some(N::TypeCast(i)) => number_type(i),
+                        _ => None,
+                    };
+                    let kept = match number_type(t)? {
+                        oid::INT2 | oid::INT4 | oid::INT8 => !value.contains('.'),
+                        oid::FLOAT4 => prints_as_real(&value),
+                        oid::FLOAT8 if from == Some(oid::FLOAT4) => exact_in_real(&value),
+                        oid::FLOAT8 => prints_as_double(&value),
+                        _ => !matches!(from, Some(oid::FLOAT4 | oid::FLOAT8)),
+                    };
+                    kept.then_some(value)
+                }
+                N::AConst(c) => match c.val.as_ref()? {
+                    Val::Ival(i) => Some(i.ival.to_string()),
+                    Val::Fval(f) => canonical(&f.fval),
+                    Val::Sval(s) => canonical(&s.sval),
+                    _ => None,
+                },
+                _ => None,
+            }
+        }
+        let value = text(node)?;
+        let ty = match node.node.as_ref()? {
+            N::TypeCast(t) => Operand::Is(number_type(t)?),
+            N::AConst(c) => match c.val.as_ref()? {
+                Val::Ival(_) => Operand::Is(oid::INT4),
+                Val::Fval(_) => Operand::Is(oid::NUMERIC),
+                _ => Operand::Unknown,
+            },
+            _ => return None,
+        };
+        Some((value, ty))
+    }
+    // The bare column, of its type, which a domain's CHECK reads as `VALUE` of the base type.
+    let bare = |node: &Node| -> Option<Operand> {
+        let Some(N::ColumnRef(c)) = node.node.as_ref() else { return None };
+        let [f] = c.fields.as_slice() else { return None };
+        let Some(N::String(s)) = f.node.as_ref() else { return None };
+        match types {
+            (Some(_), Some(base)) if s.sval == "value" && column != "value" => Some(Operand::Is(base)),
+            (Some(declared), Some(base)) if s.sval == column => Some(if declared == base { Operand::Is(base) } else { Operand::Opaque }),
+            _ if s.sval == column => Some(Operand::Opaque),
+            _ => None,
+        }
+    };
+    // The column as text, for a pattern: bare, or under the server's own cast of a `varchar`.
+    let string_column = |node: &Node| -> Option<Operand> {
+        let string = |t: Option<u32>| matches!(t, Some(oid::TEXT | oid::VARCHAR));
+        if !string(types.1) {
+            return None;
+        }
+        match node.node.as_ref()? {
+            N::TypeCast(t) if crate::infer::builtin_name(&t.type_name.as_ref()?.names).as_deref() == Some("text") => bare(t.arg.as_deref()?).map(|_| Operand::Is(oid::TEXT)),
+            _ => bare(node),
+        }
+    };
+    // A string constant and its type, a bare string's being the other operand's.
+    fn string_constant(node: &Node) -> Option<(String, Operand)> {
+        match node.node.as_ref()? {
+            N::TypeCast(t) if crate::infer::builtin_name(&t.type_name.as_ref()?.names).as_deref() == Some("text") => Some((string_constant(t.arg.as_deref()?)?.0, Operand::Is(oid::TEXT))),
+            N::AConst(c) => match c.val.as_ref()? {
+                Val::Sval(s) => Some((s.sval.clone(), Operand::Unknown)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    type Compared = Vec<(String, [Operand; 2])>;
+    let mut out = CheckFacts::default();
+    let mut compared: Compared = Vec::new();
+    let mut read = |node: &Node| -> Option<()> {
+        let N::AExpr(e) = node.node.as_ref()? else { return None };
+        if e.kind != AExprKind::AexprOp as i32 || e.name.len() != 1 {
+            return None;
+        }
+        let op = crate::jsonshape::last_string(&e.name)?;
+        let (l, r) = (e.lexpr.as_deref()?, e.rexpr.as_deref()?);
+        match op.as_str() {
+            "<" | "<=" | ">" | ">=" => {
+                // A constant on the left reads as the mirrored comparison of the column.
+                let exclusive = !op.ends_with('=');
+                let (value, above, constant_ty) = if let (Some(ty), Some((value, constant_ty))) = (bare(l), number(r)) {
+                    compared.push((op.clone(), [ty, constant_ty]));
+                    (value, op.starts_with('>'), constant_ty)
+                } else if let (Some((value, constant_ty)), Some(ty)) = (number(l), bare(r)) {
+                    compared.push((op.clone(), [constant_ty, ty]));
+                    (value, op.starts_with('<'), constant_ty)
+                } else {
+                    return None;
+                };
+                // A `real` and a `double precision` compare widened, so a `real` that prints as the
+                // constant can pass on the wrong side of it (`real` 0.1 is above `0.1::float8`).
+                let widened = matches!((types.1, constant_ty), (Some(oid::FLOAT4), Operand::Is(oid::FLOAT8)) | (Some(oid::FLOAT8), Operand::Is(oid::FLOAT4)));
+                if widened && !exact_in_real(&value) {
+                    return None;
+                }
+                let one = CheckFacts { min: above.then(|| (value.clone(), exclusive)), max: (!above).then(|| (value.clone(), exclusive)), ..CheckFacts::default() };
+                out = std::mem::take(&mut out).and(one);
+            }
+            "=" => {
+                let (left, zero) = if number(r).is_some_and(|(v, _)| v == "0") { (l, r) } else if number(l).is_some_and(|(v, _)| v == "0") { (r, l) } else { return None };
+                let N::AExpr(modulo) = left.node.as_ref()? else { return None };
+                if modulo.kind != AExprKind::AexprOp as i32 || crate::jsonshape::last_string(&modulo.name)?.as_str() != "%" {
+                    return None;
+                }
+                let ty = bare(modulo.lexpr.as_deref()?)?;
+                let (divisor, divisor_ty) = number(modulo.rexpr.as_deref()?)?;
+                let (_, zero_ty) = number(zero)?;
+                compared.push(("%".to_string(), [ty, divisor_ty]));
+                compared.push(("=".to_string(), [divisor_ty, zero_ty]));
+                // A value is a multiple of a divisor and of its negation; every value is one of 1.
+                let divisor = divisor.trim_start_matches('-').to_string();
+                if divisor != "0" && divisor != "1" {
+                    out = std::mem::take(&mut out).and(CheckFacts { multiple_of: Some(divisor), ..CheckFacts::default() });
+                }
+            }
+            "~~" | "~~*" | "~" | "~*" if deterministic => {
+                let ty = string_column(l)?;
+                let (source, constant_ty) = string_constant(r)?;
+                compared.push((op.clone(), [ty, constant_ty]));
+                let pattern = match op.as_str() {
+                    "~~" => Pattern { dialect: PatternDialect::Like, source },
+                    "~~*" => Pattern { dialect: PatternDialect::Ilike, source },
+                    "~" => Pattern { dialect: PatternDialect::Postgres, source },
+                    _ => Pattern { dialect: PatternDialect::Postgres, source: format!("(?i){source}") },
+                };
+                out = std::mem::take(&mut out).and(CheckFacts { pattern: Some(pattern), ..CheckFacts::default() });
+            }
+            _ => return None,
+        }
+        Some(())
+    };
+    // The tests every row meets: each conjunct, and the one test beside `column IS NULL` under an OR.
+    fn tests<'n>(node: &'n Node, bare: &dyn Fn(&Node) -> Option<Operand>, each: &mut Vec<&'n Node>) {
+        match node.node.as_ref() {
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::AndExpr as i32 => b.args.iter().for_each(|a| tests(a, bare, each)),
+            Some(N::BoolExpr(b)) if b.boolop == BoolExprType::OrExpr as i32 => {
+                let is_null = |a: &Node| matches!(a.node.as_ref(), Some(N::NullTest(t)) if t.nulltesttype == NullTestType::IsNull as i32 && t.arg.as_deref().and_then(bare).is_some());
+                if let [a, b] = b.args.as_slice() {
+                    if is_null(a) {
+                        tests(b, bare, each);
+                    } else if is_null(b) {
+                        tests(a, bare, each);
+                    }
+                }
+            }
+            Some(_) => each.push(node),
+            None => {}
+        }
+    }
+    let mut each = Vec::new();
+    tests(check, &bare, &mut each);
+    for node in each {
+        read(node);
+    }
+    compared.iter().all(|(op, operands)| trust.resolves(Kind::Infix, op, operands).is_some()).then_some(out)
+}
+
 /// A described column's type, a built array of arrays at its depth ([`infer::Nesting`]) under the
 /// result's name: its levels of rows over the innermost arrays, each of which collects arrays of
 /// the element type, of any depth as a column's array is, or else holds the result's elements, as
@@ -4091,7 +4361,7 @@ fn named_as(mut ty: Type, type_oid: u32, registry: &TypeRegistry) -> Type {
 
 fn identifies(ty: &Type) -> bool {
     match &ty.kind {
-        TyKind::Json(_) | TyKind::Unknown | TyKind::Any => false,
+        TyKind::Json(_) | TyKind::Unknown => false,
         TyKind::Array(array) => !array.any_depth && identifies(&array.element.ty),
         TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
         TyKind::Opaque => ty.name.as_deref() != Some("record"),
@@ -4451,6 +4721,80 @@ mod tests {
         let shadowed = Trust { shadowed: ["=".to_string()].into_iter().collect(), ..Default::default() };
         assert_eq!(check_values("status = 'a'::text", "status", text, &shadowed), None);
         assert_eq!(with_values(Type::text().named("bpchar"), Some(&["a".to_string()]), false), Type::text().named("bpchar"));
+    }
+
+    #[test]
+    fn a_check_holds_a_value_to_bounds_a_divisor_and_a_pattern() {
+        use crate::types::{Bounds, DecimalType, Kind as K};
+        let trust = Trust::default();
+        let facts = |text: &str, column: &str, ty: u32| check_facts(text, column, (Some(ty), Some(ty)), true, &trust).unwrap();
+        let bound = |v: &str, exclusive| Some((v.to_string(), exclusive));
+        // Each CHECK as PostgreSQL 18 prints it.
+        let age = facts("age >= 0 AND age <= 150", "age", oid::INT4);
+        assert_eq!((age.min.clone(), age.max.clone()), (bound("0", false), bound("150", false)));
+        let int4 = |t: Type| match t.kind { K::Integer(i) => (i.bounds, i.multiple_of), _ => panic!() };
+        assert_eq!(int4(age.apply(Type::integer(32))).0, Bounds { min: Some("0".into()), max: Some("150".into()), ..Bounds::default() });
+        // A whole number's bounds are inclusive, and one its width implies is left out.
+        assert_eq!(int4(facts("pos > 0", "pos", oid::INT4).apply(Type::integer(32))).0, Bounds { min: Some("1".into()), ..Bounds::default() });
+        assert_eq!(int4(facts("small >= '-40000'::integer", "small", oid::INT2).apply(Type::integer(16))).0, Bounds::default());
+        assert_eq!(facts("0 < x", "x", oid::INT4).min, bound("0", true));
+        // A decimal keeps the bound as the constraint states it.
+        let rate = facts("rate > 0::numeric AND rate < '1.50'::numeric", "rate", oid::NUMERIC);
+        match rate.apply(Type::decimal(DecimalType::default())).kind {
+            K::Decimal(d) => assert_eq!(d.bounds, Bounds { exclusive_min: Some("0".into()), exclusive_max: Some("1.5".into()), ..Bounds::default() }),
+            _ => panic!(),
+        }
+        // The tighter of two bounds, and NULL let through beside one.
+        assert_eq!(facts("x > 1 AND x >= 5", "x", oid::INT4).min, bound("5", false));
+        assert_eq!(facts("x IS NULL OR x > 10", "x", oid::INT4).min, bound("10", true));
+        // A divisor.
+        assert_eq!(int4(facts("(qty % 5) = 0", "qty", oid::INT4).apply(Type::integer(32))).1, Some("5".to_string()));
+        assert_eq!(facts("(half % 0.5) = 0::numeric", "half", oid::NUMERIC).multiple_of, Some("0.5".to_string()));
+        assert_eq!(facts("(qty % 1) = 0", "qty", oid::INT4).multiple_of, None);
+        // A pattern, on a varchar through the server's own cast, and a domain's on `VALUE`.
+        let pattern = |text: &str, ty: u32| facts(text, "e", ty).pattern;
+        assert_eq!(pattern("(e)::text ~~ 'a%'::text", oid::VARCHAR), Some(Pattern { dialect: PatternDialect::Like, source: "a%".into() }));
+        assert_eq!(pattern("e ~~* 'a%'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Ilike, source: "a%".into() }));
+        assert_eq!(pattern("e ~ '^a'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Postgres, source: "^a".into() }));
+        assert_eq!(pattern("e ~* 'a'::text", oid::TEXT), Some(Pattern { dialect: PatternDialect::Postgres, source: "(?i)a".into() }));
+        assert_eq!(check_facts("(VALUE)::text ~~ '%@%'::text", "value", (Some(16500), Some(oid::VARCHAR)), true, &trust).unwrap().pattern.map(|p| p.source), Some("%@%".to_string()));
+        // Not a padded string, nor a nondeterministic collation's.
+        assert_eq!(pattern("e ~~ 'a%'::text", oid::BPCHAR), None);
+        assert_eq!(check_facts("e ~~ 'a%'::text", "e", (Some(oid::TEXT), Some(oid::TEXT)), false, &trust).unwrap().pattern, None);
+        // What says nothing: an alternative, a negation, another column, a cast of the column, a
+        // non-finite or exponent constant.
+        for text in ["x > 10 OR x < 0", "NOT x < 0", "other > 0", "(x)::numeric > 1.5", "x > 'Infinity'::double precision", "x < '1e3'::numeric", "(x + 1) > 0"] {
+            assert!(facts(text, "x", oid::INT4).is_none(), "{text}");
+        }
+        // What can be read stands beside what cannot.
+        assert_eq!(facts("x > 0 AND other > 0", "x", oid::INT4).min, bound("0", true));
+        // A CHECK no value can meet says nothing.
+        assert_eq!(int4(facts("x > 5 AND x < 1", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x > 5 AND x < 6", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x >= 5 AND x < 5", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x > 2147483647", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        match facts("x >= 5::numeric AND x < 5::numeric", "x", oid::NUMERIC).apply(Type::decimal(DecimalType::default())).kind {
+            K::Decimal(d) => assert_eq!(d.bounds, Bounds::default()),
+            _ => panic!(),
+        }
+        // A cast that changes its constant says nothing: each passes a value past the constant it prints.
+        assert_eq!(facts("a <= ((2.5)::integer)::numeric", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("b < ((1.5)::integer)::double precision", "b", oid::FLOAT8).max, None);
+        assert_eq!(facts("a <= 2.55::numeric(3,1)", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("(q % ((2.5)::integer)::numeric) = 0::numeric", "q", oid::NUMERIC).multiple_of, None);
+        assert_eq!(facts("b >= (0.30000000000000001)::double precision", "b", oid::FLOAT8).min, None);
+        assert_eq!(facts("a <= ((0.30000000000000004)::double precision)::numeric", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("b <= ((0.1)::real)::double precision", "b", oid::FLOAT8).max, None);
+        // One that keeps it does.
+        assert_eq!(facts("a <= (2)::numeric", "a", oid::NUMERIC).max, bound("2", false));
+        assert_eq!(facts("c < '1000000000'::numeric::double precision", "c", oid::FLOAT8).max, bound("1000000000", true));
+        assert_eq!(facts("b >= (0.3)::double precision", "b", oid::FLOAT8).min, bound("0.3", false));
+        // A `real` beside a `double precision` compares widened, so only a constant both hold exactly is read.
+        assert_eq!(facts("f > (0.1)::double precision", "f", oid::FLOAT4).min, None);
+        assert_eq!(facts("b <= (0.1)::real", "b", oid::FLOAT8).max, None);
+        assert_eq!(facts("f >= (0)::double precision", "f", oid::FLOAT4).min, bound("0", false));
+        assert_eq!(facts("f >= (0.5)::double precision", "f", oid::FLOAT4).min, bound("0.5", false));
+        assert_eq!(facts("f >= (0.1)::real", "f", oid::FLOAT4).min, bound("0.1", false));
     }
 
     #[test]

@@ -50,6 +50,11 @@
 //! code), every error a run raises must be one its database defines, naming only what the
 //! narrowing lists. A case's `errors.txt`, where it has one, holds each statement's narrowing, and
 //! is compared and blessed like `expected.txt`.
+//!
+//! Every parameter's and column's type an analysis gives holds to the format's own rules: it is a
+//! `Type` of the format's JSON Schema, reads as the format's type and writes again as the same JSON,
+//! and passes the validity rules of spec/README.md (`validity.rs`). A type that breaks one fails its
+//! case.
 
 #[cfg(feature = "duckdb")]
 mod duckdb;
@@ -57,6 +62,7 @@ mod errors;
 mod mysql;
 mod replay;
 mod seed;
+mod validity;
 
 use reylo_engine_core::types::Type;
 use reylo_engine::AnswerCache;
@@ -212,6 +218,10 @@ async fn oracle() -> ExitCode {
             }
             run_postgres(case, client, config, keep, timeout_ms, &given, &mut dumped).await
         };
+        // Every type the case's statements were given holds to the format's rules, whatever else
+        // fails the case.
+        let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
+        let typed = validity::check(case, &files, &dumped);
         match outcome {
             Ok((lines, unchecked)) => {
                 never_ran += unchecked.len();
@@ -221,9 +231,8 @@ async fn oracle() -> ExitCode {
                 print_unchecked(case, lines.len(), &unchecked);
                 // Every verdict is printed, whichever fails the case.
                 let matched = check(case, &lines, bless);
-                let files: Vec<String> = statements(case).into_iter().map(|(file, _)| file).collect();
                 let narrowed = errors::check(case, &errors::lines(case, &files, &dumped), bless);
-                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed {
+                if !coverage(case, &unchecked, bless, strict_coverage) || !matched || !narrowed || !typed {
                     failed += 1;
                 }
             }

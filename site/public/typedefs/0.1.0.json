@@ -78,9 +78,6 @@
           "$ref": "#/$defs/OpaqueType"
         },
         {
-          "$ref": "#/$defs/AnyType"
-        },
-        {
           "$ref": "#/$defs/UnknownType"
         },
         {
@@ -734,7 +731,7 @@
         "max": {
           "description": "The parts its values have, each at the largest magnitude it reaches, of either sign, as one ISO 8601 duration: months in `M`, days in `D`, then time in `H`, `M` and `S`, its minutes and seconds below 60. A part the type lacks is left out, and a part it has is never 0. A two's complement part reaches one unit further below zero than above it, so it is written at the negative side's magnitude: Postgres's months reach -2147483648 and +2147483647, and are `2147483648M`.",
           "type": "string",
-          "pattern": "^P(?=[0-9.]*[MDT])(?:[0-9]+M)?(?:[0-9]+D)?(?:T(?=[0-9.]*[HMS])(?:[0-9]+H)?(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?)?$"
+          "pattern": "^P(?:[0-9]+M(?:[0-9]+D)?(?:T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))?|[0-9]+D(?:T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))?|T(?:[0-9]+H(?:[0-9]+M)?(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+M(?:[0-9]+(?:\\.[0-9]+)?S)?|[0-9]+(?:\\.[0-9]+)?S))$"
         },
         "tick": {
           "description": "The time part's smallest step, written exactly when `max` has a time part.",
@@ -984,7 +981,7 @@
       "unevaluatedProperties": false
     },
     "OpaqueType": {
-      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide.",
+      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `name` is all the format says; what a value looks like is the driver's to decide.",
       "type": "object",
       "allOf": [
         {
@@ -1002,24 +999,6 @@
       "required": [
         "kind",
         "name"
-      ],
-      "unevaluatedProperties": false
-    },
-    "AnyType": {
-      "description": "The database's own type admits a value of any type, each carrying its type, which is one of this format's types: SQL Server `sql_variant`, Oracle `ANYDATA`.",
-      "type": "object",
-      "allOf": [
-        {
-          "$ref": "#/$defs/Base"
-        }
-      ],
-      "properties": {
-        "kind": {
-          "const": "any"
-        }
-      },
-      "required": [
-        "kind"
       ],
       "unevaluatedProperties": false
     },

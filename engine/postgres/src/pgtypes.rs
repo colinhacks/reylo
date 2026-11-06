@@ -145,6 +145,9 @@ pub struct TypeRegistry {
     /// By relation and attribute, the non-finite values a CHECK keeps out of a float or `numeric`
     /// column of a composite's relation, which a stored row of it holds no more.
     pub non_finite: HashMap<(u32, i32), crate::types::NonFinite>,
+    /// What a CHECK holds each column of a stored row to ([`crate::types::CheckFacts`]), by relation
+    /// and attribute.
+    pub facts: HashMap<(u32, i32), crate::types::CheckFacts>,
 }
 
 /// Whether every row a scan of relation `$rel` reads has a value in the column named `$col`, as
@@ -486,9 +489,10 @@ impl TypeRegistry {
     }
 
     /// The float and `numeric` columns of the relation whose row type `oid` is, by relation and
-    /// attribute: the ones a CHECK may keep NaN or the infinities out of ([`TypeRegistry::non_finite`]).
+    /// attribute: the ones a CHECK may hold to bounds or a divisor ([`TypeRegistry::facts`]), or keep
+    /// NaN or the infinities out of ([`TypeRegistry::non_finite`]).
     pub fn row_number_columns(&self, oid: u32) -> Vec<(u32, i32)> {
-        self.row_columns(oid, &[oid::FLOAT4, oid::FLOAT8, oid::NUMERIC])
+        self.row_columns(oid, &[oid::INT2, oid::INT4, oid::INT8, oid::FLOAT4, oid::FLOAT8, oid::NUMERIC])
     }
 
     fn row_columns(&self, oid: u32, types: &[u32]) -> Vec<(u32, i32)> {
@@ -544,10 +548,11 @@ impl TypeRegistry {
         matches!(base, oid::TEXT | oid::VARCHAR) || self.get(base).filter(|t| t.kind == TypeKind::Array).and_then(|t| t.elem).is_some_and(|e| self.is_string(e))
     }
 
-    /// Whether type `oid` is a float or `numeric`, through any domain: a number a CHECK may keep
-    /// NaN or the infinities out of ([`crate::types::NonFinite`]).
+    /// Whether type `oid` is a number, through any domain: one a CHECK may hold to bounds or a
+    /// divisor ([`crate::types::CheckFacts`]), or keep NaN or the infinities out of
+    /// ([`crate::types::NonFinite`]).
     pub fn is_number(&self, oid: u32) -> bool {
-        matches!(self.resolve_domain(oid), oid::FLOAT4 | oid::FLOAT8 | oid::NUMERIC)
+        matches!(self.resolve_domain(oid), oid::INT2 | oid::INT4 | oid::INT8 | oid::FLOAT4 | oid::FLOAT8 | oid::NUMERIC)
     }
 
     /// Each domain among `names` with the name of the base type it is made from, through any
@@ -601,6 +606,10 @@ impl TypeRegistry {
                             (_, Some(values), _) if string => with_values(ty, values),
                             (_, _, Some(kept_out)) => kept_out.apply(ty),
                             _ => ty,
+                        };
+                        let ty = match t.relid.filter(|_| stored).and_then(|r| self.facts.get(&(r, f.attnum))) {
+                            Some(facts) => facts.apply(ty),
+                            None => ty,
                         };
                         Field::new(f.name.clone(), ty, !(stored && f.not_null))
                     })
