@@ -280,6 +280,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         };
@@ -328,6 +329,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         fresh: None,
         errors: None,
         read_only: false,
+        notes: Vec::new(),
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
@@ -418,7 +420,7 @@ fn tables(t: &Tree) -> Tables {
     }
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
-    Tables { read, write }
+    Tables { read, write, ..Default::default() }
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an

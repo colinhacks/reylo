@@ -260,6 +260,48 @@ test("Postgres: a retyped column warns once and runs, a new nullable one says no
   }
 });
 
+test("Postgres: a function whose body the types were read from, replaced, or a column its body reads, changed, warns once and runs; a body that settled nothing is no fact", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_fresh_bodies");
+  const url = new URL(own.url);
+  const sql = own.sql;
+  const root = project("postgres");
+  const reader = "create function comments_for(p int8) returns table (id int8, body text) language sql stable as $$ select id, body from comments where post_id = p $$";
+  try {
+    await sql.unsafe("create table comments (id int8 primary key, post_id int8 not null, body text not null, note text)");
+    await sql.unsafe(reader);
+    await sql.unsafe("create function atomic_comments(p int8) returns table (id int8, body text) language sql stable begin atomic select id, body from comments where post_id = p; end");
+    await sql.unsafe("create function in_plpgsql(p int8) returns table (id int8) language plpgsql stable as $$ begin return query select c.id from comments c where c.post_id = p; end $$");
+    await sql.unsafe("insert into comments values (1, 1, 'a', null)");
+    const statement = "select id, body from comments_for(:p::int8)";
+    const q = await built(root, url.href, "comments_for", statement);
+    assert.deepEqual(await warnings(async () => assert.equal((await q.run(sql, { p: 1 })).length, 1)), []);
+    // The body changes and the signature does not.
+    const replaced = await built(root, url.href, "comments_for2", statement);
+    await sql.unsafe("create or replace function comments_for(p int8) returns table (id int8, body text) language sql stable as $$ select id, note from comments where post_id = p $$");
+    assert.deepEqual(await warnings(async () => assert.equal((await replaced.run(sql, { p: 1 })).length, 1)), ["reylo: comments_for(bigint) has changed since comments_for2.sql was built, so its types may be out of date until the next build."]);
+    await closeSessions();
+    // The same for a body stored parsed, whose source text is empty.
+    const atomic = await built(root, url.href, "atomic_comments", "select id, body from atomic_comments(:p::int8)");
+    await sql.unsafe("create or replace function atomic_comments(p int8) returns table (id int8, body text) language sql stable begin atomic select id, note from comments where post_id = p; end");
+    assert.deepEqual(await warnings(async () => assert.equal((await atomic.run(sql, { p: 1 })).length, 1)), ["reylo: atomic_comments(bigint) has changed since atomic_comments.sql was built, so its types may be out of date until the next build."]);
+    await closeSessions();
+    // A column the body reads, loosened with the function untouched.
+    await sql.unsafe("drop function comments_for(int8)");
+    await sql.unsafe(reader);
+    const read = await built(root, url.href, "comments_for3", statement);
+    await sql.unsafe("alter table comments alter column body drop not null");
+    assert.deepEqual(await warnings(async () => assert.equal((await read.run(sql, { p: 1 })).length, 1)), ["reylo: comments.body has changed since comments_for3.sql was built (it was text not null, and is now text), so its types may be out of date until the next build."]);
+    await closeSessions();
+    // A body that settled nothing is no fact: a function in plpgsql keeps today's result.
+    const opaque = await built(root, url.href, "in_plpgsql", "select id from in_plpgsql(:p::int8)");
+    await sql.unsafe("create or replace function in_plpgsql(p int8) returns table (id int8) language plpgsql stable as $$ begin return query select c.post_id from comments c; end $$");
+    assert.deepEqual(await warnings(async () => assert.equal((await opaque.run(sql, { p: 1 })).length, 1)), []);
+  } finally {
+    await closeSessions();
+    await own.drop();
+  }
+});
+
 test("MySQL: a retyped column warns and runs, and a new nullable one says nothing", { skip: mysqlLive }, async () => {
   const own = await mysqlDatabase("reylo_fresh");
   const url = new URL(own.url);

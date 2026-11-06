@@ -1,0 +1,162 @@
+aggregate_as_argument.sql: one () -> { n: int8? }
+aggregate_in_table.sql: many () -> { n: int8? }
+aggregate_of_argument.sql: many () -> { total: int8? }
+aggregate_of_constant.sql: one () -> { total: int8? }
+aggregate_of_scalar.sql: one () -> { total: numeric? }
+alias_list.sql: many (p: int8) -> { a: int8, body: text } key (a)
+anycompatible.sql: many () -> { a: numeric? }
+array_slice.sql: one () -> { s: int4?[]? }
+array_slice_to_argument.sql: one (n: int4) -> { s: int4?[]? }
+atomic_comments.sql: many (p: int8) -> { id: int8, body: text } key (id)
+atomic_key.sql: at_most_one (x: int8) -> { id: int8, body: text }
+atomic_own_path.sql: at_most_one (x: int8) -> { id: int8, body: text }
+atomic_two.sql: many (p: int8) -> { id: int8? }
+attribute_notation.sql: many () -> { id: int8, open: bool? } key (id)
+bare_column_argument.sql: many () -> { both: text }
+by_number.sql: at_most_one (id: int8) -> { id: int8 }
+capture_bare.sql: many () -> { title: text, body: text }
+capture_by_alias.sql: many () -> { title: text, id: int8 }
+capture_with.sql: many (p: int8) -> { note: text? }
+chain_past_the_bound.sql: many (p: int8) -> { id: int8? }
+chain_three.sql: many (p: int8) -> { id: int8 } key (id)
+coerced.sql: many () -> { a: int8, b: text? }
+coerced_varchar.sql: many () -> { b: text }
+column_definitions.sql: one () -> { a: int4? }
+column_named_as_alias.sql: many () -> { open: bool? }
+comma_call.sql: many () -> { title: text, body: text }
+count_of_argument.sql: many () -> { total: int8 }
+count_star.sql: one (p: int8) -> { n: int8 }
+cycle.sql: many (n: int4) -> { x: int4? }
+default_given.sql: at_most_one (x: int8) -> { id: int8 }
+default_used.sql: at_most_one () -> { id: int8 }
+default_volatility.sql: many (p: int8) -> { id: int8, body: text } key (id)
+differing_json_type.sql: one (p: int8) -> { doc: jsonb }
+domain_argument.sql: many (x: int4) -> { a: int4 }
+domain_result.sql: one (x: int4) -> { d: int4? }
+dropped_column.sql: many () -> { a: int4, b: text }
+echo_column.sql: many () -> { x2: int8? }
+echo_null.sql: one () -> { x2: int8? }
+echo_null_column.sql: many () -> { x2: int8? }
+echo_nullable.sql: one (x: int8?) -> { x2: int8? }
+echo_param.sql: one (x: int8) -> { x2: int8 }
+from_view.sql: many (p: int8) -> { id: int8, body: text } key (id)
+function_named_as_type.sql: many () -> { a: int4? }
+group_by_scalar.sql: many () -> { n: int8?, c: int8 }
+group_key_in_body.sql: at_most_one (p: int8) -> { post_id: int8, n: int8 }
+group_key_outside.sql: at_most_one (p: int8, q: int8) -> { n: int8 }
+in_a_subquery.sql: many (p: int8) -> { id: int8, body: text } key (id)
+in_a_with.sql: many (p: int8) -> { id: int8, body: text } key (id)
+in_exists.sql: many () -> { id: int8 } key (id)
+inout_parameter.sql: one (a: int4) -> { a: int4, b: text }
+is_open.sql: many () -> { id: int8, open: bool } key (id)
+is_open_left_join.sql: many () -> { open: bool? }
+is_open_numbered.sql: many () -> { id: int8, open: bool } key (id)
+is_open_where.sql: many (a: int8) -> { id: int8 } key (id)
+json_array.sql: many () -> { id: int8, comments: jsonb ({ id: int8, body: text })[] } key (id)
+json_in_a_table.sql: many (p: int8) -> { id: int8, doc: jsonb { body: text } } key (id)
+json_object.sql: one (x: int8) -> { comment: jsonb { id: int8, body: text }? }
+key_inside.sql: at_most_one (x: int8) -> { id: int8, body: text }
+key_inside_join.sql: at_most_one (x: int8, id: int8) -> { title: text, body: text }
+key_or_null.sql: many (x: int8?) -> { id: int8 } key (id)
+key_outside.sql: at_most_one (p: int8, id: int8) -> { id: int8, body: text }
+lateral_call.sql: many () -> { title: text, body: text }
+lateral_key.sql: at_most_one (id: int8) -> { title: text, body: text }
+lateral_outer_key.sql: many (id: int8) -> { id: int8 } key (id)
+lateral_pin_cycle.sql: many () -> { id: int8, comment: int8 } key (id)
+left_join_in_body.sql: many (p: int8) -> { id: int8, note: text? } key (id)
+left_lateral.sql: many () -> { title: text, body: text? }
+limit_one.sql: at_most_one (p: int8) -> { id: int8, body: text }
+named_argument.sql: at_most_one (x: int8) -> { id: int8 }
+named_whole_row.sql: many (p: int8) -> { c: public.comments{ id: int8?, post_id: int8?, body: text?, note: text? }? }
+narrowed_by_filter.sql: many () -> { subtitle: text }
+no_alias_expression.sql: many () -> { joined: text }
+no_alias_in_expression.sql: many () -> { both: text }
+no_alias_scalar.sql: one (p: int8) -> { count_of: int8 }
+no_arguments.sql: many () -> { id: int8 } key (id)
+no_such_syntax.sql: many () -> { id: int8? }
+no_such_table.sql: many () -> { id: int8? }
+null_argument.sql: at_most_one () -> { id: int8, body: text }
+one_row.sql: one (x: int8) -> { id: int8?, post_id: int8?, body: text?, note: text? }
+one_row_first.sql: one (p: int8) -> { id: int8?, post_id: int8?, body: text?, note: text? }
+order_limit.sql: many (p: int8) -> { id: int8, body: text } key (id) ordered
+ordinality.sql: many (p: int8) -> { id: int8?, body: text?, n: int8? }
+out_aggregate.sql: one (p: int8) -> { n: int8, m: int8? }
+out_row.sql: one (x: int8) -> { a: int8?, b: text? }
+out_set.sql: many (p: int8) -> { a: int8, b: text? } key (a)
+overload_read.sql: many (x: int8) -> { id: int8? }
+own_empty_path.sql: at_most_one (x: int8) -> { id: int8, body: text }
+own_path.sql: many (x: int8) -> { id: int8?, body: text? }
+own_path_unqualified_call.sql: many (x: int8) -> { id: int8? }
+own_setting.sql: many (x: int8) -> { id: int8?, body: text? }
+plpgsql.sql: many (x: int8) -> { id: int8?, body: text? }
+polymorphic.sql: many (x: int8) -> { poly: int8? }
+positional.sql: many () -> { a: int4?, b: int4 }
+qualified.sql: at_most_one (id: int8) -> { found: int8 }
+quoted_names.sql: many (p: int8) -> { Out One: int8 } key (Out One)
+reads_a_function.sql: many (p: int8) -> { id: int8, body: text } key (id)
+recursive.sql: many (n: int4) -> { n2: int4? }
+recursive_with_body.sql: many (root: int8) -> { id: int8 }
+returned.sql: one (a: int4, b: int4) -> { sum: int4 }
+returns_table.sql: many (p: int8) -> { id: int8, body: text } key (id)
+returns_table_star.sql: many (p: int8) -> { id: int8, body: text } key (id)
+row_distinct_body.sql: many () -> { g: int8? } key (g)
+row_group_body.sql: many () -> { g: int8?, n: int8 }
+row_pin_body.sql: many () -> { id: int8 } key (id)
+row_pin_inline.sql: many () -> { id: int8 } key (id)
+rows_from.sql: many (p: int8) -> { id: int8?, body: text? }
+scalar_count.sql: one (p: int8) -> { n: int8 }
+scalar_count_per_row.sql: many () -> { id: int8, n: int8 } key (id)
+scalar_expression.sql: many () -> { both: text }
+scalar_expression_nullable.sql: many () -> { both: text? }
+scalar_in_from.sql: one (x: int8) -> { b: text? }
+scalar_in_where.sql: many () -> { id: int8 } key (id)
+scalar_may_be_empty.sql: one (x: int8) -> { b: text? }
+scalar_no_row.sql: one () -> { v: int8? }
+schema_qualified.sql: at_most_one (x: int8) -> { id: int8, body: text }
+second_default.sql: at_most_one (x: int8) -> { id: int8, y: int8? }
+second_default_given.sql: at_most_one (x: int8, y: int8) -> { id: int8, y: int8 }
+second_default_named.sql: at_most_one (y: int8, x: int8) -> { id: int8, y: int8 }
+security_definer.sql: at_most_one (x: int8) -> { id: int8, body: text }
+set_as_argument.sql: many () -> { n: int8? }
+set_expanded.sql: many (p: int8) -> { id: int8?, body: text? }
+set_in_scalar_body.sql: many () -> { s: int4? }
+set_in_select_list.sql: many (p: int8) -> { c: record? }
+setof_scalar.sql: many (p: int8) -> { many_bodies: text }
+setof_scalar_alias.sql: many (p: int8) -> { t: text }
+setof_table.sql: many (p: int8) -> { id: int8, post_id: int8, body: text, note: text? } key (id)
+setof_table_key.sql: at_most_one (p: int8, id: int8) -> { id: int8, note: text? }
+shadow_inner.sql: many (id: int8) -> { found: int8 } key (found)
+shadowed.sql: many (id: int8) -> { found: int8 } key (found)
+single_composite_column.sql: many () -> { id: int8?, body: text? }
+strict_out_null.sql: one () -> { a: text? }
+strict_out_param.sql: one (p: int8) -> { a: text }
+strict_scalar_column.sql: many () -> { v: text? }
+strict_scalar_null.sql: one () -> { v: text? }
+strict_scalar_nullable.sql: one (p: int8?) -> { v: text? }
+strict_scalar_param.sql: one (p: int8) -> { v: text }
+strict_set_column.sql: many () -> { a: text }
+strict_set_null.sql: at_most_one () -> { a: text }
+strict_set_param.sql: one (p: int8) -> { a: text }
+strict_whole_row.sql: many () -> { open: bool? }
+sublink_distinct.sql: many () -> { v: int8? } key (v)
+sublink_distinct_pin.sql: many () -> { post_id: int8 } key (post_id)
+sublink_group.sql: many () -> { n: int8 }
+sublink_in_select_list.sql: many () -> { id: int8, v: int8? } key (id)
+sublink_lateral_distinct.sql: many () -> { v: int8? } key (v)
+sublink_pin.sql: many () -> { id: int8 } key (id)
+through_strict.sql: many () -> { v: text? }
+through_strict_set.sql: at_most_one () -> { v: text? }
+to_jsonb_alias.sql: many (p: int8) -> { doc: jsonb { id: int8, body: text } }
+top_comment.sql: at_most_one (p: int8) -> { id: int8, body: text }
+two_statements.sql: many (p: int8) -> { x: int8? }
+union_body.sql: many (p: int8) -> { id: int8 }
+variadic_array.sql: many (x: int8) -> { id: int8 } key (id)
+variadic_list.sql: many (x: int8) -> { id: int8 } key (id)
+volatile_argument.sql: at_most_one () -> { id: int8, body: text }
+volatile_key.sql: at_most_one (x: int8) -> { id: int8, body: text }
+whole_row_alias.sql: many (p: int8) -> { c: record{ id: int8, body: text } }
+whole_row_beside_subquery.sql: many () -> { open: bool? }
+window_as_argument.sql: many () -> { n: int8? }
+window_in_body.sql: many () -> { r: int8 }
+with_body.sql: many (p: int8) -> { id: int8, body: text } key (id)
+writes.sql: many (x: int8) -> { id: int8? }

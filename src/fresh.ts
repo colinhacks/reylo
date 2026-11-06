@@ -6,7 +6,8 @@
 // that read them (engine/core/src/fresh.rs). Before a query runs, the run time runs that query
 // through the caller's own client and compares. A column gone, retyped, or nullable where it was
 // not warns, naming the table and the column, and the query runs: a phased migration passes through
-// such states with an old build still live, and a statement that no longer runs fails on its own. A
+// such states with an old build still live, and a statement that no longer runs fails on its own. So
+// does a SQL function replaced since the build, whose body the query's types were read from. A
 // default an insert copied fails the call, since the insert would write it as it was. A column made
 // NOT NULL, or given a default or none, says nothing: the types still hold, and the database refuses
 // a row the column now refuses itself.
@@ -94,6 +95,11 @@ export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "post
   for (const was of fresh.rows) {
     const key = `${was[0]}\u0000${was[1]}`;
     const is = now.get(key);
+    // The hash of a function whose body the types were read from: gone, the statement fails on its own.
+    if (was[1] === "(body)") {
+      if (is && is[2] !== was[2]) drifted.push({ name: was[0]! });
+      continue;
+    }
     const name = `${table(was[0]!)}.${was[1]}`;
     if (!is) drifted.push({ name, how: `it was ${describe(was)}, and no longer exists` });
     // Retyped, or nullable where it was not: a value may contradict the types.

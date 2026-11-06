@@ -509,7 +509,7 @@ pub(crate) fn tables(statement: &Statement) -> Tables {
         }
         _ => Vec::new(),
     };
-    Tables { read: walk.tables, write }
+    Tables { read: walk.tables, write, ..Default::default() }
 }
 
 /// Every table of a multi-table UPDATE's or DELETE's tables, or `None` where one is a table of

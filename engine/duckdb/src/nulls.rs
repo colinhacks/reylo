@@ -16,7 +16,7 @@
 //! column's own name, an alias), and the caller holds those against the describe's: where they
 //! differ, the tree is not the statement DuckDB read, and nothing is proven.
 
-use crate::catalog::Catalog;
+use crate::catalog::{body_relations, Catalog, TableMacro, MAX_MACRO_LEVELS};
 use sqlparser::ast::{
     BinaryOperator, CastKind, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, GroupByExpr, Ident, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, Query, Select, SelectItem, SetExpr, SetOperator,
     TableAlias, TableFactor, TableWithJoins, UnaryOperator, Value,
@@ -28,6 +28,34 @@ use std::collections::HashSet;
 pub struct Ctx<'a> {
     pub catalog: &'a Catalog,
     pub nullable_params: &'a HashSet<String>,
+    /// Inside a table macro's body, its parameters' names, lowercased; none outside one.
+    pub macro_params: &'a [String],
+    /// How many table macros' bodies this is read inside.
+    pub macro_level: usize,
+}
+
+impl<'a> Ctx<'a> {
+    /// The table macro a FROM item calls, where its body can stand for it: by one name, in the levels
+    /// read, and with no WITH query around the call named as a table the body reads, which would be
+    /// that query for all this reading can say.
+    fn table_macro(&self, name: &[String], with: &[&str]) -> Option<&'a TableMacro> {
+        let [one] = name else { return None };
+        let found = self.catalog.table_macros.get(&one.to_lowercase())?;
+        if self.macro_level >= MAX_MACRO_LEVELS {
+            return None;
+        }
+        let reads = body_relations(&found.body);
+        let clear = reads.iter().all(|parts| match parts.as_slice() {
+            [table] => !with.iter().any(|w| w.eq_ignore_ascii_case(table)),
+            _ => true,
+        });
+        clear.then_some(found)
+    }
+
+    /// This context for the body of `found`, whose names are its own: no WITH query reaches it.
+    fn within(&self, found: &'a TableMacro) -> Ctx<'a> {
+        Ctx { catalog: self.catalog, nullable_params: self.nullable_params, macro_params: &found.params, macro_level: self.macro_level + 1 }
+    }
 }
 
 /// One result column: the name DuckDB gives it where the tree says (an alias, a column's own
@@ -466,7 +494,16 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             let parts = parts(name);
             let rel_name = alias_name(alias).or_else(|| parts.last().cloned());
             if args.is_some() {
-                return Some(vec![Rel { name: rel_name, columns: None, padded: false }]);
+                // A table macro's body stands in its place when DuckDB binds the statement, and is
+                // read as a derived table of its own. Its parameters are names no table has there,
+                // which read as nothing known; any other table function's columns are unknown.
+                let with: Vec<&str> = ctes.iter().map(|(n, _)| n.as_str()).collect();
+                let columns = ctx.table_macro(&parts, &with).and_then(|m| query(&m.body, &ctx.within(m), &Vec::new())).map(|cs| cs.into_iter().map(|c| Out { comment: None, ..c }).collect::<Vec<_>>());
+                let columns = match (columns, alias) {
+                    (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
+                    (cs, _) => cs,
+                };
+                return Some(vec![Rel { name: rel_name, columns, padded: false }]);
             }
             let cte = match parts.as_slice() {
                 [one] => ctes.iter().rev().find(|(n, _)| n.eq_ignore_ascii_case(one)).map(|(_, cs)| cs.clone()),
@@ -854,6 +891,20 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     if aggregate && ungrouped {
         return if s.having.is_some() || s.qualify.is_some() { ("maybeOne", Some("its HAVING or QUALIFY may leave out the one row".into())) } else { ("one", None) };
     }
+    // A table macro alone in the FROM returns what its body returns, or fewer under a filter or a
+    // grouping.
+    if let [item] = s.from.as_slice() {
+        if let (true, TableFactor::Table { name, args: Some(_), .. }) = (item.joins.is_empty(), &item.relation) {
+            let with: Vec<&str> = ctes.iter().map(String::as_str).collect();
+            if let Some(found) = ctx.table_macro(&parts(name), &with) {
+                return match cardinality_in(&found.body, &ctx.within(found), &[]) {
+                    ("one", _) if !filtered && ungrouped => ("one", None),
+                    ("one" | "maybeOne", _) => ("maybeOne", None),
+                    (_, why) => ("many", why),
+                };
+            }
+        }
+    }
     // One table, a key of which the WHERE holds equal to one value each; not a WITH query that
     // takes a table's name, which has none of its keys.
     if let ([item], Some(selection)) = (s.from.as_slice(), &s.selection) {
@@ -862,7 +913,9 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
                 let shadowed = matches!(parts(name).as_slice(), [one] if ctes.contains(&one.to_lowercase()));
                 if let Some(table) = ctx.catalog.table(&parts(name)).filter(|_| !shadowed) {
                     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts(name).pop());
-                    if key_equal(selection, &table.keys, qualifier.as_deref()) {
+                    // A column beats a parameter of the same name, as it does when DuckDB binds the body.
+                    let arguments: Vec<String> = ctx.macro_params.iter().filter(|p| !table.columns.iter().any(|c| c.name.eq_ignore_ascii_case(p))).cloned().collect();
+                    if key_equal(selection, &table.keys, qualifier.as_deref(), &arguments) {
                         return ("maybeOne", None);
                     }
                 }
@@ -873,8 +926,8 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
 }
 
 /// Whether the AND-ed parts of `filter` hold every column of one of `keys` equal to a value that
-/// reads no column: a literal or a parameter, cast or not.
-pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -> bool {
+/// reads no column: a literal or a parameter, cast or not, or one of a table macro's `arguments`.
+pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>, arguments: &[String]) -> bool {
     let mut equal: Vec<String> = Vec::new();
     fn conjuncts<'e>(e: &'e Expr, out: &mut Vec<&'e Expr>) {
         match e {
@@ -886,18 +939,20 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -
             other => out.push(other),
         }
     }
-    fn constant(e: &Expr) -> bool {
+    fn constant(e: &Expr, arguments: &[String]) -> bool {
         match e {
             Expr::Value(v) => !matches!(v.value, Value::Null),
             Expr::TypedString(_) => true,
-            Expr::Nested(inner) => constant(inner),
-            Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr),
-            Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr),
+            Expr::Identifier(id) => arguments.contains(&id.value.to_lowercase()),
+            Expr::Nested(inner) => constant(inner, arguments),
+            Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && constant(expr, arguments),
+            Expr::UnaryOp { op: UnaryOperator::Minus | UnaryOperator::Plus, expr } => constant(expr, arguments),
             _ => false,
         }
     }
     let column = |e: &Expr| -> Option<String> {
         match e {
+            Expr::Identifier(id) if arguments.contains(&id.value.to_lowercase()) => None,
             Expr::Identifier(id) => Some(id.value.to_lowercase()),
             Expr::CompoundIdentifier(ids) if ids.len() >= 2 => {
                 let rel = &ids[ids.len() - 2].value;
@@ -915,8 +970,8 @@ pub fn key_equal(filter: &Expr, keys: &[Vec<String>], qualifier: Option<&str>) -
     for p in parts {
         if let Expr::BinaryOp { left, op: BinaryOperator::Eq, right } = p {
             match (column(left), column(right)) {
-                (Some(c), None) if constant(right) => equal.push(c),
-                (None, Some(c)) if constant(left) => equal.push(c),
+                (Some(c), None) if constant(right, arguments) => equal.push(c),
+                (None, Some(c)) if constant(left, arguments) => equal.push(c),
                 _ => {}
             }
         }
@@ -959,7 +1014,7 @@ mod tests {
     fn proven(sql: &str) -> String {
         let catalog = catalog();
         let nullable = HashSet::from(["2".to_string()]);
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 };
         match super::query(&query(sql), &ctx, &Vec::new()) {
             None => "-".into(),
             Some(out) => out.iter().map(|o| format!("{}{}", o.name.as_deref().unwrap_or("_"), if o.not_null { "" } else { "?" })).collect::<Vec<_>>().join(" "),
@@ -969,7 +1024,7 @@ mod tests {
     fn rows(sql: &str) -> &'static str {
         let catalog = catalog();
         let nullable = HashSet::new();
-        super::cardinality(&query(sql), &Ctx { catalog: &catalog, nullable_params: &nullable }).0
+        super::cardinality(&query(sql), &Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 }).0
     }
 
     #[test]
@@ -1071,7 +1126,7 @@ mod tests {
         let mut catalog = catalog();
         catalog.row_makers.insert("generate_subscripts".into());
         let nullable = HashSet::new();
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 };
         assert_eq!(super::cardinality(&query("select generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
         assert_eq!(super::cardinality(&query("select main.generate_subscripts([4, 5, 6], 1)"), &ctx).0, "many");
         // A ranking function given its own ORDER BY ranks within the frame, which may be empty.
