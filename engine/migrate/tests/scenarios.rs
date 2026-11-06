@@ -425,7 +425,7 @@ async fn refuses_drift(mut p: P) {
     assert_eq!(p.dry_run().await, 1);
     let out = p.output();
     assert_has!(&out, r"✗ This database has changes no migration made\n\n    alter table users add column hotfix [^\n]+;\n");
-    assert_has!(&out, r"To keep it, add it to schema\.sql, write the migration, and record it, running nothing:\n    reylo migration create <name>\n    reylo migration history push");
+    assert_has!(&out, r"To keep it, add it to schema\.sql, write the migration and lock it:\n    reylo migration create <name>\n    reylo migrate dev\n  Then, with the lock committed, record it here, running nothing:\n    reylo migration history push");
     assert_eq!(p.history().await, ["20261027100000_users.sql"]);
 }
 
@@ -890,8 +890,8 @@ async fn cached_and_uncached_checks_print_the_same_lines(mut p: P) {
     assert_eq!(code, 1);
     assert_has!(out, "20261027130000_nick.sql fails");
     std::fs::remove_file(p.dir.join("migrations").join("20261027130000_nick.sql")).unwrap();
-    // A late migration, which the replay by time runs in its place.
-    p.file("20261027115000_posts.sql", &format!("create table posts (id {int});"));
+    // A new migration, which the replay runs in its place.
+    p.file("20261027140000_posts.sql", &format!("create table posts (id {int});"));
     p.schema(&format!("{users} create index users_email on users (email); create table posts (id {int});"));
     assert_eq!(p.check_every_way().await.0, 0);
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -1913,6 +1913,7 @@ async fn two_applies_at_once_apply_each_migration_once(mut p: P) {
     for k in 0..5u64 {
         p.file(&format!("{}_t{k}.sql", 20261027100000u64 + k), &format!("create table t{k} (id {int}, note {text});"));
     }
+    p.relock();
     let opts = p.opts();
     // Two instances of an app, each migrating as it starts, on one database.
     let runs: Vec<(i32, String)> = std::thread::scope(|s| {
@@ -1947,6 +1948,7 @@ async fn concurrent_runs_building_one_cache_both_succeed(mut p: P) {
     p.schema(&(0..20).map(|k| format!("create table t{k} (id {int}, note {text});")).collect::<Vec<_>>().join("\n"));
     // A second target of the same project, whose shadows share the first's keys.
     let q = P::new(p.d).await.unwrap();
+    p.relock();
     let both = [p.opts(), Options { url: q.url.clone(), ..p.opts() }];
     for round in 0..3 {
         let _ = std::fs::remove_dir_all(p.dir.join(".cache"));
