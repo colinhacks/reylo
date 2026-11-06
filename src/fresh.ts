@@ -87,7 +87,7 @@ export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "post
     now.set(`${values[0]}\u0000${values[1]}`, values);
   }
   const sameType = dialect === "sqlite" ? (a: string, b: string) => a === b || asciiLower(a) === asciiLower(b) : (a: string, b: string) => a === b;
-  const sameDefault = dialect === "sqlite" ? (a: string, b: string) => a === b || sqliteDefault(a) === sqliteDefault(b) : (a: string, b: string) => a === b;
+  const sameDefault = dialect === "sqlite" ? (a: string, b: string) => a === b || sqliteDefault(a) === sqliteDefault(b) : (a: string, b: string) => a === b || withoutCast(a) === withoutCast(b);
   const stale: string[] = [];
   const drifted: Drift[] = [];
   const copied = new Set((fresh.defaults ?? []).map((d) => `${d[0]}\u0000${d[1]}`));
@@ -95,13 +95,26 @@ export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "post
     const key = `${was[0]}\u0000${was[1]}`;
     const is = now.get(key);
     const name = `${table(was[0]!)}.${was[1]}`;
-    if (!is) drifted.push({ name, how: `it was ${describe(was)}, and no longer exists` });
+    if (!is) {
+      drifted.push({ name, how: `it was ${describe(was)}, and no longer exists` });
+      continue;
+    }
     // Retyped, or nullable where it was not: a value may contradict the types.
-    else if (!sameType(is[2]!, was[2]!) || (yes(was[3]!) && !yes(is[3]!))) drifted.push({ name, how: `it was ${describe(was)}, and is now ${describe(is)}` });
-    // The insert writes the default as the build read it, for a row that leaves the key out.
-    else if (copied.has(key) && !sameDefault(is[5]!, was[5]!)) stale.push(`${name} had ${was[5] ? `the default ${was[5]}` : "no default"}, which the insert writes for a row that leaves its key out, and now has ${is[5] ? `the default ${is[5]}` : "none"}`);
+    if (!sameType(is[2]!, was[2]!) || (yes(was[3]!) && !yes(is[3]!))) drifted.push({ name, how: `it was ${describe(was)}, and is now ${describe(is)}` });
+    // The insert writes the default as the build read it, for a row that leaves the key out, whatever
+    // else changed in the column.
+    if (copied.has(key) && !sameDefault(is[5]!, was[5]!)) stale.push(`${name} had ${was[5] ? `the default ${was[5]}` : "no default"}, which the insert writes for a row that leaves its key out, and now has ${is[5] ? `the default ${is[5]}` : "none"}`);
   }
   return { stale, drifted };
+}
+
+/**
+ * A Postgres default's text without the cast it ends in, which Postgres writes again for the
+ * column's type: `'member'::text` is `'member'::character varying` once the column is a `varchar`,
+ * and the insert writes the same value for either.
+ */
+function withoutCast(text: string): string {
+  return text.replace(/::(?:"[^"]+"|[A-Za-z_][\w$]*)(?:\s+[A-Za-z_][\w$]*)*(?:\s*\([\d,\s]*\))?(?:\[\])*$/, "");
 }
 
 const warned = new Set<string>();

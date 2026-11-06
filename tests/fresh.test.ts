@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { compared, sqliteDefault, type Fresh } from "../src/fresh.ts";
+import { compared, FRESH_FOR, passed, sqliteDefault, type Fresh } from "../src/fresh.ts";
 import { sqlModule } from "../src/loader.ts";
 import { DRIVERS, pgLive, mysqlLive, INDEX, postgresDatabase, closeSessions, mysqlDatabase } from "./helpers.ts";
 
@@ -91,6 +91,14 @@ test("a default a structured insert copied is a fact by its text: changed, given
   assert.deepEqual(stale(fresh, [{ fresh_table: "accounts", fresh_column: "name", fresh_type: "text", fresh_not_null: true, fresh_default: false, fresh_expr: null }, { fresh_table: "accounts", fresh_column: "role", fresh_type: "text", fresh_not_null: true, fresh_default: true, fresh_expr: "'member'::text" }, { fresh_table: "accounts", fresh_column: "email", fresh_type: "text", fresh_not_null: false, fresh_default: false, fresh_expr: null }]), []);
   // A default given to a column that had none: the insert would write NULL for a row that leaves the key out.
   assert.deepEqual(stale(fresh, now("'member'::text", "'a@x'::text")), ["accounts.email had no default, which the insert writes for a row that leaves its key out, and now has the default 'a@x'::text"]);
+  // A default changed beside another change to the column fails all the same, and a cast Postgres
+  // writes again for a new type is no change.
+  const loosened = now("'guest'::text", "").map((r) => (r[1] === "role" ? ["accounts", "role", "text", "false", "true", "'guest'::text"] : r));
+  assert.equal(stale(fresh, loosened)?.length, 1);
+  assert.equal(drift(fresh, loosened)?.length, 1);
+  const retyped = now("'member'::character varying", "").map((r) => (r[1] === "role" ? ["accounts", "role", "character varying(20)", "true", "true", "'member'::character varying"] : r));
+  assert.deepEqual(stale(fresh, retyped), []);
+  assert.equal(drift(fresh, retyped)?.length, 1);
   // Rows of five values are not this module's catalog query.
   assert.equal(stale(fresh, [["accounts", "role", "text", "true", "true"]]), undefined);
 });
@@ -247,6 +255,7 @@ test("Postgres: a retyped column warns once and runs, a new nullable one says no
     await sql.unsafe(`alter table "Users" alter column email type varchar(100)`);
     assert.deepEqual(await warnings(async () => assert.equal((await read2.run(sql)).length, 1)), ["reylo: Users.email has changed since read_users2.sql was built (it was text not null, and is now character varying(100) not null), so its types may be out of date until the next build."]);
     // Checked again a minute later, it says nothing more.
+    passed(read2, -FRESH_FOR);
     assert.deepEqual(await warnings(async () => assert.equal((await read2.run(sql)).length, 1)), []);
     // Built again on the new schema, by a session of its own.
     await closeSessions();

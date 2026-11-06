@@ -186,7 +186,7 @@ Reylo types each query against a database with your migrations applied, so every
 
 - **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/#in-ci)).
 - **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
-- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and warns when a column it names is gone, retyped, or nullable where it was not, since its values may then contradict its types. The query still runs, and a new column, a new default or a new `NOT NULL` says nothing. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/#deploying)).
+- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and warns when a column it names is retyped or nullable where it was not, since its values may then contradict its types. The query still runs, a query naming a dropped or renamed column fails with the database's error, and a new column, a new default or a new `NOT NULL` says nothing. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/#deploying)).
 
 ```yaml title=".reylo.yaml"
 # the type check's database; a build points it at a fresh, migrated one
