@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { validate } from "../src/json-schema.ts";
 import { querySchemas, typeSchema } from "../src/schema.ts";
 import type { EngineType } from "../src/engine-type.ts";
 
@@ -85,4 +86,14 @@ test("a comment stands over a description the type gives, and beneath one the st
   assert.equal(at.description, "When they signed up");
   assert.match(at.allOf[0]!.description, /date and time/);
   assert.equal((schemas.input.properties.at as { description: string }).description, "When to look");
+});
+
+test("a time with no zone and MySQL's TIME take no format their values would fail", () => {
+  const schema = (t: object, dialect: "postgres" | "mysql") => typeSchema(t as EngineType, dialect) as { type: string; format?: string };
+  const time = schema({ kind: "time", tick: "1/1000000", max: "24:00:00", name: "time" }, "postgres");
+  assert.equal(time.format, undefined);
+  assert.equal(validate(time, "10:00:00.5"), undefined);
+  const span = schema({ kind: "duration", max: "PT838H59M59S", tick: "1/10000", name: "time" }, "mysql");
+  assert.equal(span.format, undefined);
+  for (const value of ["-838:59:59.0000", "838:59:59", "12:00:00.1235"]) assert.equal(validate(span, value), undefined);
 });
