@@ -105,7 +105,7 @@ export const json_column: Example = {
   },
 };
 
-/** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. The engine does not read MySQL's type modifiers, so these types leave out what they state: `at` holds whole milliseconds alone, `name` 100 characters at most and `body` 65,535 bytes. */
+/** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. */
 export const mysql_columns: Example = {
   database: "mysql",
   setup: "create table m (id bigint unsigned primary key, flag boolean not null, at timestamp(3) null, status enum('b','a') not null, born date, name varchar(100), body text, tags set('a','b'))",
@@ -114,11 +114,11 @@ export const mysql_columns: Example = {
     columns: [
       { name: "id", type: { kind: "integer", bits: 64, unsigned: true, name: "bigint" } },
       { name: "flag", type: { kind: "integer", bits: 8, name: "tinyint(1)" } },
-      { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999999Z", name: "timestamp" } },
+      { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", name: "timestamp" } },
       { name: "status", type: { kind: "text", enum: ["b", "a"], name: "enum" } },
       { name: "born", nullable: true, type: { kind: "date", name: "date" } },
-      { name: "name", nullable: true, type: { kind: "text", name: "varchar" } },
-      { name: "body", nullable: true, type: { kind: "text", name: "text" } },
+      { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, name: "varchar" } },
+      { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, name: "text" } },
       { name: "tags", nullable: true, type: { kind: "set", name: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
       { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, name: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "double" }, { kind: "decimal", name: "decimal" }] } },
     ],
