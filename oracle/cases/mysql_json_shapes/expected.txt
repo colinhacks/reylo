@@ -1,7 +1,7 @@
 array_agg.sql: one () -> { ids: json int[]? }
-array_agg_distinct_items.sql: one () -> { tags: json ({ n: int, tag: varchar? })[]? }
+array_agg_distinct_items.sql: one () -> { tags: json ({ n: int, tag: varchar(≤20)? })[]? }
 array_agg_empty.sql: one () -> { ids: json int[]? }
-array_agg_grouped.sql: many () -> { user_id: int, titles: json varchar[] }
+array_agg_grouped.sql: many () -> { user_id: int, titles: json varchar(≤20)[] }
 array_agg_guarded.sql: one () -> { ids: json int[] }
 array_agg_guarded_bad_cast.sql: one () -> { ids: text? }
 array_agg_guarded_cast.sql: one () -> { ids: json int[] }
@@ -16,10 +16,10 @@ array_agg_guarded_param.sql: one (fallback: json) -> { ids: unknown? }
 array_agg_guarded_string.sql: one () -> { ids: text }
 array_agg_guarded_two.sql: one () -> { ids: json int[] }
 array_agg_literal.sql: many () -> { l: json boolean[] }
-array_agg_nullable_items.sql: one () -> { emails: json varchar?[]? }
-array_agg_objects.sql: one () -> { list: json ({ id: int, name: varchar })[]? }
+array_agg_nullable_items.sql: one () -> { emails: json varchar(≤40)?[]? }
+array_agg_objects.sql: one () -> { list: json ({ id: int, name: varchar(≤20) })[]? }
 array_agg_of_json_column.sql: one () -> { docs: json json?[]?, wrapped: json ({ doc: json? })[]? }
-array_agg_ordered_subquery.sql: many () -> { titles: json varchar[] }
+array_agg_ordered_subquery.sql: many () -> { titles: json varchar(≤20)[] }
 array_agg_placeholder_passed.sql: one (p: decimal) -> { l: json (bigint | double | decimal | text?)[]? }
 array_agg_truth.sql: one () -> { l: json (boolean | bigint)[]? }
 array_agg_truth_buffered.sql: one () -> { l: json (boolean | bigint)[]? }
@@ -34,29 +34,29 @@ json_functions.sql: many () -> { a: json?, b: json?, c: text?, merged: json?, ch
 json_objectagg.sql: one () -> { by_name: json? }
 json_table_column.sql: many () -> { a: int?, o: json { a: int? } }
 many_constructors.sql: many () -> { a: json { a: int }, b: json { b: int }, c: json { c: int }, d: json { d: int }?, e: json { e: int }?, f: json { f: int }?, g: json { g: int }?, h: json { h: int }?, i: json { i: int }?, j: json { j: int }?, k: json? }
-nested_fetch.sql: at_most_one (id: int32) -> { id: int, posts: json ({ id: int, title: varchar, tag: varchar? })[], meta: json { email: varchar?, flag: tinyint(1) } }
-nested_fetch_empty.sql: many () -> { id: int, posts: json ({ id: int, title: varchar })[] }
+nested_fetch.sql: at_most_one (id: int32) -> { id: int, posts: json ({ id: int, title: varchar(≤20), tag: varchar(≤20)? })[], meta: json { email: varchar(≤40)?, flag: tinyint(1) } }
+nested_fetch_empty.sql: many () -> { id: int, posts: json ({ id: int, title: varchar(≤20) })[] }
 nested_fetch_grouped.sql: many () -> { id: int, posts: json int[]? }
 nested_fetch_having.sql: many () -> { id: int, posts: json int[]? }
 nested_fetch_limit.sql: many () -> { id: int, posts: json int[]? }
 nested_fetch_offset.sql: many () -> { id: int, posts: json int[]? }
 nested_fetch_unguarded.sql: many () -> { id: int, posts: json ({ id: int })[]? }
 nested_in_object.sql: many () -> { o: json { id: int, posts: ({ id: int })[], n: bigint, first: unknown? } }
-nested_object_first.sql: many () -> { id: int, first: json { id: int, title: varchar }? }
-nested_two_levels.sql: many () -> { o: json { id: int, posts: ({ id: int, author: { name: varchar }? })[] } }
+nested_object_first.sql: many () -> { id: int, first: json { id: int, title: varchar(≤20) }? }
+nested_two_levels.sql: many () -> { o: json { id: int, posts: ({ id: int, author: { name: varchar(≤20) }? })[] } }
 object_aggregate_field.sql: one () -> { o: json { n: unknown?, max: unknown?, names: unknown?[]? } }
-object_alias_of_column.sql: many () -> { o: varchar, name: json { id: int } }
+object_alias_of_column.sql: many () -> { o: varchar(≤20), name: json { id: int } }
 object_array_value.sql: many () -> { o: json { id: int, pair: json? } }
 object_backticked_constructor.sql: many () -> { o: json?, l: json? }
 object_case.sql: many () -> { o: json? }
 object_cast_text.sql: many () -> { o: json { a: json?, b: json?, c: json?, d: boolean } }
 object_cast_text_column.sql: many () -> { o: json { a: json? } }
 object_coalesce_other_type.sql: many () -> { o: json { n: varchar, m: varchar } }
-object_columns.sql: many () -> { o: json { id: int, name: varchar, email: varchar? } }
-object_correlated_leaf.sql: many () -> { id: int, o: json { post: int, author: varchar, email: varchar? }? }
-object_duplicate_key.sql: many () -> { o: json { id: varchar? } }
+object_columns.sql: many () -> { o: json { id: int, name: varchar(≤20), email: varchar(≤40)? } }
+object_correlated_leaf.sql: many () -> { id: int, o: json { post: int, author: varchar(≤20), email: varchar(≤40)? }? }
+object_duplicate_key.sql: many () -> { o: json { id: varchar(≤40)? } }
 object_dynamic_key.sql: many () -> { o: json? }
-object_every_type.sql: many () -> { o: json { flag: tinyint(1), score: decimal?, ratio: double?, born: date?, seen: datetime?, at: time?, doc: json?, raw: varbinary?, kind: enum?, bits: bit(boolean[8])?, y: year(0..2155)?, big: bigint?, tags: set{text}? } }
+object_every_type.sql: many () -> { o: json { flag: tinyint(1), score: decimal(10,2)?, ratio: double?, born: date?, seen: datetime?, at: time?, doc: json?, raw: varbinary(≤8)?, kind: enum?, bits: bit(boolean[8])?, y: year(0..2155)?, big: bigint?, tags: set{text}? } }
 object_expressions.sql: many () -> { o: json { next: bigint, upper: varchar?, len: bigint, half: decimal?, null: unknown?, one: bigint, text: varchar, now: datetime, sum: decimal? } }
 object_from_dual.sql: one () -> { o: json { one: bigint, t: boolean, n: unknown? } }
 object_geometry.sql: one () -> { o: json { pt: geometry? } }
@@ -68,11 +68,11 @@ object_if.sql: many () -> { o: json? }
 object_in_derived.sql: many () -> { o: json? }
 object_in_union.sql: many () -> { o: json? }
 object_in_with.sql: many () -> { o: json? }
-object_key_case.sql: many () -> { o: json { ID: int, id: varchar } }
-object_left_join.sql: many () -> { o: json { user: int, post: int?, title: varchar? } }
-object_nested.sql: many () -> { o: json { user: { id: int, name: varchar }, meta: { email: varchar? } } }
+object_key_case.sql: many () -> { o: json { ID: int, id: varchar(≤20) } }
+object_left_join.sql: many () -> { o: json { user: int, post: int?, title: varchar(≤20)? } }
+object_nested.sql: many () -> { o: json { user: { id: int, name: varchar(≤20) }, meta: { email: varchar(≤40)? } } }
 object_null_literal_field.sql: many () -> { o: json { a: unknown?, b: bigint?, c: int? } }
-object_odd_arguments.sql: many () -> { o: json { a: int, b: varchar }, none: json {  } }
+object_odd_arguments.sql: many () -> { o: json { a: int, b: varchar(≤20) }, none: json {  } }
 object_placeholder.sql: at_most_one (n: int32, s: varchar, id: int32) -> { o: json { n: bigint | double | decimal?, s: varchar?, id: int } }
 object_placeholder_passed.sql: many (p: decimal, q: decimal, r: varchar, d: date, n: int32, m: int32, t: time) -> { o: json { a: bigint | double | decimal | text?, b: bigint | double | decimal | text?, c: varchar?, d: text | date | datetime | time?, e: boolean | bigint | double | decimal | text?, f: bigint | double | decimal?, g: unknown? } }
 object_right_join.sql: many () -> { o: json { user: int?, post: int } }
@@ -81,7 +81,7 @@ object_truth_all_aggregated.sql: one () -> { o: json { c: boolean?, n: bigint, l
 object_truth_any_value.sql: many () -> { o: json { any_value: boolean | bigint } }
 object_truth_bang.sql: many () -> { o: json { bang: boolean | bigint, bang_sum: bigint } }
 object_truth_beside_aggregate.sql: many () -> { o: json { t: unknown?, m: unknown?, c: unknown?, l: unknown? } }
-object_truth_beside_list.sql: many () -> { o: json { t: boolean | bigint, titles: varchar[] } }
+object_truth_beside_list.sql: many () -> { o: json { t: boolean | bigint, titles: varchar(≤20)[] } }
 object_truth_beside_outer_aggregate.sql: many () -> { o: json { e: boolean | bigint, n: unknown? } }
 object_truth_beside_subquery.sql: many () -> { o: json { t: boolean, posts: ({ id: int, first: boolean })[] } }
 object_truth_beside_window.sql: many () -> { o: json { t: boolean | bigint, w: bigint } }
@@ -96,7 +96,7 @@ object_truth_quantified.sql: many () -> { o: json { any: boolean | bigint?, all:
 object_truth_sounds.sql: many () -> { o: json? }
 object_truth_subquery.sql: many () -> { o: json { sub: unknown?, max: bigint?, lit: unknown?, cmp: unknown?, count: boolean | bigint } }
 object_truth_values.sql: many () -> { o: json { lit: boolean, cmp: boolean, eq: boolean, in: boolean, not: boolean, and: boolean, or: boolean, xor: boolean, isnull: boolean, notnull: boolean, between: boolean, like: boolean, safe: boolean, istrue: boolean, ne: boolean } }
-object_two_same_alias.sql: many () -> { o: json { id: int }, o: json { name: varchar } } !! reylo14: Columns 1 and 2 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
+object_two_same_alias.sql: many () -> { o: json { id: int }, o: json { name: varchar(≤20) } } !! reylo14: Columns 1 and 2 are both named "o", and a row keeps only the last of them. Give one of them another name with `as`.
 object_unaliased.sql: many () -> { json_object('id', id): json? }
 object_window.sql: many () -> { o: json { id: int, rank: bigint, previous: boolean | int? } }
 scalar_guarded_by_object.sql: one () -> { o: text? }

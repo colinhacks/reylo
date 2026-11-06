@@ -806,7 +806,7 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
 }
 
 /// Why a length breaks a size, if it does.
-fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
+pub(crate) fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
     let ok = size.exact.is_none_or(|e| n == e) && size.min.is_none_or(|m| n >= m) && size.max.is_none_or(|m| n <= m);
     (!ok).then(|| format!("sized {size:?} holds {n} {unit}"))
 }
@@ -815,7 +815,7 @@ fn length_contradiction(size: &Size, n: u64, unit: &str) -> Option<String> {
 /// than its scale, or more digits than its precision. A negative scale rounds to tens or hundreds,
 /// whose zeros the precision does not count, and a scale above the precision leaves zeros after the
 /// point (`0.000123` in a `numeric(3,6)`), which it does not count either.
-fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
+pub(crate) fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
     let digits = text.trim_start_matches(['-', '+']);
     let (whole, fraction) = digits.split_once('.').unwrap_or((digits, ""));
     if whole.is_empty() && fraction.is_empty() || !whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit()) {
@@ -835,7 +835,7 @@ fn decimal_contradiction(decimal: &DecimalType, text: &str) -> Option<String> {
 }
 
 /// The fractional digits a tick allows: 3 for `"1/1000"`, 0 for `"1"`, none for a coarser one.
-fn tick_digits(tick: &str) -> Option<usize> {
+pub(crate) fn tick_digits(tick: &str) -> Option<usize> {
     match tick.split_once('/') {
         Some(("1", denominator)) if denominator.starts_with('1') && denominator[1..].chars().all(|c| c == '0') => Some(denominator.len() - 1),
         None if tick == "1" => Some(0),

@@ -12,4 +12,4 @@ through_view.sql: many () -> { done: tinyint, same: bigint | int? }
 through_with.sql: many () -> { done: tinyint(1), bit_flag: bit(boolean[1])? }
 union_arms.sql: many () -> { x: boolean? }
 union_with_number.sql: many () -> { x: bigint | int? }
-with_wildcard.sql: many () -> { before_star: boolean?, id: int, done: tinyint(1), maybe: tinyint(1)?, unsigned_flag: tinyint(1)?, small: tinyint?, four: tinyint?, bit_flag: bit(boolean[1])?, eight: bit(boolean[8])?, a: int?, b: int?, label: varchar?, after_star: boolean? }
+with_wildcard.sql: many () -> { before_star: boolean?, id: int, done: tinyint(1), maybe: tinyint(1)?, unsigned_flag: tinyint(1)?, small: tinyint?, four: tinyint?, bit_flag: bit(boolean[1])?, eight: bit(boolean[8])?, a: int?, b: int?, label: varchar(≤10)?, after_star: boolean? }

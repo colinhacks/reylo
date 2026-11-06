@@ -1,11 +1,11 @@
-agg_limit.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
-agg_no_limit.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
-agg_uncorrelated.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
-derived_join_person.sql: many () -> { id: int, comments: json ({ id: int, author: varchar?, deleted: datetime? })[] }
-join_on_correlated.sql: many () -> { id: int, comments: json ({ id: int, author: varchar })[] }
+agg_limit.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }
+agg_no_limit.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }
+agg_uncorrelated.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }
+derived_join_person.sql: many () -> { id: int, comments: json ({ id: int, author: varchar(≤20)?, deleted: datetime? })[] }
+join_on_correlated.sql: many () -> { id: int, comments: json ({ id: int, author: varchar(≤20) })[] }
 lateral_inner_derived.sql: many () -> { id: int, comments: json? }
-lateral_top_grouped.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
-nested_subqueries.sql: many () -> { id: int, posts: json ({ title: varchar, comments: ({ body: varchar })[] })[] }
-object_limit_one.sql: many () -> { id: int, latest: json { id: int, body: varchar }? }
-two_levels.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
-with_correlated.sql: many () -> { id: int, comments: json ({ id: int, body: varchar })[] }
+lateral_top_grouped.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }
+nested_subqueries.sql: many () -> { id: int, posts: json ({ title: varchar(≤20), comments: ({ body: varchar(≤40) })[] })[] }
+object_limit_one.sql: many () -> { id: int, latest: json { id: int, body: varchar(≤40) }? }
+two_levels.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }
+with_correlated.sql: many () -> { id: int, comments: json ({ id: int, body: varchar(≤40) })[] }

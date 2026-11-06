@@ -1,6 +1,6 @@
 aggregate_beside_subquery.sql: one () -> { c: bigint, n: bigint }
 coalesce_sum_subquery.sql: many () -> { id: int, total: decimal }
-count_subquery.sql: many () -> { id: int, name: varchar, email: varchar?, n: bigint }
+count_subquery.sql: many () -> { id: int, name: varchar(≤20), email: varchar(≤40)?, n: bigint }
 exists_item.sql: many () -> { id: int, has_posts: boolean }
 grouped_subquery.sql: many () -> { id: int, n: bigint? }
 having_subquery.sql: many () -> { id: int, n: bigint? }
@@ -8,7 +8,7 @@ in_item.sql: many () -> { id: int, listed: boolean? }
 limit_count_subquery.sql: many () -> { id: int, n: bigint? }
 limit_subquery.sql: many () -> { id: int, first: varchar? }
 max_subquery.sql: many () -> { id: int, last: int | bigint? }
-plain.sql: many () -> { id: int, name: varchar, email: varchar? }
+plain.sql: many () -> { id: int, name: varchar(≤20), email: varchar(≤40)? }
 subquery_aggregate_outer.sql: one () -> { top: int | bigint?, n: bigint }
 subquery_any_value.sql: many () -> { id: int, some: varchar? }
 subquery_any_value_grouped.sql: many () -> { id: int, some: varchar? }
@@ -17,26 +17,26 @@ subquery_bit_or.sql: many () -> { id: int, bits: bigint, all_bits: bigint }
 subquery_count_column.sql: many () -> { id: int, tagged: bigint }
 subquery_distinct.sql: many () -> { id: int, tags: bigint }
 subquery_expression_column.sql: many () -> { id: int, shout: varchar?, next: bigint, n: bigint }
-subquery_for_each_post.sql: many () -> { id: int, title: varchar, author: varchar?, siblings: bigint }
+subquery_for_each_post.sql: many () -> { id: int, title: varchar(≤20), author: varchar?, siblings: bigint }
 subquery_group_concat.sql: many () -> { id: int, titles: text? }
-subquery_grouped_outer.sql: many () -> { name: varchar, c: bigint, n: bigint }
+subquery_grouped_outer.sql: many () -> { name: varchar(≤20), c: bigint, n: bigint }
 subquery_in_derived.sql: many () -> { id: int, n: bigint }
 subquery_in_expression.sql: many () -> { id: int, n: bigint?, last: bigint }
-subquery_in_where.sql: many () -> { id: int, name: varchar }
+subquery_in_where.sql: many () -> { id: int, name: varchar(≤20) }
 subquery_inside_cte.sql: many () -> { id: int, n: bigint }
 subquery_min_string.sql: many () -> { id: int, first: varchar? }
 subquery_no_alias.sql: many () -> { id: int, (select count(*) from posts p where p.user_id = u.id): bigint? }
-subquery_no_from.sql: many () -> { id: int, one: bigint | int, same: varchar, c: bigint }
+subquery_no_from.sql: many () -> { id: int, one: bigint | int, same: varchar(≤20), c: bigint }
 subquery_reads_joined.sql: many () -> { id: int, post: int?, n: bigint }
 subquery_same_alias_twice.sql: many () -> { n: int, n: bigint? } !! reylo14: Columns 1 and 2 are both named "n", and a row keeps only the last of them. Give one of them another name with `as`.
 subquery_std.sql: many () -> { id: int, spread: double? }
 subquery_union.sql: many () -> { id: int, n: bigint }
 subquery_where_false.sql: many () -> { id: int, n: bigint, m: int | bigint? }
-subquery_wildcard.sql: many () -> { id: int?, name: varchar?, email: varchar?, score: int?, n: bigint }
-subquery_with_cte.sql: many () -> { id: int, name: varchar, n: bigint }
-subquery_with_key.sql: at_most_one (id: int32) -> { id: int, name: varchar, n: bigint }
-subquery_with_left_join.sql: many () -> { id: int, post: int?, title: varchar?, n: bigint }
+subquery_wildcard.sql: many () -> { id: int?, name: varchar(≤20)?, email: varchar(≤40)?, score: int?, n: bigint }
+subquery_with_cte.sql: many () -> { id: int, name: varchar(≤20), n: bigint }
+subquery_with_key.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20), n: bigint }
+subquery_with_left_join.sql: many () -> { id: int, post: int?, title: varchar(≤20)?, n: bigint }
 subquery_with_right_join.sql: many () -> { id: int?, post: int, n: bigint }
 sum_subquery.sql: many () -> { id: int, total: decimal? }
-two_subqueries.sql: many () -> { id: int, name: varchar, n: bigint, last: varchar? }
+two_subqueries.sql: many () -> { id: int, name: varchar(≤20), n: bigint, last: varchar? }
 uncorrelated_subquery.sql: many () -> { id: int, n: bigint }

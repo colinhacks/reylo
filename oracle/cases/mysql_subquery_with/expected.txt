@@ -4,12 +4,12 @@ nested_correlated.sql: many () -> { id: int, o: json ({ id: int, n: bigint })[] 
 outer_and_own.sql: one () -> { n: bigint }
 own_count.sql: one () -> { n: bigint }
 own_count_correlated.sql: many () -> { id: int, n: bigint }
-own_json.sql: one () -> { recent_posts: json ({ id: int, title: text })[] }
+own_json.sql: one () -> { recent_posts: json ({ id: int, title: text(≤65535) })[] }
 own_json_unguarded.sql: one () -> { recent_posts: json ({ id: int, body: unknown? })[]? }
 own_max.sql: one () -> { last: int | bigint? }
 recursive.sql: one () -> { c: bigint, s: decimal? }
 recursive_beside_self_named.sql: one () -> { c: bigint? }
 shadows_table.sql: one () -> { titles: json ({ id: int, title: text? })[] }
 shadows_table_count.sql: one () -> { n: bigint }
-wider_shadowed.sql: many () -> { id: int, o: json { a: varchar?, b: text }? }
+wider_shadowed.sql: many () -> { id: int, o: json { a: varchar(≤255)?, b: text(≤65535) }? }
 with_inside_derived.sql: one () -> { n: bigint }

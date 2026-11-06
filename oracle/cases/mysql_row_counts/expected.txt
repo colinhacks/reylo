@@ -3,14 +3,14 @@ aggregate_any_value.sql: many () -> { name: varchar }
 aggregate_bit.sql: one () -> { a: bigint, o: bigint, x: bigint }
 aggregate_distinct.sql: one () -> { n: bigint }
 aggregate_for_update.sql: one () -> { n: bigint }
-aggregate_group_by.sql: many () -> { name: varchar, n: bigint }
+aggregate_group_by.sql: many () -> { name: varchar(≤20), n: bigint }
 aggregate_group_by_constant.sql: at_most_one () -> { n: bigint }
 aggregate_group_concat.sql: one () -> { names: text? }
 aggregate_having.sql: many () -> { n: bigint }
 aggregate_having_true.sql: many () -> { n: bigint }
 aggregate_in_case.sql: many () -> { verdict: varchar }
 aggregate_in_function.sql: one () -> { oldest: bigint }
-aggregate_in_order_by.sql: many () -> { name: varchar }
+aggregate_in_order_by.sql: many () -> { name: varchar(≤20) }
 aggregate_in_subquery_only.sql: many () -> { n: bigint }
 aggregate_join.sql: one () -> { n: bigint }
 aggregate_json_arrayagg.sql: one () -> { ids: json int[]? }
@@ -25,12 +25,12 @@ count_nested.sql: one () -> { n: bigint }
 count_parenthesized.sql: many () -> { n: bigint }
 count_star.sql: one () -> { n: bigint }
 count_where.sql: one (pattern: varchar) -> { n: bigint, oldest: int | bigint? }
-group_by_position.sql: many () -> { name: varchar, n: bigint }
+group_by_position.sql: many () -> { name: varchar(≤20), n: bigint }
 json_table.sql: many () -> { a: int? }
 key_alias_is_other_table.sql: at_most_one (id: int32) -> { id: int }
-key_bare_in_join_group.sql: at_most_one (email: varchar) -> { email: varchar, n: bigint }
-key_composite.sql: at_most_one (post: int32, tag: varchar) -> { tag: varchar }
-key_composite_partial.sql: many (post: int32) -> { tag: varchar }
+key_bare_in_join_group.sql: at_most_one (email: varchar) -> { email: varchar(≤40), n: bigint }
+key_composite.sql: at_most_one (post: int32, tag: varchar) -> { tag: varchar(≤20) }
+key_composite_partial.sql: many (post: int32) -> { tag: varchar(≤20) }
 key_cross_join.sql: many (id: int32) -> { id: int }
 key_derived.sql: at_most_one (id: int32) -> { id: int }
 key_exists.sql: at_most_one (id: int32) -> { id: int }
@@ -38,16 +38,16 @@ key_group_by.sql: at_most_one (id: int32) -> { id: int, n: bigint }
 key_group_by_bare.sql: at_most_one (id: int32) -> { id: int, n: bigint }
 key_group_by_expression.sql: at_most_one (id: int32) -> { n: bigint }
 key_group_by_having.sql: at_most_one (id: int32) -> { id: int, n: bigint }
-key_group_by_joined_column.sql: many (id: int32) -> { title: varchar, n: bigint }
-key_group_by_other_column.sql: at_most_one (id: int32) -> { name: varchar, n: bigint }
-key_group_by_position.sql: at_most_one (id: int32) -> { name: varchar, n: bigint }
+key_group_by_joined_column.sql: many (id: int32) -> { title: varchar(≤20), n: bigint }
+key_group_by_other_column.sql: at_most_one (id: int32) -> { name: varchar(≤20), n: bigint }
+key_group_by_position.sql: at_most_one (id: int32) -> { name: varchar(≤20), n: bigint }
 key_group_by_rollup.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
 key_group_by_rollup_single.sql: many (id: int32) -> { id: int | bigint?, n: bigint }
 key_in_subquery.sql: at_most_one (id: int32) -> { id: int }
 key_into_variable.sql: none (id: int32) -> {  }
-key_join.sql: many (id: int32) -> { id: int, title: varchar }
-key_join_both.sql: at_most_one (id: int32, post: int32) -> { id: int, title: varchar }
-key_left_join.sql: many (id: int32) -> { id: int, title: varchar? }
+key_join.sql: many (id: int32) -> { id: int, title: varchar(≤20) }
+key_join_both.sql: at_most_one (id: int32, post: int32) -> { id: int, title: varchar(≤20) }
+key_left_join.sql: many (id: int32) -> { id: int, title: varchar(≤20)? }
 key_order_limit.sql: at_most_one (id: int32) -> { id: int }
 key_parenthesized.sql: many (id: int32) -> { id: int }
 key_parenthesized_limit.sql: at_most_one () -> { id: int }
@@ -69,7 +69,7 @@ no_from_now.sql: one (x: int32) -> { at: datetime, next: bigint | double | decim
 no_from_union.sql: many () -> { one: bigint | int }
 no_from_where.sql: many (flag: int32) -> { one: bigint | int }
 sum_no_rows.sql: one () -> { total: decimal? }
-table_limit.sql: many () -> { post_id: int, tag: varchar }
-table_statement.sql: many () -> { post_id: int, tag: varchar }
+table_limit.sql: many () -> { post_id: int, tag: varchar(≤20) }
+table_statement.sql: many () -> { post_id: int, tag: varchar(≤20) }
 values_one.sql: one () -> { column_0: bigint | int, column_1: varchar }
 values_two.sql: many () -> { column_0: bigint | int, column_1: varchar }

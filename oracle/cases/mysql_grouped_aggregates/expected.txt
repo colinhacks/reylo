@@ -5,7 +5,7 @@ grouped.sql: many () -> { user_id: int, total: decimal, mean: decimal, first_tit
 grouped_distinct.sql: many () -> { user_id: int, total: decimal, top: varchar }
 grouped_window.sql: many () -> { user_id: int, top: int | bigint, total: decimal }
 having.sql: many () -> { user_id: int, top: varchar }
-json.sql: many () -> { user_id: int, by_title: json, notes: json varchar?[] }
+json.sql: many () -> { user_id: int, by_title: json, notes: json varchar(≤20)?[] }
 left_joined.sql: many () -> { id: int, top: varchar? }
 left_joined_reduced.sql: many () -> { id: int, top: varchar }
 param.sql: at_most_one (1: int32) -> { user_id: int, top: int | bigint }

@@ -6,7 +6,7 @@ backticked_lower.sql: many (e: varchar) -> { id: bigint }
 backticked_max.sql: many () -> { n: bigint? }
 own_schema_table.sql: many (id: int32) -> { id: bigint }
 qualified_coalesce.sql: many () -> { o: json? }
-qualified_column.sql: many (id: int32) -> { id: bigint, name: varchar }
+qualified_column.sql: many (id: int32) -> { id: bigint, name: varchar(≤20) }
 qualified_count.sql: many () -> { n: bigint? }
 qualified_count_in_object.sql: many () -> { o: json { n: unknown? } }
 qualified_count_subquery.sql: many () -> { id: bigint, n: bigint? }

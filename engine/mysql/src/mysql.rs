@@ -409,6 +409,11 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         }
         typed.labelled.get(&(table.to_ascii_lowercase(), column.to_ascii_lowercase())).cloned()
     };
+    // Whether a result column is a TEXT column that stores UTF-8, by the same origin.
+    let utf8_of = |c: &crate::api::MysqlColumn| -> bool {
+        let (Some(table), Some(column)) = (c.org_table.as_deref(), c.org_name.as_deref()) else { return false };
+        !column.is_empty() && traced.as_ref().is_some_and(|traced| traced.iter().any(|t| t.eq_ignore_ascii_case(table))) && typed.utf8.contains(&(table.to_string(), column.to_ascii_lowercase()))
+    };
     // What the engine knows of each column being NULL: the server's flags, read where merging
     // could make them wrong with every derived table materialized, and what the engine proves
     // beyond them.
@@ -433,8 +438,9 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
     for position in flagged_wrongly(parsed.as_ref(), never_null.len(), views) {
         never_null[position] = (false, None);
     }
-    // A column of a view may be an expression, which the prepare does not tell from a table's.
-    let views: Option<HashSet<String>> = match raw.columns.iter().any(|c| (other_width(c).is_some() || flag_width(c)) && c.org_table.as_ref().is_some_and(|t| !t.is_empty())) {
+    // A column of a view may be an expression, which the prepare does not tell from a table's:
+    // the views are asked for wherever a column names its table.
+    let views: Option<HashSet<String>> = match raw.columns.iter().any(|c| c.org_table.as_ref().is_some_and(|t| !t.is_empty())) {
         true => host.query(VIEWS_QUERY, Vec::new(), Scope::Session)?.ok().map(|rows| rows.iter().filter_map(|row| row.first().and_then(as_str)).map(str::to_ascii_lowercase).collect()),
         false => Some(HashSet::new()),
     };
@@ -452,7 +458,8 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         .iter()
         .enumerate()
         .map(|(position, c)| {
-            let ty = settled.get(position).cloned().flatten().unwrap_or_else(|| column_type(c));
+            // A table's own column is of its type whatever is bound, narrowed by its definition.
+            let ty = settled.get(position).cloned().flatten().unwrap_or_else(|| defined_type(c, views.as_ref(), utf8_of(c)));
             // What the statement computes as 1 or 0 is a truth value, which MySQL delivers as an
             // integer; a table's TINYINT(1) or BIT(1) column keeps its type, since it holds
             // whatever was stored in it, and a client reads it as a truth value by its name. Any
@@ -717,7 +724,7 @@ fn prove(q: &Query, raw: Option<&MysqlDescribe>, views: &HashSet<String>, host: 
         .columns
         .iter()
         .map(|(name, shape)| {
-            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents);
+            let (ty, non_null) = resolve(shape, &outcomes, &plan, &flows, &documents, views);
             (name.clone(), ty, non_null)
         })
         .collect();
@@ -1537,19 +1544,43 @@ fn flag_width(c: &crate::api::MysqlColumn) -> bool {
     matches!((c.r#type, c.length), (1 | 16, Some(1)))
 }
 
-/// Whether a result column is a table's own TINYINT(1) or BIT(1) column, read straight from it
-/// (through a derived table or a WITH query too, which the prepare traces to the table): what an
-/// application stores a truth value in. An expression names no table, and a view's column may be
-/// an expression whose width says nothing, so neither is one; nor is any column where the views
-/// are not known.
-fn flag_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -> bool {
+/// Whether a result column is a table's own column, read straight from it (through a derived
+/// table or a WITH query too, which the prepare traces to the table), so that its values are the
+/// table's, of the type its definition says. An expression names no table, and a view's column
+/// may be an expression whose width says nothing, so neither is one; nor is any column where the
+/// views are not known.
+fn table_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -> bool {
     let named = |s: &Option<String>| s.as_ref().is_some_and(|s| !s.is_empty());
-    flag_width(c) && named(&c.org_name) && c.org_table.as_ref().is_some_and(|table| !table.is_empty() && views.is_some_and(|views| !views.contains(&table.to_ascii_lowercase())))
+    named(&c.org_name) && c.org_table.as_ref().is_some_and(|table| !table.is_empty() && views.is_some_and(|views| !views.contains(&table.to_ascii_lowercase())))
+}
+
+/// Whether a result column is a table's own TINYINT(1) or BIT(1) column ([`table_column`]): what
+/// an application stores a truth value in.
+fn flag_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -> bool {
+    flag_width(c) && table_column(c, views)
 }
 
 /// A result column's type, as its prepare describes it ([`crate::mysql_types::of`]).
 fn column_type(c: &crate::api::MysqlColumn) -> Type {
     crate::mysql_types::of(c.r#type, c.flags, c.charset, c.length)
+}
+
+/// Whether a result column's values are stored under the definition the prepare reports: a table's
+/// own column ([`table_column`]) of a schema the prepare names, other than `information_schema`.
+/// An expression names no schema, even where it names a table, as a column of `information_schema`'s
+/// own views does (`TABLES.TABLE_COMMENT`) and JSON_TABLE's do. [`VIEWS_QUERY`] does not list those
+/// views, and the columns of them that do name the schema are read from the data dictionary, so the
+/// reported length of neither is known to bound its values.
+fn stored_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -> bool {
+    table_column(c, views) && c.schema.as_deref().is_some_and(|schema| !schema.is_empty() && !schema.eq_ignore_ascii_case("information_schema"))
+}
+
+/// A result column's type, narrowed by its definition where its values are stored under it
+/// ([`stored_column`], [`crate::mysql_types::declared`]): `utf8` where it is a `TEXT` column known
+/// to store UTF-8.
+fn defined_type(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>, utf8: bool) -> Type {
+    let ty = column_type(c);
+    if stored_column(c, views) { crate::mysql_types::declared(ty, c, utf8) } else { ty }
 }
 
 /// Each `?` the prepare typed as a VECTOR wrapped in `to_vector(…)`, so that it binds the text of
@@ -1649,28 +1680,30 @@ fn param_type(code: u32, charset: u32) -> Type {
     }
 }
 
-/// One shape plus its probes' prepares as the column's type and whether it is never NULL.
-fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>]) -> (Type, bool) {
+/// One shape plus its probes' prepares as the column's type and whether it is never NULL. A leaf
+/// stored under its definition ([`stored_column`]) takes its narrowing, its `TEXT`'s capacity
+/// counted in code points, since the probe's origin may be a derived column's own name.
+fn resolve(shape: &Shape, outcomes: &[Option<MysqlDescribe>], plan: &crate::mysql_shape::Plan, flows: &[Vec<u8>], documents: &[Vec<Option<Value>>], views: &HashSet<String>) -> (Type, bool) {
     match shape {
         Shape::Object { fields, non_null } => {
             let fields = fields
                 .iter()
                 .map(|(k, s)| {
-                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents);
+                    let (ty, nn) = resolve(s, outcomes, plan, flows, documents, views);
                     Field::new(k.clone(), ty, !nn)
                 })
                 .collect();
             (Type::record(fields), *non_null)
         }
         Shape::Array { items, non_null } => {
-            let (ty, nn) = resolve(items, outcomes, plan, flows, documents);
+            let (ty, nn) = resolve(items, outcomes, plan, flows, documents, views);
             (Type::array(Position::new(ty, !nn)), *non_null)
         }
         Shape::Column { probe, index } => match outcomes.get(*probe).and_then(|o| o.as_ref()).and_then(|o| o.columns.get(*index)) {
             Some(c) if plan.booleans.contains(&(*probe, *index)) => (Type::boolean(), c.flags & 1 != 0),
             // A truth value is an integer to the server, so no other type is in doubt.
             Some(c) => {
-                let ty = column_type(c);
+                let ty = defined_type(c, Some(views), false);
                 let ty = flows.get(*probe).and_then(|f| f.get(*index)).and_then(|reached| widened(&ty, *reached)).unwrap_or(ty);
                 // A JSON column a CHECK holds to a JSON Schema: the values it admits.
                 let ty = match documents.get(*probe).and_then(|d| d.get(*index)).cloned().flatten() {
@@ -2890,6 +2923,56 @@ mod tests {
             }
         }
         panic!("the analysis never settled")
+    }
+
+    #[test]
+    fn a_tables_column_takes_its_definition_and_an_expression_or_a_views_column_does_not() {
+        // Each column as MySQL 8.4.11's prepare reports it, sent as utf8mb4 (collation 255).
+        let column = |name: &str, ty: u32, charset: u32, length: u32, decimals: u32, table: &str, org: &str| json!({ "name": name, "type": ty, "flags": 0, "charset": charset, "length": length, "decimals": decimals, "schema": if table.is_empty() { "" } else { "app" }, "org_table": table, "org_name": org });
+        let types = |sql: &str, columns: Vec<Value>| {
+            let mut answers: HashMap<String, crate::api::Answer> = HashMap::new();
+            for _ in 0..8 {
+                let host = Host::new(&answers);
+                if let Some(analysis) = analyze_text(sql, &host) {
+                    return analysis.columns.iter().map(|c| c.ty.short()).collect::<Vec<_>>().join(" ");
+                }
+                for need in host.needs() {
+                    let (id, answer) = match need {
+                        crate::api::Need::Describe { id, .. } => (id, json!({ "mysql": { "columns": columns.clone(), "params": [] } })),
+                        crate::api::Need::Query { id, sql, .. } if sql == VIEWS_QUERY => (id, json!({ "rows": [["recent"]] })),
+                        crate::api::Need::Query { id, sql, .. } if sql == crate::mysql_params::TYPES_QUERY => (id, json!({ "rows": [["users", "body", "text", "text", "", "", "utf8mb4"], ["users", "legacy", "text", "text", "", "", "latin1"]] })),
+                        crate::api::Need::Query { id, .. } => (id, json!({ "rows": [] })),
+                    };
+                    answers.insert(id, serde_json::from_value(answer).unwrap());
+                }
+            }
+            panic!("the analysis never settled")
+        };
+        let name = column("name", 253, 255, 80, 0, "users", "name");
+        let body = column("body", 252, 255, 262_140, 0, "users", "body");
+        let legacy = column("legacy", 252, 255, 262_140, 0, "users", "legacy");
+        let price = column("price", 246, 63, 12, 2, "users", "price");
+        // A TEXT the catalog says stores UTF-8 counts its bytes, and one in latin1 its code points.
+        assert_eq!(types("select name, body, legacy, price from users", vec![name.clone(), body.clone(), legacy, price]), "varchar(≤20) text(≤65535 bytes UTF-8) text(≤65535) decimal(10,2)");
+        // Through a derived table the prepare names the table, and a column's origin there may be
+        // its derived name, so a TEXT counts code points.
+        assert_eq!(types("select name, body from (select name, body from users) d", vec![name, body]), "varchar(≤20) text(≤65535)");
+        // An expression names no table, and a view's column may be an expression.
+        assert_eq!(types("select concat(name, '!') as c, price * 2 as p from users", vec![column("c", 253, 255, 84, 31, "", ""), column("p", 246, 63, 13, 2, "", "")]), "varchar decimal");
+        assert_eq!(types("select name, price from recent", vec![column("name", 253, 255, 80, 0, "recent", "name"), column("price", 246, 63, 12, 2, "recent", "price")]), "varchar decimal");
+        // A column of `information_schema`'s own views, which no list of views holds: an expression
+        // names no schema though it names its view, and the rest name `information_schema`.
+        let in_schema = |mut c: Value, schema: &str| {
+            c["schema"] = json!(schema);
+            c
+        };
+        let comment = in_schema(column("TABLE_COMMENT", 253, 255, 8192, 31, "TABLES", "TABLE_COMMENT"), "");
+        let kind = in_schema(column("COLUMN_TYPE", 252, 255, 67_108_860, 0, "COLUMNS", "COLUMN_TYPE"), "information_schema");
+        assert_eq!(types("select TABLE_COMMENT, COLUMN_TYPE from information_schema.columns", vec![comment, kind]), "varchar text");
+        // A host that sends no schema says nothing of where a column's values come from.
+        let mut bare = column("name", 253, 255, 80, 0, "users", "name");
+        bare.as_object_mut().unwrap().remove("schema");
+        assert_eq!(types("select name from users", vec![bare]), "varchar");
     }
 
     #[test]
