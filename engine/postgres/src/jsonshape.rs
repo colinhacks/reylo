@@ -310,6 +310,10 @@ pub fn oids(shape: &Shape, probes: &[Option<Outcome>], param_oids: &[u32], out: 
                 out.extend(o.columns.iter().map(|c| c.type_oid));
             }
         }
+        Shape::RowOrValue { row, value } => {
+            oids(&Shape::Row { probe: *row }, probes, param_oids, out);
+            oids(value, probes, param_oids, out);
+        }
         Shape::Param(n) => out.extend(param_oids.get((*n as usize).saturating_sub(1)).copied()),
         Shape::Unknown => {}
     }
@@ -858,8 +862,29 @@ impl Builder<'_> {
         match self.rows.as_ref().and_then(|r| r.whole(alias)).map(|(target, missing)| (target.to_string(), missing)) {
             Some((target, true)) => force_nullable(self.row(&target)),
             Some((target, false)) => self.row(&target),
-            None => self.row(alias),
+            None => self.row_or_value(alias),
         }
+    }
+
+    /// `alias.*`, where the alias may be a function's: a function that returns one value of no
+    /// row type gives that value for it (`makeWholeRowVar`), which its row's describe does not
+    /// tell from a row of one column. So the same reference read as a value says which it is:
+    /// `coalesce` of one argument is that argument, and reads `alias.*` as an expression does.
+    fn row_or_value(&mut self, alias: &str) -> Shape {
+        let row = self.row(alias);
+        let (Shape::Row { probe }, true) = (&row, self.one_function(alias)) else { return row };
+        let probe = *probe;
+        let star = star_of(alias);
+        let whole = Node { node: Some(NodeEnum::CoalesceExpr(Box::new(protobuf::CoalesceExpr { args: vec![star], location: -1, ..Default::default() }))) };
+        // Whether a function's value is NULL is not read: it is a value the function returned.
+        let value = force_nullable(self.leaf(&whole));
+        Shape::RowOrValue { row: probe, value: Box::new(value) }
+    }
+
+    /// Whether the innermost FROM with an item of this name reads it from one function with no
+    /// ordinality column: any other item's whole row is a row, whatever it holds.
+    fn one_function(&self, alias: &str) -> bool {
+        self.stack.iter().rev().find_map(|(_, from, _)| from.iter().find_map(|item| function_item(item, alias))).unwrap_or(false)
     }
 
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
@@ -991,13 +1016,7 @@ impl Builder<'_> {
             return Shape::Unknown;
         }
         let Some(probe) = self.draft(Some(alias.to_string())) else { return Shape::Unknown };
-        let star = Node {
-            node: Some(NodeEnum::ColumnRef(ColumnRef {
-                fields: vec![string_node(alias), Node { node: Some(NodeEnum::AStar(AStar {})) }],
-                location: -1,
-            })),
-        };
-        self.drafts[probe].items.push(star);
+        self.drafts[probe].items.push(star_of(alias));
         Shape::Row { probe }
     }
 
@@ -1242,6 +1261,33 @@ fn left_of(from: &[Node], alias: &str) -> Option<Vec<Node>> {
     let mut left: Vec<Node> = from[..at].to_vec();
     left.extend(left_in(&from[at], alias)?);
     Some(left)
+}
+
+/// `alias.*`.
+fn star_of(alias: &str) -> Node {
+    Node {
+        node: Some(NodeEnum::ColumnRef(ColumnRef {
+            fields: vec![string_node(alias), Node { node: Some(NodeEnum::AStar(AStar {})) }],
+            location: -1,
+        })),
+    }
+}
+
+/// Of the item of a FROM that goes by `alias`, inside the joins of `node` where it is one, whether
+/// it reads one function with no ordinality column; `None` where no item goes by it. A join with
+/// an alias of its own hides the names inside it.
+fn function_item(node: &Node, alias: &str) -> Option<bool> {
+    let named = |a: Option<&protobuf::Alias>| a.is_some_and(|a| a.aliasname == alias);
+    match node.node.as_ref()? {
+        NodeEnum::RangeFunction(f) => match &f.alias {
+            Some(a) => a.aliasname == alias,
+            None => crate::infer::function_item_name(f).as_deref() == Some(alias),
+        }
+        .then_some(f.functions.len() == 1 && !f.ordinality),
+        NodeEnum::JoinExpr(j) if j.alias.is_some() => named(j.alias.as_ref()).then_some(false),
+        NodeEnum::JoinExpr(j) => j.larg.as_deref().and_then(|n| function_item(n, alias)).or_else(|| j.rarg.as_deref().and_then(|n| function_item(n, alias))),
+        _ => (item_alias(node).as_deref() == Some(alias)).then_some(false),
+    }
 }
 
 /// The name a FROM item goes by: its alias, or a table's own name.
@@ -1494,6 +1540,20 @@ fn last_of_each_name(fields: Vec<Field>) -> Vec<Field> {
 }
 
 impl ResolveCtx<'_> {
+    /// The probe's column a `RowOrValue`'s value reads.
+    fn whole_value(&self, value: &Shape) -> Option<&DescribedColumn> {
+        match value {
+            Shape::Nullable(inner) => self.whole_value(inner),
+            Shape::Column { probe, index } => self.probes.get(*probe)?.as_ref()?.columns.get(*index),
+            _ => None,
+        }
+    }
+
+    /// Whether a value of this column is a row: `record`, a composite type, or a domain over one.
+    fn is_row(&self, col: &DescribedColumn) -> bool {
+        col.type_oid == oid::RECORD || self.registry.get(self.registry.resolve_domain(col.type_oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Composite)
+    }
+
     /// A probe's column as a type: what the catalog says of it, with what the probe's own
     /// analysis said of an array it builds (`array[x, null]` holds a NULL element) and of the
     /// values, the document and the non-finite values a CHECK keeps it to or out of, as a result
@@ -1597,6 +1657,14 @@ impl ResolveCtx<'_> {
                     // column the probe proved non-null says the row is there.
                     (Type::record(fields), !outcome.outer_join || outcome.columns.iter().any(|c| !c.nullable))
                 }
+                None => {
+                    unresolved.push(display_path(path));
+                    (Type::unknown(), false)
+                }
+            },
+            Shape::RowOrValue { row, value } => match self.whole_value(value).map(|col| self.is_row(col)) {
+                Some(true) => self.node(&Shape::Row { probe: *row }, path, unresolved),
+                Some(false) => self.node(value, path, unresolved),
                 None => {
                     unresolved.push(display_path(path));
                     (Type::unknown(), false)
@@ -2113,6 +2181,23 @@ mod tests {
     #[test]
     fn postgres_own_json_object_reads_its_strings_as_no_keys() {
         assert_eq!(shapes("SELECT json_object('{a}', '{b}') AS o").columns[0].1, Shape::Column { probe: 0, index: 0 });
+    }
+
+    #[test]
+    fn a_function_item_s_whole_row_may_be_its_one_value() {
+        let nullable = |shape: Shape| Shape::Nullable(Box::new(shape));
+        for sql in ["SELECT to_jsonb(f.*) AS o FROM many_bodies(1) f", "SELECT to_jsonb(f.*) AS o FROM rows from (many_bodies(1)) f", "SELECT to_jsonb(many_bodies.*) AS o FROM many_bodies(1)", "SELECT to_jsonb(f.*) AS o FROM users u JOIN many_bodies(u.id) f ON true"] {
+            let p = shapes(sql);
+            let row_probe = p.probes.iter().position(|probe| probe.sql.contains(".*")).expect("a probe of the star");
+            let value_probe = p.probes.iter().position(|probe| probe.sql.contains("COALESCE(")).expect("a probe of the value");
+            assert_eq!(p.columns[0].1, Shape::RowOrValue { row: row_probe, value: Box::new(nullable(Shape::Column { probe: value_probe, index: 0 })) }, "{sql}");
+        }
+        // WITH ORDINALITY, two functions, or any other item's whole row is a row.
+        for sql in ["SELECT to_jsonb(f.*) AS o FROM many_bodies(1) WITH ORDINALITY f", "SELECT to_jsonb(f.*) AS o FROM rows from (many_bodies(1), many_bodies(2)) f", "SELECT to_jsonb(u.*) AS o FROM users u"] {
+            assert_eq!(shapes(sql).columns[0].1, Shape::Row { probe: 0 }, "{sql}");
+        }
+        // A subquery's item of that name hides a function around it.
+        assert!(!format!("{:?}", shapes("SELECT (SELECT to_jsonb(f.*) FROM users f) AS o FROM many_bodies(1) f").columns[0].1).contains("RowOrValue"));
     }
 
     #[test]
