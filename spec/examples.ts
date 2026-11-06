@@ -48,7 +48,7 @@ const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-47
 const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
 
-/** Postgres: a column of each kind its catalog holds. The engine types a domain's column as the base type the server describes it by, `varchar(255)`, so `e`'s type does not carry the domain's name, `public.email`, and no engine writes a LIKE CHECK as a `pattern`. */
+/** Postgres: a column of each kind its catalog holds. The engine types a domain's column as the base type the server describes it by, `varchar(255)`, so `e`'s type does not carry the domain's name, `public.email`, and takes its LIKE CHECK as a `pattern`. */
 export const postgres_columns: Example = {
   database: "postgres",
   setup: "create type mood as enum ('sad', 'ok', 'happy'); create domain email as varchar(255) check (value like '%@%'); create table t (price numeric(10,2), total numeric, at timestamptz, day date, span interval, m mood, e email, tags varchar(20)[], flags bit(7), body jsonb, during tstzrange, pos point, ring circle, addr inet, tod time)",
@@ -61,7 +61,7 @@ export const postgres_columns: Example = {
       { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
       { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, name: "interval" } },
       { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], name: "public.mood" } },
-      { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, name: "varchar" } },
+      { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, name: "varchar" } },
       { name: "tags", nullable: true, type: { kind: "array", any_depth: true, name: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, name: "varchar" } } } },
       { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, name: "bit", element: { type: { kind: "boolean" } } } },
       { name: "body", nullable: true, type: { kind: "json", name: "jsonb" } },
