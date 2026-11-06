@@ -189,7 +189,7 @@ export type QueryDefinition = {
   source?: string;
   /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
   nestedArrays?: boolean;
-  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
   /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
