@@ -2,7 +2,7 @@
 // Reylo Type Defs, in preview (spec/index.ts, `StatementDescriptor`), read from a live
 // database by the engine, as plain data that serializes to JSON. `reylo analyze` prints the same
 // descriptors on the command line (engine/cli/src/analyze.rs), and both read the project as the type
-// check does: the database it names, unless the caller names another, and its `strict_params`. It
+// check does: the database it names, unless the caller names another, and its `allow_untyped_params`. It
 // reads no `reylo/.cache/` cache, and every call reads the database afresh.
 import { basename } from "node:path";
 import type { StatementDescriptor } from "../spec/index.ts";
@@ -144,7 +144,7 @@ function failure(e: unknown): Error {
 
 /**
  * An error at the first use of each parameter nothing in the statement types, as `reylo analyze`
- * and the type check give it where the project leaves `strict_params` on, in UTF-8 bytes
+ * and the type check give it where the project leaves `allow_untyped_params` off, in UTF-8 bytes
  * (`untypedParams` in src/module-types.ts). The engine's own lexer finds the placeholders; a
  * statement it cannot read has none, and each error is then at the statement's start.
  */

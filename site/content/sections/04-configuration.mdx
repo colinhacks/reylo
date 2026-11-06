@@ -11,8 +11,10 @@ Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`.
 direct_url: ${DATABASE_URL}
 # the .env files Reylo reads (the default)
 env: [.env.local, .env]
-# an error for a parameter whose type cannot be inferred (the default)
-strict_params: true
+# a parameter whose type cannot be inferred is an error (the default)
+allow_untyped_params: false
+# a Postgres array column holds one dimension (the default)
+allow_nested_arrays: false
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
 # the directory of Reylo's files: schema.sql, the migrations and its cache (the default)
@@ -67,13 +69,26 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
-### `strict_params`
+### `allow_untyped_params`
 
-A [parameter whose type cannot be inferred](#a-parameter-nothing-types) is an error that says to [cast it](#casts). Set `strict_params: false` to type it `unknown` instead.
+Whether a [parameter whose type cannot be inferred](#a-parameter-nothing-types) may stay `unknown`.
+
+By default it's an error that says to [cast it](#casts).
 
 ```yaml title=".reylo.yaml"
-# the default is true
-strict_params: false
+# the default is false
+allow_untyped_params: true
+```
+
+### `allow_nested_arrays`
+
+Whether a Postgres array column may hold nested arrays.
+
+Postgres doesn't track an array's dimensions, so by default Reylo types an array column with one, and `.run()` throws on a value of more. With this set, the column is typed at any depth, as `NestedArray<T>`, and nothing is refused.
+
+```yaml title=".reylo.yaml"
+# the default is false
+allow_nested_arrays: true
 ```
 
 ### `sqlcommenter`

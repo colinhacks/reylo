@@ -3,11 +3,11 @@ carried_null.sql: many () -> { n: int64, x: unknown? }
 counter.sql: many () -> { n: int64 }
 distinct_union.sql: many () -> { n: int64 }
 json_in_recursion.sql: many () -> { n: int64, x: text(utf8)?, j: text(utf8) }
-named_as_table.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
+named_as_table.sql: many () -> { id: INTEGER, email: TEXT(text(utf8) | bytes)? }
 null_in_recursion.sql: many () -> { n: int64, x: text(utf8)? }
-nullable_column.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), parent: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
-nullable_note.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), note: TEXT(text(utf8) | bytes)? }
-round_reads_nullable.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), body: TEXT(text(utf8) | bytes)? }
-rounds_keep_types.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), depth: int64 }
-tree.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), name: TEXT(text(utf8) | bytes), depth: int64 }
+nullable_column.sql: many () -> { id: INTEGER, parent: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+nullable_note.sql: many () -> { id: INTEGER, note: TEXT(text(utf8) | bytes)? }
+round_reads_nullable.sql: many () -> { id: INTEGER, body: TEXT(text(utf8) | bytes)? }
+rounds_keep_types.sql: many () -> { id: INTEGER, depth: int64 }
+tree.sql: many () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), depth: int64 }
 type_change.sql: many () -> { n: int64, v: unknown }

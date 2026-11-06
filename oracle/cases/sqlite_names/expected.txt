@@ -1,5 +1,5 @@
 delete_mixed.sql: at_most_one (id: int64) -> { ISBN: TEXT(text(utf8) | bytes)? }
-insert_upper.sql: one (title: text(utf8), note: text(utf8)?) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), note: TEXT(text(utf8) | bytes)? }
+insert_upper.sql: one (title: text(utf8), note: text(utf8)?) -> { id: INTEGER, note: TEXT(text(utf8) | bytes)? }
 json_each_upper.sql: many (ids: text(utf8)) -> { value: unknown? }
 non_ascii_exact.sql: at_most_one (id: int64) -> { v: TEXT(text(utf8) | bytes)? }
 non_ascii_folded.sql: many (id: unknown) -> {  } !! reylo6: no such table: été
@@ -7,8 +7,8 @@ qualified_join.sql: at_most_one (id: int64) -> { Title: TEXT(text(utf8) | bytes)
 quoted.sql: at_most_one (isbn: text(utf8)) -> { Title: TEXT(text(utf8) | bytes), note: TEXT(text(utf8) | bytes)? }
 rowid_alias_upper.sql: at_most_one (r: int64) -> { v: TEXT(text(utf8) | bytes)? }
 rowid_column_upper.sql: many (r: int64) -> { v: TEXT(text(utf8) | bytes)? }
-table_lower.sql: at_most_one (id: int64) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), Title: TEXT(text(utf8) | bytes), ISBN: TEXT(text(utf8) | bytes)?, note: TEXT(text(utf8) | bytes)? }
+table_lower.sql: at_most_one (id: int64) -> { id: INTEGER, Title: TEXT(text(utf8) | bytes), ISBN: TEXT(text(utf8) | bytes)?, note: TEXT(text(utf8) | bytes)? }
 table_upper.sql: at_most_one (id: int64) -> { Title: TEXT(text(utf8) | bytes) }
-trigger_quoted_table.sql: at_most_one (v: text(utf8)?) -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes) }
+trigger_quoted_table.sql: at_most_one (v: text(utf8)?) -> { id: INTEGER }
 update_mixed.sql: at_most_one (title: text(utf8), isbn: text(utf8)) -> { Title: TEXT(text(utf8) | bytes) }
 without_rowid.sql: at_most_one (k: text(utf8)) -> { v: TEXT(text(utf8) | bytes)? }

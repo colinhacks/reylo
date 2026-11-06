@@ -1,4 +1,4 @@
-add.sql: at_most_one (id: int4, embedding: public.vector(float(8,23)[]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])?) -> { id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])? }
+add.sql: at_most_one (id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])?) -> { id: int4, embedding: public.vector(float(8,23)[3]), draft: public.vector(float(8,23)[])?, sparse: public.sparsevec(float(8,23)[])? }
 aggregates.sql: one () -> { mean: public.vector(float(8,23)[])?, total: public.vector(float(8,23)[])?, embeddings: public.vector(float(8,23)[])[]?, drafts: public.vector(float(8,23)[])[]? }
 any_vector.sql: many (qs: public.vector(float(8,23)[])?[]) -> { id: int4 } key (id)
 by_vector.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, dims: int4?, norm: float8?, parts: float4?[]?, unit: public.vector(float(8,23)[])? } key (id)

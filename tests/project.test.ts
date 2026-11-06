@@ -33,19 +33,22 @@ test("without a project file, DATABASE_URL comes from the environment, then .env
   assert.deepEqual([set.url, set.urlSource, set.dialect], ["file:./x.db", "DATABASE_URL in the environment", "sqlite"]);
   // A parameter nothing types is an error unless the project file says otherwise (since 2026-10-20).
   assert.equal(local.strictParams, true);
-  const loose = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nstrict_params: false\n" });
+  const loose = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nallow_untyped_params: true\n" });
   assert.equal(resolveProject(e, loose, {}).strictParams, false);
   assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\n" }), {}).strictParams, true);
+  // A Postgres array column holds one dimension unless the file says otherwise.
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\n" }), {}).allowNestedArrays, false);
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nallow_nested_arrays: true\n" }), {}).allowNestedArrays, true);
   // The sqlcommenter comment is on unless the project file turns it off.
   assert.equal(local.sqlcommenter, true);
   assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nsqlcommenter: false\n" }), {}).sqlcommenter, false);
 });
 
-test("the project file sits beside package.json, and its direct_url, env files and strict_params apply", async () => {
+test("the project file sits beside package.json, and its direct_url, env files and allow_ flags apply", async () => {
   const e = await engine("postgres");
   const root = tree({
     "package.json": "{}",
-    ".reylo.yaml": "url: postgres://pooler/app\ndirect_url: mysql://root:${DB_PASSWORD}@127.0.0.1:3306/app\nenv: [secrets.env]\nstrict_params: true\napi:\n  routes: api\n",
+    ".reylo.yaml": "url: postgres://pooler/app\ndirect_url: mysql://root:${DB_PASSWORD}@127.0.0.1:3306/app\nenv: [secrets.env]\nallow_untyped_params: false\napi:\n  routes: api\n",
     "secrets.env": "DB_PASSWORD=hunter2\n",
     "src/db/tsconfig.json": "{}",
   });
@@ -104,9 +107,12 @@ test("a key the library does not know, and a variable nothing sets, are errors t
   const e = await engine("postgres");
   const typo = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\n\nstirct: true\n" });
   assert.match(resolveProject(e, typo, {}).error!, /^\.reylo\.yaml:3:1: unknown field `stirct`/);
-  // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is unknown, and its error names the new one.
+  // The old names have no alias: each is unknown, and its error says what to write instead.
+  const renamedTo = (key: string) => `.reylo.yaml:2:1: unknown field \`${key}\`: the key is \`allow_untyped_params\` since 0.8.0, and reads the other way round: write \`allow_untyped_params: true\` for \`${key}: false\`, and delete \`${key}: true\`, the default`;
   const renamed = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: postgres://x/db\nstrict: true\n" });
-  assert.equal(resolveProject(e, renamed, {}).error, ".reylo.yaml:2:1: unknown field `strict`: the key is `strict_params` since 2026-10-20");
+  assert.equal(resolveProject(e, renamed, {}).error, renamedTo("strict"));
+  const renamedAgain = tree({ "package.json": "{}", ".reylo.yaml": "direct_url: file:./x.db\nstrict_params: false\n" });
+  assert.equal(resolveProject(e, renamedAgain, {}).error, renamedTo("strict_params"));
   // A variable falls back, as in a shell, where it is unset or empty; the fallback may name another.
   const fallback = (url: string, env: Record<string, string>) => resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": `direct_url: ${url}\n` }), env);
   assert.equal(fallback("${BUILD:-${DEV}}", { BUILD: "postgres://build/db", DEV: "postgres://dev/db" }).url, "postgres://build/db");
@@ -205,7 +211,7 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.deepEqual([both.url, both.urlSource, both.notice], ["postgres://dev/app", '"direct_url" in .reylo.yaml', undefined]);
   // Without a project file, or without url in it, nothing is said either.
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).notice, undefined);
-  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "strict_params: false\n" }), {}).notice, undefined);
+  assert.equal(resolveProject(e, tree({ "package.json": "{}", ".reylo.yaml": "allow_untyped_params: true\n" }), {}).notice, undefined);
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).missingUrl, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.');
 });
 
@@ -215,18 +221,18 @@ test("reylo/.cache/ names an entry by its statement, then its server: never by u
     await session.close();
     return basename(session.entryFile("select 1")).replace(/\.json$/, "").split("-");
   };
-  const [statement, dev] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://dev/app" });
+  const [statement, dev] = await entry("allow_untyped_params: false\n", { DATABASE_URL: "postgres://dev/app" });
   // url alone names it like no url at all, and like a direct_url that names the same database;
   // the password is not part of it.
   assert.deepEqual(await entry("url: postgres://prod-pooler/app\n", { DATABASE_URL: "postgres://dev/app" }), [statement, dev]);
   assert.deepEqual(await entry("direct_url: postgres://:secret@dev/app\n", {}), [statement, dev]);
   // Another database of the dialect: the same statement, another server.
-  const [same, other] = await entry("strict_params: true\n", { DATABASE_URL: "postgres://ci@127.0.0.1:5432/test" });
+  const [same, other] = await entry("allow_untyped_params: false\n", { DATABASE_URL: "postgres://ci@127.0.0.1:5432/test" });
   assert.equal(same, statement);
   assert.notEqual(other, dev);
   // With no URL and every engine installed, as reylo's own install has them, the dialect stays
   // Postgres: the same statement, and no server.
-  assert.equal((await entry("strict_params: true\n", {}))[0], statement);
+  assert.equal((await entry("allow_untyped_params: false\n", {}))[0], statement);
   // Another dialect is another statement.
-  assert.notEqual((await entry("strict_params: true\n", { DATABASE_URL: "mysql://root@127.0.0.1:3306/app" }))[0], statement);
+  assert.notEqual((await entry("allow_untyped_params: false\n", { DATABASE_URL: "mysql://root@127.0.0.1:3306/app" }))[0], statement);
 });

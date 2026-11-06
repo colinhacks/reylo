@@ -92,11 +92,11 @@ test("reylo migrate init starts a project: it adds the migrate section the other
   assert.match(init.out, /✓ Wrote reylo\/schema\.sql, reylo\/migrations\/init\.sql and reylo\/reylo-lock\.yaml\n[\s\S]*✓ Added migrate to \.reylo\.yaml\n$/);
   assert.equal(readFileSync(join(root, ".reylo.yaml"), "utf8"), "migrate:\n  lock: true\n");
   // Beside what the file holds; the section the file has already is left as it is.
-  writeFileSync(join(root, ".reylo.yaml"), "strict_params: true\n");
+  writeFileSync(join(root, ".reylo.yaml"), "allow_untyped_params: true\n");
   const next = project();
-  writeFileSync(join(next, ".reylo.yaml"), "strict_params: true");
+  writeFileSync(join(next, ".reylo.yaml"), "allow_untyped_params: true");
   assert.equal(reylo(next, ["migrate", "init"]).status, 0);
-  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: true\n");
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "allow_untyped_params: true\nmigrate:\n  lock: true\n");
   // Files written with no section, as a run that failed partway leaves them, don't strand the project.
   const stranded = project();
   mkdirSync(join(stranded, "reylo"));
@@ -108,9 +108,9 @@ test("reylo migrate init starts a project: it adds the migrate section the other
   assert.equal(reylo(stranded, ["migrate", "check", "--offline"]).err.includes("no migrate section"), false);
   // unlock and lock say so in the file.
   assert.equal(reylo(next, ["migrate", "unlock"]).status, 0);
-  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: false\n");
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "allow_untyped_params: true\nmigrate:\n  lock: false\n");
   assert.equal(reylo(next, ["migrate", "lock"]).status, 0);
-  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "strict_params: true\nmigrate:\n  lock: true\n");
+  assert.equal(readFileSync(join(next, ".reylo.yaml"), "utf8"), "allow_untyped_params: true\nmigrate:\n  lock: true\n");
 });
 
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {

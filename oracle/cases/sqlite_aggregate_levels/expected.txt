@@ -14,7 +14,7 @@ bare_outer_with.sql: many () -> { n: int64? }
 bare_own.sql: many () -> { n: int64 }
 bare_own_derived.sql: many () -> { n: int64 }
 bare_own_json.sql: many () -> { titles: json text(utf8)[] }
-bare_own_key.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: int64 }
+bare_own_key.sql: many () -> { id: INTEGER, n: int64 }
 bare_own_limit.sql: many () -> { n: int64 }
 bare_own_mixed.sql: many () -> { n: int64 }
 bare_own_total.sql: many () -> { n: float(11,52) }

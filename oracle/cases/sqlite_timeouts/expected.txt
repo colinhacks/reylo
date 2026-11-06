@@ -1,4 +1,4 @@
 bounded.sql: one (top: unknown) -> { n: int64 }
 forever.sql: one () -> { n: int64 }
 forever_write.sql: none () -> {  }
-z_counters.sql: many () -> { id: INTEGER(int64 | float(11,52) | text(utf8) | bytes), n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, label: TEXT(text(utf8) | bytes)? }
+z_counters.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, label: TEXT(text(utf8) | bytes)? }

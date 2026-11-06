@@ -12,7 +12,7 @@ import { rowSource } from "./row.ts";
 import { querySchemas } from "./schema.ts";
 import { columnKind } from "./values.ts";
 import { jsonNumbers } from "./render.ts";
-import { analysisWithBases } from "./engine-type.ts";
+import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
 import { planOf } from "./codecs.ts";
 
 export type SqlModule = {
@@ -109,7 +109,7 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
+    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };

@@ -295,9 +295,10 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         .zip(a.flags())
         .zip(&booleans)
         .zip(&t.columns)
-        .map(|((((name, fact), flag), computed), public)| {
+        .zip(a.exacts())
+        .map(|(((((name, fact), flag), computed), public), exact)| {
             let ty = if flag { Ty::Scalar { name: "bool".into() } } else { fact.ty };
-            Column::new(name, descriptor(&ty, public.declared.as_deref(), *computed), !fact.non_null)
+            Column::new(name, descriptor(&ty, public.declared.as_deref(), *computed, exact), !fact.non_null)
         })
         .collect();
     let (params, refused) = a.params(lexed);
@@ -568,11 +569,12 @@ fn stored(aff: &str) -> Type {
 
 /// The format's type of a value the analysis typed `ty` ([`Ty`]). A column read as it is
 /// (`declared`, the type its table declares, through subqueries and views) holds what its affinity
-/// stores, under that name: SQLite keeps what it cannot convert as it is. A value the statement
+/// stores, under that name: SQLite keeps what it cannot convert as it is. One that is `exact`, in a
+/// STRICT table or a rowid, holds its declared type alone ([`Analyzer::exacts`]). A value the statement
 /// computes is the storage class the analysis gives it, a 64-bit column's under `BIGINT` and a
 /// column declared BOOLEAN's under `BOOLEAN`, the names a client reads it by; a truth value SQLite
 /// computes (`computed`) is a boolean, delivered as 1 or 0.
-fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool) -> Type {
+fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool, exact: bool) -> Type {
     // SQLite gives a compound's column the first arm's declared type: it names the value only
     // where the value is what a column of that type holds.
     let declared = declared.map(str::trim).filter(|d| !d.is_empty()).filter(|d| match ty {
@@ -584,6 +586,10 @@ fn descriptor(ty: &Ty, declared: Option<&str>, computed: bool) -> Type {
         Ty::Scalar { name } if name == "bool" && computed => Type::boolean(),
         Ty::Scalar { name } if name == "bool" => stored("numeric").named(declared.unwrap_or("BOOLEAN")),
         Ty::Scalar { name } => match (declared, name.as_str()) {
+            (Some(d), "integer" | "int8") if exact => int64().named(d),
+            (Some(d), "real") if exact => real().named(d),
+            (Some(d), "text") if exact => text().named(d),
+            (Some(d), "blob") if exact => Type::bytes().named(d),
             (Some(d), aff) => stored(if aff == "int8" { "integer" } else { aff }).named(d),
             (None, "integer") => int64(),
             (None, "int8") => int64().named("BIGINT"),
@@ -606,7 +612,7 @@ fn content(ty: &Ty) -> Type {
     match ty {
         Ty::Object { fields } => Type::record(fields.iter().map(|f| Field::new(f.name.clone(), content(&f.ty), f.nullable)).collect()),
         Ty::List { of, nullable_items } => Type::array(Position::new(content(of), *nullable_items)),
-        other => descriptor(other, None, false),
+        other => descriptor(other, None, false, false),
     }
 }
 
@@ -1148,6 +1154,50 @@ impl Analyzer<'_> {
             Vec::new()
         };
         (0..t.columns.len()).map(|i| truths.get(i).copied().unwrap_or(false)).collect()
+    }
+
+    /// Per result column, whether it holds its declared type alone, as a column of a STRICT table
+    /// and a rowid do: read as it is, through subqueries and views, in every arm of a compound.
+    fn exacts(&self) -> Vec<bool> {
+        let t = self.tree;
+        let exact: Vec<bool> = if let Some(returning) = &t.returning {
+            returning.iter().map(|c| self.exact(&c.expr, &Vec::new())).collect()
+        } else if let (Some(sel), None) = (&t.statement, &t.dml) {
+            (0..sel.columns.len()).map(|i| self.select_exact(sel, i, &Vec::new())).collect()
+        } else {
+            Vec::new()
+        };
+        (0..t.columns.len()).map(|i| exact.get(i).copied().unwrap_or(false)).collect()
+    }
+
+    fn select_exact(&self, sel: &Sel, i: usize, scope: &ScopeStack) -> bool {
+        let mut s = Some(sel);
+        while let Some(arm) = s {
+            let mut inner = scope.clone();
+            inner.push(&arm.from);
+            if !arm.columns.get(i).is_some_and(|c| self.exact(&c.expr, &inner)) || !arm.rows.is_empty() {
+                return false;
+            }
+            s = arm.prior.as_deref();
+        }
+        true
+    }
+
+    fn exact(&self, n: &Node, scope: &ScopeStack) -> bool {
+        if n.op != "column" {
+            return false;
+        }
+        for froms in scope.iter().rev() {
+            if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
+                if let Some(sub) = f.subquery.as_deref() {
+                    return self.select_exact(sub, n.index.max(0) as usize, scope);
+                }
+                break;
+            }
+        }
+        // A generated column of a STRICT table is left out: SQLite checks what it computes only
+        // from 3.51, and an app's driver may carry an older SQLite, which stores anything there.
+        (n.strict && !n.generated) || n.rowid
     }
 
     /// Whether column `i` of a select is a truth value in every arm of a compound.
@@ -1958,7 +2008,7 @@ impl Analyzer<'_> {
                 // A parameter compared with built JSON is bound as the text it is compared with.
                 let fact = Fact { ty: textual(&fact.ty), ..fact };
                 let nullable = fills.get(&numbered).copied().unwrap_or(false) || self.nullable_params.contains(&numbered);
-                Param { nullable, ..Param::new(name.clone(), descriptor(&fact.ty, None, false)) }
+                Param { nullable, ..Param::new(name.clone(), descriptor(&fact.ty, None, false, false)) }
             })
             .collect();
         (params, refused)
@@ -3463,6 +3513,30 @@ mod tests {
         let nullable = |extras: &Extras| col(&analyze_ddl("select email from users where lower(email) = :e", &ddl(), extras).analysis, "email").1;
         assert!(!nullable(&Extras::default()));
         assert!(nullable(&lower));
+    }
+
+    #[test]
+    fn a_strict_column_and_a_rowid_hold_their_declared_type_alone() {
+        let ddl = [
+            "create table s (id integer primary key, n int not null, x real, t text, b blob, a any, g integer generated always as (n * 2) virtual) strict",
+            "create table loose (id integer primary key, n integer not null, t text)",
+            "create table desc_key (a integer primary key desc)",
+        ]
+        .map(String::from);
+        let kinds = |sql: &str| {
+            let analysis = analyze_ddl(sql, &ddl, &Extras::default()).analysis;
+            analysis.columns.iter().map(|c| serde_json::to_value(&c.ty).unwrap()["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(kinds("select id, n, x, t, b, a from s"), "integer integer float text bytes unknown");
+        assert_eq!(kinds("select id, n, t from loose"), "integer union union");
+        assert_eq!(kinds("select a from desc_key"), "union");
+        // A generated column keeps its affinity's union: SQLite before 3.51 never checks it.
+        assert_eq!(kinds("select g from s"), "union");
+        // Through subqueries, views and every arm of a compound, and no further.
+        assert_eq!(kinds("select n, t from (select n, t from s)"), "integer text");
+        assert_eq!(kinds("select n from s union all select id from loose"), "integer");
+        assert_eq!(kinds("select n from s union all select n from loose"), "union");
+        assert_eq!(kinds("select n from s union all values (1)"), "union");
     }
 
     #[test]

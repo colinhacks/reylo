@@ -1,0 +1,21 @@
+compound_any.sql: many () -> { i: unknown? }
+compound_loose.sql: many () -> { i: INT(int64 | float(11,52) | text(utf8) | bytes)? }
+compound_strict.sql: many () -> { i: INT }
+compound_values.sql: many () -> { i: INT(int64 | float(11,52) | text(utf8) | bytes) }
+computed.sql: many () -> { plus: int64, text_of: text(utf8), filled: int64, larger: int64 }
+insert_returning.sql: one () -> { id: INTEGER, i: INT, t: TEXT(utf8)?, a: unknown? }
+loose_read.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, r: REAL(float(11,52) | text(utf8) | bytes)?, t: TEXT(text(utf8) | bytes)?, b: BLOB(int64 | float(11,52) | text(utf8) | bytes)? }
+loose_rowids.sql: many () -> { a: INTEGER, b: INTEGER, c: INTEGER }
+no_alias_desc.sql: many () -> { a: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+no_alias_int.sql: many () -> { a: INT(int64 | float(11,52) | text(utf8) | bytes)? }
+no_alias_without_rowid.sql: many () -> { a: INTEGER(int64 | float(11,52) | text(utf8) | bytes), b: TEXT(text(utf8) | bytes)? }
+outer_join.sql: many () -> { i: INT?, t: TEXT(utf8)? }
+strict_read.sql: many () -> { id: INTEGER, i: INT, n: INTEGER?, r: REAL?, t: TEXT(utf8)?, b: BLOB?, a: unknown?, g: INTEGER(int64 | float(11,52) | text(utf8) | bytes)?, h: TEXT(text(utf8) | bytes)? }
+strict_rowids.sql: many () -> { a: INTEGER, b: INTEGER, c: INTEGER }
+strict_without_rowid.sql: many () -> { k: TEXT(utf8), v: INTEGER? }
+through_loose_view.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }
+through_recursive.sql: many () -> { i: INT(int64 | float(11,52) | text(utf8) | bytes) }
+through_subquery.sql: many () -> { i: INT, t: TEXT(utf8)? }
+through_view.sql: many () -> { id: INTEGER, i: INT, t: TEXT(utf8)? }
+through_with.sql: many () -> { i: INT, t: TEXT(utf8)?, a: unknown? }
+update_returning.sql: many () -> { id: INTEGER, n: INTEGER(int64 | float(11,52) | text(utf8) | bytes)? }

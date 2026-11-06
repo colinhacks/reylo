@@ -7,15 +7,17 @@
 // serializer that writes a BigInt exactly writes, `JSON.rawJSON(String(v))`; JSON.stringify itself
 // refuses a BigInt), a decimal its text, a timestamptz its ISO text in UTC, a date and a timestamp
 // the wall-clock text the server wrote. The input is the parameters the caller passes.
-import { bareName, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
+import { bareName, nestsAnyDeep, schemaOf, type EngineType, type JsonSchema } from "./engine-type.ts";
 import { columnKind, RANGE_BOUNDS, sqliteAffinity, sqliteWide, type ScalarKind } from "./values.ts";
 import { leafCodec, type Codec, type Codecs } from "./codecs.ts";
 
 type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 type Schema = { [key: string]: unknown };
 type Analysis = {
-  params: readonly { name: string; type: EngineType; nullable?: boolean; optional?: boolean; schema?: JsonSchema; members?: readonly { written: string; schema?: JsonSchema }[] }[];
-  columns: readonly { name: string; type: EngineType; nullable?: boolean }[];
+  /** The prose written in comments before the statement, which describes both schemas. */
+  comment?: string;
+  params: readonly { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: JsonSchema; members?: readonly { written: string; schema?: JsonSchema }[] }[];
+  columns: readonly { name: string; type: EngineType; nullable?: boolean; comment?: string }[];
   cardinality: "one" | "at_most_one" | "many" | "none";
 };
 
@@ -171,6 +173,87 @@ function object(fields: readonly { name: string }[], field: (f: number) => Schem
 
 /** The JSON Schema of a value of `t`, as a result column (`input` false) or a parameter the caller passes (`input` true), or a structured parameter's member (`inRow`); `members`, a structured parameter's column list as written. */
 export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJson = false, inRow = false, members?: readonly { written: string; schema?: JsonSchema }[], codecs: Codecs = {}): Schema | JsonSchema {
+  const schema = plainSchema(t, dialect, input, inJson, inRow, members, codecs);
+  // A value a codec gives another type stands by that type's form.
+  return !inJson && leafCodec(t, dialect, codecs) !== undefined ? schema : withFacts(schema, t, input);
+}
+
+/** A number the format writes as text, where JSON Schema can write it exactly. */
+function exactNumber(text: string, whole: boolean): number | undefined {
+  const value = Number(text);
+  return whole ? (Number.isSafeInteger(value) ? value : undefined) : Number.isFinite(value) ? value : undefined;
+}
+
+/** A `LIKE` pattern as the ECMA regular expression that matches the same whole values. */
+function likeRegex(source: string): string {
+  const literal = (c: string) => c.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+  let out = "^";
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === "\\" && i + 1 < source.length) out += literal(source[++i]!);
+    else if (c === "%") out += "[\\s\\S]*";
+    else if (c === "_") out += "[\\s\\S]";
+    else out += literal(c);
+  }
+  return `${out}$`;
+}
+
+/**
+ * `schema` with the facts of `t` JSON Schema says the same way, each only where the value's form here
+ * makes it true: a text's size in code points and a `LIKE` pattern on a string, a number's bounds,
+ * divisor and values on a JSON number, within what a JSON number writes exactly, and an array's size
+ * on an array. A decimal given as its text takes no bounds. A parameter's exact size is a maximum,
+ * since `char(n)` pads a shorter value. A size in bytes or UTF-16 units and any other pattern
+ * dialect have no equivalent.
+ */
+function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): Schema | JsonSchema {
+  if (typeof schema !== "object" || schema === null) return schema;
+  const facts: Schema = {};
+  const sized = (size: { exact?: number; min?: number; max?: number }, low: string, high: string, atMost: boolean) => {
+    const min = atMost ? size.min : (size.exact ?? size.min);
+    const max = size.exact ?? size.max;
+    if (min !== undefined) facts[low] = min;
+    if (max !== undefined) facts[high] = max;
+  };
+  if (t.kind === "text" && schema.type === "string") {
+    if (t.size !== undefined && !("unit" in t.size && t.size.unit !== undefined)) sized(t.size, "minLength", "maxLength", input);
+    if (t.pattern?.dialect === "like") facts.pattern = likeRegex(t.pattern.source);
+  }
+  if ((t.kind === "integer" || t.kind === "float" || t.kind === "decimal") && (schema.type === "integer" || schema.type === "number")) {
+    const whole = t.kind === "integer";
+    const bound = (text: string | undefined, keyword: string) => {
+      const value = text === undefined ? undefined : exactNumber(text, whole);
+      if (value !== undefined) facts[keyword] = value;
+    };
+    bound(t.min, "minimum");
+    bound(t.max, "maximum");
+    if (!whole) {
+      bound(t.exclusive_min, "exclusiveMinimum");
+      bound(t.exclusive_max, "exclusiveMaximum");
+    }
+    if (t.kind !== "float") {
+      bound(t.multiple_of, "multipleOf");
+      const values = t.enum?.map((v) => exactNumber(v, whole));
+      if (values !== undefined && values.every((v) => v !== undefined)) facts.enum = values;
+    }
+  }
+  if (t.kind === "array" && schema.type === "array" && t.size !== undefined) sized(t.size, "minItems", "maxItems", false);
+  return Object.keys(facts).length ? { ...schema, ...facts } : schema;
+}
+
+/**
+ * `schema` with a comment as its description. A schema the statement's author wrote keeps its own
+ * description; one the type gave (a timestamp's format, say) sits beneath the comment, as it does
+ * beside null.
+ */
+function described(schema: Schema | JsonSchema, comment: string | undefined, written = false): Schema | JsonSchema {
+  if (comment === undefined) return schema;
+  if (schema === true) return { description: comment };
+  if (typeof schema !== "object" || schema === null) return schema;
+  return !written && "description" in schema ? { description: comment, allOf: [schema] } : { description: comment, ...schema };
+}
+
+function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: boolean, inRow: boolean, members: readonly { written: string; schema?: JsonSchema }[] | undefined, codecs: Codecs): Schema | JsonSchema {
   // A family the project file's `js.codecs` gives another type is that type's JSON form, outside JSON.
   const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
   if (codec === "set:array" && t.kind === "set") return { ...CODEC_SCHEMA[codec], items: typeSchema(t.element.type, dialect, input) };
@@ -197,8 +280,10 @@ export function typeSchema(t: EngineType, dialect: Dialect, input = false, inJso
       if (inJson ? (dialect === "postgres" && ["bit", "varbit", "vector", "halfvec", "sparsevec", "lseg", "polygon"].includes(name)) || (dialect === "mysql" && name === "bit") : !kind.endsWith("[]") && kind !== "lseg" && kind !== "polygon") break;
       // A result's elements may be null unless the statement shows they are not; a parameter's
       // are strict, but a structured parameter's member keeps them (src/render.ts).
-      const items = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
-      return { type: "array", items: (input ? inRow : t.element.nullable) ? nullable(items) : items };
+      const each = typeSchema(t.element.type, dialect, input, inJson, inRow, undefined, codecs);
+      const items = (input ? inRow : t.element.nullable) ? nullable(each) : each;
+      // An array the project lets nest holds its elements, or arrays of them at any depth.
+      return { type: "array", items: !input && nestsAnyDeep(t) ? { anyOf: [items, { type: "array" }] } : items };
     }
     case "record": {
       // A DuckDB struct's fields stand as a row's values do, each may be null.
@@ -265,7 +350,7 @@ export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codec
   const input = object(analysis.params, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema ?? typeSchema(p.type, dialect, true, false, false, p.members, codecs);
-    return p.nullable ? nullable(s) : s;
+    return described(p.nullable ? nullable(s) : s, p.comment, p.schema !== undefined);
   }, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema;
@@ -274,8 +359,9 @@ export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codec
   const row = object(analysis.columns, (i) => {
     const c = analysis.columns[i]!;
     const s = typeSchema(c.type, dialect, false, false, false, undefined, codecs);
-    return c.nullable ? nullable(s) : s;
+    return described(c.nullable ? nullable(s) : s, c.comment);
   });
   const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? { anyOf: [row, { type: "null" }] } : { type: "null" };
-  return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...output } };
+  const about = analysis.comment === undefined ? {} : { description: analysis.comment };
+  return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...output } };
 }

@@ -22,6 +22,9 @@
 //!   cargo run -p reylo-oracle -- --url … --strict-coverage oracle/cases    # fail on a statement that never ran
 //!   cargo run -p reylo-oracle -- --url … --timeout 2000 oracle/cases       # milliseconds per run
 //!
+//! Each Postgres and MySQL statement is analyzed again under other session settings, and a case
+//! whose analysis changes fails: a descriptor never turns on the session.
+//!
 //! `--analyses` names a JSON object of analyses keyed `<case>/<file>`, which the seeding checks
 //! in place of the engine's own: how a check that passes shows it can fail, run on the answers of
 //! an engine that had a defect. `--dump` writes that object, for the cases of every dialect.
@@ -419,6 +422,7 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
         dumped.insert(format!("{name}/{file}"), analysis.clone());
         analyzed.push((file, sql, analysis));
     }
+    same_under_other_settings(&client, &name, &analyzed, given).await?;
     // A value that contradicts a type is a failure whatever expected.txt says.
     let report = seed::check(&client, &analyzed, timeout_ms).await;
     drop(client);
@@ -427,6 +431,43 @@ async fn run_postgres(case: &Path, admin: &Client, admin_config: &Config, keep: 
     }
     let unchecked = seeded(case, lines.len(), report.map_err(|e| format!("seeding: {e}"))?)?;
     Ok((lines, unchecked))
+}
+
+/// What a Postgres session sets that may change how the server prints a value or an expression,
+/// and that no statement's meaning turns on, each with another of its values.
+const OTHER_SETTINGS: [(&str, &str); 5] = [("DateStyle", "Postgres, DMY"), ("IntervalStyle", "postgres_verbose"), ("TimeZone", "Asia/Kolkata"), ("extra_float_digits", "0"), ("bytea_output", "escape")];
+
+/// Each statement analyzed again under other session settings, which must change nothing: a
+/// descriptor is written in canonical text, never the session's. `search_path` gains a schema that
+/// does not exist, which leaves what every name resolves to as it was. Each setting goes back to
+/// what the case's own setup left it at.
+async fn same_under_other_settings(client: &Client, case: &str, analyzed: &[(String, String, Value)], given: &Map<String, Value>) -> Result<(), String> {
+    let setting = |name: &str, value: &str| format!("SELECT set_config('{name}', '{}', false)", value.replace('\'', "''"));
+    let mut before = Vec::new();
+    for (name, value) in OTHER_SETTINGS.iter().copied().chain([("search_path", "")]) {
+        let current: String = client.query_one(&format!("SELECT current_setting('{name}')"), &[]).await.map_err(|e| pg_message(&e))?.get(0);
+        let other = if name == "search_path" { format!("{current}, reylo_oracle_absent") } else { value.to_string() };
+        client.batch_execute(&setting(name, &other)).await.map_err(|e| format!("{name}: {}", pg_message(&e)))?;
+        before.push((name, current));
+    }
+    let mut outcome = Ok(());
+    for (file, sql, analysis) in analyzed.iter().filter(|(file, _, _)| !given.contains_key(&format!("{case}/{file}"))) {
+        match analyze_postgres(client, sql).await {
+            Ok(again) if again == *analysis => {}
+            Ok(again) => {
+                outcome = Err(format!("{file}: another session's settings change its analysis: {} became {}", line(analysis), line(&again)));
+                break;
+            }
+            Err(e) => {
+                outcome = Err(format!("{file}: under another session's settings: {e}"));
+                break;
+            }
+        }
+    }
+    for (name, value) in before {
+        client.batch_execute(&setting(name, &value)).await.map_err(|e| format!("{name}: {}", pg_message(&e)))?;
+    }
+    outcome
 }
 
 async fn analyze_postgres(client: &Client, sql: &str) -> Result<Value, String> {

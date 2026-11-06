@@ -181,6 +181,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly fresh?: Fresh | undefined;
   /** The `.sql` file the module was built from, relative to the project's root, for messages. */
   readonly source?: string | undefined;
+  /** Whether a Postgres array column may hold nested arrays, as `allow_nested_arrays: true` says: none is refused. */
+  readonly nestedArrays?: boolean | undefined;
   /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
   readonly sqlcommenter?: boolean | undefined;
   /** The checks of a typed JSON, structured or cast parameter (src/checks.ts), which a build step passes where the statement has one. */
@@ -221,8 +223,8 @@ export function execute<D extends Dialect>(
   const c = underneath(client as AnyClient);
   if (query.dialect === "sqlite" && (isSyncSqlite(c) || isDurableObjectSql(c))) return withCodecs(query, executeSyncSqlite(c, query, params));
   const nonFinite = query.dialect === "postgres" && query.nonFinite !== undefined && query.columns !== undefined ? rowMasks(query.columns, query.nonFinite) : [];
-  // A Postgres array column holds the dimensions its type declares and no more (src/values.ts, `withinDimensions`).
-  const arrays = query.dialect === "postgres" ? (query.columns ?? []).filter(([, kind]) => kind.endsWith("[]")) : [];
+  // A Postgres array column holds the dimensions its type declares and no more (src/values.ts, `withinDimensions`), unless the project lets it nest.
+  const arrays = query.dialect === "postgres" && !query.nestedArrays ? (query.columns ?? []).filter(([, kind]) => kind.endsWith("[]")) : [];
   if (!nonFinite.length && !arrays.length) return withCodecs(query, executeAsync(c, query, params));
   return withCodecs(query, executeAsync(c, query, params).then((rows) => {
     for (const row of rows as Record<string, unknown>[]) {
