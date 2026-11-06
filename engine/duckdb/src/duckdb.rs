@@ -186,6 +186,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         cardinality,
         cardinality_reason: reason,
         key: None,
+        unique: Vec::new(),
         ordered: false,
         rewritten,
         style: lexed.style,

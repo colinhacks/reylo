@@ -723,7 +723,11 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
 /// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
 /// text, in order, `None` for NULL.
 fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
-    let key = analysis["key"].as_array()?;
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
+}
+
+fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let names: Vec<&str> = key.iter().map(|k| k.as_str().unwrap_or("?")).collect();
     let Some(at) = names.iter().map(|name| columns.iter().position(|c| c["name"].as_str() == Some(name))).collect::<Option<Vec<usize>>>() else {
         return Some(format!("key ({}) names a column the statement does not return", names.join(", ")));

@@ -82,6 +82,9 @@
         },
         {
           "$ref": "#/$defs/TaggedUnionType"
+        },
+        {
+          "$ref": "#/$defs/RowsType"
         }
       ]
     },
@@ -1058,6 +1061,53 @@
       ],
       "unevaluatedProperties": false
     },
+    "RowsType": {
+      "description": "Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name.",
+      "type": "object",
+      "allOf": [
+        {
+          "$ref": "#/$defs/Base"
+        }
+      ],
+      "properties": {
+        "kind": {
+          "const": "rows"
+        },
+        "cardinality": {
+          "description": "How many rows: exactly one, at most one, any number, or none (a write without `RETURNING`).",
+          "enum": [
+            "one",
+            "at_most_one",
+            "many",
+            "none"
+          ]
+        },
+        "columns": {
+          "description": "In order; empty where there are no rows.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Column"
+          }
+        },
+        "unique": {
+          "description": "Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[[\"id\"], [\"email\"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known.",
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "required": [
+        "kind",
+        "cardinality",
+        "columns"
+      ],
+      "unevaluatedProperties": false
+    },
     "StatementDescriptor": {
       "description": "What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from.",
       "type": "object",
@@ -1094,21 +1144,9 @@
             "$ref": "#/$defs/Param"
           }
         },
-        "columns": {
-          "description": "In order; empty when the statement returns no rows.",
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/Column"
-          }
-        },
-        "cardinality": {
-          "description": "How many rows the statement returns: exactly one, at most one, any number, or none (a write without `RETURNING`).",
-          "enum": [
-            "one",
-            "at_most_one",
-            "many",
-            "none"
-          ]
+        "result": {
+          "description": "What the statement returns.",
+          "$ref": "#/$defs/RowsType"
         },
         "diagnostics": {
           "description": "What the database or the introspection reports against the statement, each at its place, so an editor can underline it. A statement that does not parse has a diagnostic and no columns.",
@@ -1123,8 +1161,7 @@
         "dialect",
         "sql",
         "params",
-        "columns",
-        "cardinality",
+        "result",
         "diagnostics"
       ]
     },

@@ -173,6 +173,8 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
+            // A relation nested in a value, as a list of its rows.
+            Kind::Rows(_) => json!({"type": "array", "items": {"type": "object"}}),
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);
