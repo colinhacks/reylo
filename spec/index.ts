@@ -26,7 +26,6 @@ export type Type =
   | GeometryType
   | XmlType
   | OpaqueType
-  | AnyType
   | UnknownType
   | TaggedUnionType;
 
@@ -321,15 +320,10 @@ export interface XmlFragment extends Base {
   fragment: true;
 }
 
-/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, and Postgres `money`, whose scale follows the session's locale. Its `name` is all the format says; what a value looks like is the driver's to decide. */
+/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `name` is all the format says; what a value looks like is the driver's to decide. */
 export interface OpaqueType extends Base {
   kind: "opaque";
   name: string;
-}
-
-/** The database's own type admits a value of any type, each carrying its type, which is one of this format's types: SQL Server `sql_variant`, Oracle `ANYDATA`. */
-export interface AnyType extends Base {
-  kind: "any";
 }
 
 /** Nothing is known about the values. */

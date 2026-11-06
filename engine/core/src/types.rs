@@ -61,8 +61,6 @@ pub enum Kind {
     Xml(XmlType),
     /// A type the database knows and the format does not structure; its `name` is all it says.
     Opaque,
-    /// A value of any type, each carrying its type: SQL Server `sql_variant`, Oracle `ANYDATA`.
-    Any,
     /// Nothing is known about the values.
     Unknown,
     /// One of several alternatives, each named by the tag every value carries: DuckDB's `UNION`.
@@ -664,9 +662,8 @@ impl Kind {
             Kind::Geometry(_) => 20,
             Kind::Xml(_) => 21,
             Kind::Opaque => 22,
-            Kind::Any => 23,
-            Kind::Unknown => 24,
-            Kind::TaggedUnion(_) => 25,
+            Kind::Unknown => 23,
+            Kind::TaggedUnion(_) => 24,
         }
     }
 
@@ -696,7 +693,6 @@ impl Kind {
             Kind::Geometry(_) => "geometry",
             Kind::Xml(_) => "xml",
             Kind::Opaque => "opaque",
-            Kind::Any => "any",
             Kind::Unknown => "unknown",
             Kind::TaggedUnion(_) => "tagged_union",
         }
@@ -1315,7 +1311,6 @@ mod tests {
         round_trip(json!({"kind": "uuid", "name": "uuid"}));
         round_trip(json!({"kind": "datetime", "tick": "1/1000000", "name": "timestamp"}));
         round_trip(json!({"kind": "multirange", "subtype": {"kind": "integer", "bits": 32, "name": "int4"}, "name": "int4multirange"}));
-        round_trip(json!({"kind": "any"}));
     }
 
     #[test]

@@ -43,7 +43,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 What an implementation needs, and the format does not state on every node.
 
-What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER`, `NUMERIC` or untyped column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A STRICT column holds its declared type alone.
+What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER` or `NUMERIC` column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A column with no declared type is `unknown`. A STRICT column holds its declared type alone.
 
 Which types hold infinities and NaN: Postgres's floats (both), `numeric` (NaN, and with no size the infinities), `date`, `timestamp`, `timestamptz` and, from version 17, `interval`; SQLite's `REAL` holds the infinities and stores a NaN as NULL. MySQL has none, refusing NaN and the infinities even in `FLOAT` and `DOUBLE`.
 

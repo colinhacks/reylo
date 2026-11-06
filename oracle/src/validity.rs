@@ -5,14 +5,11 @@ use serde_json::{Map, Value};
 use std::path::Path;
 use std::sync::OnceLock;
 
-/// The format's JSON Schema, compiled once, and the index of its definition of a type. A duration's `max` takes a `pattern` with a lookahead, which this validator's regular expressions cannot read, so the pattern is left out here: [`Type::check`] holds `max` to that form and to its canonical spelling.
+/// The format's JSON Schema, compiled once, and the index of its definition of a type.
 fn schema() -> &'static (boon::Schemas, boon::SchemaIndex) {
     static SCHEMA: OnceLock<(boon::Schemas, boon::SchemaIndex)> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut source: Value = serde_json::from_str(include_str!("../../spec/typedefs.schema.json")).expect("the format's JSON Schema is JSON");
-        if let Some(Value::Object(max)) = source.pointer_mut("/$defs/DurationType/properties/max") {
-            max.remove("pattern");
-        }
+        let source: Value = serde_json::from_str(include_str!("../../spec/typedefs.schema.json")).expect("the format's JSON Schema is JSON");
         let id = source["$id"].as_str().expect("the format's JSON Schema names its $id").to_string();
         let mut schemas = boon::Schemas::new();
         let mut compiler = boon::Compiler::new();
