@@ -99,6 +99,22 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
     // A column named `length`, which a libSQL row also holds its width under.
     const { query } = await built(root, "select 7 as length, 8 as b");
     assert.deepEqual(row(await query.run(libsql)), { length: 7, b: 8 });
+    // A column named `__proto__` is an own property of the row, read by position where the driver would assign it. sqlite3 and the sqlite wrapper have no such reading, and refuse it by name.
+    const proto = (await built(root, `select 1 as "__proto__", 2 as b`)).query;
+    for (const [name, client, sync] of clients) {
+      if (name === "sqlite3" || name === "sqlite") {
+        await assert.rejects(proto.run(client), /cannot return a column named __proto__/, name);
+        continue;
+      }
+      for (const got of [await proto.run(client), ...(sync ? [proto.runSync(client)] : [])]) {
+        const first = got as Record<string, unknown>;
+        assert.ok(first, name);
+        assert.equal(Object.hasOwn(first, "__proto__"), true, name);
+        assert.equal(Object.getOwnPropertyDescriptor(first, "__proto__")!.value, 1, name);
+        assert.equal(first.b, 2, name);
+        assert.equal(Object.getPrototypeOf(first), Object.prototype, name);
+      }
+    }
   } finally {
     own.close();
     better.close();
@@ -128,6 +144,9 @@ test("MySQL: a row holds the columns its type declares, where the driver writes 
       ["select 'hey', :s::text", { s: "hey" }, ["hey", "?"], ["hey", "hey"]],
       // The name a value would give its column, on the object's prototype.
       ["select :s::text", { s: "__proto__" }, ["?"], ["__proto__"]],
+      // A name mysql2's metadata keeps a trailing space on.
+      ["select a, true from t", undefined, ["a", "true"], [1, true]],
+      ["select current_user", undefined, ["current_user"], [undefined]],
     ];
     for (const [raw, params, names, values] of cases) {
       const { query, columns } = await built(root, raw);
@@ -135,8 +154,39 @@ test("MySQL: a row holds the columns its type declares, where the driver writes 
       for (const [name, client] of [["mysql2", own.db], ["mariadb", maria]] as const) {
         const got = row(await query.run(client, params));
         assert.deepEqual(sorted(Object.keys(got)), sorted(names), `${name}: ${raw}`);
-        assert.deepEqual(names.map((n) => got[n]), values, `${name}: ${raw}`);
+        // A value of the session's own, known only by its being there.
+        assert.deepEqual(names.map((n, i) => (values[i] === undefined ? undefined : got[n])), values, `${name}: ${raw}`);
+        if (values.includes(undefined)) assert.equal(typeof got[names[0]!], "string", `${name}: ${raw}`);
       }
+    }
+    // A column named `__proto__`: the row holds it as its own, and the connection goes on.
+    const { query: proto } = await built(root, "select '__proto__', 2 as b");
+    const { query: after } = await built(root, "select 1 as a");
+    for (const [name, client] of [["mysql2", own.db], ["mariadb", maria]] as const) {
+      const first = await proto.run(client);
+      assert.equal(Object.getOwnPropertyDescriptor(first, "__proto__")?.value, "__proto__", name);
+      assert.equal(first.b, 2n, name);
+      assert.deepEqual(Object.keys(row(await after.run(client))), ["a"], name);
+    }
+  } finally {
+    await maria.end();
+    await closeSessions();
+    await own.drop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("MySQL: a project's codecs reach a column whose name mysql2 reports with a trailing space", { skip: mysqlLive }, async () => {
+  const own = await mysqlDatabase("column_codecs");
+  const root = project(own.url, ["mysql2", "mariadb"]);
+  writeFileSync(join(root, ".reylo.yaml"), "js:\n  codecs:\n    decimal: number\n");
+  const u = new URL(own.url);
+  const maria = await driver("mariadb").createConnection({ host: u.hostname, port: Number(u.port), user: decodeURIComponent(u.username) || "root", password: decodeURIComponent(u.password), database: u.pathname.slice(1), allowPublicKeyRetrieval: true });
+  try {
+    const { query, columns } = await built(root, "select case when true then 1.5 end, 1 as y");
+    for (const [name, client] of [["mysql2", own.db], ["mariadb", maria]] as const) {
+      const got = row(await query.run(client));
+      assert.equal(got[columns[0]!], 1.5, name);
     }
   } finally {
     await maria.end();
