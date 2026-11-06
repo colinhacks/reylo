@@ -28,6 +28,11 @@ const FOLD: Record<string, readonly string[]> = {
   duckdb: ['#parameters', '#drivers'],
 };
 
+/** The pages with no table of contents, by slug, each with the width of its one centered column: a page whose whole point is one wide table. */
+const CENTERED: Record<string, string> = {
+  compare: '56rem',
+};
+
 /**
  * Run at build time only, when each page is rendered to a file (react-router.config.ts): the page
  * as the meta tags and the shell need it, without its content, which the component loads itself
@@ -130,6 +135,7 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       // An h4 (Usage's database under `.run()`) stays on the page but out of the table.
       toc={files.flatMap((file) => file.toc).filter((item) => item.depth <= 3)}
       fold={FOLD[slug] ?? []}
+      centered={CENTERED[slug]}
       brand={<Brand />}
       github={githubUrl}
       before={main ? <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData(description) }} /> : undefined}
