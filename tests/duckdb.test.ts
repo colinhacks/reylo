@@ -62,7 +62,7 @@ function shown(t: EngineType): string {
   if (t.kind === "array") return `${shown(t.element.type)}[]`;
   if (t.kind === "record") return `struct(${t.fields.map((f) => `${f.name} ${shown(f.type)}`).join(", ")})`;
   if (t.kind === "text" && t.enum !== undefined) return `enum(${t.enum.join(", ")})`;
-  return "name" in t && t.name !== undefined ? t.name : t.kind;
+  return "label" in t && t.label !== undefined ? t.label : t.kind;
 }
 
 /** Each column as `name: type`, with `?` where it may be NULL. */
@@ -75,8 +75,8 @@ test("DuckDB: each column is typed by the prepared statement, and may be NULL un
   assert.equal(one.cardinality, "at_most_one");
   assert.equal(one.kind, "select");
   assert.equal(one.columns[1]!.comment, "What happened");
-  assert.deepEqual(one.columns[4]!.type, { kind: "record", fields: [{ name: "host", type: { kind: "text", name: "varchar" }, nullable: true }, { name: "pid", type: { kind: "integer", bits: 32, name: "integer" }, nullable: true }] });
-  assert.deepEqual(one.columns[5]!.type, { kind: "text", enum: ["happy", "sad"], name: "enum" });
+  assert.deepEqual(one.columns[4]!.type, { kind: "record", fields: [{ name: "host", type: { kind: "text", label: "varchar" }, nullable: true }, { name: "pid", type: { kind: "integer", bits: 32, label: "integer" }, nullable: true }] });
+  assert.deepEqual(one.columns[5]!.type, { kind: "text", enum: ["happy", "sad"], label: "enum" });
   // An outer join pads its other side with NULL, unless a filter shows the row was matched.
   assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id")), ["id: integer", "name: varchar?"]);
   assert.deepEqual(columns(await analyze(root, "select l.id, t.name from logs l left join teams t on t.id = l.team_id where t.id is not null")), ["id: integer", "name: varchar"]);

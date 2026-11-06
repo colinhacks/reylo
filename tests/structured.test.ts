@@ -470,7 +470,7 @@ select value ->> '$.title', value ->> '$.done' from json_each(:todos::json('{
   try {
     const a = await analysis(root, url, insert);
     const p = a.params[0]!;
-    assert.deepEqual([p.name, p.type.kind === "json" ? p.type.name : undefined, p.type.kind], ["todos", "json", "json"]);
+    assert.deepEqual([p.name, p.type.kind === "json" ? p.type.label : undefined, p.type.kind], ["todos", "json", "json"]);
     // `done` has a default, so the caller may leave it out; the run time fills it.
     assert.deepEqual((schemaOf(p.type) as { items: { required: string[] } } | undefined)?.items.required, ["title"]);
     const q = await built(root, url, "insert_todos", insert);

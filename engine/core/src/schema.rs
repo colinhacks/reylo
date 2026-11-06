@@ -71,12 +71,12 @@ fn member_schema(ty: &Type, opts: SchemaOptions) -> Value {
 
 /// The type's name without the schema that qualifies it: `hstore` of `public.hstore`.
 fn bare_name(ty: &Type) -> &str {
-    ty.name.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("")
+    ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("")
 }
 
 /// A value the database writes as its text, where its own JSON form is a string too.
 fn text_of(ty: &Type) -> Value {
-    json!({"type": "string", "description": format!("pg type {}", ty.name.as_deref().unwrap_or(ty.kind.name()))})
+    json!({"type": "string", "description": format!("pg type {}", ty.label.as_deref().unwrap_or(ty.kind.name()))})
 }
 
 /// The values JSON writes as text when a float or a decimal holds them.

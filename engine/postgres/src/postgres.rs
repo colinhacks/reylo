@@ -861,7 +861,7 @@ impl<'a> Engine<'a> {
                     let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     // The document under the column's own type's name, `json` or `jsonb`.
-                    let ty = Type { name: registry.render(col.type_oid).name, ..resolved.ty };
+                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
                     (ty, !resolved.non_null)
                 }
                 // A whole row of no type the catalog has, or an array of them: the row's fields,
@@ -876,7 +876,7 @@ impl<'a> Engine<'a> {
                 // included; what it builds is its document.
                 (None, Some(built)) => {
                     unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (Type { name: registry.render(col.type_oid).name, ..built.ty.clone() }, col.nullable || !built.non_null)
+                    (Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, col.nullable || !built.non_null)
                 }
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
@@ -3758,8 +3758,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
-    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
-    let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
+    let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {
@@ -4307,8 +4307,8 @@ fn identifies(ty: &Type) -> bool {
     match &ty.kind {
         TyKind::Json(_) | TyKind::Unknown => false,
         TyKind::Array(array) => !array.any_depth,
-        TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
-        TyKind::Opaque => ty.name.as_deref() != Some("record"),
+        TyKind::Record(_) => matches!(ty.label.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
+        TyKind::Opaque => ty.label.as_deref() != Some("record"),
         _ => true,
     }
 }

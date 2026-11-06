@@ -3,8 +3,8 @@
 import type { EngineType, Field } from "../src/engine-type.ts";
 
 const float = (exponent_bits: number, mantissa_bits: number, special = true): EngineType => ({ kind: "float", exponent_bits, mantissa_bits, ...(special ? { infinity: true, nan: true } : {}) });
-const float8 = { ...float(11, 52), name: "float8" } as EngineType;
-const point: EngineType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
+const float8 = { ...float(11, 52), label: "float8" } as EngineType;
+const point: EngineType = { kind: "record", label: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const points = (min: number, exact?: number): EngineType => ({ kind: "array", element: { type: point }, size: exact === undefined ? { min } : { exact } });
 /** Postgres's geometric types, as the registry structures them: each an object of its fields, a segment and a polygon arrays of points. */
 const geometric: Record<string, EngineType> = {
@@ -28,7 +28,7 @@ export function pg(name: string): EngineType {
     float4: float(8, 23),
     float8: float(11, 52),
     numeric: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true },
-    text: { kind: "text" }, varchar: { kind: "text" }, bpchar: { kind: "text" }, name: { kind: "text" },
+    text: { kind: "text" }, varchar: { kind: "text" }, bpchar: { kind: "text" }, label: { kind: "text" },
     bytea: { kind: "bytes" },
     uuid: { kind: "uuid" },
     date: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true },
@@ -40,12 +40,12 @@ export function pg(name: string): EngineType {
     json: { kind: "json" }, jsonb: { kind: "json" },
     xml: { kind: "xml", fragment: true },
     ...geometric,
-    int4range: { kind: "range", subtype: { kind: "integer", bits: 32, name: "int4" } },
-    int8range: { kind: "range", subtype: { kind: "integer", bits: 64, name: "int8" } },
-    numrange: { kind: "range", subtype: { kind: "decimal", min_scale: 0, max_scale: 16383, infinity: true, nan: true, name: "numeric" } },
-    tstzrange: { kind: "range", subtype: { kind: "instant", tick: "1/1000000", infinity: true, name: "timestamptz" } },
-    daterange: { kind: "range", subtype: { kind: "date", infinity: true, name: "date" } },
-    int4multirange: { kind: "multirange", subtype: { kind: "integer", bits: 32, name: "int4" } },
+    int4range: { kind: "range", subtype: { kind: "integer", bits: 32, label: "int4" } },
+    int8range: { kind: "range", subtype: { kind: "integer", bits: 64, label: "int8" } },
+    numrange: { kind: "range", subtype: { kind: "decimal", min_scale: 0, max_scale: 16383, infinity: true, nan: true, label: "numeric" } },
+    tstzrange: { kind: "range", subtype: { kind: "instant", tick: "1/1000000", infinity: true, label: "timestamptz" } },
+    daterange: { kind: "range", subtype: { kind: "date", infinity: true, label: "date" } },
+    int4multirange: { kind: "multirange", subtype: { kind: "integer", bits: 32, label: "int4" } },
     bit: { kind: "array", element: { type: { kind: "boolean" } } },
     macaddr: { kind: "bytes", size: { exact: 6 } },
   };
@@ -58,10 +58,10 @@ export function pg(name: string): EngineType {
     geography: { kind: "geometry", model: "geodetic" },
     citext: { kind: "text" },
   };
-  if (known[name]) return { ...known[name], name } as EngineType;
-  if (extensions[name]) return { ...extensions[name], name: `public.${name}` } as EngineType;
+  if (known[name]) return { ...known[name], label: name } as EngineType;
+  if (extensions[name]) return { ...extensions[name], label: `public.${name}` } as EngineType;
   // `record` and every other type with no structure of its own here.
-  return { kind: "opaque", name: ["record", "money", "xid", "void", "tsvector"].includes(name) ? name : `public.${name}` };
+  return { kind: "opaque", label: ["record", "money", "xid", "void", "tsvector"].includes(name) ? name : `public.${name}` };
 }
 
 /** A MySQL type by its name, as the engine's prepare reading writes it (engine/mysql `mysql_types.rs`). */
@@ -79,16 +79,16 @@ export function my(name: string, length?: number): EngineType {
     json: { kind: "json" },
     set: { kind: "set", element: { type: { kind: "text" } } },
   };
-  return { ...known[name]!, name } as EngineType;
+  return { ...known[name]!, label: name } as EngineType;
 }
 
 /** A SQLite value by the analysis's affinity name for it, as the engine hands it on (engine/sqlite `descriptor`): a computed storage class, a column declared BIGINT's or BOOLEAN's under that name, a NUMERIC's union under its own. */
 export function lite(name: string): EngineType {
   const text: EngineType = { kind: "text", ill_formed: "utf8" };
-  const stored = (n: string): EngineType => ({ kind: "union", name: n, members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, text, { kind: "bytes" }] });
+  const stored = (n: string): EngineType => ({ kind: "union", label: n, members: [{ kind: "integer", bits: 64 }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, text, { kind: "bytes" }] });
   switch (name) {
     case "integer": return { kind: "integer", bits: 64 };
-    case "int8": return { kind: "integer", bits: 64, name: "BIGINT" };
+    case "int8": return { kind: "integer", bits: 64, label: "BIGINT" };
     case "real": return { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true };
     case "text": return text;
     case "blob": return { kind: "bytes" };
@@ -99,15 +99,15 @@ export function lite(name: string): EngineType {
 }
 
 /** An array of `element`, whose elements may be NULL unless `nullable` is false; a Postgres array of any depth, as a column's is. */
-export const array = (element: EngineType, nullable = true, name?: string): EngineType => ({ kind: "array", any_depth: true, element: { type: element, ...(nullable ? { nullable: true } : {}) }, ...(name === undefined ? {} : { name }) });
+export const array = (element: EngineType, nullable = true, name?: string): EngineType => ({ kind: "array", any_depth: true, element: { type: element, ...(nullable ? { nullable: true } : {}) }, ...(name === undefined ? {} : { label: name }) });
 
 /** A text type whose values are `labels`: an enum, or a column a CHECK keeps to them. */
-export const enumOf = (name: string, labels: string[]): EngineType => ({ kind: "text", enum: labels, name });
+export const enumOf = (name: string, labels: string[]): EngineType => ({ kind: "text", enum: labels, label: name });
 
 export const field = (name: string, type: EngineType, nullable = false, optional = false): Field => ({ name, type, ...(nullable ? { nullable: true } : {}), ...(optional ? { optional: true } : {}) });
 
 /** A record of `fields`: a composite under its name, a row, an object a statement builds. */
-export const record = (fields: Field[], name?: string): EngineType => ({ kind: "record", fields, ...(name === undefined ? {} : { name }) });
+export const record = (fields: Field[], name?: string): EngineType => ({ kind: "record", fields, ...(name === undefined ? {} : { label: name }) });
 
 /** JSON a statement built, of `content`. */
 export const doc = (content: EngineType, nullable = false): EngineType => ({ kind: "json", content: { type: content, ...(nullable ? { nullable: true } : {}) } });

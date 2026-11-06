@@ -153,7 +153,7 @@ test("analyze reads a Postgres statement over its own connection, the server's v
     assert.equal(line.dialect.name, "postgres");
     assert.match(line.dialect.version, /^\d+(\.\d+)?$/);
     assert.equal(line.sql, "select id, name from users where id = $1");
-    assert.deepEqual(line.params, [{ name: "id", type: { kind: "integer", bits: 32, name: "int4" } }]);
+    assert.deepEqual(line.params, [{ name: "id", type: { kind: "integer", bits: 32, label: "int4" } }]);
     assert.deepEqual(line.result.columns.map((c) => [c.name, c.type.kind, c.nullable ?? false]), [["id", "integer", false], ["name", "text", false]]);
     assert.equal(line.result.cardinality, "at_most_one");
   } finally {

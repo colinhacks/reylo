@@ -4268,7 +4268,7 @@ mod tests {
 
     /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
     fn affinity_of(t: &Type) -> Option<&'static str> {
-        let name = t.name.as_deref().unwrap_or("");
+        let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
             Kind::Boolean => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),

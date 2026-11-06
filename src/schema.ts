@@ -33,7 +33,7 @@ const GEOJSON: Schema = { type: "object", properties: { type: { type: "string" }
 
 /** A SQLite value's storage class, as the affinity of the declared type the engine traced it to names it, or of the value it computes. */
 function sqliteClass(t: EngineType): string {
-  const name = "name" in t ? (t.name ?? "") : "";
+  const name = "label" in t ? (t.label ?? "") : "";
   switch (t.kind) {
     case "boolean": return "bool";
     case "integer": return sqliteWide(name) ? "int8" : "integer";

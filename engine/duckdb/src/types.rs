@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn each_kind_of_type() {
         assert_eq!(of(&t(r#"{"id":"HUGEINT"}"#)).short(), "hugeint");
-        assert_eq!(serde_json::to_value(of(&t(r#"{"id":"UINTEGER"}"#))).unwrap(), serde_json::json!({"kind": "integer", "bits": 32, "unsigned": true, "name": "uinteger"}));
+        assert_eq!(serde_json::to_value(of(&t(r#"{"id":"UINTEGER"}"#))).unwrap(), serde_json::json!({"kind": "integer", "bits": 32, "unsigned": true, "label": "uinteger"}));
         assert_eq!(of(&t(r#"{"id":"DECIMAL","width":10,"scale":2}"#)).short(), "decimal(10,2)");
         assert_eq!(of(&t(r#"{"id":"VARCHAR","alias":"JSON"}"#)), Type::json().named("json"));
         assert_eq!(of(&t(r#"{"id":"LIST","child":{"id":"VARCHAR"}}"#)).short(), "varchar?[]");

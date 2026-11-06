@@ -201,7 +201,7 @@ function sqliteDeclaredKind(declared: string): Kind {
 /** Postgres's built-in geometric types, which the type descriptor structures as records (`lseg` and `polygon` as arrays of points) and names with no schema, as it names every built-in type. */
 const GEOMETRIC: ReadonlySet<string> = new Set<Geometric>(["point", "line", "lseg", "box", "path", "polygon", "circle"]);
 /** The geometric type a descriptor is, by its whole name: a created type of the same name is named with its schema. */
-const geometric = (t: EngineType): Geometric | undefined => ("name" in t && t.name !== undefined && GEOMETRIC.has(t.name) ? (t.name as Geometric) : undefined);
+const geometric = (t: EngineType): Geometric | undefined => ("label" in t && t.label !== undefined && GEOMETRIC.has(t.label) ? (t.label as Geometric) : undefined);
 
 /** A Postgres row value's kind: `(…)`, each field `[name, kind]`, and an array field's delimiter third where it is not a comma. */
 export const isRowKind = (kind: Kind): boolean => kind.startsWith("(");
@@ -280,7 +280,7 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "map":
       return dialect === "postgres" && name === "hstore" ? "hstore" : "unknown";
     case "union":
-      if (dialect === "sqlite") return "name" in t && t.name !== undefined ? sqliteDeclaredKind(t.name) : "unknown";
+      if (dialect === "sqlite") return "label" in t && t.label !== undefined ? sqliteDeclaredKind(t.label) : "unknown";
       if (dialect === "postgres" && (name === "inet" || name === "cidr")) return "text";
       if (dialect === "duckdb") return "unknown";
       return either(t.members.map((m) => columnKind(m, dialect)));
@@ -857,7 +857,7 @@ export function postgresLiteral(t: EngineType, v: unknown, fail: (message: strin
   if (shape !== undefined) return geometricText(shape, v) ?? fail(`a ${shape}, ${TS_TYPE[shape]}; got ${describe(v)}.`);
   const kind = columnKind(t, "postgres");
   if (t.kind === "record" && isRowKind(kind)) {
-    const name = t.name ?? "a row value";
+    const name = t.label ?? "a row value";
     if (!isObject(v)) return fail(`${name}, an object of its fields (${t.fields.map((f) => f.name).join(", ")}); got ${describe(v)}.`);
     const names = new Set(t.fields.map((f) => f.name));
     const extra = Object.keys(v).find((key) => !names.has(key));

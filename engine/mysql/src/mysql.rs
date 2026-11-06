@@ -486,7 +486,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             };
             // The prepare names an ENUM or a SET column without its labels.
             let ty = match labelled_of(c) {
-                Some(labelled) if matches!(ty.name.as_deref(), Some("enum" | "set")) => labelled,
+                Some(labelled) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
                 _ => ty,
             };
             Column { comment: comment_of(c), ..Column::new(c.name.clone(), ty, !not_null) }
