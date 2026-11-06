@@ -419,6 +419,10 @@
             "size": {
               "max": 255
             },
+            "pattern": {
+              "dialect": "like",
+              "source": "%@%"
+            },
             "name": "varchar"
           }
         },
