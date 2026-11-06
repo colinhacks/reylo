@@ -9,6 +9,7 @@ use crate::api::{Analysis, Column, DbError, Diagnostic, DuckdbDescribe, Param};
 use crate::catalog::{self, Catalog};
 use crate::host::{Host, Lazy};
 use crate::nulls::{self, Ctx, Out};
+use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
 use reylo_engine_core::types::{Cardinality, StatementKind, Type};
@@ -191,6 +192,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,
@@ -203,8 +205,55 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
-    reylo_engine_core::analysis::clashes(sql, &mut analysis, &|_| None);
+    reylo_engine_core::analysis::names(sql, &mut analysis, shaped.as_deref().and_then(result_targets).as_deref(), &|_| None);
     Some(analysis)
+}
+
+/// How the statement writes its result columns: a query's select list, the first arm's of a set
+/// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
+/// and for a select list the tree does not say the columns of.
+fn result_targets(statement: &Statement) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr) -> Option<Vec<ResultTarget>> {
+        match set {
+            // `from t` alone selects every column.
+            SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
+            SetExpr::Select(s) => list(&s.projection),
+            SetExpr::Query(q) => body(&q.body),
+            SetExpr::SetOperation { left, .. } => body(left),
+            // `values (1, 2)`: named col0 and col1 by DuckDB.
+            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed; values.rows.first()?.len()]),
+            SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
+            _ => None,
+        }
+    }
+    fn list(items: &[SelectItem]) -> Option<Vec<ResultTarget>> {
+        items
+            .iter()
+            .map(|item| match item {
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e) => Some(ResultTarget::Named),
+                // `columns('a.*')` stands for the columns it matches, as a `*` does.
+                SelectItem::UnnamedExpr(Expr::Function(f)) if f.name.to_string().eq_ignore_ascii_case("columns") => Some(ResultTarget::Star),
+                SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed),
+                SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => Some(ResultTarget::Star),
+                _ => None,
+            })
+            .collect()
+    }
+    fn read_as_it_is(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            Expr::Nested(e) => read_as_it_is(e),
+            _ => false,
+        }
+    }
+    match statement {
+        Statement::Query(q) => body(&q.body),
+        Statement::Insert(i) => list(i.returning.as_deref()?),
+        Statement::Update(u) => list(u.returning.as_deref()?),
+        Statement::Delete(d) => list(d.returning.as_deref()?),
+        _ => None,
+    }
 }
 
 /// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.

@@ -770,6 +770,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/#values)). Among several columns, such an expression is a type error where Postgres names it `?column?`, as it does `id + 1`; a function's name, like `lower`, passes.
+
 <Rules>
 
 **Unique keys**
@@ -931,6 +933,10 @@ select o.id, o.total, o.placed_at
 from orders o
 where o.paid
 ```
+
+**Cardinality**
+
+The query's Standard Query object says how many rows its statement returns as `cardinality`, so a driver tells a list of rows from one value that is itself an array, as in `select array_agg(id) from orders`.
 
 **Total order**
 

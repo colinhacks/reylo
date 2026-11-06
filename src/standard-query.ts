@@ -54,11 +54,17 @@ export declare namespace StandardQueryV1 {
      */
     decode(rows: readonly (readonly RawValue<D>[])[]): Output;
     /**
-     * The result key: output columns, by name, that identify each row of the result, since no two
-     * rows the statement returns agree on all of them (a null counting as equal to another null).
-     * A driver comparing two results of the query tells by it that a row changed in place rather
-     * than one row going and another coming. Never empty: absent where the statement returns one
-     * row at most, which its cardinality says, and where no key is known.
+     * How many rows the statement returns: any number, exactly one, at most one, or none. A driver
+     * that treats a list of rows otherwise than one value reads it here, since an output that is an
+     * array may be one row's value (`select array_agg(id) from t`). Absent where it is not known.
+     */
+    readonly cardinality?: StandardQueryV1.Cardinality;
+    /**
+     * The result key: columns of `columns`, by name, that identify each row of the result, since no
+     * two rows the statement returns agree on all of them (a null counting as equal to another
+     * null). A driver comparing two results of the query tells by it that a row changed in place
+     * rather than one row going and another coming. Never empty: absent where the statement returns
+     * one row at most, which its cardinality says, and where no key is known.
      */
     readonly key?: readonly string[];
     /**
@@ -89,11 +95,14 @@ export declare namespace StandardQueryV1 {
 
   /** One output column of a query: its name, and the decoder of its raw values. */
   export interface Column<D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect> {
-    /** The column's name, as the output's rows are keyed by it. */
+    /** The column's name, as the rows `output` takes are keyed by it, and as the database names it. A driver keys a row by this name, by position, since the name it reads from the database can differ. */
     readonly name: string;
     /** Maps one raw value of the column, never NULL, to its value in the output's rows. */
     decode(value: Exclude<RawValue<D>, null>): unknown;
   }
+
+  /** How many rows a statement returns: any number, exactly one, at most one, or none. */
+  export type Cardinality = "many" | "one" | "maybeOne" | "none";
 
   /** The database a statement is written for. */
   export type Dialect =
@@ -163,6 +172,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   const statementText = () => (text ??= sentText(module, compile(module).text));
   return {
     dialect: module.dialect,
+    ...(module.cardinality === undefined ? {} : { cardinality: module.cardinality }),
     ...(module.key === undefined ? {} : { key: module.key }),
     ...(columns === undefined ? {} : { columns: Object.freeze(columns) }),
     output: (rows) => materialize(rows as Record<string, unknown>[]),

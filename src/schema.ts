@@ -19,6 +19,7 @@ type Analysis = {
   params: readonly { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: JsonSchema; members?: readonly { written: string; schema?: JsonSchema }[] }[];
   columns: readonly { name: string; type: EngineType; nullable?: boolean; comment?: string }[];
   cardinality: "one" | "at_most_one" | "many" | "none";
+  value?: boolean;
 };
 
 /** The schema admitting null as well: a bare `type` gets `"null"` beside it, anything else an `anyOf` with null. */
@@ -357,12 +358,14 @@ export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codec
     const s = p.schema;
     return p.nullable === true || p.optional === true || (s !== null && typeof s === "object" && s !== undefined && "default" in s);
   }, true);
-  const row = object(analysis.columns, (i) => {
-    const c = analysis.columns[i]!;
+  const column = (c: Analysis["columns"][number]) => {
     const s = typeSchema(c.type, dialect, false, false, false, undefined, codecs);
     return described(c.nullable ? nullable(s) : s, c.comment);
-  });
-  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? { anyOf: [row, { type: "null" }] } : { type: "null" };
+  };
+  // A statement whose one column has no name gives that column's values.
+  const value = analysis.value ? analysis.columns[0] : undefined;
+  const row = value ? (column(value) as Schema) : object(analysis.columns, (i) => column(analysis.columns[i]!));
+  const output: Schema = analysis.cardinality === "many" ? { type: "array", items: row } : analysis.cardinality === "one" ? row : analysis.cardinality === "at_most_one" ? (value?.nullable ? row : { anyOf: [row, { type: "null" }] }) : { type: "null" };
   const about = analysis.comment === undefined ? {} : { description: analysis.comment };
   return { input: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...input }, output: { $schema: "https://json-schema.org/draft/2020-12/schema", ...about, ...output } };
 }

@@ -105,20 +105,93 @@ pub fn odd_pairs(sql: &str, lexed: &Lexed, names: &[&str]) -> Vec<Diagnostic> {
     found
 }
 
-/// Two result columns of one name. A driver builds each row as an object keyed by name, so it
-/// keeps the last of them, and nothing a type says of the first is true of the row. One diagnostic
-/// at each later column of a name: at the bytes `at` gives for that column (its index in
-/// `analysis.columns`), which the database's own parse knows, else on the statement's first word.
-pub fn clashes(sql: &str, analysis: &mut Analysis, at: &dyn Fn(usize) -> Option<(usize, usize)>) {
+/// How a statement's select list or `RETURNING` writes a result column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultTarget {
+    /// A `*`, which stands for any number of columns, each named by what it reads.
+    Star,
+    /// An alias, or a column read as it is: the statement says the name.
+    Named,
+    /// An expression with no alias: the statement says no name, and the database makes one up.
+    Unnamed,
+}
+
+/// The diagnostic code of an unnamed result column whose made-up name is no identifier.
+pub const UNNAMED_COLUMN: u32 = 23;
+
+/// Whether a made-up name reads as a name (`count`, `lower`) rather than as an expression's text
+/// (`count(*)`, `?column?`, `1 + 1`).
+fn is_identifier(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_alphabetic() || c == '_') && chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+}
+
+/// The rules on the names of a statement's result columns, once its columns are known. `targets`
+/// is its select list or `RETURNING` as its database's parse reads it, the first arm's of a set
+/// operation, whose names are the result's; `None` where the parse read none. `at` gives the bytes
+/// a column is written at (its index in `analysis.columns`) where the parse knows them.
+///
+/// The name of an expression with no alias is not the statement's to rely on: it differs by
+/// database, and on some by the driver, the statement's spacing or the value bound (`id + ?` and
+/// `id + 5` on MySQL). So a statement whose one column is such an expression gives its values, with
+/// no name at all ([`Analysis::value`]), and among several columns such a name that is no
+/// identifier is an error. Two columns of one name are an error too, since a driver builds each row
+/// as an object keyed by name, which keeps the last of them, and nothing a type says of the first
+/// is true of the row.
+pub fn names(sql: &str, analysis: &mut Analysis, targets: Option<&[ResultTarget]>, at: &dyn Fn(usize) -> Option<(usize, usize)>) {
+    let unnamed = unnamed_columns(analysis.columns.len(), targets);
+    analysis.value = analysis.columns.len() == 1 && unnamed.first() == Some(&true);
     let mut found = Vec::new();
+    let mut refused = vec![false; analysis.columns.len()];
+    if !analysis.value {
+        for (i, column) in analysis.columns.iter().enumerate() {
+            if unnamed.get(i) == Some(&true) && !is_identifier(&column.name) {
+                refused[i] = true;
+                // An expression's text is what MySQL, SQLite and some of DuckDB's names are, so a
+                // parse that places nothing can still find it.
+                let (start, length) = at(i).or_else(|| sql.find(&column.name).map(|start| (start, column.name.len()))).unwrap_or_else(|| first_word(sql));
+                let message = format!("Column {} has no name: the database calls it \"{}\", which is no identifier and may differ on another driver or server. Give it one with `as`.", i + 1, column.name);
+                found.push(diag(message, start, length, UNNAMED_COLUMN));
+            }
+        }
+    }
     for (i, column) in analysis.columns.iter().enumerate() {
-        if let Some(first) = analysis.columns[..i].iter().position(|c| c.name == column.name) {
+        if refused[i] {
+            continue;
+        }
+        if let Some(first) = analysis.columns[..i].iter().enumerate().position(|(k, c)| c.name == column.name && !refused[k]) {
             let (start, length) = at(i).unwrap_or_else(|| first_word(sql));
             let message = format!("Columns {} and {} are both named \"{}\", and a row keeps only the last of them. Give one of them another name with `as`.", first + 1, i + 1, column.name);
             found.push(diag(message, start, length, 14));
         }
     }
     analysis.diagnostics.extend(found);
+}
+
+/// Per result column, whether the statement writes it as an expression with no alias, as far as the
+/// targets place it: from the left up to the first `*`, and from the right back to the last. Empty
+/// where the targets cannot be the columns' (a list that expands some other way).
+fn unnamed_columns(columns: usize, targets: Option<&[ResultTarget]>) -> Vec<bool> {
+    let Some(targets) = targets else { return Vec::new() };
+    let mut unnamed = vec![false; columns];
+    match targets.iter().position(|t| *t == ResultTarget::Star) {
+        None if targets.len() != columns => return Vec::new(),
+        None => {
+            for (i, t) in targets.iter().enumerate() {
+                unnamed[i] = *t == ResultTarget::Unnamed;
+            }
+        }
+        Some(_) if targets.len() - 1 > columns => return Vec::new(),
+        Some(first) => {
+            for (i, t) in targets[..first].iter().enumerate() {
+                unnamed[i] = *t == ResultTarget::Unnamed;
+            }
+            for (from_end, t) in targets.iter().rev().take_while(|t| **t != ResultTarget::Star).enumerate() {
+                unnamed[columns - 1 - from_end] = *t == ResultTarget::Unnamed;
+            }
+        }
+    }
+    unnamed
 }
 
 /// The statement's first word, past any whitespace.
@@ -191,6 +264,7 @@ pub fn bare(sql: &str, lexed: &Lexed, dialect: Dialect, diagnostics: Vec<Diagnos
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,
@@ -252,13 +326,64 @@ mod tests {
     fn two_columns_of_one_name_are_an_error_at_the_later() {
         let mut a = bare_of("select a.x, b.x, a.x from a, b", Dialect::Postgres, Vec::new());
         a.columns = ["x", "x", "x"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
-        clashes("  select a.x, b.x, a.x from a, b", &mut a, &|i| (i == 1).then_some((14, 1)));
+        names("  select a.x, b.x, a.x from a, b", &mut a, None, &|i| (i == 1).then_some((14, 1)));
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(14, 14, 1), (14, 2, 6)]);
         assert_eq!(a.diagnostics[0].message, "Columns 1 and 2 are both named \"x\", and a row keeps only the last of them. Give one of them another name with `as`.");
         assert!(a.diagnostics[1].message.starts_with("Columns 1 and 3 are both named"));
         let mut b = bare_of("select 1 as x, 2 as y", Dialect::Postgres, Vec::new());
         b.columns = ["x", "y"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
-        clashes("select 1 as x, 2 as y", &mut b, &|_| None);
+        names("select 1 as x, 2 as y", &mut b, None, &|_| None);
         assert!(b.diagnostics.is_empty());
+    }
+
+    /// The analysis of `sql` once its columns are named `columns`, with `targets` as its parse read them.
+    fn named(sql: &str, columns: &[&str], targets: Option<&[ResultTarget]>) -> Analysis {
+        let mut a = bare_of(sql, Dialect::Postgres, Vec::new());
+        a.columns = columns.iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
+        names(sql, &mut a, targets, &|_| None);
+        a
+    }
+
+    #[test]
+    fn one_unnamed_column_is_the_result_and_any_other_stays_a_row() {
+        use ResultTarget::*;
+        for name in ["count", "count(*)", "?column?", "1 + 1"] {
+            let a = named("select x", &[name], Some(&[Unnamed]));
+            assert!(a.value, "{name}");
+            assert!(a.diagnostics.is_empty(), "{name}");
+        }
+        assert!(!named("select x as x", &["x"], Some(&[Named])).value);
+        assert!(!named("select * from t", &["x"], Some(&[Star])).value);
+        assert!(!named("select x, y", &["x", "y"], Some(&[Unnamed, Unnamed])).value);
+        // A statement no parse read, and a list that is not the columns' (DuckDB's `columns(…)`).
+        assert!(!named("select x", &["x"], None).value);
+        assert!(!named("select x, y", &["x"], Some(&[Unnamed, Unnamed])).value);
+    }
+
+    #[test]
+    fn among_several_columns_a_made_up_name_that_is_no_identifier_is_an_error() {
+        use ResultTarget::*;
+        let codes = |a: &Analysis| a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>();
+        // Placed where the text holds the name, else on the first word.
+        assert_eq!(codes(&named("select id, count(*) from t", &["id", "count(*)"], Some(&[Named, Unnamed]))), [(UNNAMED_COLUMN, 11, 8)]);
+        assert_eq!(codes(&named("select id, 1 + 1", &["id", "?column?"], Some(&[Named, Unnamed]))), [(UNNAMED_COLUMN, 0, 6)]);
+        assert_eq!(named("select id, 1 + 1", &["id", "?column?"], Some(&[Named, Unnamed])).diagnostics[0].message, "Column 2 has no name: the database calls it \"?column?\", which is no identifier and may differ on another driver or server. Give it one with `as`.");
+        // A name the database derives that reads as one, and a name the statement wrote.
+        assert!(named("select id, count(*) from t", &["id", "count"], Some(&[Named, Unnamed])).diagnostics.is_empty());
+        assert!(named("select id, lower(n) from t", &["id", "größe_2$"], Some(&[Named, Unnamed])).diagnostics.is_empty());
+        assert!(named("select 1 as \"a b\", \"c d\" from t", &["a b", "c d"], Some(&[Named, Named])).diagnostics.is_empty());
+        // No parse, no rule; a star's columns are named by what they read.
+        assert!(named("select id, 1 + 1", &["id", "?column?"], None).diagnostics.is_empty());
+        assert!(named("select * from t", &["a b", "c d"], Some(&[Star])).diagnostics.is_empty());
+        // Either side of a star is placed from its own end, and what stands between two is not.
+        assert_eq!(codes(&named("select 1 + 1, *, 2 + 2 from t", &["1 + 1", "a", "b", "2 + 2"], Some(&[Unnamed, Star, Unnamed]))).len(), 2);
+        assert_eq!(named("select 1 + 1, *, 2 + 2 from t", &["a", "b", "2 + 2"], Some(&[Named, Star, Unnamed])).diagnostics[0].message.split(':').next(), Some("Column 3 has no name"));
+        assert!(named("select *, 1 + 1, * from t", &["a", "1 + 1", "b"], Some(&[Star, Unnamed, Star])).diagnostics.is_empty());
+        // Two refused columns of one name take that one error each, and no clash on top.
+        let two = named("select 1 + 1, 2 + 2", &["?column?", "?column?"], Some(&[Unnamed, Unnamed]));
+        assert_eq!(two.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [UNNAMED_COLUMN, UNNAMED_COLUMN]);
+        // Two names that read as names still clash.
+        let clash = named("select lower(a), lower(b)", &["lower", "lower"], Some(&[Unnamed, Unnamed]));
+        assert_eq!(clash.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [14]);
     }
 }

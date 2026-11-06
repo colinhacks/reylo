@@ -1,0 +1,1 @@
+table one_column
