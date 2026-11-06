@@ -166,7 +166,7 @@ async function render(session: Session, source: string, written: string, sql: st
   if (analysis.diagnostics.length) return { error: analysis.diagnostics.map((d) => d.message).join('; ') };
   if (strict) {
     const untyped = analysis.params.filter((q) => q.type.kind === 'unknown' && !json.has(q.name));
-    if (untyped.length) return { error: `strict_params: nothing types ${untyped.map((q) => `:${q.name}`).join(', ')}` };
+    if (untyped.length) return { error: `nothing types ${untyped.map((q) => `:${q.name}`).join(', ')}` };
   }
   const inferred = analysis.cardinality === 'at_most_one' ? 'maybeOne' : analysis.cardinality;
   const order = names;
@@ -312,7 +312,7 @@ try {
           report(block, (e as Error).message);
           return;
         }
-        // A block that shows what `strict_params: false` gives says so with `strict="false"`, and is
+        // A block that shows what `allow_untyped_params: true` gives says so with `strict="false"`, and is
         // analyzed as such a project would be; every other block must type each parameter.
         const strict = !/(?:^|\s)strict="false"(?:\s|$)/.test(block.node.meta ?? '') && session.project.strictParams;
         const result = await render(session, block.name ?? 'query.sql', `${written}\n`, `${sql}\n`, json, strict);

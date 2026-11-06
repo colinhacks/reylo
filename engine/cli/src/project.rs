@@ -195,9 +195,9 @@ impl Project {
         Ok(Project { file, root, cwd: cwd.to_path_buf(), config, env_files, env })
     }
 
-    /// Whether a parameter the statement does not type is an error: unless the file says `strict_params: false`.
+    /// Whether a parameter the statement does not type is an error: unless the file says `allow_untyped_params: true`.
     pub fn strict_params(&self) -> bool {
-        self.config.strict_params.unwrap_or(true)
+        !self.config.allow_untyped_params.unwrap_or(false)
     }
 
     /// That the file sets `url`, which the type check does not read, and no `direct_url`.
@@ -515,7 +515,7 @@ mod tests {
         std::fs::write(root.join("app/.reylo.yaml"), "").unwrap();
         assert!(Project::resolve(&sub, HashMap::new()).err().unwrap().ends_with("are both project files; keep one."));
         std::fs::remove_file(root.join("app/.reylo.yaml")).unwrap();
-        std::fs::write(root.join("app/.reylo.yml"), "strict_params: false\ntypes:\n  int8: number\n").unwrap();
+        std::fs::write(root.join("app/.reylo.yml"), "allow_untyped_params: true\ntypes:\n  int8: number\n").unwrap();
         assert!(Project::resolve(&sub, HashMap::new()).err().unwrap().contains(":2:1: types: the types section was removed on 2026-10-20."));
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -579,7 +579,7 @@ mod tests {
         assert_eq!(vars.get("B").map(String::as_str), Some("two words"));
         assert_eq!(vars.get("C"), None);
         assert_eq!(vars.get("D").map(String::as_str), Some("x=y"));
-        std::fs::write(dir.join(".reylo.yaml"), "strict_params: false\n").unwrap();
+        std::fs::write(dir.join(".reylo.yaml"), "allow_untyped_params: true\n").unwrap();
         let p = Project::resolve(&dir, HashMap::new()).unwrap();
         assert!(p.expand("url", "${A}-${MISSING_VAR_X}").unwrap_err().contains("${MISSING_VAR_X}"));
         assert_eq!(p.expand("url", "db-${A}").unwrap(), "db-1");

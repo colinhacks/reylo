@@ -567,7 +567,7 @@ import echo, { type Params } from "./lite_echo.sql";
 select :value as value, :count::int as count
 ```
 
-By default, such a parameter is a type-check error asking for a cast. With [`strict_params: false`](/#strict_params) in `.reylo.yaml`, it's typed `unknown` instead, as above.
+By default, such a parameter is a type-check error asking for a cast. With [`allow_untyped_params: true`](/#allow_untyped_params) in `.reylo.yaml`, it's typed `unknown` instead, as above.
 
 ### Parameters that may be null
 

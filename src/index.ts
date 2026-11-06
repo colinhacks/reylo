@@ -28,7 +28,7 @@ export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, Post
  * rather than running it.
  *
  * It reads the database the type check reads (`direct_url` in the project file, else `DATABASE_URL`),
- * unless `url` names another, and the project file's `strict_params`. A statement the database or the
+ * unless `url` names another, and the project file's `allow_untyped_params`. A statement the database or the
  * engine refuses comes back with its diagnostics, each at its place, and no columns. It rejects only
  * where it cannot analyze at all: no database named, a project file it cannot read, no engine to run,
  * or a database it cannot reach. Calls with the same URL share one connection, which closes a moment
@@ -57,6 +57,9 @@ export type Materialize<Row, C extends Cardinality> = C extends "many" ? Row[] :
  * out of a parameter.
  */
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+/** A Postgres array column under `allow_nested_arrays: true`: an array of `T` at any depth, since Postgres doesn't enforce an array's dimensions. */
+export type NestedArray<T> = (T | NestedArray<T>)[];
 
 /**
  * What a JSON parameter with no schema takes: any value `JSON.stringify` writes as JSON, as `.run()`
@@ -184,6 +187,8 @@ export type QueryDefinition = {
   fresh?: Fresh;
   /** The `.sql` file, relative to the project's root and written with `/`: the query's `source`. Every build step puts it in the module. */
   source?: string;
+  /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
+  nestedArrays?: boolean;
   /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
@@ -221,6 +226,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     fresh: def.fresh,
     source: def.source,
     sqlcommenter: def.sqlcommenter,
+    nestedArrays: def.nestedArrays,
     checks: def.checks,
   };
   let compiled: string | undefined;

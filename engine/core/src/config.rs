@@ -34,10 +34,14 @@ pub struct Project {
     /// process environment wins over all of them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env: Option<Vec<String>>,
-    /// Whether a parameter the statement does not type is an error (`true`) or `unknown`. The key
-    /// was `strict` until 2026-10-20.
+    /// Whether a parameter the statement does not type is `unknown` (`true`) rather than an error.
+    /// The key was `strict` until 2026-10-20 and `strict_params`, the other way round, until 0.8.0.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub strict_params: Option<bool>,
+    pub allow_untyped_params: Option<bool>,
+    /// Whether a Postgres array column may hold nested arrays (`true`): typed at any depth, and
+    /// nothing refused. Off, it is typed with one dimension, and a value of more is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_nested_arrays: Option<bool>,
     /// Whether each statement the importer builds ends with a sqlcommenter comment naming its
     /// `.sql` file (`/*file='queries%2Fget_user.sql'*/`), which a database's monitoring reads as
     /// the statement's tags. On when absent.
@@ -196,11 +200,15 @@ pub fn parse(text: &str) -> Result<Project, ConfigError> {
             _ => message,
         };
         let end = text[start.min(text.len())..].find(['\n', ':']).map_or(text.len(), |n| start + n);
-        // `strict` was renamed `strict_params` on 2026-10-20: the old key is unknown like any
-        // other, and its error names the new one.
+        // `strict` was renamed `strict_params` on 2026-10-20, and that became `allow_untyped_params`,
+        // reading the other way round, in 0.8.0: an old key is unknown like any other, and its
+        // error says what to write instead.
         // The `cli` section said which files `reylo generate` analyzed, and went with it in 0.8.0.
+        let renamed = |key: &str| format!("unknown field `{key}`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `{key}: false`, and delete `{key}: true`, the default");
         let message = if message.starts_with("unknown field `strict`,") {
-            "unknown field `strict`: the key is `strict_params` since 2026-10-20".to_string()
+            renamed("strict")
+        } else if message.starts_with("unknown field `strict_params`,") {
+            renamed("strict_params")
         } else if message.starts_with("unknown field `cli`,") {
             "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it".to_string()
         } else {
@@ -263,15 +271,16 @@ mod tests {
 
     #[test]
     fn reads_the_library_keys_and_leaves_the_later_sections_alone() {
-        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nstrict_params: true\nsqlcommenter: false\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
+        let p = parse("url: ${DATABASE_URL}\ndirect_url: ${DIRECT_URL}\nenv: [.env]\nallow_untyped_params: true\nallow_nested_arrays: true\nsqlcommenter: false\napi:\n  routes: api\nrest:\n  anything: { x: 1 }\n").unwrap();
         assert_eq!(p.url.as_deref(), Some("${DATABASE_URL}"));
         assert_eq!(p.direct_url.as_deref(), Some("${DIRECT_URL}"));
         assert_eq!(p.env, Some(vec![".env".to_string()]));
-        assert_eq!(p.strict_params, Some(true));
+        assert_eq!(p.allow_untyped_params, Some(true));
+        assert_eq!(p.allow_nested_arrays, Some(true));
         assert_eq!(p.sqlcommenter, Some(false));
         assert!(p.api.is_some() && p.rest.is_some());
         // What a host reads back: the later sections are not its business.
-        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "strict_params": true, "sqlcommenter": false }));
+        assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "url": "${DATABASE_URL}", "direct_url": "${DIRECT_URL}", "env": [".env"], "allow_untyped_params": true, "allow_nested_arrays": true, "sqlcommenter": false }));
         assert_eq!(parse("").unwrap(), Project::default());
         assert_eq!(parse("# nothing yet\n").unwrap(), Project::default());
     }
@@ -293,13 +302,14 @@ mod tests {
         let e = parse(text).unwrap_err();
         assert_eq!(e.message, "unknown field `cli`: the section said which files reylo generate analyzed, and went with it in 0.8.0; delete it");
         assert_eq!(&text[e.start..e.end], "cli");
-        let e = parse("strict_params: sometimes\n").unwrap_err();
+        let e = parse("allow_untyped_params: sometimes\n").unwrap_err();
         assert!(e.message.contains("invalid type"), "{}", e.message);
-        // `strict` was renamed `strict_params` on 2026-10-20, with no alias: the old key is
-        // unknown, and the error names the new one.
+        // The old names have no alias: each is unknown, and its error says what to write instead.
+        let e = parse("strict_params: false\n").unwrap_err();
+        assert_eq!(e.message, "unknown field `strict_params`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `strict_params: false`, and delete `strict_params: true`, the default");
         let text = "url: postgres://x/db\nstrict: true\n";
         let e = parse(text).unwrap_err();
-        assert_eq!(e.message, "unknown field `strict`: the key is `strict_params` since 2026-10-20");
+        assert_eq!(e.message, "unknown field `strict`: the key is `allow_untyped_params` since 0.8.0, and reads the other way round: write `allow_untyped_params: true` for `strict: false`, and delete `strict: true`, the default");
         assert_eq!(&text[e.start..e.end], "strict");
     }
 

@@ -194,7 +194,7 @@ async fn analyze_all(dialect: &str, url: String, given: bool, base: &Path, proje
 }
 
 /// A parameter nothing in the statement types is an error at its first use, unless the project
-/// file says `strict_params: false`, as the type check says it (src/module-types.ts). A statement
+/// file says `allow_untyped_params: true`, as the type check says it (src/module-types.ts). A statement
 /// the engine refused already was not analyzed to its end, and is not asked.
 fn untyped_params(sql: &str, analysis: &Analysis, dialect: Dialect, project: &Project) -> Vec<Diagnostic> {
     // A MySQL session reads its strings by its sql_mode, which the lexer alone does not know: the
@@ -214,7 +214,7 @@ fn untyped_params(sql: &str, analysis: &Analysis, dialect: Dialect, project: &Pr
             let span = at.map_or_else(|| format!(":{}", p.name), |&(_, start, end)| sql.get(start..end).unwrap_or_default().to_string());
             let written = span.split("::").next().unwrap_or_default().trim_end().to_string();
             let (start, end) = at.map_or((0, 1), |&(_, start, _)| (utf16_offset(sql, start), utf16_offset(sql, start + written.len())));
-            Diagnostic { message: format!("Nothing in the statement gives the parameter {written} a type; cast it, as in {written}::text, or set strict_params: false in {file}."), start, end, code: None }
+            Diagnostic { message: format!("Nothing in the statement gives the parameter {written} a type; cast it, as in {written}::text, or set allow_untyped_params: true in {file}."), start, end, code: None }
         })
         .collect()
 }

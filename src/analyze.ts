@@ -116,9 +116,9 @@ export class Session {
     // From the package's directory, so that a message names a file as the project sees it.
     const dir = packageDir(from);
     const { project, engine } = await openProject(dir, env);
-    // A setting the build step reads (`sqlcommenter`) is part of the key, so a change to it in the
+    // A setting the build step reads (`sqlcommenter`, `allow_nested_arrays`) is part of the key, so a change to it in the
     // project file reaches a running watch process.
-    const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, project.sqlcommenter, engine instanceof MissingEngine ? engine.message : null]);
+    const key = JSON.stringify([project.root, project.url ?? null, project.error ?? null, project.sqlcommenter, project.allowNestedArrays, engine instanceof MissingEngine ? engine.message : null]);
     let session = sessions.get(key);
     if (!session) sessions.set(key, (session = new Session(engine, project, BUILD_IDLE, dir, env)));
     return session;

@@ -164,7 +164,7 @@ async function databaseBackend(session: Session): Promise<Backend> {
       try {
         lexed = await session.lex(sql);
       } catch {}
-      return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, width, ms });
+      return playResult(sql, dialect, { analysis: outcome.analysis, lexed }, { strictParams: project.strictParams, allowNestedArrays: project.allowNestedArrays && dialect === "postgres", width, ms });
     },
     close: () => session.close(),
   };

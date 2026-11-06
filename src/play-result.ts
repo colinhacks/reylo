@@ -30,7 +30,7 @@ export function playResult(
   sql: string,
   dialect: Dialect,
   outcome: { analysis: Analysis; lexed?: Pick<Lexed, "params" | "placeholders"> | undefined } | { error: { message: string; code?: number } },
-  options: { strictParams?: boolean; width?: number; ms?: number } = {},
+  options: { strictParams?: boolean; allowNestedArrays?: boolean; width?: number; ms?: number } = {},
 ): PlayResult {
   const place = placer(sql);
   const width = options.width ?? Infinity;
@@ -38,7 +38,7 @@ export function playResult(
   const placed = (d: { message: string; start: number; length: number; code: number }) => ({ message: d.message, code: d.code, ...place(d.start, d.length) });
   if ("error" in outcome) return { sql, params: "unknown", returns: "unknown", diagnostics: [placed({ message: outcome.error.message, start: 0, length: 1, code: outcome.error.code ?? 5 })], ms };
   try {
-    const types = moduleTypes(sql, outcome.analysis, dialect, outcome.lexed, options.strictParams ?? true);
+    const types = moduleTypes(sql, outcome.analysis, dialect, outcome.lexed, options.strictParams ?? true, undefined, undefined, options.allowNestedArrays ?? false);
     return {
       sql,
       ...(types.params === "Record<never, never>" ? {} : { params: formatType(types.params, width) }),

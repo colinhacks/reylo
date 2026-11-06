@@ -181,7 +181,7 @@ where name like concat('%', :q::text, '%')
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
-It's an error that says to [cast it](#casts), unless [`strict_params: false`](#strict_params) types it `unknown`.
+It's an error that says to [cast it](#casts), unless [`allow_untyped_params: true`](#allow_untyped_params) types it `unknown`.
 
 <DialectTabs>
 <Dialect value="Postgres">

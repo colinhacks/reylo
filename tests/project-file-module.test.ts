@@ -18,10 +18,10 @@ test("a project file in the mapper's extensions is a module that declares nothin
   const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-project-file-")));
   writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
   writeFileSync(join(root, ".env"), "DATABASE_URL=file:./app.db\n");
-  writeFileSync(join(root, ".reylo.yaml"), "# the project file\nstrict_params: true\n");
+  writeFileSync(join(root, ".reylo.yaml"), "# the project file\nallow_untyped_params: false\n");
   mkdirSync(join(root, "config"));
-  writeFileSync(join(root, "config", "staging.reylo.yaml"), "strict_params: true\n");
-  writeFileSync(join(root, "config", "local.reylo.yml"), "strict_params: true\n");
+  writeFileSync(join(root, "config", "staging.reylo.yaml"), "allow_untyped_params: false\n");
+  writeFileSync(join(root, "config", "local.reylo.yml"), "allow_untyped_params: false\n");
   const db = new DatabaseSync(join(root, "app.db"));
   db.exec("create table posts (id integer primary key, title text not null)");
   db.close();
