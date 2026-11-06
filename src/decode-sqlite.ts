@@ -47,11 +47,11 @@ const KEPT = 500;
  * compat Database (maxWriteReplicationIndex()) gets a new statement per call, closed after it: on
  * 0.4 a statement with a subquery run a second time returned no rows.
  */
-function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
+function statementFor(db: AnyClient, text: string, typed: boolean, proto: boolean): Kept {
   const keep = typeof db.maxWriteReplicationIndex !== "function";
   let kept = statements.get(db);
   if (!kept && keep) statements.set(db, (kept = new Map()));
-  const key = `${typed ? "n" : "b"}${text}`;
+  const key = `${typed ? "n" : "b"}${proto ? "p" : ""}:${text}`;
   const found = kept?.get(key);
   if (found) return found;
   const st = db.prepare(text) as Statement;
@@ -59,6 +59,8 @@ function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
   // node:sqlite's StatementSync; better-sqlite3's and bun:sqlite's Statement.
   // Turso's engine names a column with no alias its own way (`select a + 1 from t` is `t.a + 1` on 0.4, `select (a) from t` is `(a)` on 0.8), and only the embedded SQLite's analysis says what the row's type declares: its rows are read as arrays, by position.
   if (!keep && typeof st.raw === "function") st.raw(true);
+  // better-sqlite3 (its pluck() tells it from bun:sqlite, whose raw() runs the statement) builds a row by assigning each name, and a column named `__proto__` sets the object's prototype instead. Such a statement is read by position.
+  else if (proto && typeof st.pluck === "function" && typeof st.raw === "function") st.raw(true);
   if (typeof st.setReadBigInts === "function") {
     st.setReadBigInts(true);
     if (typeof st.setReturnArrays === "function") st.setReturnArrays(false);
@@ -80,7 +82,7 @@ function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
  * such database) gives the promise, which `runSync` refuses.
  */
 export function runSyncSqlite(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] | Promise<unknown[]> {
-  const entry = statementFor(db, text, everyColumnTyped(columns));
+  const entry = statementFor(db, text, everyColumnTyped(columns), hasProto(columns));
   if (entry.kept) return runStatement(entry, values, columns);
   try {
     return runStatement(entry, values, columns);
@@ -127,6 +129,11 @@ function reader(st: Statement): boolean | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a column is named `__proto__`, which only an own property of a row can hold (src/row.ts). */
+function hasProto(columns: Columns | undefined): boolean {
+  return columns?.some(([name]) => name === "__proto__") ?? false;
 }
 
 // Every column typed: a number past 2^53 in one can be told as rounded (src/values.ts). A column
@@ -262,6 +269,8 @@ function numericOnly(kinds: string[]): boolean {
  */
 export function normalize(rows: unknown[], columns: Columns | undefined, { exact = false, d1 = false } = {}): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+  // sqlite3 and the sqlite wrapper assign each name to the row they build, with no way to read by position, so the value of this column is gone. `row.__proto__` would read Object.prototype.
+  if (hasProto(columns) && !Object.hasOwn(rows[0] as object, "__proto__")) throw new DecodeError(`This client cannot return a column named __proto__: it builds each row by assigning each name, which sets the object's prototype and loses the value. Give the column an alias in the statement.`);
   const plans = (columns ? [...columns] : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
   const n = plans.length;
   for (const row of rows as Record<string, unknown>[]) {

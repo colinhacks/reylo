@@ -31,8 +31,10 @@ type AnyClient = Record<string, any>;
 // ---------------------------------------------------------------------------------------------
 // mysql2
 
-/** Options mysql2 ORs with the app's (a BIGINT and a date as text) and the row's shape, which the query's own replace. */
-const MYSQL2_OPTIONS = { supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: false, nestTables: false };
+/**
+ * Options mysql2 ORs with the app's (a BIGINT and a date as text) and the row's shape, which the query's own replace. Rows are read by position: mysql2's key is the name the executed statement's metadata gives, with a trailing space where MySQL keeps one (`select true` is `true `, as is `current_date` and an unaliased `case … end`), and building an object under the name `__proto__` fails in the driver and closes the connection.
+ */
+const MYSQL2_OPTIONS = { supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: true, nestTables: false };
 
 type Mysql2Field = { type: string; string(encoding?: string): string | null; buffer(): Uint8Array | null };
 
@@ -135,25 +137,29 @@ function fixRows(rows: Record<string, unknown>[], fixes: (readonly [string, Fix]
 
 /** mysql2's execute(), resolving to [rows, fields]. */
 export async function mysql2(m: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
-  const [rows, fields] = await m.execute({ sql: text, ...MYSQL2_OPTIONS, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
-  if (!Array.isArray(rows)) return [];
+  // mysql2's compiled parser refuses a field named `__proto__` even for an array row, and its interpreted one (`disableEval`, from 3.15) reads it.
+  const proto = columns?.some(([name]) => name === "__proto__") ? { disableEval: true } : {};
+  const [result, fields] = await m.execute({ sql: text, ...MYSQL2_OPTIONS, ...proto, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
+  if (!Array.isArray(result)) return [];
   const described = (fields ?? []) as Mysql2Column[];
+  const rows = declared(result, columns, () => described.map((f) => f.name));
   // The module's kinds where its columns are the result's; a BIGINT by the result's own type, which
   // says it of an either too (`:n + 1`, a BIGINT or a DOUBLE by what is bound).
   const kinds = columns && columns.length === described.length ? columns : undefined;
+  const nameOf = (i: number): string => kinds?.[i]![0] ?? described[i]!.name;
   const fixes: (readonly [string, Fix])[] = [];
   described.forEach((f, i) => {
     const fix = byKind(kinds?.[i]![1]) ?? (f.columnType === LONGLONG ? toBigInt : undefined);
-    if (fix) fixes.push([f.name, fix]);
+    if (fix) fixes.push([nameOf(i), fix]);
   });
   // A DATETIME's, TIMESTAMP's and TIME's text, padded to the column's own fraction digits.
-  for (const f of described) {
+  described.forEach((f, i) => {
     if (f.columnType === DATETIME || f.columnType === TIMESTAMP || (f.columnType === TIME && f.decimals > 0)) {
       const decimals = f.decimals > 6 ? 0 : f.decimals, type = f.columnType;
-      fixes.push([f.name, (v) => (typeof v === "string" ? wallClock(v, decimals, type) : v)]);
+      fixes.push([nameOf(i), (v) => (typeof v === "string" ? wallClock(v, decimals, type) : v)]);
     }
-  }
-  fixRows(rows as Record<string, unknown>[], fixes);
+  });
+  fixRows(rows, fixes);
   return rows;
 }
 
