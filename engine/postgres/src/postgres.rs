@@ -4268,10 +4268,6 @@ fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
 }
 
-/// The result keys of a statement ([`Analysis::unique`]): for a SELECT that can return more than
-/// one row, each set of columns [`cardinality::result_keys`] proves identify its rows. None where
-/// the cardinality already says the result holds one row at most or none, and none for the rows of
-/// a write's RETURNING.
 /// The key Standard Query publishes: the fewest columns, then the earliest in the output, whatever
 /// order `unique` lists them in.
 fn shortest_key(unique: &[Vec<String>], columns: &[&str]) -> Option<Vec<String>> {
@@ -4279,6 +4275,10 @@ fn shortest_key(unique: &[Vec<String>], columns: &[&str]) -> Option<Vec<String>>
     unique.iter().min_by_key(|key| (key.len(), key.iter().map(position).collect::<Vec<_>>())).cloned()
 }
 
+/// The result keys of a statement ([`Analysis::unique`]): for a SELECT that can return more than
+/// one row, each set of columns [`cardinality::result_keys`] proves identify its rows. None where
+/// the cardinality already says the result holds one row at most or none, and none for the rows of
+/// a write's RETURNING.
 fn result_keys(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<Vec<String>> {
     if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
         return Vec::new();

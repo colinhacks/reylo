@@ -1370,6 +1370,10 @@ mod tests {
                 column.ty.check().unwrap_or_else(|e| panic!("{name}: {}: {e}", column.name));
                 types += 1;
             }
+            // The rows themselves, whose `unique` sets rule 7 holds to their columns.
+            if let Some(result) = descriptor.get("result") {
+                round_trip(result.clone());
+            }
             // A whole descriptor, which names the format's version.
             if descriptor.get("$schema").is_some() {
                 let whole: StatementDescriptor = serde_json::from_value(descriptor.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
