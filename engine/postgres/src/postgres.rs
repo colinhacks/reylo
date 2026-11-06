@@ -3518,8 +3518,13 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
     let Some(N::ResTarget(target)) = select.target_list.first()?.node.as_ref() else { return None };
     let check = target.val.as_deref()?;
 
+    // A number type, but for one with a modifier, whose cast rounds (`2.55::numeric(3,1)`).
     fn number_type(cast: &pg_query::protobuf::TypeCast) -> Option<u32> {
-        match crate::infer::builtin_name(&cast.type_name.as_ref()?.names)?.as_str() {
+        let name = cast.type_name.as_ref()?;
+        if !name.typmods.is_empty() {
+            return None;
+        }
+        match crate::infer::builtin_name(&name.names)?.as_str() {
             "numeric" => Some(oid::NUMERIC),
             "float8" => Some(oid::FLOAT8),
             "float4" => Some(oid::FLOAT4),
@@ -3551,13 +3556,41 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
         };
         Some(if minus { format!("-{digits}") } else { digits })
     }
+    // Whether a float reads back as `text`, which a value of that float prints as.
+    fn prints_as_real(text: &str) -> bool {
+        text.parse::<f32>().is_ok_and(|f| f.to_string() == text)
+    }
+    fn prints_as_double(text: &str) -> bool {
+        text.parse::<f64>().is_ok_and(|f| f.to_string() == text)
+    }
+    // Whether a `real` holds `text` exactly, so that widening it to a `double precision` keeps what it
+    // prints as: 0.5 does, and 0.1 widens to 0.10000000149011612.
+    fn exact_in_real(text: &str) -> bool {
+        prints_as_real(text) && text.parse::<f32>().ok().map(f64::from) == text.parse::<f64>().ok()
+    }
     // A number and its type, through the casts between number types the server prints
-    // (`'1000000000'::numeric::double precision`), which keep a value a plain decimal writes: the
-    // outermost cast's type, or a bare literal's own.
+    // (`'1000000000'::numeric::double precision`) where each keeps the value it is given: the
+    // outermost cast's type, or a bare literal's own. A cast to a whole number rounds a fraction, a
+    // cast to a float rounds what it cannot print, and a float's cast to `numeric` drops digits.
     fn number(node: &Node) -> Option<(String, Operand)> {
         fn text(node: &Node) -> Option<String> {
             match node.node.as_ref()? {
-                N::TypeCast(t) => number_type(t).and_then(|_| text(t.arg.as_deref()?)),
+                N::TypeCast(t) => {
+                    let inner = t.arg.as_deref()?;
+                    let value = text(inner)?;
+                    let from = match inner.node.as_ref() {
+                        Some(N::TypeCast(i)) => number_type(i),
+                        _ => None,
+                    };
+                    let kept = match number_type(t)? {
+                        oid::INT2 | oid::INT4 | oid::INT8 => !value.contains('.'),
+                        oid::FLOAT4 => prints_as_real(&value),
+                        oid::FLOAT8 if from == Some(oid::FLOAT4) => exact_in_real(&value),
+                        oid::FLOAT8 => prints_as_double(&value),
+                        _ => !matches!(from, Some(oid::FLOAT4 | oid::FLOAT8)),
+                    };
+                    kept.then_some(value)
+                }
                 N::AConst(c) => match c.val.as_ref()? {
                     Val::Ival(i) => Some(i.ival.to_string()),
                     Val::Fval(f) => canonical(&f.fval),
@@ -3627,15 +3660,21 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
             "<" | "<=" | ">" | ">=" => {
                 // A constant on the left reads as the mirrored comparison of the column.
                 let exclusive = !op.ends_with('=');
-                let (value, above) = if let (Some(ty), Some((value, constant_ty))) = (bare(l), number(r)) {
+                let (value, above, constant_ty) = if let (Some(ty), Some((value, constant_ty))) = (bare(l), number(r)) {
                     compared.push((op.clone(), [ty, constant_ty]));
-                    (value, op.starts_with('>'))
+                    (value, op.starts_with('>'), constant_ty)
                 } else if let (Some((value, constant_ty)), Some(ty)) = (number(l), bare(r)) {
                     compared.push((op.clone(), [constant_ty, ty]));
-                    (value, op.starts_with('<'))
+                    (value, op.starts_with('<'), constant_ty)
                 } else {
                     return None;
                 };
+                // A `real` and a `double precision` compare widened, so a `real` that prints as the
+                // constant can pass on the wrong side of it (`real` 0.1 is above `0.1::float8`).
+                let widened = matches!((types.1, constant_ty), (Some(oid::FLOAT4), Operand::Is(oid::FLOAT8)) | (Some(oid::FLOAT8), Operand::Is(oid::FLOAT4)));
+                if widened && !exact_in_real(&value) {
+                    return None;
+                }
                 let one = CheckFacts { min: above.then(|| (value.clone(), exclusive)), max: (!above).then(|| (value.clone(), exclusive)), ..CheckFacts::default() };
                 out = std::mem::take(&mut out).and(one);
             }
@@ -4655,6 +4694,31 @@ mod tests {
         assert_eq!(facts("x > 0 AND other > 0", "x", oid::INT4).min, bound("0", true));
         // A CHECK no value can meet says nothing.
         assert_eq!(int4(facts("x > 5 AND x < 1", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x > 5 AND x < 6", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x >= 5 AND x < 5", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        assert_eq!(int4(facts("x > 2147483647", "x", oid::INT4).apply(Type::integer(32))).0, Bounds::default());
+        match facts("x >= 5::numeric AND x < 5::numeric", "x", oid::NUMERIC).apply(Type::decimal(DecimalType::default())).kind {
+            K::Decimal(d) => assert_eq!(d.bounds, Bounds::default()),
+            _ => panic!(),
+        }
+        // A cast that changes its constant says nothing: each passes a value past the constant it prints.
+        assert_eq!(facts("a <= ((2.5)::integer)::numeric", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("b < ((1.5)::integer)::double precision", "b", oid::FLOAT8).max, None);
+        assert_eq!(facts("a <= 2.55::numeric(3,1)", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("(q % ((2.5)::integer)::numeric) = 0::numeric", "q", oid::NUMERIC).multiple_of, None);
+        assert_eq!(facts("b >= (0.30000000000000001)::double precision", "b", oid::FLOAT8).min, None);
+        assert_eq!(facts("a <= ((0.30000000000000004)::double precision)::numeric", "a", oid::NUMERIC).max, None);
+        assert_eq!(facts("b <= ((0.1)::real)::double precision", "b", oid::FLOAT8).max, None);
+        // One that keeps it does.
+        assert_eq!(facts("a <= (2)::numeric", "a", oid::NUMERIC).max, bound("2", false));
+        assert_eq!(facts("c < '1000000000'::numeric::double precision", "c", oid::FLOAT8).max, bound("1000000000", true));
+        assert_eq!(facts("b >= (0.3)::double precision", "b", oid::FLOAT8).min, bound("0.3", false));
+        // A `real` beside a `double precision` compares widened, so only a constant both hold exactly is read.
+        assert_eq!(facts("f > (0.1)::double precision", "f", oid::FLOAT4).min, None);
+        assert_eq!(facts("b <= (0.1)::real", "b", oid::FLOAT8).max, None);
+        assert_eq!(facts("f >= (0)::double precision", "f", oid::FLOAT4).min, bound("0", false));
+        assert_eq!(facts("f >= (0.5)::double precision", "f", oid::FLOAT4).min, bound("0.5", false));
+        assert_eq!(facts("f >= (0.1)::real", "f", oid::FLOAT4).min, bound("0.1", false));
     }
 
     #[test]

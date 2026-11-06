@@ -130,7 +130,8 @@ impl CheckFacts {
     pub fn apply(&self, ty: Type) -> Type {
         let low = self.min.as_ref().map(|(v, _)| v.parse::<f64>().unwrap_or(f64::NEG_INFINITY));
         let high = self.max.as_ref().map(|(v, _)| v.parse::<f64>().unwrap_or(f64::INFINITY));
-        if low.zip(high).is_some_and(|(l, h)| l > h) {
+        let exclusive = self.min.as_ref().is_some_and(|(_, e)| *e) || self.max.as_ref().is_some_and(|(_, e)| *e);
+        if low.zip(high).is_some_and(|(l, h)| l > h || (l == h && exclusive)) {
             return ty;
         }
         let Type { kind, name, comment } = ty;
@@ -139,10 +140,14 @@ impl CheckFacts {
                 let lowest = if i.unsigned { 0 } else { -(1i128 << (i.bits.min(127) - 1)) };
                 let highest = if i.unsigned { (1i128 << i.bits.min(126)) - 1 } else { (1i128 << (i.bits.min(127) - 1)) - 1 };
                 let whole = |bound: &Option<(String, bool)>, step: i128| bound.as_ref().and_then(|(v, exclusive)| Some(v.parse::<i128>().ok()? + if *exclusive { step } else { 0 }));
-                if let Some(min) = whole(&self.min, 1).filter(|min| *min > lowest) {
+                let (min, max) = (whole(&self.min, 1), whole(&self.max, -1));
+                if min.unwrap_or(lowest) > max.unwrap_or(highest) {
+                    return Type { kind: Kind::Integer(i), name, comment };
+                }
+                if let Some(min) = min.filter(|min| *min > lowest) {
                     i.bounds.min = Some(min.to_string());
                 }
-                if let Some(max) = whole(&self.max, -1).filter(|max| *max < highest) {
+                if let Some(max) = max.filter(|max| *max < highest) {
                     i.bounds.max = Some(max.to_string());
                 }
                 i.multiple_of = self.multiple_of.clone().or(i.multiple_of);

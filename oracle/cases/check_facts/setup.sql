@@ -28,3 +28,21 @@ insert into items (id, age, qty, pos, small, price, rate, half, ratio, code, slu
   (2, 150, 10, 2147483647, 32767, 99999999.99, 0.999, 99999.5, 1, 'z', 'a%', 'XYZ', 'xABCx', 'ab', null, -1, 5, 2, '@', 100),
   (3, null, 0, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 create view item_view as select age, price, slug from items;
+-- A cast that changes its constant, and a real compared with a double precision, can pass a value past the constant the CHECK prints, so neither gives a bound; one that keeps its constant does.
+create table rounding (
+  id int primary key,
+  to_int numeric check (to_int <= 2.5::int),
+  to_scale numeric check (to_scale <= 2.55::numeric(3,1)),
+  past_float float8 check (past_float >= 0.30000000000000001),
+  through_real float8 check (through_real <= 0.1::real::float8),
+  single float4 check (single > 0.1),
+  below_single float4 check (below_single < 0.7),
+  kept_int numeric check (kept_int <= 2::int),
+  kept_float float8 check (kept_float >= 0.3),
+  kept_single float4 check (kept_single >= 0.5),
+  kept_real float4 check (kept_real >= 0.1::real),
+  no_whole int check (no_whole > 5 and no_whole < 6)
+);
+insert into rounding (id, to_int, to_scale, past_float, through_real, single, below_single, kept_int, kept_float, kept_single, kept_real) values
+  (1, 2.9, 2.58, 0.3, 0.1000000012, 0.1, 0.7, 2, 0.3, 0.5, 0.1),
+  (2, null, null, null, null, null, null, null, null, null, null);
