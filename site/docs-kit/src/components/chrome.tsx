@@ -66,10 +66,13 @@ export function TocFooter({ github }: { github: string }) {
   );
 }
 
-/** Below xl, where the left column is hidden: one row above the title, not sticky. */
-export function TopRow({ brand, github }: { brand: ReactNode; github: string }) {
+/**
+ * Below xl, where the left column is hidden: one row above the title, not sticky. On a `centered`
+ * page, which has no left column, it stays at every width and shares both edges of the page's column.
+ */
+export function TopRow({ brand, github, centered }: { brand: ReactNode; github: string; centered?: boolean }) {
   return (
-    <div className="[grid-area:header] mx-auto flex w-full max-w-[900px] items-center gap-3 px-4 pt-4 md:px-6 xl:hidden">
+    <div className={`[grid-area:header] mx-auto flex w-full items-center gap-3 px-4 pt-4 md:px-6 ${centered ? 'max-w-[calc(var(--dk-column)+4rem)] xl:px-8 xl:pt-8' : 'max-w-[900px] xl:hidden'}`}>
       {brand}
       <div className="flex-1" />
       <a href={github} rel="noreferrer noopener" target="_blank" className={linkClass} aria-label="GitHub">

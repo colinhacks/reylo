@@ -87,10 +87,13 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | An array | an array of its element type | `["math", "poetry"]` |
 | An enum | the union of its labels | `"admin"` |
 | A domain | its base type | its base type's |
-| A row value | `string` | `"(1,Ada)"` |
+| A row value of a table or composite type | an object of its fields | `{ id: 1, name: "Ada" }` |
+| `point`, `box`, `circle` and the other geometric types | an object of its fields | `{ x: 1.5, y: -2 }` |
+| A range | an object of its bounds | `{ lower: 1, upper: 5, bounds: "[)" }` |
+| A multirange | an array of ranges | `[{ lower: 1, upper: 3, bounds: "[)" }]` |
 | pgvector's `vector`, `halfvec` | `number[]` | `[1, 2.5, -3]` |
 | `hstore` | `Record<string, string \| null>` | `{ a: "1", b: null }` |
-| Every other type (`inet`, ranges, `point`, `tsvector`, `xml`, …) | `string` | `"[1,5)"` |
+| Every other type (`inet`, `tsvector`, `xml`, …) | `string` | `"192.168.0.1"` |
 
 Each example below pairs a SQL value with the value `.run()` returns for it: `select <SQL> as v` returns the row `{ v: <JavaScript> }`.
 
@@ -492,6 +495,84 @@ An enum is typed as the union of its labels. So is a `text` column whose `CHECK`
 
 A domain over `jsonb` with a JSON Schema `CHECK` is typed by its schema. A `CHECK` added `NOT VALID` is ignored, since older rows may break it.
 
+### Row values and geometric types
+
+A row value of a table or a composite type comes back as an object of its fields, each typed as a column of its type is. So does each geometric type: a `point` is `{ x, y }`, a `circle` is `{ center, radius }`. A parameter of either takes the same object.
+
+```ts twoslash tab="main.ts"
+import buyers from "./pg_buyers.sql";
+
+const rows = await buyers.run(db);
+//    ^?
+```
+
+```sql tab="pg_buyers.sql"
+select o.id, u as buyer, point(1.5, -2) as pin
+from orders o
+join users u on u.id = o.user_id
+```
+
+<Rules>
+
+**Geometric types**
+
+A `lseg` and a `polygon` are arrays of their points, and a `path` says whether it is closed.
+
+<Pairs>
+
+- `box(point(3, 4), point(1, 2))` → `{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }`
+- `'[(0,0),(1,1)]'::path` → `{ closed: false, points: [ { x: 0, y: 0 }, { x: 1, y: 1 } ] }`
+- `'((0,0),(1,1),(2,0))'::polygon` → `[ { x: 0, y: 0 }, { x: 1, y: 1 }, { x: 2, y: 0 } ]`
+- `circle(point(1, 2), 3)` → `{ center: { x: 1, y: 2 }, radius: 3 }`
+
+</Pairs>
+
+**Rows without field names**
+
+A row whose fields Postgres doesn't name, as `row(…)` builds, comes back as its text. Cast it to a composite type to get an object.
+
+<Pairs>
+
+- `row(1, 'Ada')` → `"(1,Ada)"`
+
+</Pairs>
+
+</Rules>
+
+### Ranges
+
+A range comes back as an object of its bounds: `lower` and `upper`, each in its subtype's form and left out where that end is unbounded, and `bounds`, the brackets Postgres writes around them, as its range constructors take them. An empty range is `{ empty: true }`, and a multirange is an array of ranges. A parameter takes the same object, with `bounds` as `"[)"` where it leaves them out.
+
+```ts twoslash tab="main.ts"
+import deliveries from "./pg_deliveries.sql";
+
+const rows = await deliveries.run(db);
+//    ^?
+```
+
+```sql tab="pg_deliveries.sql"
+select id, tstzrange(placed_at, placed_at + interval '1 day') as delivery
+from orders
+```
+
+<Rules>
+
+**Bounds**
+
+Postgres writes a range of integers or dates as `[)`, whatever the query wrote, and an unbounded end as exclusive. An infinite bound is a bound, unlike an unbounded end.
+
+<Pairs>
+
+- `int4range(1, 5, '[]')` → `{ lower: 1, upper: 6, bounds: "[)" }`
+- `numrange(1.5, null, '(]')` → `{ lower: "1.5", bounds: "()" }`
+- `daterange('2026-10-20', 'infinity')` → `{ lower: "2026-10-20", upper: "infinity", bounds: "[)" }`
+- `'empty'::int4range` → `{ empty: true }`
+- `int4multirange(int4range(1, 3), int4range(5, 7))` → `[ { lower: 1, upper: 3, bounds: "[)" }, { lower: 5, upper: 7, bounds: "[)" } ]`
+
+</Pairs>
+
+</Rules>
+
 ## Nullability
 
 Every column is typed `| null` unless Reylo can tell it never is null. On Postgres, it reads your schema and the query:
@@ -857,13 +938,14 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | `date`, `timestamp`, `time` | `string` |
 | `timestamptz` | a `string` that names its zone |
 | `interval` | a `string`: an ISO 8601 duration (`-P1D` too) or Postgres's own text |
-| `json`, `jsonb` | any JSON value, or what the column's JSON Schema admits |
+| `json`, `jsonb` | any value `JSON.stringify` writes, such as a `Date` inside an object, or what the column's JSON Schema admits |
 | `bytea` | `Uint8Array` |
 | An array | an array of its element's parameter type, without `null` |
 | An enum | the union of its labels |
 | `text`, `varchar` a `CHECK` limits to a list | the union of the list, written into the column with no cast |
 | pgvector's `vector`, `halfvec` | `number[]` |
 | `hstore` | an object whose values are strings or `null` |
+| A row value, a geometric type, a range | the object `.run()` returns for it |
 
 <Rules>
 
@@ -1225,7 +1307,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
 | An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more | Select `to_jsonb(column)` to read such a column as JSON |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
-| A row value outside JSON, which comes back as text | Select its fields as columns, or build an object with `to_jsonb` |
+| A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select its fields as columns |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |

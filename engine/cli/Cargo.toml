@@ -3,7 +3,7 @@ name = "reylo"
 version.workspace = true
 edition = "2021"
 publish = false
-description = "One program for every database Reylo reads: the analysis engine each language's frontend talks to over standard input and output (reylo engine <database>), each statement's type descriptor on the command line (reylo compile), and the migrations (reylo migrate, reylo run)."
+description = "One program for every database Reylo reads: the analysis engine each language's frontend talks to over standard input and output (reylo engine <database>), each statement's type descriptor on the command line (reylo analyze), and the migrations (reylo migrate, reylo run)."
 
 [[bin]]
 name = "reylo"

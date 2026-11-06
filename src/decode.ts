@@ -23,7 +23,7 @@
 // A type the database created (an enum, a domain's array, an extension's type) has the kind the
 // module gives its column; for a query defined by hand, one catalog query per client reads which of
 // those oids are arrays, cached in a WeakMap keyed by the app's object.
-import { coerce, DecodeError, elementKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind, type ScalarKind } from "./values.ts";
+import { coerce, DecodeError, elementKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
 
@@ -33,9 +33,12 @@ type Field = { name: string; oid: number };
 /** Below it the built-in types, whose oids every database shares (FirstGenbkiObjectId). */
 const FIRST_USER_OID = 10000;
 
-const SCALAR_OIDS: Readonly<Record<number, ScalarKind>> = {
+const SCALAR_OIDS: Readonly<Record<number, Kind>> = {
   16: "bool", 17: "bytes", 20: "int8", 21: "int", 23: "int", 26: "int", 700: "float", 701: "float",
   1700: "decimal", 1082: "date", 1114: "timestamp", 1184: "timestamptz", 1186: "interval", 114: "json", 3802: "json",
+  600: "point", 601: "lseg", 602: "path", 603: "box", 604: "polygon", 628: "line", 718: "circle",
+  3904: "range:int", 3906: "range:decimal", 3908: "range:timestamp", 3910: "range:timestamptz", 3912: "range:date", 3926: "range:int8",
+  4451: "multirange:int", 4532: "multirange:decimal", 4533: "multirange:timestamp", 4534: "multirange:timestamptz", 4535: "multirange:date", 4536: "multirange:int8",
 };
 
 // Every built-in array type and its element, as Postgres 18's pg_type lists them (none was ever
@@ -89,8 +92,9 @@ const learnedOf = (key: object): Learned => {
 type Load = (sql: string) => Promise<(string | null)[][]>;
 
 // Every type among `oids`, and every array type's element, with its base type through any number
-// of domains and that base type's name (an array of row values, or of a type whose own output is
-// an array, stays text). An oid goes out as int8, since one above 2^31 would wrap as int4.
+// of domains and that base type's name (an array of a type whose own output is an array stays
+// text), a row type's fields as a JSON array of each one's name and type, and a range's or a
+// multirange's subtype. An oid goes out as int8, since one above 2^31 would wrap as int4.
 const catalogSql = (oids: number[]) => {
   const list = `'{${oids.map((o) => Math.trunc(o)).join(",")}}'::pg_catalog.oid[]`;
   return `with recursive d(oid, base) as (
@@ -98,7 +102,9 @@ const catalogSql = (oids: number[]) => {
   union all
   select d.oid, t.typbasetype from d join pg_catalog.pg_type t on t.oid = d.base where t.typtype = 'd'
 )
-select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text
+select e.typarray::int8::text, b.oid::int8::text, (b.typtype = 'c' or b.typcategory = 'A')::text, e.typdelim::text, e.oid::int8::text, b.typname::text,
+  case when b.typtype = 'c' then coalesce((select pg_catalog.json_agg(pg_catalog.json_build_array(a.attname, a.atttypid::int8) order by a.attnum) from pg_catalog.pg_attribute a where a.attrelid = b.typrelid and a.attnum > 0 and not a.attisdropped)::text, '[]') end,
+  b.typtype::text, (select r.rngsubtype::int8::text from pg_catalog.pg_range r where r.rngtypid = b.oid or r.rngmultitypid = b.oid)
 from pg_catalog.pg_type e
 join pg_catalog.pg_type b on b.oid = coalesce((select d.base from d join pg_catalog.pg_type t on t.oid = d.base where d.oid = e.oid and t.typtype <> 'd'), e.oid)
 where e.typarray = any(${list}) or (e.oid = any(${list}) and e.typcategory <> 'A')`;
@@ -106,18 +112,33 @@ where e.typarray = any(${list}) or (e.oid = any(${list}) and e.typcategory <> 'A
 
 /**
  * Reads the kinds of the oids the client has not met yet: a type the database created by its
- * name, as the engine names it (pgvector's `vector` is its numbers, an enum its text), and an array
- * of one its element's kind.
+ * name, as the engine names it (pgvector's `vector` is its numbers, an enum its text), a row type
+ * by its fields, each field's type read the same way where the client has not met it either, and
+ * an array of one its element's kind.
  */
 async function learn(key: object, oids: Iterable<number>, load: Load): Promise<void> {
   const known = learnedOf(key);
   const missing = new Set([...oids].filter((oid) => !known.has(oid)));
   if (!missing.size) return;
   const rows = await load(catalogSql([...missing]));
+  // A row type's fields, by its base type's oid; the catalog forbids a row type that holds itself.
+  const rowTypes = new Map<number, [string, number][]>();
+  for (const row of rows) if (row[6]) rowTypes.set(Number(row[1]), JSON.parse(row[6]) as [string, number][]);
+  // A range's or a multirange's subtype, by its base type's oid.
+  const subtypes = new Map<number, { range: "range" | "multirange"; subtype: number }>();
+  for (const row of rows) if (row[8] && (row[7] === "r" || row[7] === "m")) subtypes.set(Number(row[1]), { range: row[7] === "r" ? "range" : "multirange", subtype: Number(row[8]) });
+  const unmet = [...new Set([...[...rowTypes.values()].flat().map(([, oid]) => Number(oid)), ...[...subtypes.values()].map((s) => s.subtype)])].filter((oid) => !builtin(oid) && !known.has(oid));
+  if (unmet.length) await learn(key, unmet, load);
+  const rowKind = (fields: [string, number][]) => `(${fields.map(([field, oid]) => {
+    const k = builtin(Number(oid)) ?? known.get(Number(oid)) ?? { kind: "text", delim: "," };
+    return JSON.stringify(k.kind.endsWith("[]") && k.delim !== "," ? [field, k.kind, k.delim] : [field, k.kind]);
+  }).join(",")})`;
   // An array oid takes its element's kind, never the text its own row as a type would give it.
   const arrays = new Set<number>();
   for (const [array, base, isText, delim, oid, name] of rows) {
-    const element = isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name) : "text"));
+    const fields = rowTypes.get(Number(base));
+    const range = subtypes.get(Number(base));
+    const element = fields !== undefined ? rowKind(fields) : range !== undefined ? `${range.range}:${(builtin(range.subtype) ?? known.get(range.subtype))?.kind ?? "text"}` : isText === "true" ? undefined : (builtin(Number(base))?.kind ?? (name ? scalarKind(name) : "text"));
     if (missing.has(Number(array))) {
       arrays.add(Number(array));
       known.set(Number(array), element === undefined || element.endsWith("[]") ? { kind: "text", delim: "," } : { kind: `${element}[]`, delim: delim ?? "," });
@@ -373,9 +394,10 @@ export async function postgresJs(c: AnyClient, text: string, params: unknown[], 
  * typed array, an array of a type Bun does not parse (an enum's, uuid, name, a range) as its text,
  * a pgvector vector and an hstore as their text, MySQL's TINYINT(1) and a comparison as a number or
  * a BIGINT's digits, and its BIT(1) as a boolean; and an interval as Postgres's text, which Reylo writes as
- * an ISO 8601 duration.
+ * an ISO 8601 duration. A row value, a geometric type, a range and a MySQL SET are their text, which
+ * Reylo reads as an object, an array or a Set, and a MySQL ENUM's text is checked.
  */
-const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore)$|\[\]$|\|/;
+const BUN_KINDS = /^(bool|int8|date|timestamp|timestamptz|interval|bytes|vector|hstore|point|line|lseg|box|path|polygon|circle|enum|set)$|^\(|^(multi)?range:|\[\]$|\|/;
 
 export function bunRows(rows: unknown[], columns: Columns | undefined, postgres = false): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];

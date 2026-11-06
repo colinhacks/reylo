@@ -51,6 +51,9 @@ pub struct Project {
     /// `reylo migrate`'s settings; the section's presence opts the project in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub migrate: Option<Migrate>,
+    /// How the importer represents values in JavaScript and TypeScript.
+    #[serde(default, skip_serializing_if = "Js::is_empty")]
+    pub js: Js,
     #[serde(default, skip_serializing)]
     pub rest: Option<serde_yaml::Value>,
     /// The settings of a host that serves the queries, which that host parses.
@@ -71,6 +74,126 @@ pub struct Migrate {
     /// when absent); `false` (`reylo migrate unlock`) runs them by name, with no lock.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lock: Option<bool>,
+}
+
+/// The importer's JavaScript settings.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Js {
+    #[serde(default, skip_serializing_if = "Codecs::is_empty")]
+    pub codecs: Codecs,
+}
+
+impl Js {
+    fn is_empty(&self) -> bool {
+        self.codecs.is_empty()
+    }
+}
+
+/// Each family of values and the TypeScript type `.run()` returns its values as, and takes its
+/// parameters as. A family is a kind of the type descriptor format (spec/index.ts), and a family
+/// left out keeps its default, the first value of its type here; every other value is exact, or
+/// refuses a value it cannot hold. A 64-bit integer has none: a bigint is its one exact type.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Codecs {
+    /// An exact decimal: Postgres's `numeric` and MySQL's and DuckDB's `DECIMAL`. A `number` refuses
+    /// a value a double cannot hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decimal: Option<DecimalCodec>,
+    /// Bytes: Postgres's `bytea`, MySQL's `BINARY`, `VARBINARY` and `BLOB`, and SQLite's and
+    /// DuckDB's `BLOB`. A `string` is their base64.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<BytesCodec>,
+    /// A date: `date`, MySQL's and DuckDB's `DATE`, a SQLite column declared `DATE`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub date: Option<DateCodec>,
+    /// A time of day with no zone: Postgres's and DuckDB's `time`, a SQLite column declared
+    /// `TIME`. One that keeps its offset (`timetz`) keeps its text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time: Option<TimeCodec>,
+    /// A date and time of day as a wall clock reads, with no zone: Postgres's `timestamp`,
+    /// MySQL's `DATETIME` and `TIMESTAMP`, DuckDB's `TIMESTAMP`, a SQLite column declared
+    /// `DATETIME` or `TIMESTAMP`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub datetime: Option<DateTimeCodec>,
+    /// An instant: Postgres's and DuckDB's `timestamptz`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instant: Option<InstantCodec>,
+    /// A duration: Postgres's `interval`, MySQL's `TIME`, DuckDB's `INTERVAL`. A
+    /// `Temporal.Duration` refuses one whose parts differ in sign, which it cannot hold.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration: Option<DurationCodec>,
+    /// A set of members: MySQL's `SET`, a `Set` by default, or an `array` of its members.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub set: Option<SetCodec>,
+}
+
+impl Codecs {
+    fn is_empty(&self) -> bool {
+        *self == Codecs::default()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecimalCodec {
+    String,
+    Number,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum BytesCodec {
+    Uint8Array,
+    #[serde(rename = "string")]
+    String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DateCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainDate")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum TimeCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainTime")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DateTimeCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.PlainDateTime")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum InstantCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.Instant")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum DurationCodec {
+    #[serde(rename = "string")]
+    String,
+    #[serde(rename = "Temporal.Duration")]
+    Temporal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub enum SetCodec {
+    Set,
+    #[serde(rename = "array")]
+    Array,
 }
 
 /// Why the file does not parse, at byte offsets in its text.
@@ -220,6 +343,33 @@ mod tests {
         let e = parse(text).unwrap_err();
         assert_eq!(e.message, "unknown field `strict`: the key is `strict_params` since 2026-10-20");
         assert_eq!(&text[e.start..e.end], "strict");
+    }
+
+    #[test]
+    fn js_codecs_name_a_typescript_type_per_family() {
+        let text = "js:\n  codecs:\n    decimal: number\n    bytes: string\n    date: Temporal.PlainDate\n    time: Temporal.PlainTime\n    datetime: Temporal.PlainDateTime\n    instant: Temporal.Instant\n    duration: Temporal.Duration\n    set: array\n";
+        let p = parse(text).unwrap();
+        assert_eq!(p.js.codecs.instant, Some(InstantCodec::Temporal));
+        assert_eq!(p.js.codecs.set, Some(SetCodec::Array));
+        assert_eq!(
+            serde_json::to_value(&p).unwrap(),
+            serde_json::json!({ "js": { "codecs": { "decimal": "number", "bytes": "string", "date": "Temporal.PlainDate", "time": "Temporal.PlainTime", "datetime": "Temporal.PlainDateTime", "instant": "Temporal.Instant", "duration": "Temporal.Duration", "set": "array" } } })
+        );
+        // A default spelled out is a setting like any other; an empty section reads back as none.
+        assert_eq!(serde_json::to_value(parse("js:\n  codecs:\n    set: Set\n    bytes: Uint8Array\n").unwrap()).unwrap(), serde_json::json!({ "js": { "codecs": { "set": "Set", "bytes": "Uint8Array" } } }));
+        assert_eq!(serde_json::to_value(parse("js:\n  codecs: {}\n").unwrap()).unwrap(), serde_json::json!({}));
+        // A family or a type the section does not know is an error that names what it takes.
+        let e = parse("js:\n  codecs:\n    instant: Date\n").unwrap_err();
+        assert!(e.message.contains("unknown variant `Date`, expected `string` or `Temporal.Instant`"), "{}", e.message);
+        let e = parse("js:\n  codecs:\n    decimal: number\n    interval: Temporal.Duration\n").unwrap_err();
+        assert!(e.message.contains("unknown field `interval`"), "{}", e.message);
+        // A 64-bit integer is always a bigint.
+        let e = parse("js:\n  codecs:\n    int64: string\n").unwrap_err();
+        assert!(e.message.contains("unknown field `int64`"), "{}", e.message);
+        let e = parse("js:\n  codecs:\n    local_datetime: Temporal.PlainDateTime\n").unwrap_err();
+        assert!(e.message.contains("unknown field `local_datetime`"), "{}", e.message);
+        let e = parse("js:\n  decode: {}\n").unwrap_err();
+        assert!(e.message.contains("unknown field `decode`, expected `codecs`"), "{}", e.message);
     }
 
     #[test]

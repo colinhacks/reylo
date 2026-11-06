@@ -1,6 +1,7 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
-import { compile as compileQuery, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import type { Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
 import type { Structured } from "./rows.ts";
@@ -10,20 +11,20 @@ import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
 import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
 import { listening, type QueryTrace } from "./trace.ts";
-import { buildTime, type CompileInput, type StatementDescriptor } from "./build-time.ts";
+import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
 export type { ClientFor, Dialect, Inputs, MysqlClient, PostgresClient, SqliteClient, SyncClientFor } from "./execute.ts";
 export type { QueryTrace } from "./trace.ts";
 export type { StandardQueryV1 } from "./standard-query.ts";
 export { checks } from "./checks.ts";
-export type { CompileInput } from "./build-time.ts";
+export type { AnalyzeInput } from "./build-time.ts";
 export type * as TypeDefs from "../spec/index.ts";
 export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, PostgresCode, PostgresCondition, PostgresErrorFields, PostgresNarrowing, PostgresQueryError, QueryError, SqliteCode, SqliteErrorFields, SqliteNarrowing, SqliteQueryError } from "./query-error.ts";
 
 /**
  * One statement's types as plain data that serializes to JSON, in Reylo Type Defs: its parameters and
  * columns with their types and nullability, its cardinality, its kind, and `sql` with the database's
- * own placeholders. It is what `reylo compile` prints, for a tool that reads a statement's types
+ * own placeholders. It is what `reylo analyze` prints, for a tool that reads a statement's types
  * rather than running it.
  *
  * It reads the database the type check reads (`direct_url` in the project file, else `DATABASE_URL`),
@@ -40,8 +41,8 @@ export type { MysqlCode, MysqlErrorFields, MysqlNarrowing, MysqlQueryError, Post
  * @preview Reylo Type Defs is at version 0.1.0, and until 1.0.0 a new version may change
  * anything in it. Each descriptor names its version in `$schema`.
  */
-export async function compile(input: CompileInput): Promise<StatementDescriptor> {
-  return buildTime().compile(input);
+export async function analyze(input: AnalyzeInput): Promise<StatementDescriptor> {
+  return buildTime().analyze(input);
 }
 
 /** How many rows a statement returns: `none` is a data-modifying statement without RETURNING. */
@@ -56,6 +57,13 @@ export type Materialize<Row, C extends Cardinality> = C extends "many" ? Row[] :
  * out of a parameter.
  */
 export type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
+
+/**
+ * What a JSON parameter with no schema takes: any value `JSON.stringify` writes as JSON, as `.run()`
+ * sends it. That is `Json`, and at any depth a value with a `toJSON()`, such as a `Date` or a
+ * Temporal value, which writes itself as its text.
+ */
+export type JsonInput = string | number | boolean | null | { toJSON(key: string): unknown } | { readonly [key: string]: JsonInput | undefined } | readonly JsonInput[];
 
 /**
  * The shape of a row value as JSON: a BigInt is the integer it is (JSON.stringify refuses one, so a
@@ -168,6 +176,8 @@ export type QueryDefinition = {
   key?: readonly string[];
   /** Whether the statement's ORDER BY orders its rows totally, so the order is the same on every run, where the analysis proves it. A build step puts it in the module; the query's Standard Query `ordered` (src/standard-query.ts). */
   ordered?: boolean;
+  /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts): a build step writes them where there are any. */
+  codecs?: Readonly<Record<string, Plan>>;
   /** Each structured parameter in a MySQL insert, with the lists of `text` the run time writes again for the keys a call carries (a Postgres or SQLite insert copies its defaults instead). */
   structured?: readonly Structured[];
   /** The catalog facts the statement relied on, which the run time checks before it runs (src/fresh.ts). */
@@ -206,6 +216,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     row: def.row,
     key: def.key,
     ordered: def.ordered,
+    codecs: def.codecs,
     structured: def.structured,
     fresh: def.fresh,
     source: def.source,
@@ -218,7 +229,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     // A query defined by hand is compiled when its `sql` is first read, so a placeholder its
     // `params` misses fails there and in `run`, not where it is defined.
     get sql() {
-      return (compiled ??= compileQuery(module).text);
+      return (compiled ??= compile(module).text);
     },
     raw: def.sql,
     params: def.params,

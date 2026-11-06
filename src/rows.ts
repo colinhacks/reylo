@@ -8,7 +8,7 @@
 // nobody chose is refused.
 import type { EngineType, JsonSchema } from "./engine-type.ts";
 import { validate, withDefaults } from "./json-schema.ts";
-import { columnKind, describe, hstoreText, ParameterError, postgresInterval, postgresYear, zoned } from "./values.ts";
+import { columnKind, describe, hstoreText, ParameterError, postgresInterval, postgresLiteral, postgresYear, zoned } from "./values.ts";
 
 export { describe, zoned } from "./values.ts";
 
@@ -136,6 +136,8 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
       }
       break;
     case "array":
+      // A segment and a polygon, as a Postgres row value and a geometric type below.
+      if (dialect === "postgres" && ["lseg", "polygon"].includes(columnKind(type, dialect))) return postgresLiteral(type, v, (message) => fail(`is ${message}`));
       if (columnKind(type, dialect).endsWith("[]")) {
         if (!Array.isArray(v)) return fail(`is ${written}, an array; got ${describe(v)}.`);
         const element = written.replace(/\s*\[\s*\]\s*$/, "");
@@ -143,6 +145,13 @@ function check(type: EngineType, written: string, v: unknown, dialect: Dialect, 
       }
       break;
     case "record":
+      // A Postgres row value, and a geometric type, as the text its input reads, from its object.
+      if (dialect === "postgres") return postgresLiteral(type, v, (message) => fail(`is ${message}`));
+      return v;
+    case "range":
+    case "multirange":
+      if (dialect === "postgres") return postgresLiteral(type, v, (message) => fail(`is ${message}`));
+      break;
     case "map":
     case "unknown":
       if (columnKind(type, dialect) !== "hstore") return v;

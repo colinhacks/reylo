@@ -34,12 +34,12 @@ test("the reylo command runs the binary with its arguments, standard input and e
   const root = project();
   const version = reylo(root, ["--version"]);
   assert.deepEqual(version, { status: 0, out: `reylo ${VERSION}\n`, err: "" });
-  const typed = reylo(root, ["compile", "-"], { input: "select name from users where id = :id" });
+  const typed = reylo(root, ["analyze", "-"], { input: "select name from users where id = :id" });
   assert.equal(typed.status, 0, typed.err);
   const [line] = typed.out.trim().split("\n").map((l) => JSON.parse(l) as { columns: { name: string }[]; cardinality: string });
   assert.deepEqual([line!.columns.map((c) => c.name), line!.cardinality], [["name"], "at_most_one"]);
   // A statement with a diagnostic exits with 1, as the binary does.
-  assert.equal(reylo(root, ["compile", "--sql", "select nope from users"]).status, 1);
+  assert.equal(reylo(root, ["analyze", "--sql", "select nope from users"]).status, 1);
   const unknown = reylo(root, ["frobnicate"]);
   assert.equal(unknown.status, 2);
   assert.match(unknown.err, /^reylo: unknown command frobnicate\n\nUsage: reylo <command>/);
@@ -116,7 +116,7 @@ test("reylo migrate init starts a project: it adds the migrate section the other
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
   const gone = reylo(project(), ["generate"]);
   assert.equal(gone.status, 2);
-  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo compile prints each statement's types.\n");
+  assert.equal(gone.err, "reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.\n");
 });
 
 test("reylo play is the playground's server, in JavaScript", () => {

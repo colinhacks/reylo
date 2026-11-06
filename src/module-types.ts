@@ -4,6 +4,7 @@
 // are. It imports nothing from Node, so a browser can run it beside the engine.
 import type { Analysis, Dialect, Lexed } from "./engine.ts";
 import { docComment } from "./doc-comment.ts";
+import type { Codecs } from "./codecs.ts";
 import { analysisWithBases } from "./engine-type.ts";
 import { ident, lastOfEachName, orNull, renderParamType, renderType } from "./render.ts";
 
@@ -49,15 +50,16 @@ function paramType(q: Analysis["params"][number], rendered: string): string {
 }
 
 /**
- * The module's import from `reylo`: `Query`, and `Json` where one of `types` names it. Comments,
- * string literal types and a key named `Json` are left out of the search, so that the module never
+ * The module's import from `reylo`: `Query`, and `Json` and `JsonInput` where one of `types` names
+ * it. Comments, string literal types and a key of either name are left out of the search, so that the module never
  * imports a name it does not use. Strings and comments are read in one pass, from the left, so a
  * comment's delimiter inside a quoted name (`"/*"`) starts no comment, nor a quote inside a comment
  * a string.
  */
 export function reyloImport(...types: string[]): string {
   const text = types.join("\n").replace(/"(?:[^"\\]|\\.)*"|\/\*[\s\S]*?\*\//g, (m) => (m.startsWith('"') ? '""' : ""));
-  return `import type { ${/(?<![\w$])Json(?![\w$]|\s*\??:)/.test(text) ? "Json, " : ""}Query } from "reylo";`;
+  const names = ["Json", "JsonInput"].filter((name) => new RegExp(`(?<![\\w$])${name}(?![\\w$]|\\s*\\??:)`).test(text));
+  return `import type { ${names.map((name) => `${name}, `).join("")}Query } from "reylo";`;
 }
 
 /**
@@ -98,7 +100,7 @@ export function withinFile(start: number, length: number, size: number): { start
 
 /**
  * The error at the first use of each parameter nothing in the statement types, which the type check
- * and `reylo compile` give unless the project file says `strict_params: false` (the default is true
+ * and `reylo analyze` give unless the project file says `strict_params: false` (the default is true
  * since 2026-10-20); `placeholders` are where the statement writes each parameter, in UTF-8 bytes. A
  * statement the engine already refused (a parameter written twice, an error from the server) was not
  * analysed to its end, so its parameters are untyped for that reason: its own error is the one to fix
@@ -138,7 +140,7 @@ export function placeholdersOf(analysis: Pick<Analysis, "rewritten">, dialect: D
  * the project file's `strict_params`, and `projectFile` the file the error about it names: the
  * project's own file, which may be `.reylo.yml` or another path REYLO_CONFIG names.
  */
-export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml"): ModuleTypes {
+export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, lexed: Pick<Lexed, "params" | "placeholders"> | undefined, strictParams: boolean, projectFile = ".reylo.yaml", codecs: Codecs = {}): ModuleTypes {
   const analysis = analysisWithBases(written);
   // On MySQL, the names and places are the ones the analysis read (`placeholdersOf`).
   const names = dialect === "mysql" ? analysis.params.map((q) => q.name) : (lexed?.params ?? []);
@@ -147,10 +149,14 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
   if (strictParams) diagnostics.push(...untypedParams(sql, analysis, placeholders, projectFile));
   const cardinality = analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality;
   if (analysis.diagnostics.some((d) => d.code === 6) || (dialect === "postgres" && analysis.kind === undefined)) return { diagnostics, params: "unknown", row: "unknown", cardinality, names, queryError: queryErrorType(dialect, undefined) };
-  const columns = lastOfEachName(analysis.columns).map((c) => [`${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`, c.comment] as const);
+  // A family the project file's `js.codecs` gives another type is that type (src/codecs.ts).
+  const columns = lastOfEachName(analysis.columns).map((c) => {
+    const type = renderType(c.type, false, dialect, codecs);
+    return [`${ident(c.name)}: ${c.nullable ? orNull(type) : type}`, c.comment] as const;
+  });
   // A parameter is typed from its context (a column it is compared with or written to, a CAST);
   // one no context types is `unknown`.
-  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members)), q.comment] as const);
+  const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members, codecs)), q.comment] as const);
   // A parameter that takes null may be left out, which binds NULL; so may one the engine says the
   // caller may leave out, a typed JSON parameter whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
@@ -162,7 +168,7 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
     cardinality,
     names,
     queryError: queryErrorType(dialect, analysis.errors),
-    columns: standardColumnsType(analysis.columns, dialect),
+    columns: standardColumnsType(analysis.columns, dialect, codecs),
   };
 }
 
@@ -170,7 +176,7 @@ export function moduleTypes(sql: string, written: Analysis, dialect: Dialect, le
  * The type of a module's Standard Query `columns`: one entry per output column, in order, whose
  * decoder takes the column's raw value, never NULL, and gives the column's type without null.
  */
-export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect): string {
+export function standardColumnsType(columns: Analysis["columns"], dialect: Dialect, codecs: Codecs = {}): string {
   const raw = dialect === "postgres" ? "string" : dialect === "duckdb" ? "unknown" : "string | number | bigint | Uint8Array";
-  return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect)} }`).join(", ")}]`;
+  return `readonly [${columns.map((c) => `{ readonly name: ${JSON.stringify(c.name)}; decode(value: ${raw}): ${renderType(c.type, false, dialect, codecs)} }`).join(", ")}]`;
 }

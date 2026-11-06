@@ -62,7 +62,7 @@ create view pgf_members as select id, name, email from pgf_users where role = 'm
 create view pgf_user_stats as
   select u.id, u.name, count(p.id) as posts, max(p.published_at) as last_at
   from pgf_users u left join pgf_posts p on p.user_id = u.id group by u.id;
--- Types no driver parses: each arrives as the text Postgres prints.
+-- Types no driver parses, which Reylo reads from the text Postgres prints.
 create table pgf_things (
   id serial primary key,
   span int4range not null,

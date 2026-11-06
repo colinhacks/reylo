@@ -118,7 +118,7 @@ from events
 
 **JSON**
 
-A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), is any JSON value or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
+A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
 
 </Rules>
 

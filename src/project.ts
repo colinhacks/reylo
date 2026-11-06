@@ -8,7 +8,7 @@
 // a file. The URL's scheme names the dialect. The connection is
 // `direct_url`, else `${DATABASE_URL}`, and never `url`, which the file keeps for another use
 // (wiki/project-config.md section 4). A file that sets `url` without `direct_url` is told so by
-// `reylo compile` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
+// `reylo analyze` and `reylo play`, once, and by the error a project with no connection gets; never by an error of
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
 // is the one the entries of the project's cache (`reylo/.cache/`) record.
 import { spawnSync } from "node:child_process";
@@ -16,6 +16,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
+import type { Codecs } from "./codecs.ts";
 
 export type Dialect = "postgres" | "sqlite" | "mysql" | "duckdb";
 
@@ -29,6 +30,7 @@ export type ProjectFile = {
   sqlcommenter?: boolean;
   /** The directory of the project's own files, `reylo` beside the project file when absent. */
   dir?: string;
+  js?: { codecs?: Codecs };
 };
 
 export type ResolvedProject = {
@@ -43,6 +45,8 @@ export type ResolvedProject = {
   strictParams: boolean;
   /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
+  /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
+  codecs: Codecs;
   /** The connection the type check uses: `direct_url` when the file names one, else `DATABASE_URL`; never `url`. */
   url: string | undefined;
   /** Where the URL came from, for a diagnostic: never the URL itself. */
@@ -417,7 +421,7 @@ export function resolveProject(engine: Engine | MissingEngine, projectDir: strin
   const cache = join(resolve(root, config.dir ?? "reylo"), ".cache");
   const cached = url ? [] : cachedDialects(cache);
   if (cached.length === 1) dialect = cached[0];
-  return { file, root, cache, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
+  return { file, root, cache, dialect: dialect ?? "postgres", strictParams: config.strict_params ?? true, sqlcommenter: config.sqlcommenter ?? true, codecs: config.js?.codecs ?? {}, url, urlSource, refreshUrl, watched, error, notice, missingUrl };
 }
 
 /** `duckdb:./dev.duckdb`, `duckdb:///abs/dev.duckdb` → a path, relative ones resolved against baseDir; `duckdb::memory:` (or `duckdb:` alone) → `:memory:`, an empty database, for statements that read files alone. */

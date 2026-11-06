@@ -14,14 +14,14 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 ## Rules
 
-1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field either widens the type or narrows it, on its own, so any combination is valid. A flag is a boolean written only when true: its default is false. The widening fields are a closed list, and a new one means a new major version, while a narrowing one may come in a minor version, since a consumer that ignores it stays sound:
+1. **A consumer reads `kind`, the fields its kind requires (an integer's `bits`, a float's widths, a time's `tick`, a duration's `max`) and the widening fields, and may ignore the rest.** That is enough to pick a representation that holds every value it can receive. A field either widens the type or narrows it, on its own, so any combination is valid. A flag is a boolean written only when true: its default is false. The widening fields are a closed list, and a new one means a new major version, while a narrowing one may come in a minor version, since a consumer that ignores it stays sound:
      - `nullable` and `optional` on a position;
      - `unsigned` on an integer;
      - `infinity` and `nan`;
      - `zone` on a time or an instant;
      - `ill_formed` on text;
      - `any_depth` on an array, `duplicates` on a set, and `fragment` on XML;
-     - `months`, `days` and `time` on a duration, each a part its values may carry;
+     - the parts a duration's `max` writes, each a part its values may carry;
      - a date-bearing kind's bounds beyond 0001-01-01 to 9999-12-31, and a time's reaching 24:00:00.
 
    A new kind may come in a minor version too, since a consumer that does not know it reads it as rule 6 says.
@@ -36,7 +36,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 6. **A consumer that meets an unknown kind** reads it as `opaque` at a SQL position and as any JSON inside JSON content, and reads an unknown value of a known field the same way. It ignores a field it does not know, which can only narrow, since a widening field comes with a new major version.
 
-7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a whole-number kind takes neither exclusive field; a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive.
+7. **Validity rules**, for what no shape can rule out, each a check a validator runs: a side of a range takes one of `min` and `exclusive_min` (or `max` and `exclusive_max`), and a whole-number kind takes neither exclusive field; a minimum is at most its maximum (bounds, sizes, scales); a size's `exact` never sits beside its `min` or `max`, its `min` never equals its `max`, and `encoding` appears only with `unit: "byte"`; a tick is positive; a float's widths are positive; a duration's `max` writes each part above zero, with no leading zero, and its minutes and seconds below 60, and the duration has a `tick` exactly when that `max` has a time part.
 
 8. **Versions are semantic**, and a descriptor names its own in `$schema`. A patch version changes no descriptor; a minor version may add a kind or a narrowing field, which a consumer of the version before stays sound ignoring (rules 1 and 6); a major version may change anything. Before 1.0.0 the minor number stands for the major one and the patch number for the minor one: 0.2.0 may change anything 0.1.0 says, and 0.1.1 only what a minor version may.
 ## Facts about each database

@@ -14,8 +14,13 @@
 // front; `json` the parsed value; `bytes` a Uint8Array (a Buffer is one); `vector` pgvector's
 // `vector` or `halfvec` as an array of its numbers; `hstore` an hstore's keys as an object, each
 // value a string or null; `text` the server's text, which every other type is (time, uuid, an
-// enum's label, a range, a row value); `unknown` whatever the driver gives (a SQLite column with no
-// declared type). A DuckDB STRUCT, MAP or UNION is decoded by the result's own types
+// enum's label, a row value whose fields are not known); `unknown` whatever the driver gives (a
+// SQLite column with no declared type); `(…)` a Postgres row value of known fields as an object
+// of them, each field listed as `[name, kind]` (`(["id","int8"],["name","text"])`); `point`,
+// `line`, `lseg`, `box`, `path`, `polygon` and `circle` Postgres's geometric types as objects of
+// their fields, as the type descriptor gives them; and `range:k` and `multirange:k` a range of `k`
+// as an object of its bounds and a multirange as an array of them. A DuckDB STRUCT, MAP or UNION
+// is decoded by the result's own types
 // (src/decode-duckdb.ts), each of its values in its own kind's form. `k[]` is an array of `k`, a NULL element `null`, and `a|b` either (a MySQL
 // expression whose type the bound value decides). No kind is a JavaScript Date. An array's text
 // separates its elements with a comma, or with its element type's own delimiter (`:` for PostGIS's
@@ -28,8 +33,10 @@ import { bareName, type EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | "unknown";
-/** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either. */
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "unknown";
+/** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
+export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
+/** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];
@@ -79,6 +86,8 @@ export function numbersInJson(v: unknown, at: JsonNumbers): unknown {
   return v;
 }
 
+const POINT = "{ x: number; y: number }";
+
 /** The TypeScript type of each scalar kind: what a value of that kind is at run time. */
 export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   bool: "boolean",
@@ -96,14 +105,27 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   bytes: "Uint8Array",
   vector: "number[]",
   hstore: "Record<string, string | null>",
+  // The geometric types' fields, as the type descriptor names them (engine/postgres pgtypes.rs).
+  point: POINT,
+  line: "{ a: number; b: number; c: number }",
+  lseg: `${POINT}[]`,
+  box: `{ high: ${POINT}; low: ${POINT} }`,
+  path: `{ closed: boolean; points: ${POINT}[] }`,
+  polygon: `${POINT}[]`,
+  circle: `{ center: ${POINT}; radius: number }`,
+  // A MySQL ENUM's label, whose union its descriptor says (src/render.ts).
+  enum: "string",
+  // A MySQL SET's members, which MySQL keeps once each, in the order the column declares them.
+  set: "Set<string>",
   unknown: "unknown",
 };
 
 /**
  * The kind of a Postgres base type by its catalog name, for a value whose type a driver names
  * (src/decode.ts; a value the engine typed takes its kind from its descriptor, `columnKind`). Every
- * type not named here is its text: Reylo owns every oid, so the driver never parses one (an enum's label, a range, `time`,
- * `uuid`, `money`, `point`, `xml`, a row value). pgvector's `vector` and `halfvec`, and an
+ * type not named here is its text: Reylo owns every oid, so the driver never parses one (an enum's label, `time`,
+ * `uuid`, `money`, `xml`); a range and a row value take their kinds from their oids or their
+ * descriptors (src/decode.ts). pgvector's `vector` and `halfvec`, and an
  * `hstore`, are extensions' types, named by their names as every created type is.
  */
 const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
@@ -125,6 +147,13 @@ const SQL_KINDS: Readonly<Record<string, ScalarKind>> = {
   vector: "vector",
   halfvec: "vector",
   hstore: "hstore",
+  point: "point",
+  line: "line",
+  lseg: "lseg",
+  box: "box",
+  path: "path",
+  polygon: "polygon",
+  circle: "circle",
 };
 
 /**
@@ -169,8 +198,26 @@ function sqliteDeclaredKind(declared: string): Kind {
   }
 }
 
-/** Postgres's built-in geometric types the format structures as records, which no driver parses either: each is its text. */
-const GEOMETRIC = new Set(["point", "line", "box", "path", "circle"]);
+/** Postgres's built-in geometric types, which the type descriptor structures as records (`lseg` and `polygon` as arrays of points) and names with no schema, as it names every built-in type. */
+const GEOMETRIC: ReadonlySet<string> = new Set<Geometric>(["point", "line", "lseg", "box", "path", "polygon", "circle"]);
+/** The geometric type a descriptor is, by its whole name: a created type of the same name is named with its schema. */
+const geometric = (t: EngineType): Geometric | undefined => ("name" in t && t.name !== undefined && GEOMETRIC.has(t.name) ? (t.name as Geometric) : undefined);
+
+/** A Postgres row value's kind: `(…)`, each field `[name, kind]`, and an array field's delimiter third where it is not a comma. */
+export const isRowKind = (kind: Kind): boolean => kind.startsWith("(");
+const rowFieldsCache = new Map<Kind, Columns>();
+/** The fields a row value's kind lists, in order. */
+export function rowFields(kind: Kind): Columns {
+  let fields = rowFieldsCache.get(kind);
+  if (fields === undefined) rowFieldsCache.set(kind, (fields = JSON.parse(`[${kind.slice(1, -1)}]`) as Columns));
+  return fields;
+}
+
+/** What separates the elements of an array of `element` in Postgres's text: its type's `typdelim`, `;` for a box and `:` for PostGIS's types. */
+function delimiterOf(element: EngineType): string | undefined {
+  if (geometric(element) === "box") return ";";
+  return element.kind === "geometry" && (bareName(element) === "geometry" || bareName(element) === "geography") ? ":" : undefined;
+}
 
 /** Kinds that may each be the value's, one `a|b` kind: a BigInt absorbs a narrower integer, a BigInt either way, where no float shares the column. */
 function either(kinds: Kind[]): Kind {
@@ -207,11 +254,12 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "array": {
       if (dialect === "postgres") {
         if (name === "vector" || name === "halfvec") return "vector";
-        if (name === "bit" || name === "varbit" || name === "sparsevec" || name === "lseg" || name === "polygon") return "text";
-        // A row value's array is the text Postgres prints, as a row value is; a built-in geometric
-        // type's elements are each their text.
+        if (name === "bit" || name === "varbit" || name === "sparsevec") return "text";
+        const shape = geometric(t);
+        if (shape !== undefined) return shape;
+        // An array of row values whose fields are not known is the text Postgres prints.
         const element = t.element.type;
-        if ((element.kind === "record" && !GEOMETRIC.has(bareName(element))) || (element.kind === "opaque" && bareName(element) === "record")) return "text";
+        if (element.kind === "opaque" && bareName(element) === "record") return "text";
       }
       if (dialect === "mysql" && name === "bit") return t.size?.exact === 1 ? "bool" : "bytes";
       if (dialect === "duckdb" && name === "bit") return "text";
@@ -239,10 +287,29 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
     case "tagged_union":
       // A DuckDB union is decoded by the result's own types (src/decode-duckdb.ts).
       return "unknown";
-    case "record":
-      // A Postgres row value is the text the server prints; a DuckDB struct is decoded by the
-      // result's own types (src/decode-duckdb.ts).
-      return dialect === "postgres" ? "text" : "unknown";
+    case "record": {
+      // A DuckDB struct is decoded by the result's own types (src/decode-duckdb.ts).
+      if (dialect !== "postgres") return "unknown";
+      // A Postgres row value is an object of its fields, each decoded from its text as a column of
+      // its type is.
+      const shape = geometric(t);
+      if (shape !== undefined) return shape;
+      return `(${t.fields.map((f) => {
+        const kind = columnKind(f.type, dialect);
+        const delim = f.type.kind === "array" && kind.endsWith("[]") ? delimiterOf(f.type.element.type) : undefined;
+        return JSON.stringify(delim === undefined ? [f.name, kind] : [f.name, kind, delim]);
+      }).join(",")})`;
+    }
+    case "text":
+      // A MySQL ENUM of known labels holds one of them or `''`, which the run time refuses.
+      return dialect === "mysql" && name === "enum" && t.enum !== undefined && !t.enum.includes("") ? "enum" : "text";
+    case "set":
+      // A MySQL SET is a Set of its members.
+      return dialect === "mysql" ? "set" : "text";
+    case "range":
+    case "multirange":
+      // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
+      return dialect === "postgres" ? `${t.kind}:${columnKind(t.subtype, dialect)}` : "text";
     case "geometry":
     case "opaque":
       return dialect === "postgres" ? "text" : "unknown";
@@ -345,7 +412,7 @@ const pad = (n: number, width = 2) => String(n).padStart(width, "0");
  * them, Temporal holds no such date in any form, and a sign keeps the rule that every year outside
  * 0000–9999 has one, which `postgresYear` reads back.
  */
-const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-" : "+"}${pad(Math.abs(y), 6)}`);
+export const isoYear = (y: number) => (y >= 0 && y <= 9999 ? pad(y, 4) : `${y < 0 ? "-" : "+"}${pad(Math.abs(y), 6)}`);
 
 /**
  * A date or time parameter's text as Postgres reads it, the inverse of `isoYear` for what `run`
@@ -574,6 +641,272 @@ export function hstoreText(v: object, fail: (message: string) => never): string 
   return pairs.join(", ");
 }
 
+// Postgres's geometric types from their text (geo_ops.c): a point `(x,y)`, a line `{a,b,c}`, a
+// segment `[(x1,y1),(x2,y2)]`, a box `(x1,y1),(x2,y2)` with its upper right corner first, a path
+// `[…]` when open and `(…)` when closed, a polygon `(…)`, a circle `<(x,y),r>`; each number as
+// float8 writes it (`1.5`, `-2`, `1e+300`, `Infinity`, `NaN`), which `+` reads.
+type Point = { x: number; y: number };
+const POINTS = /\(([^,()]+),([^,()]+)\)/g;
+const points = (x: string): Point[] => Array.from(x.matchAll(POINTS), (m) => ({ x: +m[1]!, y: +m[2]! }));
+const GEOMETRIC_DECODERS: Readonly<Record<Geometric, Decoder>> = {
+  point: (x) => points(x)[0],
+  line: (x) => {
+    const [a, b, c] = x.slice(1, -1).split(",").map(Number);
+    return { a, b, c };
+  },
+  lseg: points,
+  box: (x) => {
+    const [high, low] = points(x);
+    return { high, low };
+  },
+  path: (x) => ({ closed: x[0] === "(", points: points(x) }),
+  polygon: points,
+  circle: (x) => ({ center: points(x)[0], radius: +x.slice(x.lastIndexOf(",") + 1, -1) }),
+};
+
+/**
+ * The text of each field of a Postgres row value, `(1,"a b",,"x""y")` (record_out), null where a
+ * field is empty: a field is quoted when it holds a comma, a parenthesis, a quote, a backslash or
+ * white space, or is empty, and a quote inside quotes is doubled; a backslash escapes the next
+ * character anywhere. `count` is the row's number of fields, since one NULL field and none both
+ * print `()`.
+ */
+export function parseRow(text: string, count: number, ends = ",)"): (string | null)[] {
+  const out: (string | null)[] = [];
+  let i = 1;
+  for (let f = 0; f < count; f++) {
+    if (f) i++;
+    if (ends.includes(text[i]!)) {
+      out.push(null);
+      continue;
+    }
+    let s = "";
+    let quoted = false;
+    let from = i;
+    while (i < text.length) {
+      const c = text[i];
+      if (c === "\\") {
+        s += text.slice(from, i) + (text[i + 1] ?? "");
+        from = i += 2;
+      } else if (c === '"') {
+        s += text.slice(from, i);
+        if (quoted && text[i + 1] === '"') (s += '"'), (i += 2);
+        else (quoted = !quoted), i++;
+        from = i;
+      } else if (!quoted && ends.includes(c!)) break;
+      else i++;
+    }
+    out.push(s + text.slice(from, i));
+  }
+  return out;
+}
+
+// A Postgres range: `empty`, or its two bounds between `[` or `(` and `]` or `)`, each quoted as a
+// row value's field is and absent where that end is unbounded (range_out); a multirange its ranges
+// in braces, `{[1,3),[5,7)}`. As an object, a range is `{ empty: true }`, or its `lower` and `upper`
+// bounds, each in its subtype's own form and left out where that end is unbounded, and `bounds`,
+// the brackets Postgres writes around them, which its range constructors take (`int4range(1, 5,
+// '[)')`): an unbounded end is always exclusive.
+export const RANGE_BOUNDS = ["[)", "[]", "(]", "()"] as const;
+
+/** A range's kind, `range:<subtype's kind>`, and a multirange's, `multirange:<subtype's kind>`. */
+export const isRangeKind = (kind: Kind): boolean => kind.startsWith("range:");
+export const isMultirangeKind = (kind: Kind): boolean => kind.startsWith("multirange:");
+const subtypeKind = (kind: Kind): Kind => kind.slice(kind.indexOf(":") + 1);
+
+/** A range from its text, each bound by `bound`. */
+function parseRange(text: string, bound: Decoder): Record<string, unknown> {
+  if (text === "empty") return { empty: true };
+  const [lower, upper] = parseRow(text, 2, ",)]");
+  const range: Record<string, unknown> = {};
+  if (lower !== null && lower !== undefined) range.lower = bound(lower);
+  if (upper !== null && upper !== undefined) range.upper = bound(upper);
+  range.bounds = text[0]! + text[text.length - 1]!;
+  return range;
+}
+
+/** Each range's text in a multirange's, `{[1,3),[5,7)}`: a range ends at the first `]` or `)` outside quotes. */
+function multirangeParts(text: string): string[] {
+  const parts: string[] = [];
+  let i = 1;
+  while (i < text.length && text[i] !== "}") {
+    const from = i;
+    let quoted = false;
+    for (i++; i < text.length; i++) {
+      const c = text[i];
+      if (c === "\\") i++;
+      else if (c === '"') quoted = !quoted;
+      else if (!quoted && (c === "]" || c === ")")) break;
+    }
+    parts.push(text.slice(from, ++i));
+    if (text[i] === ",") i++;
+  }
+  return parts;
+}
+
+const rowDecoders = new Map<Kind, Decoder>();
+/** A row value of `kind` from its text, as an object of its fields, each from its text as a column of its kind. */
+function rowDecoder(kind: Kind): Decoder {
+  let d = rowDecoders.get(kind);
+  if (d !== undefined) return d;
+  const fields = rowFields(kind);
+  const decoders = fields.map(([, k, delim]) => textDecoder(k, delim));
+  d = (x) => {
+    const texts = parseRow(x, fields.length);
+    const row: Record<string, unknown> = {};
+    fields.forEach(([name], i) => {
+      const text = texts[i];
+      setKey(row, name, text === null || text === undefined ? null : decoders[i]!(text));
+    });
+    return row;
+  };
+  rowDecoders.set(kind, d);
+  return d;
+}
+
+/** `row[name] = v`, a field named `__proto__` among them, which an assignment would take for the object's prototype. */
+function setKey(row: Record<string, unknown>, name: string, v: unknown): void {
+  if (name === "__proto__") Object.defineProperty(row, name, { value: v, enumerable: true, writable: true, configurable: true });
+  else row[name] = v;
+}
+
+// The text Postgres's input functions read, for a value Reylo writes as text itself: a row value,
+// a geometric type and a range, from the object `.run()` returns for them.
+
+/** A number as float8's input reads it: `Infinity`, `-Infinity` and `NaN` as JavaScript writes them, and -0 with its sign. */
+const floatText = (n: number): string => (Object.is(n, -0) ? "-0" : String(n));
+const isObject = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v) && !(v instanceof Uint8Array);
+/** Whether `v` is an object of exactly the keys `keys`. */
+const hasKeys = (v: unknown, keys: readonly string[]): v is Record<string, unknown> => isObject(v) && Object.keys(v).length === keys.length && keys.every((k) => k in v);
+
+/** A geometric type's text from its object, or undefined where `v` is not one. */
+function geometricText(shape: Geometric, v: unknown): string | undefined {
+  const num = (n: unknown) => (typeof n === "number" ? floatText(n) : undefined);
+  const pt = (p: unknown) => {
+    if (!hasKeys(p, ["x", "y"])) return undefined;
+    const x = num(p.x);
+    const y = num(p.y);
+    return x === undefined || y === undefined ? undefined : `(${x},${y})`;
+  };
+  const pts = (a: unknown, count?: number) => {
+    if (!Array.isArray(a) || !a.length || (count !== undefined && a.length !== count)) return undefined;
+    const each = a.map(pt);
+    return each.includes(undefined) ? undefined : each.join(",");
+  };
+  const all = (...parts: (string | undefined)[]) => (parts.includes(undefined) ? undefined : parts.join(","));
+  switch (shape) {
+    case "point":
+      return pt(v);
+    case "line": {
+      if (!hasKeys(v, ["a", "b", "c"])) return undefined;
+      const abc = all(num(v.a), num(v.b), num(v.c));
+      return abc === undefined ? undefined : `{${abc}}`;
+    }
+    case "lseg": {
+      const ends = pts(v, 2);
+      return ends === undefined ? undefined : `[${ends}]`;
+    }
+    case "box":
+      return hasKeys(v, ["high", "low"]) ? all(pt(v.high), pt(v.low)) : undefined;
+    case "path": {
+      if (!hasKeys(v, ["closed", "points"]) || typeof v.closed !== "boolean") return undefined;
+      const each = pts(v.points);
+      return each === undefined ? undefined : v.closed ? `(${each})` : `[${each}]`;
+    }
+    case "polygon": {
+      const each = pts(v);
+      return each === undefined ? undefined : `(${each})`;
+    }
+    case "circle": {
+      if (!hasKeys(v, ["center", "radius"])) return undefined;
+      const parts = all(pt(v.center), num(v.radius));
+      return parts === undefined ? undefined : `<${parts}>`;
+    }
+  }
+}
+
+/** A range's text from its object: `empty`, or its bounds, each quoted, an unbounded end empty. */
+function rangeText(t: Extract<EngineType, { kind: "range" | "multirange" }>, v: unknown, fail: (message: string) => never): string {
+  const what = `${bareName(t) || "a range"}, { empty: true } or { lower, upper, bounds } (each bound left out where that end is unbounded, bounds one of ${RANGE_BOUNDS.map((b) => JSON.stringify(b)).join(", ")})`;
+  if (!isObject(v)) return fail(`${what}; got ${describe(v)}.`);
+  const keys = Object.keys(v).filter((k) => v[k] !== undefined);
+  if (keys.length === 1 && v.empty === true) return "empty";
+  if (keys.some((k) => k !== "lower" && k !== "upper" && k !== "bounds")) return fail(`${what}; got { ${keys.join(", ")} }.`);
+  // Bounds left out are `[)`, as Postgres's range constructors take them.
+  const bounds = v.bounds ?? "[)";
+  if (!(RANGE_BOUNDS as readonly unknown[]).includes(bounds)) return fail(`${what}; got bounds ${describe(bounds)}.`);
+  const bound = (key: "lower" | "upper") => (v[key] === undefined ? "" : v[key] === null ? fail(`${what}, whose ${key} is a bound, never null; leave it out for an unbounded end.`) : quoted(postgresLiteral(t.subtype, v[key], (message) => fail(`${what}, whose ${key} is ${message}`))));
+  return `${(bounds as string)[0]}${bound("lower")},${bound("upper")}${(bounds as string)[1]}`;
+}
+
+/** A value inside an array's or a row value's text: quoted, with each quote and backslash escaped. */
+const quoted = (text: string) => `"${text.replace(/["\\]/g, "\\$&")}"`;
+
+/** Whether a value of `t` is itself a JavaScript array: a vector, a segment, a polygon. */
+const arrayValued = (t: EngineType) => ["vector", "lseg", "polygon"].includes(columnKind(t, "postgres"));
+
+/**
+ * A value of the Postgres type `t` as the text its input function reads: a row value from an
+ * object of its fields, a geometric type from its object, and each part of either as a parameter
+ * of its type takes it (binary data as `\x` and its hex, a date or a timestamp with its year as
+ * Postgres writes it, an interval from its ISO 8601 text, JSON from its value). `fail` says why
+ * `v` is not such a value, after "is".
+ */
+export function postgresLiteral(t: EngineType, v: unknown, fail: (message: string) => never): string {
+  const shape = geometric(t);
+  if (shape !== undefined) return geometricText(shape, v) ?? fail(`a ${shape}, ${TS_TYPE[shape]}; got ${describe(v)}.`);
+  const kind = columnKind(t, "postgres");
+  if (t.kind === "record" && isRowKind(kind)) {
+    const name = t.name ?? "a row value";
+    if (!isObject(v)) return fail(`${name}, an object of its fields (${t.fields.map((f) => f.name).join(", ")}); got ${describe(v)}.`);
+    const names = new Set(t.fields.map((f) => f.name));
+    const extra = Object.keys(v).find((key) => !names.has(key));
+    if (extra !== undefined) fail(`${name}, which has no field ${JSON.stringify(extra)}; its fields are ${t.fields.map((f) => f.name).join(", ")}.`);
+    // A field left out, or undefined, is NULL, as an empty field is in the text.
+    return `(${t.fields.map((f) => {
+      const field = Object.prototype.hasOwnProperty.call(v, f.name) ? v[f.name] : undefined;
+      return field === null || field === undefined ? "" : quoted(postgresLiteral(f.type, field, (message) => fail(`${name}, whose field ${JSON.stringify(f.name)} is ${message}`)));
+    }).join(",")})`;
+  }
+  if (t.kind === "range") return rangeText(t, v, fail);
+  if (t.kind === "multirange") {
+    if (!Array.isArray(v)) return fail(`${bareName(t) || "a multirange"}, an array of ranges; got ${describe(v)}.`);
+    return `{${v.map((r) => rangeText(t, r, fail)).join(",")}}`;
+  }
+  if (t.kind === "array" && kind.endsWith("[]")) {
+    const element = t.element.type;
+    const delim = delimiterOf(element) ?? ",";
+    const write = (a: unknown): string => {
+      if (!Array.isArray(a)) return fail(`an array; got ${describe(a)}.`);
+      return `{${a.map((e) => (e === null || e === undefined ? "NULL" : Array.isArray(e) && !arrayValued(element) ? write(e) : quoted(postgresLiteral(element, e, fail)))).join(delim)}}`;
+    };
+    return write(v);
+  }
+  if (t.kind === "json") return JSON.stringify(v);
+  if (kind === "hstore" && isObject(v)) return hstoreText(v, (message) => fail(message.replace(/^is /, "")));
+  if (kind === "vector" && Array.isArray(v) && v.every((n) => typeof n === "number" && Number.isFinite(n))) return JSON.stringify(v);
+  if (v instanceof Uint8Array) {
+    let hex = "\\x";
+    for (const byte of v) hex += (byte < 16 ? "0" : "") + byte.toString(16);
+    return hex;
+  }
+  switch (typeof v) {
+    case "boolean":
+      return v ? "t" : "f";
+    case "number":
+      return floatText(v);
+    case "bigint":
+      return String(v);
+    case "string":
+      if (kind === "date" || kind === "timestamp" || kind === "timestamptz") return postgresYear(v);
+      return kind === "interval" ? postgresInterval(v) : v;
+  }
+  return fail(`${bareName(t) || t.kind}; got ${describe(v)}.`);
+}
+
+/** A MySQL SET from its text, its members joined by commas (`a,c`), none for an empty one. */
+const members = (x: string): Set<string> => new Set(x === "" ? [] : x.split(","));
+
 const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   bool: (x) => x === "t",
   int: number,
@@ -590,6 +923,9 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   // pgvector prints the shortest text of each float, `[1,2.5,1e-07]`, which JSON reads exactly.
   vector: (x) => JSON.parse(x),
   hstore,
+  ...GEOMETRIC_DECODERS,
+  enum: identity,
+  set: (x) => members(x),
   unknown: identity,
 };
 
@@ -666,6 +1002,15 @@ export function textDecoder(kind: Kind, delim = ","): Decoder {
   if (kind.endsWith("[]")) {
     const element = textDecoder(elementKind(kind), delim);
     return (x) => parseArray(x, element, delim);
+  }
+  if (isRowKind(kind)) return rowDecoder(kind);
+  if (isRangeKind(kind)) {
+    const bound = textDecoder(subtypeKind(kind));
+    return (x) => parseRange(x, bound);
+  }
+  if (isMultirangeKind(kind)) {
+    const bound = textDecoder(subtypeKind(kind));
+    return (x) => multirangeParts(x).map((r) => parseRange(r, bound));
   }
   return TEXT_DECODERS[kind as ScalarKind] ?? identity;
 }
@@ -830,6 +1175,9 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ",", post
     if (ArrayBuffer.isView(v) && !(v instanceof DataView)) return Array.from(v as unknown as ArrayLike<unknown>, (e) => coerce(element, e, column));
     return v;
   }
+  // A row value, and a geometric type, are their text where no driver parses them.
+  if (isRowKind(kind) || isRangeKind(kind) || isMultirangeKind(kind)) return typeof v === "string" ? textDecoder(kind)(v) : v;
+  if (GEOMETRIC.has(kind)) return typeof v === "string" ? GEOMETRIC_DECODERS[kind as Geometric](v) : v;
   if (kind.includes("|")) return coerceEither(kind, v, column);
   switch (kind as ScalarKind) {
     case "bool":
@@ -872,6 +1220,16 @@ export function coerce(kind: Kind, v: unknown, column: string, delim = ",", post
       if (Array.isArray(v)) return Uint8Array.from(v as number[]);
       if (typeof v === "boolean") return Uint8Array.of(v ? 1 : 0);
       if (typeof v === "string") return bytea(v);
+      return v;
+    case "enum":
+      // MySQL stores `''` for a value an ENUM does not list, under INSERT IGNORE or outside strict
+      // mode, which the column's union does not admit.
+      if (v === "") throw new DecodeError(`Column "${column}" holds "", which is none of its ENUM's labels: MySQL stores it for a value the column does not list, under INSERT IGNORE or outside strict mode. Select nullif(${column}, '') to read such a row.`);
+      return v;
+    case "set":
+      // mysql2's SET is its text, mariadb's an array of its members.
+      if (typeof v === "string") return members(v);
+      if (Array.isArray(v)) return new Set(v as unknown[]);
       return v;
     case "text":
       if (typeof v === "string") return v;

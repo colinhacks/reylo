@@ -410,17 +410,18 @@ const TYPED: Record<Dialect, Record<string, unknown>> = {
   postgres: {
     id: 1, big: 9007199254740993n, amount: "12345678901234567890.123456789", day: "2026-10-20", at: "2026-10-20T10:00:00.123000", stamp: "2026-10-20T08:00:00.123000Z",
     doc: { a: [1, 2] }, docb: { b: true }, raw: Uint8Array.of(1, 2, 255), flag: true, f8: 2.5, tags: ["a", null, "NULL", "b,c"], ints: [1, 2, 3], moods: ["ok", "sad"], span: "P1DT2H", uid: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+    pr: { a: 1, b: "x,y" }, pt: { x: 1.5, y: -2 }, bxs: [{ high: { x: 3, y: 4 }, low: { x: 1, y: 2 } }, { high: { x: 1, y: 1 }, low: { x: 0, y: 0 } }], seats: { lower: 1, upper: 5, bounds: "[)" }, many: [{ lower: 1n, upper: 3n, bounds: "[)" }, { lower: 5n, upper: 7n, bounds: "[)" }],
   },
   mysql: {
     id: 1, big: -9007199254740993n, ubig: 18446744073709551615n, amount: "1.100000000000000001", day: "2026-10-20", at: "2026-10-20T10:00:00.123", doc: { a: [1, 2] },
-    bit1: true, raw: Uint8Array.of(1, 2, 255), tags: "x,z", kind: "b", flag: true, yr: 2026, f8: 2.5, tm: "10:00:00", s: "hi",
+    bit1: true, raw: Uint8Array.of(1, 2, 255), tags: new Set(["x", "z"]), kind: "b", flag: true, yr: 2026, f8: 2.5, tm: "10:00:00", s: "hi",
   },
   sqlite: { id: 1, n: 5, r: 1.5, s: "hi", b: Uint8Array.of(1, 2, 255), doc: { a: [1, 2] }, flag: true, x: 7 },
 };
-const TYPED_COLUMNS: Record<Dialect, [string, string][]> = {
-  postgres: [["id", "int"], ["big", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["stamp", "timestamptz"], ["doc", "json"], ["docb", "json"], ["raw", "bytes"], ["flag", "bool"], ["f8", "float"], ["tags", "text[]"], ["ints", "int[]"], ["moods", "text[]"], ["span", "interval"], ["uid", "text"]],
+const TYPED_COLUMNS: Record<Dialect, ([string, string] | [string, string, string])[]> = {
+  postgres: [["id", "int"], ["big", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["stamp", "timestamptz"], ["doc", "json"], ["docb", "json"], ["raw", "bytes"], ["flag", "bool"], ["f8", "float"], ["tags", "text[]"], ["ints", "int[]"], ["moods", "text[]"], ["span", "interval"], ["uid", "text"], ["pr", '(["a","int"],["b","text"])'], ["pt", "point"], ["bxs", "box[]", ";"], ["seats", "range:int"], ["many", "multirange:int8"]],
   // A BIT(1) and a TINYINT(1) column are truth values, as the engine types them (engine/mysql).
-  mysql: [["id", "int"], ["big", "int8"], ["ubig", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["doc", "json"], ["bit1", "bool"], ["raw", "bytes"], ["tags", "text"], ["kind", "text"], ["flag", "bool"], ["yr", "int"], ["f8", "float"], ["tm", "text"], ["s", "text"]],
+  mysql: [["id", "int"], ["big", "int8"], ["ubig", "int8"], ["amount", "decimal"], ["day", "date"], ["at", "timestamp"], ["doc", "json"], ["bit1", "bool"], ["raw", "bytes"], ["tags", "set"], ["kind", "enum"], ["flag", "bool"], ["yr", "int"], ["f8", "float"], ["tm", "text"], ["s", "text"]],
   // A SQLite JSON column and truth value as the engine types them where it can tell, a column with no type unknown.
   sqlite: [["id", "int"], ["n", "int"], ["r", "float"], ["s", "text"], ["b", "bytes"], ["doc", "json"], ["flag", "bool"], ["x", "unknown"]],
 };
@@ -432,11 +433,15 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
   postgres: {
     big: T.int8, amount: { kind: "decimal", name: "numeric" }, day: T.date, at: T.timestamp, stamp: T.timestamptz, doc: { ...T.json, name: "json" }, docb: { ...T.json, name: "jsonb" }, raw: T.bytea, flag: T.bool, f8: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, name: "float8" },
     tags: array(T.text, "_text"), ints: array(T.int4, "_int4"), moods: array(mood, "driver_matrix._mood"), span: { kind: "duration", name: "interval" }, uid: { kind: "uuid", name: "uuid" },
+    pr: { kind: "record", name: "driver_matrix.pair", fields: [{ name: "a", type: T.int4, nullable: true }, { name: "b", type: T.text, nullable: true }] },
+    pt: { kind: "record", name: "point", fields: [{ name: "x", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } }, { name: "y", type: { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } }] },
+    seats: { kind: "range", subtype: T.int4, name: "int4range" },
+    many: { kind: "multirange", subtype: T.int8, name: "int8multirange" },
   },
   mysql: {
     big: my("integer", "bigint", { bits: 64 }), ubig: my("integer", "bigint", { bits: 64, unsigned: true }), amount: my("decimal", "decimal"), day: my("date", "date"), at: my("datetime", "datetime", { tick: "1/1000000" }), doc: my("json", "json"),
-    bit1: { kind: "union", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text" } } }), kind: my("text", "enum"),
-    flag: my("integer", "tinyint(1)", { bits: 8 }), yr: my("integer", "year", { bits: 16, min: "0", max: "2155" }), f8: my("float", "double", { exponent_bits: 11, mantissa_bits: 52 }), tm: my("duration", "time", { time: { tick: "1/1000000", max: "PT838H59M59S" } }), s: my("text", "varchar"),
+    bit1: { kind: "union", members: [{ kind: "boolean" }, my("array", "bit", { element: { type: { kind: "boolean" } } })] }, raw: my("bytes", "blob"), tags: my("set", "set", { element: { type: { kind: "text", enum: ["x", "y", "z"] } } }), kind: my("text", "enum", { enum: ["a", "b"] }),
+    flag: my("integer", "tinyint(1)", { bits: 8 }), yr: my("integer", "year", { bits: 16, min: "0", max: "2155" }), f8: my("float", "double", { exponent_bits: 11, mantissa_bits: 52 }), tm: my("duration", "time", { max: "PT838H59M59S", tick: "1/1000000" }), s: my("text", "varchar"),
   },
   sqlite: {
     n: { kind: "integer", bits: 64 }, r: { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, s: { kind: "text", ill_formed: "utf8" }, b: { kind: "bytes" },
@@ -448,7 +453,8 @@ const ROUND_TRIP: Record<Dialect, Record<string, unknown>> = {
 const ROUND_TRIP_ARRAYS = new Set(["tags", "ints", "moods"]);
 /** The comparison for each column: Postgres's json has no `=`, and MySQL's JSON column is compared with json_extract of the JSON parameter. */
 const ROUND_TRIP_SQL: Record<Dialect, (c: string) => string> = {
-  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
+  // A point has no `=`: `~=` is its "same as". A row value's `=` reads an uncast parameter as an anonymous record, which Postgres takes no input of.
+  postgres: (c) => (c === "doc" ? `doc::jsonb = :doc::jsonb` : c === "pt" ? `pt ~= :pt` : c === "pr" ? `pr = :pr::driver_matrix.pair` : ROUND_TRIP_ARRAYS.has(c) ? `array_remove(${c}, null) = :${c}` : `${c} = :${c}`),
   mysql: (c) => (c === "doc" ? `doc = json_extract(:doc, '$')` : `${c} = :${c}`),
   sqlite: (c) => `${c} = :${c}`,
 };
@@ -458,6 +464,7 @@ function typedValue(v: unknown): unknown {
   if (v === null || v === undefined) return v ?? null;
   if (v instanceof Date) return `Date(${Number.isNaN(v.getTime()) ? "Invalid" : v.toISOString()})`;
   if (v instanceof Uint8Array) return `Uint8Array(${[...v]})`;
+  if (v instanceof Set) return { Set: [...v].map(typedValue) };
   if (Array.isArray(v)) return v.map(typedValue);
   if (typeof v === "object") return Object.fromEntries(Object.keys(v).sort().map((k) => [k, typedValue((v as Record<string, unknown>)[k])]));
   return `${typeof v}(${String(v)})`;

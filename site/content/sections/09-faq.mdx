@@ -32,7 +32,7 @@ Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.s
 </Accordion>
 <Accordion title="Can another tool read the types Reylo infers?" id="faq-rtd">
 
-Yes: [`compile()`](#compile) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo compile` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
+Yes: [`analyze()`](#analyze) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo analyze` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
 
 </Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
@@ -47,7 +47,7 @@ No, not yet: Reylo reads your types from a live database, so a type check or a b
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](#data-types).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](#data-types), and [`js.codecs`](#jscodecs) gives a family another, such as Temporal's.
 
 </Accordion>
 <Accordion title="How do I add observability to my queries?" id="faq-observability">

@@ -2,7 +2,7 @@
 //! type code, flags, character set and display length say of a value, under MySQL's own name for
 //! the type (`bigint`, `tinyint(1)`, `datetime`).
 
-use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, TimePart, Type, MICROSECOND};
+use crate::types::{ArrayType, Bounds, DateTimeType, DateType, DurationType, InstantType, IntegerType, Kind, Position, SetType, Size, Type, MICROSECOND};
 
 /// The protocol's flag for an UNSIGNED integer column.
 const UNSIGNED: u32 = 32;
@@ -15,6 +15,53 @@ pub(crate) const BINARY: u32 = 63;
 /// A whole number of `bits`, unsigned where the flags say so.
 fn integer(bits: u32, flags: u32, name: &str) -> Type {
     Type::new(Kind::Integer(IntegerType { bits, unsigned: flags & UNSIGNED != 0, ..IntegerType::default() })).named(name)
+}
+
+/// MySQL's `SET`: each of its members once, as text.
+pub(crate) fn set() -> Type {
+    set_of(None)
+}
+
+/// MySQL's `ENUM`: one of its labels, where they are known, else text.
+pub(crate) fn enumeration(labels: Option<Vec<String>>) -> Type {
+    labels.map_or_else(Type::text, Type::text_of).named("enum")
+}
+
+/// MySQL's `SET`: each of its members once, one of its labels where they are known.
+pub(crate) fn set_of(labels: Option<Vec<String>>) -> Type {
+    let member = labels.map_or_else(Type::text, Type::text_of);
+    Type::new(Kind::Set(SetType { element: Box::new(Position::non_null(member)), size: None, duplicates: false })).named("set")
+}
+
+/// The labels of an `ENUM` or a `SET` column as `information_schema.columns` writes its
+/// `column_type`: `enum('it''s','a\\b')`, each label quoted, a quote inside it doubled and a
+/// backslash escaped. None for text of any other form.
+pub(crate) fn labels(column_type: &str) -> Option<Vec<String>> {
+    let open = column_type.find('(')?;
+    let body = column_type[open + 1..].strip_suffix(')')?;
+    let mut labels = Vec::new();
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' => {}
+            ',' => continue,
+            _ => return None,
+        }
+        let mut label = String::new();
+        loop {
+            match chars.next()? {
+                '\'' if chars.peek() == Some(&'\'') => {
+                    chars.next();
+                    label.push('\'');
+                }
+                '\'' => break,
+                '\\' => label.push(chars.next()?),
+                c => label.push(c),
+            }
+        }
+        labels.push(label);
+    }
+    Some(labels)
 }
 
 /// MySQL's `BIT(n)`, a string of `n` bits: exactly `n` where the length is known.
@@ -33,7 +80,7 @@ pub(crate) fn date() -> Type {
 
 /// A `TIME`, which is a length of time, up to 838:59:59 either way.
 pub(crate) fn time() -> Type {
-    Type::new(Kind::Duration(DurationType { time: Some(TimePart { tick: MICROSECOND.into(), max: Some("PT838H59M59S".into()) }), ..DurationType::default() })).named("time")
+    Type::new(Kind::Duration(DurationType { max: "PT838H59M59S".into(), tick: Some(MICROSECOND.into()), infinity: false })).named("time")
 }
 
 pub(crate) fn bigint() -> Type {
@@ -76,7 +123,7 @@ pub(crate) fn of(code: u32, flags: u32, charset: u32, length: Option<u32>) -> Ty
         254 if charset == BINARY => Type::bytes().named("binary"),
         253 | 15 if charset == BINARY => Type::bytes().named("varbinary"),
         254 if flags & ENUM != 0 => Type::text().named("enum"),
-        254 if flags & SET != 0 => Type::new(Kind::Set(SetType { element: Box::new(Position::non_null(Type::text())), size: None, duplicates: false })).named("set"),
+        254 if flags & SET != 0 => set(),
         254 => Type::text().named("char"),
         253 | 15 => Type::text().named("varchar"),
         249..=252 => Type::text().named("text"),
@@ -151,6 +198,8 @@ mod tests {
         assert_eq!(of(13, 0, 0, None).short(), "year(0..2155)");
         assert_eq!(of(254, ENUM, 255, None).short(), "enum");
         assert_eq!(of(254, SET, 255, None).short(), "set{text}");
+        assert_eq!(serde_json::to_value(enumeration(labels("enum('x','y')"))).unwrap(), serde_json::json!({"kind": "text", "enum": ["x", "y"], "name": "enum"}));
+        assert_eq!(serde_json::to_value(set_of(labels("set('a','b')"))).unwrap(), serde_json::json!({"kind": "set", "element": {"type": {"kind": "text", "enum": ["a", "b"]}}, "name": "set"}));
         assert_eq!(of(253, 0, BINARY, None).short(), "varbinary");
         assert_eq!(of(16, 0, 0, Some(7)).short(), "bit(boolean[7])");
         assert_eq!(unflagged(of(1, UNSIGNED, 0, Some(1))).short(), "tinyint");
@@ -160,6 +209,14 @@ mod tests {
         for code in [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 242, 245, 246, 249, 250, 251, 252, 253, 254, 255] {
             of(code, 0, 0, Some(5)).check().unwrap_or_else(|e| panic!("{code}: {e}"));
         }
+    }
+
+    #[test]
+    fn an_enums_and_a_sets_labels_are_read_from_the_column_type_the_catalog_writes() {
+        assert_eq!(labels("enum('it''s','a\\\\b','x,y','\u{dc}n\u{ef}','')"), Some(vec!["it's".to_string(), "a\\b".into(), "x,y".into(), "\u{dc}n\u{ef}".into(), "".into()]));
+        assert_eq!(labels("set('a','b c')"), Some(vec!["a".to_string(), "b c".into()]));
+        assert_eq!(labels("varchar(10)"), None);
+        assert_eq!(labels("enum('a'"), None);
     }
 
     #[test]

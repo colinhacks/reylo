@@ -69,8 +69,8 @@ Each MySQL type maps to one TypeScript type, and `.run()` returns the same value
 | `DECIMAL`, `SUM(…)`, `AVG(…)`, `/` | `string` | `"12.50"` |
 | `FLOAT`, `DOUBLE` | `number` | `1.1` |
 | `CHAR`, `VARCHAR`, `TEXT` | `string` | `"Ada"` |
-| `ENUM` | `string`, not a union of its labels | `"member"` |
-| `SET` | `string` | `"a,c"` |
+| `ENUM` | the union of its labels | `"member"` |
+| `SET` | a `Set` of its labels, its members in the order the column declares them | `new Set(["a", "c"])` |
 | `DATE` | `string` | `"2026-10-20"` |
 | `DATETIME`, `TIMESTAMP` | `string` | `"2026-10-20T10:00:00.123"` |
 | `TIME` | `string` | `"10:00:00"` |
@@ -304,6 +304,21 @@ where user_id = :user_id
 
 MySQL validates every schema as draft 4, whatever its `$schema` says, so `const`, `if`, `prefixItems` and `contains` don't narrow the type.
 
+### Enums and sets
+
+An `ENUM` is the union of its labels, and a `SET` a JavaScript `Set` of them.
+
+MySQL keeps a `SET`'s members once each, in the order the column declares them. A parameter written to a `SET` column, or compared with one, takes a `Set` too, and [`js.codecs`](/#jscodecs) can make both an array. `JSON.stringify` writes a `Set` as `{}`, so spread it into an array before sending it as JSON.
+
+<Pairs>
+
+- `'c,a,a'` in a `SET('a', 'b', 'c')` column → `new Set([ "a", "c" ])`
+- `''` in the same column → `new Set()`
+
+</Pairs>
+
+MySQL stores `''` in an `ENUM` for a value it doesn't list, under `INSERT IGNORE` or outside strict mode. `.run()` throws on such a row, naming the column. Select `nullif(column, '')` to read it.
+
 ### Vectors
 
 A `VECTOR`, new in MySQL 9, comes back as a `number[]` of 32-bit floats. A vector parameter takes a `number[]`, which works anywhere MySQL accepts a `VECTOR`; `NaN` and infinities are rejected before the query runs.
@@ -506,9 +521,11 @@ A parameter accepts the same values `.run()` returns for its type, so you can pa
 | A `TINYINT(1)` or `BIT(1)` column | `boolean` or `number` |
 | `DECIMAL` | `string` |
 | `FLOAT`, `DOUBLE` | `number` |
-| `CHAR`, `VARCHAR`, `TEXT`, `ENUM`, `SET` | `string` |
+| `CHAR`, `VARCHAR`, `TEXT` | `string` |
+| An `ENUM` column | the union of its labels |
+| A `SET` column | a `Set` of its labels |
 | `DATE`, `DATETIME`, `TIMESTAMP`, `TIME` | `string` |
-| `JSON` | any JSON value |
+| `JSON` | any value `JSON.stringify` writes, such as a `Date` inside an object |
 | `BINARY`, `VARBINARY`, `BLOB` | `Uint8Array` |
 | `VECTOR` | `number[]` |
 
@@ -745,7 +762,7 @@ What Reylo can't type on MySQL, and what to do instead:
 
 | Limit | Instead |
 | --- | --- |
-| An `ENUM`'s labels: an `ENUM` is typed `string` | Check the value in TypeScript where you need the union |
+| The labels of an `ENUM` or a `SET` a query reads through a `WITH` query, a `UNION` or an expression: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |

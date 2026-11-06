@@ -47,6 +47,7 @@ export function DocsShell({
   title,
   toc,
   fold,
+  centered,
   brand,
   github,
   before,
@@ -61,6 +62,11 @@ export function DocsShell({
   toc: TOCItemType[];
   /** The h2 anchors whose h3s stay out of the table of contents. */
   fold?: readonly string[];
+  /**
+   * A page with no table of contents: the width of its one column, which sits in the middle of the
+   * window under the top row, on Fumadocs' own grid, whose outer columns share what the window leaves.
+   */
+  centered?: string;
   /** The site's mark and name, a link to the top of the page. */
   brand: ReactNode;
   /** The repository's URL. */
@@ -75,16 +81,26 @@ export function DocsShell({
   children: ReactNode;
 }) {
   return (
-    <DocsLayout tree={tree} sidebar={{ enabled: false }} nav={{ enabled: false }} containerProps={{ style: LEFT_TOC }}>
-      <TopRow brand={brand} github={github} />
+    <DocsLayout
+      tree={tree}
+      sidebar={{ enabled: false }}
+      nav={{ enabled: false }}
+      containerProps={{ style: centered ? ({ '--dk-column': centered, '--fd-layout-width': 'calc(var(--dk-column) + 4rem)' } as CSSProperties) : LEFT_TOC }}
+    >
+      <TopRow brand={brand} github={github} centered={centered !== undefined} />
       <DocsPage
-        toc={foldToc(toc, fold)}
-        tableOfContent={{
-          style: 'clerk',
-          header: <TocHeader brand={brand} />,
-          footer: <TocFooter github={github} />,
-          container: { className: 'justify-self-end ps-4 pt-8' },
-        }}
+        toc={centered ? [] : foldToc(toc, fold)}
+        tableOfContent={
+          centered
+            ? { enabled: false }
+            : {
+                style: 'clerk',
+                header: <TocHeader brand={brand} />,
+                footer: <TocFooter github={github} />,
+                container: { className: 'justify-self-end ps-4 pt-8' },
+              }
+        }
+        tableOfContentPopover={centered ? { enabled: false } : undefined}
         breadcrumb={{ enabled: false }}
         footer={{ enabled: false }}
       >

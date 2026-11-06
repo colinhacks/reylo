@@ -102,16 +102,22 @@ const toBigInt: Fix = (v, name) => (typeof v === "string" ? BigInt(v) : typeof v
 
 // A VECTOR is MySQL's one array: mysql2 decodes its floats, mariadb and PlanetScale give its bytes.
 const toFloats: Fix = (v, name) => coerce("float[]", v, name);
+// A SET is a Set of its members: mysql2 and PlanetScale give its text, mariadb an array.
+const toSet: Fix = (v, name) => coerce("set", v, name);
+// An ENUM holds one of its labels, or the `''` MySQL stores for any other value, which is refused.
+const toEnum: Fix = (v, name) => coerce("enum", v, name);
 
 /**
  * The fix a column of `kind` needs, if any: `bool` a boolean, `int8` (a BIGINT, or an integer a
  * temporary table may widen to one) a BigInt from whatever the driver gave, `float[]` (a VECTOR)
- * its floats.
+ * its floats, `set` a Set of its members, `enum` its label.
  */
 function byKind(kind: Kind | undefined): Fix | undefined {
   if (kind === "bool") return toBool;
   if (kind === "int8") return toBigInt;
   if (kind === "float[]") return toFloats;
+  if (kind === "set") return toSet;
+  if (kind === "enum") return toEnum;
   return undefined;
 }
 

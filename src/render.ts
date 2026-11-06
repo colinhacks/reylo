@@ -4,8 +4,21 @@
 // the database has already serialized it, so the same type reads as JSON writes it there, and a
 // value nothing types there, or a `json` or `jsonb` value nothing constrains, is any JSON value:
 // `Json`, which the generated module imports from `reylo`.
+import { CODEC_TYPE, leafCodec, type Codec, type Codecs } from "./codecs.ts";
 import { bareName, schemaOf, type EngineType, type Field } from "./engine-type.ts";
-import { columnKind, kindType as typeOfKind, type Dialect, type JsonNumbers } from "./values.ts";
+import { columnKind, isRowKind, kindType as typeOfKind, RANGE_BOUNDS, type Dialect, type JsonNumbers } from "./values.ts";
+
+/** The type a codec gives a value of `t`: its own, or for a SET's array an array of its members' type, by `member`. */
+function codecType(codec: Codec, t: EngineType, member: (t: EngineType) => string): string {
+  if (codec === "set:array" && t.kind === "set") {
+    const element = member(t.element.type);
+    return /[|&]/.test(element) ? `(${element})[]` : `${element}[]`;
+  }
+  return CODEC_TYPE[codec];
+}
+
+/** A Postgres range of bounds of the type `bound`, as `.run()` returns it, and as a parameter takes it (`input`), its brackets `[)` where it leaves them out (src/values.ts). */
+const rangeOf = (bound: string, input = false) => `{ empty: true } | { lower?: ${bound}; upper?: ${bound}; bounds${input ? "?" : ""}: ${RANGE_BOUNDS.map((b) => JSON.stringify(b)).join(" | ")} }`;
 
 // What Postgres writes inside a JSON document for a type whose form there its kind does not say
 // (the spec's facts): the text of a type the format structures (a bit string, a vector, a
@@ -40,8 +53,11 @@ const json: Record<string, string> = {
 /** Any JSON value, as a module names it: the type `reylo` exports. */
 export const JSON_TYPE = "Json";
 
-/** A type that may also be null. `Json` already admits null, which a NOT NULL `jsonb` column can hold, so it reads the same either way. */
-export const orNull = (type: string) => (type === JSON_TYPE ? type : `${type} | null`);
+/** What a JSON parameter with no schema takes, the type `reylo` exports: any value `JSON.stringify` writes. */
+export const JSON_INPUT_TYPE = "JsonInput";
+
+/** A type that may also be null. `Json` already admits null, which a NOT NULL `jsonb` column can hold, so it reads the same either way, as does `JsonInput`. */
+export const orNull = (type: string) => (type === JSON_TYPE || type === JSON_INPUT_TYPE ? type : `${type} | null`);
 
 export const ident = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
 
@@ -89,8 +105,14 @@ function jsonImage(t: EngineType, dialect: Dialect, inUnion = false): string {
   }
 }
 
-export function renderType(t: EngineType, inJson = false, dialect: Dialect = "postgres"): string {
+/**
+ * `codecs`: the project file's `js.codecs`, which give a value of a family another type at every
+ * position outside JSON (src/codecs.ts).
+ */
+export function renderType(t: EngineType, inJson = false, dialect: Dialect = "postgres", codecs: Codecs = {}): string {
   const name = bareName(t);
+  const codec = inJson ? undefined : leafCodec(t, dialect, codecs);
+  if (codec !== undefined) return codecType(codec, t, (e) => renderType(e, false, dialect));
   switch (t.kind) {
     case "array": {
       // A type Postgres structures as an array and writes as its text (a bit string, a vector), or
@@ -106,7 +128,7 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       // elements may be null unless the statement builds the array from values it shows are not
       // (`array[1, 2]`, `array_agg` over a NOT NULL column). A parameter's are strict
       // (`renderParamType`).
-      const item = renderType(t.element.type, inJson, dialect);
+      const item = renderType(t.element.type, inJson, dialect, codecs);
       const inner = t.element.nullable ? orNull(item) : item;
       return /[|&]/.test(inner) ? `(${inner})[]` : `${inner}[]`;
     }
@@ -115,10 +137,12 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       if (inJson) return dialect === "postgres" && name !== "record" && json[name] !== undefined ? json[name]! : renderFields(t.fields, dialect);
       // A DuckDB struct's fields stand as a row's values do.
       if (dialect === "duckdb") {
-        return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect))}`).join("; ")} }` : "Record<never, never>";
+        return t.fields.length ? `{ ${lastOfEachName(t.fields).map((f) => `${ident(f.name)}: ${orNull(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
       }
-      // On the wire a Postgres row value is the text the server prints, which no driver parses.
-      return "string";
+      // A Postgres row value, and a geometric type, is an object of its fields, each as a column
+      // of its type is (src/values.ts).
+      if (dialect === "postgres") return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderType(f.type, false, dialect, codecs))}`).join("; ")} }` : "Record<never, never>";
+      break;
     // A JSON value: what the statement built, the values a schema admits, or any JSON.
     case "json":
       if (t.content !== undefined) {
@@ -128,16 +152,28 @@ export function renderType(t: EngineType, inJson = false, dialect: Dialect = "po
       return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
     case "map":
       // A DuckDB map's entries stand as a row's values do.
-      if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect)}; value: ${orNull(renderType(t.value.type, false, dialect))} }[]`;
+      if (dialect === "duckdb") return `{ key: ${renderType(t.key, false, dialect, codecs)}; value: ${orNull(renderType(t.value.type, false, dialect, codecs))} }[]`;
       break;
     case "tagged_union":
       // A tagged union is one alternative, `{ tag, value }`, as DuckDB's client returns it; inside
       // a document, whose form of it the engine does not read, any JSON.
       if (inJson) break;
-      return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect)) : renderType(a.type, false, dialect)} }`).join(" | ") : "never";
+      return t.alternatives.length ? t.alternatives.map((a) => `{ tag: ${JSON.stringify(a.tag)}; value: ${a.nullable ? orNull(renderType(a.type, false, dialect, codecs)) : renderType(a.type, false, dialect, codecs)} }`).join(" | ") : "never";
     case "text":
       // An enum's labels, or the strings a CHECK keeps a column to.
       if (t.enum !== undefined) return t.enum.length ? t.enum.map((l) => JSON.stringify(l)).join(" | ") : "string";
+      break;
+    // A MySQL SET is a Set of its members.
+    case "set":
+      if (!inJson && dialect === "mysql") return `Set<${renderType(t.element.type, false, dialect, codecs)}>`;
+      break;
+    // A Postgres range is an object of its bounds, a multirange an array of ranges.
+    case "range":
+    case "multirange":
+      if (!inJson && dialect === "postgres") {
+        const range = rangeOf(renderType(t.subtype, false, dialect, codecs));
+        return t.kind === "range" ? range : `(${range})[]`;
+      }
       break;
     // Inside a document the database built, a value nothing types is still JSON; anywhere else
     // (SQLite's `json_extract`, a column of no declared type) it may be any value.
@@ -323,7 +359,10 @@ function renderFields(fields: readonly Field[], dialect: Dialect): string {
  * statement builds with NULL elements (`array_agg` over a left join is `(string | null)[]`) goes
  * back into a row.
  */
-export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string }[]): string {
+export function renderParamType(t: EngineType, dialect: Dialect = "postgres", inRow = false, members?: readonly { readonly written: string }[], codecs: Codecs = {}): string {
+  // A family the project file's `js.codecs` gives another type takes that type alone.
+  const codec = leafCodec(t, dialect, codecs);
+  if (codec !== undefined) return codecType(codec, t, (e) => renderParamType(e, dialect, true));
   const kind = columnKind(t, dialect);
   // DuckDB binds a number, a BigInt or the digits for a 64-bit or wider integer, the exact text for
   // a DECIMAL, the text for a date or a time, and bytes for a BLOB; a struct takes an object of
@@ -331,26 +370,37 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   if (dialect === "duckdb") {
     if (kind === "int8") return "number | bigint | string";
     if (kind === "decimal" || kind === "date" || kind === "timestamp" || kind === "timestamptz" || kind === "interval") return "string";
-    if (t.kind === "record" && t.fields.length && t.fields.every((f) => f.name === "")) return `readonly [${t.fields.map((f) => orNull(renderParamType(f.type, dialect, true))).join(", ")}]`;
-    if (t.kind === "record" && members === undefined) return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${orNull(renderParamType(f.type, dialect, true))}`).join("; ")} }` : "Record<never, never>";
-    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key, dialect, true)}; value: ${orNull(renderParamType(t.value.type, dialect, true))} }[]`;
+    if (t.kind === "record" && t.fields.length && t.fields.every((f) => f.name === "")) return `readonly [${t.fields.map((f) => orNull(renderParamType(f.type, dialect, true, undefined, codecs))).join(", ")}]`;
+    if (t.kind === "record" && members === undefined) return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${orNull(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
+    if (t.kind === "map") return `readonly { key: ${renderParamType(t.key, dialect, true, undefined, codecs)}; value: ${orNull(renderParamType(t.value.type, dialect, true, undefined, codecs))} }[]`;
   }
   // A JSON parameter takes the JSON a result of its type holds, which `.run()` writes with
-  // `JSON.stringify`; its null is JSON's null where the statement takes no SQL NULL
-  // (src/execute.ts), so `Json` admits it either way.
-  if (t.kind === "json") return t.schema === undefined ? JSON_TYPE : schemaType(schemaOf(t));
+  // `JSON.stringify`, so one with no schema takes whatever that writes, a value with a `toJSON()`
+  // among them; its null is JSON's null where the statement takes no SQL NULL (src/execute.ts),
+  // so `JsonInput` admits it either way.
+  if (t.kind === "json") return t.schema === undefined ? JSON_INPUT_TYPE : schemaType(schemaOf(t));
   // A structured parameter: one row, or an array of rows, each key as a parameter of its type
   // takes it, `?` where the caller may leave it out, `| null` where it may be null.
   if (members !== undefined) {
     const record = t.kind === "record" ? t : t.kind === "array" && t.element.type.kind === "record" ? t.element.type : undefined;
     if (record !== undefined) {
       const fields = record.fields.map((f) => {
-        const type = renderParamType(f.type, dialect, true);
+        const type = renderParamType(f.type, dialect, true, undefined, codecs);
         return `${ident(f.name)}${f.optional ? "?" : ""}: ${f.nullable ? orNull(type) : type}`;
       });
       const row = fields.length ? `{ ${fields.join("; ")} }` : "Record<never, never>";
       return t.kind === "record" ? row : `readonly ${row}[]`;
     }
+  }
+  if (dialect === "postgres" && (t.kind === "range" || t.kind === "multirange")) {
+    const range = rangeOf(renderParamType(t.subtype, dialect, false, undefined, codecs), true);
+    return t.kind === "range" ? range : `(${range})[]`;
+  }
+  // A Postgres row value takes an object of its fields, each as a member of a structured parameter
+  // takes it, null where the field may be; a geometric type the object it returns.
+  if (dialect === "postgres" && t.kind === "record" && members === undefined && kind !== "text") {
+    if (!isRowKind(kind)) return renderType(t, false, dialect, codecs);
+    return t.fields.length ? `{ ${t.fields.map((f) => `${ident(f.name)}: ${(f.nullable ? orNull : (x: string) => x)(renderParamType(f.type, dialect, true, undefined, codecs))}`).join("; ")} }` : "Record<never, never>";
   }
   if (dialect !== "sqlite") {
     if (kind === "int8") return "number | bigint | string";
@@ -373,13 +423,13 @@ export function renderParamType(t: EngineType, dialect: Dialect = "postgres", in
   if (kind === "bytes") return "Uint8Array";
   if (kind === "decimal" && dialect !== "sqlite") return "string";
   if (t.kind === "array") {
-    // An array of row values comes back as the text Postgres prints, which the parameter takes back
-    // beside an array of each row's own text.
-    if (dialect === "postgres" && kind === "text" && ((t.element.type.kind === "record" && json[bareName(t.element.type)] === undefined) || bareName(t.element.type) === "record")) return "string | string[]";
+    // An array of row values whose fields are not known comes back as the text Postgres prints,
+    // which the parameter takes back beside an array of each row's own text.
+    if (dialect === "postgres" && kind === "text" && bareName(t.element.type) === "record") return "string | string[]";
     if (kind.endsWith("[]")) {
-      const inner = inRow ? orNull(renderParamType(t.element.type, dialect, inRow)) : renderParamType(t.element.type, dialect);
+      const inner = inRow ? orNull(renderParamType(t.element.type, dialect, inRow, undefined, codecs)) : renderParamType(t.element.type, dialect, false, undefined, codecs);
       return /[|&]/.test(inner) ? `(${inner})[]` : `${inner}[]`;
     }
   }
-  return renderType(t, false, dialect);
+  return renderType(t, false, dialect, codecs);
 }

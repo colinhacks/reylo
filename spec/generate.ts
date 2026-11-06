@@ -87,9 +87,11 @@ ts = ts.trimEnd() + "\n";
 
 const outputs: [string, string][] = [
   [path.join(root, "spec", "index.ts"), ts],
-  [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8")],
+  [path.join(root, "site", "public", "typedefs", `${version}.json`), readFileSync(source, "utf8").replaceAll("\r\n", "\n")],
 ];
-const stale = outputs.filter(([file, text]) => !existsSync(file) || readFileSync(file, "utf8") !== text);
+// A checkout on Windows may hold any of these with CRLF line endings, which change nothing they say.
+const lf = (text: string) => text.replaceAll("\r\n", "\n");
+const stale = outputs.filter(([file, text]) => !existsSync(file) || lf(readFileSync(file, "utf8")) !== lf(text));
 if (check) {
   for (const [file] of stale) console.error(`${path.relative(root, file)} is not what spec/typedefs.schema.json gives: run \`nub run typedefs\`.`);
   if (stale.length) process.exit(1);

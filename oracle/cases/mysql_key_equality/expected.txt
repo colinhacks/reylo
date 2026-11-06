@@ -66,10 +66,10 @@ decimal_whole_scan.sql: at_most_one (whole: decimal) -> { whole: decimal }
 double_decimal_literal.sql: at_most_one () -> { d: double }
 double_param.sql: at_most_one (d: double) -> { d: double }
 double_string_literal.sql: many () -> { d: double }
-enum_literal.sql: at_most_one () -> { kind: enum }
-enum_number.sql: many () -> { kind: enum }
-enum_param.sql: at_most_one (kind: varchar) -> { kind: enum }
-enum_scan.sql: at_most_one (kind: varchar) -> { kind: enum }
+enum_literal.sql: at_most_one () -> { kind: enum('a' | 'b' | 'c') }
+enum_number.sql: many () -> { kind: enum('a' | 'b' | 'c') }
+enum_param.sql: at_most_one (kind: enum('a' | 'b' | 'c')) -> { kind: enum('a' | 'b' | 'c') }
+enum_scan.sql: at_most_one (kind: enum('a' | 'b' | 'c')) -> { kind: enum('a' | 'b' | 'c') }
 float_decimal_literal.sql: at_most_one () -> { f: float }
 float_param.sql: at_most_one (f: double) -> { f: float }
 float_scan.sql: at_most_one (f: double) -> { f: float }
@@ -119,8 +119,8 @@ int_view.sql: at_most_one (id: int32) -> { id: int | bigint }
 int_xor.sql: many (id: int32) -> { id: int }
 prefix_key.sql: at_most_one (name: varchar) -> { name: varchar }
 prefix_key_scan.sql: at_most_one (name: varchar) -> { name: varchar }
-set_param.sql: at_most_one (flags: varchar) -> { flags: set{text} }
-set_scan.sql: at_most_one (flags: varchar) -> { flags: set{text} }
+set_param.sql: at_most_one (flags: set{text('x' | 'y')}) -> { flags: set{text('x' | 'y')} }
+set_scan.sql: at_most_one (flags: set{text('x' | 'y')}) -> { flags: set{text('x' | 'y')} }
 system_variable_key.sql: many () -> { id: int }
 text_abs.sql: many (n: varchar) -> { id: int }
 text_arithmetic.sql: many (n: int32) -> { id: int }
