@@ -1,41 +1,41 @@
-aggregate_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
-aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id)
-aggregate_own_order.sql: many () -> { author_id: int8, titles: text? } key (author_id)
-alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id)
-by_primary_key.sql: many () -> { id: int8, name: text? } key (id) ordered
-by_unique_desc.sql: many () -> { email: text, name: text? } key (email) ordered
+aggregate_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (n desc nulls first, author_id nulls last) ordered
+aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id) sorted (titles nulls last, author_id nulls last)
+aggregate_own_order.sql: many () -> { author_id: int8, titles: text? } key (author_id) sorted (titles nulls last, author_id nulls last)
+alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id) sorted (id nulls last)
+by_primary_key.sql: many () -> { id: int8, name: text? } key (id) sorted (id nulls last) ordered
+by_unique_desc.sql: many () -> { email: text, name: text? } key (email) sorted (email desc nulls first) ordered
 cte.sql: many (min: int4) -> { title: text? } ordered
-distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id) ordered
+distinct_on.sql: many () -> { author_id: int8, title: text? } key (author_id) sorted (author_id nulls last) ordered
 explicit_collation.sql: many () -> { id: int8, email: text } key (id), (email) ordered
 explicit_collation_only.sql: many () -> { email: text } key (email)
 expression.sql: many () -> { id: int8, title: text? } key (id)
-group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) ordered
-group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id)
+group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (author_id nulls last) ordered
+group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (n nulls last)
 json_array_query.sql: many () -> { id: int8 } key (id)
-json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id)
+json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id) sorted (titles nulls last, author_id nulls last)
 key_not_selected.sql: many () -> { title: text? } ordered
 lateral_sibling.sql: many () -> { id: int8 } key (id)
-limited.sql: many () -> { id: int8, title: text? } key (id) ordered
+limited.sql: many () -> { id: int8, title: text? } key (id) sorted (id nulls last) ordered
 no_order.sql: many () -> { id: int8, title: text? } key (id)
-non_unique.sql: many () -> { title: text? }
-non_unique_then_key.sql: many () -> { title: text?, score: int4? } ordered
-nondeterministic.sql: many () -> { tag: text } key (tag)
+non_unique.sql: many () -> { title: text? } sorted (title nulls last)
+non_unique_then_key.sql: many () -> { title: text?, score: int4? } sorted (title nulls last) ordered
+nondeterministic.sql: many () -> { tag: text } key (tag) sorted (tag nulls last)
 nullable_side_key.sql: many () -> { name: text? }
-nullable_unique.sql: many () -> { handle: text?, name: text? }
-offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) ordered
+nullable_unique.sql: many () -> { handle: text?, name: text? } sorted (handle nulls last)
+offset_param.sql: many (skip: int8) -> { id: int8, title: text? } key (id) sorted (title nulls last, id nulls last) ordered
 parameter_sort.sql: many (sort: text) -> { id: int8, name: text? } key (id) ordered
-position.sql: many () -> { title: text?, id: int8 } key (id) ordered
+position.sql: many () -> { title: text?, id: int8 } key (id) sorted (id nulls last) ordered
 probe_alias.sql: many () -> { reylo_sort_0: text? } ordered
-star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id), (email), (tag) ordered
+star_name.sql: many () -> { id: int8, email: text, handle: text?, name: text?, tag: text } key (id), (email), (tag) sorted (email nulls last) ordered
 subquery.sql: many () -> { title: text? } ordered
 to_many_both_keys.sql: many () -> { name: text?, title: text? } ordered
 to_many_join.sql: many () -> { name: text?, title: text? }
 to_one_join.sql: many () -> { title: text?, name: text? } ordered
 to_one_left_join.sql: many () -> { name: text?, bio: text? } ordered
-union.sql: many () -> { title: text? } key (title) ordered
-union_all.sql: many () -> { title: text? }
+union.sql: many () -> { title: text? } key (title) sorted (title nulls last) ordered
+union_all.sql: many () -> { title: text? } sorted (title nulls last)
 unique_not_selected.sql: many () -> { name: text? } ordered
-view.sql: many () -> { id: int8, title: text? } key (id) ordered
+view.sql: many () -> { id: int8, title: text? } key (id) sorted (id nulls last) ordered
 view_key_not_selected.sql: many () -> { title: text? } ordered
 volatile_first.sql: many () -> { id: int8, name: text? } key (id)
 window_first.sql: many () -> { id: int8, title: text? } key (id)

@@ -1,0 +1,22 @@
+ascending.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last)
+by_alias.sql: many () -> { n: int4, s: int4? } key (n) sorted (s nulls last, n nulls last) ordered
+by_position.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last, id desc nulls first) ordered
+by_table_column.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last, id nulls last) ordered
+collated_key.sql: many () -> { id: int4, label: text? } key (id) ordered
+descending.sql: many () -> { id: int4, score: int4? } key (id) sorted (score desc nulls first)
+expression_key.sql: many () -> { id: int4, label: text? } key (id) ordered
+first_not_in_result.sql: many () -> { id: int4 } key (id) ordered
+for_update.sql: many () -> { id: int4, score: int4? } key (id)
+no_order.sql: many () -> { id: int4 } key (id)
+not_in_result.sql: many () -> { id: int4 } key (id)
+nulls_written.sql: many () -> { id: int4, score: int4? } key (id) sorted (score desc nulls last, id nulls first) ordered
+one_row.sql: at_most_one () -> { id: int4, score: int4? }
+repeated_key.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last, id nulls last) ordered
+second_not_in_result.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last) ordered
+text_column.sql: many () -> { id: int4, label: text? } key (id) sorted (label desc nulls first)
+text_digits.sql: many () -> { id: int4, digits: text } key (id) sorted (digits nulls last)
+through_subquery.sql: many () -> { id: int4 } key (id)
+two_keys.sql: many () -> { id: int4, score: int4? } key (id) sorted (score desc nulls first, id nulls last) ordered
+union_all.sql: many () -> { id: int4, score: int4? } sorted (score desc nulls first)
+using_key.sql: many () -> { id: int4, score: int4? } key (id) ordered
+with_limit.sql: many () -> { id: int4, score: int4? } key (id) sorted (score nulls last)
