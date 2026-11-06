@@ -121,8 +121,9 @@ function scalar(t: EngineType, dialect: Dialect, inJson: boolean, input: boolean
   switch (t.kind) {
     case "text": case "set": return { type: "string" };
     case "uuid": return { type: "string", format: "uuid" };
-    case "time": return t.zone === undefined ? { type: "string", format: "time" } : { type: "string", description: `pg type ${name}` };
-    case "duration": return { type: "string", format: "time" };
+    // RFC 3339's time, which JSON Schema's `time` format names, needs an offset and stops at 23:59:60.
+    case "time": return t.zone === undefined ? { type: "string", description: "a time of day without a time zone (10:00:00.5)" } : { type: "string", description: `pg type ${name}` };
+    case "duration": return { type: "string", description: "a length of time as MySQL writes it, up to 838:59:59 either way (-12:00:00.5)" };
     default: return { type: "string", description: `${dialect === "mysql" ? "MySQL" : dialect === "duckdb" ? "DuckDB" : "pg"} type ${name || t.kind}` };
   }
 }

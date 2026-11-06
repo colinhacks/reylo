@@ -32,9 +32,10 @@ const CHECKS_QUERY: &str = "select tc.table_name, cc.check_clause from informati
     where tc.table_schema = database() and tc.constraint_type = 'CHECK' and tc.enforced = 'YES' and find_in_set(tc.table_name, ?)";
 
 /// Each column's type of the named tables of the current schema, for [`typed`]: its
-/// `data_type`, its `column_type` (`tinyint(1)`, `bit(1)`, `bigint unsigned`), its `extra` and
-/// its comment, empty for none (a view's column has its table column's).
-pub(crate) const TYPES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.column_type, c.extra, c.column_comment from information_schema.columns c \
+/// `data_type`, its `column_type` (`tinyint(1)`, `bit(1)`, `bigint unsigned`), its `extra`, its
+/// comment, empty for none (a view's column has its table column's), and its character set, NULL
+/// for a column that is no text.
+pub(crate) const TYPES_QUERY: &str = "select c.table_name, c.column_name, c.data_type, c.column_type, c.extra, c.column_comment, c.character_set_name from information_schema.columns c \
     where c.table_schema = database() and find_in_set(c.table_name, ?) order by c.table_name, c.ordinal_position";
 
 /// The parameter each `?` of the rewritten text is, by where it stands as the parser counts:
@@ -133,6 +134,9 @@ pub(crate) struct Typed {
     /// Per `ENUM` and `SET` column of those tables, by table and column in lower case, its type
     /// with the labels it declares, which the prepare does not give.
     pub labelled: HashMap<(String, String), crate::types::Type>,
+    /// The `TEXT` columns of those tables that store UTF-8 (`utf8mb4`, `utf8mb3`), by table as the
+    /// server names it and column in lower case: their capacity in bytes is a client's too.
+    pub utf8: HashSet<(String, String)>,
 }
 
 /// The type of each parameter whose column the statement names directly, where it differs from
@@ -178,6 +182,10 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
             }
         }
         let comment = row.get(5).and_then(as_str).filter(|c| !c.is_empty()).map(String::from);
+        let text = matches!(data_type.to_ascii_lowercase().as_str(), "tinytext" | "text" | "mediumtext" | "longtext");
+        if text && row.get(6).and_then(as_str).is_some_and(|charset| ["utf8mb4", "utf8mb3", "utf8"].iter().any(|u| charset.eq_ignore_ascii_case(u))) {
+            out.utf8.insert((table.to_string(), column.to_ascii_lowercase()));
+        }
         if let Some(comment) = &comment {
             out.columns.insert((table.to_ascii_lowercase(), column.to_ascii_lowercase()), comment.clone());
         }

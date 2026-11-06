@@ -2,7 +2,7 @@ alter_table.sql: none () -> {  }
 ambiguous.sql: many () -> {  } !! reylo6: Column 'id' in field list is ambiguous (ER_NON_UNIQ_ERROR)
 backslash_quote.sql: at_most_one (id: int32) -> { id: int, said: varchar }
 backslash_quote_filter.sql: at_most_one (id: int32) -> { id: int }
-backticks.sql: at_most_one (id: int32) -> { id: int, the name: varchar }
+backticks.sql: at_most_one (id: int32) -> { id: int, the name: varchar(≤20) }
 begin.sql: many () -> {  } !! reylo6: This command is not supported in the prepared statement protocol yet (ER_UNSUPPORTED_PS), so if it is a migration or a schema file, leave it out of the type check with "exclude" in tsconfig.json, as in "exclude": ["db/**"].
 block_comment.sql: at_most_one (id: int32) -> { id: int }
 call_procedure.sql: many () -> {  } !! reylo10: A CALL returns the result sets its procedure makes, which MySQL does not describe before the procedure runs, so its rows cannot be typed: select from a function or a view instead
@@ -10,7 +10,7 @@ create_table.sql: none () -> {  }
 delete_all.sql: none () -> {  }
 describe.sql: many () -> { Field: varchar?, Type: text?, Null: varchar?, Key: enum?, Default: text?, Extra: varchar? }
 do_statement.sql: none () -> {  }
-double_quoted_key.sql: many () -> { o: json { id: int, name: varchar } }
+double_quoted_key.sql: many () -> { o: json { id: int, name: varchar(≤20) } }
 double_quoted_string.sql: at_most_one () -> { id: int }
 drop_table.sql: none () -> {  }
 empty_second.sql: at_most_one (id: int32) -> { id: int }
@@ -34,7 +34,7 @@ optimizer_hint.sql: at_most_one (id: int32) -> { id: int }
 optimizer_hint_set_var.sql: many () -> { id: int }
 parenthesized.sql: many (id: int32) -> { id: int }
 partition_and_hint.sql: at_most_one (id: int32) -> { id: int }
-placeholder_at.sql: many () -> { name: varchar }
+placeholder_at.sql: many () -> { name: varchar(≤20) }
 placeholder_cast_like.sql: at_most_one (id: int32, name: varchar) -> { id: int }
 placeholder_colon_equals.sql: at_most_one (id: int32) -> { n: unknown }
 placeholder_dollar.sql: many () -> {  } !! reylo6: Unknown column '$1' in 'where clause' (ER_BAD_FIELD_ERROR)
@@ -42,21 +42,21 @@ placeholder_in_limit.sql: many (n: int32) -> { id: int }
 placeholder_in_string.sql: at_most_one (id: int32) -> { text: varchar, mark: varchar, id: int }
 placeholder_mixed.sql: many (1: unknown, name: unknown) -> {  } !! reylo2: Named and positional parameters cannot be mixed in one statement.
 placeholder_numbered.sql: many () -> {  } !! reylo1: MySQL has no numbered placeholder ?1; write ? for each value, or :name
-placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar }
+placeholder_question.sql: at_most_one (1: int32, 2: varchar) -> { name: varchar(≤20) }
 replace_statement.sql: none (id: int32, name: varchar) -> {  }
-select_distinctrow.sql: many () -> { name: varchar }
+select_distinctrow.sql: many () -> { name: varchar(≤20) }
 select_for_share.sql: at_most_one (id: int32) -> { id: int }
 select_function_writes.sql: at_most_one (id: int32) -> { id: int, n: int | bigint? }
 select_high_priority.sql: at_most_one (id: int32) -> { id: int }
 select_into_outfile.sql: none () -> {  }
 select_into_variable.sql: none (id: int32) -> {  }
-select_one.sql: at_most_one (id: int32) -> { id: int, name: varchar }
+select_one.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20) }
 select_sql_calc.sql: at_most_one () -> { id: int }
 select_stored_function.sql: one () -> { n: int | bigint? }
 set_variable.sql: none () -> {  }
 show_tables.sql: many () -> { Tables_in_reylo_oracle_mysql_statements: varchar? }
 syntax_error.sql: many () -> {  } !! reylo6: You have an error in your SQL syntax; check the manual that corresponds to your MySQL server version for the right syntax to use near '' at line 1 (ER_PARSE_ERROR)
-table_statement.sql: many () -> { id: int, name: varchar, email: varchar?, doc: json? }
+table_statement.sql: many () -> { id: int, name: varchar(≤20), email: varchar(≤40)?, doc: json? }
 trailing_comment.sql: at_most_one (id: int32) -> { id: int }
 trailing_semicolon.sql: at_most_one (id: int32) -> { id: int }
 truncate.sql: none () -> {  }

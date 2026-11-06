@@ -6,8 +6,8 @@ bare_outer_distinct.sql: many () -> { n: bigint? }
 bare_outer_empty.sql: many () -> { n: bigint? }
 bare_outer_expression.sql: many () -> { n: bigint? }
 bare_outer_join.sql: many () -> { n: bigint? }
-bare_outer_json.sql: many () -> { names: json varchar[]? }
-bare_outer_json_object.sql: many () -> { names: json ({ name: varchar })[]? }
+bare_outer_json.sql: many () -> { names: json varchar(≤20)[]? }
+bare_outer_json_object.sql: many () -> { names: json ({ name: varchar(≤20) })[]? }
 bare_outer_nested.sql: many () -> { n: bigint? }
 bare_outer_sum.sql: many () -> { n: decimal? }
 bare_outer_two.sql: many () -> { n: bigint? }
@@ -21,8 +21,8 @@ bare_own_distinct.sql: many () -> { n: bigint }
 bare_own_empty.sql: many () -> { n: bigint }
 bare_own_expression.sql: many () -> { n: bigint }
 bare_own_join.sql: many () -> { n: bigint }
-bare_own_json.sql: many () -> { titles: json varchar[] }
-bare_own_json_object.sql: many () -> { titles: json ({ title: varchar })[] }
+bare_own_json.sql: many () -> { titles: json varchar(≤20)[] }
+bare_own_json_object.sql: many () -> { titles: json ({ title: varchar(≤20) })[] }
 bare_own_mixed.sql: many () -> { n: bigint? }
 bare_own_sum.sql: many () -> { n: decimal }
 bare_own_view.sql: many () -> { n: bigint }
@@ -41,7 +41,7 @@ outer_in_where_only.sql: many () -> { id: bigint, n: bigint }
 qualified_other_case.sql: many () -> { n: bigint? }
 qualified_outer.sql: many () -> { n: bigint? }
 qualified_outer_hidden.sql: many () -> { n: bigint? }
-qualified_outer_json.sql: many () -> { names: json varchar[]? }
+qualified_outer_json.sql: many () -> { names: json varchar(≤20)[]? }
 qualified_own.sql: many () -> { n: bigint }
 qualified_own_unaliased.sql: many () -> { n: bigint }
 std_outer.sql: many () -> { n: double? }

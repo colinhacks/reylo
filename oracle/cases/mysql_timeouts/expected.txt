@@ -1,5 +1,5 @@
 forever.sql: one () -> { slept: bigint }
 forever_rows.sql: many () -> { c: bigint }
 forever_update.sql: none () -> {  }
-quick.sql: at_most_one (id: int32) -> { id: int, name: varchar? }
+quick.sql: at_most_one (id: int32) -> { id: int, name: varchar(≤20)? }
 sometimes.sql: at_most_one (id: int32) -> { id: int }
