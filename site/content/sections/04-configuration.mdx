@@ -91,7 +91,7 @@ allow_nested_arrays: true
 
 ### `sqlcommenter`
 
-Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. The query's [`.sql`](#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true

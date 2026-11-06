@@ -183,7 +183,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly source?: string | undefined;
   /** Whether a Postgres array column may hold nested arrays, as `allow_nested_arrays: true` says: none is refused. */
   readonly nestedArrays?: boolean | undefined;
-  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
   readonly sqlcommenter?: boolean | undefined;
   /** The checks of a typed JSON, structured or cast parameter (src/checks.ts), which a build step passes where the statement has one. */
   readonly checks?: Checks | undefined;
@@ -541,7 +541,7 @@ function statement(query: QueryModule, params: ParamsInput) {
 
 /** `text` as Reylo sends it: with the comment naming the query's file, where the module asks for one (src/sqlcommenter.ts). */
 export function sentText(query: QueryModule, text: string): string {
-  return query.sqlcommenter && query.source ? withSqlcommenter(text, query.source) : text;
+  return query.sqlcommenter && query.source ? withSqlcommenter(text, query.source, query.dialect) : text;
 }
 
 /**
