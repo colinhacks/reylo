@@ -241,11 +241,16 @@ function withFacts(schema: Schema | JsonSchema, t: EngineType, input: boolean): 
   return Object.keys(facts).length ? { ...schema, ...facts } : schema;
 }
 
-/** `schema` with a comment as its description, where it has none of its own. */
-function described(schema: Schema | JsonSchema, comment: string | undefined): Schema | JsonSchema {
+/**
+ * `schema` with a comment as its description. A schema the statement's author wrote keeps its own
+ * description; one the type gave (a timestamp's format, say) sits beneath the comment, as it does
+ * beside null.
+ */
+function described(schema: Schema | JsonSchema, comment: string | undefined, written = false): Schema | JsonSchema {
   if (comment === undefined) return schema;
   if (schema === true) return { description: comment };
-  return typeof schema === "object" && schema !== null ? { description: comment, ...schema } : schema;
+  if (typeof schema !== "object" || schema === null) return schema;
+  return !written && "description" in schema ? { description: comment, allOf: [schema] } : { description: comment, ...schema };
 }
 
 function plainSchema(t: EngineType, dialect: Dialect, input: boolean, inJson: boolean, inRow: boolean, members: readonly { written: string; schema?: JsonSchema }[] | undefined, codecs: Codecs): Schema | JsonSchema {
@@ -343,7 +348,7 @@ export function querySchemas(analysis: Analysis, dialect: Dialect, codecs: Codec
   const input = object(analysis.params, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema ?? typeSchema(p.type, dialect, true, false, false, p.members, codecs);
-    return described(p.nullable ? nullable(s) : s, p.comment);
+    return described(p.nullable ? nullable(s) : s, p.comment, p.schema !== undefined);
   }, (i) => {
     const p = analysis.params[i]!;
     const s = p.schema;

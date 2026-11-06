@@ -70,3 +70,19 @@ test("a nullable position keeps its facts beside null, and comments describe wha
   assert.deepEqual(schemas.input.properties.doc, { description: "As written", type: "object" });
   assert.deepEqual(schemas.output.properties.name, { description: "Shown on the profile page", anyOf: [{ type: "string", maxLength: 20 }, { type: "null" }] });
 });
+
+test("a comment stands over a description the type gives, and beneath one the statement's author wrote", () => {
+  const timestamp = { kind: "datetime", name: "timestamp" } as EngineType;
+  const schemas = querySchemas(
+    {
+      params: [{ name: "at", type: timestamp, comment: "When to look" }],
+      columns: [{ name: "at", type: timestamp, comment: "When they signed up" }],
+      cardinality: "one",
+    } as never,
+    "postgres",
+  ) as { input: { properties: Record<string, unknown> }; output: { properties: Record<string, { description: string; allOf: { description: string }[] }> } };
+  const at = schemas.output.properties.at!;
+  assert.equal(at.description, "When they signed up");
+  assert.match(at.allOf[0]!.description, /date and time/);
+  assert.equal((schemas.input.properties.at as { description: string }).description, "When to look");
+});
