@@ -1682,6 +1682,20 @@ fn type_class(ty: &str) -> TypeClass {
 }
 
 impl Alterer for PostgresAlterer {
+    /// A SQL function's body is checked as it's made, against the functions and tables it calls, but
+    /// the server records none of what it calls (a `begin atomic` body aside), so the plan can't put
+    /// them first. Its bodies are checked when they run instead, as pg_dump makes them.
+    fn finish(&self, statements: &mut Vec<String>) {
+        static SQL_BODY: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^create\s+(or\s+replace\s+)?(function|procedure)\b.*\blanguage\s+sql\b").expect("a valid pattern"));
+        let checked = |s: &String| SQL_BODY.is_match(s) && !s.to_ascii_lowercase().contains("begin atomic");
+        if statements.iter().filter(|s| checked(s)).count() < 2 {
+            return;
+        }
+        statements.insert(0, "set check_function_bodies = off".into());
+        statements.push("reset check_function_bodies".into());
+    }
+
     fn narrows(&self, from: &Object, to: &Object) -> Option<String> {
         let (a, b) = (parse_column(&from.def).ty, parse_column(&to.def).ty);
         let why = super::narrowing(&type_class(&a), &type_class(&b))?;

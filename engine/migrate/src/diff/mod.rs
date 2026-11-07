@@ -148,6 +148,11 @@ pub trait Alterer {
         let _ = (from, to);
         None
     }
+    /// The plan's statements once ordered, for the settings that let them run in that order: a
+    /// Postgres function's body calls others the server keeps no record of, so no order is safe.
+    fn finish(&self, statements: &mut Vec<String>) {
+        let _ = statements;
+    }
 }
 
 /// A column type, as far as a change between two of them can lose values without failing.
@@ -869,6 +874,7 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             }
         }
     }
+    alterer.finish(&mut plan.statements);
     plan
 }
 
