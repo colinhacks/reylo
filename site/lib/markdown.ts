@@ -7,6 +7,14 @@ import { expandInferred } from '@/lib/inferred-markdown';
 import { pageFiles } from '@/lib/page-files';
 import { expandErrors } from '@/lib/sql-errors';
 
+/** Each `<Step>` as a numbered list item, its name in bold and where it acts after it. */
+function expandSteps(text: string): string {
+  return text.replace(/<Steps>\n([\s\S]*?)<\/Steps>\n/g, (_, steps: string) => {
+    let n = 0;
+    return steps.replace(/<Step title="([^"]+)"(?: where="([^"]+)")?>\n+([\s\S]*?)\n+<\/Step>\n/g, (_m, title: string, where: string | undefined, body: string) => `${++n}. **${title}**${where ? ` (${where})` : ''}: ${body}\n`);
+  });
+}
+
 /** Each `<Feature>` card as a list item, its name in bold: what a card says, as an agent reads a list. */
 function expandFeatures(text: string): string {
   return text.replace(/<Features>\n([\s\S]*?)<\/Features>\n/g, (_, cards: string) => cards.replace(/<Feature icon="\w+" title="([^"]+)">\n+([\s\S]*?)\n+<\/Feature>\n/g, '- **$1.** $2\n'));
@@ -24,6 +32,6 @@ export async function markdownOf(slug: string): Promise<string> {
   const files = slug ? [path.resolve('content/docs', `${slug}.mdx`)] : pageFiles();
   // Each `<Inferred>` card with the types the page shows for it (lib/inferred-markdown.ts), and each
   // error example with its errors (lib/sql-errors.ts), and the comparison's marks as a table (lib/compare.ts).
-  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandFeatures(expandCompare(expandErrors(expandInferred(text)))));
+  const sources = (await Promise.all(files.map((file) => readFile(file, 'utf8')))).map((text) => expandSteps(expandFeatures(expandCompare(expandErrors(expandInferred(text))))));
   return pageMarkdown(sources, { site: siteUrl, page: slug ? `/${slug}` : '/' });
 }

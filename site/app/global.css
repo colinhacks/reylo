@@ -900,3 +900,83 @@ a.reylo-compare-name:hover {
     grid-template-columns: 1fr;
   }
 }
+
+/* The vertical stepper (components/steps.tsx): a numbered dot per step, joined by a line. */
+#nd-page .prose ol.reylo-steps {
+  list-style: none;
+  counter-reset: reylo-step;
+  margin: 1.5rem 0;
+  padding: 0;
+}
+
+#nd-page .prose li.reylo-step {
+  counter-increment: reylo-step;
+  position: relative;
+  margin: 0;
+  padding: 0 0 1.25rem 2.75rem;
+}
+
+#nd-page .prose li.reylo-step::before {
+  content: counter(reylo-step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  background: var(--color-fd-card);
+  color: var(--color-fd-foreground);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.7rem;
+  text-align: center;
+}
+
+#nd-page .prose li.reylo-step[data-shadow]::before {
+  border-color: var(--color-fd-primary);
+  color: var(--color-fd-primary);
+}
+
+#nd-page .prose li.reylo-step:not(:last-child)::after {
+  content: '';
+  position: absolute;
+  left: calc(0.875rem - 0.5px);
+  top: 1.95rem;
+  bottom: 0.2rem;
+  width: 1px;
+  background: var(--color-fd-border);
+}
+
+.reylo-step-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  min-height: 1.75rem;
+}
+
+.reylo-step-title {
+  font-weight: 600;
+  color: var(--color-fd-foreground);
+}
+
+.reylo-step-where {
+  font-size: 0.75rem;
+  line-height: 1;
+  padding: 0.3rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--color-fd-border);
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .prose li.reylo-step[data-shadow] .reylo-step-where {
+  border-color: color-mix(in srgb, var(--color-fd-primary) 60%, transparent);
+  color: var(--color-fd-primary);
+}
+
+#nd-page .prose .reylo-step-body p {
+  margin: 0.2rem 0 0;
+  color: var(--color-fd-muted-foreground);
+}
+
