@@ -1917,7 +1917,7 @@ mod tests {
 
     #[test]
     fn a_null_element_is_found_between_the_types_own_delimiters() {
-        let points = json!({"kind": "array", "name": "public._geometry", "element": {"type": {"kind": "geometry", "name": "public.geometry"}}});
+        let points = json!({"kind": "array", "label": "public._geometry", "element": {"type": {"kind": "geometry", "label": "public.geometry"}}});
         let point = "0101000000000000000000F03F0000000000000040";
         // An array of geometries separates its elements with a colon, of boxes with a semicolon.
         assert_eq!(contradiction(&points, &format!("{{{point}:NULL}}"), false, ':').as_deref(), Some("typed with non-null elements holds a NULL element"));

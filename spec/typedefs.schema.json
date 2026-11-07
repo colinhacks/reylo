@@ -537,7 +537,7 @@
       "unevaluatedProperties": false
     },
     "RecordType": {
-      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
+      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
       "type": "object",
       "allOf": [
         {

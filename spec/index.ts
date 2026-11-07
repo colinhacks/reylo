@@ -182,7 +182,7 @@ export interface ArrayType extends Base, Lengths {
 }
 
 /**
- * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:
+ * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:
  *   - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;
  *   - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;
  *   - an Oracle `BFILE` is `{ directory, file }`.

@@ -28,7 +28,7 @@ export function pg(name: string): EngineType {
     float4: float(8, 23),
     float8: float(11, 52),
     numeric: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true },
-    text: { kind: "text" }, varchar: { kind: "text" }, bpchar: { kind: "text" }, label: { kind: "text" },
+    text: { kind: "text" }, varchar: { kind: "text" }, bpchar: { kind: "text" }, name: { kind: "text" },
     bytea: { kind: "bytes" },
     uuid: { kind: "uuid" },
     date: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true },
