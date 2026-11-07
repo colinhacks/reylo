@@ -301,6 +301,7 @@ mod tests {
         let p = parse("dir: db\nshadow_url: ${SHADOW_URL}\n").unwrap();
         assert_eq!(serde_json::to_value(&p).unwrap(), serde_json::json!({ "dir": "db", "shadow_url": "${SHADOW_URL}" }));
         assert!(parse("migrate:\n  lock: true\n").is_err(), "the lock is always kept, and needs no setting");
+        assert_eq!(parse("shadow_url: null\n").unwrap().shadow_url, None, "null is the default the docs show");
     }
 
     #[test]
