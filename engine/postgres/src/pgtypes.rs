@@ -955,16 +955,16 @@ mod tests {
         let registry = TypeRegistry::with_builtins();
         let json = |oid: u32, typmod: i32| serde_json::to_value(registry.render_typmod(oid, typmod)).unwrap();
         // varchar(20) and char(5): n + 4.
-        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "size": {"max": 20}, "name": "varchar"}));
-        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "size": {"exact": 5}, "name": "bpchar"}));
+        assert_eq!(json(oid::VARCHAR, 24), json!({"kind": "text", "size": {"max": 20}, "label": "varchar"}));
+        assert_eq!(json(oid::BPCHAR, 9), json!({"kind": "text", "size": {"exact": 5}, "label": "bpchar"}));
         // numeric(10,2), numeric(5,-2) and numeric(5): NaN and no infinity, no bound beyond the digits.
-        assert_eq!(json(oid::NUMERIC, 655366), json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "name": "numeric"}));
-        assert_eq!(json(oid::NUMERIC, 329730), json!({"kind": "decimal", "precision": 5, "min_scale": -2, "max_scale": -2, "nan": true, "name": "numeric"}));
-        assert_eq!(json(oid::NUMERIC, 327684), json!({"kind": "decimal", "precision": 5, "min_scale": 0, "max_scale": 0, "nan": true, "name": "numeric"}));
+        assert_eq!(json(oid::NUMERIC, 655366), json!({"kind": "decimal", "precision": 10, "min_scale": 2, "max_scale": 2, "nan": true, "label": "numeric"}));
+        assert_eq!(json(oid::NUMERIC, 329730), json!({"kind": "decimal", "precision": 5, "min_scale": -2, "max_scale": -2, "nan": true, "label": "numeric"}));
+        assert_eq!(json(oid::NUMERIC, 327684), json!({"kind": "decimal", "precision": 5, "min_scale": 0, "max_scale": 0, "nan": true, "label": "numeric"}));
         // time(3), timestamp(3) and timestamptz(0): the tick, and the latest value cut to it.
-        assert_eq!(json(oid::TIME, 3), json!({"kind": "time", "tick": "1/1000", "max": "24:00:00", "name": "time"}));
+        assert_eq!(json(oid::TIME, 3), json!({"kind": "time", "tick": "1/1000", "max": "24:00:00", "label": "time"}));
         assert_eq!(json(oid::TIMESTAMP, 3)["max"], json!("+294276-12-31T23:59:59.999"));
-        assert_eq!(json(oid::TIMESTAMPTZ, 0), json!({"kind": "instant", "tick": "1", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59Z", "infinity": true, "name": "timestamptz"}));
+        assert_eq!(json(oid::TIMESTAMPTZ, 0), json!({"kind": "instant", "tick": "1", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59Z", "infinity": true, "label": "timestamptz"}));
         // An interval's fields and precision: its maximum, as Postgres 18 truncates its largest value, and its tick.
         let whole_hours = "P2147483648M2147483648DT2562047788H";
         for (typmod, max, tick) in [
@@ -998,10 +998,10 @@ mod tests {
         let mut registry = registry;
         registry.insert_rows(&[row(90100, "geometry", "b", 0, 0, ",", "public", 0)]);
         let geometry = |typmod: i32| serde_json::to_value(registry.render_typmod(90100, typmod)).unwrap();
-        assert_eq!(geometry(1107460), json!({"kind": "geometry", "model": "planar", "srid": 4326, "subtype": "point", "coordinates": "xy", "name": "public.geometry"}));
-        assert_eq!(geometry(987402), json!({"kind": "geometry", "model": "planar", "srid": 3857, "subtype": "linestring", "coordinates": "xyz", "name": "public.geometry"}));
-        assert_eq!(geometry(27), json!({"kind": "geometry", "model": "planar", "subtype": "multipolygon", "coordinates": "xyzm", "name": "public.geometry"}));
-        assert_eq!(geometry(-1), json!({"kind": "geometry", "model": "planar", "name": "public.geometry"}));
+        assert_eq!(geometry(1107460), json!({"kind": "geometry", "model": "planar", "srid": 4326, "subtype": "point", "coordinates": "xy", "label": "public.geometry"}));
+        assert_eq!(geometry(987402), json!({"kind": "geometry", "model": "planar", "srid": 3857, "subtype": "linestring", "coordinates": "xyz", "label": "public.geometry"}));
+        assert_eq!(geometry(27), json!({"kind": "geometry", "model": "planar", "subtype": "multipolygon", "coordinates": "xyzm", "label": "public.geometry"}));
+        assert_eq!(geometry(-1), json!({"kind": "geometry", "model": "planar", "label": "public.geometry"}));
         // No modifier, or a type that takes none, leaves the type as it is.
         assert_eq!(registry.render_typmod(oid::VARCHAR, -1), registry.render(oid::VARCHAR));
         assert_eq!(registry.render_typmod(oid::TEXT, 24), registry.render(oid::TEXT));
@@ -1011,13 +1011,13 @@ mod tests {
     fn each_base_type_is_its_values() {
         let registry = TypeRegistry::with_builtins();
         let json = |oid: u32| serde_json::to_value(registry.render(oid)).unwrap();
-        assert_eq!(json(oid::INT4), json!({"kind": "integer", "bits": 32, "name": "int4"}));
-        assert_eq!(json(26), json!({"kind": "integer", "bits": 32, "unsigned": true, "name": "oid"}));
-        assert_eq!(json(oid::FLOAT8), json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "name": "float8"}));
-        assert_eq!(json(oid::NUMERIC), json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "name": "numeric"}));
-        assert_eq!(json(oid::DATE), json!({"kind": "date", "min": "-4713-11-24", "max": "+5874897-12-31", "infinity": true, "name": "date"}));
-        assert_eq!(json(oid::TIMESTAMPTZ), json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "name": "timestamptz"}));
-        assert_eq!(json(oid::TIME), json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "name": "time"}));
+        assert_eq!(json(oid::INT4), json!({"kind": "integer", "bits": 32, "label": "int4"}));
+        assert_eq!(json(26), json!({"kind": "integer", "bits": 32, "unsigned": true, "label": "oid"}));
+        assert_eq!(json(oid::FLOAT8), json!({"kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "infinity": true, "nan": true, "label": "float8"}));
+        assert_eq!(json(oid::NUMERIC), json!({"kind": "decimal", "min_scale": 0, "max_scale": 16383, "exclusive_min": "-1e131072", "exclusive_max": "1e131072", "infinity": true, "nan": true, "label": "numeric"}));
+        assert_eq!(json(oid::DATE), json!({"kind": "date", "min": "-4713-11-24", "max": "+5874897-12-31", "infinity": true, "label": "date"}));
+        assert_eq!(json(oid::TIMESTAMPTZ), json!({"kind": "instant", "tick": "1/1000000", "min": "-4713-11-24T00:00:00Z", "max": "+294276-12-31T23:59:59.999999Z", "infinity": true, "label": "timestamptz"}));
+        assert_eq!(json(oid::TIME), json!({"kind": "time", "tick": "1/1000000", "max": "24:00:00", "label": "time"}));
         assert_eq!(registry.render(1560).short(), "bit(boolean[])");
         assert_eq!(registry.render(869).short(), "inet({ address: bytes(=4), prefix: uint8(..32) } | { address: bytes(=16), prefix: uint8(..128) })");
         assert_eq!(registry.render(829).short(), "macaddr(=6)");
@@ -1034,10 +1034,10 @@ mod tests {
         let mut registry = TypeRegistry::with_builtins();
         registry.insert_rows(&[row(90001, "vector", "b", 0, 0, ",", "extensions", 0), row(90002, "hstore", "b", 0, 0, ",", "public", 0), row(90003, "ltree", "b", 0, 0, ",", "public", 0), row(90004, "Odd Range", "r", 0, 0, ",", "My Schema", 23)]);
         assert_eq!(registry.render(90001).short(), "extensions.vector(float(8,23)[])");
-        assert_eq!(serde_json::to_value(registry.render(90001)).unwrap(), json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 8, "mantissa_bits": 23}}, "name": "extensions.vector"}));
+        assert_eq!(serde_json::to_value(registry.render(90001)).unwrap(), json!({"kind": "array", "element": {"type": {"kind": "float", "exponent_bits": 8, "mantissa_bits": 23}}, "label": "extensions.vector"}));
         assert_eq!(registry.render(90002).short(), "public.hstore(text => text?)");
         assert_eq!(registry.render(90003), Type::opaque("public.ltree"));
-        assert_eq!(registry.render(90004).name.as_deref(), Some("\"My Schema\".\"Odd Range\""));
+        assert_eq!(registry.render(90004).label.as_deref(), Some("\"My Schema\".\"Odd Range\""));
     }
 
     #[test]

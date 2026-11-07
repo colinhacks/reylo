@@ -18,7 +18,7 @@ import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
+import { coerce, DecodeError, describe, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -123,6 +123,13 @@ function decoder(name: string, kind: string, delim: string | undefined): (v: unk
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
   // column that may be one included (src/decode-mysql.ts, `mariadb`).
   if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  // A MySQL GEOMETRY's raw value is its bytes, as `.run()` gives it. An object is a driver's own
+  // reading of one (mysql2's `{ x, y }`, mariadb's GeoJSON), which the bytes cannot be had back from.
+  if (kind.split("|").includes("geometry"))
+    return (v) => {
+      if (typeof v === "object" && v !== null && !(v instanceof Uint8Array)) throw new DecodeError(`Column "${name}" holds ${describe(v)}, which is no raw MySQL value: a GEOMETRY's raw value is its bytes, which a driver parses into an object unless its conversions are off (mysql2's typeCast returning \`field.buffer()\`).`);
+      return coerce(kind, v, name, delim);
+    };
   return (v) => coerce(kind, v, name, delim);
 }
 

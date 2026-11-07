@@ -205,13 +205,14 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // dot, so `:auth.user_id` survives only as a number. `?n` is the lexer's n-th parameter, which
     // is how `params` matches them back, and an error offset maps back through the rewrite.
     let numbered = lex::rewrite(sql, lexed, Target::Numbered);
+    let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
     // Triggers are not replayed (a body may call a function only the application registers);
     // their headers say which statements a trigger can skip a row of.
     let (triggers, replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
     let skipping = skipping_triggers(&triggers);
     let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
-    let t = match tree::analyze(&replay, &numbered.sql, &functions, listed.as_deref()) {
+    let t = match tree::analyze(&replay, &numbered.sql, &rewritten.sql, &functions, listed.as_deref()) {
         Ok(t) => t,
         Err(message) => return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 6)])),
     };
@@ -274,7 +275,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             unique: Vec::new(),
             order: Vec::new(),
             ordered: false,
-            rewritten: lex::rewrite(sql, lexed, Target::Question),
+            rewritten,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
@@ -282,6 +283,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         };
@@ -324,7 +326,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
-        rewritten: lex::rewrite(sql, lexed, Target::Question),
+        rewritten,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
@@ -332,6 +334,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         fresh: None,
         errors: None,
         read_only: false,
+        notes: Vec::new(),
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
@@ -422,7 +425,7 @@ fn tables(t: &Tree) -> Tables {
     }
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
-    Tables { read, write }
+    Tables { read, write, ..Default::default() }
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -3189,7 +3192,7 @@ mod tests {
         // before the serializer lists the tables: read then, a recursive one nested in another,
         // whose memory SQLite had reused, ended the analysis in a crash.
         let described = |sql: &str| {
-            let t = tree::analyze(&ddl(), sql, &[], None).expect("the tree parses");
+            let t = tree::analyze(&ddl(), sql, sql, &[], None).expect("the tree parses");
             assert!(t.error.is_none(), "{sql}: {:?}", t.error);
             let mut names = t.tables.into_keys().collect::<Vec<_>>();
             names.sort();
@@ -3992,6 +3995,20 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_word_that_names_no_column_is_refused_as_the_drivers_refuse_it() {
+        // A schema that holds one replays, as SQLite reads it from a file.
+        let schema = vec!["create table t (id integer primary key, v text default \"none\" check (v <> \"bad\"))".to_string()];
+        let a = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        for sql in ["select \"hello\"", "select \"hello\" from t", "select id from t where v = \"x\""] {
+            let messages: Vec<String> = a(sql).diagnostics.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(messages, [format!("no such column: \"{}\" - should this be a string literal in single-quotes?", if sql.contains("hello") { "hello" } else { "x" })], "{sql}");
+        }
+        for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
+            assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
+        }
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
@@ -4052,6 +4069,16 @@ mod tests {
         let a = full("select id from users order by :sort::text");
         assert_eq!(a.columns.len(), 1);
         assert_eq!(affinity_of(&a.params[0].ty), Some("text"));
+    }
+
+    #[test]
+    fn names_a_column_as_the_statement_is_sent() {
+        // The tree is read over `?1`; the statement runs with `?`, and a driver's row holds the name that text gives.
+        let names = |sql: &str| analysis(sql).columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("select id + cast(:a as integer), name from users"), ["id + cast(? as integer)", "name"]);
+        assert_eq!(names("select * from (select id + cast(:a as integer) from users)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("update users set name = name returning id + cast(:a as integer)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("select cast(:a as integer) as a"), ["a"]);
     }
 
     #[test]
@@ -4268,7 +4295,7 @@ mod tests {
 
     /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
     fn affinity_of(t: &Type) -> Option<&'static str> {
-        let name = t.name.as_deref().unwrap_or("");
+        let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
             Kind::Boolean => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),

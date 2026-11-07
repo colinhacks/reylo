@@ -24,7 +24,8 @@ pub struct Tally {
     pub files_skipped: usize,
     /// The statements the engine reads (queries and writes), each analyzed.
     pub statements: usize,
-    pub analysis_failed: usize,
+    /// Each statement the engine could not analyze, and why.
+    pub analysis_failed: Vec<String>,
     pub with_params: usize,
     pub ran: usize,
     pub failed: usize,
@@ -32,7 +33,7 @@ pub struct Tally {
     pub non_null: usize,
     pub bounded: usize,
     /// Statements whose syntax the engine's parser does not read, typed from the describe alone.
-    pub unread: usize,
+    pub unread: Vec<String>,
     /// Refusals by Reylo's own rule that no two columns share a name, which no database has.
     pub by_rule: usize,
     /// Other refusals of statements the database ran.
@@ -66,8 +67,8 @@ impl Tally {
             }
             return;
         }
-        if analysis["cardinalityReason"].as_str().is_some_and(|r| r.starts_with("the engine does not read")) {
-            self.unread += 1;
+        if analysis["cardinalityReason"].as_str().is_some_and(|r| r.starts_with("the engine does not read") || r == "the statement did not parse locally") {
+            self.unread.push(shown());
         }
         let columns = analysis["columns"].as_array().cloned().unwrap_or_default();
         if columns.is_empty() {
@@ -96,9 +97,15 @@ impl Tally {
     /// Prints what the replay found; whether it found no contradiction.
     pub fn report(&self) -> bool {
         println!("{} file(s), {} skipped (a feature the server or the runner lacks)", self.files, self.files_skipped);
-        println!("{} statement(s) the engine reads: {} ran, {} failed on the database, {} take parameters (not run), {} the engine could not analyze", self.statements, self.ran, self.failed, self.with_params, self.analysis_failed);
+        println!("{} statement(s) the engine reads: {} ran, {} failed on the database, {} take parameters (not run), {} the engine could not analyze:", self.statements, self.ran, self.failed, self.with_params, self.analysis_failed.len());
+        for a in &self.analysis_failed {
+            println!("    {a}");
+        }
         println!("{} of {} columns of the statements that ran inferred non-null; {} statements inferred one or at_most_one", self.non_null, self.columns, self.bounded);
-        println!("{} of the statements that ran were typed from the describe alone, their syntax beyond the engine's parser", self.unread);
+        println!("{} of the statements that ran were typed from the describe alone, their syntax beyond the engine's parser:", self.unread.len());
+        for u in &self.unread {
+            println!("    {u}");
+        }
         println!("{} refused by Reylo's own rule that no two columns share a name", self.by_rule);
         println!("{} other statement(s) the engine refused and the database ran:", self.refused.len());
         for r in &self.refused {

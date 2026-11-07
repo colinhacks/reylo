@@ -11,6 +11,16 @@ on:
       - main
   # release.yml runs the whole of this before it stages anything, so a release passes every check
   workflow_call:
+  # A branch's checks with no pull request, and so no review: `gh workflow run test.yml --ref <branch>`. A release's run reads as this event too, since a called workflow takes its caller's, so what tells the two apart is `inputs.scope`, which only a dispatch of this file sets.
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "changed runs the checks the branch's changes from main reach, as a pull request does; everything runs every check and the type check on Windows"
+        type: choice
+        options:
+          - changed
+          - everything
+        default: changed
 
 permissions:
   contents: read
@@ -24,7 +34,7 @@ jobs:
   # What a pull request touches, which decides the engine's, the oracle's and the playground's jobs
   # below: a pull request that touches no engine, no oracle and no build or CI file skips them all, and
   # one that touches one database's engine runs the oracle's cases of that database alone. A push to
-  # main and a release run everything.
+  # main and a release run everything. A dispatch reads a branch's changes from main the same way.
   scope:
     if: ${{ !github.event.repository.private }}
     name: What the change touches
@@ -39,14 +49,16 @@ jobs:
       # A pull request's run checks out the merge of it into main: its first parent is main, so the
       # files between the two are the ones the pull request changes, without a token that reads pull requests.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || inputs.scope == 'changed'
         with:
           persist-credentials: false
-          fetch-depth: 2
+          # Strings: a bare 0 is false in an expression, so `&& 0 || 2` always gives 2.
+          fetch-depth: ${{ inputs.scope == 'changed' && '0' || '2' }}
       - name: Read the changed files
         id: scope
         env:
           EVENT: ${{ github.event_name }}
+          SCOPE: ${{ inputs.scope }}
         run: |
           # Every database, or the ones the change reaches.
           everything() {
@@ -55,10 +67,16 @@ jobs:
             echo 'shards=["postgres","sqlite","duckdb","mysql-1","mysql-2","mysql-slow"]'
             echo playground=true
           }
-          if [ "$EVENT" != pull_request ]; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
-          if ! git rev-parse -q --verify HEAD^2 > /dev/null; then everything >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [ "$SCOPE" = changed ]; then
+            base=$(git merge-base origin/main HEAD)
+          elif [ "$EVENT" = pull_request ] && git rev-parse -q --verify HEAD^2 > /dev/null; then
+            base=HEAD^1
+          else
+            everything >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # A renamed file counts at both paths, so a file moved out of a path that runs everything still does.
-          files=$(git diff --name-only --no-renames HEAD^1 HEAD)
+          files=$(git diff --name-only --no-renames "$base" HEAD)
           echo "$files"
           # Core, the crate the oracle answers through, the oracle's own code, the build, the code lists the
           # oracle reads, the format's schema and examples the engine's tests and the oracle read, the validators'
@@ -204,10 +222,10 @@ jobs:
       # dist/reylo and this machine's platform package, around the binary the tests ran.
       - run: nub scripts/build.ts --binary "$REYLO_ENGINE_PATH"
 
-  # The type check on Windows (windows.yml): on each push to main and within each release, never on a
-  # pull request, which does not wait on it.
+  # The type check on Windows (windows.yml): on each push to main, within each release and on a dispatch
+  # of everything, never on a pull request, which does not wait on it.
   windows:
-    if: ${{ !github.event.repository.private && github.event_name != 'pull_request' }}
+    if: ${{ !github.event.repository.private && github.event_name != 'pull_request' && inputs.scope != 'changed' }}
     uses: ./.github/workflows/windows.yml
 
   # The engine's sources, beyond the binary the loader's tests run: the whole workspace built natively,

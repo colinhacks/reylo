@@ -1,3 +1,5 @@
+attribute_call.sql: many () -> { k: text? }
+attribute_call_of_row.sql: many () -> { n: int4? }
 calendar.sql: many (start: date, stop: date) -> { day: date, visits: int8 }
 calendar_bare.sql: many () -> { d: timestamptz }
 each.sql: many () -> { key: text, value: jsonb }
