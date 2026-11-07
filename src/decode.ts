@@ -43,7 +43,7 @@ const SCALAR_OIDS: Readonly<Record<number, Kind>> = {
   4451: "multirange:int", 4532: "multirange:decimal", 4533: "multirange:timestamp", 4534: "multirange:timestamptz", 4535: "multirange:date", 4536: "multirange:int8",
 };
 
-// Every built-in array type and its element, as Postgres 18's pg_type lists them (none was ever
+// Every built-in array type and its element, as Postgres 19's pg_type lists them (none was ever
 // renumbered): `_record` is left out, since an array of row values is its text until its column's
 // kind says what its fields are.
 const ARRAY_OIDS = new Map<number, number>([
@@ -55,7 +55,7 @@ const ARRAY_OIDS = new Map<number, number>([
   [2207, 2202], [2208, 2203], [2209, 2204], [2210, 2205], [2211, 2206], [2949, 2970], [2951, 2950], [3221, 3220],
   [3643, 3614], [3644, 3642], [3645, 3615], [3735, 3734], [3770, 3769], [3807, 3802], [3905, 3904], [3907, 3906],
   [3909, 3908], [3911, 3910], [3913, 3912], [3927, 3926], [4073, 4072], [4090, 4089], [4097, 4096], [4192, 4191],
-  [5039, 5038], [6150, 4451], [6151, 4532], [6152, 4533], [6153, 4534], [6155, 4535], [6157, 4536],
+  [5039, 5038], [6150, 4451], [6151, 4532], [6152, 4533], [6153, 4534], [6155, 4535], [6157, 4536], [6442, 6437], [6491, 6490],
 ]);
 const BOX_ARRAY = 1020;
 

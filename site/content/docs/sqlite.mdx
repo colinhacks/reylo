@@ -878,3 +878,4 @@ What Reylo can't type on SQLite, and what to do instead:
 | A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
 | A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| A string in double quotes, such as `select "hello"`, which SQLite reads as text when no column has that name: `better-sqlite3`, `node:sqlite`, libSQL and Turso refuse it, so the type check does too, with SQLite's message, though `sqlite3`, `sqlite` and `bun:sqlite` run it | Write the string in single quotes, `select 'hello'` |

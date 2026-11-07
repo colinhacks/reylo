@@ -80,7 +80,7 @@ macro_rules! relname {
 /// a column's type, a row type, a type the statement names or a function it calls returns, a
 /// preferred type or one a built-in type casts to implicitly, and what those are built of (a
 /// domain's base, an array's element and its array, a composite's fields, a range's subtype).
-/// A server newer than 18 may raise a code the run time's list lacks. An `open` row's last column is
+/// A server newer than 19 may raise a code the run time's list lacks (19's list is 18's). An `open` row's last column is
 /// `reads` where what it finds cannot write ([`read_only`]): a type's input and output, or a function
 /// that is not volatile. One row `('present', oid)` for
 /// each type of a user's present, which [`OPERATORS_QUERY`] takes. One row `('runs', name, 'built in' or
@@ -140,8 +140,8 @@ pub const ERRORS_QUERY: &str = concat!(
         SELECT t.typbasetype UNION ALL SELECT t.typelem UNION ALL SELECT t.typarray \
         UNION ALL SELECT a.atttypid FROM pg_catalog.pg_attribute a WHERE a.attrelid OPERATOR(pg_catalog.=) t.typrelid AND a.attnum OPERATOR(pg_catalog.>) 0 AND NOT a.attisdropped \
         UNION ALL SELECT g.rngsubtype FROM pg_catalog.pg_range g WHERE g.rngtypid OPERATOR(pg_catalog.=) t.oid) AS y(oid) WHERE y.oid OPERATOR(pg_catalog.<>) '0'::pg_catalog.oid) \
-    SELECT 'open'::pg_catalog.text, 'a server newer than 18'::pg_catalog.text, NULL::pg_catalog.text, NULL::pg_catalog.text \
-      WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.>=) '190000'::pg_catalog.numeric \
+    SELECT 'open'::pg_catalog.text, 'a server newer than 19'::pg_catalog.text, NULL::pg_catalog.text, NULL::pg_catalog.text \
+      WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.>=) '200000'::pg_catalog.numeric \
     UNION ALL SELECT 'open', 'trigger', g.tgname::pg_catalog.text, NULL FROM pg_catalog.pg_trigger g JOIN w ON g.tgrelid OPERATOR(pg_catalog.=) w.oid \
       WHERE NOT g.tgisinternal AND g.tgenabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" \
     UNION ALL SELECT 'open', 'rule', q.rulename::pg_catalog.text, NULL FROM pg_catalog.pg_rewrite q JOIN w ON q.ev_class OPERATOR(pg_catalog.=) w.oid \

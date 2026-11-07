@@ -150,6 +150,7 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     case "text": return { type: "string" };
     case "json": return {};
+    case "geometry": return {};
     case "unknown": return {};
     case "enum": return { type: "string" };
     // A Set's members, which a Set holds once each; `JSON.stringify` writes a Set itself as `{}`.

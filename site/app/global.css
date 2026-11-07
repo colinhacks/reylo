@@ -3,6 +3,7 @@
    the agent card and the cursors. Below it, only what is Reylo's own. */
 @import 'docs-kit/style.css';
 @import '../lib/live/play.css';
+@import './typedefs.css';
 
 /* The page's three faces (app/fonts.css, which app/root.tsx links: the files next/font served
    before the site left Next.js), as the variables docs-kit's stylesheet reads: Geist for text, behind it its size-adjusted Arial;

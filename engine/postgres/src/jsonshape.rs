@@ -1606,6 +1606,9 @@ impl ResolveCtx<'_> {
                     }
                     let one = if members.len() == 1 { members.remove(0) } else { serde_json::json!({ "anyOf": members }) };
                     serde_json::json!({ "type": "array", "items": one, "maxItems": items.len() })
+                } else if items.is_empty() {
+                    // JSON Schema 2020-12 refuses an empty `prefixItems`, so no items is `items: false` alone.
+                    serde_json::json!({ "type": "array", "items": false })
                 } else {
                     let prefix: Vec<Value> = items.iter().map(|(ty, non_null)| {
                         let schema = ty.json_schema(SchemaOptions::IN_JSON);

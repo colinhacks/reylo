@@ -656,9 +656,11 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.deterministic_only = trust.deterministic_only;
 }
 
-fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
-    let rows = host.query(cardinality::SET_RETURNING_OPERATORS_QUERY, vec![], Scope::Session)?;
-    Some(rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect())
+/// The operators some set-returning function implements, and the set-returning functions one argument can call.
+fn set_returning_operators(host: &Host) -> Lazy<(HashSet<String>, HashSet<String>)> {
+    let names = |sql| host.query(sql, vec![], Scope::Session).map(|rows| rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect::<HashSet<String>>());
+    let (operators, attributes) = (names(cardinality::SET_RETURNING_OPERATORS_QUERY), names(cardinality::SET_RETURNING_ATTRIBUTES_QUERY));
+    Some((operators?, attributes?))
 }
 
 /// A catalog query of `$1` a `text[]` of relation names and `$2` how many, asked of each relation
@@ -1041,7 +1043,7 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Row count.
-        let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let (cardinality, reason) = self.cardinality(&rewritten.sql, &lex::first_word(sql, lexed), parsed.as_ref(), &described, &trust, &catalog);
         let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         let order = result_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
@@ -1193,8 +1195,13 @@ impl<'a> Engine<'a> {
         })
     }
 
-    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
-        let Some(parsed) = parsed else { return (Cardinality::Many, Some("the statement did not parse locally".into())) };
+    fn cardinality(&self, sql: &str, first_word: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
+        let Some(parsed) = parsed else {
+            // Syntax of a server newer than the parser. A command with no columns, such as `REPACK`, returns no rows; a query with none, such as `SELECT FROM t`, returns an empty row per row it reads, and one in parentheses has no first word.
+            let query = matches!(first_word, "" | "select" | "with" | "values" | "table");
+            let rows = if described.columns.is_empty() && !query { Cardinality::None } else { Cardinality::Many };
+            return (rows, Some("the statement did not parse locally".into()));
+        };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
         if parsed.statement != "select" {
@@ -3968,8 +3975,8 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     into.volatile.extend(from.volatile);
 }
 
-fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
-    let mut catalog = Catalog { set_returning_operators: operators.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
+fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: CatalogRows) -> Catalog {
+    let mut catalog = Catalog { set_returning_operators: set_returning.0.clone(), set_returning_attributes: set_returning.1.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
     for row in rows.columns {
         if let (Some(rel), Some(cols)) = (row.first().and_then(as_str), row.get(1).and_then(as_strings)) {
             let types: Vec<Option<u32>> = row.get(2).and_then(Value::as_array).map(|a| a.iter().map(as_u32).collect()).unwrap_or_default();
@@ -5213,6 +5220,18 @@ mod tests {
         let refused = analyzed(sql);
         let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
         assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
+    }
+
+    #[test]
+    fn syntax_past_the_parser_is_typed_from_the_describe() {
+        let repack = replay_users("REPACK users", &[]);
+        assert_eq!((repack.cardinality, repack.columns.len(), repack.cardinality_reason.as_deref()), (Cardinality::None, 0, Some("the statement did not parse locally")));
+        for query in ["SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ()", "(SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ())"] {
+            assert_eq!((replay_users(query, &[]).cardinality, replay_users(query, &[]).columns.len()), (Cardinality::Many, 0), "{query}");
+        }
+        let window = replay_users("SELECT first_value(id) IGNORE NULLS OVER (ORDER BY id) AS f FROM users", &["f"]);
+        assert_eq!((window.cardinality, window.cardinality_reason.as_deref()), (Cardinality::Many, Some("the statement did not parse locally")));
+        assert!(window.columns[0].nullable);
     }
 
     #[test]

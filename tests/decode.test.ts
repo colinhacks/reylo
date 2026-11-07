@@ -37,6 +37,8 @@ const COLUMNS: [string, number, string | null][] = [
   ["spans", 1187, '{"1 day","02:00:00"}'],
   ["amounts", 1231, "{1.5,12345678901234567890.1}"],
   ["ints", 1007, "{1,NULL}"],
+  ["ids", 6442, "{1,18446744073709551615}"],
+  ["databases", 6491, "{postgres}"],
   ["big", 20, "9007199254740993"],
   ["at", 1184, "2024-01-15 10:30:00.123456+02"],
   ["wall", 1114, "2024-01-15 10:30:00.123456"],
@@ -63,6 +65,8 @@ const declared = {
   spans: ["P1D", "PT2H"],
   amounts: ["1.5", "12345678901234567890.1"],
   ints: [1, null],
+  ids: ["1", "18446744073709551615"],
+  databases: ["postgres"],
   big: 9007199254740993n,
   at: "2024-01-15T08:30:00.123456Z",
   wall: "2024-01-15T10:30:00.123456",
@@ -80,7 +84,7 @@ const declared = {
 };
 /** The module's columns for the same statement, as a build step writes them (src/loader.ts). */
 const columns: Columns = [
-  ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"],
+  ["roles", "text[]"], ["role", "text"], ["names", "text[]"], ["posints", "int[]"], ["pairs", "text"], ["span", "text"], ["spans", "text[]"], ["amounts", "decimal[]"], ["ints", "int[]"], ["ids", "text[]"], ["databases", "text[]"],
   ["big", "int8"], ["at", "timestamptz"], ["wall", "timestamp"], ["day", "date"], ["doc", "json"], ["bytes", "bytes"], ["flag", "bool"], ["boxes", "box[]", ";"], ["shapes", "text[]", ":"], ["embedding", "vector"], ["embeddings", "vector[]"], ["prefs", "hstore"], ["history", "hstore[]"], ["nothing", "text[]"],
 ];
 

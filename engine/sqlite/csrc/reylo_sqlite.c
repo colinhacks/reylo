@@ -725,6 +725,12 @@ static int openSchema(
     }
     sqlite3_free(zErr);
   }
+  /* A double-quoted word that names no column is a string to SQLite only where the build allows
+  ** it. better-sqlite3, node:sqlite, libSQL and Turso build without it (SQLITE_DQS=0) and refuse
+  ** `select "hello"`, so a statement is prepared without it too. The replay above keeps it, since
+  ** SQLite always reads a schema it loads from a file that way, whatever the build. */
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DML, 0, (int*)0);
+  sqlite3_db_config(gDb, SQLITE_DBCONFIG_DQS_DDL, 0, (int*)0);
   return SQLITE_OK;
 }
 
