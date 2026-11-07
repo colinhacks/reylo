@@ -2,9 +2,9 @@ chain_bare.sql: at_most_one (id: int8) -> { body: text?, title: text?, email: te
 comma_join.sql: at_most_one (id: int8) -> { title: text?, email: text? }
 distinct_chain.sql: at_most_one (a: int8) -> { author_id: int8, email: text? }
 distinct_on.sql: at_most_one (a: int8) -> { title: text? }
-distinct_on_output_name.sql: many (t: text) -> { title: int8? } key (title) ordered
-distinct_on_position.sql: many (a: int8) -> { id: int8, title: text? } key (id) ordered
-distinct_on_position_composite.sql: many (t: text) -> { id: int8, author_id: int8?, title: text?, score: float8?, t: text? }
+distinct_on_output_name.sql: many (t: text) -> { title: int8? } key (title) sorted (title nulls last) ordered
+distinct_on_position.sql: many (a: int8) -> { id: int8, title: text? } key (id), (title) sorted (title nulls last) ordered
+distinct_on_position_composite.sql: many (t: text) -> { id: int8, author_id: int8?, title: text?, score: float8?, t: text? } sorted (author_id nulls last)
 except.sql: at_most_one (id: int8) -> { id: int8 }
 group_pinned.sql: at_most_one (a: int8) -> { author_id: int8, n: int8 }
 inner_join.sql: at_most_one (id: int8) -> { title: text?, email: text? }

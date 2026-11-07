@@ -1,0 +1,46 @@
+alias_column_list.sql: many () -> { v: bool? }
+atomic_named_alias.sql: many (x: text?) -> { v: text? }
+bit_result.sql: many () -> { b: bit(boolean[]) }
+char_length.sql: one () -> { y: bpchar }
+char_result.sql: many () -> { c: bpchar(=6) }
+collation_beside_a_column.sql: many () -> { id: int4 }
+collation_of_an_argument.sql: many () -> { id: int4 }
+collation_of_parameters.sql: many (x: text, y: text) -> { id: int4 } key (id)
+collation_written.sql: many () -> { id: int4 } key (id)
+nested_distinct.sql: many () -> { v: int8? } key (v)
+nested_distinct_pin.sql: many () -> { post_id: int8 } key (post_id)
+nested_from_distinct.sql: many () -> { v: int8? } key (v)
+nested_group.sql: many () -> { n: int8 }
+nested_pin.sql: many () -> { id: int8 } key (id)
+one_field_composite.sql: one () -> { j: jsonb { v: public.one_col{ a: int4? }? } }
+one_output_out.sql: many (p: int8) -> { doc: jsonb? }
+one_output_row.sql: many (p: int8) -> { doc: jsonb? }
+one_output_row_star.sql: many (p: int8) -> { doc: jsonb { id: int8?, post_id: int8?, body: text?, note: text? } }
+order_by_position.sql: many () -> { id: int8 } key (id)
+path_of_a_caller.sql: many () -> { b: text? }
+path_through_atomic.sql: many () -> { b: text? }
+path_with_loophole.sql: many () -> { body: text? }
+projection.sql: many () -> { v: int4? }
+row_pin_cycle.sql: many () -> { id: int8, comment: int8 } key (id)
+strict_capture.sql: many () -> { a: text? }
+strict_no_rows.sql: many () -> { a: text }
+through_strict.sql: many () -> { j: jsonb { a: text? } }
+through_strict_set.sql: at_most_one () -> { v: text? }
+transform_null_equals.sql: many () -> { id: int8?, code: text? }
+two_casts.sql: one () -> { v: text? }
+two_casts_set.sql: at_most_one () -> { a: text }
+unaliased_capture.sql: many () -> { v: text? }
+user_cast_implicit.sql: one () -> { v: text? }
+user_cast_set.sql: at_most_one (x: int4) -> { a: text }
+user_cast_written.sql: one () -> { v: text? }
+values_column.sql: many () -> { open: bool? }
+whole_row_derived.sql: many () -> { v: bool? }
+whole_row_inner_alias.sql: many () -> { v: bool? }
+whole_row_lateral_alias.sql: many () -> { v: bool? }
+whole_row_listed.sql: many (p: int8) -> { doc: jsonb? }
+whole_row_out.sql: one (x: int8) -> { doc: jsonb? }
+whole_row_renamed.sql: many () -> { v: bool? }
+whole_row_stored.sql: many () -> { v: bool }
+whole_row_table.sql: one (p: int8) -> { doc: jsonb text?[] }
+whole_row_with.sql: many () -> { v: bool? }
+whole_row_with_named.sql: many () -> { v: bool? }

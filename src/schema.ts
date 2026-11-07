@@ -33,7 +33,7 @@ const GEOJSON: Schema = { type: "object", properties: { type: { type: "string" }
 
 /** A SQLite value's storage class, as the affinity of the declared type the engine traced it to names it, or of the value it computes. */
 function sqliteClass(t: EngineType): string {
-  const name = "name" in t ? (t.name ?? "") : "";
+  const name = "label" in t ? (t.label ?? "") : "";
   switch (t.kind) {
     case "boolean": return "bool";
     case "integer": return sqliteWide(name) ? "int8" : "integer";
@@ -149,6 +149,7 @@ function kindSchema(kind: ScalarKind, t: EngineType, dialect: Dialect): Schema {
     case "hstore": return { type: "object", additionalProperties: { type: ["string", "null"] } };
     case "text": return { type: "string" };
     case "json": return {};
+    case "geometry": return {};
     case "unknown": return {};
     case "enum": return { type: "string" };
     // A Set's members, which a Set holds once each; `JSON.stringify` writes a Set itself as `{}`.

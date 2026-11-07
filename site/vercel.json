@@ -40,11 +40,6 @@
       "source": "/opengraph-image",
       "destination": "/opengraph-image.png",
       "permanent": true
-    },
-    {
-      "source": "/typedefs",
-      "destination": "https://github.com/colinhacks/reylo/blob/main/spec/README.md",
-      "permanent": false
     }
   ],
   "headers": [

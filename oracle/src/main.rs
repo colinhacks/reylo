@@ -534,9 +534,15 @@ fn line(analysis: &Value) -> String {
     let params: Vec<String> = analysis["params"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let columns: Vec<String> = analysis["columns"].as_array().map(|a| a.iter().map(field).collect()).unwrap_or_default();
     let mut out = format!("{} ({}) -> {{ {} }}", analysis["cardinality"].as_str().unwrap_or("?"), params.join(", "), columns.join(", "));
-    // The result key, which a result of more than one row may have.
-    if let Some(key) = analysis["key"].as_array() {
-        out.push_str(&format!(" key ({})", key.iter().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", ")));
+    // The result keys, which a result of more than one row may have.
+    if let Some(keys) = analysis["unique"].as_array().filter(|k| !k.is_empty()) {
+        let shown: Vec<String> = keys.iter().map(|key| format!("({})", key.as_array().into_iter().flatten().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", "))).collect();
+        out.push_str(&format!(" key {}", shown.join(", ")));
+    }
+    // The columns of the result its ORDER BY sorts on.
+    if let Some(order) = analysis["order"].as_array().filter(|o| !o.is_empty()) {
+        let shown: Vec<String> = order.iter().map(|o| format!("{}{} nulls {}", o["column"].as_str().unwrap_or("?"), if o["desc"].as_bool() == Some(true) { " desc" } else { "" }, o["nulls"].as_str().unwrap_or("?"))).collect();
+        out.push_str(&format!(" sorted ({})", shown.join(", ")));
     }
     // An ORDER BY that orders the rows totally.
     if analysis["ordered"].as_bool() == Some(true) {

@@ -272,6 +272,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             cardinality,
             cardinality_reason: None,
             key: None,
+            unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten,
             style: lexed.style,
@@ -281,6 +283,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         };
@@ -320,6 +323,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         cardinality,
         cardinality_reason: reason,
         key: None,
+        unique: Vec::new(),
+        order: Vec::new(),
         ordered: false,
         rewritten,
         style: lexed.style,
@@ -329,6 +334,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         fresh: None,
         errors: None,
         read_only: false,
+        notes: Vec::new(),
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
@@ -419,7 +425,7 @@ fn tables(t: &Tree) -> Tables {
     }
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
-    Tables { read, write }
+    Tables { read, write, ..Default::default() }
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -557,8 +563,8 @@ fn text() -> Type {
     Type::new(Kind::Text(TextType { ill_formed: Some(IllFormed::Utf8), ..TextType::default() }))
 }
 
-/// What a column of an affinity holds outside a STRICT table: an INTEGER, NUMERIC or untyped one
-/// any storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
+/// What a column of an affinity holds outside a STRICT table: an INTEGER or NUMERIC one any
+/// storage class, a REAL one a float, text or bytes, a TEXT one text or bytes.
 fn stored(aff: &str) -> Type {
     let members = match aff {
         "real" => vec![real(), text(), Type::bytes()],
@@ -3989,6 +3995,20 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_word_that_names_no_column_is_refused_as_the_drivers_refuse_it() {
+        // A schema that holds one replays, as SQLite reads it from a file.
+        let schema = vec!["create table t (id integer primary key, v text default \"none\" check (v <> \"bad\"))".to_string()];
+        let a = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        for sql in ["select \"hello\"", "select \"hello\" from t", "select id from t where v = \"x\""] {
+            let messages: Vec<String> = a(sql).diagnostics.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(messages, [format!("no such column: \"{}\" - should this be a string literal in single-quotes?", if sql.contains("hello") { "hello" } else { "x" })], "{sql}");
+        }
+        for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
+            assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
+        }
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
@@ -4275,7 +4295,7 @@ mod tests {
 
     /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
     fn affinity_of(t: &Type) -> Option<&'static str> {
-        let name = t.name.as_deref().unwrap_or("");
+        let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
             Kind::Boolean => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),

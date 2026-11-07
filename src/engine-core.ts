@@ -22,6 +22,8 @@ export type Analysis = {
   kind?: "select" | "insert" | "update" | "delete" | "merge" | "other";
   /** The prose written in comments before the statement. */
   comment?: string;
+  /** What is worth saying of the statement but fails nothing, for a hover. */
+  notes?: string[];
   /** `nullable`: the statement lets the caller pass null. `optional`: the caller may leave the parameter out (a typed JSON parameter whose schema has a `default`). */
   /** `cast`: a `::type` written on MySQL or SQLite, which the run time checks a value against (src/rows.ts). `members`: a structured parameter's column list as written, by field. `delimiter`: what separates an array's elements in its text, where it is not a comma. */
   /** `comment`: the comment the database keeps on the column a parameter is written to (or, on MySQL, compared with), and on the table column a result column reads as it is; the declaration prints it as the field's doc comment. */
@@ -33,6 +35,10 @@ export type Analysis = {
   cardinalityReason?: string;
   /** The result key: output columns, by name, no two rows of the result agree on all of (a NULL equal to another NULL). Only for a result that can hold more than one row: absent where the cardinality is `one` or `maybeOne`, and where no key is proven (engine/core/src/api.rs). */
   key?: string[];
+  /** Every set of output columns no two rows agree on all of, as `key` is, a table's primary key first where the result holds it. */
+  unique?: string[][];
+  /** The columns of the result its ORDER BY sorts on, as far as its keys are such columns. */
+  order?: { column: string; desc?: true; nulls: "first" | "last" }[];
   /** Whether the statement's ORDER BY orders its rows totally: no two rows of a result tie on every sort key, so the order is the same on every run. Only for a result that can hold more than one row, as `key` is (engine/core/src/api.rs). */
   ordered?: true;
   /** `inserted`: text the engine added that the statement as written does not hold, as `[original offset, start, end]` (the collation MySQL's own text needs). */
@@ -147,7 +153,7 @@ export class EngineCore {
   /** Analyze one statement, fulfilling the engine's needs through `io` until it answers. */
   async analyze(sql: string, dialect: Dialect, io: EngineIo, cache = new AnswerCache()): Promise<Analysis> {
     const answers: Record<string, Answer> = {};
-    for (let round = 0; round < 16; round++) {
+    for (let round = 0; round < 32; round++) {
       const r = await this.ask({ op: "analyze", sql, dialect, answers });
       if (r.status === "analysis") return r.analysis;
       if (r.status !== "need") throw new Error(r.status === "error" ? r.message : `unexpected ${r.status}`);

@@ -10,7 +10,8 @@ import { Session } from "../src/analyze.ts";
 import { defineQuery, type Query } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
-import { ParameterError } from "../src/values.ts";
+import { columnKind, kindType, ParameterError } from "../src/values.ts";
+import type { EngineType } from "../src/engine-type.ts";
 import type { StandardQueryV1 } from "../src/standard-query.ts";
 import type { Dialect } from "../src/execute.ts";
 import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX, transform } from "./helpers.ts";
@@ -27,11 +28,11 @@ const users = defineQuery<{ id: number; tags: number[]; doc: unknown; bytes: Uin
   text: "select id, at, big from users where id = $1 and tags @> $2 and doc @> $3 and bytes = $4 and flag = $5",
   order: ["id", "tags", "doc", "bytes", "flag"],
   inputs: {
-    id: { type: { kind: "integer", bits: 32, name: "int4" }, nullable: false },
-    tags: { type: { kind: "array", element: { type: { kind: "integer", bits: 32, name: "int4" } }, name: "_int4" } },
-    doc: { type: { kind: "json", name: "jsonb" } },
-    bytes: { type: { kind: "bytes", name: "bytea" } },
-    flag: { type: { kind: "boolean", name: "bool" } },
+    id: { type: { kind: "integer", bits: 32, label: "int4" }, nullable: false },
+    tags: { type: { kind: "array", element: { type: { kind: "integer", bits: 32, label: "int4" } }, label: "_int4" } },
+    doc: { type: { kind: "json", label: "jsonb" } },
+    bytes: { type: { kind: "bytes", label: "bytea" } },
+    flag: { type: { kind: "boolean", label: "bool" } },
   },
   columns: [
     ["id", "int"],
@@ -201,7 +202,7 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
     params: ["id", "doc"],
     text: "select id, at, amount, ok from t where id = ? and json_contains(doc, ?)",
     order: ["id", "doc"],
-    inputs: { id: { type: { kind: "integer", bits: 64, name: "bigint" } }, doc: { type: { kind: "json", name: "json" } } },
+    inputs: { id: { type: { kind: "integer", bits: 64, label: "bigint" } }, doc: { type: { kind: "json", label: "json" } } },
     columns: [
       ["id", "int8"],
       ["at", "timestamp"],
@@ -224,7 +225,7 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
     params: ["ok"],
     text: "select id, ok from t where ok = ?",
     order: ["ok"],
-    inputs: { ok: { type: { kind: "integer", bits: 8, name: "tinyint(1)" } } },
+    inputs: { ok: { type: { kind: "integer", bits: 8, label: "tinyint(1)" } } },
     columns: [
       ["id", "int8"],
       ["ok", "bool"],
@@ -251,6 +252,26 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   assert.throws(() => lq.decode([["abc", "a", null]]), /Column "n" is typed number and holds the text "abc"/);
   assert.throws(() => lq.decode([[1, new Uint8Array([1]), null]]), /Column "s" is typed string and holds a BLOB of 1 byte/);
   assert.throws(() => lq.decode([[2n ** 60n, "a", null]]), /"n"/);
+});
+
+test("mysql: a GEOMETRY is its bytes through decode, as .run() gives it, and a driver's own reading of one is refused", () => {
+  // A GEOMETRY's kind is its own on MySQL, and its TypeScript type is still `unknown`.
+  assert.equal(columnKind({ kind: "geometry", name: "point" } as EngineType, "mysql"), "geometry");
+  assert.equal(kindType("geometry"), "unknown");
+  const q = defineQuery({ dialect: "mysql", sql: "select point(1,2) as p", params: [], columns: [["p", "geometry"]], cardinality: "one" })["~standard"].query;
+  // The bytes mysql2 and mariadb read: the SRID, then the point's WKB.
+  const wkb = Uint8Array.of(0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63, 0, 0, 0, 0, 0, 0, 0, 64);
+  assert.deepEqual(q.decode([[wkb]]), { p: wkb });
+  assert.deepEqual(q.columns![0]!.decode(wkb), wkb);
+  assert.deepEqual(q.decode([[null]]), { p: null });
+  // mysql2's `{ x, y }`, its array of points for a LINESTRING, and mariadb's GeoJSON are no raw MySQL value.
+  for (const parsed of [{ x: 1, y: 2 }, [{ x: 1, y: 2 }], { type: "Point", coordinates: [1, 2] }]) {
+    assert.throws(() => q.decode([[parsed as never]]), /Column "p" holds an (object|array), which is no raw MySQL value: a GEOMETRY's raw value is its bytes/);
+    assert.throws(() => q.columns![0]!.decode(parsed as never), /no raw MySQL value/);
+  }
+  // A column of no known type, such as JSON a placeholder reaches, takes whatever the driver gives, a parsed document included.
+  const any = defineQuery({ dialect: "mysql", sql: "select coalesce(doc->'$.a', ?) as a from t", params: [], columns: [["a", "unknown"]] })["~standard"].query;
+  assert.deepEqual(any.decode([[{ b: 1 }], [[1, 2]], ["x"]] as never), [{ a: { b: 1 } }, { a: [1, 2] }, { a: "x" }]);
 });
 
 test("the result key a build step writes is the Standard Query's key", () => {

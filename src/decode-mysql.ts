@@ -89,7 +89,7 @@ const configOf = (m: AnyClient): Mysql2Config | undefined => m.pool?.config?.con
  * or replace mysql2's own reading (or cannot be read).
  */
 function needsCast(m: AnyClient, columns: Columns | undefined): boolean {
-  if (!columns || columns.some(([, kind]) => kind === "unknown" || kind.split("|").some((k) => k === "json" || k.startsWith("json")))) return true;
+  if (!columns || columns.some(([, kind]) => kind === "unknown" || kind.split("|").some((k) => k === "geometry" || k === "json" || k.startsWith("json")))) return true;
   const config = configOf(m);
   return config === undefined || typeof config.typeCast === "function" || config.decimalNumbers === true || config.jsonStrings === true;
 }
@@ -199,7 +199,7 @@ type MariadbColumn = { type?: string; columnType?: number; name?: string | (() =
 /** mariadb's query(), on its promise or its callback API, with Reylo's options. */
 export async function mariadb(c: AnyClient, text: string, values: unknown[], columns: Columns | undefined): Promise<unknown[]> {
   // By position where the module declares the columns: mariadb writes each value into the statement's text, so MySQL names a column with no alias after it (`select :x::int + 1` is `CAST(5 AS SIGNED) + 1`), and two of them may share a name.
-  const options = { sql: text, ...MARIADB_OPTIONS, rowsAsArray: Boolean(columns?.length), ...(columns?.some(([, kind]) => kind === "unknown") ? { typeCast: mariadbGeometry } : {}) };
+  const options = { sql: text, ...MARIADB_OPTIONS, rowsAsArray: Boolean(columns?.length), ...(columns?.some(([, kind]) => kind === "unknown" || kind.split("|").includes("geometry")) ? { typeCast: mariadbGeometry } : {}) };
   // The promise API resolves to the rows with their `meta`; the callback API hands the meta over as a third argument.
   let callbackMeta: MariadbColumn[] | undefined;
   const result = await new Promise((resolve, reject) => {

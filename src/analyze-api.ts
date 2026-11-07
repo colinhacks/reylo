@@ -167,8 +167,13 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
     ...(a.kind !== undefined && { kind: a.kind }),
     ...(a.comment !== undefined && { comment: a.comment }),
     params: a.params.map((p) => ({ name: p.name, type: p.type, ...(p.nullable && { nullable: true }), ...(p.optional && { optional: true }), ...(p.comment !== undefined && { comment: p.comment }) })),
-    columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
-    cardinality: a.cardinality,
+    result: {
+      kind: "rows",
+      cardinality: a.cardinality,
+      columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
+      ...(a.unique?.length && { unique: a.unique }),
+      ...(a.order?.length && { order: a.order }),
+    },
     diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);
       return { message: d.message, start, end: Math.max(utf16(sql, d.start + d.length), start), ...(d.server_code !== undefined && { code: d.server_code }) };
@@ -178,7 +183,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
 
 /** A statement the engine could not analyze: no parameters or columns, and one diagnostic over the whole of it. */
 function refused(sql: string, dialect: Database, version: string, message: string): StatementDescriptor {
-  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], columns: [], cardinality: "many", diagnostics: [{ message, start: 0, end: sql.length }] };
+  return { $schema: SCHEMA, dialect: { name: dialect, version }, sql, params: [], result: { kind: "rows", cardinality: "many", columns: [] }, diagnostics: [{ message, start: 0, end: sql.length }] };
 }
 
 /** The UTF-16 offset of the UTF-8 byte offset `byte` of `text`: a byte inside a character counts from the character's start, and one past the end at the end (`utf16_offset` in engine/core/src/api.rs). */

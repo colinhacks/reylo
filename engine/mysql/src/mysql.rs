@@ -353,6 +353,8 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             cardinality,
             cardinality_reason: None,
             key: None,
+            unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten: vectors_as_text(rewritten, &raw),
             style: lexed.style,
@@ -362,6 +364,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         });
@@ -475,7 +478,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let (not_null, shape) = never_null[position];
             let ty = match shape.map(|i| &proven.shaped[i]) {
                 // A JSON column takes the shape's type; any other keeps the server's.
-                Some((_, shaped_ty, _)) if c.r#type == 245 => Type { name: Some("json".into()), ..crate::mysql_types::document(shaped_ty.clone()) },
+                Some((_, shaped_ty, _)) if c.r#type == 245 => Type { label: Some("json".into()), ..crate::mysql_types::document(shaped_ty.clone()) },
                 Some(_) => ty,
                 None => match documents.get(position).cloned().flatten() {
                     Some(schema) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema).kind, ..ty },
@@ -484,12 +487,13 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             };
             // The prepare names an ENUM or a SET column without its labels.
             let ty = match labelled_of(c) {
-                Some(labelled) if matches!(ty.name.as_deref(), Some("enum" | "set")) => labelled,
+                Some(labelled) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
                 _ => ty,
             };
             Column { comment: comment_of(c), ..Column::new(c.name.clone(), ty, !not_null) }
         })
         .collect();
+    let written = written_types(&typed, host)?;
     // The first `?` a name binds carries the server's type for it.
     let params = lexed
         .params
@@ -504,6 +508,14 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let ty = match (described, typed.types.get(name)) {
                 (Some(p), Some(column)) if matches!(p.r#type, 1 | 2 | 3 | 8 | 9 | 13 | 16) => column.clone(),
                 (Some(p), Some(column)) if labelled(column) && matches!(p.r#type, 15 | 253 | 254) => column.clone(),
+                _ => ty,
+            };
+            // Written bare and whole to a column, it takes the column's definition, which the prepare
+            // leaves out: `decimal(10,2)`'s precision and scale, `varchar(20)`'s size. The server
+            // rounds what `decimal(10,2)` can't hold and refuses or cuts a longer string, so the
+            // column's type is the stricter one, never the looser.
+            let ty = match written.get(name) {
+                Some(column) if !typed.types.contains_key(name) && column.kind.name() == ty.kind.name() => column.clone(),
                 _ => ty,
             };
             Param { nullable: nullable.contains(name), comment: typed.comments.get(name).cloned(), ..Param::new(name.clone(), ty) }
@@ -535,6 +547,8 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         cardinality,
         cardinality_reason: reason,
         key: None,
+        unique: Vec::new(),
+        order: Vec::new(),
         ordered: false,
         rewritten,
         style: lexed.style,
@@ -544,6 +558,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         fresh: None,
         errors: None,
         read_only: false,
+        notes: Vec::new(),
         // From the tree as the session reads the statement, also where it reads some part of it
         // otherwise than the parser (`||`, a spaced `count (`): which tables a FROM names does not
         // turn on that.
@@ -1558,6 +1573,45 @@ fn table_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) ->
 /// an application stores a truth value in.
 fn flag_column(c: &crate::api::MysqlColumn, views: Option<&HashSet<String>>) -> bool {
     flag_width(c) && table_column(c, views)
+}
+
+/// The type of the column each parameter is written to ([`crate::mysql_params::Typed::written`]),
+/// by the parameter's name, as a read of that column gives it. A view's column that takes a write
+/// is its table's. A table the server won't prepare a read of leaves its parameters as they are.
+fn written_types(typed: &crate::mysql_params::Typed, host: &Host) -> Lazy<HashMap<String, Type>> {
+    let mut tables: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (table, column) in typed.written.values() {
+        match tables.iter_mut().find(|(name, _)| name == table) {
+            Some((_, columns)) if columns.contains(&column.as_str()) => {}
+            Some((_, columns)) => columns.push(column),
+            None => tables.push((table, vec![column])),
+        }
+    }
+    tables.sort_unstable();
+    for (_, columns) in &mut tables {
+        columns.sort_unstable();
+    }
+    let ident = |name: &str| format!("`{}`", name.replace('`', "``"));
+    let no_views = HashSet::new();
+    let mut read: HashMap<(&str, &str), Type> = HashMap::new();
+    let mut pending = false;
+    for (table, columns) in &tables {
+        let list: Vec<String> = columns.iter().map(|c| ident(c)).collect();
+        match host.describe(&format!("SELECT {} FROM {}", list.join(", "), ident(table))) {
+            None => pending = true,
+            Some(Ok(described)) => {
+                for (c, column) in described.columns.iter().zip(columns) {
+                    let utf8 = typed.utf8.contains(&(table.to_string(), column.to_string()));
+                    read.insert((*table, *column), defined_type(c, Some(&no_views), utf8));
+                }
+            }
+            Some(Err(_)) => {}
+        }
+    }
+    if pending {
+        return None;
+    }
+    Some(typed.written.iter().filter_map(|(param, (table, column))| Some((param.clone(), read.get(&(table.as_str(), column.as_str()))?.clone()))).collect())
 }
 
 /// A result column's type, as its prepare describes it ([`crate::mysql_types::of`]).

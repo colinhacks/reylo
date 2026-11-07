@@ -1,0 +1,105 @@
+/* The type descriptor format's page (content/docs/typedefs.mdx): the chips under its title, each
+   card's rows, in alternating
+   backgrounds so that a long card scans, its Types row, by database, and its Holds row, the values
+   its type admits as tight chips (lib/remark-typedefs.ts). */
+
+#nd-page .prose .typedef-version {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin-block: 0 1.875rem;
+}
+
+#nd-page .typedef-version > * {
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.3125rem;
+  background: var(--color-fd-accent);
+  font-family: var(--font-code);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-fd-muted-foreground);
+  text-decoration: none;
+}
+
+#nd-page .typedef-version > a:hover {
+  color: var(--color-fd-headings);
+}
+
+#nd-page .typedef-card .reylo-inferred-row:nth-child(even) {
+  background: color-mix(in srgb, var(--color-fd-foreground) 4%, transparent);
+}
+
+#nd-page .reylo-inferred-body > .typedef-types {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.125rem 1rem 0.875rem;
+  font-size: var(--dk-code-size, 13px);
+  line-height: 1.7;
+}
+
+#nd-page .typedef-types > p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+#nd-page .typedef-database {
+  flex: 0 0 4.5rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+#nd-page .typedef-types code {
+  padding: 0.0625rem 0.4375rem;
+  border: 0;
+  border-radius: 0.3125rem;
+  background: var(--color-fd-accent);
+  font-family: var(--font-code);
+  font-size: inherit;
+  color: var(--color-fd-headings);
+}
+
+#nd-page .reylo-inferred-body > .typedef-values {
+  padding: 0.125rem 1rem 0.875rem;
+  font-size: var(--dk-code-size, 13px);
+  line-height: 1.7;
+}
+
+#nd-page .typedef-values > p {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+}
+
+#nd-page .typedef-values code {
+  padding: 0.0625rem 0.4375rem;
+  border: 0;
+  border-radius: 0.3125rem;
+  background: var(--color-fd-accent);
+  font-family: var(--font-code);
+  font-size: inherit;
+  color: var(--color-fd-headings);
+}
+
+/* A database other than Postgres, beside the sentence that names a kind. */
+#nd-page .typedef-dialect {
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid var(--color-fd-border);
+  border-radius: 0.375rem;
+  font-size: 12px;
+  color: var(--color-fd-muted-foreground);
+  white-space: nowrap;
+}
+
+#nd-page .typedef-phrase {
+  color: var(--color-fd-muted-foreground);
+}
+
+/* A card and the whole format read in one scroll of the page: Fumadocs caps a code block at 600px. */
+#nd-page .typedef-card figure .max-h-\[600px\],
+#nd-page .typedef-spec figure .max-h-\[600px\] {
+  max-height: none;
+}

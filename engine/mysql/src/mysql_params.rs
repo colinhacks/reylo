@@ -73,6 +73,7 @@ pub(crate) fn prefetch(statement: &Statement, names: &Names, host: &Host) {
 /// and those whose columns the result columns read ([`traced_from`]).
 fn typed_tables(statement: &Statement, names: &Names) -> Vec<String> {
     let mut tables = written_tables(&typed_targets(statement, names));
+    tables.extend(written_tables(&filled(statement, names, Fill::Bare)));
     tables.extend(traced_from(statement).unwrap_or_default());
     tables.sort();
     tables.dedup();
@@ -137,6 +138,9 @@ pub(crate) struct Typed {
     /// The `TEXT` columns of those tables that store UTF-8 (`utf8mb4`, `utf8mb3`), by table as the
     /// server names it and column in lower case: their capacity in bytes is a client's too.
     pub utf8: HashSet<(String, String)>,
+    /// Per parameter written bare and whole to one column, by table as the server names it and
+    /// column in lower case, that column: the parameter takes its definition.
+    pub written: HashMap<String, (String, String)>,
 }
 
 /// The type of each parameter whose column the statement names directly, where it differs from
@@ -214,6 +218,30 @@ pub(crate) fn typed(statement: &Statement, names: &Names, host: &Host) -> Lazy<T
         found.entry(param.clone()).and_modify(|seen| if *seen != ty { *seen = None }).or_insert(ty);
         noted.entry(param).and_modify(|seen| if *seen != comment { *seen = None }).or_insert(comment);
     }
+    // The one column each bare parameter is written to, the SELECT that feeds an INSERT included.
+    let mut written: HashMap<String, Option<(String, String)>> = HashMap::new();
+    for (param, table, target) in filled(statement, names, Fill::Bare) {
+        let known = match columns.get_key_value(&table) {
+            Some(known) => Some(known),
+            None => {
+                let mut same = columns.iter().filter(|(name, _)| name.eq_ignore_ascii_case(&table));
+                match (same.next(), same.next()) {
+                    (Some(known), None) => Some(known),
+                    _ => None,
+                }
+            }
+        };
+        let place = known.and_then(|(name, known)| {
+            let column = match &target {
+                Target::Name(column) => known.iter().find(|(c, _, _, _)| c == column),
+                Target::Position(i) => known.iter().filter(|(_, _, invisible, _)| !invisible).nth(*i),
+            };
+            // A column the rule above narrows keeps that rule, whatever else the parameter is compared with.
+            column.filter(|(_, ty, _, _)| ty.is_none()).map(|(column, _, _, _)| (name.clone(), column.clone()))
+        });
+        written.entry(param).and_modify(|seen| if *seen != place { *seen = None }).or_insert(place);
+    }
+    out.written = written.into_iter().filter_map(|(param, place)| place.map(|place| (param, place))).collect();
     out.types = found.into_iter().filter_map(|(param, ty)| ty.map(|ty| (param, ty))).collect();
     out.comments = noted.into_iter().filter_map(|(param, comment)| comment.map(|comment| (param, comment))).collect();
     Some(out)
@@ -509,7 +537,7 @@ pub(crate) fn tables(statement: &Statement) -> Tables {
         }
         _ => Vec::new(),
     };
-    Tables { read: walk.tables, write }
+    Tables { read: walk.tables, write, ..Default::default() }
 }
 
 /// Every table of a multi-table UPDATE's or DELETE's tables, or `None` where one is a table of

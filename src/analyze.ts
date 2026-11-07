@@ -616,7 +616,7 @@ const POSTGRES_FINGERPRINT = `select pg_catalog.md5(coalesce(pg_catalog.string_a
     union all select ${line("o", named("regoperator", "o.oid"), named("regprocedure", "o.oprcode::pg_catalog.oid"))} from pg_catalog.pg_operator o where o.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("e", type("e.enumtypid"), out("float4", "e.enumsortorder"), txt("e.enumlabel"))} from pg_catalog.pg_enum e
     union all select ${line("t", type("t.oid"), txt("t.typname"), txt("t.typtype"), type("t.typbasetype"), out("int4", "t.typtypmod"), txt("t.typnotnull"), md5(or("t.typdefault")))} from pg_catalog.pg_type t join pg_catalog.pg_namespace n on ${eq("n.oid", "t.typnamespace")} where ${NS}
-    union all select ${line("f", named("regprocedure", "p.oid"), type("p.prorettype"), txt("p.proretset"), md5(or("p.prosrc")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), type("p.provariadic"))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
+    union all select ${line("f", named("regprocedure", "p.oid"), type("p.prorettype"), txt("p.proretset"), md5(or("p.prosrc")), md5(or("pg_catalog.pg_get_function_sqlbody(p.oid)")), or(txt("p.proconfig")), md5(or("pg_catalog.pg_get_expr(p.proargdefaults, 0::pg_catalog.oid)")), txt("p.prokind"), txt("p.provolatile"), txt("p.proisstrict"), out("int2", "p.pronargdefaults"), type("p.provariadic"))} from pg_catalog.pg_proc p join pg_catalog.pg_namespace n on ${eq("n.oid", "p.pronamespace")} where ${NS}
     union all select ${line("k", type("k.castsource"), type("k.casttarget"), named("regprocedure", "k.castfunc"), txt("k.castcontext"), txt("k.castmethod"))} from pg_catalog.pg_cast k where k.oid operator(pg_catalog.>=) ${USER}
     union all select ${line("w", relation("c.oid"), md5("pg_catalog.pg_get_viewdef(c.oid)"))} from pg_catalog.pg_class c join pg_catalog.pg_namespace n on ${eq("n.oid", "c.relnamespace")} where c.relkind operator(pg_catalog.=) any ('{v,m}'::pg_catalog."char"[]) and ${NS}
     union all select ${line("x", relation("d.adrelid"), out("int2", "d.adnum"), md5("pg_catalog.pg_get_expr(d.adbin, d.adrelid)"))} from pg_catalog.pg_attrdef d ${rel("d", "adrelid")} where ${NS}
@@ -643,6 +643,7 @@ const FINGERPRINT: Record<ResolvedProject["dialect"], string> = {
   duckdb: `select md5(coalesce(string_agg(x, chr(10) order by x), '')) from (
     select concat_ws(' ', 'v', version()) as x
     union all select concat_ws(' ', 'c', database_name, schema_name, table_name, column_index, column_name, data_type, is_nullable, coalesce(column_default, ''), md5(coalesce(comment, ''))) from duckdb_columns() where not internal
+    union all select concat_ws(' ', 'b', database_name, schema_name, table_name, md5(coalesce(sql, ''))) from duckdb_tables() where not internal
     union all select concat_ws(' ', 'k', database_name, schema_name, table_name, constraint_type, constraint_text) from duckdb_constraints()
     union all select concat_ws(' ', 'w', database_name, schema_name, view_name, md5(coalesce(sql, ''))) from duckdb_views() where not internal
     union all select concat_ws(' ', 't', database_name, schema_name, type_name, logical_type) from duckdb_types() where not internal

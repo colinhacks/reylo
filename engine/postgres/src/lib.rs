@@ -10,6 +10,7 @@
 //! through its own driver and reads the parse-tree modules directly.
 
 pub mod analyze;
+pub mod bodies;
 pub mod api;
 pub mod cardinality;
 #[cfg(test)]

@@ -36,6 +36,8 @@ pub async fn run(url: &str, regress: &Path, timeout_ms: u64) -> Result<bool, Str
     for name in names {
         let Ok(text) = std::fs::read_to_string(regress.join("sql").join(format!("{name}.sql"))) else { continue };
         t.files += 1;
+        // pg_regress gives each file a session of its own, so a file's `SET search_path` ends with it; on this one session, it would place the objects of the files after it where a new connection cannot see them.
+        let _ = client.batch_execute("RESET search_path").await;
         for item in split(&text) {
             if client.is_closed() {
                 client = open(&db_url, timeout_ms).await?;
@@ -83,8 +85,9 @@ pub async fn run(url: &str, regress: &Path, timeout_ms: u64) -> Result<bool, Str
                     t.statements += 1;
                     let analysis = match tokio::time::timeout(timeout, reylo_engine::clients::tokio_postgres::analyze(&client, &sql, &mut AnswerCache::default())).await {
                         Ok(Ok(a)) => serde_json::to_value(&a).unwrap_or_default(),
-                        _ => {
-                            t.analysis_failed += 1;
+                        outcome => {
+                            let why = outcome.map_or_else(|_| "timed out".to_string(), |o| o.err().map_or_else(String::new, |e| e.to_string()));
+                            t.analysis_failed.push(format!("{name}.sql: {} -- {why}", super::one_line(&sql)));
                             let _ = tokio::time::timeout(timeout, client.batch_execute(&sql)).await;
                             continue;
                         }

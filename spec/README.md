@@ -30,7 +30,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 3. **A value is what the type denotes, never its encoding.** A decimal is a number, so `1.5` and `1.50` are one value; a `timestamptz` is one instant however a session prints it; a duration is its months, days and time, so `1 mon` and `30 days` are two values though Postgres finds them equal; an array is its elements, wherever its index starts. The format says nothing about how a driver or protocol encodes a value: decoding is the driver's.
 
-4. **One spelling per meaning.** A modifier goes in the type's fields, a name in `name`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds, and members of one kind in the order the database declares them (an object type before its subtypes; an `inet`'s IPv4 record before its IPv6 one).
+4. **One spelling per meaning.** A modifier goes in the type's fields, the database's name for it in `label`, nullability on the position. Defaults are omitted, and so is a bound other fields imply. Unions are flat, and list their members in the order `Type` lists the kinds, and members of one kind in the order the database declares them (an object type before its subtypes; an `inet`'s IPv4 record before its IPv6 one).
 
 5. **Values inside the format are strings** in the kind's canonical text, so a 64-bit bound or a date survives any serialization; counts (`bits`, a size, a precision or scale) are numbers. Dates and times are ISO 8601, with a sign and more than four digits where a year needs them (`-4713-11-24`, `+5874897-12-31`), which RFC 3339 cannot write. Durations are ISO 8601 durations, with a sign on each part where the parts' signs differ, as Postgres writes them (`P1M-1D`).
 
@@ -43,7 +43,7 @@ One kind per class every language has: a date, a time of day, a wall-clock date 
 
 What an implementation needs, and the format does not state on every node.
 
-What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER`, `NUMERIC` or untyped column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A STRICT column holds its declared type alone.
+What a SQLite column that is not STRICT holds, by its declared type's affinity: an `INTEGER` or `NUMERIC` column any of an integer, a float, text and bytes; a `REAL` column a float, text or bytes; a `TEXT` column text or bytes. A column with no declared type is `unknown`. A STRICT column holds its declared type alone.
 
 Which types hold infinities and NaN: Postgres's floats (both), `numeric` (NaN, and with no size the infinities), `date`, `timestamp`, `timestamptz` and, from version 17, `interval`; SQLite's `REAL` holds the infinities and stores a NaN as NULL. MySQL has none, refusing NaN and the infinities even in `FLOAT` and `DOUBLE`.
 
@@ -60,7 +60,7 @@ What a database writes inside its own JSON:
       - a `DATETIME` or `TIMESTAMP` is a string with a space and six fractional digits, and a `TIME` its text with six fractional digits (`"12:00:01.500000"`);
       - a `DECIMAL` is a number that keeps its scale, and a `YEAR` a number;
       - a comparison is `true` or `false`;
-      - an `ENUM` is its label, and a `SET` its elements joined by commas (`"a,b"`);
+      - an `ENUM` is its value as text, and a `SET` its elements joined by commas (`"a,b"`);
       - a binary value, a `BIT` among them, is `"base64:type15:…"`, the number its protocol type;
       - a spatial value is GeoJSON;
       - the last duplicate key wins.
