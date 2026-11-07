@@ -78,7 +78,7 @@ fn of_table(line: &str, name: &str) -> bool {
     let first = name_at(rest);
     let column = first.strip_prefix(name).is_some_and(|tail| tail.starts_with('.'));
     match kind {
-        "table" | "constraint" | "policy" => first == name,
+        "table" | "constraint" | "policy" | "replica" => first == name,
         "column" => column,
         "grant" | "comment" => first == name || column,
         "index" | "trigger" => after_word(rest, " ON ").is_some_and(|on| name_at(on.strip_prefix("ONLY ").unwrap_or(on)) == name),
@@ -198,6 +198,7 @@ async fn postgres(db: &mut Db) -> Result<Vec<String>, Error> {
 async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     let mut lines = Vec::new();
     let ns = PG_USER_NS;
+    let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
     let history = HISTORY_TABLE;
 
     for r in db
@@ -242,7 +243,11 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
               (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
                  from aclexplode(c.relacl) x where x.grantee <> c.relowner) as acl,
-              obj_description(c.oid, 'pg_class') as comment
+              obj_description(c.oid, 'pg_class') as comment,
+              case when c.relkind in ('r', 'p') then case c.relreplident when 'f' then 'full' when 'n' then 'nothing'
+                when 'i' then (select format('using index %I', ic.relname) from pg_index i join pg_class ic on ic.oid = i.indexrelid where i.indrelid = c.oid and i.indisreplident) end end as replica,
+              (select format('server %I', fs.srvname) || coalesce(' options (' || (select string_agg(o, ', ' order by o) from unnest(ft.ftoptions) o) || ')', '')
+                 from pg_foreign_table ft join pg_foreign_server fs on fs.oid = ft.ftserver where ft.ftrelid = c.oid) as foreign_server
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
@@ -285,7 +290,16 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         if let Some(options) = r.get("options") {
             parts.push(format!("with ({options})"));
         }
+        // A foreign table's rows are its server's, read with its options.
+        if let Some(server) = r.get("foreign_server") {
+            parts.push(server.to_string());
+        }
         lines.push(parts.join(" "));
+        // What logical replication sends of a row an update or delete changes: Supabase Realtime
+        // needs `full` to send the old row.
+        if let Some(replica) = r.get("replica") {
+            lines.push(format!("replica {name} identity {replica}"));
+        }
         if let Some(acl) = r.get("acl") {
             lines.push(format!("grant {name} {acl}"));
         }
@@ -300,7 +314,9 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
               pg_get_expr(d.adbin, d.adrelid) as def, a.attidentity as identity, a.attgenerated as generated,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
               col_description(c.oid, a.attnum) as comment,
-              exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit
+              exists (select 1 from pg_constraint nn where nn.conrelid = c.oid and nn.contype = 'n' and nn.connoinherit and nn.conkey = array[a.attnum]) as noinherit,
+              (select string_agg(distinct format('%s:%s%s', case when x.grantee = 0 then 'PUBLIC' else pg_get_userbyid(x.grantee) end, x.privilege_type, case when x.is_grantable then '*' else '' end), ',')
+                 from aclexplode(a.attacl) x where x.grantee <> c.relowner) as acl
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -329,6 +345,10 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             parts.push(format!("collate {collation}"));
         }
         lines.push(parts.join(" "));
+        // A privilege on the column alone: `grant select (email) on users to …`.
+        if let Some(acl) = r.get("acl") {
+            lines.push(format!("grant {column} {acl}"));
+        }
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {column} {}", json(comment)));
         }
@@ -381,7 +401,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         ))
         .await?
     {
-        lines.push(format!("view {} as {}", r.text("name"), r.text("def").split_whitespace().collect::<Vec<_>>().join(" ")));
+        lines.push(format!("view {} as {}", r.text("name"), one_line(r.text("def"))));
     }
 
     for r in db
@@ -416,7 +436,13 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         .rows(&format!(
             "select format('%I.%I', n.nspname, t.typname) as name, t.typtype as kind,
               (select string_agg(format('%s', to_json(e.enumlabel::text)), ', ' order by e.enumsortorder) from pg_enum e where e.enumtypid = t.oid) as labels,
-              case when t.typtype = 'd' then format_type(t.typbasetype, t.typtypmod) end as base, t.typnotnull as notnull, t.typdefault as def
+              case when t.typtype = 'd' then format_type(t.typbasetype, t.typtypmod) end as base, t.typnotnull as notnull, t.typdefault as def,
+              (select concat_ws(' ', 'subtype=' || format_type(rg.rngsubtype, null),
+                  case when rg.rngcollation <> 0 then 'collate=' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = rg.rngcollation) end,
+                  'opclass=' || (select format('%I.%I', on_.nspname, oc.opcname) from pg_opclass oc join pg_namespace on_ on on_.oid = oc.opcnamespace where oc.oid = rg.rngsubopc),
+                  case when rg.rngcanonical <> 0 then 'canonical=' || rg.rngcanonical::regproc::text end,
+                  case when rg.rngsubdiff <> 0 then 'diff=' || rg.rngsubdiff::regproc::text end)
+                from pg_range rg where rg.rngtypid = t.oid) as range
             from pg_type t join pg_namespace n on n.oid = t.typnamespace
             where t.typtype in ('e', 'd', 'r') and {ns} and {} and {}",
             not_extension("pg_type", "t"),
@@ -433,7 +459,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
                 if r.flag("notnull") { " not null" } else { "" },
                 r.get("def").map(|d| format!(" default {d}")).unwrap_or_default()
             )),
-            _ => lines.push(format!("range {name}")),
+            _ => lines.push(format!("range {name} {}", r.text("range"))),
         }
     }
 
@@ -553,14 +579,49 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
                   || coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = pr.prrelid and a.attnum = any (pr.prattrs)) || ')', ''), ', ' order by 1)
                 from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid), ''),
               concat_ws(',', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end),
-              case when p.pubviaroot then ' via root' else '' end) as line
+              case when p.pubviaroot then ' via root' else '' end) || {} as line
             from pg_publication p where {}
             union all select format('base type %I.%I input=%s output=%s receive=%s send=%s typmod_in=%s typmod_out=%s analyze=%s length=%s byval=%s align=%s storage=%s category=%s preferred=%s delimiter=%s collatable=%s default=%s',
               n.nspname, t.typname, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, t.typmodout, t.typanalyze, t.typlen, t.typbyval, t.typalign, t.typstorage, t.typcategory, t.typispreferred, t.typdelim, t.typcollation <> 0, coalesce(t.typdefault, ''))
             from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype = 'b' and t.typelem = 0 and t.typarray <> 0 and {ns} and {} and {}",
+            if version >= 150000 {
+                "coalesce(' schemas=' || (select string_agg(format('%I', pn.nspname), ', ' order by 1) from pg_publication_namespace pp join pg_namespace pn on pn.oid = pp.pnnspid where pp.pnpubid = p.oid), '')"
+            } else {
+                "''"
+            },
             not_platform("p.pubowner"),
             not_extension("pg_type", "t"),
             not_platform("t.typowner"),
+        ))
+        .await?
+    {
+        lines.push(r.text("line").to_string());
+    }
+
+    // Collations: what decides how text sorts and compares, which the server's library version
+    // aside, so that an upgrade of it is no drift.
+    for r in db
+        .rows(&format!(
+            "select format('collation %I.%I provider=%s deterministic=%s', n.nspname, c.collname, c.collprovider, c.collisdeterministic)
+              || coalesce(' collate=' || nullif(c.collcollate, ''), '') || coalesce(' ctype=' || nullif(c.collctype, ''), '')
+              || coalesce(' locale=' || coalesce(to_jsonb(c) ->> 'colllocale', to_jsonb(c) ->> 'colliculocale'), '')
+              || coalesce(' rules=' || (to_jsonb(c) ->> 'collicurules'), '') as line
+            from pg_collation c join pg_namespace n on n.oid = c.collnamespace where {ns} and {} and {}",
+            not_extension("pg_collation", "c"),
+            not_platform("c.collowner")
+        ))
+        .await?
+    {
+        lines.push(r.text("line").to_string());
+    }
+
+    // Foreign servers, with their wrapper and options.
+    for r in db
+        .rows(&format!(
+            "select format('server %I wrapper=%I', s.srvname, w.fdwname) || coalesce(' type=' || s.srvtype, '') || coalesce(' version=' || s.srvversion, '')
+              || coalesce(' options (' || (select string_agg(o, ', ' order by o) from unnest(s.srvoptions) o) || ')', '') as line
+            from pg_foreign_server s join pg_foreign_data_wrapper w on w.oid = s.srvfdw where {}",
+            not_platform("s.srvowner")
         ))
         .await?
     {
@@ -573,7 +634,6 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         ("pg_operator", "oprnamespace", "oprowner"),
         ("pg_opclass", "opcnamespace", "opcowner"),
         ("pg_opfamily", "opfnamespace", "opfowner"),
-        ("pg_collation", "collnamespace", "collowner"),
         ("pg_conversion", "connamespace", "conowner"),
         ("pg_ts_config", "cfgnamespace", "cfgowner"),
         ("pg_ts_dict", "dictnamespace", "dictowner"),
@@ -591,7 +651,6 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     kinds.push(format!("select 'pg_cast'::regclass, x.oid from pg_cast x where x.oid >= 16384 and {}", not_extension("pg_cast", "x")));
     kinds.push(format!("select 'pg_event_trigger'::regclass, x.oid from pg_event_trigger x where {} and {}", not_extension("pg_event_trigger", "x"), not_platform("x.evtowner")));
     kinds.push(format!("select 'pg_foreign_data_wrapper'::regclass, x.oid from pg_foreign_data_wrapper x where {} and {}", not_extension("pg_foreign_data_wrapper", "x"), not_platform("x.fdwowner")));
-    kinds.push(format!("select 'pg_foreign_server'::regclass, x.oid from pg_foreign_server x where {}", not_platform("x.srvowner")));
     for r in db
         .rows(&format!("select 'object ' || o.type || ' ' || o.identity || ' (definition not compared)' as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o", kinds.join(" union all ")))
         .await?
@@ -759,6 +818,51 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     {
         lines.push(format!("trigger {} {} {} on {} order={} definer={} {}", r.text("n"), r.text("timing"), r.text("ev"), r.text("t"), r.text("ord"), r.text("definer"), strip(r.text("body"))));
     }
+
+    // Events, without the times the server fills in as each is made (a recurring event's start, a
+    // one-time event's moment written as `current_timestamp + interval …`), which no two databases
+    // share.
+    for r in db
+        .rows(
+            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, on_completion as completion, status, definer, event_definition as body, event_comment as comment
+            from information_schema.events where event_schema = database()",
+        )
+        .await?
+    {
+        let every = r.get("every").map(|v| format!(" every {v} {}", r.text("unit"))).unwrap_or_default();
+        lines.push(format!("event {} {}{every} on completion {} {} definer={} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), r.text("definer"), strip(r.text("body"))));
+        if !r.text("comment").is_empty() {
+            lines.push(format!("comment event {} {}", r.text("n"), json(r.text("comment"))));
+        }
+    }
+
+    // Partitioning: each table's scheme, and each partition as a child of its table, which, like a
+    // Postgres partition, is data where it was made at run time (a month's partition a job adds).
+    let mut schemes: BTreeMap<String, String> = BTreeMap::new();
+    let mut parts: BTreeMap<(String, String), (String, Vec<String>)> = BTreeMap::new();
+    for r in db
+        .rows(&format!(
+            "select table_name as t, partition_name as p, subpartition_name as sp, partition_method as method, partition_expression as expr,
+              subpartition_method as submethod, subpartition_expression as subexpr, partition_description as bound
+            from information_schema.partitions where table_schema = database() and partition_name is not null and table_name <> '{history}'
+            order by table_name, partition_ordinal_position, subpartition_ordinal_position"
+        ))
+        .await?
+    {
+        let t = r.text("t").to_string();
+        let sub = r.get("submethod").map(|m| format!(" subpartition by {m} ({})", strip(r.text("subexpr")))).unwrap_or_default();
+        schemes.insert(t.clone(), format!("partitioning {t} by {} ({}){sub}", r.text("method"), strip(r.text("expr"))));
+        let bound = r.get("bound").map(|b| format!(" values {b}")).unwrap_or_default();
+        let entry = parts.entry((t, r.text("p").to_string())).or_insert_with(|| (bound, vec![]));
+        if let Some(sp) = r.get("sp") {
+            entry.1.push(sp.to_string());
+        }
+    }
+    lines.extend(schemes.into_values());
+    for ((t, p), (bound, subs)) in parts {
+        let subs = if subs.is_empty() { String::new() } else { format!(" subpartitions ({})", subs.join(", ")) };
+        lines.push(format!("table {t}.{p} partition of {t}{bound}{subs}"));
+    }
     Ok(lines)
 }
 
@@ -856,9 +960,32 @@ async fn sqlite(db: &mut Db) -> Result<Vec<String>, Error> {
     Ok(lines)
 }
 
+/// Postgres's SQL on one line: the whitespace between two tokens read as one space, and each token
+/// (a string, a quoted name, a dollar-quoted body) kept as written, so that `'a  b'` and `'a b'`
+/// still differ.
+fn one_line(sql: &str) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for t in tokenize(sql, Dialect::Postgres) {
+        if !out.is_empty() && sql[last..t.start].chars().any(char::is_whitespace) {
+            out.push(' ');
+        }
+        out.push_str(&sql[t.start..t.end]);
+        last = t.end;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_views_text_keeps_the_spacing_inside_its_strings() {
+        assert_eq!(one_line(" SELECT 'a  b' AS x,\n    \"y  z\"::text\n   FROM t;"), "SELECT 'a  b' AS x, \"y  z\"::text FROM t;");
+        assert_ne!(one_line("SELECT 'a  b'"), one_line("SELECT 'a b'"));
+        assert_ne!(one_line("SELECT $$a  b$$"), one_line("SELECT $$a b$$"));
+    }
 
     #[test]
     fn sqlite_text_is_canonical_whatever_its_spelling() {

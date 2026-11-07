@@ -23,7 +23,7 @@ One set of commands for all three.
 </Feature>
 <Feature icon="shield" title="No silent data loss">
 
-Nothing is dropped until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
+A migration drops nothing until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
 
 </Feature>
 <Feature icon="hash" title="Integrity checks">
@@ -140,7 +140,7 @@ Writing and repairing migrations need one, and a deploy doesn't:
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so does the role Neon gives you. Reylo keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
 - **SQLite:** in memory. There's nothing to grant.
 

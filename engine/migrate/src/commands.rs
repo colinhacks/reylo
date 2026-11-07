@@ -230,7 +230,8 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 /// once (two instances of an app, each migrating as it starts) neither decide alike nor run alike:
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
-/// file of the project's (in its cache, which only these runs open), held while the answer lives.
+/// file named after its path in this machine's temporary directory, which every checkout and
+/// worktree that opens the database shares, held while the answer lives.
 async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
@@ -251,7 +252,7 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             let canonical = std::fs::canonicalize(&path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path);
             let mut digest = crate::cache::Sha256::new();
             digest.part(canonical.as_bytes());
-            let dir = opts.cache.join("migrate").join("locks");
+            let dir = std::env::temp_dir().join("reylo-migrate-locks");
             std::fs::create_dir_all(&dir)?;
             let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(crate::cache::hex(&digest.finish()[..8])))?;
             file.lock()?;
@@ -260,21 +261,30 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
     }
 }
 
-async fn insert_row(db: &mut Db, m: &Migration, applied: bool) -> Result<(), Error> {
+/// The migration's row: applied now, or marked started; with the fingerprint of the schema it left,
+/// where the run that applied it read one.
+async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Option<&str>) -> Result<(), Error> {
     let d = db.dialect();
-    let sql = format!("insert into {HISTORY_TABLE} (name, {}, applied_at) values ({}, {}, {})", sql_col(d), db.param(1), db.param(2), if applied { now_sql(d) } else { "null".to_string() });
-    db.exec_with(&sql, &[&m.name, &m.sql]).await
+    let at = if applied { now_sql(d) } else { "null".to_string() };
+    let stamp = if fingerprint.is_some() { db.param(3) } else { "null".to_string() };
+    let sql = format!("insert into {HISTORY_TABLE} (name, {}, applied_at, fingerprint) values ({}, {}, {at}, {stamp})", sql_col(d), db.param(1), db.param(2));
+    match fingerprint {
+        Some(value) => db.exec_with(&sql, &[&m.name, &m.sql, value]).await,
+        None => db.exec_with(&sql, &[&m.name, &m.sql]).await,
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
 // Running a migration: in one transaction with its history row, or, for a file that cannot run in
-// one, alone, with a row marked started before it and finished after it.
+// one, alone, with a row marked started before it and finished after it. A row is finished with the
+// fingerprint of the schema the migration left, in the same transaction or the same update, so no
+// run cut off between the two leaves an applied row with nothing to compare.
 
 pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), Error> {
     let d = db.dialect();
     if runs_alone(&m.sql, d) {
         if record {
-            insert_row(db, m, false).await?;
+            insert_row(db, m, false, None).await?;
         }
         // A failed `create index concurrently` (or `reindex concurrently`) leaves an invalid index
         // behind; the ones this statement left are dropped, so the file can run again as written.
@@ -297,7 +307,8 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
             return Err(e);
         }
         if record {
-            db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {} where name = {}", now_sql(d), db.param(1)), &[&m.name]).await?;
+            let value = fingerprint(db).await?;
+            db.exec_with(&format!("update {HISTORY_TABLE} set applied_at = {}, fingerprint = {} where name = {}", now_sql(d), db.param(1), db.param(2)), &[&value, &m.name]).await?;
         }
         return Ok(());
     }
@@ -317,7 +328,8 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
             }
         }
         if record {
-            insert_row(db, m, true).await?;
+            let value = fingerprint(db).await?;
+            insert_row(db, m, true, Some(&value)).await?;
         }
         db.exec("commit").await
     }
@@ -1084,13 +1096,9 @@ async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Err
     for m in &plan.pending {
         let at = std::time::Instant::now();
         match run(db, m, true).await {
-            Ok(()) => {
-                rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", at.elapsed().as_millis()))));
-                // On its own row as it finishes, so that a run cut off after it, or a migration
-                // after it that fails and leaves part of itself, is seen by the next run.
-                let value = fingerprint(db).await?;
-                set_fingerprint(db, &m.name, &value).await?;
-            }
+            // Its row holds the fingerprint it left, so that a run cut off after it, or a migration
+            // after it that fails and leaves part of itself, is seen by the next run.
+            Ok(()) => rows.row(log, &paint("green", "✓"), &m.name, &format!("applied {}", paint("dim", &format!("· {} ms", at.elapsed().as_millis())))),
             Err(e) => {
                 rows.row(log, &paint("bold red", "✗"), &m.name, failed_row(&m.sql, d));
                 log(&format!("      {e}"));
@@ -1417,11 +1425,13 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     let recorded = &order[..n];
     let before = before_rows;
     ensure_history(db).await?;
+    // The schema it records, which running nothing leaves as it is, on the last row, written with it.
+    let value = fingerprint(db).await?;
     db.exec(if d == Dialect::Mysql { "start transaction" } else { "begin" }).await?;
     let written = async {
         db.exec(&format!("delete from {HISTORY_TABLE}")).await?;
-        for f in recorded {
-            insert_row(db, f, true).await?;
+        for (k, f) in recorded.iter().enumerate() {
+            insert_row(db, f, true, (k + 1 == recorded.len()).then_some(value.as_str())).await?;
         }
         db.exec("commit").await
     }
@@ -1429,10 +1439,6 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     if let Err(e) = written {
         let _ = db.exec("rollback").await;
         return Err(e);
-    }
-    if let Some(last) = read_history(db).await?.iter().rfind(|r| r.applied) {
-        let value = fingerprint(db).await?;
-        set_fingerprint(db, &last.name, &value).await?;
     }
     for f in recorded {
         let ran = before.iter().any(|r| r.applied && r.name == f.name && same_statements(&r.sql, &f.sql, d));
@@ -2520,15 +2526,19 @@ async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, files: &[M
     Ok(())
 }
 
-/// The lock of the main branch, as git has it, where git can tell: `origin/HEAD`'s copy of it.
+/// The lock of the main branch, as git has it, where git can tell: the copy on the remote's default
+/// branch (`origin/HEAD`), else on its `main` or `master`; `origin` first, then any other remote,
+/// since a clone may name its remote otherwise or never have set its HEAD.
 fn main_lock(opts: &Options) -> Option<lock::Lock> {
     let dir = opts.lock.parent()?;
     let name = opts.lock.file_name()?.to_string_lossy().into_owned();
-    let out = std::process::Command::new("git").args(["show", &format!("origin/HEAD:./{name}")]).current_dir(dir).output().ok()?;
-    if !out.status.success() {
-        return None;
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(dir).output().ok().filter(|o| o.status.success());
+    let mut remotes = vec!["origin".to_string()];
+    if let Some(out) = git(&["remote"]) {
+        remotes.extend(String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|r| !r.is_empty() && *r != "origin").map(String::from));
     }
-    match lock::of_text(&String::from_utf8_lossy(&out.stdout)) {
+    let text = remotes.iter().flat_map(|r| ["HEAD", "main", "master"].map(|b| format!("{r}/{b}:./{name}"))).find_map(|spec| git(&["show", &spec]))?;
+    match lock::of_text(&String::from_utf8_lossy(&text.stdout)) {
         lock::State::Lock(l) => Some(l),
         _ => None,
     }
@@ -2795,7 +2805,7 @@ async fn dev_in_shadows(shadows: &mut Shadows<'_>, db: &mut Db, opts: &Options, 
         ensure_history(db).await?;
     }
     for m in &records {
-        insert_row(db, m, true).await?;
+        insert_row(db, m, true, None).await?;
         rows.row(log, &paint("yellow", "!"), &m.name, "recorded, not run: already in place");
     }
     for m in &pending {

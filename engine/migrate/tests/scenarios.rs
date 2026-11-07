@@ -372,6 +372,7 @@ for_each_dialect!(
     db_push_runs_or_records_a_migration_cut_off,
     db_push_rewinds_only_what_the_rewound_migrations_made,
     create_guesses_no_rename_a_table_that_stays_could_explain,
+    every_applied_row_holds_the_fingerprint_it_left,
 );
 
 async fn applies_pending_migrations_once(mut p: P) {
@@ -687,6 +688,19 @@ async fn history_push_follows_a_renamed_migration(mut p: P) {
     assert_eq!(p.history_push().await, 1);
     assert_has!(p.output(), r"This database's schema isn't what any run of the migrations makes; the closest is through 20261027130000_mine\.sql[\s\S]*stray[\s\S]*Nothing was changed\.");
     assert_eq!(p.history().await, ["20261027100000_a.sql", "20261027130000_mine.sql"]);
+}
+
+async fn every_applied_row_holds_the_fingerprint_it_left(mut p: P) {
+    let (int, text) = (p.t.int, p.t.text);
+    p.schema(&format!("create table a (id {int}, note {text});"));
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    p.file("20261027110000_note.sql", &format!("alter table a add column note {text};"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    // Written with its row, so that no run cut off between the two leaves a row with nothing to compare.
+    let rows = p.rows("select name, fingerprint from __reylo_migrations order by name").await;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|r| r.get("fingerprint").is_some()), "{rows:?}");
+    assert_ne!(rows[0].get("fingerprint"), rows[1].get("fingerprint"), "each holds the schema it left");
 }
 
 async fn a_failed_migration_leaves_nothing(mut p: P) {
@@ -2066,9 +2080,10 @@ mod on_mysql {
     on!(Mysql, a_comment_made_by_hand_stops_nothing, a_comment_in_schema_sql_is_written);
 }
 on!(Sqlite, a_rebuild_keeps_every_row_where_foreign_keys_are_on, a_rebuild_keeps_tables_that_reference_each_other);
-on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_prod);
+on!(Mysql, a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy);
 on!(Mysql, a_table_comment_is_no_clause_of_its_table);
 on!(Mysql, a_reserved_word_stays_quoted);
+on!(Mysql, a_partition_added_at_run_time_is_data);
 on!(
     Postgres,
     a_narrowing_type_change_fails_rather_than_cuts,
@@ -2661,7 +2676,26 @@ mod adversarial {
         assert_eq!(p.rows("select * from a.orders").await.len(), 3);
     }
 
-    pub async fn a_failure_that_leaves_part_of_itself_is_seen_by_the_next_prod(mut p: P) {
+    pub async fn a_partition_added_at_run_time_is_data(mut p: P) {
+        let table = "create table sales (id int not null, y int not null, primary key (id, y)) partition by range (y) (partition p2025 values less than (2026), partition p2026 values less than (2027));";
+        p.schema(table);
+        p.file("20261027100000_sales.sql", table);
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        p.output();
+        // A job adds next year's partition: data, as a Postgres partition made at run time is.
+        p.exec("alter table sales add partition (partition p2027 values less than (2028))").await;
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_has!(p.output(), "Up to date");
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        p.output();
+        // A declared one dropped by hand is drift, which, as for any partition, only a replay can
+        // tell from one made at run time: the dry run finds it.
+        p.exec("alter table sales drop partition p2026").await;
+        assert_eq!(p.dry_run().await, 1);
+        assert_has!(p.output(), r"✗ This database is missing something its migrations made\n\n    alter table sales partition by range");
+    }
+
+    pub async fn a_failure_that_leaves_part_of_itself_is_seen_by_the_next_deploy(mut p: P) {
         p.file("20261027100000_t.sql", "create table t (id int primary key);");
         p.file("20261027110000_proc.sql", "create procedure p() begin create table t2 (id int); select * from nope; end;");
         p.file("20261027120000_call.sql", "call p();");

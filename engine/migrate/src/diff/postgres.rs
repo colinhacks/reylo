@@ -182,6 +182,13 @@ impl Ids {
     }
 }
 
+/// Whether the object (`alias` of the catalog `table`) is one the server made with another and
+/// drops with it, which no plan makes or drops itself: a range type's constructor functions, its
+/// multirange's and the cast between them.
+fn made_with(table: &str, alias: &str) -> String {
+    format!("exists (select 1 from pg_depend dep where dep.classid = '{table}'::regclass and dep.objid = {alias}.oid and dep.deptype = 'i')")
+}
+
 fn oid(r: &Row, name: &str) -> u32 {
     r.text(name).parse().unwrap_or(0)
 }
@@ -301,6 +308,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = t.typcollation) end as collation,
               case when t.typtype = 'r' then (select concat_ws(', ', 'subtype = ' || format_type(r.rngsubtype, null),
                   case when r.rngsubopc <> 0 and not (select o.opcdefault from pg_opclass o where o.oid = r.rngsubopc) then 'subtype_opclass = ' || (select format('%I.%I', on_.nspname, o.opcname) from pg_opclass o join pg_namespace on_ on on_.oid = o.opcnamespace where o.oid = r.rngsubopc) end,
+                  case when r.rngcollation <> 0 and r.rngcollation <> (select st.typcollation from pg_type st where st.oid = r.rngsubtype) then 'collation = ' || (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = r.rngcollation) end,
                   case when r.rngcanonical <> 0 then 'canonical = ' || format('%s', r.rngcanonical::regproc) end,
                   case when r.rngsubdiff <> 0 then 'subtype_diff = ' || format('%s', r.rngsubdiff::regproc) end) from pg_range r where r.rngtypid = t.oid) end as range
             from pg_type t join pg_namespace n on n.oid = t.typnamespace
@@ -439,7 +447,10 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
               case when c.relkind = 'p' then pg_get_partkeydef(c.oid) end as partkey,
               case when c.relkind in ('v', 'm') then pg_get_viewdef(c.oid, false) end as view,
               {} as acl,
-              obj_description(c.oid, 'pg_class') as comment
+              obj_description(c.oid, 'pg_class') as comment,
+              case when c.relkind in ('r', 'p') then case c.relreplident when 'f' then 'full' when 'n' then 'nothing'
+                when 'i' then (select format('using index %I', ic.relname) from pg_index i join pg_class ic on ic.oid = i.indexrelid where i.indrelid = c.oid and i.indisreplident) end end as replica,
+              (select i.indexrelid from pg_index i where i.indrelid = c.oid and i.indisreplident) as replica_index
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
@@ -520,7 +531,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             "select a.attrelid as rel, a.attnum as num, format('%I', a.attname) as name, format_type(a.atttypid, a.atttypmod) as type, a.attnotnull as notnull,
               pg_get_expr(d.adbin, d.adrelid) as def, d.oid as defoid, a.attidentity as identity, a.attgenerated as generated, a.attislocal as local,
               case when a.attcollation <> t.typcollation then (select format('%I.%I', cn.nspname, co.collname) from pg_collation co join pg_namespace cn on cn.oid = co.collnamespace where co.oid = a.attcollation) end as collation,
-              col_description(a.attrelid, a.attnum) as comment, {} as noinherit
+              col_description(a.attrelid, a.attnum) as comment, {} as noinherit, {} as acl
             from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
             left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
             where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
@@ -528,6 +539,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             // Postgres 18 records a column's NOT NULL as a constraint, which may be kept from the
             // table's children (NO INHERIT).
             if version >= 180000 { "coalesce((select co.connoinherit from pg_constraint co where co.conrelid = a.attrelid and co.contype = 'n' and co.conkey = array[a.attnum]), false)" } else { "false" },
+            acl("a.attacl", 'c', "c.relowner"),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
         ))
@@ -563,6 +575,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                     change: Change::Alter { blocks: false },
                     ..Object::default()
                 });
+            }
+            if kind != "c" {
+                column_grants(&mut s, c.text("acl"), &name, c.text("name"), &col_id);
             }
             if matches!(kind, "v" | "m") {
                 continue;
@@ -705,6 +720,26 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         });
     }
 
+    // A table's replica identity where it isn't the default (its primary key): what logical
+    // replication sends of a changed row, which Supabase Realtime needs `full` for. One that names
+    // an index is made after it.
+    for r in &rels {
+        let Some(how) = r.get("replica") else { continue };
+        let name = r.text("name");
+        let deps = r.get("replica_index").and_then(|i| i.parse::<u32>().ok()).and_then(|i| ids.class.get(&i).cloned()).into_iter().collect();
+        s.add(Object {
+            id: format!("replica identity {name}"),
+            kind: Some(Kind::Rls),
+            owner: Some(relations[&oid(r, "oid")].0.clone()),
+            def: how.to_string(),
+            create: vec![format!("alter table {name} replica identity {how}")],
+            drop: vec![format!("alter table {name} replica identity default")],
+            deps,
+            change: Change::Alter { blocks: false },
+            ..Object::default()
+        });
+    }
+
     for r in db
         .rows(&format!(
             "select p.oid, p.prokind as kind, {} as acl, format('%s', p.oid::regprocedure) as ident, format('%I.%I', n.nspname, p.proname) as qname, pg_get_function_result(p.oid) as result, pg_get_function_arguments(p.oid) as args,
@@ -716,10 +751,11 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                   case when a.aggsortop <> 0 then 'sortop = ' || format('%s', a.aggsortop::regoperator) end)
                 from pg_aggregate a where a.aggfnoid = p.oid) end as agg
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
-            where p.prokind in ('f', 'p', 'w', 'a') and {ns} and {} and {}",
+            where p.prokind in ('f', 'p', 'w', 'a') and {ns} and {} and {} and not {}",
             acl("p.proacl", 'f', "p.proowner"),
             not_extension("pg_proc", "p"),
-            not_platform("p.proowner")
+            not_platform("p.proowner"),
+            made_with("pg_proc", "p")
         ))
         .await?
     {
@@ -1039,8 +1075,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         .rows(&format!(
             "select c.oid, format_type(c.castsource, null) as src, format_type(c.casttarget, null) as tgt, case when c.castfunc <> 0 then format('%s', c.castfunc::regprocedure) end as func,
               c.castcontext as context, c.castmethod as method
-            from pg_cast c where c.oid >= 16384 and {}",
-            not_extension("pg_cast", "c")
+            from pg_cast c where c.oid >= 16384 and {} and not {}",
+            not_extension("pg_cast", "c"),
+            made_with("pg_cast", "c")
         ))
         .await?
     {
@@ -1454,6 +1491,25 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
             def: grantable.to_string(),
             create: vec![revoke(grantee, privilege)],
             drop: vec![grant(grantee, privilege, *grantable)],
+            ..Object::default()
+        });
+    }
+}
+
+/// One object per privilege a column grants of its own (`grant select (email) on table users to
+/// anon`), which a column has none of by default. `privileges` is `acl`'s, `table` the column's
+/// table and `id` the column's.
+fn column_grants(s: &mut Schema, privileges: &str, table: &str, column: &str, id: &str) {
+    let lists: Vec<Option<Vec<serde_json::Value>>> = serde_json::from_str(privileges).unwrap_or_default();
+    for g in lists.first().cloned().flatten().unwrap_or_default() {
+        let (grantee, privilege, grantable) = (g["grantee"].as_str().unwrap_or_default(), g["privilege"].as_str().unwrap_or_default().to_lowercase(), g["grantable"].as_bool().unwrap_or(false));
+        s.add(Object {
+            id: format!("grant {privilege} ({column}) on {table} to {grantee}"),
+            kind: Some(Kind::Grant),
+            owner: Some(id.to_string()),
+            def: grantable.to_string(),
+            create: vec![format!("grant {privilege} ({column}) on table {table} to {grantee}{}", if grantable { " with grant option" } else { "" })],
+            drop: vec![format!("revoke {privilege} ({column}) on table {table} from {grantee}")],
             ..Object::default()
         });
     }
