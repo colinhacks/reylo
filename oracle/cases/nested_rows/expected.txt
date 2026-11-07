@@ -6,7 +6,7 @@ a_derived_json.sql: many () -> { id: int8, comments: (record{ id: int8, doc: jso
 a_derived_ordered.sql: many () -> { id: int8, comments: (record{ id: int8, body: text? })[] } key (id)
 a_derived_outer.sql: many () -> { id: int8, comments: (record{ id: int8, reply: text? })[] } key (id)
 a_derived_param.sql: many (min: int8) -> { id: int8, comments: (record{ id: int8, big: int8 })[] } key (id)
-b_function.sql: many () -> { id: int8, comments: record?[] } key (id)
+b_function.sql: many () -> { id: int8, comments: (record{ id: int8, body: text? })[] } key (id)
 b_table.sql: many () -> { id: int8, comments: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, amount: numeric, at: timestamptz, d: date?, raw: bytea?, m: public.mood('ok' | 'sad, "very"')?, p: public.pos(1..)?, j: jsonb?, tags: text?[]?, a: public.addr{ street: text?, zip: int4? }?, f: float8?, iv: interval?, ok: bool? })[] } key (id)
 b_values.sql: one () -> { vals: (record{ n: int4, s: text? })[] }
 b_view.sql: many () -> { id: int8, comments: (public.comment_view{ id: int8?, post_id: int8?, body: text? })[] } key (id)
