@@ -1709,7 +1709,13 @@ impl ResolveCtx<'_> {
                     }
                     other => other,
                 },
-                Some((true, None)) => self.node(&Shape::Row { probe: *row }, path, unresolved),
+                // Only a `record` takes the names its columns go by; a named type whose fields the
+                // registry cannot give has names the build does not know.
+                Some((true, None)) if self.whole_value(value).is_some_and(|col| col.type_oid == oid::RECORD) => self.node(&Shape::Row { probe: *row }, path, unresolved),
+                Some((true, None)) => {
+                    unresolved.push(display_path(path));
+                    (Type::unknown(), false)
+                }
                 Some((false, _)) => self.node(value, path, unresolved),
                 None => {
                     unresolved.push(display_path(path));
@@ -2609,6 +2615,23 @@ mod tests {
         assert_eq!(r.ty.short(), "json { id: unknown?, title: unknown? }");
         // The keys are still the SQL's own, and the object is still never null.
         assert!(r.non_null);
+    }
+
+    #[test]
+    fn a_renamed_row_takes_its_types_names_or_none() {
+        let registry = TypeRegistry::with_builtins();
+        let outcome = |columns: Vec<DescribedColumn>| Some(Outcome { columns, outer_join: false, present: None, built: Vec::new() });
+        let shape = Shape::RowOrValue { row: 0, value: Box::new(Shape::Nullable(Box::new(Shape::Column { probe: 1, index: 0 }))) };
+        let row = || outcome(vec![column("a", oid::INT8, "int8", false), column("name", oid::TEXT, "text", false)]);
+        // A `record` takes the names its columns go by.
+        let record = resolve(&shape, &[row(), outcome(vec![column("coalesce", oid::RECORD, "record", true)])], &registry, &[]);
+        assert_eq!(record.ty.short(), "json { a: int8, name: text }");
+        // A named row type whose fields the registry cannot give is no row whose names the build
+        // knows: the alias's names are never a named type's.
+        let mut registry = registry;
+        registry.insert_rows(&[vec![serde_json::json!(987_654), serde_json::json!("teams"), serde_json::json!("c")]]);
+        let named = resolve(&shape, &[row(), outcome(vec![column("coalesce", 987_654, "teams", true)])], &registry, &[]);
+        assert!(!named.unresolved.is_empty() && !named.ty.short().contains("a: int8"), "{}", named.ty.short());
     }
 
     #[test]
