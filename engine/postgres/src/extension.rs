@@ -84,6 +84,8 @@ struct Remote {
     #[serde(default)]
     unique: Vec<Vec<String>>,
     #[serde(default)]
+    order: Vec<reylo_engine_core::types::OrderColumn>,
+    #[serde(default)]
     ordered: bool,
     #[serde(default)]
     diagnostics: Vec<Diagnostic>,
@@ -116,6 +118,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         cardinality_reason: remote.cardinality_reason,
         key: remote.key,
         unique: remote.unique,
+        order: remote.order,
         ordered: remote.ordered,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
         style: lexed.style,

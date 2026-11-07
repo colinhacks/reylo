@@ -1061,6 +1061,26 @@
       ],
       "unevaluatedProperties": false
     },
+    "OrderColumn": {
+      "description": "A column rows are sorted on.",
+      "type": "object",
+      "properties": {
+        "column": {
+          "description": "The column's name.",
+          "type": "string"
+        },
+        "desc": {
+          "description": "Sorted from the highest value down.",
+          "const": true
+        },
+        "nulls": {
+          "description": "Where NULLs sort, which a database's default decides unless the statement says.",
+          "enum": ["first", "last"]
+        }
+      },
+      "required": ["column", "nulls"],
+      "additionalProperties": false
+    },
     "RowsType": {
       "description": "Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name.",
       "type": "object",
@@ -1098,6 +1118,13 @@
             "items": {
               "type": "string"
             }
+          }
+        },
+        "order": {
+          "description": "The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrderColumn"
           }
         }
       },

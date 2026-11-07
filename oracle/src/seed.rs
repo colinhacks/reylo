@@ -655,6 +655,9 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                     if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
                         problems.push(format!("{file}: {why} with ({})", values.join(", ")));
                     }
+                    if let Some(why) = out_of_order(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
+                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                    }
                     match &probe {
                         Some((None, at)) => {
                             if let Some(why) = ties(&rows, at) {
@@ -716,6 +719,47 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
     rows.windows(2).enumerate().find_map(|(k, pair)| {
         let (a, b) = (keys(pair[0]), keys(pair[1]));
         (a == b).then(|| format!("ordered, and rows {} and {} tie on every sort key, as ({})", k + 1, k + 2, a.iter().map(|v| v.as_deref().map_or_else(|| "NULL".to_string(), |v| format!("'{v}'"))).collect::<Vec<_>>().join(", ")))
+    })
+}
+
+/// Why the rows of one run contradict the columns the analysis says they are sorted on, if they do:
+/// a NULL on the wrong side of a value, or two numbers the wrong way round. Each pair of rows is
+/// read column by column while they tie. Text and the other kinds sort by rules the server keeps,
+/// so a pair that differs in one is taken as sorted, as is a pair of numbers with no decimal text,
+/// such as `NaN`.
+fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let order = analysis["order"].as_array().filter(|o| !o.is_empty())?;
+    let keys: Vec<(usize, &str, bool, bool, bool)> = order
+        .iter()
+        .filter_map(|o| {
+            let name = o["column"].as_str()?;
+            let at = columns.iter().position(|c| c["name"].as_str() == Some(name))?;
+            let number = matches!(columns[at]["type"]["kind"].as_str(), Some("integer" | "decimal" | "float"));
+            Some((at, name, o["desc"].as_bool() == Some(true), o["nulls"].as_str() == Some("first"), number))
+        })
+        .collect();
+    if keys.len() != order.len() {
+        return Some("order names a column the statement does not return".into());
+    }
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    rows.windows(2).enumerate().find_map(|(k, pair)| {
+        for &(at, name, desc, nulls_first, number) in &keys {
+            let (a, b) = (pair[0].get(at).copied().flatten(), pair[1].get(at).copied().flatten());
+            match (a, b) {
+                (None, None) => continue,
+                (None, Some(_)) if nulls_first => return None,
+                (Some(_), None) if !nulls_first => return None,
+                (None, Some(_)) | (Some(_), None) => return Some(format!("sorted on {name} with NULLs {}, and rows {} and {} hold ({a:?}, {b:?})", if nulls_first { "first" } else { "last" }, k + 1, k + 2)),
+                (Some(a), Some(b)) => match decimal_cmp(a, b).filter(|_| number) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    Some(ordering) if (ordering == std::cmp::Ordering::Less) != desc => return None,
+                    Some(_) => return Some(format!("sorted on {name}{}, and rows {} and {} hold ({a}, {b})", if desc { " descending" } else { "" }, k + 1, k + 2)),
+                    None if a == b => continue,
+                    None => return None,
+                },
+            }
+        }
+        None
     })
 }
 
