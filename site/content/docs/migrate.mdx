@@ -313,7 +313,9 @@ $ reylo migration history push --url $PROD_URL
 Where your tables hold a change no migration lists, someone made it by hand. Keep it by writing it into `schema.sql` and a migration, then record it on the database that has it:
 
 ```terminal
-$ reylo db introspect --url $PROD_URL > reylo/schema.sql
+# Print what the database has, and copy the change into reylo/schema.sql
+$ reylo db introspect --url $PROD_URL
+
 $ reylo migration create users_email
 $ reylo migrate dev
 $ reylo migration history push --url $PROD_URL
@@ -456,10 +458,23 @@ With `--watch`, it pushes again each time you save. It needs your database at it
 
 Prints your database's schema as SQL, as `reylo migration init` writes it.
 
-It writes no file, so save it with a redirect. It's the database's own dump, so your comments and layout go, and git keeps them:
+It writes no file. It's the database's own dump, in its own layout:
 
 ```terminal
-$ reylo db introspect > reylo/schema.sql
+$ reylo db introspect
+CREATE TABLE public.users (
+    id integer NOT NULL,
+    email text NOT NULL
+);
+
+ALTER TABLE ONLY public.users
+    ADD CONSTRAINT users_pkey PRIMARY KEY (id);
+```
+
+To save it over `schema.sql`, write it to another file first. A redirect empties its file before the command runs, so a failed run would leave `schema.sql` empty:
+
+```terminal
+$ reylo db introspect > schema.new.sql && mv schema.new.sql reylo/schema.sql
 ```
 
 ### `reylo db wipe`
