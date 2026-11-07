@@ -107,3 +107,5 @@ case "$target" in
     ;;
 esac
 ls -l "$bin"
+
+# Touching this file runs binaries.yml on the pull request, for its macOS binary; dropped before review.
