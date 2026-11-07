@@ -3994,6 +3994,20 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_word_that_names_no_column_is_refused_as_the_drivers_refuse_it() {
+        // A schema that holds one replays, as SQLite reads it from a file.
+        let schema = vec!["create table t (id integer primary key, v text default \"none\" check (v <> \"bad\"))".to_string()];
+        let a = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        for sql in ["select \"hello\"", "select \"hello\" from t", "select id from t where v = \"x\""] {
+            let messages: Vec<String> = a(sql).diagnostics.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(messages, [format!("no such column: \"{}\" - should this be a string literal in single-quotes?", if sql.contains("hello") { "hello" } else { "x" })], "{sql}");
+        }
+        for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
+            assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
+        }
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
