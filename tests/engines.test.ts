@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { anyEngine, engine, MissingEngine, Unreachable } from "../src/engine.ts";
 import { nativeBinary, PLATFORM_PACKAGES, platformPackage } from "../src/native.ts";
 import { resolveProject } from "../src/project.ts";
+import { DRIVERS, PG, postgresDatabase } from "./helpers.ts";
 
 // The engine is one executable for every database, `reylo engine <database>` (src/native.ts),
 // which reylo finds from REYLO_ENGINE_PATH, its platform's package, or a checkout's cargo build,
@@ -105,4 +106,30 @@ test("a closed connection's child has ended, its requests refused as a lost conn
   const again = await e.open(":memory:");
   assert.deepEqual((await again.analyze("select 2 as y")).columns.map((col) => col.name), ["y"]);
   await again.close();
+});
+
+// A host that runs the engine's analysis itself, over the connection the engine holds, answers a
+// describe the server refuses with the server's code and the character its message points at: the
+// engine reads a SQL function's body by where the server says a name in it is no column.
+const livePostgres = !PG ? "REYLO_TEST_PG names no server" : !existsSync(join(DRIVERS, "postgres")) ? "lab/drivers is not installed" : false;
+
+test("an analysis run over the engine's own connection reads a SQL function's body, by where the server's refusal points", { skip: livePostgres }, async () => {
+  const own = await postgresDatabase(
+    "reylo_engine_bodies",
+    "create table comments (id int8 primary key, post_id int8 not null, body text not null); create function one_comment(x int8) returns table (id int8, body text) language sql stable as $$ select id, body from comments where id = x $$;",
+  );
+  const e = await engine("postgres");
+  const c = await e.open(own.url);
+  try {
+    await assert.rejects(c.describe("select id, body from comments where id = x"), (err: Error & { code?: string; position?: number }) => {
+      assert.deepEqual([err.message, err.code, err.position], ['column "x" does not exist', "42703", 42]);
+      return true;
+    });
+    const analysis = await e.analyze("select id, body from one_comment(:x::int8)", "postgres", { describe: (sql) => c.describe(sql), query: (sql, params) => c.query(sql, params) });
+    assert.equal(analysis.cardinality, "at_most_one");
+    assert.deepEqual(analysis.columns.map((col) => [col.name, col.nullable ?? false]), [["id", false], ["body", false]]);
+  } finally {
+    await c.close();
+    await own.drop();
+  }
 });
