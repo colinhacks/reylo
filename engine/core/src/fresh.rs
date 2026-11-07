@@ -1,6 +1,6 @@
 //! What a statement's analysis relied on, for a deployed query to check against the database it
-//! runs on: the schema freshness check (wiki/structured-params.md §6): any
-//! change fails.
+//! runs on: the schema freshness check, in `src/fresh.ts`. A change to a column warns, and one to a
+//! default an insert copied fails the call.
 //!
 //! For each table the statement reads or writes, the facts of each column it names (of every
 //! column, after a `*`): the type as the catalog writes it, whether it is not null, and whether it

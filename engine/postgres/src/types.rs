@@ -134,7 +134,7 @@ impl CheckFacts {
         if low.zip(high).is_some_and(|(l, h)| l > h || (l == h && exclusive)) {
             return ty;
         }
-        let Type { kind, name, comment } = ty;
+        let Type { kind, label, comment } = ty;
         let kind = match kind {
             Kind::Integer(mut i) => {
                 let lowest = if i.unsigned { 0 } else { -(1i128 << (i.bits.min(127) - 1)) };
@@ -142,7 +142,7 @@ impl CheckFacts {
                 let whole = |bound: &Option<(String, bool)>, step: i128| bound.as_ref().and_then(|(v, exclusive)| Some(v.parse::<i128>().ok()? + if *exclusive { step } else { 0 }));
                 let (min, max) = (whole(&self.min, 1), whole(&self.max, -1));
                 if min.unwrap_or(lowest) > max.unwrap_or(highest) {
-                    return Type { kind: Kind::Integer(i), name, comment };
+                    return Type { kind: Kind::Integer(i), label, comment };
                 }
                 if let Some(min) = min.filter(|min| *min > lowest) {
                     i.bounds.min = Some(min.to_string());
@@ -170,7 +170,7 @@ impl CheckFacts {
             }
             kind => kind,
         };
-        Type { kind, name, comment }
+        Type { kind, label, comment }
     }
 
     /// Each bound on `bounds`, in place of what that side held. `reach` is how far the type's own

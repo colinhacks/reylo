@@ -1003,7 +1003,15 @@ test("a Durable Object's ctx.storage.sql: the catalog facts are read again throu
   const built = (email: string[]) =>
     defineQuery<{}, unknown, "many", "sqlite">({ dialect: "sqlite", sql: "select id, email from users", params: [], fresh: { query, rows: [email, ["users", "id", "INTEGER", "0", "1"]], inserts: [] }, source: "users.sql" });
   assert.deepEqual(built(["users", "email", "TEXT", "1", "0"]).runSync(sql), []);
-  assert.throws(() => built(["users", "email", "INTEGER", "1", "0"]).runSync(sql), /^Error: The database changed after users\.sql was built: users\.email was INTEGER not null and is now TEXT not null/);
+  const said: string[] = [];
+  const warn = console.warn;
+  console.warn = (message: string) => void said.push(message);
+  try {
+    assert.deepEqual(built(["users", "email", "INTEGER", "1", "0"]).runSync(sql), []);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(said, ["reylo: users.email has changed since users.sql was built (it was INTEGER not null, and is now TEXT not null), so its types may be out of date until the next build."]);
   // run takes the same synchronous path: the check and the statement run before it returns.
   const ran: string[] = [];
   const counted = { ...sql, exec: (text: string, ...bindings: unknown[]) => (ran.push(text), sql.exec(text, ...bindings)), databaseSize: 4096 };

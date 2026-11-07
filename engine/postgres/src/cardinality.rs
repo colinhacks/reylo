@@ -110,6 +110,9 @@ pub struct Catalog {
     /// whose equality is not identity: `'a' = 'A'` there, and a function of the column can tell
     /// the two apart.
     pub nondeterministic: std::collections::HashMap<String, HashSet<String>>,
+    /// Whether the database holds no nondeterministic collation, as the trust check reports it, so
+    /// no value of a comparison can bring one ([`From::keeps_collation`]).
+    pub deterministic_only: bool,
     /// The relations, as named in `unique_keys`, that hold exactly one row whatever is written: a
     /// sequence (`SELECT last_value FROM my_sequence`).
     pub single_row: HashSet<String>,
@@ -462,7 +465,8 @@ pub const UNIQUE_KEYS_QUERY: &str = concat!(
             AND d.refobjsubid OPERATOR(pg_catalog.>) 0 AND NOT o.collisdeterministic)) \
       ELSE i.indcollation[k] OPERATOR(pg_catalog.=) a.attcollation OR ( \
         coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) i.indcollation[k]), true) \
-        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END)"
+        AND coalesce((SELECT o.collisdeterministic FROM pg_catalog.pg_collation o WHERE o.oid OPERATOR(pg_catalog.=) a.attcollation), true)) END) \
+    ORDER BY x.name, i.indisprimary DESC, i.indexrelid"
 );
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: every column of each, `(the
@@ -1251,8 +1255,10 @@ impl<'a> From<'a> {
             return Some(placed);
         }
         match c.fields.iter().filter_map(field_name).collect::<Vec<_>>().as_slice() {
-            // A table's own columns are placed above; a name it lacks is an enclosing query's.
-            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
+            // A table's own columns are placed above; a name it lacks is an enclosing query's. The
+            // item's own name may be no column of it but the whole row, which `name.name` would
+            // read as a function of that row: neither is placed.
+            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) && self.items[0].alias != *column => Some((0, column.to_string())),
             _ => None,
         }
     }
@@ -1386,7 +1392,95 @@ impl<'a> From<'a> {
                     read.iter().all(|(j, read)| *j != i && (done[*j] || read.as_deref().is_some_and(|c| self.pinned_by_value(*j, c, catalog))))
                 })
                 && equality_bounds(catalog, relation, column, value, &|n| self.node_type(n, catalog))
+                && self.keeps_collation(relation, column, value, catalog)
         })
+    }
+
+    /// Whether `column = value` compares under the column's own collation, or one as strict. A
+    /// value's collation decides a comparison with a column of the default one (`u.code = t.c`,
+    /// with `t.c` under a case-insensitive collation, matches 'a' and 'A', which a unique index
+    /// under the default tells apart), and one of its children's reaches it through a call, an
+    /// operator or a cast (`lower(t.c)`). A key under a nondeterministic collation holds to that
+    /// one: another implicit collation beside it is an error, and an explicit one is refused
+    /// ([`equality_bounds`]). A comparison of a type with no collation uses none.
+    fn keeps_collation(&self, relation: &str, column: &str, value: &protobuf::Node, catalog: &Catalog) -> bool {
+        if catalog.deterministic_only {
+            return true;
+        }
+        let Some(column_type) = catalog.column_types.get(relation).and_then(|types| types.get(column)) else { return true };
+        if UNCOLLATED_TYPES.contains(column_type) || catalog.nondeterministic.get(relation).is_some_and(|n| n.contains(column)) {
+            return true;
+        }
+        serde_json::to_value(value).is_ok_and(|tree| !self.may_bring_collation(&tree, catalog))
+    }
+
+    /// Whether an expression, as the parse tree's JSON writes it, may carry a nondeterministic
+    /// collation: it reads a column that holds one or that the proof cannot place, a field of a
+    /// row (whose type's fields the catalog does not give), a subquery, a cast to a type that may
+    /// be a domain under one, or a call that may return such a domain.
+    fn may_bring_collation(&self, v: &Value, catalog: &Catalog) -> bool {
+        let names = |list: Option<&Value>| -> Vec<String> { list.and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.pointer("/node/String/sval")?.as_str().map(String::from)).collect() };
+        // A name that is the built-in's, as `infer::builtin_name` reads one.
+        let built_in = |names: Vec<String>| match names.as_slice() {
+            [name] => Some(name.clone()),
+            [schema, name] if schema == "pg_catalog" => Some(name.clone()),
+            _ => None,
+        };
+        match v {
+            Value::Array(items) => items.iter().any(|item| self.may_bring_collation(item, catalog)),
+            Value::Object(map) => map.iter().any(|(key, child)| match key.as_str() {
+                "ColumnRef" => !self.column_is_deterministic(child, catalog),
+                "SubLink" | "SelectStmt" | "AIndirection" => true,
+                "TypeCast" => {
+                    let named = built_in(names(child.pointer("/type_name/names"))).is_some_and(|name| CAST_TYPES.iter().any(|(c, _)| *c == name) && catalog.cast_targets.as_ref().is_none_or(|t| t.contains(&name)));
+                    !named || child.get("arg").is_some_and(|arg| self.may_bring_collation(arg, catalog))
+                }
+                "FuncCall" => {
+                    let known = built_in(names(child.get("funcname"))).is_some_and(|name| infer::postgres_function_names().contains(&name.as_str()) && !catalog.user_operators.contains(&name));
+                    !known || self.may_bring_collation(child, catalog)
+                }
+                "AExpr" => {
+                    let known = built_in(names(child.get("name"))).is_some_and(|name| (infer::POSTGRES_OPERATORS.contains(&name.as_str()) || infer::POSTGRES_STRICT_OPERATORS.contains(&name.as_str())) && !catalog.user_operators.contains(&name));
+                    !known || self.may_bring_collation(child, catalog)
+                }
+                _ => self.may_bring_collation(child, catalog),
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a column reference, as the parse tree's JSON writes it, reads a column certainly
+    /// under no nondeterministic collation: of an item here, or of an enclosing query's relation.
+    fn column_is_deterministic(&self, c: &Value, catalog: &Catalog) -> bool {
+        let Some(fields) = c.get("fields").and_then(Value::as_array) else { return false };
+        let parts: Vec<&str> = fields.iter().filter_map(|f| f.pointer("/node/String/sval")?.as_str()).collect();
+        if parts.len() != fields.len() {
+            return false;
+        }
+        match parts.as_slice() {
+            [q, column] => match self.items.iter().position(|it| it.alias == *q) {
+                Some(i) => self.item_column_is_deterministic(i, column, catalog),
+                None => catalog.outer_aliases.get(*q).is_some_and(|relation| relation_column_is_deterministic(catalog, relation, column)),
+            },
+            [column] if !self.merged(column) => {
+                let mut having = (0..self.items.len()).filter(|i| self.has_column(*i, column, catalog));
+                match (having.next(), having.next()) {
+                    (Some(i), None) => self.item_column_is_deterministic(i, column, catalog),
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// [`From::column_is_deterministic`] of column `column` of item `i`: a table's or a view's, as
+    /// the catalog gives it, or what the statement of a subquery or a WITH query selects for it.
+    fn item_column_is_deterministic(&self, i: usize, column: &str, catalog: &Catalog) -> bool {
+        let item = &self.items[i];
+        match &item.source {
+            Source::Relation(rv) => !item.renamed && relation_column_is_deterministic(catalog, &catalog_name(rv), column),
+            _ => self.through(i, catalog, |body, scope, columns| inner_name(column, body, columns).is_some_and(|inner| output_is_deterministic(body, &inner, scope))).unwrap_or(false),
+        }
     }
 
     /// Whether the WHERE equates this column of item `j` to a value that reads no column, so every
@@ -1411,6 +1505,7 @@ impl<'a> From<'a> {
                     self.own(side, &item.alias).as_deref() == Some(column)
                         && self.reads(value, catalog).is_some_and(|read| read.is_empty())
                         && equality_bounds(catalog, &relation, column, value, &|n| self.node_type(n, catalog))
+                        && self.keeps_collation(&relation, column, value, catalog)
                 })
         })
     }
@@ -2174,12 +2269,12 @@ fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialec
     names.len() == others.len() && left_type.is_some() && left_type == ty(right, other)
 }
 
-/// The result key of one rewritten SELECT: output columns, by name, no two of its rows agree on
-/// all of, a NULL counting as equal to another NULL. `columns` are the statement's output columns
-/// in order, each with whether it may be NULL. Of the keys proven, the one of fewest columns, the
-/// earliest columns breaking a tie, in output order; `None` where none is proven, or where a key's
-/// column shares its name with another output column, or is one `identifies` marks false: of a
-/// type two of whose values may read alike.
+/// The result keys of one rewritten SELECT: each set of output columns, by name, no two of its rows
+/// agree on all of, a NULL counting as equal to another NULL. `columns` are the statement's output
+/// columns in order, each with whether it may be NULL. Each key in output order, none inside
+/// another, a table's primary key before its other keys; none where none is proven, or where a
+/// key's column shares its name with another output column, or is one `identifies` marks false: of
+/// a type two of whose values may read alike.
 ///
 /// - Without ALL, UNION, INTERSECT and EXCEPT return distinct rows: the whole output is a key.
 ///   INTERSECT and EXCEPT, with ALL or without, return only rows of their left side, which keep its
@@ -2196,25 +2291,34 @@ fn unconverted(left: &SelectStmt, right: &SelectStmt, at: usize, dialect: Dialec
 /// - A LIMIT or an OFFSET only removes rows, and keeps every key.
 ///
 /// None at all for a VALUES list, or a set-returning call at this level, which repeats a row.
-pub fn result_key(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Option<Vec<String>> {
+pub fn result_keys(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], identifies: &[bool]) -> Vec<Vec<String>> {
     crate::stack::run(|| {
-        let s = one_select(sql, Dialect::Postgres).ok()?;
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
         let keys = select_keys(&s, trust, &with_fields(&s, catalog), columns);
         // A column whose name another output column also has is not one a row can be read by.
         let named = |i: usize| columns.get(i).filter(|(name, _)| identifies.get(i) == Some(&true) && columns.iter().filter(|(other, _)| other == name).count() == 1).map(|(name, _)| name.clone());
-        keys.into_iter()
+        let readable: Vec<Vec<usize>> = keys
+            .into_iter()
             .filter_map(|mut key| {
                 key.sort_unstable();
                 key.dedup();
-                let names = key.iter().map(|&i| named(i)).collect::<Option<Vec<String>>>()?;
-                Some((key, names))
+                (!key.is_empty() && key.iter().all(|&i| named(i).is_some())).then_some(key)
             })
-            .min_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)))
-            .map(|(_, names)| names)
+            .collect();
+        // A key another key lies inside says nothing more, and one repeated says it once. The rest
+        // keep the order they were found in, a table's primary key before its other keys.
+        let mut out: Vec<Vec<usize>> = Vec::new();
+        for key in &readable {
+            let holds = |other: &Vec<usize>| other.len() < key.len() && other.iter().all(|i| key.contains(i));
+            if !readable.iter().any(holds) && !out.contains(key) {
+                out.push(key.clone());
+            }
+        }
+        out.into_iter().map(|key| key.into_iter().filter_map(named).collect()).collect()
     })
 }
 
-/// The keys of a SELECT's rows as [`result_key`] reads them, each a list of output positions.
+/// The keys of a SELECT's rows as [`result_keys`] reads them, each a list of output positions.
 fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)]) -> Vec<Vec<usize>> {
     if s.limit_count.is_some() || s.limit_offset.is_some() {
         return select_keys(&unlimited(s), trust, catalog, columns);
@@ -2252,14 +2356,7 @@ fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(Str
         keys.extend(s.group_clause.iter().map(|g| clause_column(s, &from, g, KeyClause::GroupBy, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
         return keys;
     }
-    if !s.distinct_clause.is_empty() {
-        if s.distinct_clause.iter().all(|d| d.node.is_none()) {
-            keys.push(whole);
-        } else {
-            keys.extend(s.distinct_clause.iter().map(|d| clause_column(s, &from, d, KeyClause::DistinctOn, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
-        }
-    }
-    // The keys of the FROM's rows, which DISTINCT only thins out.
+    // The keys of the FROM's rows, which DISTINCT only thins out, a table's primary key first.
     let plain = SelectStmt { distinct_clause: Vec::new(), ..s.clone() };
     let at = |name: &str| {
         let mut found = columns.iter().enumerate().filter(|(_, (n, _))| n == name).map(|(i, _)| i);
@@ -2281,6 +2378,13 @@ fn select_keys(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(Str
                 .min_by_key(|key| key.len())
         });
         keys.extend(each.collect::<Option<Vec<Vec<usize>>>>().map(|parts| parts.concat()));
+    }
+    if !s.distinct_clause.is_empty() {
+        if s.distinct_clause.iter().all(|d| d.node.is_none()) {
+            keys.push(whole);
+        } else {
+            keys.extend(s.distinct_clause.iter().map(|d| clause_column(s, &from, d, KeyClause::DistinctOn, &positions, catalog, columns)).collect::<Option<Vec<usize>>>());
+        }
     }
     keys
 }
@@ -2432,7 +2536,7 @@ fn clause_column(s: &SelectStmt, from: &From, e: &protobuf::Node, clause: KeyCla
 ///
 /// The sort keys must hold every column of a unique key of the rows being sorted:
 ///
-/// - a result key ([`result_key`]'s rules), each column an output column the ORDER BY names, by
+/// - a result key ([`result_keys`]'s rules), each column an output column the ORDER BY names, by
 ///   position, by its output name or as the FROM's column the select list holds;
 /// - a unique key of a FROM item's rows (a table's, or one a view, a WITH query or a subquery keeps
 ///   from its statement), every column of it a table's `NOT NULL` column passed through unchanged,
@@ -2489,6 +2593,80 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
     }
     let Some(from) = from else { return false };
     from_ordered(s, &from, &sorted_inputs, trust, catalog)
+}
+
+/// The columns of one rewritten SELECT's result its ORDER BY sorts on, in order, with each one's
+/// direction and where its NULLs sort: ascending and last unless the key says otherwise, and
+/// descending first. The list ends at the first key that is no output column of a name of its own,
+/// since a later key sorts only among rows that tie on that one: an expression, a column the
+/// result doesn't hold, a `USING` operator or a `COLLATE`, under which the values aren't sorted
+/// as the column's own collation sorts them. A later key on a column already listed sorts nothing.
+/// A column of a type with a collation is listed only where it is a table's column, passed through
+/// unchanged ([`From::base`]), or a set operation's: a set-returning SQL function the planner inlines
+/// sorts a column it passes through under its body's collation, not the one it declares. A name
+/// spelled with a character beyond ASCII ends the list too, since a server whose encoding is not
+/// UTF-8 truncates and folds it otherwise than the parser here does.
+/// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
+/// for is returned with its new values, in the place its old ones sorted to, so such a statement
+/// has no order to state.
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
+    use crate::types::{NullsOrder, OrderColumn};
+    use protobuf::{SortByDir, SortByNulls};
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        if !s.locking_clause.is_empty() {
+            return Vec::new();
+        }
+        let catalog = with_fields(&s, catalog);
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
+        let positions = target_positions(&s);
+        let mut order: Vec<OrderColumn> = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
+            let Some(e) = by.node.as_deref() else { break };
+            if !by.use_op.is_empty() || by.sortby_dir == SortByDir::SortbyUsing as i32 {
+                break;
+            }
+            let (Some(at), input) = sort_target(&s, from.as_ref(), e, &positions, &catalog, columns) else { break };
+            let Some((name, _)) = columns.get(at) else { break };
+            let target = positions.iter().position(|p| *p == Some(at)).and_then(|t| s.target_list.get(t));
+            if !ascii_names(e) || target.is_some_and(|t| !ascii_names(t)) {
+                break;
+            }
+            if plain.get(at) != Some(&true) && !set_operation {
+                let traced = from.as_ref().zip(input.as_ref()).and_then(|(f, (i, column))| f.base(*i, column, Dialect::Postgres, trust, &catalog));
+                if traced.is_none() {
+                    break;
+                }
+            }
+            if columns.iter().filter(|(other, _)| other == name).count() != 1 {
+                break;
+            }
+            if order.iter().any(|o| o.column == *name) {
+                continue;
+            }
+            let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
+            let first = if by.sortby_nulls == SortByNulls::SortbyNullsFirst as i32 {
+                true
+            } else if by.sortby_nulls == SortByNulls::SortbyNullsLast as i32 {
+                false
+            } else {
+                desc
+            };
+            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+        }
+        order
+    })
+}
+
+/// Whether every name a column reference or a select-list entry spells is ASCII.
+fn ascii_names(node: &protobuf::Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => c.fields.iter().filter_map(field_name).all(|f| f.is_ascii()),
+        Some(NodeEnum::ResTarget(r)) => r.name.is_ascii() && r.val.as_deref().is_none_or(ascii_names),
+        _ => true,
+    }
 }
 
 /// What one sort key of a SELECT names: the output column, by position, and the FROM's column, by
@@ -2867,6 +3045,39 @@ fn view_select<T>(definition: &str, f: impl FnOnce(&SelectStmt) -> T) -> Option<
         NodeEnum::SelectStmt(select) => Some(f(select)),
         _ => None,
     }
+}
+
+/// Whether output column `name` of a SELECT certainly carries no nondeterministic collation.
+fn output_is_deterministic(s: &SelectStmt, name: &str, catalog: &Catalog) -> bool {
+    if s.larg.is_some() || s.rarg.is_some() || !s.values_lists.is_empty() {
+        return false;
+    }
+    let from = From::read(s, catalog);
+    if from.refused.is_some() {
+        return false;
+    }
+    s.target_list.iter().any(|target| {
+        let Some(NodeEnum::ResTarget(r)) = target.node.as_ref() else { return false };
+        let Some(value) = r.val.as_deref() else { return false };
+        if let Some(NodeEnum::ColumnRef(c)) = value.node.as_ref() {
+            if c.fields.last().is_some_and(|f| matches!(f.node, Some(NodeEnum::AStar(_)))) {
+                // `*` over one item, or `q.*`, keeps that item's column of the name.
+                let i = match c.fields.len() {
+                    1 if from.items.len() == 1 && !from.natural && from.using.is_empty() => Some(0),
+                    2 => from.items.iter().position(|it| Some(it.alias.as_str()) == c.fields.first().and_then(field_name)),
+                    _ => None,
+                };
+                return i.is_some_and(|i| from.item_column_is_deterministic(i, name, catalog));
+            }
+        }
+        let out = if r.name.is_empty() { implicit_name(value).map(|(n, _)| n) } else { Some(r.name.clone()) };
+        out.as_deref() == Some(name) && !mentions(value, "CollateClause") && serde_json::to_value(value).is_ok_and(|tree| !from.may_bring_collation(&tree, catalog))
+    })
+}
+
+/// Whether a table's or a view's column certainly carries no nondeterministic collation.
+fn relation_column_is_deterministic(catalog: &Catalog, relation: &str, column: &str) -> bool {
+    catalog.column_types.get(relation).is_some_and(|types| types.contains_key(column)) && !catalog.nondeterministic.get(relation).is_some_and(|n| n.contains(column))
 }
 
 /// The table column behind output column `name` of a SELECT, passed through unchanged.
@@ -3315,6 +3526,10 @@ fn compatible(column: u32, value: u32) -> bool {
 /// computed from one is computed from the other. Not `numeric` (1 = 1.0, of another scale), not
 /// the floats (0 = -0), and not a string under a nondeterministic collation ('a' = 'A').
 const IDENTITY_TYPES: &[u32] = &[oid::INT2, oid::INT4, oid::INT8, oid::BOOL, oid::UUID, oid::DATE, oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::TEXT, oid::VARCHAR, oid::NAME];
+
+/// Column types that have no collation, so that whatever a comparison's other side carries, the
+/// comparison is the type's own.
+const UNCOLLATED_TYPES: &[u32] = &[oid::BOOL, oid::BYTEA, oid::INT2, oid::INT4, oid::INT8, oid::FLOAT4, oid::FLOAT8, oid::NUMERIC, oid::UUID, oid::DATE, oid::TIME, oid::TIMESTAMP, oid::TIMESTAMPTZ, oid::INTERVAL, oid::JSONB];
 
 /// Whether this column's equality is identity ([`IDENTITY_TYPES`]), as far as the catalog says.
 fn identity(catalog: &Catalog, relation: &str, column: &str) -> bool {
@@ -3838,6 +4053,49 @@ mod tests {
         }
         assert_eq!(at("select distinct u.email from pv_posts p join pv_users u on u.id = ascii(p.code) where p.code = 'a'"), Ok(()));
         assert_eq!(at("select distinct u.email from pv_posts p join pv_users u on u.id = p.id * 97 where p.id = 1"), Ok(()));
+    }
+
+    #[test]
+    fn a_value_that_may_carry_a_nondeterministic_collation_pins_no_key_under_another() {
+        let mut c = catalog();
+        c.unique_keys.insert("ck_u".into(), vec![vec!["code".into()], vec!["id".into()]]);
+        c.unique_keys.insert("ck_t".into(), vec![vec!["id".into()], vec!["ci".into()]]);
+        let columns = |cols: &[(&str, u32)]| cols.iter().map(|(n, t)| (n.to_string(), *t)).collect();
+        c.column_types.insert("ck_u".into(), columns(&[("id", oid::INT4), ("code", oid::TEXT)]));
+        c.column_types.insert("ck_t".into(), columns(&[("id", oid::INT4), ("ci", oid::TEXT), ("plain", oid::TEXT)]));
+        c.nondeterministic.insert("ck_t".into(), ["ci".to_string()].into_iter().collect());
+        c.functions.extend(["lower".to_string(), "my_value".to_string(), "length".to_string()]);
+        let at = |sql: &str, c: &Catalog| at_most_one(sql, Dialect::Postgres, &Trust::default(), c);
+        let carried = [
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.ci",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = lower(t.ci)",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.ci || ''",
+            "select id from ck_u where code = (select plain from ck_t where id = 1)",
+            "select u.id from (select ci from ck_t where id = 1) t, ck_u u where u.code = t.ci",
+            "select u.id from (select 'a' collate ci as c) t, ck_u u where u.code = t.c",
+            "select id from ck_u where code = $1::ci_text",
+            "select id from ck_u where code = my_value()",
+        ];
+        for sql in carried {
+            refused(at(sql, &c), "", sql);
+        }
+        for sql in [
+            "select id from ck_u where code = $1",
+            "select id from ck_u where code = 'a'",
+            "select id from ck_u where code = $1::text",
+            "select id from ck_u where code = lower($1::text)",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.code = t.plain",
+            "select u.id from (select plain from ck_t where id = 1) t, ck_u u where u.code = t.plain",
+            // A key under the collation itself holds to its equality, and an integer has none.
+            "select t.id from ck_t t, ck_u u where u.id = 1 and t.ci = u.code",
+            "select u.id from ck_t t, ck_u u where t.id = 1 and u.id = length(t.ci)",
+        ] {
+            assert_eq!(at(sql, &c), Ok(()), "{sql}");
+        }
+        // A database that holds no nondeterministic collation has no value to carry one.
+        c.nondeterministic.clear();
+        c.deterministic_only = true;
+        assert_eq!(at("select id from ck_u where code = my_value()", &c), Ok(()));
     }
 
     fn at_most(sql: &str) -> Result<(), String> {
@@ -4494,10 +4752,11 @@ mod tests {
         }
     }
 
-    /// The result key of `sql` over `joined()`, its output columns named and nullable as given.
+    /// The result key of `sql` over `joined()` of fewest columns, its output columns named and
+    /// nullable as given.
     fn key_of(sql: &str, columns: &[(&str, bool)]) -> Option<Vec<String>> {
         let columns: Vec<(String, bool)> = columns.iter().map(|(n, nullable)| (n.to_string(), *nullable)).collect();
-        result_key(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()])
+        result_keys(sql, &Trust::default(), &joined(), &columns, &vec![true; columns.len()]).into_iter().min_by_key(Vec::len)
     }
 
     #[test]

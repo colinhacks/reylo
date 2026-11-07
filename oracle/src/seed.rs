@@ -655,6 +655,9 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                     if let Some(why) = key_repeats(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
                         problems.push(format!("{file}: {why} with ({})", values.join(", ")));
                     }
+                    if let Some(why) = out_of_order(analysis, &columns, rows.iter().map(|row| (0..columns.len()).map(|i| row.try_get(i).ok().flatten()).collect())) {
+                        problems.push(format!("{file}: {why} with ({})", values.join(", ")));
+                    }
                     match &probe {
                         Some((None, at)) => {
                             if let Some(why) = ties(&rows, at) {
@@ -692,7 +695,7 @@ pub async fn check(client: &Client, statements: &[(String, String, Value)], time
                                 continue;
                             }
                             // The delimiter the catalog gives the array type, by its name without its schema.
-                            let delimiter = col["type"]["name"].as_str().map(|n| n.rsplit('.').next().unwrap_or(n).trim_matches('"')).and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
+                            let delimiter = col["type"]["label"].as_str().map(|n| n.rsplit('.').next().unwrap_or(n).trim_matches('"')).and_then(|t| delimiters.get(t)).copied().unwrap_or(',');
                             if let Some(why) = contradiction(&col["type"], value.unwrap_or_default(), col["nullable"].as_bool().unwrap_or(false), delimiter) {
                                 problems.push(format!("{file}: column {name} {why} with ({})", values.join(", ")));
                             }
@@ -719,11 +722,56 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
     })
 }
 
+/// Why the rows of one run contradict the columns the analysis says they are sorted on, if they do:
+/// a NULL on the wrong side of a value, or two numbers the wrong way round. Each pair of rows is
+/// read column by column while they tie. Text and the other kinds sort by rules the server keeps,
+/// so a pair that differs in one is taken as sorted, as is a pair of numbers with no decimal text,
+/// such as `NaN`.
+fn out_of_order<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
+    let order = analysis["order"].as_array().filter(|o| !o.is_empty())?;
+    let keys: Vec<(usize, &str, bool, bool, bool)> = order
+        .iter()
+        .filter_map(|o| {
+            let name = o["column"].as_str()?;
+            let at = columns.iter().position(|c| c["name"].as_str() == Some(name))?;
+            let number = matches!(columns[at]["type"]["kind"].as_str(), Some("integer" | "decimal" | "float"));
+            Some((at, name, o["desc"].as_bool() == Some(true), o["nulls"].as_str() == Some("first"), number))
+        })
+        .collect();
+    if keys.len() != order.len() {
+        return Some("order names a column the statement does not return".into());
+    }
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    rows.windows(2).enumerate().find_map(|(k, pair)| {
+        for &(at, name, desc, nulls_first, number) in &keys {
+            let (a, b) = (pair[0].get(at).copied().flatten(), pair[1].get(at).copied().flatten());
+            match (a, b) {
+                (None, None) => continue,
+                (None, Some(_)) if nulls_first => return None,
+                (Some(_), None) if !nulls_first => return None,
+                (None, Some(_)) | (Some(_), None) => return Some(format!("sorted on {name} with NULLs {}, and rows {} and {} hold ({a:?}, {b:?})", if nulls_first { "first" } else { "last" }, k + 1, k + 2)),
+                (Some(a), Some(b)) => match decimal_cmp(a, b).filter(|_| number) {
+                    Some(std::cmp::Ordering::Equal) => continue,
+                    Some(ordering) if (ordering == std::cmp::Ordering::Less) != desc => return None,
+                    Some(_) => return Some(format!("sorted on {name}{}, and rows {} and {} hold ({a}, {b})", if desc { " descending" } else { "" }, k + 1, k + 2)),
+                    None if a == b => continue,
+                    None => return None,
+                },
+            }
+        }
+        None
+    })
+}
+
 /// Why the rows of one run contradict the analysis's result key, if they do: two rows agree on
 /// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
 /// text, in order, `None` for NULL.
 fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
-    let key = analysis["key"].as_array()?;
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
+}
+
+fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let names: Vec<&str> = key.iter().map(|k| k.as_str().unwrap_or("?")).collect();
     let Some(at) = names.iter().map(|name| columns.iter().position(|c| c["name"].as_str() == Some(name))).collect::<Option<Vec<usize>>>() else {
         return Some(format!("key ({}) names a column the statement does not return", names.join(", ")));
@@ -760,7 +808,7 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
         // A type modifier's length, in code points: `varchar(20)` at most, `char(5)` exactly, as
         // it pads what it stores.
         Kind::Text(TextType { size: Some(size), ill_formed: None, .. }) if size.unit.is_none() => {
-            let size = if ty.name.as_deref() == Some("bpchar") { size.clone() } else { Size { exact: None, ..size.clone() } };
+            let size = if ty.label.as_deref() == Some("bpchar") { size.clone() } else { Size { exact: None, ..size.clone() } };
             length_contradiction(&size, text.chars().count() as u64, "code points")
         }
         // Postgres prints a float's or a `numeric`'s non-finite values so.
@@ -775,8 +823,8 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
         Kind::Instant(instant) => fraction_contradiction(&instant.tick, text),
         Kind::Duration(duration) => interval_contradiction(duration, text),
         // A bit string's length is its bits (`bit(7)`, `varbit(5)`), and a vector's its elements.
-        Kind::Array(ArrayType { size: Some(size), .. }) if matches!(ty.name.as_deref(), Some("bit" | "varbit")) => length_contradiction(size, text.chars().count() as u64, "bits"),
-        Kind::Array(ArrayType { size: Some(size), .. }) if ty.name.as_deref().is_some_and(|n| n.ends_with("vector") || n.ends_with("halfvec")) => {
+        Kind::Array(ArrayType { size: Some(size), .. }) if matches!(ty.label.as_deref(), Some("bit" | "varbit")) => length_contradiction(size, text.chars().count() as u64, "bits"),
+        Kind::Array(ArrayType { size: Some(size), .. }) if ty.label.as_deref().is_some_and(|n| n.ends_with("vector") || n.ends_with("halfvec")) => {
             let inner = text.trim_start_matches('[').trim_end_matches(']').trim();
             length_contradiction(size, if inner.is_empty() { 0 } else { inner.split(',').count() as u64 }, "elements")
         }
@@ -998,7 +1046,7 @@ fn interval_contradiction(duration: &DurationType, text: &str) -> Option<String>
 /// Whether a type structured as an array is one in Postgres's text too: a type written otherwise
 /// (`bit`, `vector`) is not one here.
 fn postgres_array(ty: &Type) -> bool {
-    ty.name.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
+    ty.label.as_deref().is_none_or(|n| n.rsplit('.').next().unwrap_or(n).starts_with('_'))
 }
 
 /// Why a Postgres array's text nests deeper or shallower than its type, if it does: a type fixes
@@ -1093,7 +1141,9 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]")) {
+                // An `any_depth` array holds arrays of itself, where its element is no array itself.
+                let nested = array.any_depth && item.is_array() && !matches!(array.element.ty.kind, Kind::Array(_) | Kind::Json(_));
+                if let Some(why) = json_contradiction(if nested { ty } else { &array.element.ty }, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }
@@ -1107,7 +1157,7 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
 /// structures it: a bit string, pgvector's vectors, the geometric types and the network types
 /// (the spec's facts on what Postgres writes inside its own JSON).
 fn written_as_text(ty: &Type) -> bool {
-    let name = ty.name.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
+    let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     matches!(name, "bit" | "varbit" | "vector" | "halfvec" | "sparsevec" | "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle" | "inet" | "cidr")
 }
 
@@ -1118,7 +1168,7 @@ fn written_as_text(ty: &Type) -> bool {
 /// (a structured one written as its text among them). JSON, and a type the engine does not know,
 /// admit any value.
 fn json_admits(ty: &Type, json: &Value) -> bool {
-    let name = ty.name.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
+    let name = ty.label.as_deref().map(|n| n.rsplit('.').next().unwrap_or(n)).unwrap_or("");
     match &ty.kind {
         _ if written_as_text(ty) => json.is_string(),
         Kind::Boolean => json.is_boolean(),
@@ -1329,7 +1379,7 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
                                 }
                                 // A column declared 64 bits wide, and what passes one through,
                                 // is a BigInt to the run time, which only an INTEGER is.
-                                Some(value) if col["type"]["kind"] == "integer" && col["type"]["name"] == "BIGINT" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(_)) => {
+                                Some(value) if col["type"]["kind"] == "integer" && col["type"]["label"] == "BIGINT" && !matches!(value, rusqlite::types::Value::Null | rusqlite::types::Value::Integer(_)) => {
                                     found.push(format!("{file}: column {name} typed int8 holds {value:?} with ({shown})"));
                                 }
                                 // JSON a constructor built is text that parses as that JSON,
@@ -1443,7 +1493,7 @@ fn is_built(ty: &Value) -> bool {
 /// type for it stands for.
 fn sqlite_declared(ty: &Value) -> String {
     let Ok(ty) = serde_json::from_value::<Type>(ty.clone()) else { return String::new() };
-    match (&ty.kind, ty.name.as_deref()) {
+    match (&ty.kind, ty.label.as_deref()) {
         (Kind::Integer(_), Some("BIGINT")) => "int8",
         (Kind::Integer(_), _) => "integer",
         (Kind::Float(_), _) => "real",
@@ -1735,11 +1785,11 @@ mod tests {
 
     #[test]
     fn a_postgres_array_nests_as_deep_as_its_type_says() {
-        let int4 = json!({"kind": "integer", "bits": 32, "name": "int4"});
-        let column = json!({"kind": "array", "any_depth": true, "name": "_int4", "element": {"nullable": true, "type": int4}});
-        let flat = json!({"kind": "array", "name": "_int4", "element": {"nullable": true, "type": int4}});
-        let rows = json!({"kind": "array", "name": "_int4", "element": {"type": {"kind": "array", "name": "_int4", "element": {"type": int4}}}});
-        let stacked = json!({"kind": "array", "name": "_int4", "element": {"type": column}});
+        let int4 = json!({"kind": "integer", "bits": 32, "label": "int4"});
+        let column = json!({"kind": "array", "any_depth": true, "label": "_int4", "element": {"nullable": true, "type": int4}});
+        let flat = json!({"kind": "array", "label": "_int4", "element": {"nullable": true, "type": int4}});
+        let rows = json!({"kind": "array", "label": "_int4", "element": {"type": {"kind": "array", "label": "_int4", "element": {"type": int4}}}});
+        let stacked = json!({"kind": "array", "label": "_int4", "element": {"type": column}});
         // A column's array holds any depth; one a statement builds holds the depth it shows.
         assert_eq!(contradiction(&column, "{{1,2},{3,4}}", false, ','), None);
         assert_eq!(contradiction(&flat, "{1,NULL}", false, ','), None);
@@ -1754,17 +1804,17 @@ mod tests {
         assert_eq!(contradiction(&stacked, "{{1,NULL}}", false, ','), None);
         // A vector is an array in the type but no braces in Postgres's text, so it adds no dimension.
         let float4 = json!({"kind": "float", "exponent_bits": 8, "mantissa_bits": 23});
-        let vector = json!({"kind": "array", "name": "public.vector", "element": {"type": float4}});
-        let vectors = json!({"kind": "array", "name": "public._vector", "element": {"type": {"kind": "array", "name": "public._vector", "element": {"type": vector}}}});
+        let vector = json!({"kind": "array", "label": "public.vector", "element": {"type": float4}});
+        let vectors = json!({"kind": "array", "label": "public._vector", "element": {"type": {"kind": "array", "label": "public._vector", "element": {"type": vector}}}});
         assert_eq!(contradiction(&vectors, r#"{{"[1,2]"}}"#, false, ','), None);
         assert_eq!(contradiction(&vectors, r#"{"[1,2]"}"#, false, ',').as_deref(), Some("typed with 2 dimensions holds 1"));
     }
 
     #[test]
     fn a_postgres_document_is_of_the_kind_its_type_says() {
-        let int8 = json!({"kind": "integer", "bits": 64, "name": "int8"});
+        let int8 = json!({"kind": "integer", "bits": 64, "label": "int8"});
         let list = json!({"kind": "array", "element": {"type": int8}});
-        let document = |content: &Value| json!({"kind": "json", "name": "jsonb", "content": {"type": content}});
+        let document = |content: &Value| json!({"kind": "json", "label": "jsonb", "content": {"type": content}});
         let object = json!({"kind": "record", "fields": [{"name": "ids", "type": list.clone()}]});
         assert_eq!(contradiction(&document(&list), "[1, 2]", false, ','), None);
         assert_eq!(contradiction(&document(&object), r#"{"ids": []}"#, false, ','), None);
@@ -1778,7 +1828,7 @@ mod tests {
         // Every key is there, and a leaf is the form Postgres writes its type in.
         assert_eq!(contradiction(&document(&object), "{}", false, ',').as_deref(), Some("has no key .ids"));
         assert_eq!(contradiction(&document(&list), r#"["1"]"#, false, ',').as_deref(), Some(r#"holds "1" at [0], typed as int8"#));
-        let bits: Type = serde_json::from_value(json!({"kind": "array", "name": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
+        let bits: Type = serde_json::from_value(json!({"kind": "array", "label": "bit", "element": {"type": {"kind": "boolean"}}})).unwrap();
         assert_eq!(json_contradiction(&bits, &json!("101"), ".b"), None);
         assert!(json_contradiction(&bits, &json!([true]), ".b").is_some());
     }
@@ -1867,7 +1917,7 @@ mod tests {
 
     #[test]
     fn a_null_element_is_found_between_the_types_own_delimiters() {
-        let points = json!({"kind": "array", "name": "public._geometry", "element": {"type": {"kind": "geometry", "name": "public.geometry"}}});
+        let points = json!({"kind": "array", "label": "public._geometry", "element": {"type": {"kind": "geometry", "label": "public.geometry"}}});
         let point = "0101000000000000000000F03F0000000000000040";
         // An array of geometries separates its elements with a colon, of boxes with a semicolon.
         assert_eq!(contradiction(&points, &format!("{{{point}:NULL}}"), false, ':').as_deref(), Some("typed with non-null elements holds a NULL element"));

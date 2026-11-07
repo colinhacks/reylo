@@ -13,7 +13,7 @@
 use crate::database::Database;
 use crate::dialect::Dialect;
 use crate::lex;
-use crate::types::{self, Cardinality, DialectVersion, StatementDescriptor, StatementKind, Type};
+use crate::types::{self, Cardinality, DialectVersion, RowsType, StatementDescriptor, StatementKind, Type};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -220,6 +220,13 @@ pub struct Analysis {
     /// `maybeOne`, which says as much, and where no key is proven, which is always sound.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<Vec<String>>,
+    /// Every set of output columns no two rows agree on all of, as `key` is, none inside another,
+    /// and a table's primary key first where the result holds it. Empty where none is proven.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unique: Vec<Vec<String>>,
+    /// The columns of the result its ORDER BY sorts on, as far as its keys are such columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<types::OrderColumn>,
     /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
     /// every sort key, so the order is the same on every run. Only for a result that can hold more
     /// than one row, as `key` is.
@@ -270,8 +277,7 @@ impl Analysis {
             kind: self.kind,
             comment: self.comment.clone(),
             params: self.params.iter().map(Param::descriptor).collect(),
-            columns: self.columns.iter().map(Column::descriptor).collect(),
-            cardinality: self.cardinality,
+            result: RowsType { cardinality: self.cardinality, columns: self.columns.iter().map(Column::descriptor).collect(), unique: self.unique.clone(), order: self.order.clone() }.into(),
             diagnostics: self.diagnostics.iter().map(|d| {
                 let start = utf16_offset(sql, d.start);
                 types::Diagnostic { message: d.message.clone(), start, end: utf16_offset(sql, d.start + d.length).max(start), code: d.server_code.clone() }

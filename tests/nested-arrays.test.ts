@@ -10,8 +10,8 @@ import type { Analysis } from "../src/engine.ts";
 const analysis = {
   params: [],
   columns: [
-    { name: "cells", nullable: false, type: { kind: "array", any_depth: true, name: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, name: "int4" } } } },
-    { name: "stacked", nullable: false, type: { kind: "array", name: "_int4", element: { type: { kind: "array", any_depth: true, name: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, name: "int4" } } } } } },
+    { name: "cells", nullable: false, type: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } },
+    { name: "stacked", nullable: false, type: { kind: "array", label: "_int4", element: { type: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } } },
   ],
   cardinality: "many",
   kind: "select",
@@ -39,4 +39,12 @@ test("reylo play types an array column as the type check does under allow_nested
 test("a query's output schema lets an array nest under allow_nested_arrays", () => {
   const items = (a: Analysis) => (querySchemas(a, "postgres").output as { items: { properties: { cells: { items: unknown } } } }).items.properties.cells.items;
   assert.deepEqual(items(analysisWithNestedArrays(analysis)), { anyOf: [items(analysis), { type: "array" }] });
+});
+
+test("an array column inside JSON a statement builds is typed at any depth under allow_nested_arrays", () => {
+  const built = { ...analysis, columns: [{ name: "doc", nullable: false, type: { kind: "json", label: "jsonb", content: { type: { kind: "record", fields: [{ name: "cells", type: analysis.columns[0]!.type }] } } } }] } as unknown as Analysis;
+  assert.match(moduleTypes("", built, "postgres", undefined, true).row, /cells: \(number \| null\)\[\]/);
+  const nested = moduleTypes("", built, "postgres", undefined, true, ".reylo.yaml", {}, true);
+  assert.match(nested.row, /cells: NestedArray<number \| null>/);
+  assert.equal(reyloImport(nested.row), `import type { NestedArray, Query } from "reylo";`);
 });

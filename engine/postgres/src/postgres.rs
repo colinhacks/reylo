@@ -269,6 +269,7 @@ pub const RELATION_COLUMNS_QUERY: &str = concat!(
 ///   cast to it from any other built-in type is a built-in one.
 /// - `raise`, from a server before 18, whose cast of a JSON null to a number or a boolean raises
 ///   an error where 18 answers NULL ([`JSONB_CASTS_RAISE`]).
+/// - `deterministic`, from a database that holds no nondeterministic collation ([`DETERMINISTIC_ONLY`]).
 ///
 /// Every operator, function and type the query calls or names is spelled as `pg_catalog`'s
 /// (`OPERATOR(pg_catalog.=)`, parenthesized, since that spelling takes no operator's precedence):
@@ -401,9 +402,13 @@ pub const TRUST_QUERY: &str = "WITH RECURSIVE \
     AND EXISTS (SELECT 1 FROM pg_catalog.pg_cast c WHERE c.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND c.casttarget OPERATOR(pg_catalog.=) t.oid AND c.castmethod OPERATOR(pg_catalog.=) 'f'::pg_catalog.\"char\") \
     AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_type u WHERE u.oid OPERATOR(pg_catalog.>=) '16384'::pg_catalog.oid AND u.typname OPERATOR(pg_catalog.=) t.typname) \
     UNION ALL SELECT 'raise', NULL, NULL, NULL, NULL \
-    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric";
+    WHERE pg_catalog.to_number(pg_catalog.current_setting('server_version_num'::pg_catalog.text), '999999'::pg_catalog.text) OPERATOR(pg_catalog.<) '180000'::pg_catalog.numeric \
+    UNION ALL SELECT 'deterministic', NULL, NULL, NULL, NULL \
+    WHERE NOT EXISTS (SELECT 1 FROM pg_catalog.pg_collation c WHERE NOT c.collisdeterministic)";
 /// The tag of [`TRUST_QUERY`]'s row that says the server is one before PostgreSQL 18.
 const JSONB_CASTS_RAISE: &str = "raise";
+/// The tag of [`TRUST_QUERY`]'s row that says the database holds no nondeterministic collation.
+const DETERMINISTIC_ONLY: &str = "deterministic";
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per unique index of
 /// each that is a plain or a partitioned table, `(the name, the index's key columns with NULL for
@@ -487,6 +492,7 @@ pub fn trust(host: &Host) -> Lazy<Trust> {
                         }
                     }
                     Some(JSONB_CASTS_RAISE) => trust.jsonb_casts_raise = true,
+                    Some(DETERMINISTIC_ONLY) => trust.deterministic_only = true,
                     _ => {}
                 }
             }
@@ -554,6 +560,7 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.user_operators = trust.shadowed.clone();
     catalog.cast_targets = trust.cast_targets.clone();
     catalog.overloads = trust.overloads.clone();
+    catalog.deterministic_only = trust.deterministic_only;
 }
 
 fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
@@ -855,7 +862,7 @@ impl<'a> Engine<'a> {
                     let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     // The document under the column's own type's name, `json` or `jsonb`.
-                    let ty = Type { name: registry.render(col.type_oid).name, ..resolved.ty };
+                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
                     (ty, !resolved.non_null)
                 }
                 // A whole row of no type the catalog has, or an array of them: the row's fields,
@@ -870,7 +877,7 @@ impl<'a> Engine<'a> {
                 // included; what it builds is its document.
                 (None, Some(built)) => {
                     unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (Type { name: registry.render(col.type_oid).name, ..built.ty.clone() }, col.nullable || !built.non_null)
+                    (Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, col.nullable || !built.non_null)
                 }
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
@@ -940,7 +947,9 @@ impl<'a> Engine<'a> {
 
         // Row count.
         let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
-        let key = result_key(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
+        let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+        let order = result_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
@@ -952,6 +961,8 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: reason,
             key,
+            unique,
+            order,
             ordered,
             rewritten,
             style: lexed.style,
@@ -1066,6 +1077,8 @@ impl<'a> Engine<'a> {
             cardinality,
             cardinality_reason: None,
             key: None,
+            unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten,
             style: lexed.style,
@@ -3842,8 +3855,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
-    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
-    let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
+    let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {
@@ -4362,17 +4375,24 @@ fn is_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0c' | '\x0b')
 }
 
-/// The result key of a statement ([`Analysis::key`]): for a SELECT that can return more than one
-/// row, the columns [`cardinality::result_key`] proves identify its rows. None where the
-/// cardinality already says the result holds one row at most or none, and none for the rows of a
-/// write's RETURNING.
-fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Option<Vec<String>> {
+/// The key Standard Query publishes: the fewest columns, then the earliest in the output, whatever
+/// order `unique` lists them in.
+fn shortest_key(unique: &[Vec<String>], columns: &[&str]) -> Option<Vec<String>> {
+    let position = |name: &String| columns.iter().position(|c| c == name);
+    unique.iter().min_by_key(|key| (key.len(), key.iter().map(position).collect::<Vec<_>>())).cloned()
+}
+
+/// The result keys of a statement ([`Analysis::unique`]): for a SELECT that can return more than
+/// one row, each set of columns [`cardinality::result_keys`] proves identify its rows. None where
+/// the cardinality already says the result holds one row at most or none, and none for the rows of
+/// a write's RETURNING.
+fn result_keys(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<Vec<String>> {
     if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
-        return None;
+        return Vec::new();
     }
     let identifies: Vec<bool> = columns.iter().map(|c| identifies(&c.ty)).collect();
     let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
-    cardinality::result_key(sql, trust, catalog, &named, &identifies).filter(|key| !key.is_empty())
+    cardinality::result_keys(sql, trust, catalog, &named, &identifies)
 }
 
 /// Whether a value of `ty` is read whole as a number, a string or an enum's label, and so stays as
@@ -4383,10 +4403,10 @@ fn result_key(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, col
 /// A row's or an array of rows' type under the names its oid has: a table's row keeps the table's name at every depth, and one of no catalog type stays `record`.
 fn named_as(mut ty: Type, type_oid: u32, registry: &TypeRegistry) -> Type {
     let Some(array) = registry.get(type_oid).filter(|t| t.kind == crate::pgtypes::TypeKind::Array) else { return ty };
-    let element = array.elem.map(|e| registry.render(e).name);
-    ty.name = registry.render(type_oid).name;
-    if let (TyKind::Array(a), Some(name)) = (&mut ty.kind, element) {
-        a.element.ty.name = name;
+    let element = array.elem.map(|e| registry.render(e).label);
+    ty.label = registry.render(type_oid).label;
+    if let (TyKind::Array(a), Some(label)) = (&mut ty.kind, element) {
+        a.element.ty.label = label;
     }
     ty
 }
@@ -4395,10 +4415,21 @@ fn identifies(ty: &Type) -> bool {
     match &ty.kind {
         TyKind::Json(_) | TyKind::Unknown => false,
         TyKind::Array(array) => !array.any_depth && identifies(&array.element.ty),
-        TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
-        TyKind::Opaque => ty.name.as_deref() != Some("record"),
+        TyKind::Record(_) => matches!(ty.label.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
+        TyKind::Opaque => ty.label.as_deref() != Some("record"),
         _ => true,
     }
+}
+
+/// The columns of a statement's result its ORDER BY sorts on ([`Analysis::order`]), for a SELECT
+/// that can return more than one row, as [`cardinality::result_order`] reads them.
+fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::OrderColumn> {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
+        return Vec::new();
+    }
+    let plain: Vec<bool> = columns.iter().map(|c| uncollated(&c.ty)).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::result_order(sql, trust, catalog, &named, &plain)
 }
 
 /// Whether a statement's ORDER BY orders its rows totally ([`Analysis::ordered`]): for a SELECT that
@@ -4517,6 +4548,15 @@ mod tests {
         // The fix reads the value from a WITH.
         let a = replay("with input as (select concat('%', :q::text, '%') as pattern) select 1 as one from input where input.pattern like input.pattern");
         assert!(a.diagnostics.iter().all(|d| d.code != 3), "{:?}", a.diagnostics);
+    }
+
+    #[test]
+    fn the_published_key_is_the_shortest_then_the_earliest_in_the_output() {
+        let key = |sets: &[&[&str]], columns: &[&str]| shortest_key(&sets.iter().map(|s| s.iter().map(|c| c.to_string()).collect()).collect::<Vec<Vec<String>>>(), columns);
+        // `select email, id from users`, whose primary key `unique` lists first.
+        assert_eq!(key(&[&["id"], &["email"]], &["email", "id"]), Some(vec!["email".to_string()]));
+        assert_eq!(key(&[&["a", "b"], &["id"]], &["a", "b", "id"]), Some(vec!["id".to_string()]));
+        assert_eq!(key(&[], &["a"]), None);
     }
 
     #[test]
@@ -5183,11 +5223,13 @@ mod tests {
         assert!(!before.shadowed.contains("raise") && !before.cast_targets.as_ref().unwrap().contains("raise"));
         let later = read(Ok(vec![shadow, row("cast", json!("int4"))]));
         assert!(!later.jsonb_casts_raise && later.overloads.is_some());
+        // A database that holds no nondeterministic collation says so with one row.
+        assert!(!later.deterministic_only && read(Ok(vec![row("deterministic", Value::Null)])).deterministic_only);
         // A server that refuses the query shadows every name, and no cast keeps its argument's
         // nullability.
         let refused = read(Err(DbError { message: "permission denied".into(), code: None, position: None }));
         assert!(refused.shadowed.contains("=") && refused.shadowed.contains("count") && refused.overloads.is_none());
-        assert!(refused.cast_targets.as_ref().unwrap().is_empty());
+        assert!(refused.cast_targets.as_ref().unwrap().is_empty() && !refused.deterministic_only);
     }
 
     #[test]

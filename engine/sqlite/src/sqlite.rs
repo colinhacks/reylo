@@ -271,6 +271,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             cardinality,
             cardinality_reason: None,
             key: None,
+            unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten: lex::rewrite(sql, lexed, Target::Question),
             style: lexed.style,
@@ -319,6 +321,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         cardinality,
         cardinality_reason: reason,
         key: None,
+        unique: Vec::new(),
+        order: Vec::new(),
         ordered: false,
         rewritten: lex::rewrite(sql, lexed, Target::Question),
         style: lexed.style,
@@ -4264,7 +4268,7 @@ mod tests {
 
     /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
     fn affinity_of(t: &Type) -> Option<&'static str> {
-        let name = t.name.as_deref().unwrap_or("");
+        let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
             Kind::Boolean => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),

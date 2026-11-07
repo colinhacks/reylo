@@ -82,6 +82,10 @@ struct Remote {
     #[serde(default)]
     key: Option<Vec<String>>,
     #[serde(default)]
+    unique: Vec<Vec<String>>,
+    #[serde(default)]
+    order: Vec<reylo_engine_core::types::OrderColumn>,
+    #[serde(default)]
     ordered: bool,
     #[serde(default)]
     diagnostics: Vec<Diagnostic>,
@@ -107,6 +111,8 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         cardinality: remote.cardinality,
         cardinality_reason: remote.cardinality_reason,
         key: remote.key,
+        unique: remote.unique,
+        order: remote.order,
         ordered: remote.ordered,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
         style: lexed.style,
@@ -225,7 +231,7 @@ mod tests {
         answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
             "kind": "select",
             "params": [],
-            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "name": "public.embedding" } }],
+            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "label": "public.embedding" } }],
             "cardinality": "many",
             "domains": { "public.embedding": "vector" },
         })));
