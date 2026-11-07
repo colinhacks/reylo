@@ -477,7 +477,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             let (not_null, shape) = never_null[position];
             let ty = match shape.map(|i| &proven.shaped[i]) {
                 // A JSON column takes the shape's type; any other keeps the server's.
-                Some((_, shaped_ty, _)) if c.r#type == 245 => Type { name: Some("json".into()), ..crate::mysql_types::document(shaped_ty.clone()) },
+                Some((_, shaped_ty, _)) if c.r#type == 245 => Type { label: Some("json".into()), ..crate::mysql_types::document(shaped_ty.clone()) },
                 Some(_) => ty,
                 None => match documents.get(position).cloned().flatten() {
                     Some(schema) if ty.is_json() && ty.schema().is_none() => Type { kind: Type::json_schema_of(schema).kind, ..ty },
@@ -486,7 +486,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
             };
             // The prepare names an ENUM or a SET column without its labels.
             let ty = match labelled_of(c) {
-                Some(labelled) if matches!(ty.name.as_deref(), Some("enum" | "set")) => labelled,
+                Some(labelled) if matches!(ty.label.as_deref(), Some("enum" | "set")) => labelled,
                 _ => ty,
             };
             Column { comment: comment_of(c), ..Column::new(c.name.clone(), ty, !not_null) }

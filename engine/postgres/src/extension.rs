@@ -231,7 +231,7 @@ mod tests {
         answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
             "kind": "select",
             "params": [],
-            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "name": "public.embedding" } }],
+            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "label": "public.embedding" } }],
             "cardinality": "many",
             "domains": { "public.embedding": "vector" },
         })));

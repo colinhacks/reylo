@@ -2230,7 +2230,7 @@ fn type_differs(m: &Member, field: &Field, c: &TableColumn, domains: &std::colle
         Dialect::Postgres => {
             // The catalog's own name for the type, which the table's column names unqualified and
             // unquoted, a domain's by its base type, as the column's base is.
-            let base = match (&field.ty.kind, &field.ty.name) {
+            let base = match (&field.ty.kind, &field.ty.label) {
                 (Kind::Json(_), _) => m.ty.clone(),
                 (Kind::Record(_) | Kind::Unknown, _) | (_, None) => return None,
                 (_, Some(name)) => split_name(domains.get(name).unwrap_or(name)).1,

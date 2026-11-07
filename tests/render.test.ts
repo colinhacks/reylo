@@ -69,7 +69,7 @@ test("a union is either", () => {
   assert.equal(renderType(oneOf({ kind: "boolean" }, my("bigint")), true, "mysql"), "boolean | number");
   assert.equal(renderType(doc({ kind: "array", element: { type: oneOf({ kind: "boolean" }, my("bigint")), nullable: true } }), false, "mysql"), "(boolean | number | null)[]");
   // A member whose JSON form is unknown is nothing known inside a document.
-  assert.equal(renderType(oneOf(my("bigint"), { kind: "opaque", name: "mystery" }), true, "mysql"), "Json");
+  assert.equal(renderType(oneOf(my("bigint"), { kind: "opaque", label: "mystery" }), true, "mysql"), "Json");
 });
 
 test("pgvector's vector and halfvec are arrays of numbers, as columns and as parameters; inside a document their text", () => {
@@ -125,9 +125,9 @@ test("SQLite: an INTEGER is a number, exact or an error; a NUMERIC whichever the
   assert.equal(renderType(lite("int8"), false, "sqlite"), "bigint");
   assert.equal(renderType({ kind: "unknown" }, false, "sqlite"), "unknown");
   // A column read as it is holds what its affinity stores, under the name its table declares.
-  assert.equal(renderType({ ...lite("numeric"), name: "DECIMAL(10,2)" } as EngineType, false, "sqlite"), "number | string");
-  assert.equal(renderType({ ...lite("numeric"), name: "bigint(20)" } as EngineType, false, "sqlite"), "bigint");
-  assert.equal(renderType({ kind: "union", name: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
+  assert.equal(renderType({ ...lite("numeric"), label: "DECIMAL(10,2)" } as EngineType, false, "sqlite"), "number | string");
+  assert.equal(renderType({ ...lite("numeric"), label: "bigint(20)" } as EngineType, false, "sqlite"), "bigint");
+  assert.equal(renderType({ kind: "union", label: "VARCHAR(20)", members: [lite("text"), lite("blob")] }, false, "sqlite"), "string");
   // The driver binds a number for an INTEGER, and the run time a truth value as 1 or 0.
   assert.equal(renderParamType(lite("integer"), "sqlite"), "number");
   assert.equal(renderParamType(lite("numeric"), "sqlite"), "number | string | boolean");
@@ -220,8 +220,8 @@ test("parameters take what every driver binds, whatever Reylo returns", () => {
 });
 
 test("the run time converts each float or decimal inside Postgres JSON that may be NaN or an infinity, and only those", () => {
-  const sized = { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" } as const;
-  const finite = { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "float8" } as const;
+  const sized = { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } as const;
+  const finite = { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "float8" } as const;
   const row = record([field("id", pg("int4")), field("n", pg("numeric")), field("p", sized), field("f", finite), field("at", pg("point")), field("xs", array(pg("float8")))]);
   assert.deepEqual(jsonNumbers(doc(row)), { keys: [["n", true], ["p", true], ["xs", { items: true, deep: true }]] });
   // An array a statement aggregates, of JSON, and a Postgres array of JSON values.
@@ -342,7 +342,7 @@ test("a JSON column a CHECK holds to a JSON Schema is the type of the values the
 });
 
 test("a DuckDB tagged union is { tag, value } as a value, and any JSON inside a document", () => {
-  const choice = { kind: "tagged_union", alternatives: [{ tag: "num", type: { kind: "integer", bits: 64 }, nullable: true }, { tag: "str", type: { kind: "text" }, nullable: true }], name: "union" } as unknown as EngineType;
+  const choice = { kind: "tagged_union", alternatives: [{ tag: "num", type: { kind: "integer", bits: 64 }, nullable: true }, { tag: "str", type: { kind: "text" }, nullable: true }], label: "union" } as unknown as EngineType;
   assert.equal(renderType(choice, false, "duckdb"), `{ tag: "num"; value: bigint | null } | { tag: "str"; value: string | null }`);
   // A 64-bit integer is a bigint as a value, never inside parsed JSON.
   assert.equal(renderType(choice, true, "duckdb"), "Json");
