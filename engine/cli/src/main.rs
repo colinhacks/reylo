@@ -48,7 +48,7 @@ Commands:
   migration history push   Record the migrations this database's schema has
   migration history pull   Write the migrations this database ran into files
   migrate dev              Take this database to the migrations, and lock them
-  migrate prod             Run what the lock lists, with no shadow database
+  migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
   db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
@@ -61,7 +61,7 @@ Flags:
   -h, --help               Print this help";
 
 /// Every command of those groups, as it's typed.
-const COMMANDS: [&str; 10] = ["migration init", "migration create", "migration lint", "migration history push", "migration history pull", "migrate dev", "migrate prod", "db push", "db introspect", "db wipe"];
+const COMMANDS: [&str; 10] = ["migration init", "migration create", "migration lint", "migration history push", "migration history pull", "migrate dev", "migrate deploy", "db push", "db introspect", "db wipe"];
 
 /// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
 /// it takes dim. Piped, it is the text alone.
@@ -193,11 +193,11 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     let command = command.as_str();
     let parsed = parse(&args[words..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
-    // What a command doesn't take is refused, never passed over: prod --dev must not run prod, and
+    // What a command doesn't take is refused, never passed over: deploy --dev must not run deploy, and
     // db push --rename must not leave its guess unsaid.
     let takes: &[&str] = match command {
         "db push" => &["watch"],
-        "migrate prod" => &["dry-run"],
+        "migrate deploy" => &["dry-run"],
         _ => &[],
     };
     let short = args[..words].join(" ");
@@ -243,8 +243,8 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
             "migration history push" => reylo_migrate::history_push(&opts, &mut log).await,
             "migration history pull" => reylo_migrate::history_pull(&opts, &mut log).await,
             "migrate dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
-            "migrate prod" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
-            "migrate prod" => reylo_migrate::prod(&opts, &mut log).await,
+            "migrate deploy" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
+            "migrate deploy" => reylo_migrate::deploy(&opts, &mut log).await,
             "db push" if has("watch") => reylo_migrate::db_push_watch(&opts, in_ci, None, &mut log).await,
             "db push" => reylo_migrate::db_push(&opts, in_ci, &mut log).await,
             // The schema alone on stdout, so that it can be saved with a redirect.

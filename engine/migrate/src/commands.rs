@@ -408,7 +408,7 @@ pub struct Plan {
     pub unchanged: Option<bool>,
     /// The records that are lone statements cut off before their row was finished, which landed.
     pub landed: Vec<String>,
-    /// The invalid indexes such statements left, which `prod` drops before running them again.
+    /// The invalid indexes such statements left, which `deploy` drops before running them again.
     pub leftovers: Vec<Leftover>,
 }
 
@@ -608,7 +608,7 @@ fn read_lock(opts: &Options, files: &[Migration]) -> Result<lock::Lock, Problem>
 }
 
 /// The problems of the lock against the migration files, for a command that runs
-/// what it lists as it is (prod, its dry run): an entry with no file, a file edited after it was locked,
+/// what it lists as it is (deploy, its dry run): an entry with no file, a file edited after it was locked,
 /// lines merged out of their order, and drafts.
 fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
     let path = shown(&opts.lock);
@@ -649,7 +649,7 @@ fn run_order(opts: &Options, files: &[Migration]) -> Vec<Migration> {
 
 /// Checks the target against the migration files; changes nothing. With a `server` (`reylo migrate
 /// check`) it replays them in shadow databases, against the live schema and schema.sql; with none
-/// (`reylo migrate prod`) it replays nothing, and trusts the fingerprint Reylo's last run stored: a
+/// (`reylo migrate deploy`) it replays nothing, and trusts the fingerprint Reylo's last run stored: a
 /// database that no longer has it is refused, and what the fingerprint can't speak to is `--dry-run`'s.
 pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> Result<Plan, Error> {
     let d = db.dialect();
@@ -729,7 +729,7 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
     let Some(server) = server else {
         // No replay: the fingerprint says whether the database is as Reylo's last run left it.
         if unchanged == Some(false) {
-            let problem = Problem::new("This database changed since Reylo last ran on it").fix("See how", &["reylo migrate prod --dry-run"]);
+            let problem = Problem::new("This database changed since Reylo last ran on it").fix("See how", &["reylo migrate deploy --dry-run"]);
             return Ok(Plan { problems: vec![problem], ..Plan::default() });
         }
         // A first run is on an empty database: there is no history to say what else this one holds.
@@ -846,7 +846,7 @@ async fn drift(shadows: &mut Shadows<'_>, target: &mut Db, run: &Run<'_>, checkp
         shadows.push(without, run.applied_files.iter().map(Step::of));
         if let Ok(Ok(lines)) = shadows.lines(without).await {
             if crate::catalog::without_comments(&lines) == live {
-                return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate prod"])]);
+                return Ok(vec![Problem::new(format!("This database doesn't have what {names} make, so they can't be recorded without running")).fix("Run them instead", &["reylo migrate deploy"])]);
             }
         }
     }
@@ -1033,11 +1033,11 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
     d == Dialect::Mysql || runs_alone(sql, d)
 }
 
-/// `reylo migrate prod`: runs what is pending on a database that is as Reylo's last run left it, and
+/// `reylo migrate deploy`: runs what is pending on a database that is as Reylo's last run left it, and
 /// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
-pub async fn prod(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
-    let result = prod_on(&mut db, opts, log).await;
+    let result = deploy_on(&mut db, opts, log).await;
     db.close().await;
     result
 }
@@ -1048,7 +1048,7 @@ fn swept_note(swept: usize, log: Log<'_>) {
     }
 }
 
-async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
+async fn deploy_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let _held = lock(db, opts).await?;
     let plan = check(db, None, opts).await?;
     if !plan.ok() {
@@ -1059,7 +1059,7 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
     }
     let history = read_history(db).await?;
     if plan.unchanged.is_none() && history.iter().any(|r| r.applied) {
-        log(&paint("dim", "Reylo holds no fingerprint of this database to compare (after a new version of Reylo, or a new major version of the server): reylo migrate prod --dry-run compares it with its migrations"));
+        log(&paint("dim", "Reylo holds no fingerprint of this database to compare (after a new version of Reylo, or a new major version of the server): reylo migrate deploy --dry-run compares it with its migrations"));
     }
     if plan.pending.is_empty() {
         // A fingerprint that can't be compared is stored again, for the next run to compare.
@@ -1095,7 +1095,7 @@ async fn prod_on(db: &mut Db, opts: &Options, log: Log<'_>) -> Result<i32, Error
                 rows.row(log, &paint("bold red", "✗"), &m.name, failed_row(&m.sql, d));
                 log(&format!("      {e}"));
                 if started.contains(&m.name.as_str()) {
-                    log("      A run before this one was cut off here, so its change may be in place: reylo migrate prod --dry-run says, and reylo migration history push records it.");
+                    log("      A run before this one was cut off here, so its change may be in place: reylo migrate deploy --dry-run says, and reylo migration history push records it.");
                 }
                 code = 1;
                 break;
@@ -1114,7 +1114,7 @@ fn failed_row(sql: &str, d: Dialect) -> &'static str {
     }
 }
 
-/// `reylo migrate prod --dry-run`: everything `prod` checks, the database against a replay of its
+/// `reylo migrate deploy --dry-run`: everything `deploy` checks, the database against a replay of its
 /// history, what is pending tried in a shadow, and the migrations against schema.sql; runs nothing,
 /// and writes nothing to the database.
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
@@ -1132,11 +1132,11 @@ pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     log(&format!("{} This database matches its history", paint("green", "✓")));
     match plan.unchanged {
         Some(true) => log(&format!("{} Nothing has changed this database since Reylo last ran on it", paint("green", "✓"))),
-        Some(false) => log(&format!("{} Its fingerprint isn't the one Reylo stored, so reylo migrate prod refuses it until reylo migration history push stores it again", paint("yellow", "!"))),
+        Some(false) => log(&format!("{} Its fingerprint isn't the one Reylo stored, so reylo migrate deploy refuses it until reylo migration history push stores it again", paint("yellow", "!"))),
         None => {}
     }
     for x in &plan.leftovers {
-        log(&format!("{} {} was cut off and left {} invalid: reylo migrate prod drops it, then runs {} again", paint("yellow", "!"), x.migration, x.index, x.migration));
+        log(&format!("{} {} was cut off and left {} invalid: reylo migrate deploy drops it, then runs {} again", paint("yellow", "!"), x.migration, x.index, x.migration));
     }
     for name in &plan.landed {
         log(&format!("{} {name} was cut off, and its change is in place: reylo migration history push records it", paint("yellow", "!")));
@@ -1188,7 +1188,7 @@ pub fn lint(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     log(&format!("{} {} lists every migration, in order, as written", paint("green", "✓"), shown(&opts.lock)));
     match proven {
         Some(true) => log(&format!("{} The migrations reach {}", paint("green", "✓"), shown(&opts.schema))),
-        _ => log(&format!("{} {} isn't proven against the migrations without a database: reylo db push proves it in development, and reylo migrate prod --dry-run against a database", paint("yellow", "!"), shown(&opts.schema))),
+        _ => log(&format!("{} {} isn't proven against the migrations without a database: reylo db push proves it in development, and reylo migrate deploy --dry-run against a database", paint("yellow", "!"), shown(&opts.schema))),
     }
     if Dialect::of_url(&opts.url).is_err() {
         log(&paint("dim", "With no database URL, whether each migration runs atomically wasn't checked."));
@@ -1453,7 +1453,7 @@ async fn history_push_on(db: &mut Db, server: &mut Server, opts: &Options, log: 
     let pending = &order[n..];
     log(&format!("{} The history lists the {} migration{} this database's schema has", paint("green", "✓"), recorded.len(), if recorded.len() == 1 { "" } else { "s" }));
     if !pending.is_empty() {
-        log(&format!("  {} pending, which reylo migrate prod runs: {}", pending.len(), pending.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")));
+        log(&format!("  {} pending, which reylo migrate deploy runs: {}", pending.len(), pending.iter().map(|f| f.name.as_str()).collect::<Vec<_>>().join(", ")));
     }
     Ok(0)
 }
@@ -2095,7 +2095,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
             log(&paint("dim", &format!("the migrations already make {}: the migration is empty, for a change of data", shown(&opts.schema))));
             return Ok(Ok((vec![String::new()], 0)));
         }
-        // The plan runs on the replay as `prod` will run its files: one file in one transaction (on
+        // The plan runs on the replay as `deploy` will run its files: one file in one transaction (on
         // SQLite with foreign keys off until it is checked), or on MySQL a file per statement.
         let pieces: Vec<String> = if d == Dialect::Mysql {
             plan.runnable().cloned().collect()
@@ -2398,8 +2398,8 @@ pub fn refused_in_ci(command: &str, log: Log<'_>) -> i32 {
     log(&paint("bold red", &format!("✗ {command} changes a development database, and CI is set")));
     log("  In CI, lint the migrations, try them, or run them:");
     log(&format!("    {}", paint("cyan", "reylo migration lint")));
-    log(&format!("    {}", paint("cyan", "reylo migrate prod --dry-run")));
-    log(&format!("    {}", paint("cyan", "reylo migrate prod")));
+    log(&format!("    {}", paint("cyan", "reylo migrate deploy --dry-run")));
+    log(&format!("    {}", paint("cyan", "reylo migrate deploy")));
     1
 }
 
@@ -2504,7 +2504,7 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     result
 }
 
-/// What `dev` leaves for `prod` to compare with: the fingerprint of what the migrations make, not of
+/// What `dev` leaves for `deploy` to compare with: the fingerprint of what the migrations make, not of
 /// this database, which may hold more that no migration made.
 async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, files: &[Migration]) -> Result<(), Error> {
     let history = read_history(db).await?;

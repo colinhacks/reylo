@@ -116,7 +116,7 @@ impl P {
     }
 
     async fn migrate(&mut self) -> i32 {
-        self.run(async |o, log| reylo_migrate::prod(o, log).await).await
+        self.run(async |o, log| reylo_migrate::deploy(o, log).await).await
     }
 
     async fn history_push(&mut self) -> i32 {
@@ -137,12 +137,12 @@ impl P {
         self.run(async |o, log| reylo_migrate::db_push(o, false, log).await).await
     }
 
-    /// `prod --dry-run`: what prod checks, and the migrations against schema.sql.
+    /// `deploy --dry-run`: what deploy checks, and the migrations against schema.sql.
     async fn dry_run(&mut self) -> i32 {
         self.run(async |o, log| reylo_migrate::dry_run(o, log).await).await
     }
 
-    /// `prod --dry-run` with the replay cache on or off, and what it printed, but for what differs
+    /// `deploy --dry-run` with the replay cache on or off, and what it printed, but for what differs
     /// between any two runs (`same_run`).
     async fn check_with(&mut self, cache: bool) -> (i32, String) {
         reylo_migrate::cache::set_enabled(Some(cache));
@@ -337,9 +337,9 @@ for_each_dialect!(
     two_applies_at_once_apply_each_migration_once,
     create_states_what_it_drops_and_renames,
     wipe_deletes_rows_and_keeps_the_schema,
-    prod_builds_no_shadow_database_and_trusts_the_fingerprint,
-    prod_goes_on_where_it_has_no_fingerprint_to_compare,
-    prod_refuses_tables_with_no_history,
+    deploy_builds_no_shadow_database_and_trusts_the_fingerprint,
+    deploy_goes_on_where_it_has_no_fingerprint_to_compare,
+    deploy_refuses_tables_with_no_history,
     a_lock_whose_order_is_not_the_names_survives_one_run,
     a_lock_kept_on_this_branchs_side_is_refused_where_git_has_mains,
     init_locks_the_baseline_in_a_locked_project,
@@ -359,8 +359,8 @@ for_each_dialect!(
     create_renames_a_table_keeping_its_rows,
     create_lists_every_rename_it_assumes,
     commands_create_prints_for_names_with_spaces_run_as_printed,
-    prod_compares_with_what_dev_replayed,
-    prod_refuses_any_schema_with_no_history,
+    deploy_compares_with_what_dev_replayed,
+    deploy_refuses_any_schema_with_no_history,
     init_on_an_empty_database_writes_only_the_schema_file,
     a_broken_draft_keeps_what_sync_made,
     a_migrations_directory_that_isnt_there_is_refused,
@@ -419,9 +419,9 @@ async fn refuses_drift(mut p: P) {
     p.exec(&format!("alter table users add column hotfix {}", p.t.int)).await;
     p.schema(&format!("create table users (id {}, email {} not null, nick {});", p.t.id, p.t.text, p.t.text));
     p.file("20261027110000_nick.sql", &format!("alter table users add column nick {};", p.t.text));
-    // prod sees that it changed; check says how.
+    // deploy sees that it changed; check says how.
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"✗ This database changed since Reylo last ran on it\n\n  See how:\n    reylo migrate prod --dry-run\n\nNothing was applied\.$");
+    assert_has!(p.output(), r"✗ This database changed since Reylo last ran on it\n\n  See how:\n    reylo migrate deploy --dry-run\n\nNothing was applied\.$");
     assert_eq!(p.dry_run().await, 1);
     let out = p.output();
     assert_has!(&out, r"✗ This database has changes no migration made\n\n    alter table users add column hotfix [^\n]+;\n");
@@ -508,7 +508,7 @@ async fn ddl_run_by_hand_then_written_is_recorded(mut p: P) {
     p.exec(&format!("alter table users add column nick {text}")).await;
     p.file("20261027110000_nick.sql", &format!("alter table users add column nick {text};"));
     p.schema(&format!("create table users (id {int}, nick {text});"));
-    // Never recorded by prod, which refuses it; check says the migration makes the change, and how to
+    // Never recorded by deploy, which refuses it; check says the migration makes the change, and how to
     // record it.
     assert_eq!(p.migrate().await, 1);
     p.output();
@@ -533,7 +533,7 @@ async fn ddl_run_by_hand_then_written_is_recorded(mut p: P) {
     p.file("20261027140000_bio.sql", &format!("alter table users add column bio {text};"));
     p.schema(&format!("create table users (id {int}, nick {text}, score {int}, bio {text});"));
     assert_eq!(p.history_push().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"2 pending, which reylo migrate prod runs: 20261027130000_seed\.sql, 20261027140000_bio\.sql");
+    assert_has!(p.output(), r"2 pending, which reylo migrate deploy runs: 20261027130000_seed\.sql, 20261027140000_bio\.sql");
     assert_eq!(p.history().await.len(), 3);
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_eq!(p.rows("select id from users").await.len(), 1);
@@ -745,7 +745,7 @@ async fn a_lone_statement_cut_off(mut p: P, landed: bool) {
     db.close().await;
     p.output();
     if landed {
-        // Its change is in place, so this database isn't as Reylo's last finished run left it: prod
+        // Its change is in place, so this database isn't as Reylo's last finished run left it: deploy
         // refuses, a dry run says what happened, and history push records it.
         assert_eq!(p.migrate().await, 1);
         assert_has!(p.output(), "changed since Reylo last ran on it");
@@ -792,7 +792,7 @@ async fn a_lone_statement_cut_off_with_no_fingerprint_to_compare(mut p: P) {
     p.output();
     // Run again, it fails where it landed, and says how to find out.
     assert_eq!(p.migrate().await, 1);
-    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed[^\n]*:[\s\S]*A run before this one was cut off here, so its change may be in place: reylo migrate prod --dry-run says, and reylo migration history push records it");
+    assert_has!(p.output(), r"✗ 20261027110000_index\.sql  failed[^\n]*:[\s\S]*A run before this one was cut off here, so its change may be in place: reylo migrate deploy --dry-run says, and reylo migration history push records it");
     assert_eq!(p.dry_run().await, 1);
     assert_has!(p.output(), r"20261027110000_index\.sql makes exactly that change[^\n]*\n    reylo migration history push");
     assert_eq!(p.history_push().await, 0, "{}", p.peek());
@@ -924,7 +924,7 @@ async fn a_cached_prefix_replays_only_what_follows_it(mut p: P) {
     }
     p.schema(&tables(3));
     reylo_migrate::cache::set_enabled(Some(true));
-    // A check builds shadows, which the cache keeps; prod builds none.
+    // A check builds shadows, which the cache keeps; deploy builds none.
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     p.output();
@@ -1332,7 +1332,7 @@ async fn commands_create_prints_for_names_with_spaces_run_as_printed(mut p: P) {
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
 }
 
-async fn prod_compares_with_what_dev_replayed(mut p: P) {
+async fn deploy_compares_with_what_dev_replayed(mut p: P) {
     let (int, text) = (p.t.int, p.t.text);
     p.strict = true;
     p.schema(&format!("create table a (id {int});"));
@@ -1342,13 +1342,13 @@ async fn prod_compares_with_what_dev_replayed(mut p: P) {
     // As dev left it: nothing to note, and nothing to refuse.
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
     assert_has!(p.output(), r"^✓ Up to date$");
-    // What sync adds is no migration's, so prod sees that the database changed, as after a prod.
+    // What sync adds is no migration's, so deploy sees that the database changed, as after a deploy.
     p.schema(&format!("create table a (id {int}, note {text});"));
     assert_eq!(p.db_push().await, 0, "{}", p.peek());
     p.output();
     assert_eq!(p.migrate().await, 1);
     assert_has!(p.output(), "changed since Reylo last ran on it");
-    // dev keeps what sync made, and prod still sees it isn't the migrations'.
+    // dev keeps what sync made, and deploy still sees it isn't the migrations'.
     assert_eq!(p.dev().await, 0, "{}", p.peek());
     p.output();
     assert_eq!(p.migrate().await, 1);
@@ -1425,7 +1425,7 @@ async fn init_on_an_empty_database_writes_only_the_schema_file(mut p: P) {
     assert_eq!(p.history().await.len(), 1);
 }
 
-async fn prod_refuses_any_schema_with_no_history(mut p: P) {
+async fn deploy_refuses_any_schema_with_no_history(mut p: P) {
     p.exec("create view v as select 1 as x").await;
     p.file("20261027100000_t.sql", &format!("create table t (id {});", p.t.int));
     assert_eq!(p.migrate().await, 1);
@@ -1584,7 +1584,7 @@ async fn create_guesses_no_rename_a_table_that_stays_could_explain(mut p: P) {
     assert_eq!(p.dry_run().await, 0, "{}", p.peek());
 }
 
-async fn prod_builds_no_shadow_database_and_trusts_the_fingerprint(mut p: P) {
+async fn deploy_builds_no_shadow_database_and_trusts_the_fingerprint(mut p: P) {
     let (id, int) = (p.t.id, p.t.int);
     reylo_migrate::cache::set_enabled(Some(true));
     reylo_migrate::cache::take_stats();
@@ -1604,7 +1604,7 @@ async fn prod_builds_no_shadow_database_and_trusts_the_fingerprint(mut p: P) {
     p.exec(&format!("create table stray (id {int})")).await;
     assert_eq!(p.migrate().await, 1);
     let out = p.output();
-    assert_has!(&out, r"✗ This database changed since Reylo last ran on it\n\n  See how:\n    reylo migrate prod --dry-run\n\nNothing was applied\.");
+    assert_has!(&out, r"✗ This database changed since Reylo last ran on it\n\n  See how:\n    reylo migrate deploy --dry-run\n\nNothing was applied\.");
     p.schema(&format!("create table users (id {id}); create table tags (id {int});"));
     assert_eq!(p.dry_run().await, 1);
     assert_has!(p.output(), "This database has changes no migration made");
@@ -1614,7 +1614,7 @@ async fn prod_builds_no_shadow_database_and_trusts_the_fingerprint(mut p: P) {
     assert_has!(p.output(), "Up to date");
 }
 
-async fn prod_goes_on_where_it_has_no_fingerprint_to_compare(mut p: P) {
+async fn deploy_goes_on_where_it_has_no_fingerprint_to_compare(mut p: P) {
     let int = p.t.int;
     p.file("20261027100000_users.sql", &format!("create table users (id {int});"));
     assert_eq!(p.migrate().await, 0, "{}", p.peek());
@@ -1640,7 +1640,7 @@ async fn prod_goes_on_where_it_has_no_fingerprint_to_compare(mut p: P) {
     assert_has!(p.output(), r"^✓ Up to date$");
 }
 
-async fn prod_refuses_tables_with_no_history(mut p: P) {
+async fn deploy_refuses_tables_with_no_history(mut p: P) {
     let int = p.t.int;
     p.exec(&format!("create table legacy (id {int})")).await;
     p.file("20261027100000_users.sql", &format!("create table users (id {int});"));
@@ -1934,7 +1934,7 @@ async fn two_applies_at_once_apply_each_migration_once(mut p: P) {
                 s.spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
                     let mut lines = Vec::new();
-                    let code = rt.block_on(reylo_migrate::prod(opts, &mut |l: &str| lines.push(l.to_string()))).unwrap();
+                    let code = rt.block_on(reylo_migrate::deploy(opts, &mut |l: &str| lines.push(l.to_string()))).unwrap();
                     (code, lines.join("\n"))
                 })
             })
@@ -2235,7 +2235,7 @@ mod adversarial {
         p.file("20261027110000_backfill.sql", "update t set x = x * 10;");
         p.output();
         assert_eq!(p.history_push().await, 0, "{}", p.peek());
-        assert_has!(p.output(), r"1 pending, which reylo migrate prod runs: 20261027110000_backfill\.sql");
+        assert_has!(p.output(), r"1 pending, which reylo migrate deploy runs: 20261027110000_backfill\.sql");
         assert_eq!(p.rows("select x from t").await[0].text("x"), "1", "history push ran nothing");
     }
 
@@ -2446,7 +2446,7 @@ mod adversarial {
         p.exec("delete from t where ctid = (select max(ctid) from t)").await;
         p.output();
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());
-        assert_has!(p.output(), r"20261027110000_unique\.sql was cut off and left public\.t_x invalid: reylo migrate prod drops it, then runs 20261027110000_unique\.sql again");
+        assert_has!(p.output(), r"20261027110000_unique\.sql was cut off and left public\.t_x invalid: reylo migrate deploy drops it, then runs 20261027110000_unique\.sql again");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         let out = p.output();
         assert_has!(&out, r"Dropped public\.t_x, which 20261027110000_unique\.sql left invalid when it was cut off");
@@ -2518,7 +2518,7 @@ mod adversarial {
         p.file("20261027110000_idx.sql", "do $$ begin if exists (select 1 from t) then create index t_id on t (id); end if; end $$;");
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         p.output();
-        // Its result is what prod compares with next; check holds it against the replay.
+        // Its result is what deploy compares with next; check holds it against the replay.
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_has!(p.output(), r"^✓ Up to date$");
         assert_eq!(p.dry_run().await, 1);
@@ -2545,7 +2545,7 @@ mod adversarial {
         // pg_partman makes next year's partition, and TimescaleDB-like children inherit a table.
         p.exec("create table events_2025 partition of events for values from ('2025-01-01') to ('2026-01-01'); insert into events values (1, '2025-03-01'); create table metrics_c1 () inherits (metrics); insert into metrics_c1 values (1, 2)").await;
         p.output();
-        // The fingerprint leaves children out, so nothing has changed for prod, or for check.
+        // The fingerprint leaves children out, so nothing has changed for deploy, or for check.
         assert_eq!(p.migrate().await, 0, "{}", p.peek());
         assert_has!(p.output(), r"^✓ Up to date$");
         assert_eq!(p.dry_run().await, 0, "{}", p.peek());

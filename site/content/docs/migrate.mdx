@@ -33,7 +33,7 @@ Chained hashes in the lock catch a migration edited, deleted or reordered, with 
 </Feature>
 <Feature icon="layers" title="Real dry runs">
 
-Reylo replays your migrations on a throwaway database, so `reylo migrate prod --dry-run` shows what a deploy would do, running nothing on yours.
+Reylo replays your migrations on a throwaway database, so `reylo migrate deploy --dry-run` shows what a deploy would do, running nothing on yours.
 
 </Feature>
 </Features>
@@ -98,7 +98,7 @@ Wrote reylo/reylo-lock.yaml
 Commit the migration and the lock. When you deploy, run it on production:
 
 ```terminal
-$ npx reylo migrate prod
+$ npx reylo migrate deploy
 Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
@@ -130,12 +130,12 @@ Writing and repairing migrations need one, and a deploy doesn't:
 
 | Needs a shadow database | Needs none |
 | --- | --- |
-| `reylo migration init` | `reylo migrate prod` |
+| `reylo migration init` | `reylo migrate deploy` |
 | `reylo migration create` | `reylo migration lint` |
 | `reylo migration history push` | `reylo db introspect` |
 | `reylo migration history pull` | `reylo db wipe` |
 | `reylo migrate dev` | |
-| `reylo migrate prod --dry-run` | |
+| `reylo migrate deploy --dry-run` | |
 | `reylo db push` | |
 
 Each database makes them its own way:
@@ -183,7 +183,7 @@ Commands:
   migration history push   Record the migrations this database's schema has
   migration history pull   Write the migrations this database ran into files
   migrate dev              Take this database to the migrations, and lock them
-  migrate prod             Run what the lock lists, with no shadow database
+  migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
   db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
@@ -375,7 +375,7 @@ Undoes what your database ran past that point, by the change from what it has to
 </Step>
 <Step title="Run" where="your database">
 
-Runs the migrations it hasn't run, as `reylo migrate prod` will.
+Runs the migrations it hasn't run, as `reylo migrate deploy` will.
 
 </Step>
 <Step title="Lock" where="your files">
@@ -385,14 +385,14 @@ Writes `reylo-lock.yaml`, listing what ran, in order.
 </Step>
 </Steps>
 
-### `reylo migrate prod`
+### `reylo migrate deploy`
 
 Runs what the lock lists and your database hasn't run, when you deploy.
 
 Each migration runs in one transaction with its history row; on MySQL, where a schema change commits on its own, each holds one change.
 
 ```terminal
-$ reylo migrate prod
+$ reylo migrate deploy
 Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
@@ -400,11 +400,11 @@ Applying to postgres://db.example.com/app
 It needs no shadow database, so it needs no permission to create one. Each migration it runs stores a fingerprint of the schema, and it refuses a database that no longer has it:
 
 ```terminal
-$ reylo migrate prod
+$ reylo migrate deploy
 ✗ This database changed since Reylo last ran on it
 
   See how:
-    reylo migrate prod --dry-run
+    reylo migrate deploy --dry-run
 
 Nothing was applied.
 ```
@@ -412,7 +412,7 @@ Nothing was applied.
 With `--dry-run`, it runs nothing, and replays your migrations on shadow databases instead: against your database, against `schema.sql`, and with what's pending tried on top. Run it in CI, and before you deploy:
 
 ```terminal
-$ reylo migrate prod --dry-run
+$ reylo migrate deploy --dry-run
 ✓ The migrations reach reylo/schema.sql
 ✓ This database matches its history
 ✓ 1 pending, and each runs in a shadow database:
@@ -421,7 +421,7 @@ $ reylo migrate prod --dry-run
 
 Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard is no drift, and stops no deploy.
 
-After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared: `reylo migrate prod` runs, stores a new one, and says so. A dry run checks the database then too.
+After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared: `reylo migrate deploy` runs, stores a new one, and says so. A dry run checks the database then too.
 
 ## `reylo db`
 
@@ -519,10 +519,10 @@ In CI, and when you deploy:
 $ reylo migration lint
 
 # Try the deploy, running nothing
-$ reylo migrate prod --dry-run
+$ reylo migrate deploy --dry-run
 
 # Deploy
-$ reylo migrate prod --dry-run && reylo migrate prod
+$ reylo migrate deploy --dry-run && reylo migrate deploy
 
 # Take back a migration as production ran it
 $ reylo migration history pull --url $PROD_URL

@@ -1,7 +1,7 @@
 //! `reylo migrate` and its neighbours: migrations written by hand (or by an agent), checked against
-//! the declared schema. `reylo migrate prod --dry-run` builds shadows beside the target: one runs
+//! the declared schema. `reylo migrate deploy --dry-run` builds shadows beside the target: one runs
 //! `schema.sql`; the other replays what the target applied, is compared with the live target (the
-//! drift check), and then runs what is pending; the two must agree. `reylo migrate prod` builds none,
+//! drift check), and then runs what is pending; the two must agree. `reylo migrate deploy` builds none,
 //! and trusts the fingerprint its last run stored. Every migration file runs atomically with its
 //! history row, so a file that cannot (a statement that cannot run in a transaction beside others;
 //! MySQL's DDL beside anything) is refused.
@@ -21,7 +21,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{create, db_introspect, db_push, db_push_watch, db_wipe, dev, dry_run, history_pull, history_push, init, lint, prod, run_sql, Choices, Options};
+pub use commands::{create, db_introspect, db_push, db_push_watch, db_wipe, deploy, dev, dry_run, history_pull, history_push, init, lint, run_sql, Choices, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]
