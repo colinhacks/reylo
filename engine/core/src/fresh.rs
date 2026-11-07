@@ -21,12 +21,12 @@ use crate::api::{Analysis, Describe, Scope};
 use crate::dialect::Dialect;
 use crate::host::{Host, Lazy};
 use crate::lex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// The tables a statement reads and writes, as its database's own parse names them: each as the
 /// statement writes it (a schema-qualified name with its schema), a WITH query's name never.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Tables {
     pub read: Vec<String>,
     /// What an INSERT, an UPDATE, a DELETE or a MERGE writes.

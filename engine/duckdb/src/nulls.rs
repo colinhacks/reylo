@@ -1003,7 +1003,13 @@ fn select_cardinality(s: &Select, ctx: &Ctx, ctes: &[String]) -> (&'static str, 
     if let [item] = s.from.as_slice() {
         if let (true, TableFactor::Table { name, args: Some(args), .. }) = (item.joins.is_empty(), &item.relation) {
             let with: Vec<&str> = ctes.iter().map(String::as_str).collect();
-            if let Some(found) = ctx.table_macro(&parts(name), &with) {
+            // An argument that makes rows is written in at each place its parameter stands, so it
+            // multiplies the body's rows.
+            let makes_rows = args.args.iter().any(|a| match a {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(e)) | FunctionArg::Named { arg: FunctionArgExpr::Expr(e), .. } | FunctionArg::ExprNamed { arg: FunctionArgExpr::Expr(e), .. } => has_unnest(e, &ctx.catalog.row_makers),
+                _ => true,
+            });
+            if let Some(found) = ctx.table_macro(&parts(name), &with).filter(|_| !makes_rows) {
                 let arguments = macro_arguments(&found.params, &args.args, ctx);
                 return match cardinality_in(&found.body, &ctx.within(found, &arguments, &with), &[]) {
                     ("one", _) if !filtered && ungrouped => ("one", None),

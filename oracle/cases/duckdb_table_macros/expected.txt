@@ -4,6 +4,9 @@ alias_list.sql: many (p: bigint) -> { a: bigint, body: varchar }
 amount_by_decimal.sql: at_most_one () -> { amount: decimal(38,2), n: integer }
 amount_by_double.sql: many () -> { amount: decimal(38,2), n: integer }
 amount_by_long.sql: many () -> { amount: decimal(38,2), n: integer }
+argument_makes_rows.sql: many () -> { v: integer? }
+argument_makes_rows_aggregate.sql: many () -> { n: bigint, v: integer? }
+argument_makes_rows_filtered.sql: many () -> { v: integer }
 capture_with.sql: many (p: bigint) -> { id: bigint?, body: varchar? }
 ci_by_param.sql: many (c: varchar) -> { code: varchar, n: integer }
 ci_by_text.sql: many () -> { code: varchar, n: integer }

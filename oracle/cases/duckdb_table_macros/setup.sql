@@ -73,3 +73,6 @@ create macro qual_shadow(code) as table select code as k, n from codes c where c
 create macro one_c(x) as table select id, body from comments where id = x;
 create macro outer_c(x) as table select id, body from one_c(x);
 create macro outer_c2(x) as table select s.id, s.body from (select * from one_c(x)) s;
+
+-- An argument that makes rows is written in at each place its parameter stands.
+create macro counted_with(x) as table select count(*) as n, x as v from comments;

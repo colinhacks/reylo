@@ -34,6 +34,11 @@ user_cast_implicit.sql: one () -> { v: text? }
 user_cast_set.sql: at_most_one (x: int4) -> { a: text }
 user_cast_written.sql: one () -> { v: text? }
 values_column.sql: many () -> { open: bool? }
+whole_row_derived.sql: many () -> { v: bool? }
 whole_row_listed.sql: many (p: int8) -> { doc: jsonb? }
 whole_row_out.sql: one (x: int8) -> { doc: jsonb? }
+whole_row_renamed.sql: many () -> { v: bool? }
+whole_row_stored.sql: many () -> { v: bool }
 whole_row_table.sql: one (p: int8) -> { doc: jsonb text?[] }
+whole_row_with.sql: many () -> { v: bool? }
+whole_row_with_named.sql: many () -> { v: bool? }

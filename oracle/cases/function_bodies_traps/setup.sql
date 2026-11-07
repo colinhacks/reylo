@@ -98,3 +98,7 @@ create function strict_iset(x bigint) returns table (a text) language sql stable
 -- One output of a row type returns that row, whose whole row is its columns, not a row of one column.
 create function row_col(p bigint) returns table (r comments) language sql stable as $$ select c from comments c where c.post_id = p $$;
 create function out_row(p bigint, out r comments) returns setof comments language sql stable as $$ select c from comments c where c.post_id = p $$;
+
+-- A derived table's or a WITH query's row reaches a function of a table's row type by position, and
+-- the body reads its fields by name.
+create function only_archived(t posts) returns boolean language sql stable as $$ select not t.archived $$;

@@ -541,6 +541,50 @@ fn may_show(statement: &Value, name: &str) -> bool {
     shows
 }
 
+/// A type's name as `format_type` writes it, without its schema or its quotes.
+fn unqualified(name: &str) -> String {
+    let mut last = String::new();
+    let mut quoted = false;
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                chars.next();
+                last.push('"');
+            }
+            '"' => quoted = !quoted,
+            '.' if !quoted => last.clear(),
+            c => last.push(c),
+        }
+    }
+    last
+}
+
+/// Whether the FROM item `name` is a stored relation whose row type is `typename`: a table or a
+/// view of that name, under no WITH query of the name, its columns not renamed. Anything else that
+/// binds the name, or nothing, is not.
+fn relation_of_type(statement: &Value, name: &str, typename: Option<&str>) -> bool {
+    let Some(typename) = typename else { return false };
+    let mut with = HashSet::new();
+    // Each item of the name: its relation's name, whether its columns are renamed, and whether the
+    // relation is named without a schema, which a WITH query of its name would take.
+    let mut items: Vec<(String, bool, bool)> = Vec::new();
+    each_object("", statement, &mut |key, map| match key {
+        "CommonTableExpr" => with.extend(map.get("ctename").and_then(Value::as_str).map(String::from)),
+        "RangeVar" => {
+            let relname = map.get("relname").and_then(Value::as_str).unwrap_or("");
+            let alias = map.get("alias").and_then(Value::as_object);
+            if alias.and_then(|a| a.get("aliasname")).and_then(Value::as_str).unwrap_or(relname) == name {
+                let renamed = alias.is_some_and(|a| !names_of(a.get("colnames")).is_empty());
+                let bare = map.get("schemaname").and_then(Value::as_str).is_none_or(str::is_empty);
+                items.push((relname.to_string(), renamed, bare));
+            }
+        }
+        _ => {}
+    });
+    !items.is_empty() && items.iter().all(|(relname, renamed, bare)| !renamed && relname == typename && !(*bare && with.contains(relname)))
+}
+
 /// The names a body binds, at any level: each FROM item's alias, a table's name, a WITH query's.
 fn bound_names(body: &Value) -> HashSet<String> {
     let mut names = HashSet::new();
@@ -1053,10 +1097,17 @@ fn inline(sql: &str, f: &Function, body: &Body, value: &Value, args: &mut [Argum
         let rows = host.query_each(cardinality::COLUMNS_QUERY, relations.iter().map(|r| vec![json!([r]), json!(1)]), Scope::Statement)?;
         let columns: Vec<String> = rows.unwrap_or_default().iter().filter_map(|r| r.get(1).and_then(as_strings)).flatten().collect();
         let statement = tree(sql).map(|(statement, _)| statement);
-        for a in args.iter_mut() {
+        for (i, a) in args.iter_mut().enumerate() {
             if let Some(name) = &a.bare {
                 if !columns.contains(name) {
                     if statement.as_ref().is_none_or(|s| may_show(s, name)) {
+                        return Some(None);
+                    }
+                    // Postgres converts a derived table's, a WITH query's or a VALUES list's row to
+                    // the argument's type by position, and the body reads its fields by name: only a
+                    // stored relation of that very type, its columns not renamed, reads alike.
+                    let typename = f.input_typenames.get(i).map(|t| unqualified(t));
+                    if statement.as_ref().is_none_or(|s| !relation_of_type(s, name, typename.as_deref())) {
                         return Some(None);
                     }
                     a.whole_row = Some(name.clone());

@@ -261,9 +261,15 @@ pub struct Analysis {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
     /// The tables the statement reads and writes, as its database's own parse names them, which
-    /// the facts are read for ([`Database::tables`]). Not on the wire.
-    #[serde(skip)]
+    /// the facts are read for ([`Database::tables`]). On the wire only where the analysis read a
+    /// function's body, whose facts a parse of the statement as written cannot give: so a server's
+    /// analysis carries them to the client that checks its freshness.
+    #[serde(skip_serializing_if = "reads_no_body")]
     pub tables: Option<crate::fresh::Tables>,
+}
+
+fn reads_no_body(tables: &Option<crate::fresh::Tables>) -> bool {
+    tables.as_ref().is_none_or(|t| t.functions.is_empty())
 }
 
 impl Analysis {
