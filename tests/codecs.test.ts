@@ -34,7 +34,7 @@ const duck = (name: string): EngineType => (({
 }) as Record<string, EngineType>)[name]!;
 /** DuckDB's UNION, as the engine writes it: a tagged union of its alternatives, each value of which may be null. */
 const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", label: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });
-const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "array" };
+const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "Array" };
 
 test("each family reaches the values that hold its kind, on every database, and nothing else", () => {
   const onPg = (t: EngineType) => leafCodec(t, "postgres", every);
