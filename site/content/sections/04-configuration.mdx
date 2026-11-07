@@ -17,6 +17,8 @@ allow_untyped_params: false
 allow_nested_arrays: false
 # a comment naming each query's file, for your database's monitoring (the default)
 sqlcommenter: true
+# the directory of Reylo's files: schema.sql, the migrations and its cache (the default)
+dir: reylo
 ```
 
 ### `direct_url`
@@ -100,4 +102,22 @@ sqlcommenter: false
 
 ```sql title="What Postgres receives for queries/get_user.sql, by default"
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
+```
+
+### `dir`
+
+The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrate), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+
+```yaml title=".reylo.yaml"
+# the default is reylo
+dir: db
+```
+
+### `shadow_url`
+
+The server where [migrations](/migrate) build their shadow databases, for a database whose own server refuses `create database`:
+
+```yaml title=".reylo.yaml"
+# the default is the database's own server
+shadow_url: ${SHADOW_URL}
 ```

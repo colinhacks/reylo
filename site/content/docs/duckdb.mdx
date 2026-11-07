@@ -132,7 +132,7 @@ from read_parquet('logs/*.parquet')
 group by all
 ```
 
-Reylo keeps each query's analysis in [`.reylo/`](/#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `.reylo/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+Reylo keeps each query's analysis in [`reylo/.cache/`](/#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
 
 ## Nullability
 

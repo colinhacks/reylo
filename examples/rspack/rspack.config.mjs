@@ -10,7 +10,7 @@ export default {
   module: {
     rules: [
       // Reylo: each .sql import becomes a module that runs the statement. The loader analyzes
-      // the statement against the database DATABASE_URL names (or reads .reylo/) at build time.
+      // the statement against the database DATABASE_URL names (or reads reylo/.cache/) at build time.
       { test: /\.sql$/, use: "reylo/webpack" },
       {
         test: /\.ts$/,

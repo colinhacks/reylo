@@ -97,7 +97,7 @@ const sessionModule = pathToFileURL(join(project, "node_modules", "reylo", "src"
  */
 function check(name: string, url: string, { env = {}, tsc = true, analyze = !url.startsWith("duckdb:"), refused }: { env?: Record<string, string>; tsc?: boolean; analyze?: boolean; refused?: RegExp } = {}) {
   writeFileSync(join(project, ".reylo.yaml"), `direct_url: ${JSON.stringify(url)}\n`);
-  rmSync(join(project, ".reylo"), { recursive: true, force: true });
+  rmSync(join(project, "reylo", ".cache"), { recursive: true, force: true });
   const loader = run(process.execPath, ["--input-type=module", "-e", loaderAnalysis, sessionModule], project, false, env);
   console.log(`\n== ${name}: ${url}\n${loader.out.trim()}`);
   if (refused) {
@@ -111,7 +111,7 @@ function check(name: string, url: string, { env = {}, tsc = true, analyze = !url
     if (analyzed.status !== 0 || !analyzed.out.includes(`"file":"queries/get_user.sql"`)) failures.push(`${name}: reylo analyze exited ${analyzed.status}`);
   }
   if (!tsc) return;
-  rmSync(join(project, ".reylo"), { recursive: true, force: true });
+  rmSync(join(project, "reylo", ".cache"), { recursive: true, force: true });
   const check = run(process.execPath, [join(project, "node_modules", "typescript", "bin", "tsc"), "--noEmit", "--runExternalCode"], project, false, env);
   console.log(`tsc: ${check.status}${check.out.trim() ? `\n${check.out.trim()}` : ""}`);
   if (check.status !== 0) failures.push(`${name}: tsc exited ${check.status}`);

@@ -215,7 +215,7 @@ test("url is never the type check's connection: alone, it draws a notice and DAT
   assert.equal(resolveProject(e, tree({ "package.json": "{}" }), {}).missingUrl, 'No database URL: set DATABASE_URL in the environment, .env.local or .env, or "direct_url" in .reylo.yaml.');
 });
 
-test(".reylo/ names an entry by its statement, then its server: never by url or a password", async () => {
+test("reylo/.cache/ names an entry by its statement, then its server: never by url or a password", async () => {
   const entry = async (yaml: string, env: Record<string, string>) => {
     const session = await Session.open(tree({ "package.json": "{}", ".reylo.yaml": yaml }), env);
     await session.close();

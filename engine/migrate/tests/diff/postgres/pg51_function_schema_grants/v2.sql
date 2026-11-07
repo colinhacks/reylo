@@ -1,0 +1,11 @@
+create schema api;
+grant usage on schema api to reader;
+create table api.notes (id integer primary key, body text not null);
+grant select on api.notes to reader;
+create function api.note_count() returns bigint language sql stable as 'select count(*) from api.notes';
+grant execute on function api.note_count() to reader;
+create function api.purge() returns void language sql as 'delete from api.notes';
+revoke execute on function api.purge() from public;
+create function api.recent(n integer) returns setof api.notes language sql stable as 'select * from api.notes order by id desc limit n';
+revoke all on function api.recent(integer) from public;
+grant execute on function api.recent(integer) to reader;

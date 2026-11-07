@@ -1,0 +1,1 @@
+do $$ begin if not exists (select 1 from pg_roles where rolname = 'reader') then create role reader; end if; if not exists (select 1 from pg_roles where rolname = 'writer') then create role writer; end if; end $$;

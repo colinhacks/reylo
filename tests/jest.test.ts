@@ -93,7 +93,7 @@ test("Vitest's module cache makes a .sql module again after a migration", { skip
 test("Vitest's watch mode makes a .sql module again when the type check analyzes it anew", { skip }, async () => {
   const { dir, exec, seen } = cachedProject();
   // The type check (here its session, as the content mapper opens one) writes the statement's entry
-  // to `.reylo/`, which the module is built from; it is there before Vitest starts, so that its
+  // to `reylo/.cache/`, which the module is built from; it is there before Vitest starts, so that its
   // first run writes none. The session opens on the directory's real path, as Vitest sees it (on
   // macOS the temporary directory is under a link), since an entry is named for its database's.
   const typeCheck = async () => {
