@@ -199,16 +199,22 @@ fn placed_columns(columns: usize, targets: Option<&[ResultTarget]>) -> Vec<Optio
     placed
 }
 
-/// Where each item of the statement's result list is written, trimmed: the list after its
-/// `RETURNING`, else after its first `select` outside parentheses, up to the clause that ends it.
-/// `None` where the text has no such list, or an item is empty.
+/// Where each item of the statement's result list is written, trimmed of whitespace and comments:
+/// the list after its `RETURNING`, else after its first `select` outside parentheses, up to the
+/// clause that ends it; inside the parentheses of a statement or a first arm written in them. `None`
+/// where the text has no such list, or an item is empty.
 pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> {
     const MODIFIERS: [&str; 11] = ["distinct", "all", "distinctrow", "high_priority", "straight_join", "sql_small_result", "sql_big_result", "sql_buffer_result", "sql_no_cache", "sql_cache", "sql_calc_found_rows"];
     const ENDS: [&str; 16] = ["from", "where", "group", "having", "window", "order", "limit", "offset", "fetch", "union", "intersect", "except", "into", "qualify", "for", "returning"];
+    const SET_OPERATIONS: [&str; 3] = ["union", "intersect", "except"];
     let bytes = sql.as_bytes();
-    // The words and commas outside parentheses, strings and comments, and the statement's end.
+    // The words and commas outside parentheses, strings and comments; which bytes are code (not a
+    // comment, not whitespace); the first group of parentheses outside all others; and the end.
     let mut words: Vec<(usize, usize)> = Vec::new();
     let mut commas = Vec::new();
+    let mut code = vec![false; bytes.len()];
+    let mut group: Option<(usize, usize)> = None;
+    let mut open_at = 0;
     let mut end = bytes.len();
     let mut depth = 0usize;
     let mut i = 0;
@@ -218,12 +224,14 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
         match b {
             b'\'' | b'"' | b'`' => {
                 // MySQL reads a backslash in a string as an escape, and so does Postgres in E'…'.
-                let escapes = b == b'\'' && (dialect == Dialect::Mysql || (i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !ident(bytes[i - 2]))));
+                let escapes = (dialect == Dialect::Mysql && b != b'`') || (b == b'\'' && i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !ident(bytes[i - 2])));
+                let from = i;
                 i += 1;
                 while i < bytes.len() && bytes[i] != b {
                     i += if escapes && bytes[i] == b'\\' { 2 } else { 1 };
                 }
-                i += 1;
+                i = (i + 1).min(bytes.len());
+                code[from..i].fill(true);
                 continue;
             }
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
@@ -243,21 +251,39 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
                 while i < bytes.len() && !bytes[i..].starts_with(b"*/") {
                     i += 1;
                 }
-                i += 2;
+                i = (i + 2).min(bytes.len());
                 continue;
             }
-            // A Postgres dollar-quoted string, `$$…$$` or `$tag$…$tag$`; `$1` is a parameter.
-            b'$' if dialect == Dialect::Postgres && (i == 0 || !ident(bytes[i - 1])) && bytes.get(i + 1).is_some_and(|c| *c == b'$' || c.is_ascii_alphabetic() || *c == b'_') => {
+            // A dollar-quoted string, `$$…$$` or `$tag$…$tag$`; `$1` is a parameter.
+            b'$' if matches!(dialect, Dialect::Postgres | Dialect::Duckdb) && (i == 0 || !ident(bytes[i - 1])) && bytes.get(i + 1).is_some_and(|c| *c == b'$' || c.is_ascii_alphabetic() || *c == b'_') => {
                 let tag_end = bytes[i + 1..].iter().position(|c| !(c.is_ascii_alphanumeric() || *c == b'_')).map(|p| i + 1 + p);
                 if let Some(t) = tag_end.filter(|t| bytes[*t] == b'$') {
                     let tag = &bytes[i..=t];
                     let close = bytes[t + 1..].windows(tag.len()).position(|w| w == tag);
-                    i = close.map_or(bytes.len(), |c| t + 1 + c + tag.len());
+                    let to = close.map_or(bytes.len(), |c| t + 1 + c + tag.len());
+                    code[i..to].fill(true);
+                    i = to;
                     continue;
                 }
             }
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if !b.is_ascii_whitespace() {
+            code[i] = true;
+        }
+        match b {
+            b'(' | b'[' | b'{' => {
+                if depth == 0 {
+                    open_at = i;
+                }
+                depth += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 && b == b')' && bytes[open_at] == b'(' {
+                    group.get_or_insert((open_at, i));
+                }
+            }
             b',' if depth == 0 => commas.push(i),
             b';' if depth == 0 => {
                 end = i;
@@ -268,6 +294,7 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
                 while i < bytes.len() && ident(bytes[i]) {
                     i += 1;
                 }
+                code[start..i].fill(true);
                 words.push((start, i));
                 continue;
             }
@@ -276,27 +303,47 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
         i += 1;
     }
     let is = |(s, e): (usize, usize), word: &str| sql[s..e].eq_ignore_ascii_case(word);
-    let (mut start, from_returning) = match words.iter().position(|w| is(*w, "returning")) {
+    // A clause's word stands after a value, never after an operator or before a comma: `x + offset`
+    // and `offset,` are a column named so. `is distinct from` and `is not distinct from` are one
+    // operator.
+    let before = |at: usize| code[..at].iter().rposition(|c| *c).map(|p| bytes[p]);
+    let after = |at: usize| code[at..].iter().position(|c| *c).map(|p| bytes[at + p]);
+    let clause = |k: usize| {
+        let w = words[k];
+        let operand = before(w.0).is_some_and(|b| b"+-*/%|&<>=^~!:,(".contains(&b)) || after(w.1).is_some_and(|b| b",)+-*/%|&<>=^~!".contains(&b));
+        let distinct = is(w, "from") && k > 0 && is(words[k - 1], "distinct") && ((k > 1 && is(words[k - 2], "is")) || (k > 2 && is(words[k - 2], "not") && is(words[k - 3], "is")));
+        !operand && !distinct
+    };
+    let returning = words.iter().enumerate().position(|(k, w)| dialect != Dialect::Mysql && is(*w, "returning") && clause(k));
+    let select = words.iter().position(|w| is(*w, "select"));
+    let first_arm = select.is_some_and(|s| words[..s].iter().any(|w| SET_OPERATIONS.iter().any(|o| is(*w, o))));
+    // A statement, or its first arm, in parentheses: its list is inside them.
+    if returning.is_none() && (select.is_none() || first_arm) {
+        let first_code = code.iter().position(|c| *c)?;
+        let (open, close) = group.filter(|(open, _)| *open == first_code)?;
+        return result_items(&sql[open + 1..close], dialect).map(|items| items.into_iter().map(|(s, l)| (s + open + 1, l)).collect());
+    }
+    let (mut start, from_returning) = match returning {
         Some(k) => (k, true),
-        None => (words.iter().position(|w| is(*w, "select"))?, false),
+        None => (select?, false),
     };
     let mut list_start = words[start].1;
     if !from_returning {
-        while let Some(&w) = words.get(start + 1).filter(|w| MODIFIERS.iter().any(|m| is(**w, m)) && sql[list_start..w.0].trim().is_empty()) {
+        while let Some(&w) = words.get(start + 1).filter(|w| MODIFIERS.iter().any(|m| is(**w, m)) && !code[list_start..w.0].contains(&true)) {
             start += 1;
             list_start = w.1;
         }
         // `distinct on (…)`: the list starts after its parentheses.
-        if let Some(&w) = words.get(start + 1).filter(|w| is(**w, "on") && sql[list_start..w.0].trim().is_empty()) {
-            let open = w.1 + sql[w.1..].len() - sql[w.1..].trim_start().len();
-            if bytes.get(open) != Some(&b'(') {
+        if let Some(&w) = words.get(start + 1).filter(|w| is(**w, "on") && !code[list_start..w.0].contains(&true)) {
+            let open = w.1 + code[w.1..].iter().position(|c| *c)?;
+            if bytes[open] != b'(' {
                 return None;
             }
             let mut d = 0;
             let close = (open..bytes.len()).find(|&j| {
                 d += match bytes[j] {
-                    b'(' => 1,
-                    b')' => -1,
+                    b'(' if code[j] => 1,
+                    b')' if code[j] => -1,
                     _ => 0,
                 };
                 d == 0
@@ -304,18 +351,15 @@ pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> 
             list_start = close + 1;
         }
     }
-    let list_end = if from_returning { end } else { words.iter().find(|w| w.0 >= list_start && ENDS.iter().any(|e| is(**w, e))).map_or(end, |w| w.0) };
+    let list_end = if from_returning { end } else { words.iter().enumerate().find(|(k, w)| w.0 >= list_start && ENDS.iter().any(|e| is(**w, e)) && clause(*k)).map_or(end, |(_, w)| w.0) };
     let mut bounds = vec![list_start];
     bounds.extend(commas.iter().filter(|c| **c > list_start && **c < list_end).map(|c| c + 1));
     let mut items = Vec::with_capacity(bounds.len());
     for (k, &from) in bounds.iter().enumerate() {
         let to = bounds.get(k + 1).map_or(list_end, |next| next - 1);
-        let text = &sql[from..to];
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        items.push((from + (text.len() - text.trim_start().len()), trimmed.len()));
+        let first = code[from..to].iter().position(|c| *c)? + from;
+        let last = code[from..to].iter().rposition(|c| *c)? + from;
+        items.push((first, last + 1 - first));
     }
     Some(items)
 }
@@ -550,9 +594,23 @@ mod result_items {
         assert_eq!(texts("select a, [1, 2], {'k': 1} from t", Dialect::Duckdb).unwrap(), ["a", "[1, 2]", "{'k': 1}"]);
         assert_eq!(texts("from t select a, b where a > 1", Dialect::Duckdb).unwrap(), ["a", "b"]);
         assert_eq!(texts("select a, # , b\n c from t", Dialect::Mysql).unwrap(), ["a", "# , b\n c"]);
+        // A word that ends a list, where it is an operator's or a column's.
+        assert_eq!(pg("select id, id is distinct from 1 from t").unwrap(), ["id", "id is distinct from 1"]);
+        assert_eq!(pg("select id, id is not distinct from 1 from t").unwrap(), ["id", "id is not distinct from 1"]);
+        assert_eq!(texts("select x, x + offset, offset + 1 from t", Dialect::Mysql).unwrap(), ["x", "x + offset", "offset + 1"]);
+        assert_eq!(texts("select returning + 1, `returning` + 2 from t", Dialect::Mysql).unwrap(), ["returning + 1", "`returning` + 2"]);
+        // A trailing comment is no part of an item.
+        assert_eq!(pg("select id, id + 1 -- , x\nfrom t").unwrap(), ["id", "id + 1"]);
+        // MySQL's escapes in either quote, and DuckDB's dollar quotes.
+        assert_eq!(texts("select \"a\\\"\", \"x,y\" from t", Dialect::Mysql).unwrap(), ["\"a\\\"\"", "\"x,y\""]);
+        assert_eq!(texts("select id, $$a,b$$, id + 1 from t", Dialect::Duckdb).unwrap(), ["id", "$$a,b$$", "id + 1"]);
+        // A statement in parentheses, and a first arm in them.
+        assert_eq!(pg("((select id, id + 1 from t)) limit 1").unwrap(), ["id", "id + 1"]);
+        assert_eq!(pg("(select id, id + 1 from t) union all select 1, 2").unwrap(), ["id", "id + 1"]);
+        assert_eq!(pg("with c as (select 1) (select id, id + 1 from t) union all select 1, 2"), None);
         // No list, an item cut short by a word that ends it, and an empty item.
         assert_eq!(pg("values (1, 2)"), None);
-        assert_eq!(pg("select a, offset from t"), None);
+        assert_eq!(pg("select offset from t"), None);
         assert_eq!(pg("select a, , b"), None);
     }
 }

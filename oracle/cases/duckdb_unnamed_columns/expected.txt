@@ -15,6 +15,7 @@ row_column.sql: many () -> { id: integer }
 row_columns_function.sql: many () -> { x: integer? }
 row_columns_in_call.sql: one () -> { x: integer? }
 row_columns_in_expression.sql: many () -> { x: integer? }
+row_current_date.sql: one () -> { current_date: date }
 row_current_date_column.sql: many () -> { current_date: varchar? }
 row_delete_star.sql: many () -> { x: integer }
 row_exclude.sql: many () -> { kept: integer }
@@ -38,7 +39,6 @@ value_aggregate.sql: one () -> { count_star(): bigint } value
 value_call.sql: many () -> { lower("name"): varchar } value
 value_case.sql: many () -> { CASE  WHEN ((id > 1)) THEN ('a') ELSE 'b' END: varchar } value
 value_cast.sql: many () -> { CAST(id AS BIGINT): bigint } value
-value_current_date.sql: one () -> { current_date: date } value
 value_delete.sql: at_most_one () -> { (id + 1): integer } value
 value_expression.sql: many () -> { (id + 1): integer } value
 value_first_arm.sql: many () -> { 1: integer } value

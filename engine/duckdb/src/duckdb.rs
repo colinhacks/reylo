@@ -181,15 +181,13 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
     let rewritten_sql = rewritten.sql.clone();
-    let lowered = rewritten.sql.to_lowercase();
-    let column = |word: &str| catalog.has_column(word) || lowered.contains(&format!("\"{}\"", word.to_lowercase()));
     let analysis_columns = columns.len();
     let targets = shaped.as_deref().and_then(|statement| {
-        let targets = result_targets(statement, &column, false)?;
+        let targets = result_targets(statement, false)?;
         // An `unnest` of a struct makes a column of each field, so a list of more columns than items
         // is read again with each `unnest` as a `*`.
         if !targets.contains(&ResultTarget::Star) && targets.len() != analysis_columns {
-            return result_targets(statement, &column, true);
+            return result_targets(statement, true);
         }
         Some(targets)
     });
@@ -226,28 +224,28 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 /// and for a select list the tree does not say the columns of.
 /// `unnest` and `unpack` stand for as many columns as a struct has fields where `expand`, which the
 /// caller asks for once the list's count is not the columns'.
-fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
-    fn body(set: &SetExpr, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
+fn result_targets(statement: &Statement, expand: bool) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr, expand: bool) -> Option<Vec<ResultTarget>> {
         match set {
             // `from t` alone selects every column.
             SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
-            SetExpr::Select(s) => list(&s.projection, column, expand),
-            SetExpr::Query(q) => body(&q.body, column, expand),
+            SetExpr::Select(s) => list(&s.projection, expand),
+            SetExpr::Query(q) => body(&q.body, expand),
             // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
             SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
-            SetExpr::SetOperation { left, .. } => body(left, column, expand),
+            SetExpr::SetOperation { left, .. } => body(left, expand),
             // `values (1, 2)`: named col0 and col1 by DuckDB.
             SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn list(items: &[SelectItem], column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
+    fn list(items: &[SelectItem], expand: bool) -> Option<Vec<ResultTarget>> {
         let expanding = |e: &Expr| matches!(e, Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)));
         items
             .iter()
             .map(|item| match item {
-                SelectItem::UnnamedExpr(e) if read_as_it_is(e, column) || prefix_alias(e) => Some(ResultTarget::Named),
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e) || prefix_alias(e) => Some(ResultTarget::Named),
                 SelectItem::UnnamedExpr(e) if holds_columns(e) || (expand && expanding(e)) => Some(ResultTarget::Star),
                 SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed(None)),
                 SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
@@ -256,14 +254,13 @@ fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: 
             })
             .collect()
     }
-    // A column. A function DuckDB calls without parentheses (`current_date`) is read as a column of
-    // that name where the FROM has one, which only a table the statement names or a quoted name in
-    // the statement itself can make, since the word is reserved.
-    fn read_as_it_is(e: &Expr, column: &dyn Fn(&str) -> bool) -> bool {
+    // A word: a column, or a function DuckDB calls without parentheses (`current_date`), which it
+    // reads as a column of that name wherever one is in scope, and names after itself either way.
+    fn read_as_it_is(e: &Expr) -> bool {
         match e {
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
-            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None) && column(&f.name.to_string()),
-            Expr::Nested(e) => read_as_it_is(e, column),
+            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None),
+            Expr::Nested(e) => read_as_it_is(e),
             _ => false,
         }
     }
@@ -277,12 +274,12 @@ fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: 
         shallow(e, &|e| matches!(e, Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns")))
     }
     match statement {
-        Statement::Query(q) => body(&q.body, column, expand),
-        Statement::Insert(i) => list(i.returning.as_deref()?, column, expand),
-        Statement::Update(u) => list(u.returning.as_deref()?, column, expand),
-        Statement::Delete(d) => list(d.returning.as_deref()?, column, expand),
+        Statement::Query(q) => body(&q.body, expand),
+        Statement::Insert(i) => list(i.returning.as_deref()?, expand),
+        Statement::Update(u) => list(u.returning.as_deref()?, expand),
+        Statement::Delete(d) => list(d.returning.as_deref()?, expand),
         Statement::Merge(m) => match m.output.as_ref()? {
-            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, column, expand),
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, expand),
         },
         _ => None,
     }
