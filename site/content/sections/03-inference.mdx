@@ -46,7 +46,7 @@ Reylo decodes its own queries' values itself, so every driver gives the same typ
 | An array | an array of its element type, a `NULL` element `null` |
 | An enum | the union of its labels |
 | A domain | its base type |
-| A row value of a table or composite type | an object of its fields |
+| A row value of a table, a subquery or a composite type | an object of its fields |
 | `point`, `box`, `circle` and the other geometric types | an object of its fields, as `{ x, y }` |
 | A range | an object of its bounds, as `{ lower: 1, upper: 5, bounds: "[)" }`; a multirange an array of them |
 | pgvector's `vector`, `halfvec` | `number[]` |
@@ -114,6 +114,7 @@ Reylo sends the query to the live database [prepared](https://www.postgresql.org
 | Column types | the server's description; an enum as its labels, a domain as its base type, a JSON column as what its JSON Schema `CHECK` admits |
 | Nullability | the catalog's `NOT NULL`, outer joins, the expressions |
 | Cardinality | primary and unique keys, aggregates, `limit 1`, `returning` |
+| Nested rows | an `array(select r from (…) r)` of a subquery's or a table's whole rows, typed field by field |
 | Nested JSON | built with `jsonb_build_object`, `jsonb_agg` or `to_jsonb` of a row, typed from their arguments |
 
 </Dialect>
@@ -758,28 +759,26 @@ group by u.id
 
 ### Nested fetching
 
-Fetch each row's related rows with an aggregated subquery: it collects them into JSON, and Reylo types every field inside it:
+Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
 
 <Inferred>
 
 ```sql file="users_with_posts.sql" dialect="postgres"
 select u.id, u.name,
   -- every post, as an array
-  (
-    select coalesce(jsonb_agg(jsonb_build_object(
-      'id', p.id,
-      'title', p.title
-    ) order by p.id), '[]')
-    from posts p
-    where p.user_id = u.id
+  array(
+    select p from (
+      select id, title from posts where user_id = u.id order by id
+    ) p
   ) as posts,
   -- the latest post, or null
   (
-    select jsonb_build_object('id', p.id, 'title', p.title)
-    from posts p
-    where p.user_id = u.id
-    order by p.published_at desc nulls last
-    limit 1
+    select p from (
+      select id, title from posts
+      where user_id = u.id
+      order by published_at desc nulls last
+      limit 1
+    ) p
   ) as latest_post
 from users u
 where u.id = :id::int
@@ -829,6 +828,21 @@ select u.id, u.name,
   ) as latest_post
 from users u
 where u.id = :id::int
+```
+
+</Inferred>
+
+On Postgres, each field of an array of rows is read as a column is, so a `bigint` stays exact. [Inside JSON, values can differ](/postgres#json). JSON is still the smaller result when rows nest three levels deep and hold JSON documents, since a row's text escapes the quotes of what it holds at each level:
+
+<Inferred>
+
+```sql file="users_with_posts_json.sql" dialect="postgres"
+select u.id,
+  (
+    select coalesce(jsonb_agg(p), '[]')
+    from (select id, title from posts where user_id = u.id order by id) p
+  ) as posts
+from users u
 ```
 
 </Inferred>

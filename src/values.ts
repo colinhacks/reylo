@@ -748,20 +748,55 @@ function multirangeParts(text: string): string[] {
   return parts;
 }
 
+const COMMA = 44;
+const RIGHT_PAREN = 41;
+const RIGHT_BRACE = 125;
+const LEFT_BRACE = 123;
+const BACKSLASH = 92;
+const QUOTE = 34;
+const LETTER_N = 78;
+
 const rowDecoders = new Map<Kind, Decoder>();
 /** A row value of `kind` from its text, as an object of its fields, each from its text as a column of its kind. */
 function rowDecoder(kind: Kind): Decoder {
   let d = rowDecoders.get(kind);
   if (d !== undefined) return d;
   const fields = rowFields(kind);
+  const count = fields.length;
+  const names = fields.map(([name]) => name);
   const decoders = fields.map(([, k, delim]) => textDecoder(k, delim));
+  const plainNames = !names.includes("__proto__");
+  // One pass over the text, as record_out writes it (parseRow): each field's text is cut where it stands, and copied piece by piece only where it holds an escape.
   d = (x) => {
-    const texts = parseRow(x, fields.length);
     const row: Record<string, unknown> = {};
-    fields.forEach(([name], i) => {
-      const text = texts[i];
-      setKey(row, name, text === null || text === undefined ? null : decoders[i]!(text));
-    });
+    const n = x.length;
+    let i = 1;
+    for (let f = 0; f < count; f++) {
+      let c = x.charCodeAt(i);
+      let v: unknown = null;
+      if (c === COMMA || c === RIGHT_PAREN || i >= n) i++;
+      else {
+        let from = i;
+        let text = "";
+        let quoted = false;
+        for (; i < n; i++) {
+          c = x.charCodeAt(i);
+          if (c === BACKSLASH) {
+            text += x.slice(from, i) + (x[i + 1] ?? "");
+            from = ++i + 1;
+          } else if (c === QUOTE) {
+            text += x.slice(from, i);
+            if (quoted && x.charCodeAt(i + 1) === QUOTE) text += '"', i++;
+            else quoted = !quoted;
+            from = i + 1;
+          } else if (!quoted && (c === COMMA || c === RIGHT_PAREN)) break;
+        }
+        v = decoders[f]!(text === "" ? x.slice(from, i) : text + x.slice(from, i));
+        i++;
+      }
+      if (plainNames) row[names[f]!] = v;
+      else setKey(row, names[f]!, v);
+    }
     return row;
   };
   rowDecoders.set(kind, d);
@@ -1002,11 +1037,46 @@ export function elementKind(kind: Kind): Kind {
   return kind.replace(/(?:\[\])+$/, "") as Kind;
 }
 
+/** The decoder of an array of row values: parseArray, in one pass over a flat array's text, which is nearly every array of rows. An element is quoted, a backslash escaping within it, unless it is `NULL` or a row with no character to quote. */
+function rowsDecoder(element: Decoder): Decoder {
+  return (x) => {
+    if (x.charCodeAt(0) !== LEFT_BRACE || x.charCodeAt(1) === LEFT_BRACE) return parseArray(x, element);
+    const out: unknown[] = [];
+    if (x.charCodeAt(1) === RIGHT_BRACE) return out;
+    const n = x.length;
+    let i = 1;
+    while (i < n) {
+      if (x.charCodeAt(i) === QUOTE) {
+        let text = "";
+        let from = ++i;
+        for (; i < n; i++) {
+          const c = x.charCodeAt(i);
+          if (c === BACKSLASH) {
+            text += x.slice(from, i);
+            from = ++i;
+          } else if (c === QUOTE) break;
+        }
+        out.push(element(text === "" ? x.slice(from, i) : text + x.slice(from, i)));
+        i += 2;
+      } else {
+        const from = i;
+        for (; i < n; i++) {
+          const c = x.charCodeAt(i);
+          if (c === COMMA || c === RIGHT_BRACE) break;
+        }
+        const s = x.slice(from, i++);
+        out.push(s.charCodeAt(0) === LETTER_N && s === "NULL" ? null : element(s));
+      }
+    }
+    return out;
+  };
+}
+
 /** The decoder of a Postgres value of `kind` from its text; `delim` is an array's (`;` for `box[]`). */
 export function textDecoder(kind: Kind, delim = ","): Decoder {
   if (kind.endsWith("[]")) {
     const element = textDecoder(elementKind(kind), delim);
-    return (x) => parseArray(x, element, delim);
+    return isRowKind(elementKind(kind)) && delim === "," ? rowsDecoder(element) : (x) => parseArray(x, element, delim);
   }
   if (isRowKind(kind)) return rowDecoder(kind);
   if (isRangeKind(kind)) {

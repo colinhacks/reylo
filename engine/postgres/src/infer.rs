@@ -2834,6 +2834,16 @@ impl Around {
         Some(Around { statement: arm_text(version, &select, with)?, has_items: !items.is_empty() })
     }
 
+    /// `SELECT * FROM …`, every column of the items beside the subquery.
+    pub fn beside(&self) -> String {
+        self.statement.replacen("SELECT reylo_arm.*", "SELECT *", 1)
+    }
+
+    /// Whether a FROM item stands beside the subquery, which a name in it may read.
+    pub fn reads_beside(&self) -> bool {
+        self.has_items
+    }
+
     /// The statement over this subquery's text.
     pub fn with(&self, subquery: &str) -> String {
         format!("{} {} LATERAL ({subquery}) AS reylo_arm", self.statement, if self.has_items { "," } else { "FROM" })
@@ -4892,3 +4902,60 @@ mod tests {
         assert_eq!(lite("SELECT json_extract('not json', '$') AS boom").head, vec![Some(Expr::Unknown)]);
     }
 }
+
+/// The bare names a statement reads, anywhere in it, that are also the names of FROM items in it, at any depth: each a whole row only where no query in scope has a column of the name, which Postgres reads first.
+pub fn whole_row_names(sql: &str) -> Option<HashSet<String>> {
+    use serde_json::Value;
+    fn walk(v: &Value, bare: &mut HashSet<String>, items: &mut HashSet<String>) {
+        match v {
+            Value::Object(map) => {
+                if let Some(Value::Object(c)) = map.get("ColumnRef") {
+                    if let Some(Value::Array(fields)) = c.get("fields") {
+                        if let [only] = fields.as_slice() {
+                            if let Some(name) = only.pointer("/node/String/sval").and_then(Value::as_str) {
+                                bare.insert(name.to_string());
+                            }
+                        }
+                    }
+                }
+                for (kind, name) in [("RangeVar", "/alias/aliasname"), ("RangeSubselect", "/alias/aliasname"), ("RangeFunction", "/alias/aliasname"), ("JoinExpr", "/alias/aliasname")] {
+                    if let Some(item) = map.get(kind) {
+                        if let Some(n) = item.pointer(name).and_then(Value::as_str) {
+                            items.insert(n.to_string());
+                        } else if kind == "RangeVar" {
+                            if let Some(n) = item.get("relname").and_then(Value::as_str) {
+                                items.insert(n.to_string());
+                            }
+                        }
+                    }
+                }
+                map.values().for_each(|v| walk(v, bare, items));
+            }
+            Value::Array(list) => list.iter().for_each(|v| walk(v, bare, items)),
+            _ => {}
+        }
+    }
+    crate::stack::run(|| {
+        let parsed = crate::stack::parse(sql).ok()?;
+        let tree = serde_json::to_value(&parsed.protobuf).ok()?;
+        let (mut bare, mut items) = (HashSet::new(), HashSet::new());
+        walk(&tree, &mut bare, &mut items);
+        Some(bare.intersection(&items).cloned().collect())
+    })
+}
+
+#[cfg(test)]
+mod whole_row_names_tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_name_that_is_also_an_items_name_is_read_at_any_depth() {
+        let names = |sql: &str| { let mut v: Vec<String> = whole_row_names(sql).unwrap().into_iter().collect(); v.sort(); v };
+        assert_eq!(names("SELECT array(SELECT c FROM replies c) AS arr"), ["c"]);
+        assert_eq!(names("SELECT (SELECT to_jsonb(c) FROM replies c LIMIT 1) AS j"), ["c"]);
+        assert_eq!(names("SELECT to_jsonb(replies) FROM replies UNION ALL SELECT '{}'::jsonb"), ["replies"]);
+        assert!(names("SELECT id, body FROM replies r WHERE r.comment_id = 1").is_empty());
+        assert!(names("SELECT array[g.id, g.id] FROM grids g ORDER BY g.id").is_empty());
+    }
+}
+

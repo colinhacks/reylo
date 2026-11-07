@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.post_id, sum(x.big) filter (where x.id > 100) as s, max(x.big + 1) filter (where x.id > 100) as m from comments x where x.post_id = p.id group by x.post_id) c) as arr from posts p

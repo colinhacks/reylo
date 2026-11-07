@@ -794,3 +794,25 @@ test("an array of arrays decodes its innermost elements by their kind, from text
   assert.deepEqual(coerce("int8[][]", "{{1,2}}", "c"), [[1n, 2n]]);
   assert.deepEqual(coerce("int8[][]", [["1", "2"], ["3", null]], "c"), [[1n, 2n], [3n, null]]);
 });
+
+test("an array of rows reads as parseArray and parseRow read it, in every quoting record_out and array_out write", () => {
+  const row = `(${JSON.stringify(["a", "int"])},${JSON.stringify(["b", "text"])},${JSON.stringify(["c", "text"])})`;
+  const decode = textDecoder(row) as (text: string) => unknown;
+  for (const text of ['(1,"he said ""hi"", (ok) \\\\ back",)', '(1,,"")', "(,,)", "(2,NULL,x)", '(3,"a b","c\\"d")']) {
+    const [a, b, c] = parseRow(text, 3);
+    assert.deepEqual(decode(text), { a: a === null ? null : Number(a), b, c }, text);
+  }
+  const rows = textDecoder(`${row}[]`) as (text: string) => unknown;
+  const one = textDecoder(`(${JSON.stringify(["x", "int"])})[]`) as (text: string) => unknown;
+  assert.deepEqual(rows("{}"), []);
+  assert.deepEqual(rows("{NULL}"), [null]);
+  assert.deepEqual(one("{(1),NULL,(2)}"), [{ x: 1 }, null, { x: 2 }]);
+  assert.deepEqual(one("{()}"), [{ x: null }]);
+  assert.deepEqual(rows('{"(1,x,)","(2,\\"y z\\",\\"\\")"}'), [{ a: 1, b: "x", c: null }, { a: 2, b: "y z", c: "" }]);
+  // Another shape parseArray reads: lower bounds, and more than one dimension.
+  assert.deepEqual(rows('[0:0]={"(1,x,y)"}'), [{ a: 1, b: "x", c: "y" }]);
+  assert.deepEqual(rows('{{"(1,x,y)"},{"(2,a,b)"}}'), [[{ a: 1, b: "x", c: "y" }], [{ a: 2, b: "a", c: "b" }]]);
+  // A field named __proto__ is a field, whatever an assignment would make of it.
+  const proto = textDecoder(`(${JSON.stringify(["__proto__", "int"])})`) as (text: string) => object;
+  assert.deepEqual(Object.keys(proto("(1)")), ["__proto__"]);
+});

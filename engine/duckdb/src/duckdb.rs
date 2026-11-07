@@ -11,13 +11,29 @@ use crate::host::{Host, Lazy};
 use crate::nulls::{self, Ctx, Out};
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
-use reylo_engine_core::types::{Cardinality, StatementKind, Type};
+use reylo_engine_core::types::{Cardinality, Kind, StatementKind, Type};
 use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
+
+/// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
+fn with_rows(mut ty: Type, out: &Out) -> Type {
+    if let (Some(rows), Kind::Array(array)) = (&out.rows, &mut ty.kind) {
+        if let Kind::Record(record) = &mut array.element.ty.kind {
+            if record.fields.len() == rows.len() {
+                array.element.nullable = false;
+                for (field, row) in record.fields.iter_mut().zip(rows) {
+                    field.nullable = !row.not_null;
+                    field.ty = with_rows(field.ty.clone(), row);
+                }
+            }
+        }
+    }
+    ty
+}
 
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "from", "values", "table", "insert", "update", "delete", "pivot", "unpivot", "summarize"];
@@ -117,7 +133,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), crate::types::of(&c.ty), !out.is_some_and(|o| o.not_null)) }
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_rows(crate::types::of(&c.ty), o)), !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {

@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, lag(x.big) over (order by x.id) as prev, sum(x.big) over (order by x.id rows between 1 following and 1 following) as nxt, nth_value(x.big, 2) over (order by x.id) as second from comments x where x.post_id = p.id) c) as arr from posts p

@@ -170,6 +170,8 @@ pub struct Out {
     pub name: Option<String>,
     pub not_null: bool,
     pub comment: Option<String>,
+    /// For `array(select c from … c)`, an array of the whole rows of an item no outer join pads: the rows' columns, its fields.
+    pub rows: Option<Vec<Out>>,
 }
 
 /// The WITH queries in scope, innermost last: each one's name, lowercased, and its columns.
@@ -194,6 +196,8 @@ struct Scope {
     grouping_sets: bool,
     /// Grouped by keys (GROUP BY with any key, or ALL), so that each group has a row.
     grouped: bool,
+    /// The WITH queries in scope.
+    ctes: Ctes,
     /// Inside a table macro's body, its parameters' names: a bare one is the parameter, never a column.
     params: Vec<String>,
 }
@@ -252,7 +256,7 @@ impl Scope {
 
     fn column(&self, (i, j): (usize, usize)) -> Out {
         let rel = &self.rels[i];
-        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None });
+        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None });
         let not_null = !self.grouping_sets && (self.rejected.contains(&(i, j)) || (!rel.padded && c.not_null));
         Out { not_null, ..c }
     }
@@ -265,13 +269,13 @@ pub fn query(q: &Query, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     if let Some(with) = &q.with {
         for cte in &with.cte_tables {
             // A recursive query's rows come from itself too: its columns are named by its first
-            // part, and each may be NULL.
+            // part, and each may be NULL, as may each field of an array of rows.
             let columns = if with.recursive {
                 let first = match &*cte.query.body {
                     SetExpr::SetOperation { left, .. } => set_expr(left, ctx, &ctes),
                     _ => query(&cte.query, ctx, &ctes),
                 };
-                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, ..c }).collect())
+                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, ..c }).collect())
             } else {
                 query(&cte.query, ctx, &ctes)
             };
@@ -315,6 +319,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                         },
                         comment: None,
                         name: a.name,
+                        rows: None,
                     })
                     .collect(),
             )
@@ -326,7 +331,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                 return None;
             }
             // DuckDB names a VALUES list's columns col0, col1, …
-            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None }).collect())
+            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None }).collect())
         }
         _ => None,
     }
@@ -334,6 +339,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 
 fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     let mut scope = from(&s.from, ctx, ctes)?;
+    scope.ctes = ctes.clone();
     if let Some(selection) = &s.selection {
         reject(selection, &mut scope);
     }
@@ -354,7 +360,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 /// called `alias` in the statement: its NOT NULL columns are not NULL.
 pub fn returning(items: &[SelectItem], name: &[String], alias: Option<String>, ctx: &Ctx) -> Option<Vec<Out>> {
     let table = ctx.catalog.table(name)?;
-    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone() }).collect();
+    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None }).collect();
     let scope = Scope { rels: vec![Rel { name: alias.or_else(|| name.last().cloned()), columns: Some(columns), padded: false }], ..Scope::default() };
     projection(items, &scope, ctx)
 }
@@ -406,7 +412,7 @@ fn expand(scope: &Scope, i: usize, options: &sqlparser::ast::WildcardAdditionalO
         }
         let replaced = options.opt_replace.as_ref().and_then(|r| r.items.iter().find(|item| item.column_name.value.eq_ignore_ascii_case(&name)));
         match replaced {
-            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None }),
+            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None }),
             None => out.push(Out { name: Some(name), ..scope.column((i, j)) }),
         }
     }
@@ -429,8 +435,25 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
     let name = alias.map(String::from).or(own_name);
     match read {
         Some(at) => Out { name, ..scope.column(at) },
-        None => Out { name, not_null: not_null(e, scope, ctx), comment: None },
+        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx) },
     }
+}
+
+/// The columns of the rows `array(select c from … c)` collects: an item of the subquery's own FROM that no outer join pads, under a name that is no column in scope. A whole row of such an item is a struct, whatever its fields hold.
+fn array_of_rows(e: &Expr, scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>> {
+    let Expr::Function(f) = e else { return None };
+    let (true, FunctionArguments::Subquery(q)) = (builtin(f).as_deref() == Some("array"), &f.args) else { return None };
+    let SetExpr::Select(s) = &*q.body else { return None };
+    let [SelectItem::UnnamedExpr(Expr::Identifier(id))] = s.projection.as_slice() else { return None };
+    let plain = q.with.is_none() && matches!(&s.group_by, sqlparser::ast::GroupByExpr::Expressions(keys, _) if keys.is_empty()) && s.having.is_none() && s.qualify.is_none();
+    let is_column = |rel: &Rel| rel.columns.as_ref().is_none_or(|cs| cs.iter().any(|c| c.name.as_deref().is_none_or(|n| n.eq_ignore_ascii_case(&id.value))));
+    let inner = from(&s.from, ctx, &scope.ctes).filter(|_| plain)?;
+    if inner.rels.iter().chain(&scope.rels).any(is_column) {
+        return None;
+    }
+    let mut named = inner.rels.iter().filter(|r| r.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(&id.value)));
+    let (Some(rel), None) = (named.next(), named.next()) else { return None };
+    rel.columns.clone().filter(|_| !rel.padded)
 }
 
 /// How a SELECT groups its rows.
@@ -618,7 +641,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             };
             let columns = match cte {
                 Some(columns) => Some(columns),
-                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone() }).collect()),
+                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None }).collect()),
             };
             let columns = match (columns, alias) {
                 (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
@@ -861,6 +884,10 @@ pub fn builtin(f: &Function) -> Option<String> {
 fn function(f: &Function, scope: &Scope, ctx: &Ctx) -> bool {
     let Some(name) = builtin(f) else { return false };
     let name = name.as_str();
+    // `array(select …)` is an empty list over no rows.
+    if name == "array" && matches!(f.args, FunctionArguments::Subquery(_)) {
+        return true;
+    }
     // A ranking function given an ORDER BY of its own, as in `ntile(2 ORDER BY id) OVER (…)`, ranks
     // within the window's frame, and is NULL where the frame is empty.
     let framed = matches!(&f.args, FunctionArguments::List(list) if !list.clauses.is_empty());

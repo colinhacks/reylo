@@ -75,12 +75,15 @@ async function compute(): Promise<PlayData> {
       if (result.diagnostics.length) throw new Error(`lib/live/hard-examples.ts: the example "${title}" no longer types against the main page's Postgres schema: ${result.diagnostics[0]!.message}`);
       examples.push(example(title, slug, sql, result));
     }
-    if (!examples.some((e) => e.slug === START)) throw new Error(`lib/live/play-data.ts: no Inference example "${START}" to open with`);
+    // A preview of unreleased work runs an older release's engine (scripts/playground-engine.ts), which may not type the example the page opens with: it opens with the first one it types.
+    const start = examples.some((e) => e.slug === START) ? START : examples[0]?.slug;
+    if (start === undefined) throw new Error(`lib/live/play-data.ts: no Inference example to open with`);
+    if (start !== START) console.warn(`lib/live/play-data.ts: the Inference example "${START}" is left out, so the playground opens with "${start}"`);
     // The schema's comments follow their code by two spaces, where the docs line them up in a
     // column: the playground's pane is narrower than that column.
     const schema = pagePostgresSchema().replace(/(\S)[ \t]{2,}--/g, '$1  --');
     const apiAnswer = answerJson(await analyzeStatement(engine, io, new AnswerCache(), REYLO_API.example));
-    return { schema: tokens(h, schema, 'sql'), examples, start: START, catalog: await readCatalog(io), apiAnswer };
+    return { schema: tokens(h, schema, 'sql'), examples, start, catalog: await readCatalog(io), apiAnswer };
   } finally {
     await pg.close();
   }
