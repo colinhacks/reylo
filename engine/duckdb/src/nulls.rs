@@ -269,13 +269,13 @@ pub fn query(q: &Query, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     if let Some(with) = &q.with {
         for cte in &with.cte_tables {
             // A recursive query's rows come from itself too: its columns are named by its first
-            // part, and each may be NULL.
+            // part, and each may be NULL, as may each field of an array of rows.
             let columns = if with.recursive {
                 let first = match &*cte.query.body {
                     SetExpr::SetOperation { left, .. } => set_expr(left, ctx, &ctes),
                     _ => query(&cte.query, ctx, &ctes),
                 };
-                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, ..c }).collect())
+                first.map(|cs| cs.into_iter().map(|c| Out { not_null: false, comment: None, rows: None, ..c }).collect())
             } else {
                 query(&cte.query, ctx, &ctes)
             };
