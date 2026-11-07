@@ -98,10 +98,12 @@ test("reylo migration init starts a project, and needs nothing in the project fi
   assert.match(init.out, /^✓ Wrote reylo\/schema\.sql, reylo\/migrations\/init\.sql and reylo\/reylo-lock\.yaml\n/);
   assert.equal(existsSync(join(root, ".reylo.yaml")), false);
   // With no more than that, every command runs on it.
-  for (const args of [["migration", "lint"], ["migrate", "prod", "--dry-run"], ["migrate", "prod"], ["migration", "history", "push"], ["migration", "history", "pull"], ["schema", "pull"]]) {
+  for (const args of [["migration", "lint"], ["migrate", "prod", "--dry-run"], ["migrate", "prod"], ["migration", "history", "push"], ["migration", "history", "pull"], ["db", "introspect"]]) {
     const r = reylo(root, args);
     assert.equal(r.status, 0, `${args.join(" ")}: ${r.err}${r.out}`);
   }
+  // What db introspect prints is the schema init wrote, and it writes nothing.
+  assert.equal(reylo(root, ["db", "introspect"]).out, readFileSync(join(root, "reylo", "schema.sql"), "utf8"));
   // A key that has gone is refused, as any key the file can't have.
   writeFileSync(join(root, ".reylo.yaml"), "migrate:\n  lock: true\n");
   assert.notEqual(reylo(root, ["migration", "lint"]).status, 0);
