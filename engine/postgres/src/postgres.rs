@@ -531,9 +531,14 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         analysis.key = shortest_key(&kept, &analysis.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         analysis.unique = kept;
         analysis.ordered |= read.ordered;
-        // The same ORDER BY sorts both, and the bodies may say more of how far its columns go.
-        if read.order.len() > analysis.order.len() {
-            analysis.order = read.order;
+        // The same ORDER BY sorts both, and the bodies may say more of how far its columns go, but
+        // only for a type with no collation: a body's text sorts under the body's collation where the
+        // planner inlines the function, and under the declared one where it does not.
+        let columns = &analysis.columns;
+        let plain = |column: &str| columns.iter().find(|c| c.name == column).is_some_and(|c| uncollated(&c.ty));
+        let order: Vec<_> = read.order.into_iter().enumerate().take_while(|(i, o)| analysis.order.get(*i) == Some(o) || plain(&o.column)).map(|(_, o)| o).collect();
+        if order.len() > analysis.order.len() {
+            analysis.order = order;
             changed = true;
         }
     } else {

@@ -569,8 +569,14 @@ fn relation_of_type(statement: &Value, name: &str, typename: Option<&str>) -> bo
     // Each item of the name: its relation's name, whether its columns are renamed, and whether the
     // relation is named without a schema, which a WITH query of its name would take.
     let mut items: Vec<(String, bool, bool)> = Vec::new();
+    // Any other FROM item of the name: a derived table, a function, a join's alias.
+    let mut other = false;
     each_object("", statement, &mut |key, map| match key {
         "CommonTableExpr" => with.extend(map.get("ctename").and_then(Value::as_str).map(String::from)),
+        "RangeSubselect" | "RangeFunction" | "RangeTableFunc" | "JsonTable" | "JoinExpr" => {
+            other |= map.get("alias").and_then(Value::as_object).and_then(|a| a.get("aliasname")).and_then(Value::as_str) == Some(name);
+            other |= map.get("join_using_alias").and_then(Value::as_object).and_then(|a| a.get("aliasname")).and_then(Value::as_str) == Some(name);
+        }
         "RangeVar" => {
             let relname = map.get("relname").and_then(Value::as_str).unwrap_or("");
             let alias = map.get("alias").and_then(Value::as_object);
@@ -582,7 +588,7 @@ fn relation_of_type(statement: &Value, name: &str, typename: Option<&str>) -> bo
         }
         _ => {}
     });
-    !items.is_empty() && items.iter().all(|(relname, renamed, bare)| !renamed && relname == typename && !(*bare && with.contains(relname)))
+    !other && !items.is_empty() && items.iter().all(|(relname, renamed, bare)| !renamed && relname == typename && !(*bare && with.contains(relname)))
 }
 
 /// The names a body binds, at any level: each FROM item's alias, a table's name, a WITH query's.
