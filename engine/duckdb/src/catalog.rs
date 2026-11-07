@@ -100,8 +100,10 @@ impl Default for Catalog {
 
 impl Catalog {
     /// The table a name as written resolves to: `t`, `s.t` or `d.s.t`, each part compared without
-    /// case. An unqualified name is the current schema's table where it has one, else the one
-    /// table of that name anywhere; a name the catalog has twice otherwise resolves to none.
+    /// case. A name that names no database is the session's temporary table where it has one in
+    /// that schema, which DuckDB reads before any other (`main.t` too, since the temporary
+    /// catalog has a `main`); else an unqualified name is the current schema's table, else the one
+    /// table of that name anywhere. A name the catalog has twice otherwise resolves to none.
     pub fn table(&self, parts: &[String]) -> Option<&Table> {
         let same = |a: &str, b: &str| a.eq_ignore_ascii_case(b);
         let Some((name, qualifiers)) = parts.split_last() else { return None };
@@ -111,12 +113,18 @@ impl Catalog {
             .filter(|t| same(&t.name, name))
             .filter(|t| match qualifiers {
                 [] => true,
-                // A schema of the current database, or a database whose schema is `main`.
-                [q] => (same(&t.schema, q) && t.current_database) || (same(&t.database, q) && same(&t.schema, "main")),
+                // A schema of the temporary catalog or the current database, or a database whose
+                // schema is `main`.
+                [q] => (same(&t.schema, q) && (t.current_database || same(&t.database, "temp"))) || (same(&t.database, q) && same(&t.schema, "main")),
                 [d, s] => same(&t.database, d) && same(&t.schema, s),
                 _ => false,
             })
             .collect();
+        if qualifiers.len() <= 1 {
+            if let Some(temporary) = found.iter().find(|t| same(&t.database, "temp") && qualifiers.iter().all(|q| same(&t.schema, q))) {
+                return Some(temporary);
+            }
+        }
         if qualifiers.is_empty() {
             if let Some(current) = found.iter().find(|t| t.current) {
                 return Some(current);
@@ -234,6 +242,17 @@ mod tests {
         let makers = row_makers(macros);
         assert!(makers.contains("unnest") && makers.contains("generate_subscripts") && makers.contains("my_rows"));
         assert!(!makers.contains("plain") && !makers.contains("my_unnest_count"));
+    }
+
+    #[test]
+    fn an_unqualified_name_reads_the_sessions_temporary_table_first() {
+        let table = |database: &str, current: bool| Table { database: database.into(), schema: "main".into(), name: "comments".into(), current, current_database: current, ..Table::default() };
+        let catalog = of(vec![table("app", true), table("temp", false)]);
+        let found = |parts: &[&str]| catalog.table(&parts.iter().map(|p| p.to_string()).collect::<Vec<_>>()).map(|t| t.database.clone());
+        assert_eq!(found(&["comments"]).as_deref(), Some("temp"));
+        assert_eq!(found(&["main", "comments"]).as_deref(), Some("temp"));
+        assert_eq!(found(&["app", "main", "comments"]).as_deref(), Some("app"));
+        assert_eq!(found(&["temp", "comments"]).as_deref(), Some("temp"));
     }
 
     #[test]
