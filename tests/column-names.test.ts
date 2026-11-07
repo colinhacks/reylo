@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -124,7 +124,6 @@ test("SQLite: a row holds the columns its type declares, on every client, with t
     callbacks.close();
     await wrapped.close();
     await closeSessions();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -172,7 +171,6 @@ test("MySQL: a row holds the columns its type declares, where the driver writes 
     await maria.end();
     await closeSessions();
     await own.drop();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -192,7 +190,6 @@ test("MySQL: a project's codecs reach a column whose name mysql2 reports with a 
     await maria.end();
     await closeSessions();
     await own.drop();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -235,30 +232,37 @@ test("Postgres: a column with no alias is named by the expression's form, with n
   } finally {
     await closeSessions();
     await own.drop();
-    rmSync(root, { recursive: true, force: true });
   }
 });
 
 test("DuckDB: a column with no alias is named by the statement as DuckDB reads it, with no comment in it", async () => {
   const root = project("duckdb:./app.duckdb", ["@duckdb/node-api"]);
   const { DuckDBInstance } = driver("@duckdb/node-api");
-  const instance = await DuckDBInstance.create(join(root, "app.duckdb"));
+  const file = join(root, "app.duckdb");
+  // On Windows DuckDB opens a file it writes with no sharing, so while it is held for writing nothing can open it again, not even the type check in this same process: the database is closed while each statement is analyzed.
+  const seed = await DuckDBInstance.create(file);
+  const setup = await seed.connect();
+  await setup.run("create table t (a int, b text); insert into t values (1, 'x')");
+  setup.closeSync();
+  seed.closeSync();
+  const cases = [
+    ["select 1 + 1", undefined, ["(1 + 1)"], { "(1 + 1)": 2 }],
+    ["select :x::int + 1", { x: 5 }, ["(CAST($1 AS INTEGER) + 1)"], { "(CAST($1 AS INTEGER) + 1)": 6 }],
+    ["update t set a = a returning upper(b)", undefined, ["upper(b)"], { "upper(b)": "X" }],
+  ] as const;
+  const modules = [];
+  for (const [raw, , names] of cases) {
+    const { query, columns } = await built(root, raw);
+    assert.deepEqual(columns, names, raw);
+    modules.push(query);
+  }
+  await closeSessions();
+  const instance = await DuckDBInstance.create(file);
   const connection = await instance.connect();
-  await connection.run("create table t (a int, b text); insert into t values (1, 'x')");
   try {
-    for (const [raw, params, names, expected] of [
-      ["select 1 + 1", undefined, ["(1 + 1)"], { "(1 + 1)": 2 }],
-      ["select :x::int + 1", { x: 5 }, ["(CAST($1 AS INTEGER) + 1)"], { "(CAST($1 AS INTEGER) + 1)": 6 }],
-      ["update t set a = a returning upper(b)", undefined, ["upper(b)"], { "upper(b)": "X" }],
-    ] as const) {
-      const { query, columns } = await built(root, raw);
-      assert.deepEqual(columns, names, raw);
-      assert.deepEqual(row(await query.run(connection, params)), expected, raw);
-    }
+    for (const [i, [raw, params, , expected]] of cases.entries()) assert.deepEqual(row(await modules[i].run(connection, params)), expected, raw);
   } finally {
     connection.closeSync();
     instance.closeSync();
-    await closeSessions();
-    rmSync(root, { recursive: true, force: true });
   }
 });
