@@ -227,8 +227,6 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 /// `unnest` and `unpack` stand for as many columns as a struct has fields where `expand`, which the
 /// caller asks for once the list's count is not the columns'.
 fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
-    let body = |set: &SetExpr| body(set, column, expand);
-    let list = |items: &[SelectItem]| list(items, column, expand);
     fn body(set: &SetExpr, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
         match set {
             // `from t` alone selects every column.
@@ -279,12 +277,12 @@ fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: 
         shallow(e, &|e| matches!(e, Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns")))
     }
     match statement {
-        Statement::Query(q) => body(&q.body),
-        Statement::Insert(i) => list(i.returning.as_deref()?),
-        Statement::Update(u) => list(u.returning.as_deref()?),
-        Statement::Delete(d) => list(d.returning.as_deref()?),
+        Statement::Query(q) => body(&q.body, column, expand),
+        Statement::Insert(i) => list(i.returning.as_deref()?, column, expand),
+        Statement::Update(u) => list(u.returning.as_deref()?, column, expand),
+        Statement::Delete(d) => list(d.returning.as_deref()?, column, expand),
         Statement::Merge(m) => match m.output.as_ref()? {
-            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items),
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, column, expand),
         },
         _ => None,
     }
