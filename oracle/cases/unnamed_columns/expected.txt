@@ -1,3 +1,4 @@
+many_after_field_star.sql: many () -> { x: int4, ?column?: int4 } !! reylo23: Column 2 has no name: the database calls it "?column?", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_aggregate.sql: many () -> { id: int4, count: int8 } key (id)
 many_alias.sql: many () -> { id: int4, next: int4 } key (id)
 many_call.sql: many () -> { id: int4, lower: text } key (id)
@@ -6,6 +7,7 @@ many_expression_then_star.sql: many () -> { ?column?: int4, x: int4 } !! reylo23
 many_expressions.sql: many () -> { ?column?: int4, ?column?: int4 } !! reylo23: Column 1 has no name: the database calls it "?column?", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 2 has no name: the database calls it "?column?", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_named.sql: many () -> { id: int4, n: text } key (id)
 many_same_call.sql: many () -> { lower: text, lower: text? } !! reylo14: Columns 1 and 2 are both named "lower", and a row keeps only the last of them. Give one of them another name with `as`.
+many_star_of_nothing.sql: many () -> { ?column?: int4 } !! reylo23: Column 1 has no name: the database calls it "?column?", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_star_then_alias.sql: many () -> { x: int4, next: int4 }
 many_star_then_expression.sql: many () -> { x: int4, ?column?: int4 } !! reylo23: Column 2 has no name: the database calls it "?column?", which is no identifier and may differ on another driver or server. Give it one with `as`.
 row_alias.sql: one () -> { total: int8 }
