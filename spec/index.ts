@@ -33,7 +33,7 @@ export type Type =
 /** What every type may carry. */
 export interface Base {
   /**
-   * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, the name is qualified, and it is the type's identity.
+   * The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, it is qualified, and it is the type's identity.
    *   - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).
    *   - MySQL: `bigint`, `enum`, `json`.
    *   - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.
@@ -41,7 +41,7 @@ export interface Base {
    *
    * Absent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.
    */
-  name?: string;
+  label?: string;
   /** The comment the database keeps on a named type: `COMMENT ON TYPE` or `COMMENT ON DOMAIN`. A column's own comment is on the column. */
   comment?: string;
 }
@@ -182,7 +182,7 @@ export interface ArrayType extends Base, Lengths {
 }
 
 /**
- * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:
+ * Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:
  *   - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;
  *   - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;
  *   - an Oracle `BFILE` is `{ directory, file }`.
@@ -321,10 +321,10 @@ export interface XmlFragment extends Base {
   fragment: true;
 }
 
-/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `name` is all the format says; what a value looks like is the driver's to decide. */
+/** A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `label` is all the format says; what a value looks like is the driver's to decide. */
 export interface OpaqueType extends Base {
   kind: "opaque";
-  name: string;
+  label: string;
 }
 
 /** Nothing is known about the values. */
@@ -343,6 +343,16 @@ export interface Alternative extends Position {
   tag: string;
 }
 
+/** A column rows are sorted on. */
+export interface OrderColumn {
+  /** The column's name. */
+  column: string;
+  /** Sorted from the highest value down. */
+  desc?: true;
+  /** Where NULLs sort, which a database's default decides unless the statement says. */
+  nulls: "first" | "last";
+}
+
 /** Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name. */
 export interface RowsType extends Base {
   kind: "rows";
@@ -352,6 +362,8 @@ export interface RowsType extends Base {
   columns: Column[];
   /** Each set of columns, by name, no two rows agree on all of, a NULL equal to another NULL, none inside another: `[["id"], ["email"]]`. A nullable column of a unique index is not one, since NULLs may repeat there. A table's primary key comes first where the rows hold it. Only for rows that can be more than one, and absent where none is known. */
   unique?: string[][];
+  /** The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result. */
+  order?: OrderColumn[];
 }
 
 /** What introspecting one statement returns. A tool may write keys of its own beside these, as `reylo analyze` writes the file a statement was read from. */
@@ -411,7 +423,7 @@ export interface Param extends Position {
   comment?: string;
 }
 
-/** The database a document of descriptors describes, stated once at the document's top: every `name` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version. */
+/** The database a document of descriptors describes, stated once at the document's top: every `label` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version. */
 export interface Dialect {
   name: string;
   version: string;

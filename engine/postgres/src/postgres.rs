@@ -453,8 +453,101 @@ fn analyze_plain(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         Ok(l) => l,
         Err(bare) => return Some(bare),
     };
+    // Asked with the statement's first round, so that one that reads no body costs no round.
+    let rewritten = lex::rewrite(sql, &lexed, Target::Dollar);
+    let parsed = analyze::analyze(&rewritten.sql).ok();
+    let is_select = parsed.as_ref().is_some_and(|p| p.statement == "select");
+    if is_select {
+        crate::bodies::ask(parsed.as_ref().map_or(&[], |p| p.functions.as_slice()), host);
+    }
     let engine = Engine::new(host);
-    engine.run(sql, &lexed, marked)
+    let analysis = engine.run(sql, &lexed, marked)?;
+    if !is_select {
+        return Some(analysis);
+    }
+    // The statement with each call replaced by the body it runs, analyzed as a statement of its own:
+    // what that says narrows what the statement as written says, column for column.
+    let nullable: HashSet<String> = analysis.rewritten.order.iter().enumerate().filter(|(_, n)| marked.contains(n)).map(|(k, _)| (k + 1).to_string()).collect();
+    let Some(expanded) = crate::bodies::expand(&analysis.rewritten.sql, &nullable, host)? else { return Some(analysis) };
+    let Some((text, order)) = crate::bodies::renumbered(&expanded.sql) else { return Some(analysis) };
+    // An argument the body reads as a parameter of its own may be null.
+    let inner_marked: Vec<String> = order.iter().enumerate().filter(|(_, old)| nullable.contains(*old) || expanded.fresh.contains(*old)).map(|(i, _)| (i + 1).to_string()).collect();
+    // An argument a body reads twice is one value, written twice here: this statement is prepared
+    // and never run, and the rule against a repeated parameter is for what an author writes.
+    let Ok(inner_lexed) = lex::lex(&text, Dialect::Postgres) else { return Some(analysis) };
+    let inner = Engine::new(host);
+    let read = inner.run(&text, &inner_lexed, &inner_marked)?;
+    let (declared, found) = (engine.column_oids.borrow(), inner.column_oids.borrow());
+    let (mut analysis, narrowed) = narrowed(analysis, &declared, read, &found);
+    analysis.notes = expanded.notes;
+    // A type the body settled holds only while the body and what it reads do: the freshness check
+    // watches those too.
+    if narrowed {
+        let (first, through) = (analyze::analyze(&analysis.rewritten.sql).ok(), analyze::analyze(&text).ok());
+        let own: Vec<String> = first.iter().flat_map(|p| p.read_set.iter().chain(&p.write_set).cloned()).collect();
+        let mut tables: Vec<String> = own.iter().cloned().filter(|t| first.iter().any(|p| p.read_set.contains(t))).chain(through.iter().flat_map(|p| p.read_set.iter().cloned())).collect();
+        tables.sort_unstable();
+        tables.dedup();
+        analysis.tables = Some(reylo_engine_core::fresh::Tables { read: tables, write: first.map(|p| p.write_set).unwrap_or_default(), functions: expanded.functions, expanded: Some(text) });
+    }
+    Some(analysis)
+}
+
+/// What the statement with its functions' bodies in place says of `analysis`, where it describes to
+/// the same columns of the same types: a column not null, a type it holds more of (a JSON shape), the
+/// smaller of the two cardinalities. Each claim is the statement's own, so taking either is sound.
+/// With whether it changed anything.
+fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u32]) -> (Analysis, bool) {
+    let same = declared == found && analysis.columns.len() == read.columns.len() && analysis.columns.iter().zip(&read.columns).all(|(a, b)| a.name == b.name);
+    if !same || read.columns.is_empty() {
+        return (analysis, false);
+    }
+    let mut changed = false;
+    for (column, body) in analysis.columns.iter_mut().zip(read.columns) {
+        changed |= column.nullable && !body.nullable;
+        changed |= column.ty != body.ty;
+        column.nullable &= body.nullable;
+        column.ty = body.ty;
+        column.comment = column.comment.take().or(body.comment);
+    }
+    let rank = |c: &Cardinality| match c {
+        Cardinality::None => 0,
+        Cardinality::One => 1,
+        Cardinality::AtMostOne => 2,
+        Cardinality::Many => 3,
+    };
+    if rank(&read.cardinality) < rank(&analysis.cardinality) {
+        analysis.cardinality = read.cardinality;
+        analysis.cardinality_reason = read.cardinality_reason;
+        changed = true;
+    }
+    if analysis.cardinality == Cardinality::Many {
+        changed |= read.unique.iter().any(|key| !analysis.unique.contains(key));
+        changed |= !analysis.ordered && read.ordered;
+        let mut unique = std::mem::take(&mut analysis.unique);
+        unique.extend(read.unique.into_iter().filter(|key| !unique.contains(key)).collect::<Vec<_>>());
+        let inside = |key: &Vec<String>, other: &Vec<String>| key.len() > other.len() && other.iter().all(|c| key.contains(c));
+        let kept: Vec<Vec<String>> = unique.iter().filter(|key| !unique.iter().any(|other| inside(key, other))).cloned().collect();
+        analysis.key = shortest_key(&kept, &analysis.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+        analysis.unique = kept;
+        analysis.ordered |= read.ordered;
+        // The same ORDER BY sorts both, and the bodies may say more of how far its columns go, but
+        // only for a type with no collation: a body's text sorts under the body's collation where the
+        // planner inlines the function, and under the declared one where it does not.
+        let columns = &analysis.columns;
+        let plain = |column: &str| columns.iter().find(|c| c.name == column).is_some_and(|c| uncollated(&c.ty));
+        let order: Vec<_> = read.order.into_iter().enumerate().take_while(|(i, o)| analysis.order.get(*i) == Some(o) || plain(&o.column)).map(|(_, o)| o).collect();
+        if order.len() > analysis.order.len() {
+            analysis.order = order;
+            changed = true;
+        }
+    } else {
+        analysis.key = None;
+        analysis.unique.clear();
+        analysis.order.clear();
+        analysis.ordered = false;
+    }
+    (analysis, changed)
 }
 
 /// The described statement alone, for a host that renders its own types and reads its own JSON
@@ -563,9 +656,11 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.deterministic_only = trust.deterministic_only;
 }
 
-fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
-    let rows = host.query(cardinality::SET_RETURNING_OPERATORS_QUERY, vec![], Scope::Session)?;
-    Some(rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect())
+/// The operators some set-returning function implements, and the set-returning functions one argument can call.
+fn set_returning_operators(host: &Host) -> Lazy<(HashSet<String>, HashSet<String>)> {
+    let names = |sql| host.query(sql, vec![], Scope::Session).map(|rows| rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect::<HashSet<String>>());
+    let (operators, attributes) = (names(cardinality::SET_RETURNING_OPERATORS_QUERY), names(cardinality::SET_RETURNING_ATTRIBUTES_QUERY));
+    Some((operators?, attributes?))
 }
 
 /// A catalog query of `$1` a `text[]` of relation names and `$2` how many, asked of each relation
@@ -672,6 +767,8 @@ struct Engine<'a> {
     /// The comment of each result column of the main statement and of each column it writes a
     /// parameter to ([`Engine::comments`]).
     comments: RefCell<Comments>,
+    /// The type of each column the main statement's describe reports.
+    column_oids: RefCell<Vec<u32>>,
     budget: Cell<usize>,
 }
 
@@ -691,7 +788,7 @@ struct Nullable {
 
 impl<'a> Engine<'a> {
     fn new(host: &'a Host<'a>) -> Engine<'a> {
-        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES) }
+        Engine { host, registry: RefCell::new(TypeRegistry::with_builtins()), relations: RefCell::new(HashMap::new()), columns_by_name: RefCell::new(HashMap::new()), oids_by_name: RefCell::new(HashMap::new()), stored: RefCell::new(HashSet::new()), column_types: RefCell::new(HashMap::new()), written_facts: RefCell::new(HashMap::new()), views: RefCell::new(HashMap::new()), with_stack: RefCell::new(Vec::new()), probed: RefCell::new(HashSet::new()), prewarmed: RefCell::new(HashSet::new()), probing: RefCell::new(Vec::new()), probe_calls: Cell::new(0), settled: RefCell::new(HashMap::new()), assumptions: Cell::new(0), casts: RefCell::new(Vec::new()), pinned: Cell::new(false), written: RefCell::new(HashMap::new()), written_values: RefCell::new(HashMap::new()), comments: RefCell::new(Comments::default()), budget: Cell::new(MAX_PROBES), column_oids: RefCell::new(Vec::new()) }
     }
 
     fn run(&self, sql: &str, lexed: &Lexed, marked: &[String]) -> Lazy<Analysis> {
@@ -792,6 +889,7 @@ impl<'a> Engine<'a> {
                 return Some(bare(sql, lexed, Dialect::Postgres, diagnostics));
             }
         };
+        *self.column_oids.borrow_mut() = raw.columns.iter().map(|c| c.oid).collect();
         let trust = Trust { param_types: raw.params.clone(), ..trust };
         // The catalog the row-count proof reads, with what the describe and the trust settled.
         let mut catalog = build_catalog(&operators, catalog_rows);
@@ -861,7 +959,7 @@ impl<'a> Engine<'a> {
                     let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
                     unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
                     // The document under the column's own type's name, `json` or `jsonb`.
-                    let ty = Type { name: registry.render(col.type_oid).name, ..resolved.ty };
+                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
                     (ty, !resolved.non_null)
                 }
                 // A whole row of no type the catalog has, or an array of them: the row's fields,
@@ -876,7 +974,7 @@ impl<'a> Engine<'a> {
                 // included; what it builds is its document.
                 (None, Some(built)) => {
                     unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (Type { name: registry.render(col.type_oid).name, ..built.ty.clone() }, col.nullable || !built.non_null)
+                    (Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, col.nullable || !built.non_null)
                 }
                 // A WITH query's SEARCH or CYCLE column of rows.
                 _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
@@ -945,9 +1043,10 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Row count.
-        let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let (cardinality, reason) = self.cardinality(&rewritten.sql, &lex::first_word(sql, lexed), parsed.as_ref(), &described, &trust, &catalog);
         let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+        let order = result_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
@@ -960,6 +1059,7 @@ impl<'a> Engine<'a> {
             cardinality_reason: reason,
             key,
             unique,
+            order,
             ordered,
             rewritten,
             style: lexed.style,
@@ -969,6 +1069,7 @@ impl<'a> Engine<'a> {
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         };
@@ -1075,6 +1176,7 @@ impl<'a> Engine<'a> {
             cardinality_reason: None,
             key: None,
             unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten,
             style: lexed.style,
@@ -1084,13 +1186,19 @@ impl<'a> Engine<'a> {
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         })
     }
 
-    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
-        let Some(parsed) = parsed else { return (Cardinality::Many, Some("the statement did not parse locally".into())) };
+    fn cardinality(&self, sql: &str, first_word: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
+        let Some(parsed) = parsed else {
+            // Syntax of a server newer than the parser. A command with no columns, such as `REPACK`, returns no rows; a query with none, such as `SELECT FROM t`, returns an empty row per row it reads, and one in parentheses has no first word.
+            let query = matches!(first_word, "" | "select" | "with" | "values" | "table");
+            let rows = if described.columns.is_empty() && !query { Cardinality::None } else { Cardinality::Many };
+            return (rows, Some("the statement did not parse locally".into()));
+        };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
         if parsed.statement != "select" {
@@ -3755,8 +3863,8 @@ pub fn check_facts(text: &str, column: &str, types: (Option<u32>, Option<u32>), 
 /// since Postgres reports one only where every element has it.
 pub fn nest(col: &DescribedColumn, registry: &crate::pgtypes::TypeRegistry) -> Type {
     let level = |element: Type| crate::types::ArrayType { element: Box::new(crate::types::Position::non_null(element)), size: None, any_depth: false };
-    let Type { kind, name, comment } = registry.render_typmod(col.type_oid, col.typmod);
-    let named = |kind| Type { kind, name: name.clone(), comment: comment.clone() };
+    let Type { kind, label, comment } = registry.render_typmod(col.type_oid, col.typmod);
+    let named = |kind| Type { kind, label: label.clone(), comment: comment.clone() };
     match (col.nested, kind) {
         (Some(infer::Nesting { rows, element }), TyKind::Array(array)) => {
             let mut inner = match element {
@@ -3864,8 +3972,8 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     into.volatile.extend(from.volatile);
 }
 
-fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
-    let mut catalog = Catalog { set_returning_operators: operators.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
+fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: CatalogRows) -> Catalog {
+    let mut catalog = Catalog { set_returning_operators: set_returning.0.clone(), set_returning_attributes: set_returning.1.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
     for row in rows.columns {
         if let (Some(rel), Some(cols)) = (row.first().and_then(as_str), row.get(1).and_then(as_strings)) {
             let types: Vec<Option<u32>> = row.get(2).and_then(Value::as_array).map(|a| a.iter().map(as_u32).collect()).unwrap_or_default();
@@ -4304,10 +4412,21 @@ fn identifies(ty: &Type) -> bool {
     match &ty.kind {
         TyKind::Json(_) | TyKind::Unknown => false,
         TyKind::Array(array) => !array.any_depth,
-        TyKind::Record(_) => matches!(ty.name.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
-        TyKind::Opaque => ty.name.as_deref() != Some("record"),
+        TyKind::Record(_) => matches!(ty.label.as_deref(), Some("point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle")),
+        TyKind::Opaque => ty.label.as_deref() != Some("record"),
         _ => true,
     }
+}
+
+/// The columns of a statement's result its ORDER BY sorts on ([`Analysis::order`]), for a SELECT
+/// that can return more than one row, as [`cardinality::result_order`] reads them.
+fn result_order(sql: &str, parsed: Option<&Parsed>, cardinality: &Cardinality, columns: &[Column], trust: &Trust, catalog: &Catalog) -> Vec<crate::types::OrderColumn> {
+    if *cardinality != Cardinality::Many || !parsed.is_some_and(|p| p.statement == "select") {
+        return Vec::new();
+    }
+    let plain: Vec<bool> = columns.iter().map(|c| uncollated(&c.ty)).collect();
+    let named: Vec<(String, bool)> = columns.iter().map(|c| (c.name.clone(), c.nullable)).collect();
+    cardinality::result_order(sql, trust, catalog, &named, &plain)
 }
 
 /// Whether a statement's ORDER BY orders its rows totally ([`Analysis::ordered`]): for a SELECT that
@@ -5050,6 +5169,18 @@ mod tests {
         let refused = analyzed(sql);
         let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
         assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
+    }
+
+    #[test]
+    fn syntax_past_the_parser_is_typed_from_the_describe() {
+        let repack = replay_users("REPACK users", &[]);
+        assert_eq!((repack.cardinality, repack.columns.len(), repack.cardinality_reason.as_deref()), (Cardinality::None, 0, Some("the statement did not parse locally")));
+        for query in ["SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ()", "(SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ())"] {
+            assert_eq!((replay_users(query, &[]).cardinality, replay_users(query, &[]).columns.len()), (Cardinality::Many, 0), "{query}");
+        }
+        let window = replay_users("SELECT first_value(id) IGNORE NULLS OVER (ORDER BY id) AS f FROM users", &["f"]);
+        assert_eq!((window.cardinality, window.cardinality_reason.as_deref()), (Cardinality::Many, Some("the statement did not parse locally")));
+        assert!(window.columns[0].nullable);
     }
 
     #[test]

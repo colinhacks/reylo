@@ -45,6 +45,15 @@ export function getMDXComponents(components?: MDXComponents) {
     Step,
     // The marks on /compare (components/compare-table.tsx).
     CompareTable,
+    // A type descriptor format card, the same card's rows: Types, Schema, Query, Descriptor and Holds
+    // (lib/remark-typedefs.ts fills them).
+    TypeDefCard: ({ children }: { children: ReactNode }) => (
+      <div className="typedef-card">
+        <Inferred layout="rows" bare>
+          {children}
+        </Inferred>
+      </div>
+    ),
     // The card that links the playground, /play (components/playground-link.tsx).
     PlaygroundLink,
     // A rule list whose rules show SQL values and what `.run()` returns for each, the dialect

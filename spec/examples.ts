@@ -18,7 +18,7 @@ export interface Example {
   descriptor: Partial<StatementDescriptor>;
 }
 
-const int8: IntegerType = { kind: "integer", bits: 64, name: "int8" };
+const int8: IntegerType = { kind: "integer", bits: 64, label: "int8" };
 
 /** A first example, on Postgres: one user, by id. The statement's leading comment is its `comment`, and `sql` is the statement as the database runs it, with Postgres's own placeholders. */
 export const first_example: Example = {
@@ -37,8 +37,8 @@ export const first_example: Example = {
       cardinality: "at_most_one",
       columns: [
         { name: "id", type: int8 },
-        { name: "email", type: { kind: "text", size: { max: 255 }, name: "varchar" } },
-        { name: "bio", nullable: true, type: { kind: "text", name: "text" }, comment: "Shown on the profile page" },
+        { name: "email", type: { kind: "text", size: { max: 255 }, label: "varchar" } },
+        { name: "bio", nullable: true, type: { kind: "text", label: "text" }, comment: "Shown on the profile page" },
       ],
     },
     diagnostics: [],
@@ -46,10 +46,32 @@ export const first_example: Example = {
 };
 
 const int64: IntegerType = { kind: "integer", bits: 64 };
-const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, name: "float8" };
-const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, name: "timestamptz" };
-const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
+const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, label: "float8" };
+const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" };
+const point: RecordType = { kind: "record", label: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
+
+/** Postgres: the columns the rows are sorted on. `id` follows `at`, and NULLs sort first when descending unless the key says otherwise. */
+export const sorted_rows: Example = {
+  database: "postgres",
+  setup: "create table events (id int8 primary key, at timestamptz)",
+  statement: "select id, at from events order by at desc, id",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" } },
+      ],
+      unique: [["id"]],
+      order: [
+        { column: "at", desc: true, nulls: "first" },
+        { column: "id", nulls: "last" },
+      ],
+    },
+  },
+};
 
 /** Postgres: the sets of columns no two rows agree on, a table's primary key first. A nullable column of a unique index is not one, since NULLs may repeat there. */
 export const unique_columns: Example = {
@@ -62,8 +84,8 @@ export const unique_columns: Example = {
       cardinality: "many",
       columns: [
         { name: "id", type: int8 },
-        { name: "email", type: { kind: "text", name: "text" } },
-        { name: "handle", nullable: true, type: { kind: "text", name: "text" } },
+        { name: "email", type: { kind: "text", label: "text" } },
+        { name: "handle", nullable: true, type: { kind: "text", label: "text" } },
       ],
       unique: [["id"], ["email"]],
     },
@@ -80,32 +102,32 @@ export const postgres_columns: Example = {
       kind: "rows",
       cardinality: "many",
       columns: [
-        { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" } },
-        { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, name: "numeric" } },
+        { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } },
+        { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, label: "numeric" } },
         { name: "at", nullable: true, type: timestamptz },
-        { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
-        { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, name: "interval" } },
-        { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], name: "public.mood" } },
-        { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, name: "varchar" } },
-        { name: "tags", nullable: true, type: { kind: "array", any_depth: true, name: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, name: "varchar" } } } },
-        { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, name: "bit", element: { type: { kind: "boolean" } } } },
-        { name: "body", nullable: true, type: { kind: "json", name: "jsonb" } },
-        { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, name: "tstzrange" } },
+        { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, label: "date" } },
+        { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, label: "interval" } },
+        { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], label: "public.mood" } },
+        { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, label: "varchar" } },
+        { name: "tags", nullable: true, type: { kind: "array", any_depth: true, label: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, label: "varchar" } } } },
+        { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, label: "bit", element: { type: { kind: "boolean" } } } },
+        { name: "body", nullable: true, type: { kind: "json", label: "jsonb" } },
+        { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, label: "tstzrange" } },
         { name: "pos", nullable: true, type: point },
-        { name: "ring", nullable: true, type: { kind: "record", name: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
+        { name: "ring", nullable: true, type: { kind: "record", label: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
         {
           name: "addr",
           nullable: true,
           type: {
             kind: "union",
-            name: "inet",
+            label: "inet",
             members: [
               { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
               { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
             ],
           },
         },
-        { name: "tod", nullable: true, type: { kind: "time", tick: "1/1000000", max: "24:00:00", name: "time" } },
+        { name: "tod", nullable: true, type: { kind: "time", tick: "1/1000000", max: "24:00:00", label: "time" } },
       ],
     },
   },
@@ -120,7 +142,7 @@ export const pgvector_column: Example = {
     result: {
       kind: "rows",
       cardinality: "many",
-      columns: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, name: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }],
+      columns: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, label: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }],
     },
   },
 };
@@ -134,7 +156,7 @@ export const json_column: Example = {
     result: {
       kind: "rows",
       cardinality: "many",
-      columns: [{ name: "titles", nullable: true, type: { kind: "json", name: "json", content: { type: { kind: "array", element: { type: { kind: "text", name: "text" } } } } } }],
+      columns: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: { kind: "text", label: "text" } } } } } }],
     },
   },
 };
@@ -149,15 +171,15 @@ export const mysql_columns: Example = {
       kind: "rows",
       cardinality: "many",
       columns: [
-        { name: "id", type: { kind: "integer", bits: 64, unsigned: true, name: "bigint" } },
-        { name: "flag", type: { kind: "integer", bits: 8, name: "tinyint(1)" } },
-        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", name: "timestamp" } },
-        { name: "status", type: { kind: "text", enum: ["b", "a"], name: "enum" } },
-        { name: "born", nullable: true, type: { kind: "date", name: "date" } },
-        { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, name: "varchar" } },
-        { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, name: "text" } },
-        { name: "tags", nullable: true, type: { kind: "set", name: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
-        { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, name: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, name: "double" }, { kind: "decimal", name: "decimal" }] } },
+        { name: "id", type: { kind: "integer", bits: 64, unsigned: true, label: "bigint" } },
+        { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
+        { name: "status", type: { kind: "text", enum: ["b", "a"], label: "enum" } },
+        { name: "born", nullable: true, type: { kind: "date", label: "date" } },
+        { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
+        { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, label: "text" } },
+        { name: "tags", nullable: true, type: { kind: "set", label: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
+        { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, label: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "double" }, { kind: "decimal", label: "decimal" }] } },
       ],
     },
   },
@@ -173,8 +195,8 @@ export const sqlserver_columns: Example = {
       kind: "rows",
       cardinality: "many",
       columns: [
-        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", name: "datetimeoffset" } },
-        { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, name: "nvarchar" } },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", label: "datetimeoffset" } },
+        { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, label: "nvarchar" } },
       ],
     },
   },
@@ -189,7 +211,7 @@ export const range_over_array: Example = {
     result: {
       kind: "rows",
       cardinality: "many",
-      columns: [{ name: "r", nullable: true, type: { kind: "range", name: "public.arrayrange", subtype: { kind: "array", any_depth: true, name: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, name: "int4" } } } } }],
+      columns: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }],
     },
   },
 };
@@ -206,10 +228,10 @@ export const sqlite_columns: Example = {
       kind: "rows",
       cardinality: "many",
       columns: [
-        { name: "price", nullable: true, type: { kind: "union", name: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
-        { name: "name", nullable: true, type: { kind: "union", name: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
+        { name: "price", nullable: true, type: { kind: "union", label: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
+        { name: "name", nullable: true, type: { kind: "union", label: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
         { name: "x", nullable: true, type: { kind: "unknown" } },
-        { name: "n", nullable: true, type: { ...int64, name: "INTEGER" } },
+        { name: "n", nullable: true, type: { ...int64, label: "INTEGER" } },
       ],
     },
   },
@@ -230,15 +252,15 @@ export const oracle_column: Example = {
           nullable: true,
           type: {
             kind: "union",
-            name: "R.SHAPE_T",
+            label: "R.SHAPE_T",
             members: [
-              { kind: "record", name: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } }] },
+              { kind: "record", label: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } }] },
               {
                 kind: "record",
-                name: "R.CIRCLE_T",
+                label: "R.CIRCLE_T",
                 fields: [
-                  { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } },
-                  { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", name: "NUMBER" } },
+                  { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } },
+                  { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", label: "NUMBER" } },
                 ],
               },
             ],
@@ -263,10 +285,10 @@ export const duckdb_column: Example = {
           nullable: true,
           type: {
             kind: "tagged_union",
-            name: "union",
+            label: "union",
             alternatives: [
-              { tag: "num", nullable: true, type: { kind: "integer", bits: 32, name: "integer" } },
-              { tag: "str", nullable: true, type: { kind: "text", name: "varchar" } },
+              { tag: "num", nullable: true, type: { kind: "integer", bits: 32, label: "integer" } },
+              { tag: "str", nullable: true, type: { kind: "text", label: "varchar" } },
             ],
           },
         },
@@ -290,7 +312,7 @@ export const structured_param: Example = {
             type: {
               kind: "record",
               fields: [
-                { name: "kind", type: { kind: "text", size: { max: 32 }, name: "varchar" } },
+                { name: "kind", type: { kind: "text", size: { max: 32 }, label: "varchar" } },
                 { name: "at", nullable: true, optional: true, type: timestamptz },
               ],
             },

@@ -90,6 +90,8 @@ pub struct Catalog {
     pub set_returning: HashSet<String>,
     /// Operator names some set-returning function implements, in any schema.
     pub set_returning_operators: HashSet<String>,
+    /// Names of set-returning functions one argument can call, in any schema: `(x).f` and `t.f` call `f` where `x` or `t` has no field of the name.
+    pub set_returning_attributes: HashSet<String>,
     /// Per relation, the column lists of its unique keys: every unique, valid, non-partial index
     /// over plain columns. This is the fact [`at_most_one`] rests on, and it is a fact about the
     /// database rather than about the statement — adding an index makes a read provably single
@@ -504,6 +506,10 @@ pub const FUNCTIONS_QUERY: &str = "SELECT p.proname::pg_catalog.text, pg_catalog
 /// Every operator some set-returning function implements.
 pub const SET_RETURNING_OPERATORS_QUERY: &str = "SELECT DISTINCT o.oprname::pg_catalog.text FROM pg_catalog.pg_operator o \
     JOIN pg_catalog.pg_proc p ON p.oid OPERATOR(pg_catalog.=) o.oprcode::pg_catalog.oid WHERE p.proretset";
+
+/// Every set-returning function one argument can call, as `(x).f` and `t.f` do.
+pub const SET_RETURNING_ATTRIBUTES_QUERY: &str = "SELECT DISTINCT p.proname::pg_catalog.text FROM pg_catalog.pg_proc p \
+    WHERE p.proretset AND p.pronargs OPERATOR(pg_catalog.>=) '1'::pg_catalog.int2 AND p.pronargs OPERATOR(pg_catalog.-) p.pronargdefaults OPERATOR(pg_catalog.<=) '1'::pg_catalog.int2";
 
 /// Prove that one rewritten statement (placeholders already `$n` or `?n`) returns exactly one
 /// row, or say why the build cannot, worded to finish a sentence: "a WHERE with no FROM can
@@ -1255,8 +1261,10 @@ impl<'a> From<'a> {
             return Some(placed);
         }
         match c.fields.iter().filter_map(field_name).collect::<Vec<_>>().as_slice() {
-            // A table's own columns are placed above; a name it lacks is an enclosing query's.
-            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
+            // A table's own columns are placed above; a name it lacks is an enclosing query's. The
+            // item's own name may be no column of it but the whole row, which `name.name` would
+            // read as a function of that row: neither is placed.
+            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) && self.items[0].alias != *column => Some((0, column.to_string())),
             _ => None,
         }
     }
@@ -2593,6 +2601,80 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
     from_ordered(s, &from, &sorted_inputs, trust, catalog)
 }
 
+/// The columns of one rewritten SELECT's result its ORDER BY sorts on, in order, with each one's
+/// direction and where its NULLs sort: ascending and last unless the key says otherwise, and
+/// descending first. The list ends at the first key that is no output column of a name of its own,
+/// since a later key sorts only among rows that tie on that one: an expression, a column the
+/// result doesn't hold, a `USING` operator or a `COLLATE`, under which the values aren't sorted
+/// as the column's own collation sorts them. A later key on a column already listed sorts nothing.
+/// A column of a type with a collation is listed only where it is a table's column, passed through
+/// unchanged ([`From::base`]), or a set operation's: a set-returning SQL function the planner inlines
+/// sorts a column it passes through under its body's collation, not the one it declares. A name
+/// spelled with a character beyond ASCII ends the list too, since a server whose encoding is not
+/// UTF-8 truncates and folds it otherwise than the parser here does.
+/// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
+/// for is returned with its new values, in the place its old ones sorted to, so such a statement
+/// has no order to state.
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
+    use crate::types::{NullsOrder, OrderColumn};
+    use protobuf::{SortByDir, SortByNulls};
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        if !s.locking_clause.is_empty() {
+            return Vec::new();
+        }
+        let catalog = with_fields(&s, catalog);
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
+        let positions = target_positions(&s);
+        let mut order: Vec<OrderColumn> = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
+            let Some(e) = by.node.as_deref() else { break };
+            if !by.use_op.is_empty() || by.sortby_dir == SortByDir::SortbyUsing as i32 {
+                break;
+            }
+            let (Some(at), input) = sort_target(&s, from.as_ref(), e, &positions, &catalog, columns) else { break };
+            let Some((name, _)) = columns.get(at) else { break };
+            let target = positions.iter().position(|p| *p == Some(at)).and_then(|t| s.target_list.get(t));
+            if !ascii_names(e) || target.is_some_and(|t| !ascii_names(t)) {
+                break;
+            }
+            if plain.get(at) != Some(&true) && !set_operation {
+                let traced = from.as_ref().zip(input.as_ref()).and_then(|(f, (i, column))| f.base(*i, column, Dialect::Postgres, trust, &catalog));
+                if traced.is_none() {
+                    break;
+                }
+            }
+            if columns.iter().filter(|(other, _)| other == name).count() != 1 {
+                break;
+            }
+            if order.iter().any(|o| o.column == *name) {
+                continue;
+            }
+            let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
+            let first = if by.sortby_nulls == SortByNulls::SortbyNullsFirst as i32 {
+                true
+            } else if by.sortby_nulls == SortByNulls::SortbyNullsLast as i32 {
+                false
+            } else {
+                desc
+            };
+            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+        }
+        order
+    })
+}
+
+/// Whether every name a column reference or a select-list entry spells is ASCII.
+fn ascii_names(node: &protobuf::Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => c.fields.iter().filter_map(field_name).all(|f| f.is_ascii()),
+        Some(NodeEnum::ResTarget(r)) => r.name.is_ascii() && r.val.as_deref().is_none_or(ascii_names),
+        _ => true,
+    }
+}
+
 /// What one sort key of a SELECT names: the output column, by position, and the FROM's column, by
 /// item and name. A position counts output columns, a `*`'s included; a bare name is an output
 /// column's before a column of the FROM, as Postgres reads ORDER BY.
@@ -3201,10 +3283,12 @@ fn dml_node(node: &NodeEnum, trust: &Trust, catalog: &Catalog) -> Option<Result<
             // A row trigger that runs BEFORE the insert (or the update ON CONFLICT turns it into)
             // or INSTEAD of it can return NULL, and then the row is neither written nor returned.
             let skipped = |events: i32| i.relation.as_ref().and_then(|rv| catalog.skipping_triggers.get(&catalog_name(rv))).is_some_and(|mask| mask & events != 0);
+            // A `WITH` query that writes may have updated the conflicting row already, and `DO UPDATE` leaves a row this statement has written alone, and returns nothing for it.
+            let written_before = i.with_clause.as_ref().is_some_and(|w| w.ctes.iter().any(|c| matches!(c.node.as_ref(), Some(NodeEnum::CommonTableExpr(cte)) if !matches!(cte.ctequery.as_deref().and_then(|q| q.node.as_ref()), Some(NodeEnum::SelectStmt(_))))));
             match i.on_conflict_clause.as_deref() {
                 Some(c) if c.action == protobuf::OnConflictAction::OnconflictNothing as i32 => Ok(Cardinality::AtMostOne),
                 // `DO UPDATE … WHERE` leaves a conflicting row alone, and returns nothing for it.
-                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
+                Some(c) if c.action == protobuf::OnConflictAction::OnconflictUpdate as i32 && (c.where_clause.is_some() || written_before || skipped(TRIGGER_ROW_INSERT | TRIGGER_ROW_UPDATE)) => Ok(Cardinality::AtMostOne),
                 _ if skipped(TRIGGER_ROW_INSERT) => Ok(Cardinality::AtMostOne),
                 _ => Ok(Cardinality::One),
             }
@@ -3594,6 +3678,8 @@ fn not_one_row_shaped(s: &SelectStmt) -> &'static str {
 struct Calls {
     functions: Vec<String>,
     operators: Vec<String>,
+    /// The last names of `(x).f` and `t.f`, each a field or, where the value has no such field, a call of `f`.
+    attributes: Vec<String>,
 }
 
 impl Calls {
@@ -3606,6 +3692,9 @@ impl Calls {
             if !catalog.functions.contains(name) {
                 return Some(format!("the function {name} is not in the catalog, so the build cannot rule out that it returns a set"));
             }
+        }
+        if let Some(name) = self.attributes.iter().find(|name| catalog.set_returning_attributes.contains(name.as_str())) {
+            return Some(format!("{name} may be a call of the set-returning function of that name, which returns a row per value, and none for an empty set"));
         }
         self.operators
             .iter()
@@ -3651,6 +3740,15 @@ fn walk(v: &Value, calls: &mut Calls) {
                             calls.functions.push(name);
                         }
                         walk(child, calls);
+                    }
+                    "AIndirection" => {
+                        calls.attributes.extend(child.get("indirection").and_then(Value::as_array).into_iter().flatten().filter_map(|n| n.pointer("/node/String/sval")?.as_str().map(String::from)));
+                        walk(child, calls);
+                    }
+                    "ColumnRef" => {
+                        if child.get("fields").and_then(Value::as_array).is_some_and(|fields| fields.len() > 1) {
+                            calls.attributes.extend(last_name(child.get("fields")));
+                        }
                     }
                     "AExpr" => {
                         match last_name(child.get("name")) {
@@ -4033,6 +4131,8 @@ mod tests {
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do nothing returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         // `DO UPDATE … WHERE` leaves a conflicting row alone and returns nothing for it.
+        assert_eq!(dml("with u as (update users set email = $1 returning id) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
+        assert_eq!(dml("with u as (select 1) insert into users (email) values ($1) on conflict (email) do update set email = excluded.email returning id", &Trust::default(), &c), Some(Ok(Cardinality::One)));
         assert_eq!(dml("insert into users (email) values ($1) on conflict (email) do update set email = excluded.email where users.id > 1 returning id", &Trust::default(), &c), Some(Ok(Cardinality::AtMostOne)));
         // A row trigger that runs BEFORE the insert can return NULL; one on UPDATE matters only
         // where ON CONFLICT turns the insert into an update.
@@ -4273,6 +4373,16 @@ mod tests {
         assert!(at_most_one("SELECT relkind, count(*) AS n FROM pg_class GROUP BY relkind, ()", Dialect::Postgres, &Trust::default(), &c).is_err());
         // Without an aggregate it reads as ungrouped: many rows, never fewer than it returns.
         assert!(at_most_one("SELECT 1 AS x FROM pg_class GROUP BY ()", Dialect::Postgres, &Trust::default(), &c).is_err());
+    }
+
+    #[test]
+    fn an_attribute_may_be_a_call_of_a_set_returning_function() {
+        let mut catalog = stock();
+        catalog.set_returning_attributes.insert("jsonb_object_keys".into());
+        let one = |sql: &str| exactly_one(sql, Dialect::Postgres, &Trust::default(), &catalog);
+        refused(one("SELECT ('{}'::jsonb).jsonb_object_keys AS k"), "set-returning function", "field notation");
+        refused(one("SELECT count(*) AS n, t.jsonb_object_keys AS k FROM t"), "set-returning function", "a qualified name");
+        assert!(one("SELECT ('{}'::jsonb).other AS k").is_ok());
     }
 
     #[test]

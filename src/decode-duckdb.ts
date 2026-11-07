@@ -254,7 +254,7 @@ export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: str
     if (value == null) throw new ParameterError(`Parameter "${name}" is a UNION, and @duckdb/node-api cannot bind one whose ${JSON.stringify(tag)} member is null: pass null for the whole parameter, or a value of the member.`);
     return { tag, value: encodeDuckdb(member.type, value, name) };
   }
-  if (type.kind === "integer" || (type.kind === "decimal" && type.name === "bignum")) {
+  if (type.kind === "integer" || (type.kind === "decimal" && type.label === "bignum")) {
     if (typeof v === "number" && !Number.isInteger(v)) throw new ParameterError(`Parameter "${name}" is an integer, and ${v} has a fraction, which DuckDB would round away.`);
     if (typeof v === "string" && !/^\s*[+-]?\d+\s*$/.test(v)) throw new ParameterError(`Parameter "${name}" is an integer, so a string for it holds the digits alone; got ${JSON.stringify(v)}.`);
   }

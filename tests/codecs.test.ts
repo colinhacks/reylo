@@ -26,14 +26,14 @@ import type { EngineType } from "../src/engine-type.ts";
 const Temporal: any = (globalThis as any).Temporal;
 
 /** A SQLite column of NUMERIC affinity whose table declares it `declared`, as the engine writes it: whatever storage class a row stored, under the declared name. */
-const declared = (name: string): EngineType => ({ ...(lite("numeric") as Extract<EngineType, { kind: "union" }>), name });
+const declared = (name: string): EngineType => ({ ...(lite("numeric") as Extract<EngineType, { kind: "union" }>), label: name });
 const duck = (name: string): EngineType => (({
   bigint: { kind: "integer", bits: 64 }, hugeint: { kind: "integer", bits: 128 }, decimal: { kind: "decimal", precision: 18, min_scale: 3, max_scale: 3 },
   timestamptz: { kind: "instant", tick: "1/1000000" }, timestamp_ns: { kind: "datetime", tick: "1/1000000000" }, date: { kind: "date" }, time: { kind: "time", tick: "1/1000000" },
   interval: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000" }, blob: { kind: "bytes" }, varchar: { kind: "text" },
 }) as Record<string, EngineType>)[name]!;
 /** DuckDB's UNION, as the engine writes it: a tagged union of its alternatives, each value of which may be null. */
-const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", name: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });
+const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", label: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });
 const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "array" };
 
 test("each family reaches the values that hold its kind, on every database, and nothing else", () => {

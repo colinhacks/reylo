@@ -125,7 +125,7 @@ export function mapperHandlers(): MapperHandlers {
           // hover shows the row's shape (`{ id: number; ... } | null`) and not `Row | null`. The two
           // texts go in by `typeof`, so a hover over the query names them and one over its `sql`
           // shows the statement.
-          `${docComment(leading.prose, written)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(dialect)}, QueryError> & {`,
+          `${docComment(leading.prose, written, outcome.ok ? outcome.analysis.notes?.join("\n\n") : undefined)}declare const query: Query<${paramsType}, ${rowType}, ${JSON.stringify(cardinality)}, ${JSON.stringify(dialect)}, QueryError> & {`,
           `  readonly sql: typeof sql;`,
           `  readonly raw: typeof raw;`,
           // Every build step writes the file's path into the module, so an import's source is never

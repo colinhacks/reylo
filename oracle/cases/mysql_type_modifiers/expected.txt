@@ -13,5 +13,6 @@ view.sql: many () -> { name: varchar, twice: varchar?, price: decimal?, at_ms: d
 with_query.sql: many () -> { name: varchar(≤20), note: text(≤255)?, bits: varbinary(≤8)?, stamp: timestamp? }
 written.sql: none (id: int, name: varchar(≤20), code: char(≤5)?, price: decimal(10,2)?, body: text(≤65535 bytes UTF-8)?) -> {  }
 written_cast.sql: none (id: int, name: varchar) -> {  }
+written_cast_overflow.sql: none (id: int, price: decimal) -> {  }
 written_select.sql: none (id: int, name: varchar(≤20), price: decimal(10,2)?) -> {  }
 written_update.sql: none (name: varchar(≤20), price: decimal(10,2)?, id: int32) -> {  }

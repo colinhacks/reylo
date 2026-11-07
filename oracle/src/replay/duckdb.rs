@@ -123,7 +123,7 @@ fn run_file(file: &Path, dir: &Path, timeout_ms: u64, t: &mut Tally) -> Result<(
             Ok(Ok(a)) => a,
             _ => {
                 let _ = db.exec(&sql);
-                t.analysis_failed += 1;
+                t.analysis_failed.push(format!("{shown}:{}: {}", r.line, super::one_line(&sql)));
                 continue;
             }
         };

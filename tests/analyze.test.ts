@@ -428,6 +428,11 @@ test("the Postgres fingerprint runs on the server, holds while nothing changes, 
       "create or replace function plus(int, int default 1) returns int language sql as 'select $1 + $2'",
       "alter function plus(int, int) immutable",
       "alter function plus(int, int) strict",
+      // What a body returns, which an analysis reads: a body stored parsed keeps prosrc empty.
+      "create or replace function plus(int, int default 2) returns int language sql strict immutable as 'select $1 + $2'",
+      "alter function plus(int, int) set search_path = public",
+      "create function atomic_plus(a int) returns int language sql begin atomic select a + 1; end",
+      "create or replace function atomic_plus(a int) returns int language sql begin atomic select a + 2; end",
       "alter table m alter column v type varchar(50)",
       "alter table m alter column n type numeric(10,2)",
     ]) {

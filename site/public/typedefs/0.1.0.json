@@ -92,8 +92,8 @@
       "description": "What every type may carry.",
       "type": "object",
       "properties": {
-        "name": {
-          "description": "The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, the name is qualified, and it is the type's identity.\n  - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).\n  - MySQL: `bigint`, `enum`, `json`.\n  - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.\n  - Oracle: `VARCHAR2`, `R.SHAPE_T`.\n\nAbsent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.",
+        "label": {
+          "description": "The database's name for the type, less the modifiers a field states: `numeric` for `numeric(10,2)`, but `tinyint(1)` for MySQL's `BOOLEAN`, whose `(1)` bounds no value. It is in the dialect the document states once at its top. When a schema defines the type, it is qualified, and it is the type's identity.\n  - Postgres: `int4`, `varchar`, `timestamptz`, `public.mood` (an enum), `public.email` (a domain), `public.vector` (an extension's type).\n  - MySQL: `bigint`, `enum`, `json`.\n  - SQLite: the declared type the value traces to, through `max`, `coalesce` and union arms too.\n  - Oracle: `VARCHAR2`, `R.SHAPE_T`.\n\nAbsent on a type the statement builds, such as the record inside a `json_build_object`. It never changes what the type means. Generators and drivers key their conventions on it, such as MySQL's `tinyint(1)` as a boolean.",
           "type": "string"
         },
         "comment": {
@@ -537,7 +537,7 @@
       "unevaluatedProperties": false
     },
     "RecordType": {
-      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `name`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
+      "description": "Fields, in order: a composite type, a row value, an object type, a JSON object a statement builds, or a structured parameter's row. A database's sugar over simpler values is a record carrying its `label`:\n  - a Postgres `point` is `{ x, y }` and a `circle` `{ center, radius }`;\n  - an `inet` is a union of an IPv4 record, `{ address, prefix }` with 4 bytes and a prefix to 32, and an IPv6 one, with 16 bytes and a prefix to 128; a `cidr` likewise, its host bits zero;\n  - an Oracle `BFILE` is `{ directory, file }`.\n\nA record holds exactly its fields. A column whose object type has subtypes is a union of their records.",
       "type": "object",
       "allOf": [
         {
@@ -984,7 +984,7 @@
       "unevaluatedProperties": false
     },
     "OpaqueType": {
-      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `name` is all the format says; what a value looks like is the driver's to decide.",
+      "description": "A type the database knows and the format does not structure: an extension's own, such as Postgres `ltree`, `tsvector` and `pg_lsn` or SQL Server's `hierarchyid`, Postgres `money`, whose scale follows the session's locale, and a type that holds a value of any type, each carrying its own, such as SQL Server `sql_variant` and Oracle `ANYDATA`. Its `label` is all the format says; what a value looks like is the driver's to decide.",
       "type": "object",
       "allOf": [
         {
@@ -995,13 +995,13 @@
         "kind": {
           "const": "opaque"
         },
-        "name": {
+        "label": {
           "type": "string"
         }
       },
       "required": [
         "kind",
-        "name"
+        "label"
       ],
       "unevaluatedProperties": false
     },
@@ -1061,6 +1061,26 @@
       ],
       "unevaluatedProperties": false
     },
+    "OrderColumn": {
+      "description": "A column rows are sorted on.",
+      "type": "object",
+      "properties": {
+        "column": {
+          "description": "The column's name.",
+          "type": "string"
+        },
+        "desc": {
+          "description": "Sorted from the highest value down.",
+          "const": true
+        },
+        "nulls": {
+          "description": "Where NULLs sort, which a database's default decides unless the statement says.",
+          "enum": ["first", "last"]
+        }
+      },
+      "required": ["column", "nulls"],
+      "additionalProperties": false
+    },
     "RowsType": {
       "description": "Rows of columns: what a statement returns, and a relation nested in a value, such as SQL's `MULTISET` or an Oracle nested table. A statement that returns one value is still a row of one column, which keeps the column's name.",
       "type": "object",
@@ -1098,6 +1118,13 @@
             "items": {
               "type": "string"
             }
+          }
+        },
+        "order": {
+          "description": "The columns the rows are sorted on, in order, as far as an `ORDER BY` names columns of the result: `order by at desc, lower(name), id` gives only `at`, since its next key is no column here and `id` then sorts only among rows that tie on it. A collation is the column's own, unless the key names another, which ends the list. Rows that tie on all of them come back in any order. Only for rows that can be more than one, and absent where the rows aren't sorted on a column of the result.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OrderColumn"
           }
         }
       },
@@ -1277,7 +1304,7 @@
       "unevaluatedProperties": false
     },
     "Dialect": {
-      "description": "The database a document of descriptors describes, stated once at the document's top: every `name` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version.",
+      "description": "The database a document of descriptors describes, stated once at the document's top: every `label` inside is this dialect's. `name` is the database's, such as `postgres`, `mysql`, `sqlite`, `oracle` or `sqlserver`, and `version` its server version.",
       "type": "object",
       "properties": {
         "name": {

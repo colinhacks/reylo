@@ -591,7 +591,7 @@ enum Js {
 fn admitted(ty: &Value) -> Vec<Js> {
     use Js::{Bytes, Date, Number, Text};
     let ty: Option<Type> = serde_json::from_value(ty.clone()).ok();
-    let kind = ty.as_ref().map(|t| (&t.kind, t.name.as_deref()));
+    let kind = ty.as_ref().map(|t| (&t.kind, t.label.as_deref()));
     match kind {
         // 2^53 and 2^64 are numbers and no safe integers.
         Some((Kind::Integer(_), name)) if name != Some("tinyint(1)") => vec![Number(1.0), Number(2.0), Number(0.0), Number(-1.0), Number(1.5), Number(9007199254740991.0), Number(9007199254740992.0), Number(18446744073709551616.0), Number(900000.0)],
@@ -1179,7 +1179,7 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
             Kind::Date(_) => vec!["date"],
             Kind::Duration(_) => vec!["time"],
             Kind::Json(_) => vec!["json"],
-            Kind::Array(_) if m.name.as_deref() == Some("bit") => vec!["bytea"],
+            Kind::Array(_) if m.label.as_deref() == Some("bit") => vec!["bytea"],
             Kind::Bytes(_) => vec!["bytea"],
             Kind::Text(_) | Kind::Set(_) => vec!["text"],
             _ => return None,
@@ -1325,7 +1325,7 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
             None
         }
         // A BIT is written inside a document as its bytes, `"base64:type16:…"` (the spec's facts).
-        Kind::Array(array) if ty.name.as_deref() != Some("bit") => {
+        Kind::Array(array) if ty.label.as_deref() != Some("bit") => {
             let Some(items) = json.as_array() else { return Some(format!("holds {kind} at {at}, typed a list")) };
             items.iter().enumerate().find_map(|(i, item)| document_contradiction(&array.element.ty, item, array.element.nullable, &format!("{path}[{i}]")))
         }
@@ -1338,7 +1338,7 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
                     Kind::Boolean => "a boolean",
                     Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) => "a number",
                     Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Set(_) => "a string",
-                    Kind::Array(_) if m.name.as_deref() == Some("bit") => "a string",
+                    Kind::Array(_) if m.label.as_deref() == Some("bit") => "a string",
                     _ => return None,
                 });
             }
@@ -1384,7 +1384,7 @@ mod tests {
 
     #[test]
     fn a_number_is_bound_as_mysql2_binds_it() {
-        let int = json!({ "kind": "integer", "bits": 32, "name": "int" });
+        let int = json!({ "kind": "integer", "bits": 32, "label": "int" });
         // A safe integer inside the placeholder's type goes as that integer, anything else as a DOUBLE.
         assert_eq!(bound(&Js::Number(1.0), Some((8, false)), true).value, My::Int(1));
         assert_eq!(bound(&Js::Number(1.0), Some((8, true)), true).value, My::UInt(1));
@@ -1396,7 +1396,7 @@ mod tests {
         assert_eq!(bound(&Js::Number(1.0), Some((8, false)), false).value, My::Double(1.0));
         let all = bindings(&int, Some((8, false)));
         assert!(all.iter().any(|b| b.value == My::Int(1)) && all.iter().any(|b| b.value == My::Double(1.0)), "{all:?}");
-        assert_eq!(bindings(&json!({ "kind": "text", "name": "varchar" }), Some((253, false)))[0], Bound { value: My::Bytes(b"a".to_vec()), literal: "'a'".into(), shown: "'a'".into() });
+        assert_eq!(bindings(&json!({ "kind": "text", "label": "varchar" }), Some((253, false)))[0], Bound { value: My::Bytes(b"a".to_vec()), literal: "'a'".into(), shown: "'a'".into() });
         // What a driver that binds nothing writes into the text.
         let literal = |js: Js| bound(&js, None, true).literal;
         assert_eq!(literal(Js::Number(1.0)), "1");
@@ -1420,16 +1420,16 @@ mod tests {
 
     #[test]
     fn a_returned_type_is_held_against_the_engines() {
-        let int = json!({ "kind": "integer", "bits": 32, "name": "int" });
-        let bigint = json!({ "kind": "integer", "bits": 64, "name": "bigint" });
-        let double = json!({ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "name": "double" });
-        let date = json!({ "kind": "date", "name": "date" });
-        let datetime = json!({ "kind": "datetime", "tick": "1/1000000", "name": "datetime" });
+        let int = json!({ "kind": "integer", "bits": 32, "label": "int" });
+        let bigint = json!({ "kind": "integer", "bits": 64, "label": "bigint" });
+        let double = json!({ "kind": "float", "exponent_bits": 11, "mantissa_bits": 52, "label": "double" });
+        let date = json!({ "kind": "date", "label": "date" });
+        let datetime = json!({ "kind": "datetime", "tick": "1/1000000", "label": "datetime" });
         let either = |members: Vec<Value>| json!({ "kind": "union", "members": members });
         assert_eq!(type_contradiction(&int, 3, 63), None);
         assert_eq!(type_contradiction(&int, 5, 63), None);
         assert_eq!(type_contradiction(&bigint, 5, 63).as_deref(), Some("typed int8 came back as number (protocol type 5)"));
-        assert_eq!(type_contradiction(&json!({ "kind": "text", "name": "varchar" }), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
+        assert_eq!(type_contradiction(&json!({ "kind": "text", "label": "varchar" }), 253, 63).as_deref(), Some("typed text came back as bytea (protocol type 253)"));
         assert_eq!(type_contradiction(&date, 12, 63).as_deref(), Some("typed date came back as timestamp (protocol type 12)"));
         assert_eq!(type_contradiction(&json!({ "kind": "json", "content": { "type": { "kind": "record", "fields": [] } } }), 245, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "json" }), 251, 63).as_deref(), Some("typed json came back as bytea (protocol type 251)"));
@@ -1442,8 +1442,8 @@ mod tests {
         for code in [1, 16, 8, 3] {
             assert_eq!(type_contradiction(&json!({ "kind": "boolean" }), code, 63), None);
         }
-        assert_eq!(type_contradiction(&json!({ "kind": "integer", "bits": 8, "name": "tinyint(1)" }), 1, 63), None);
-        assert_eq!(type_contradiction(&json!({ "kind": "array", "size": { "exact": 1 }, "name": "bit", "element": { "type": { "kind": "boolean" } } }), 16, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "integer", "bits": 8, "label": "tinyint(1)" }), 1, 63), None);
+        assert_eq!(type_contradiction(&json!({ "kind": "array", "size": { "exact": 1 }, "label": "bit", "element": { "type": { "kind": "boolean" } } }), 16, 63), None);
         assert_eq!(type_contradiction(&json!({ "kind": "boolean" }), 253, 33).as_deref(), Some("typed number or int8 or bytea came back as text (protocol type 253)"));
         assert!(is_truth(&My::Int(1)) && is_truth(&My::UInt(0)) && is_truth(&My::Bytes(b"1".to_vec())));
         assert!(!is_truth(&My::Int(2)) && !is_truth(&My::Bytes(b"-1".to_vec())));
@@ -1456,25 +1456,25 @@ mod tests {
     fn a_value_is_held_against_its_length_digits_and_tick() {
         let ty = |json: Value| serde_json::from_value::<Type>(json).unwrap();
         let bytes = |text: &str| My::Bytes(text.as_bytes().to_vec());
-        let varchar = ty(json!({ "kind": "text", "size": { "max": 2 }, "name": "varchar" }));
+        let varchar = ty(json!({ "kind": "text", "size": { "max": 2 }, "label": "varchar" }));
         assert_eq!(value_contradiction(&varchar, &bytes("😀😀")), None);
         assert!(value_contradiction(&varchar, &bytes("abc")).is_some());
-        let text = ty(json!({ "kind": "text", "size": { "unit": "byte", "encoding": "UTF-8", "max": 4 }, "name": "text" }));
+        let text = ty(json!({ "kind": "text", "size": { "unit": "byte", "encoding": "UTF-8", "max": 4 }, "label": "text" }));
         assert_eq!(value_contradiction(&text, &bytes("😀")), None);
         assert!(value_contradiction(&text, &bytes("ááa")).is_some());
-        let binary = ty(json!({ "kind": "bytes", "size": { "exact": 3 }, "name": "binary" }));
+        let binary = ty(json!({ "kind": "bytes", "size": { "exact": 3 }, "label": "binary" }));
         assert_eq!(value_contradiction(&binary, &My::Bytes(vec![0x61, 0, 0])), None);
         assert!(value_contradiction(&binary, &My::Bytes(vec![0x61])).is_some());
-        let decimal = ty(json!({ "kind": "decimal", "precision": 4, "min_scale": 2, "max_scale": 2, "name": "decimal" }));
+        let decimal = ty(json!({ "kind": "decimal", "precision": 4, "min_scale": 2, "max_scale": 2, "label": "decimal" }));
         assert_eq!(value_contradiction(&decimal, &bytes("-99.99")), None);
         assert!(value_contradiction(&decimal, &bytes("100.00")).is_some());
         // A DATETIME(3) in either protocol, and a TIME(0).
-        let datetime = ty(json!({ "kind": "datetime", "tick": "1/1000", "name": "datetime" }));
+        let datetime = ty(json!({ "kind": "datetime", "tick": "1/1000", "label": "datetime" }));
         assert_eq!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_000)), None);
         assert!(value_contradiction(&datetime, &My::Date(2026, 1, 1, 12, 0, 0, 123_400)).is_some());
         assert_eq!(value_contradiction(&datetime, &bytes("2026-01-01 12:00:00.120")), None);
         assert!(value_contradiction(&datetime, &bytes("2026-01-01 12:00:00.1234")).is_some());
-        let time = ty(json!({ "kind": "duration", "max": "PT838H59M59S", "tick": "1", "name": "time" }));
+        let time = ty(json!({ "kind": "duration", "max": "PT838H59M59S", "tick": "1", "label": "time" }));
         assert_eq!(value_contradiction(&time, &My::Time(true, 34, 22, 59, 59, 0)), None);
         assert!(value_contradiction(&time, &My::Time(false, 0, 12, 0, 0, 500_000)).is_some());
         assert_eq!(value_contradiction(&time, &bytes("-838:59:59")), None);
@@ -1490,17 +1490,17 @@ mod tests {
 
     #[test]
     fn a_json_document_is_held_against_its_shape() {
-        let shape = json!({ "kind": "json", "name": "json", "content": { "type": { "kind": "record", "fields": [
-            { "name": "id", "type": { "kind": "integer", "bits": 32, "name": "int" } },
+        let shape = json!({ "kind": "json", "label": "json", "content": { "type": { "kind": "record", "fields": [
+            { "name": "id", "type": { "kind": "integer", "bits": 32, "label": "int" } },
             { "name": "ok", "type": { "kind": "boolean" }, "nullable": true },
-            { "name": "tags", "type": { "kind": "array", "element": { "type": { "kind": "text", "name": "varchar" } } } },
+            { "name": "tags", "type": { "kind": "array", "element": { "type": { "kind": "text", "label": "varchar" } } } },
         ] } } });
         let check = |document: Value| json_contradiction(&shape, &document, false, "");
         assert_eq!(check(json!({ "id": 1, "ok": null, "tags": ["a"] })), None);
         assert_eq!(check(json!({ "id": null, "ok": true, "tags": [] })).as_deref(), Some("has a null at .id, typed non-null"));
         assert_eq!(check(json!({ "id": "1", "ok": true, "tags": [] })).as_deref(), Some("holds a string at .id, typed int"));
         assert_eq!(check(json!({ "id": 1, "ok": 1, "tags": [] })).as_deref(), Some("holds a number at .ok, typed boolean"));
-        let either = json!({ "kind": "union", "members": [{ "kind": "boolean" }, { "kind": "integer", "bits": 64, "name": "bigint" }] });
+        let either = json!({ "kind": "union", "members": [{ "kind": "boolean" }, { "kind": "integer", "bits": 64, "label": "bigint" }] });
         assert_eq!(json_contradiction(&either, &json!(true), false, ".ok"), None);
         assert_eq!(json_contradiction(&either, &json!(1), false, ".ok"), None);
         assert_eq!(json_contradiction(&either, &json!("1"), false, ".ok").as_deref(), Some("holds a string at .ok, typed boolean | bigint"));

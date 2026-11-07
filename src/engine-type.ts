@@ -34,7 +34,7 @@ const isEmptyObject = (v: unknown) => v !== null && typeof v === "object" && !Ar
 
 /** A type's name without the schema that qualifies it: `vector` of `public.vector`, `"Odd"` of `app."Odd"` unquoted. */
 export function bareName(t: Type): string {
-  const name = "name" in t ? (t.name ?? "") : "";
+  const name = "label" in t ? (t.label ?? "") : "";
   const last = /(?:^|\.)("(?:[^"]|"")*"|[^."]*)$/.exec(name)?.[1] ?? name;
   return last.startsWith('"') ? last.slice(1, -1).replaceAll('""', '"') : last;
 }
@@ -51,7 +51,7 @@ export function membersOf(t: Type): readonly Type[] {
  */
 export function withBases(t: Type, domains: Readonly<Record<string, string>> | undefined): Type {
   if (domains === undefined || !Object.keys(domains).length) return t;
-  const named = "name" in t && t.name !== undefined && domains[t.name] !== undefined ? ({ ...t, name: domains[t.name] } as Type) : t;
+  const named = "label" in t && t.label !== undefined && domains[t.label] !== undefined ? ({ ...t, label: domains[t.label] } as Type) : t;
   switch (named.kind) {
     case "array": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
     case "set": return { ...named, element: { ...named.element, type: withBases(named.element.type, domains) } };
