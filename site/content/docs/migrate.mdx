@@ -132,10 +132,11 @@ Writing and repairing migrations need one, and a deploy doesn't:
 | --- | --- |
 | `reylo migration init` | `reylo migrate prod` |
 | `reylo migration create` | `reylo migration lint` |
-| `reylo migration history push` | `reylo migration history pull` |
-| `reylo migrate dev` | `reylo schema pull` |
-| `reylo migrate prod --dry-run` | `reylo db wipe` |
-| `reylo schema push` | |
+| `reylo migration history push` | `reylo db introspect` |
+| `reylo migration history pull` | `reylo db wipe` |
+| `reylo migrate dev` | |
+| `reylo migrate prod --dry-run` | |
+| `reylo db push` | |
 
 Each database makes them its own way:
 
@@ -184,9 +185,9 @@ Commands:
   migrate dev              Take this database to the migrations, and lock them
   migrate prod             Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  schema push              Take this database to schema.sql, unrecorded
+  db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
-  schema pull              Write schema.sql from this database
+  db introspect            Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
   db wipe                  Delete every row, keeping the schema
 
@@ -197,7 +198,7 @@ Flags:
 
 <Callout title="Development only">
 
-The commands that change a database in ways no deploy wants, `migrate dev`, `schema push` and `db wipe`, refuse to run where `CI` is set.
+The commands that change a database in ways no deploy wants, `migrate dev`, `db push` and `db wipe`, refuse to run where `CI` is set.
 
 </Callout>
 
@@ -301,7 +302,7 @@ $ reylo migration lint
 
 Writes your database's history from your migration files, running nothing.
 
-It records the migrations a shadow database shows make the schema your database has; those after them stay pending:
+It records the migrations a shadow database shows make the schema your database has; those after them stay pending. It needs your migrations to reach `schema.sql` first:
 
 ```terminal
 $ reylo migration history push --url $PROD_URL
@@ -309,10 +310,10 @@ $ reylo migration history push --url $PROD_URL
 ✓ The history lists the 3 migrations this database's schema has
 ```
 
-Where your tables hold a change no migration lists, someone made it by hand. Keep it by writing it as a migration, then record it on the database that has it:
+Where your tables hold a change no migration lists, someone made it by hand. Keep it by writing it into `schema.sql` and a migration, then record it on the database that has it:
 
 ```terminal
-$ reylo schema pull --url $PROD_URL
+$ reylo db introspect --url $PROD_URL > reylo/schema.sql
 $ reylo migration create users_email
 $ reylo migrate dev
 $ reylo migration history push --url $PROD_URL
@@ -330,6 +331,8 @@ Pulling from postgres://db.example.com/app
   ↓ 20261104140347_add_bio.sql  written over: it differed from what ran
 Not run on this database, and left as they are: 20261105090000_tags.sql
 ```
+
+It first replays your database's history in a shadow database. One whose tables differ from what that makes was changed by hand, and is refused: files written from its history wouldn't make it either.
 
 ## `reylo migrate`
 
@@ -418,11 +421,11 @@ Your database's `COMMENT ON` comments aren't compared. A migration writes them, 
 
 After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared: `reylo migrate prod` runs, stores a new one, and says so. A dry run checks the database then too.
 
-## `reylo schema`
+## `reylo db`
 
-Copies your schema between `schema.sql` and your database, with no migration.
+Changes your database directly, recording nothing.
 
-### `reylo schema push`
+### `reylo db push`
 
 Takes your development database to `schema.sql`, with no migration.
 
@@ -439,7 +442,7 @@ create table users (
 ```
 
 ```terminal
-$ reylo schema push
+$ reylo db push
 Pushing schema.sql to postgres://localhost:5432/app
   + alter table users add column nick text;
 
@@ -449,20 +452,15 @@ Pushing schema.sql to postgres://localhost:5432/app
 
 With `--watch`, it pushes again each time you save. It needs your database at its migrations, so it refuses until `reylo migrate dev` has run. When you then write the migration, `reylo migrate dev` records it without running it again.
 
-### `reylo schema pull`
+### `reylo db introspect`
 
-Writes `schema.sql` from your database.
+Prints your database's schema as SQL, as `reylo migration init` writes it.
 
-It's for a change made on the database itself, which `reylo migration create` then writes as a migration. It writes the database's own dump, so your comments and layout go, and git keeps them:
+It writes no file, so save it with a redirect. It's the database's own dump, so your comments and layout go, and git keeps them:
 
 ```terminal
-$ reylo schema pull
-✓ Wrote reylo/schema.sql from postgres://localhost:5432/app
+$ reylo db introspect > reylo/schema.sql
 ```
-
-## `reylo db`
-
-Changes your database directly, recording nothing.
 
 ### `reylo db wipe`
 
@@ -493,7 +491,7 @@ $ reylo migration create about --rename users.bio=about
 $ reylo migrate dev
 
 # Try a change with no migration yet, on every save
-$ reylo schema push --watch
+$ reylo db push --watch
 
 # Start again with no rows, and your seed
 $ reylo db wipe && reylo run --file seed.sql

@@ -138,12 +138,25 @@ pub(crate) fn hex(h: &[u8]) -> String {
 /// This build's catalog reader, which decides what a schema's fingerprint is a digest of: a build
 /// whose reader differs reads another fingerprint for the same schema, which is then not drift.
 pub(crate) fn code_id() -> String {
-    static ID: LazyLock<String> = LazyLock::new(|| {
-        let mut h = Sha256::new();
-        h.part(include_str!("catalog.rs").as_bytes());
-        hex(&h.finish()[..6])
-    });
+    static ID: LazyLock<String> = LazyLock::new(|| code_digest(include_str!("catalog.rs")));
     ID.clone()
+}
+
+/// A digest of a source's code up to its tests, leaving out what reads no schema differently: a
+/// line's indentation, a blank line and a line that is all comment. Spacing inside a line stays in,
+/// since a string the catalog writes may hold it.
+fn code_digest(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with("//")).collect();
+    let end = match lines.iter().position(|l| *l == "mod tests {") {
+        Some(i) if i > 0 && lines[i - 1] == "#[cfg(test)]" => i - 1,
+        Some(i) => i,
+        None => lines.len(),
+    };
+    let mut h = Sha256::new();
+    for line in &lines[..end] {
+        h.part(line.as_bytes());
+    }
+    hex(&h.finish()[..6])
 }
 
 /// This build's code, as far as it decides what a replay ends in or what the catalog reads: the
@@ -770,6 +783,14 @@ mod tests {
         assert_eq!(split.finish(), Sha256::new().update(long).finish());
         let million = vec![b'a'; 1_000_000];
         assert_eq!(hex(&Sha256::new().update(&million).finish()), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+    }
+
+    #[test]
+    fn the_code_id_reads_code_alone() {
+        let code = "fn read() -> &'static str {\n    // what the catalog holds\n    \"a b\"\n}\n";
+        let reworded = "/// Reads it.\nfn read() -> &'static str {\n\n  \"a b\"\n}\n#[cfg(test)]\nmod tests {\n    fn more() {}\n}\n";
+        assert_eq!(code_digest(code), code_digest(reworded));
+        assert_ne!(code_digest(code), code_digest("fn read() -> &'static str {\n    \"ab\"\n}\n"));
     }
 
     #[test]

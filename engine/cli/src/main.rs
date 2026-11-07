@@ -1,7 +1,7 @@
 //! `reylo`, one program for every database: the analysis engine a language's frontend talks to over
 //! standard input and output (`reylo engine <database>`, one JSON request per line, one answer per
 //! line), each statement's type descriptor on the command line (`reylo analyze`), and the
-//! migrations (`reylo migration`, `reylo migrate`, `reylo schema`, `reylo db`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
+//! migrations (`reylo migration`, `reylo migrate`, `reylo db`, `reylo run`). npm's `reylo` command runs it (src/cli.ts), but for
 //! `reylo play`, the playground's server, which renders TypeScript and so runs in JavaScript.
 
 mod analyze;
@@ -19,9 +19,8 @@ const USAGE: &str = "Usage: reylo <command>
                             statement, read from the project's database
   migration <command>       Write and lint migrations, and repair their history
   migrate <command>         Run migrations on a database
-  schema <command>          Copy the schema between schema.sql and a database
-  db <command>              Delete every row of a database
-                            (reylo migrate --help lists all four's commands)
+  db <command>              Change a database directly, recording nothing
+                            (reylo migrate --help lists all three's commands)
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
   play [--port] [--no-open] Serve the playground on 127.0.0.1, against the project's database
@@ -51,9 +50,9 @@ Commands:
   migrate dev              Take this database to the migrations, and lock them
   migrate prod             Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
-  schema push              Take this database to schema.sql, unrecorded
+  db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
-  schema pull              Write schema.sql from this database
+  db introspect            Print this database's schema as SQL
     --schema <name>        A schema to read (Postgres; public by default)
   db wipe                  Delete every row, keeping the schema
 
@@ -62,7 +61,7 @@ Flags:
   -h, --help               Print this help";
 
 /// Every command of those groups, as it's typed.
-const COMMANDS: [&str; 10] = ["migration init", "migration create", "migration lint", "migration history push", "migration history pull", "migrate dev", "migrate prod", "schema push", "schema pull", "db wipe"];
+const COMMANDS: [&str; 10] = ["migration init", "migration create", "migration lint", "migration history push", "migration history pull", "migrate dev", "migrate prod", "db push", "db introspect", "db wipe"];
 
 /// The help as a terminal shows it: its headings bold, each command cyan, each flag yellow and what
 /// it takes dim. Piped, it is the text alone.
@@ -171,7 +170,7 @@ fn print(line: &str) {
     println!("{line}");
 }
 
-/// The commands of `reylo migration`, `reylo migrate`, `reylo schema` and `reylo db`.
+/// The commands of `reylo migration`, `reylo migrate` and `reylo db`.
 fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     if args.is_empty() || args[0] == "help" || args.iter().any(|a| matches!(a.as_str(), "--help" | "-h")) {
         println!("{}", painted_usage());
@@ -195,9 +194,9 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     let parsed = parse(&args[words..])?;
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     // What a command doesn't take is refused, never passed over: prod --dev must not run prod, and
-    // schema push --rename must not leave its guess unsaid.
+    // db push --rename must not leave its guess unsaid.
     let takes: &[&str] = match command {
-        "schema push" => &["watch"],
+        "db push" => &["watch"],
         "migrate prod" => &["dry-run"],
         _ => &[],
     };
@@ -212,7 +211,7 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     if command != "migration create" && !parsed.renames.is_empty() {
         return refused("--rename");
     }
-    if !matches!(command, "migration init" | "schema pull") && !parsed.schemas.is_empty() {
+    if !matches!(command, "migration init" | "db introspect") && !parsed.schemas.is_empty() {
         return refused("--schema");
     }
     if !parsed.files.is_empty() {
@@ -223,7 +222,7 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
     }
     let opts = settings(&parsed, command != "migration lint")?;
     // These start from the database; the rest need a project to work on.
-    if !matches!(command, "migration init" | "migration history pull" | "schema pull" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
+    if !matches!(command, "migration init" | "migration history pull" | "db introspect" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
         let home = opts.schema.parent().unwrap_or(&opts.root);
         return Err(format!("no {} here: check dir in .reylo.yaml, or start with reylo migration init", home.strip_prefix(&opts.root).unwrap_or(home).display()));
     }
@@ -246,9 +245,13 @@ fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
             "migrate dev" => reylo_migrate::dev(&opts, in_ci, &mut log).await,
             "migrate prod" if has("dry-run") => reylo_migrate::dry_run(&opts, &mut log).await,
             "migrate prod" => reylo_migrate::prod(&opts, &mut log).await,
-            "schema push" if has("watch") => reylo_migrate::schema_push_watch(&opts, in_ci, None, &mut log).await,
-            "schema push" => reylo_migrate::schema_push(&opts, in_ci, &mut log).await,
-            "schema pull" => reylo_migrate::schema_pull(&opts, &parsed.schemas, &mut log).await,
+            "db push" if has("watch") => reylo_migrate::db_push_watch(&opts, in_ci, None, &mut log).await,
+            "db push" => reylo_migrate::db_push(&opts, in_ci, &mut log).await,
+            // The schema alone on stdout, so that it can be saved with a redirect.
+            "db introspect" => reylo_migrate::db_introspect(&opts, &parsed.schemas).await.map(|sql| {
+                print!("{sql}");
+                0
+            }),
             "db wipe" => reylo_migrate::db_wipe(&opts, in_ci, &mut log).await,
             other => Err(reylo_migrate::Error(format!("unknown command {other}"))),
         }
@@ -319,7 +322,7 @@ fn main() {
             eprintln!("reylo generate was removed in 0.8.0: the type check and the build steps fill reylo/.cache/ where the database can be reached, and reylo analyze prints each statement's types.");
             2
         }
-        Some(group @ ("migration" | "migrate" | "schema" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
+        Some(group @ ("migration" | "migrate" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo {group}: {e}");
             1
         }),

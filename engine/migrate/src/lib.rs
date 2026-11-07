@@ -21,7 +21,7 @@ mod replay;
 pub mod sql;
 mod time;
 
-pub use commands::{create, db_wipe, dev, dry_run, history_pull, history_push, init, lint, prod, run_sql, schema_pull, schema_push, schema_push_watch, Choices, Options};
+pub use commands::{create, db_introspect, db_push, db_push_watch, db_wipe, dev, dry_run, history_pull, history_push, init, lint, prod, run_sql, Choices, Options};
 
 /// What went wrong, as a sentence for the person running the command.
 #[derive(Debug, Clone, PartialEq, Eq)]

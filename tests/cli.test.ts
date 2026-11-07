@@ -49,11 +49,11 @@ test("the migration commands and reylo run are the binary's, with their output a
   const root = project();
   const help = reylo(root, ["--help"]);
   assert.equal(help.status, 0, help.err);
-  for (const usage of ["  migration <command>", "  migrate <command>", "  schema <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
+  for (const usage of ["  migration <command>", "  migrate <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
   const migrate = reylo(root, ["migrate", "--help"]);
   assert.equal(migrate.status, 0, migrate.err);
   assert.match(migrate.out, /^Usage: reylo <group> <command> \[flags\]\n/);
-  for (const group of ["migration", "schema", "db"]) assert.equal(reylo(root, [group, "--help"]).out, migrate.out, group);
+  for (const group of ["migration", "db"]) assert.equal(reylo(root, [group, "--help"]).out, migrate.out, group);
   // The docs show the help as it is.
   assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
@@ -79,8 +79,8 @@ test("the migration commands and reylo run are the binary's, with their output a
   const slip = reylo(root, ["migrate", "create", "add_bio"]);
   assert.equal(slip.status, 2);
   assert.match(slip.err, /^reylo migrate has no create: it's reylo migration create\n/);
-  assert.match(reylo(root, ["migration", "push"]).err, /^reylo migration has no push: it's reylo migration history push, or reylo schema push\n/);
-  for (const [args, said] of [[["schema", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "prod", "--schema", "x"], /prod doesn't take --schema/], [["migrate", "prod", "-f", "x.sql"], /prod doesn't take --file/], [["migrate", "prod", "dev"], /prod doesn't take dev/], [["migration", "create", "a", "b"], /create doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migration", "lint", "--offline"], /lint doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migration", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
+  assert.match(reylo(root, ["migration", "push"]).err, /^reylo migration has no push: it's reylo migration history push, or reylo db push\n/);
+  for (const [args, said] of [[["db", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "prod", "--schema", "x"], /prod doesn't take --schema/], [["migrate", "prod", "-f", "x.sql"], /prod doesn't take --file/], [["migrate", "prod", "dev"], /prod doesn't take dev/], [["migration", "create", "a", "b"], /create doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migration", "lint", "--offline"], /lint doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migration", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
     const r = reylo(root, [...args]);
     assert.equal(r.status, 1, args.join(" "));
     assert.match(r.err, said);
