@@ -33,7 +33,7 @@ Reylo Type Defs is in preview, at version 0.1.0. Until 1.0.0, any release may ch
   "sql": "select id, name, email, role from users where id = $1",
   "kind": "select",
   "params": [
-    { "name": "id", "type": { "kind": "integer", "bits": 32, "name": "int4" } }
+    { "name": "id", "type": { "kind": "integer", "bits": 32, "label": "int4" } }
   ],
   "result": {
     "kind": "rows",
@@ -41,15 +41,15 @@ Reylo Type Defs is in preview, at version 0.1.0. Until 1.0.0, any release may ch
     "columns": [
       {
         "name": "id",
-        "type": { "kind": "integer", "bits": 32, "name": "int4" }
+        "type": { "kind": "integer", "bits": 32, "label": "int4" }
       },
       {
         "name": "name",
-        "type": { "kind": "text", "name": "text" }
+        "type": { "kind": "text", "label": "text" }
       },
       {
         "name": "email",
-        "type": { "kind": "text", "name": "text" },
+        "type": { "kind": "text", "label": "text" },
         "nullable": true
       },
       {
@@ -57,7 +57,7 @@ Reylo Type Defs is in preview, at version 0.1.0. Until 1.0.0, any release may ch
         "type": {
           "kind": "text",
           "enum": ["admin", "member"],
-          "name": "public.user_role"
+          "label": "public.user_role"
         }
       }
     ]

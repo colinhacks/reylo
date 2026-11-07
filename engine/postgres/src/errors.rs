@@ -337,17 +337,28 @@ const VOLATILE_READS: &[&str] = &["random", "random_normal", "gen_random_uuid", 
 /// `stable` or `immutable` that calls a volatile function goes unseen. A type's input and output
 /// write nothing.
 pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
-    use pg_query::protobuf::node::Node as N;
     if !analysis.diagnostics.is_empty() {
         return Some(false);
     }
-    let Ok(parsed) = analyze::analyze(&analysis.rewritten.sql) else { return Some(false) };
-    let Ok(tree) = crate::stack::parse(&analysis.rewritten.sql) else { return Some(false) };
+    only_reads(&analysis.rewritten.sql, VOLATILE_READS, host)
+}
+
+/// Whether a function's body calls nothing volatile, by the same reading, and so could say `stable`:
+/// the built-ins that answer anew for each call count here, since a function that calls
+/// `clock_timestamp()` is rightly volatile.
+pub fn calls_nothing_volatile(body: &str, host: &Host) -> Lazy<bool> {
+    only_reads(body, &[], host)
+}
+
+fn only_reads(sql: &str, volatile_reads: &[&str], host: &Host) -> Lazy<bool> {
+    use pg_query::protobuf::node::Node as N;
+    let Ok(parsed) = analyze::analyze(sql) else { return Some(false) };
+    let Ok(tree) = crate::stack::parse(sql) else { return Some(false) };
     let Some(N::SelectStmt(select)) = tree.protobuf.stmts.first().and_then(|s| s.stmt.as_deref()).and_then(|n| n.node.as_ref()) else { return Some(false) };
     if parsed.kind != analyze::StatementKind::Query || parsed.has_locking || select.into_clause.is_some() {
         return Some(false);
     }
-    let Some(request) = request(&analysis.rewritten.sql) else { return Some(false) };
+    let Some(request) = request(sql) else { return Some(false) };
     let rows = catalog_rows(request, host);
     let mut called = names(&parsed.functions);
     called.sort_unstable();
@@ -358,11 +369,11 @@ pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     let tagged = |row: &&Vec<Value>, tag: &str| row.first().and_then(Value::as_str) == Some(tag);
     let text = |row: &Vec<Value>, k: usize| row.get(k).and_then(Value::as_str).map(str::to_string);
     let reads = rows.iter().filter(|row| tagged(row, "open")).all(|row| text(row, 3).as_deref() == Some("reads"));
-    let reach_nothing = rows.iter().filter(|row| tagged(row, "runs")).all(|row| text(row, 2).as_deref() == Some("built in") && text(row, 1).is_some_and(|f| VOLATILE_READS.contains(&f.as_str())));
+    let reach_nothing = rows.iter().filter(|row| tagged(row, "runs")).all(|row| text(row, 2).as_deref() == Some("built in") && text(row, 1).is_some_and(|f| volatile_reads.contains(&f.as_str())));
     // A user's function of a name in VOLATILE_READS may be the one called.
     let a_users = |f: &str| rows.iter().filter(|row| tagged(row, "open")).any(|row| text(row, 1).as_deref() == Some("function") && text(row, 2).as_deref() == Some(f));
     // Each is in the catalog, none of them volatile.
-    let not_volatile = called.iter().all(|f| (VOLATILE_READS.contains(f) && !a_users(f)) || functions.iter().any(|row| row.first().and_then(Value::as_str) == Some(f) && row.get(2).and_then(reylo_engine_core::host::as_bool) == Some(false)));
+    let not_volatile = called.iter().all(|f| (volatile_reads.contains(f) && !a_users(f)) || functions.iter().any(|row| row.first().and_then(Value::as_str) == Some(f) && row.get(2).and_then(reylo_engine_core::host::as_bool) == Some(false)));
     Some(reads && reach_nothing && not_volatile)
 }
 

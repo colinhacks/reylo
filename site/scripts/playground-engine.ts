@@ -105,10 +105,29 @@ function github(): Releases {
     name: `GitHub's releases of ${REPOSITORY}`,
     asset: (tag, name) => get(`https://github.com/${REPOSITORY}/releases/download/${tag}/${name}`),
     async list() {
-      const body = await get(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`, { accept: 'application/vnd.github+json', ...auth });
-      return parseList(body, `${REPOSITORY}'s releases`);
+      try {
+        const body = await get(`https://api.github.com/repos/${REPOSITORY}/releases?per_page=100`, { accept: 'application/vnd.github+json', ...auth });
+        return parseList(body, `${REPOSITORY}'s releases`);
+      } catch (error) {
+        // A build machine shares its address with others, so the anonymous limit can be spent before
+        // the build starts. The newest release is the page GitHub's own redirect names, which no
+        // limit holds; the fetch of its assets says whether it carries the engine.
+        const tag = error instanceof Unreachable ? await latestTag() : undefined;
+        if (!tag) throw error;
+        return [{ tag, assets: [ASSET, SUMS] }];
+      }
     },
   };
+}
+
+/** The tag of the newest release, from where `releases/latest` redirects. */
+async function latestTag(): Promise<string | undefined> {
+  try {
+    const res = await fetch(`https://github.com/${REPOSITORY}/releases/latest`, { redirect: 'manual', headers: { 'user-agent': 'reylo-site' } });
+    return /\/releases\/tag\/([^/?#]+)$/.exec(res.headers.get('location') ?? '')?.[1];
+  } catch {
+    return undefined;
+  }
 }
 
 function parseList(body: Uint8Array | undefined, where: string): { tag: string; assets: string[] }[] {

@@ -12,7 +12,7 @@
             "nullable": true,
             "type": {
               "kind": "tagged_union",
-              "name": "union",
+              "label": "union",
               "alternatives": [
                 {
                   "tag": "num",
@@ -20,7 +20,7 @@
                   "type": {
                     "kind": "integer",
                     "bits": 32,
-                    "name": "integer"
+                    "label": "integer"
                   }
                 },
                 {
@@ -28,7 +28,7 @@
                   "nullable": true,
                   "type": {
                     "kind": "text",
-                    "name": "varchar"
+                    "label": "varchar"
                   }
                 }
               ]
@@ -57,7 +57,7 @@
           "type": {
             "kind": "integer",
             "bits": 64,
-            "name": "int8"
+            "label": "int8"
           }
         }
       ],
@@ -70,7 +70,7 @@
             "type": {
               "kind": "integer",
               "bits": 64,
-              "name": "int8"
+              "label": "int8"
             }
           },
           {
@@ -80,7 +80,7 @@
               "size": {
                 "max": 255
               },
-              "name": "varchar"
+              "label": "varchar"
             }
           },
           {
@@ -88,7 +88,7 @@
             "nullable": true,
             "type": {
               "kind": "text",
-              "name": "text"
+              "label": "text"
             },
             "comment": "Shown on the profile page"
           }
@@ -111,14 +111,14 @@
             "nullable": true,
             "type": {
               "kind": "json",
-              "name": "json",
+              "label": "json",
               "content": {
                 "type": {
                   "kind": "array",
                   "element": {
                     "type": {
                       "kind": "text",
-                      "name": "text"
+                      "label": "text"
                     }
                   }
                 }
@@ -144,7 +144,7 @@
               "kind": "integer",
               "bits": 64,
               "unsigned": true,
-              "name": "bigint"
+              "label": "bigint"
             }
           },
           {
@@ -152,7 +152,7 @@
             "type": {
               "kind": "integer",
               "bits": 8,
-              "name": "tinyint(1)"
+              "label": "tinyint(1)"
             }
           },
           {
@@ -163,7 +163,7 @@
               "tick": "1/1000",
               "min": "1970-01-01T00:00:01Z",
               "max": "2038-01-19T03:14:07.999Z",
-              "name": "timestamp"
+              "label": "timestamp"
             }
           },
           {
@@ -174,7 +174,7 @@
                 "b",
                 "a"
               ],
-              "name": "enum"
+              "label": "enum"
             }
           },
           {
@@ -182,7 +182,7 @@
             "nullable": true,
             "type": {
               "kind": "date",
-              "name": "date"
+              "label": "date"
             }
           },
           {
@@ -193,7 +193,7 @@
               "size": {
                 "max": 100
               },
-              "name": "varchar"
+              "label": "varchar"
             }
           },
           {
@@ -206,7 +206,7 @@
                 "encoding": "UTF-8",
                 "max": 65535
               },
-              "name": "text"
+              "label": "text"
             }
           },
           {
@@ -214,7 +214,7 @@
             "nullable": true,
             "type": {
               "kind": "set",
-              "name": "set",
+              "label": "set",
               "element": {
                 "type": {
                   "kind": "text",
@@ -235,17 +235,17 @@
                 {
                   "kind": "integer",
                   "bits": 64,
-                  "name": "bigint"
+                  "label": "bigint"
                 },
                 {
                   "kind": "float",
                   "exponent_bits": 11,
                   "mantissa_bits": 52,
-                  "name": "double"
+                  "label": "double"
                 },
                 {
                   "kind": "decimal",
-                  "name": "decimal"
+                  "label": "decimal"
                 }
               ]
             }
@@ -268,11 +268,11 @@
             "nullable": true,
             "type": {
               "kind": "union",
-              "name": "R.SHAPE_T",
+              "label": "R.SHAPE_T",
               "members": [
                 {
                   "kind": "record",
-                  "name": "R.SHAPE_T",
+                  "label": "R.SHAPE_T",
                   "fields": [
                     {
                       "name": "NAME",
@@ -283,14 +283,14 @@
                           "min": 1,
                           "max": 20
                         },
-                        "name": "VARCHAR2"
+                        "label": "VARCHAR2"
                       }
                     }
                   ]
                 },
                 {
                   "kind": "record",
-                  "name": "R.CIRCLE_T",
+                  "label": "R.CIRCLE_T",
                   "fields": [
                     {
                       "name": "NAME",
@@ -301,7 +301,7 @@
                           "min": 1,
                           "max": 20
                         },
-                        "name": "VARCHAR2"
+                        "label": "VARCHAR2"
                       }
                     },
                     {
@@ -312,7 +312,7 @@
                         "precision": 40,
                         "exclusive_min": "-1e126",
                         "exclusive_max": "1e126",
-                        "name": "NUMBER"
+                        "label": "NUMBER"
                       }
                     }
                   ]
@@ -341,7 +341,7 @@
               "size": {
                 "exact": 3
               },
-              "name": "public.vector",
+              "label": "public.vector",
               "element": {
                 "type": {
                   "kind": "float",
@@ -373,7 +373,7 @@
               "min_scale": 2,
               "max_scale": 2,
               "nan": true,
-              "name": "numeric"
+              "label": "numeric"
             }
           },
           {
@@ -387,7 +387,7 @@
               "exclusive_max": "1e131072",
               "infinity": true,
               "nan": true,
-              "name": "numeric"
+              "label": "numeric"
             }
           },
           {
@@ -399,7 +399,7 @@
               "min": "-4713-11-24T00:00:00Z",
               "max": "+294276-12-31T23:59:59.999999Z",
               "infinity": true,
-              "name": "timestamptz"
+              "label": "timestamptz"
             }
           },
           {
@@ -410,7 +410,7 @@
               "min": "-4713-11-24",
               "max": "+5874897-12-31",
               "infinity": true,
-              "name": "date"
+              "label": "date"
             }
           },
           {
@@ -421,7 +421,7 @@
               "max": "P2147483648M2147483648DT2562047788H54.775808S",
               "tick": "1/1000000",
               "infinity": true,
-              "name": "interval"
+              "label": "interval"
             }
           },
           {
@@ -434,7 +434,7 @@
                 "ok",
                 "happy"
               ],
-              "name": "public.mood"
+              "label": "public.mood"
             }
           },
           {
@@ -449,7 +449,7 @@
                 "dialect": "like",
                 "source": "%@%"
               },
-              "name": "varchar"
+              "label": "varchar"
             }
           },
           {
@@ -458,7 +458,7 @@
             "type": {
               "kind": "array",
               "any_depth": true,
-              "name": "_varchar",
+              "label": "_varchar",
               "element": {
                 "nullable": true,
                 "type": {
@@ -466,7 +466,7 @@
                   "size": {
                     "max": 20
                   },
-                  "name": "varchar"
+                  "label": "varchar"
                 }
               }
             }
@@ -479,7 +479,7 @@
               "size": {
                 "exact": 7
               },
-              "name": "bit",
+              "label": "bit",
               "element": {
                 "type": {
                   "kind": "boolean"
@@ -492,7 +492,7 @@
             "nullable": true,
             "type": {
               "kind": "json",
-              "name": "jsonb"
+              "label": "jsonb"
             }
           },
           {
@@ -506,9 +506,9 @@
                 "min": "-4713-11-24T00:00:00Z",
                 "max": "+294276-12-31T23:59:59.999999Z",
                 "infinity": true,
-                "name": "timestamptz"
+                "label": "timestamptz"
               },
-              "name": "tstzrange"
+              "label": "tstzrange"
             }
           },
           {
@@ -516,7 +516,7 @@
             "nullable": true,
             "type": {
               "kind": "record",
-              "name": "point",
+              "label": "point",
               "fields": [
                 {
                   "name": "x",
@@ -526,7 +526,7 @@
                     "mantissa_bits": 52,
                     "infinity": true,
                     "nan": true,
-                    "name": "float8"
+                    "label": "float8"
                   }
                 },
                 {
@@ -537,7 +537,7 @@
                     "mantissa_bits": 52,
                     "infinity": true,
                     "nan": true,
-                    "name": "float8"
+                    "label": "float8"
                   }
                 }
               ]
@@ -548,13 +548,13 @@
             "nullable": true,
             "type": {
               "kind": "record",
-              "name": "circle",
+              "label": "circle",
               "fields": [
                 {
                   "name": "center",
                   "type": {
                     "kind": "record",
-                    "name": "point",
+                    "label": "point",
                     "fields": [
                       {
                         "name": "x",
@@ -564,7 +564,7 @@
                           "mantissa_bits": 52,
                           "infinity": true,
                           "nan": true,
-                          "name": "float8"
+                          "label": "float8"
                         }
                       },
                       {
@@ -575,7 +575,7 @@
                           "mantissa_bits": 52,
                           "infinity": true,
                           "nan": true,
-                          "name": "float8"
+                          "label": "float8"
                         }
                       }
                     ]
@@ -589,7 +589,7 @@
                     "mantissa_bits": 52,
                     "infinity": true,
                     "nan": true,
-                    "name": "float8"
+                    "label": "float8"
                   }
                 }
               ]
@@ -600,7 +600,7 @@
             "nullable": true,
             "type": {
               "kind": "union",
-              "name": "inet",
+              "label": "inet",
               "members": [
                 {
                   "kind": "record",
@@ -658,7 +658,7 @@
               "kind": "time",
               "tick": "1/1000000",
               "max": "24:00:00",
-              "name": "time"
+              "label": "time"
             }
           }
         ]
@@ -679,21 +679,70 @@
             "nullable": true,
             "type": {
               "kind": "range",
-              "name": "public.arrayrange",
+              "label": "public.arrayrange",
               "subtype": {
                 "kind": "array",
                 "any_depth": true,
-                "name": "_int4",
+                "label": "_int4",
                 "element": {
                   "nullable": true,
                   "type": {
                     "kind": "integer",
                     "bits": 32,
-                    "name": "int4"
+                    "label": "int4"
                   }
                 }
               }
             }
+          }
+        ]
+      }
+    }
+  },
+  "sorted_rows": {
+    "database": "postgres",
+    "setup": "create table events (id int8 primary key, at timestamptz)",
+    "statement": "select id, at from events order by at desc, id",
+    "descriptor": {
+      "result": {
+        "kind": "rows",
+        "cardinality": "many",
+        "columns": [
+          {
+            "name": "id",
+            "type": {
+              "kind": "integer",
+              "bits": 64,
+              "label": "int8"
+            }
+          },
+          {
+            "name": "at",
+            "nullable": true,
+            "type": {
+              "kind": "instant",
+              "tick": "1/1000000",
+              "min": "-4713-11-24T00:00:00Z",
+              "max": "+294276-12-31T23:59:59.999999Z",
+              "infinity": true,
+              "label": "timestamptz"
+            }
+          }
+        ],
+        "unique": [
+          [
+            "id"
+          ]
+        ],
+        "order": [
+          {
+            "column": "at",
+            "desc": true,
+            "nulls": "first"
+          },
+          {
+            "column": "id",
+            "nulls": "last"
           }
         ]
       }
@@ -713,7 +762,7 @@
             "nullable": true,
             "type": {
               "kind": "union",
-              "name": "numeric",
+              "label": "numeric",
               "members": [
                 {
                   "kind": "integer",
@@ -740,7 +789,7 @@
             "nullable": true,
             "type": {
               "kind": "union",
-              "name": "TEXT",
+              "label": "TEXT",
               "members": [
                 {
                   "kind": "text",
@@ -765,7 +814,7 @@
             "type": {
               "kind": "integer",
               "bits": 64,
-              "name": "INTEGER"
+              "label": "INTEGER"
             }
           }
         ]
@@ -788,7 +837,7 @@
               "kind": "instant",
               "tick": "1/1000",
               "zone": "offset",
-              "name": "datetimeoffset"
+              "label": "datetimeoffset"
             }
           },
           {
@@ -800,7 +849,7 @@
               "size": {
                 "max": 10
               },
-              "name": "nvarchar"
+              "label": "nvarchar"
             }
           }
         ]
@@ -828,7 +877,7 @@
                       "size": {
                         "max": 32
                       },
-                      "name": "varchar"
+                      "label": "varchar"
                     }
                   },
                   {
@@ -841,7 +890,7 @@
                       "min": "-4713-11-24T00:00:00Z",
                       "max": "+294276-12-31T23:59:59.999999Z",
                       "infinity": true,
-                      "name": "timestamptz"
+                      "label": "timestamptz"
                     }
                   }
                 ]
@@ -866,14 +915,14 @@
             "type": {
               "kind": "integer",
               "bits": 64,
-              "name": "int8"
+              "label": "int8"
             }
           },
           {
             "name": "email",
             "type": {
               "kind": "text",
-              "name": "text"
+              "label": "text"
             }
           },
           {
@@ -881,7 +930,7 @@
             "nullable": true,
             "type": {
               "kind": "text",
-              "name": "text"
+              "label": "text"
             }
           }
         ],

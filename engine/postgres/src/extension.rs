@@ -84,6 +84,8 @@ struct Remote {
     #[serde(default)]
     unique: Vec<Vec<String>>,
     #[serde(default)]
+    order: Vec<reylo_engine_core::types::OrderColumn>,
+    #[serde(default)]
     ordered: bool,
     #[serde(default)]
     diagnostics: Vec<Diagnostic>,
@@ -92,6 +94,12 @@ struct Remote {
     /// Each domain the descriptors name, to its base type, which the loader reads a value by.
     #[serde(default)]
     domains: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    notes: Vec<String>,
+    /// Where the server read a function's body: what that body reads, which the freshness check
+    /// watches, and which no parse of the statement as written gives.
+    #[serde(default)]
+    tables: Option<reylo_engine_core::fresh::Tables>,
 }
 
 /// The whole analysis from the server. `Some(None)` is a server that did not answer it (the
@@ -110,6 +118,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         cardinality_reason: remote.cardinality_reason,
         key: remote.key,
         unique: remote.unique,
+        order: remote.order,
         ordered: remote.ordered,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
         style: lexed.style,
@@ -119,7 +128,8 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         fresh: None,
         errors: None,
         read_only: false,
-        tables: None,
+        notes: remote.notes,
+        tables: remote.tables,
         domains: remote.domains,
     }))
 }
@@ -228,12 +238,30 @@ mod tests {
         answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
             "kind": "select",
             "params": [],
-            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "name": "public.embedding" } }],
+            "columns": [{ "name": "embedding", "type": { "kind": "array", "element": { "type": { "kind": "float", "exponent_bits": 8, "mantissa_bits": 23, "infinity": true } }, "label": "public.embedding" } }],
             "cardinality": "many",
             "domains": { "public.embedding": "vector" },
         })));
         let analysis = analyze(sql, &Host::new(&answers)).expect("answered").expect("read");
         assert_eq!(analysis.domains.get("public.embedding").map(String::as_str), Some("vector"));
+    }
+
+    #[test]
+    fn the_servers_analysis_keeps_what_a_functions_body_settled() {
+        let mut answers = HashMap::new();
+        let sql = "select id from comments_for($1)";
+        let tables = reylo_engine_core::fresh::Tables { read: vec!["comments".into()], write: vec![], functions: vec!["comments_for(bigint)".into()], expanded: Some("SELECT reylo_body.id FROM (SELECT id FROM comments WHERE post_id = $1) AS reylo_body".into()) };
+        answers.insert(format!("query:{ANALYZE_QUERY}|{}", json!([sql])), rows(json!({
+            "kind": "select",
+            "params": [],
+            "columns": [],
+            "cardinality": "many",
+            "notes": ["comments_for(bigint) is volatile"],
+            "tables": tables,
+        })));
+        let analysis = analyze(sql, &Host::new(&answers)).expect("answered").expect("read");
+        assert_eq!(analysis.notes, vec!["comments_for(bigint) is volatile".to_string()]);
+        assert_eq!(analysis.tables, Some(tables));
     }
 
     #[test]

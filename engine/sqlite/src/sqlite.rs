@@ -272,6 +272,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             cardinality_reason: None,
             key: None,
             unique: Vec::new(),
+            order: Vec::new(),
             ordered: false,
             rewritten: lex::rewrite(sql, lexed, Target::Question),
             style: lexed.style,
@@ -281,6 +282,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             fresh: None,
             errors: None,
             read_only: false,
+            notes: Vec::new(),
             tables: None,
             domains: Default::default(),
         };
@@ -321,6 +323,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         cardinality_reason: reason,
         key: None,
         unique: Vec::new(),
+        order: Vec::new(),
         ordered: false,
         rewritten: lex::rewrite(sql, lexed, Target::Question),
         style: lexed.style,
@@ -330,6 +333,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         fresh: None,
         errors: None,
         read_only: false,
+        notes: Vec::new(),
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
@@ -420,7 +424,7 @@ fn tables(t: &Tree) -> Tables {
     }
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
-    Tables { read, write }
+    Tables { read, write, ..Default::default() }
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -4266,7 +4270,7 @@ mod tests {
 
     /// The analysis's affinity name for a value of the format's type, as [`descriptor`] wrote it.
     fn affinity_of(t: &Type) -> Option<&'static str> {
-        let name = t.name.as_deref().unwrap_or("");
+        let name = t.label.as_deref().unwrap_or("");
         match &t.kind {
             Kind::Boolean => Some("bool"),
             Kind::Integer(_) if name == "BIGINT" => Some("int8"),

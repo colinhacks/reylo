@@ -1261,8 +1261,10 @@ impl<'a> From<'a> {
             return Some(placed);
         }
         match c.fields.iter().filter_map(field_name).collect::<Vec<_>>().as_slice() {
-            // A table's own columns are placed above; a name it lacks is an enclosing query's.
-            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) => Some((0, column.to_string())),
+            // A table's own columns are placed above; a name it lacks is an enclosing query's. The
+            // item's own name may be no column of it but the whole row, which `name.name` would
+            // read as a function of that row: neither is placed.
+            [column] if self.items.len() == 1 && c.fields.len() == 1 && !self.merged(column) && !matches!(self.items[0].source, Source::Relation(_)) && self.items[0].alias != *column => Some((0, column.to_string())),
             _ => None,
         }
     }
@@ -2597,6 +2599,80 @@ fn ordered_select(s: &SelectStmt, trust: &Trust, catalog: &Catalog, columns: &[(
     }
     let Some(from) = from else { return false };
     from_ordered(s, &from, &sorted_inputs, trust, catalog)
+}
+
+/// The columns of one rewritten SELECT's result its ORDER BY sorts on, in order, with each one's
+/// direction and where its NULLs sort: ascending and last unless the key says otherwise, and
+/// descending first. The list ends at the first key that is no output column of a name of its own,
+/// since a later key sorts only among rows that tie on that one: an expression, a column the
+/// result doesn't hold, a `USING` operator or a `COLLATE`, under which the values aren't sorted
+/// as the column's own collation sorts them. A later key on a column already listed sorts nothing.
+/// A column of a type with a collation is listed only where it is a table's column, passed through
+/// unchanged ([`From::base`]), or a set operation's: a set-returning SQL function the planner inlines
+/// sorts a column it passes through under its body's collation, not the one it declares. A name
+/// spelled with a character beyond ASCII ends the list too, since a server whose encoding is not
+/// UTF-8 truncates and folds it otherwise than the parser here does.
+/// A LIMIT or an OFFSET keeps the order. A locking clause doesn't: at READ COMMITTED a row it waited
+/// for is returned with its new values, in the place its old ones sorted to, so such a statement
+/// has no order to state.
+pub fn result_order(sql: &str, trust: &Trust, catalog: &Catalog, columns: &[(String, bool)], plain: &[bool]) -> Vec<crate::types::OrderColumn> {
+    use crate::types::{NullsOrder, OrderColumn};
+    use protobuf::{SortByDir, SortByNulls};
+    crate::stack::run(|| {
+        let Ok(s) = one_select(sql, Dialect::Postgres) else { return Vec::new() };
+        if !s.locking_clause.is_empty() {
+            return Vec::new();
+        }
+        let catalog = with_fields(&s, catalog);
+        let set_operation = s.larg.is_some() || s.rarg.is_some();
+        let from = (!set_operation).then(|| From::read(&s, &catalog)).filter(|f| f.refused.is_none());
+        let positions = target_positions(&s);
+        let mut order: Vec<OrderColumn> = Vec::new();
+        for item in &s.sort_clause {
+            let Some(NodeEnum::SortBy(by)) = item.node.as_ref() else { break };
+            let Some(e) = by.node.as_deref() else { break };
+            if !by.use_op.is_empty() || by.sortby_dir == SortByDir::SortbyUsing as i32 {
+                break;
+            }
+            let (Some(at), input) = sort_target(&s, from.as_ref(), e, &positions, &catalog, columns) else { break };
+            let Some((name, _)) = columns.get(at) else { break };
+            let target = positions.iter().position(|p| *p == Some(at)).and_then(|t| s.target_list.get(t));
+            if !ascii_names(e) || target.is_some_and(|t| !ascii_names(t)) {
+                break;
+            }
+            if plain.get(at) != Some(&true) && !set_operation {
+                let traced = from.as_ref().zip(input.as_ref()).and_then(|(f, (i, column))| f.base(*i, column, Dialect::Postgres, trust, &catalog));
+                if traced.is_none() {
+                    break;
+                }
+            }
+            if columns.iter().filter(|(other, _)| other == name).count() != 1 {
+                break;
+            }
+            if order.iter().any(|o| o.column == *name) {
+                continue;
+            }
+            let desc = by.sortby_dir == SortByDir::SortbyDesc as i32;
+            let first = if by.sortby_nulls == SortByNulls::SortbyNullsFirst as i32 {
+                true
+            } else if by.sortby_nulls == SortByNulls::SortbyNullsLast as i32 {
+                false
+            } else {
+                desc
+            };
+            order.push(OrderColumn { column: name.clone(), desc, nulls: if first { NullsOrder::First } else { NullsOrder::Last } });
+        }
+        order
+    })
+}
+
+/// Whether every name a column reference or a select-list entry spells is ASCII.
+fn ascii_names(node: &protobuf::Node) -> bool {
+    match node.node.as_ref() {
+        Some(NodeEnum::ColumnRef(c)) => c.fields.iter().filter_map(field_name).all(|f| f.is_ascii()),
+        Some(NodeEnum::ResTarget(r)) => r.name.is_ascii() && r.val.as_deref().is_none_or(ascii_names),
+        _ => true,
+    }
 }
 
 /// What one sort key of a SELECT names: the output column, by position, and the FROM's column, by

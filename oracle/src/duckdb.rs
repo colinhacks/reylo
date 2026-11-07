@@ -617,7 +617,7 @@ fn parameter_pool(ty: &Value, nullable: bool, scenario: Scenario) -> Option<Vec<
     let name = match &ty.kind {
         reylo_engine_core::types::Kind::Text(text) if text.values.is_some() => return Some(text.values.iter().flatten().map(|l| Some(l.clone())).chain(nullable.then_some(None)).collect()),
         reylo_engine_core::types::Kind::Json(_) => "json".into(),
-        _ => ty.name.clone()?,
+        _ => ty.label.clone()?,
     };
     let edges = scenario == Scenario::Edges;
     let mut values: Vec<&str> = match name.as_str() {
