@@ -253,6 +253,22 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
   assert.throws(() => lq.decode([[2n ** 60n, "a", null]]), /"n"/);
 });
 
+test("mysql: a GEOMETRY is its bytes through decode, as .run() gives it, and a driver's own reading of one is refused", () => {
+  const q = defineQuery({ dialect: "mysql", sql: "select point(1,2) as p", params: [], columns: [["p", "unknown"]], cardinality: "one" })["~standard"].query;
+  // The bytes mysql2 and mariadb read: the SRID, then the point's WKB.
+  const wkb = Uint8Array.of(0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63, 0, 0, 0, 0, 0, 0, 0, 64);
+  assert.deepEqual(q.decode([[wkb]]), { p: wkb });
+  assert.deepEqual(q.columns![0]!.decode(wkb), wkb);
+  // A value of no known type is passed on as it came, a NULL included.
+  assert.deepEqual(q.decode([["x"]]), { p: "x" });
+  assert.deepEqual(q.decode([[null]]), { p: null });
+  // mysql2's `{ x, y }`, its array of points for a LINESTRING, and mariadb's GeoJSON are no raw MySQL value.
+  for (const parsed of [{ x: 1, y: 2 }, [{ x: 1, y: 2 }], { type: "Point", coordinates: [1, 2] }]) {
+    assert.throws(() => q.decode([[parsed as never]]), /Column "p" holds an (object|array), which is no raw MySQL value: a GEOMETRY's raw value is its bytes/);
+    assert.throws(() => q.columns![0]!.decode(parsed as never), /no raw MySQL value/);
+  }
+});
+
 test("the result key a build step writes is the Standard Query's key", () => {
   const keyed = defineQuery({ dialect: "postgres", sql: "select id, name from users", params: [], columns: [["id", "int"], ["name", "text"]], key: ["id"] });
   assert.deepEqual(keyed["~standard"].query.key, ["id"]);

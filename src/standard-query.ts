@@ -18,7 +18,7 @@ import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
+import { coerce, DecodeError, describe, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -119,10 +119,18 @@ export declare namespace StandardQueryV1 {
 }
 
 /** A column's raw value as its kind, on MySQL from whatever form the driver read. Postgres's are its text's decoders, SQLite's `.run()`'s own (`sqliteDecoder`). */
-function decoder(name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
+function decoder(dialect: Dialect, name: string, kind: string, delim: string | undefined): (v: unknown) => unknown {
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
   // column that may be one included (src/decode-mysql.ts, `mariadb`).
   if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  // A MySQL column of no known type holds a raw value as it is, and a GEOMETRY's is its bytes,
+  // as `.run()` gives it. An object is no raw MySQL value: it is a driver's own reading of a
+  // GEOMETRY (mysql2's `{ x, y }`, mariadb's GeoJSON), which the bytes cannot be had back from.
+  if (dialect === "mysql" && kind === "unknown")
+    return (v) => {
+      if (typeof v === "object" && v !== null && !(v instanceof Uint8Array)) throw new DecodeError(`Column "${name}" holds ${describe(v)}, which is no raw MySQL value: a GEOMETRY's raw value is its bytes, which a driver parses into an object unless its conversions are off (mysql2's typeCast returning \`field.buffer()\`).`);
+      return v;
+    };
   return (v) => coerce(kind, v, name, delim);
 }
 
@@ -152,7 +160,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
   const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
-    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(dialect, name, kind, delim)) as (v: never) => unknown;
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
     return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);
