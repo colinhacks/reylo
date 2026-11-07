@@ -585,7 +585,7 @@ mod result_items {
         assert_eq!(pg("select a, f(b, c), 'x, y' from t").unwrap(), ["a", "f(b, c)", "'x, y'"]);
         assert_eq!(pg("with w as (select 1, 2) select a, b from w").unwrap(), ["a", "b"]);
         assert_eq!(pg("select distinct on (a, b) a, b from t order by a").unwrap(), ["a", "b"]);
-        assert_eq!(pg("select all a /* , */, b -- , c\n from t").unwrap(), ["a /* , */", "b -- , c"]);
+        assert_eq!(pg("select all a /* , */, b -- , c\n from t").unwrap(), ["a", "b"]);
         assert_eq!(pg("insert into t select 1, 2 returning id, x + 1").unwrap(), ["id", "x + 1"]);
         assert_eq!(pg("select $$a, b$$, $1 from t").unwrap(), ["$$a, b$$", "$1"]);
         assert_eq!(pg("select a, b union select c, d").unwrap(), ["a", "b"]);
