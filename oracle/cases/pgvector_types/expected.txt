@@ -2,7 +2,7 @@ add.sql: at_most_one (id: int4, embedding: public.vector(float(8,23)[3]), draft:
 aggregates.sql: one () -> { mean: public.vector(float(8,23)[])?, total: public.vector(float(8,23)[])?, embeddings: public.vector(float(8,23)[])[]?, drafts: public.vector(float(8,23)[])[]? }
 any_vector.sql: many (qs: public.vector(float(8,23)[])?[]) -> { id: int4 } key (id)
 by_vector.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, dims: int4?, norm: float8?, parts: float4?[]?, unit: public.vector(float(8,23)[])? } key (id)
-cosine.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, distance: float8?, draft_distance: float8? } key (id)
+cosine.sql: many (q: public.vector(float(8,23)[])) -> { id: int4, distance: float8?, draft_distance: float8? } key (id) sorted (distance nulls last)
 half_nearest.sql: many (h: public.halfvec(float(5,10)[]), s: public.sparsevec(float(8,23)[])) -> { id: int4, distance: float8?, cosine: float8?, sparse_distance: float8? } key (id)
 inner_product.sql: many (q: public.vector(float(8,23)[]), threshold: float8) -> { id: int4, score: float8? } key (id)
 json_agg.sql: one () -> { embeddings: jsonb public.vector(float(8,23)[3])[]?, halves: jsonb ({ half: public.halfvec(float(5,10)[3])? })[]? }

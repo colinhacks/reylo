@@ -1,150 +1,324 @@
-/** Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database. `nub run typecheck` checks each against the types. */
-
-import type { Column, FloatType, InstantType, IntegerType, Param, RecordType, StatementDescriptor, TextType } from "./index.ts";
-
-const int8: IntegerType = { kind: "integer", bits: 64, name: "int8" };
-
-/** A first example, on Postgres, over `create table users (id int8 primary key, email varchar(255) not null, bio text); comment on column users.bio is 'Shown on the profile page';`:
+/**
+ * Examples of Reylo Type Defs, the type descriptor format (`index.ts`), database by database: each a statement, the schema it reads, and what introspecting it gives, whole or the part the example is about. `nub run typecheck` checks each against the types, and `tests/typedefs.test.ts` against the JSON Schema.
  *
- *   -- One user, by id.
- *   select id, email, bio from users where id = :id
+ * Those of Postgres, MySQL, SQLite and DuckDB are what Reylo's engine writes: `tests/spec-examples.test.ts` runs each one's setup and statement on its database and compares every field the example shows, all but the server's version. Reylo runs no SQL Server or Oracle, so those two are written by hand. `nub run typedefs` copies every example into `examples.json`, which the engine's own tests read.
  */
-export const first_example: StatementDescriptor = {
-  $schema: "https://reylo.dev/typedefs/0.1.0.json",
-  dialect: { name: "postgres", version: "18.1" },
-  sql: "select id, email, bio from users where id = $1",
-  kind: "select",
-  comment: "One user, by id.",
-  params: [{ name: "id", type: int8 }],
-  columns: [
-    { name: "id", type: int8 },
-    { name: "email", type: { kind: "text", size: { max: 255 }, name: "varchar" } },
-    { name: "bio", nullable: true, type: { kind: "text", name: "text" }, comment: "Shown on the profile page" },
-  ],
-  cardinality: "at_most_one",
-  diagnostics: [],
+
+import type { FloatType, InstantType, IntegerType, RecordType, StatementDescriptor, TextType } from "./index.ts";
+
+/** One example: a statement on one database, the schema it reads, and what introspecting it gives. */
+export interface Example {
+  /** The database, as `dialect.name` names it. */
+  database: "postgres" | "mysql" | "sqlite" | "duckdb" | "sqlserver" | "oracle";
+  /** The schema the statement reads, run first on an empty database. */
+  setup?: string;
+  /** The statement as written, with `:name` parameters. */
+  statement: string;
+  /** What introspecting the statement gives: the whole descriptor, or the fields the example is about. */
+  descriptor: Partial<StatementDescriptor>;
+}
+
+const int8: IntegerType = { kind: "integer", bits: 64, label: "int8" };
+
+/** A first example, on Postgres: one user, by id. The statement's leading comment is its `comment`, and `sql` is the statement as the database runs it, with Postgres's own placeholders. */
+export const first_example: Example = {
+  database: "postgres",
+  setup: "create table users (id int8 primary key, email varchar(255) not null, bio text); comment on column users.bio is 'Shown on the profile page'",
+  statement: "-- One user, by id.\nselect id, email, bio from users where id = :id",
+  descriptor: {
+    $schema: "https://reylo.dev/typedefs/0.1.0.json",
+    dialect: { name: "postgres", version: "18.1" },
+    sql: "-- One user, by id.\nselect id, email, bio from users where id = $1",
+    kind: "select",
+    comment: "One user, by id.",
+    params: [{ name: "id", type: int8 }],
+    result: {
+      kind: "rows",
+      cardinality: "at_most_one",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "email", type: { kind: "text", size: { max: 255 }, label: "varchar" } },
+        { name: "bio", nullable: true, type: { kind: "text", label: "text" }, comment: "Shown on the profile page" },
+      ],
+    },
+    diagnostics: [],
+  },
 };
 
 const int64: IntegerType = { kind: "integer", bits: 64 };
-const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, name: "float8" };
-const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, name: "timestamptz" };
-const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
+const float8: FloatType = { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true, nan: true, label: "float8" };
+const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" };
+const point: RecordType = { kind: "record", label: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
 
-/**
- * Postgres.
- *
- *   create type mood as enum ('sad', 'ok', 'happy');
- *   create domain email as varchar(255) check (value like '%@%');
- *   create table t (price numeric(10,2), total numeric, at timestamptz, day date, span interval, m mood, e email, tags varchar(20)[], flags bit(7), emb vector(3), body jsonb, during tstzrange, pos point, ring circle, addr inet, tod time);
- */
-export const postgres_columns: Column[] = [
-  { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, name: "numeric" } },
-  { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, name: "numeric" } },
-  { name: "at", nullable: true, type: timestamptz },
-  { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, name: "date" } },
-  { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, name: "interval" } },
-  { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], name: "public.mood" } },
-  { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, name: "public.email" } },
-  { name: "tags", nullable: true, type: { kind: "array", any_depth: true, name: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, name: "varchar" } } } },
-  { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, name: "bit", element: { type: { kind: "boolean" } } } },
-  { name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, name: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } },
-  { name: "body", nullable: true, type: { kind: "json", name: "jsonb" } },
-  { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, name: "tstzrange" } },
-  { name: "pos", nullable: true, type: point },
-  { name: "ring", nullable: true, type: { kind: "record", name: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
-  {
-    name: "addr", nullable: true,
-    type: { kind: "union", name: "inet", members: [
-      { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
-      { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
-    ] },
+/** Postgres: the columns the rows are sorted on. `id` follows `at`, and NULLs sort first when descending unless the key says otherwise. */
+export const sorted_rows: Example = {
+  database: "postgres",
+  setup: "create table events (id int8 primary key, at timestamptz)",
+  statement: "select id, at from events order by at desc, id",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000000", min: "-4713-11-24T00:00:00Z", max: "+294276-12-31T23:59:59.999999Z", infinity: true, label: "timestamptz" } },
+      ],
+      unique: [["id"]],
+      order: [
+        { column: "at", desc: true, nulls: "first" },
+        { column: "id", nulls: "last" },
+      ],
+    },
   },
-  { name: "tod", nullable: true, type: { kind: "time", tick: "1/1000000", max: "24:00:00", name: "time" } },
-];
-
-/** Postgres: `select json_agg(p.title) filter (where p.id is not null) as titles from users u left join posts p on p.author_id = u.id group by u.id`, over a NOT NULL `title`. */
-export const json_column: Column = {
-  name: "titles",
-  nullable: true,
-  type: { kind: "json", name: "json", content: { type: { kind: "array", element: { type: { kind: "text", name: "text" } } } } },
 };
 
-/** Postgres: `create type arrayrange as range (subtype = int4[]); create table t (r arrayrange); select r from t`. A range spans whatever the database orders, an array here. */
-export const range_over_array: Column = {
-  name: "r",
-  nullable: true,
-  type: { kind: "range", name: "public.arrayrange", subtype: { kind: "array", any_depth: true, name: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, name: "int4" } } } },
+/** Postgres: the sets of columns no two rows agree on, a table's primary key first. A nullable column of a unique index is not one, since NULLs may repeat there. */
+export const unique_columns: Example = {
+  database: "postgres",
+  setup: "create table accounts (id int8 primary key, email text not null unique, handle text unique)",
+  statement: "select id, email, handle from accounts",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: int8 },
+        { name: "email", type: { kind: "text", label: "text" } },
+        { name: "handle", nullable: true, type: { kind: "text", label: "text" } },
+      ],
+      unique: [["id"], ["email"]],
+    },
+  },
+};
+
+/** Postgres: a column of each kind its catalog holds. The engine types a domain's column as the base type the server describes it by, `varchar(255)`, so `e`'s type does not carry the domain's name, `public.email`, and takes its LIKE CHECK as a `pattern`. */
+export const postgres_columns: Example = {
+  database: "postgres",
+  setup: "create type mood as enum ('sad', 'ok', 'happy'); create domain email as varchar(255) check (value like '%@%'); create table t (price numeric(10,2), total numeric, at timestamptz, day date, span interval, m mood, e email, tags varchar(20)[], flags bit(7), body jsonb, during tstzrange, pos point, ring circle, addr inet, tod time)",
+  statement: "select * from t",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "price", nullable: true, type: { kind: "decimal", precision: 10, min_scale: 2, max_scale: 2, nan: true, label: "numeric" } },
+        { name: "total", nullable: true, type: { kind: "decimal", min_scale: 0, max_scale: 16383, exclusive_min: "-1e131072", exclusive_max: "1e131072", infinity: true, nan: true, label: "numeric" } },
+        { name: "at", nullable: true, type: timestamptz },
+        { name: "day", nullable: true, type: { kind: "date", min: "-4713-11-24", max: "+5874897-12-31", infinity: true, label: "date" } },
+        { name: "span", nullable: true, type: { kind: "duration", max: "P2147483648M2147483648DT2562047788H54.775808S", tick: "1/1000000", infinity: true, label: "interval" } },
+        { name: "m", nullable: true, type: { kind: "text", enum: ["sad", "ok", "happy"], label: "public.mood" } },
+        { name: "e", nullable: true, type: { kind: "text", size: { max: 255 }, pattern: { dialect: "like", source: "%@%" }, label: "varchar" } },
+        { name: "tags", nullable: true, type: { kind: "array", any_depth: true, label: "_varchar", element: { nullable: true, type: { kind: "text", size: { max: 20 }, label: "varchar" } } } },
+        { name: "flags", nullable: true, type: { kind: "array", size: { exact: 7 }, label: "bit", element: { type: { kind: "boolean" } } } },
+        { name: "body", nullable: true, type: { kind: "json", label: "jsonb" } },
+        { name: "during", nullable: true, type: { kind: "range", subtype: timestamptz, label: "tstzrange" } },
+        { name: "pos", nullable: true, type: point },
+        { name: "ring", nullable: true, type: { kind: "record", label: "circle", fields: [{ name: "center", type: point }, { name: "radius", type: float8 }] } },
+        {
+          name: "addr",
+          nullable: true,
+          type: {
+            kind: "union",
+            label: "inet",
+            members: [
+              { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 4 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "32" } }] },
+              { kind: "record", fields: [{ name: "address", type: { kind: "bytes", size: { exact: 16 } } }, { name: "prefix", type: { kind: "integer", bits: 8, unsigned: true, max: "128" } }] },
+            ],
+          },
+        },
+        { name: "tod", nullable: true, type: { kind: "time", tick: "1/1000000", max: "24:00:00", label: "time" } },
+      ],
+    },
+  },
+};
+
+/** Postgres: an extension's type, pgvector's `vector(3)`, under the schema the extension is installed in. */
+export const pgvector_column: Example = {
+  database: "postgres",
+  setup: "create extension vector; create table items (emb vector(3))",
+  statement: "select emb from items",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [{ name: "emb", nullable: true, type: { kind: "array", size: { exact: 3 }, label: "public.vector", element: { type: { kind: "float", exponent_bits: 8, mantissa_bits: 23 } } } }],
+    },
+  },
+};
+
+/** Postgres: the JSON a statement builds, typed inside, over a NOT NULL `title`. */
+export const json_column: Example = {
+  database: "postgres",
+  setup: "create table users (id int8 primary key); create table posts (id int8 primary key, author_id int8 references users, title text not null)",
+  statement: "select json_agg(p.title) filter (where p.id is not null) as titles from users u left join posts p on p.author_id = u.id group by u.id",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [{ name: "titles", nullable: true, type: { kind: "json", label: "json", content: { type: { kind: "array", element: { type: { kind: "text", label: "text" } } } } } }],
+    },
+  },
+};
+
+/** MySQL. `:n + 1` is a `BIGINT`, a `DOUBLE` or a `DECIMAL` by what is bound to `:n` and how the driver sends it, so its type is a union of the three. */
+export const mysql_columns: Example = {
+  database: "mysql",
+  setup: "create table m (id bigint unsigned primary key, flag boolean not null, at timestamp(3) null, status enum('b','a') not null, born date, name varchar(100), body text, tags set('a','b'))",
+  statement: "select id, flag, at, status, born, name, body, tags, :n + 1 next from m",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "id", type: { kind: "integer", bits: 64, unsigned: true, label: "bigint" } },
+        { name: "flag", type: { kind: "integer", bits: 8, label: "tinyint(1)" } },
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", label: "timestamp" } },
+        { name: "status", type: { kind: "text", enum: ["b", "a"], label: "enum" } },
+        { name: "born", nullable: true, type: { kind: "date", label: "date" } },
+        { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, label: "varchar" } },
+        { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, label: "text" } },
+        { name: "tags", nullable: true, type: { kind: "set", label: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
+        { name: "next", nullable: true, type: { kind: "union", members: [{ ...int64, label: "bigint" }, { kind: "float", exponent_bits: 11, mantissa_bits: 52, label: "double" }, { kind: "decimal", label: "decimal" }] } },
+      ],
+    },
+  },
+};
+
+/** SQL Server, written by hand. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate. */
+export const sqlserver_columns: Example = {
+  database: "sqlserver",
+  setup: "create table s (at datetimeoffset(3), label nvarchar(10))",
+  statement: "select at, label from s",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", label: "datetimeoffset" } },
+        { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, label: "nvarchar" } },
+      ],
+    },
+  },
+};
+
+/** Postgres: a range spans whatever the database orders, an array here. */
+export const range_over_array: Example = {
+  database: "postgres",
+  setup: "create type arrayrange as range (subtype = int4[]); create table t (r arrayrange)",
+  statement: "select r from t",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [{ name: "r", nullable: true, type: { kind: "range", label: "public.arrayrange", subtype: { kind: "array", any_depth: true, label: "_int4", element: { nullable: true, type: { kind: "integer", bits: 32, label: "int4" } } } } }],
+    },
+  },
 };
 
 /**
- * MySQL.
- *
- *   create table m (id bigint unsigned primary key, flag boolean not null, at timestamp(3) null, status enum('b','a') not null, born date, name varchar(100), body text, tags set('a','b'));
- *   select id, flag, at, status, born, name, body, tags, :n + 1 next from m
+ * SQLite. A NUMERIC column stores `'0012'` as 12, `'abc'` as text and a blob as a blob; a TEXT column stores 12 as `'12'`. A type is named as SQLite reports the column's declared type: one of its own words (`INT`, `INTEGER`, `REAL`, `TEXT`, `BLOB`) in capitals, any other as written. The engine leaves `x`, declared with no type, `unknown`, though it holds what a NUMERIC column does. In the STRICT table, `n` is an integer alone.
  */
-export const mysql_columns: Column[] = [
-  { name: "id", type: { kind: "integer", bits: 64, unsigned: true, name: "bigint" } },
-  { name: "flag", type: { kind: "integer", bits: 8, name: "tinyint(1)" } },
-  { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", min: "1970-01-01T00:00:01Z", max: "2038-01-19T03:14:07.999Z", name: "timestamp" } },
-  { name: "status", type: { kind: "text", enum: ["b", "a"], name: "enum" } },
-  { name: "born", nullable: true, type: { kind: "date", name: "date" } },
-  { name: "name", nullable: true, type: { kind: "text", size: { max: 100 }, name: "varchar" } },
-  { name: "body", nullable: true, type: { kind: "text", size: { unit: "byte", encoding: "UTF-8", max: 65535 }, name: "text" } },
-  { name: "tags", nullable: true, type: { kind: "set", size: { max: 2 }, name: "set", element: { type: { kind: "text", enum: ["a", "b"] } } } },
-  { name: "next", nullable: true, type: { kind: "union", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52 }, { kind: "decimal" }] } },
-];
-
-/** SQL Server: `create table s (at datetimeoffset(3), label nvarchar(10))`. `at` keeps the offset each value was written with, and `label` may hold a lone surrogate. */
-export const sqlserver_columns: Column[] = [
-  { name: "at", nullable: true, type: { kind: "instant", tick: "1/1000", zone: "offset", name: "datetimeoffset" } },
-  { name: "label", nullable: true, type: { kind: "text", ill_formed: "utf16", size: { max: 10 }, name: "nvarchar" } },
-];
-
-/**
- * SQLite.
- *
- *   create table s (id integer primary key, price numeric, name text, x);
- *   create table t (n integer) strict;
- *   select price, name, x, n from s, t
- *
- * A NUMERIC column stores `'0012'` as 12, `'abc'` as text and a blob as a blob; a TEXT column stores 12 as `'12'`. In the STRICT table, `n` is an integer alone.
- */
-export const sqlite_columns: Column[] = [
-  { name: "price", nullable: true, type: { kind: "union", name: "NUMERIC", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
-  { name: "name", nullable: true, type: { kind: "union", name: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
-  { name: "x", nullable: true, type: { kind: "union", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
-  { name: "n", nullable: true, type: { ...int64, name: "INTEGER" } },
-];
-
-/** Oracle: `create type shape_t as object (name varchar2(20 char)) not final; create type circle_t under shape_t (radius number); create table shapes (s shape_t);` Oracle stores `''` as null, so its text is at least 1 code point. */
-export const oracle_column: Column = {
-  name: "S",
-  nullable: true,
-  type: { kind: "union", name: "R.SHAPE_T", members: [
-    { kind: "record", name: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } }] },
-    { kind: "record", name: "R.CIRCLE_T", fields: [
-      { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, name: "VARCHAR2" } },
-      { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", name: "NUMBER" } },
-    ] },
-  ] },
+export const sqlite_columns: Example = {
+  database: "sqlite",
+  setup: "create table s (id integer primary key, price numeric, name text, x); create table t (n integer) strict",
+  statement: "select price, name, x, n from s, t",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        { name: "price", nullable: true, type: { kind: "union", label: "numeric", members: [int64, { kind: "float", exponent_bits: 11, mantissa_bits: 52, infinity: true }, sqlite_text, { kind: "bytes" }] } },
+        { name: "name", nullable: true, type: { kind: "union", label: "TEXT", members: [sqlite_text, { kind: "bytes" }] } },
+        { name: "x", nullable: true, type: { kind: "unknown" } },
+        { name: "n", nullable: true, type: { ...int64, label: "INTEGER" } },
+      ],
+    },
+  },
 };
 
-/** DuckDB: `select union_value(num := 1)::union(num integer, str varchar) as u`, a tagged union whose every alternative may hold NULL, as DuckDB lets any value inside a nested type be. */
-export const duckdb_column: Column = {
-  name: "u",
-  nullable: true,
-  type: { kind: "tagged_union", name: "union", alternatives: [
-    { tag: "num", nullable: true, type: { kind: "integer", bits: 32, name: "integer" } },
-    { tag: "str", nullable: true, type: { kind: "text", name: "varchar" } },
-  ] },
+/** Oracle, written by hand. Oracle stores `''` as null, so its text is at least 1 code point. */
+export const oracle_column: Example = {
+  database: "oracle",
+  setup: "create type shape_t as object (name varchar2(20 char)) not final; create type circle_t under shape_t (radius number); create table shapes (s shape_t)",
+  statement: "select s from shapes",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "many",
+      columns: [
+        {
+          name: "S",
+          nullable: true,
+          type: {
+            kind: "union",
+            label: "R.SHAPE_T",
+            members: [
+              { kind: "record", label: "R.SHAPE_T", fields: [{ name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } }] },
+              {
+                kind: "record",
+                label: "R.CIRCLE_T",
+                fields: [
+                  { name: "NAME", nullable: true, type: { kind: "text", size: { min: 1, max: 20 }, label: "VARCHAR2" } },
+                  { name: "RADIUS", nullable: true, type: { kind: "decimal", precision: 40, exclusive_min: "-1e126", exclusive_max: "1e126", label: "NUMBER" } },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  },
 };
 
-/** A structured parameter: `insert into events (kind, at) select * from :events::rows(kind varchar(32), at timestamptz?)` */
-export const structured_param: Param = {
-  name: "events",
-  type: { kind: "array", element: { type: { kind: "record", fields: [
-    { name: "kind", type: { kind: "text", size: { max: 32 }, name: "varchar" } },
-    { name: "at", nullable: true, optional: true, type: timestamptz },
-  ] } } },
+/** DuckDB: a tagged union whose every alternative may hold NULL, as DuckDB lets any value inside a nested type be. */
+export const duckdb_column: Example = {
+  database: "duckdb",
+  statement: "select union_value(num := 1)::union(num integer, str varchar) as u",
+  descriptor: {
+    result: {
+      kind: "rows",
+      cardinality: "one",
+      columns: [
+        {
+          name: "u",
+          nullable: true,
+          type: {
+            kind: "tagged_union",
+            label: "union",
+            alternatives: [
+              { tag: "num", nullable: true, type: { kind: "integer", bits: 32, label: "integer" } },
+              { tag: "str", nullable: true, type: { kind: "text", label: "varchar" } },
+            ],
+          },
+        },
+      ],
+    },
+  },
+};
+
+/** Postgres: a structured parameter, a list of records. `at` may be null, so the caller may leave it out. */
+export const structured_param: Example = {
+  database: "postgres",
+  setup: "create table events (kind varchar(32) not null, at timestamptz)",
+  statement: "insert into events (kind, at) select * from :events::rows(kind varchar(32) not null, at timestamptz)",
+  descriptor: {
+    params: [
+      {
+        name: "events",
+        type: {
+          kind: "array",
+          element: {
+            type: {
+              kind: "record",
+              fields: [
+                { name: "kind", type: { kind: "text", size: { max: 32 }, label: "varchar" } },
+                { name: "at", nullable: true, optional: true, type: timestamptz },
+              ],
+            },
+          },
+        },
+      },
+    ],
+  },
 };

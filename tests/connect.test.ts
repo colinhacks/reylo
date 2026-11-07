@@ -122,7 +122,7 @@ test("reylo analyze opens a Postgres Unix socket itself, without TLS, and reads 
       child.on("close", (code) => done({ code, stdout, stderr }));
     });
     assert.equal(run.code, 0, run.stderr + run.stdout);
-    assert.deepEqual(JSON.parse(run.stdout).columns.map((col: { name: string }) => col.name), ["x"]);
+    assert.deepEqual(JSON.parse(run.stdout).result.columns.map((col: { name: string }) => col.name), ["x"]);
   } finally {
     pg.server.close();
   }

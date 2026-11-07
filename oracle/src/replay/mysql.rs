@@ -99,6 +99,7 @@ async fn replay(server: &Owned, paths: &[PathBuf], timeout_ms: u64) -> Result<bo
                     continue;
                 }
             };
+            t.typed(&name, &sql, &analysis);
             if analysis["params"].as_array().is_some_and(|p| !p.is_empty()) {
                 t.with_params += 1;
                 continue;

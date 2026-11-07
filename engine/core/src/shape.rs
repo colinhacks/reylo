@@ -22,6 +22,10 @@ pub enum Shape {
     Column { probe: usize, index: usize },
     /// A whole row: every column of probe `probe`, which selects `alias.*`.
     Row { probe: usize },
+    /// `alias.*` on a function of the FROM: the row of probe `row` where `value`, the same
+    /// reference read as one value, is of a row type, and that value where the function returns
+    /// one of any other type.
+    RowOrValue { row: usize, value: Box<Shape> },
     /// A bound parameter, `$n`; its type is the one the statement's own describe reported.
     Param(i32),
     /// The value of a scalar subquery that may find no row: the shape inside, or NULL.
