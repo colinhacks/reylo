@@ -39,5 +39,5 @@ scan_limit_5.sql: many () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), emai
 scan_limit_negative.sql: many () -> { id: INTEGER, name: TEXT(text(utf8) | bytes), email: TEXT(text(utf8) | bytes)? }
 values.sql: many () -> { column1: int64 }
 values_joined.sql: many () -> { n: int64, column1: int64 }
-values_rows.sql: many () -> { column1: int64 }
+values_rows.sql: many () -> { column1: int64 } value
 with_count.sql: one () -> { n: int64 }

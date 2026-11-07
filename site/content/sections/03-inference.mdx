@@ -544,6 +544,38 @@ order by user_id
 
 </Inferred>
 
+### Single values [#values]
+
+A column with no name returns its values instead of rows:
+
+<Inferred>
+
+```sql file="post_total.sql" dialect="postgres"
+select count(*)::int
+from posts
+where user_id = :user_id::int
+```
+
+```sql file="post_total.sql" dialect="mysql"
+select count(*)
+from posts
+where user_id = :user_id::int
+```
+
+```sql file="post_total.sql" dialect="sqlite"
+select count(*)
+from posts
+where user_id = :user_id::int
+```
+
+</Inferred>
+
+An expression with no `as` has no name of its own, only what your database makes up for it, which can differ by driver. Add an `as` to get rows back, as in the [query above](#aggregates). A column read as it is, like `select id`, already has a name and keeps its rows.
+
+Where such a value may be null and the query may also match no row, `null` stands for both. Name the column to tell them apart.
+
+Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
+
 ### Window functions
 
 Reylo types each window function: a row number is never null, while `lag()` is null on the first row:

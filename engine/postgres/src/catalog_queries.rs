@@ -28,6 +28,7 @@ fn queries() -> Vec<(&'static str, String)> {
         ("COLUMNS_QUERY", cardinality::COLUMNS_QUERY.into()),
         ("FUNCTIONS_QUERY", cardinality::FUNCTIONS_QUERY.into()),
         ("SET_RETURNING_OPERATORS_QUERY", cardinality::SET_RETURNING_OPERATORS_QUERY.into()),
+        ("SET_RETURNING_ATTRIBUTES_QUERY", cardinality::SET_RETURNING_ATTRIBUTES_QUERY.into()),
         ("BODIES_QUERY", bodies::BODIES_QUERY.into()),
         ("TYPE_QUERY", pgtypes::TYPE_QUERY.into()),
         ("RELATION_TYPES_QUERY", pgtypes::RELATION_TYPES_QUERY.into()),

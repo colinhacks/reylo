@@ -430,7 +430,7 @@ test("mysql: execute() → [rows, fields] on mysql2, a repeated name repeated in
   // The statement with Reylo's per-query options and typeCast (src/decode-mysql.ts), never decimalNumbers.
   const [options, values] = calls[0]!.args as [Record<string, unknown>, unknown[]];
   assert.deepEqual(values, [1, "ada", 1]);
-  assert.deepEqual({ ...options, typeCast: typeof options.typeCast }, { sql: "select ? as id, ? as name, ? as again", supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: false, nestTables: false, typeCast: "function" });
+  assert.deepEqual({ ...options, typeCast: typeof options.typeCast }, { sql: "select ? as id, ? as name, ? as again", supportBigNumbers: true, bigNumberStrings: true, dateStrings: true, rowsAsArray: true, nestTables: false, typeCast: "function" });
   assert.deepEqual(await execute(pool, my, { id: 1, name: "ada" }), []);
 });
 

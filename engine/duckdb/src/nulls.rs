@@ -203,6 +203,12 @@ struct Scope {
 }
 
 impl Scope {
+    /// Whether a bare word may be a column here: a relation has a column of that name, or a relation's
+    /// columns are not known.
+    fn may_name(&self, word: &str) -> bool {
+        self.rels.iter().any(|r| r.columns.as_ref().is_none_or(|cs| cs.iter().any(|c| c.name.as_deref().is_some_and(|n| n.eq_ignore_ascii_case(word)))))
+    }
+
     /// The relation and column a reference names: `c` where exactly one relation has a column of
     /// that name and every relation's columns are known, `r.c` (or `s.r.c`) where the relation is
     /// named. Anything else (a struct's field, a lambda's parameter, a column of a table function)
@@ -370,6 +376,9 @@ fn projection(items: &[SelectItem], scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>
     let mut out = Vec::new();
     for item in items {
         match item {
+            // An `unnest` or `unpack` of a struct makes a column of each field, named by the field,
+            // which the tree does not say.
+            SelectItem::UnnamedExpr(Expr::Function(f)) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)) => return None,
             SelectItem::UnnamedExpr(e) => out.push(column_of(e, None, scope, ctx)),
             SelectItem::ExprWithAlias { expr, alias } => out.push(column_of(expr, Some(&alias.value), scope, ctx)),
             SelectItem::Wildcard(options) => {
@@ -851,6 +860,11 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         Expr::Position { expr, r#in } => nn(expr) && nn(r#in),
         Expr::Substring { expr, substring_from, substring_for, .. } => nn(expr) && substring_from.as_deref().is_none_or(nn) && substring_for.as_deref().is_none_or(nn),
         Expr::AtTimeZone { timestamp, time_zone } => nn(timestamp) && nn(time_zone),
+        // A word DuckDB calls without parentheses (`current_date`) is read as a column of that name
+        // where the FROM has one, which may hold NULL.
+        Expr::Function(f) if matches!(f.args, FunctionArguments::None) && scope.may_name(&f.name.to_string()) => {
+            scope.resolve(&[Ident::new(f.name.to_string())]).is_some_and(|at| scope.column(at).not_null)
+        }
         Expr::Function(f) => function(f, scope, ctx),
         _ => false,
     }

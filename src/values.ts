@@ -15,7 +15,7 @@
 // `vector` or `halfvec` as an array of its numbers; `hstore` an hstore's keys as an object, each
 // value a string or null; `text` the server's text, which every other type is (time, uuid, an
 // enum's label, a row value whose fields are not known); `unknown` whatever the driver gives (a
-// SQLite column with no declared type); `(…)` a Postgres row value of known fields as an object
+// SQLite column with no declared type); `geometry` a MySQL GEOMETRY's bytes, which a driver may parse unless asked for them; `(…)` a Postgres row value of known fields as an object
 // of them, each field listed as `[name, kind]` (`(["id","int8"],["name","text"])`); `point`,
 // `line`, `lseg`, `box`, `path`, `polygon` and `circle` Postgres's geometric types as objects of
 // their fields, as the type descriptor gives them; and `range:k` and `multirange:k` a range of `k`
@@ -33,7 +33,7 @@ import { bareName, type EngineType } from "./engine-type.ts";
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 
 /** A scalar value's representation. */
-export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "unknown";
+export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
 /** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
@@ -117,6 +117,8 @@ export const TS_TYPE: Readonly<Record<ScalarKind, string>> = {
   enum: "string",
   // A MySQL SET's members, which MySQL keeps once each, in the order the column declares them.
   set: "Set<string>",
+  // A GEOMETRY's bytes, `unknown` as the type of a value its WKB alone describes.
+  geometry: "unknown",
   unknown: "unknown",
 };
 
@@ -311,6 +313,8 @@ export function columnKind(t: EngineType, dialect: Dialect): Kind {
       // A Postgres range is an object of its bounds, each decoded from its text as its subtype is.
       return dialect === "postgres" ? `${t.kind}:${columnKind(t.subtype, dialect)}` : "text";
     case "geometry":
+      // A MySQL GEOMETRY is its bytes, which `.run()` asks each driver for.
+      return dialect === "postgres" ? "text" : dialect === "mysql" ? "geometry" : "unknown";
     case "opaque":
       return dialect === "postgres" ? "text" : "unknown";
     case "unknown":
@@ -961,6 +965,7 @@ const TEXT_DECODERS: Readonly<Record<ScalarKind, Decoder>> = {
   ...GEOMETRIC_DECODERS,
   enum: identity,
   set: (x) => members(x),
+  geometry: identity,
   unknown: identity,
 };
 

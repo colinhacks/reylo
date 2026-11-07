@@ -125,7 +125,7 @@ export interface Query<Params, Row, C extends Cardinality, D extends Dialect, E 
   /** The JSON Schema (2020-12) of the result as JSON: what `run` returns, written as JSON, a BigInt as the integer it is. */
   readonly outputSchema: Record<string, unknown>;
   /** Standard JSON Schema's `jsonSchema` and Standard Query's `query`: a driver that supports Standard Query runs the import with the same input and output as `.run()`. */
-  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
+  readonly "~standard": StandardJSONSchemaV1.Props<Params, Materialize<Row, C>> & StandardQueryV1.Props<Params, Materialize<Row, C>, D> & { readonly query: { readonly cardinality: C; output(rows: readonly Record<string, unknown>[]): Materialize<Row, C> } };
   readonly "~reylo": ReyloTypes<Params, Row, C>;
   /**
    * Runs the statement on the client, or on a transaction or connection taken from it. The
@@ -189,15 +189,23 @@ export type QueryDefinition = {
   source?: string;
   /** Whether a Postgres array column may hold nested arrays, as a build step writes where the project file says `allow_nested_arrays: true`: none is refused. */
   nestedArrays?: boolean;
-  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts), as a build step writes unless the project file says `sqlcommenter: false`. The query's `sql` leaves it out. */
   sqlcommenter?: boolean;
   cardinality?: Cardinality;
+  /** Whether the result is the one column's values rather than rows that hold them, as a build step writes where the statement gives the column no name: the query's `Row` is that value's type. */
+  value?: boolean;
   /** Whether the engine finds nothing in the statement that could write: the query's `readOnly`. */
   readOnly?: boolean;
   jsonSchema?: { input: Record<string, unknown>; output: Record<string, unknown> };
   /** The checks of a typed JSON, structured or cast parameter, `checks` from "reylo": a build step passes them where the statement has one, so that an app none of whose statements has one bundles none of them. */
   checks?: Checks;
 };
+
+/** The value of a row of one column. Its key is a name the database or the driver made up, which can differ from the one the analysis read, so the value is read without it. */
+function onlyValue(row: unknown): unknown {
+  for (const name in row as Record<string, unknown>) return (row as Record<string, unknown>)[name];
+  return undefined;
+}
 
 export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(
   def: QueryDefinition & { dialect: D; cardinality?: C },
@@ -221,6 +229,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     row: def.row,
     key: def.key,
     ordered: def.ordered,
+    cardinality,
     codecs: def.codecs,
     structured: def.structured,
     fresh: def.fresh,
@@ -255,7 +264,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
         input: () => def.jsonSchema?.input ?? missingSchema(),
         output: () => def.jsonSchema?.output ?? missingSchema(),
       },
-      query: standardQuery(module, (rows) => materialize(rows as Row[])),
+      query: standardQuery(module, (rows) => materialize(rows as Row[])) as ReturnType<typeof standardQuery<D, Materialize<Row, C>>> & { readonly cardinality: C },
     },
     "~reylo": undefined as unknown as ReyloTypes<Params, Row, C>,
     run: ((client: ClientFor<D>, params?: Params) => run(client, params ?? ({} as Params))) as Query<Params, Row, C, D>["run"],
@@ -327,18 +336,19 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
     }
     return error;
   }
+  const element = def.value ? onlyValue : (row: unknown) => row;
   function materialize(rows: Row[]): Materialize<Row, C> {
     switch (cardinality) {
       case "none":
         return undefined as Materialize<Row, C>;
       case "many":
-        return rows as Materialize<Row, C>;
+        return (def.value ? rows.map(onlyValue) : rows) as Materialize<Row, C>;
       case "one":
         if (rows.length !== 1) throw new Error(`${where}Expected exactly one row, got ${rows.length}`);
-        return rows[0] as Materialize<Row, C>;
+        return element(rows[0]) as Materialize<Row, C>;
       default:
         if (rows.length > 1) throw new Error(`${where}Expected at most one row, got ${rows.length}`);
-        return (rows[0] ?? null) as Materialize<Row, C>;
+        return (rows.length ? element(rows[0]) : null) as Materialize<Row, C>;
     }
   }
   return query;

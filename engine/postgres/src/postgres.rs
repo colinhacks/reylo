@@ -8,7 +8,7 @@
 //! the database goes through [`Host`], which records what it cannot answer yet; `analyze` then
 //! returns `None`, the host answers, and the next call replays with more.
 
-use crate::analysis::{bare, bare_of, constant_key, diag, lexed, KeyClause};
+use crate::analysis::{bare, bare_of, constant_key, diag, lexed, KeyClause, ResultTarget};
 use crate::analyze::{self, Analysis as Parsed};
 use crate::api::{Analysis, Column, DbError, Diagnostic, Param, RawDescribe, Scope};
 use crate::cardinality::{self, Catalog};
@@ -656,9 +656,11 @@ fn trusted(catalog: &mut Catalog, trust: &Trust) {
     catalog.deterministic_only = trust.deterministic_only;
 }
 
-fn set_returning_operators(host: &Host) -> Lazy<HashSet<String>> {
-    let rows = host.query(cardinality::SET_RETURNING_OPERATORS_QUERY, vec![], Scope::Session)?;
-    Some(rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect())
+/// The operators some set-returning function implements, and the set-returning functions one argument can call.
+fn set_returning_operators(host: &Host) -> Lazy<(HashSet<String>, HashSet<String>)> {
+    let names = |sql| host.query(sql, vec![], Scope::Session).map(|rows| rows.unwrap_or_default().iter().filter_map(|r| r.first().and_then(as_str).map(String::from)).collect::<HashSet<String>>());
+    let (operators, attributes) = (names(cardinality::SET_RETURNING_OPERATORS_QUERY), names(cardinality::SET_RETURNING_ATTRIBUTES_QUERY));
+    Some((operators?, attributes?))
 }
 
 /// A catalog query of `$1` a `text[]` of relation names and `$2` how many, asked of each relation
@@ -1042,13 +1044,14 @@ impl<'a> Engine<'a> {
             .collect();
 
         // Row count.
-        let (cardinality, reason) = self.cardinality(&rewritten.sql, parsed.as_ref(), &described, &trust, &catalog);
+        let (cardinality, reason) = self.cardinality(&rewritten.sql, &lex::first_word(sql, lexed), parsed.as_ref(), &described, &trust, &catalog);
         let unique = result_keys(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let key = shortest_key(&unique, &columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         let order = result_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
+        let targets = result_targets(sql, &rewritten);
         let mut analysis = Analysis {
             kind: parsed.as_ref().map(|p| StatementKind::of(p.statement)),
             comment: None,
@@ -1060,6 +1063,7 @@ impl<'a> Engine<'a> {
             unique,
             order,
             ordered,
+            value: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -1075,7 +1079,7 @@ impl<'a> Engine<'a> {
         // The domains its types name, with the base type each is made from.
         let names: Vec<String> = analysis.params.iter().map(|p| &p.ty).chain(analysis.columns.iter().map(|c| &c.ty)).flat_map(Type::names).collect();
         analysis.domains = registry.domain_bases(&names);
-        crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
+        crate::analysis::names(sql, Dialect::Postgres, &mut analysis, targets.as_deref(), &|i| spans.get(i).copied());
         Some(analysis)
     }
 
@@ -1177,6 +1181,7 @@ impl<'a> Engine<'a> {
             unique: Vec::new(),
             order: Vec::new(),
             ordered: false,
+            value: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -1191,8 +1196,13 @@ impl<'a> Engine<'a> {
         })
     }
 
-    fn cardinality(&self, sql: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
-        let Some(parsed) = parsed else { return (Cardinality::Many, Some("the statement did not parse locally".into())) };
+    fn cardinality(&self, sql: &str, first_word: &str, parsed: Option<&Parsed>, described: &DescribedStatement, trust: &Trust, catalog: &Catalog) -> (Cardinality, Option<String>) {
+        let Some(parsed) = parsed else {
+            // Syntax of a server newer than the parser. A command with no columns, such as `REPACK`, returns no rows; a query with none, such as `SELECT FROM t`, returns an empty row per row it reads, and one in parentheses has no first word.
+            let query = matches!(first_word, "" | "select" | "with" | "values" | "table");
+            let rows = if described.columns.is_empty() && !query { Cardinality::None } else { Cardinality::Many };
+            return (rows, Some("the statement did not parse locally".into()));
+        };
         // By the top statement, not `kind`: a SELECT over a data-modifying WITH is a mutation,
         // and its rows are still a SELECT's.
         if parsed.statement != "select" {
@@ -4062,8 +4072,8 @@ fn merge_keys(into: &mut Catalog, from: Catalog) {
     into.volatile.extend(from.volatile);
 }
 
-fn build_catalog(operators: &HashSet<String>, rows: CatalogRows) -> Catalog {
-    let mut catalog = Catalog { set_returning_operators: operators.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
+fn build_catalog(set_returning: &(HashSet<String>, HashSet<String>), rows: CatalogRows) -> Catalog {
+    let mut catalog = Catalog { set_returning_operators: set_returning.0.clone(), set_returning_attributes: set_returning.1.clone(), columns: Columns::from_rows(&rows.columns), ..Catalog::default() };
     for row in rows.columns {
         if let (Some(rel), Some(cols)) = (row.first().and_then(as_str), row.get(1).and_then(as_strings)) {
             let types: Vec<Option<u32>> = row.get(2).and_then(Value::as_array).map(|a| a.iter().map(as_u32).collect()).unwrap_or_default();
@@ -4361,6 +4371,54 @@ fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
     }
 }
 
+/// How the top statement writes its result columns: its target list, the first arm's of a set
+/// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
+/// and for one the parser does not read.
+fn result_targets(sql: &str, rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
+    let parsed = crate::stack::parse(&rewritten.sql).ok()?;
+    let top = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()?;
+    let items = match top {
+        NodeEnum::SelectStmt(s) => {
+            let mut first = &**s;
+            while let Some(left) = first.larg.as_deref() {
+                first = left;
+            }
+            // `values (1, 2)`: named column1 and column2 by the server, by nothing in the statement.
+            if let Some(row) = first.values_lists.first() {
+                let width = match row.node.as_ref()? {
+                    NodeEnum::List(list) => list.items.len(),
+                    _ => return None,
+                };
+                return Some(vec![ResultTarget::Unnamed(None); width]);
+            }
+            first.target_list.clone()
+        }
+        NodeEnum::InsertStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::UpdateStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::DeleteStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::MergeStmt(s) => jsonshape::returning(&s.returning_clause),
+        _ => return None,
+    };
+    items
+        .iter()
+        .map(|item| {
+            let NodeEnum::ResTarget(rt) = item.node.as_ref()? else { return None };
+            if !rt.name.is_empty() {
+                return Some(ResultTarget::Named);
+            }
+            let val = rt.val.as_deref()?;
+            Some(match val.node.as_ref()? {
+                _ if expands(val) => ResultTarget::Star,
+                NodeEnum::ColumnRef(_) => ResultTarget::Named,
+                _ => {
+                    let start = rewritten.to_original(rt.location.max(0) as usize).min(sql.len());
+                    ResultTarget::Unnamed(Some((start, sql[start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"')).count().max(1))))
+                }
+            })
+        })
+        .collect()
+}
+
 /// Where each result column is written, by its index, as far as the top statement's target list
 /// says: the name an alias gives it (`as x`), else a column's own name (the `id` of `mt.id`), else
 /// the target's first word. Nothing from a `*` on, which stands for columns the list does not name.
@@ -4375,7 +4433,7 @@ fn column_spans(sql: &str, rewritten: &Rewritten) -> Vec<(usize, usize)> {
     let starts: Vec<usize> = targets.iter().map(|rt| rewritten.to_original(rt.location.max(0) as usize).min(sql.len())).collect();
     let mut spans = Vec::new();
     for (k, rt) in targets.iter().enumerate() {
-        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+        if rt.val.as_deref().is_some_and(expands) {
             break;
         }
         let start = starts[k];
@@ -5270,6 +5328,18 @@ mod tests {
         let refused = analyzed(sql);
         let at = |d: &crate::api::Diagnostic| (sql[d.start..d.start + d.length].to_string(), d.message.clone(), d.code);
         assert_eq!(refused.diagnostics.iter().map(at).collect::<Vec<_>>(), [(":name::nullable(text)".to_string(), said(":name", "name"), crate::structured::CODE)]);
+    }
+
+    #[test]
+    fn syntax_past_the_parser_is_typed_from_the_describe() {
+        let repack = replay_users("REPACK users", &[]);
+        assert_eq!((repack.cardinality, repack.columns.len(), repack.cardinality_reason.as_deref()), (Cardinality::None, 0, Some("the statement did not parse locally")));
+        for query in ["SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ()", "(SELECT FROM users ORDER BY first_value(id) IGNORE NULLS OVER ())"] {
+            assert_eq!((replay_users(query, &[]).cardinality, replay_users(query, &[]).columns.len()), (Cardinality::Many, 0), "{query}");
+        }
+        let window = replay_users("SELECT first_value(id) IGNORE NULLS OVER (ORDER BY id) AS f FROM users", &["f"]);
+        assert_eq!((window.cardinality, window.cardinality_reason.as_deref()), (Cardinality::Many, Some("the statement did not parse locally")));
+        assert!(window.columns[0].nullable);
     }
 
     #[test]

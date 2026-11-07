@@ -88,6 +88,8 @@ struct Remote {
     #[serde(default)]
     ordered: bool,
     #[serde(default)]
+    value: bool,
+    #[serde(default)]
     diagnostics: Vec<Diagnostic>,
     #[serde(default)]
     unresolved: Vec<String>,
@@ -120,6 +122,7 @@ pub fn analyze(sql: &str, host: &Host) -> Lazy<Option<Analysis>> {
         unique: remote.unique,
         order: remote.order,
         ordered: remote.ordered,
+        value: remote.value,
         rewritten: lex::rewrite(sql, &lexed, Target::Dollar),
         style: lexed.style,
         diagnostics: remote.diagnostics,

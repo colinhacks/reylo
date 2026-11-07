@@ -513,6 +513,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace` without `returning` |
 | `Row[]` | `many` | is anything else |
 
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/#values)). Among several columns, such an expression is a type error where SQLite's name for it, its text, isn't an identifier, as with `count(*)`. SQLite leaves that name unspecified from one release to the next.
+
 These don't count as a key match, so the query returns `Row[]`:
 
 | Case | Example |
@@ -876,3 +878,4 @@ What Reylo can't type on SQLite, and what to do instead:
 | A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
 | A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| A string in double quotes, such as `select "hello"`, which SQLite reads as text when no column has that name: `better-sqlite3`, `node:sqlite`, libSQL and Turso refuse it, so the type check does too, with SQLite's message, though `sqlite3`, `sqlite` and `bun:sqlite` run it | Write the string in single quotes, `select 'hello'` |

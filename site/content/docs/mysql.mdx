@@ -470,6 +470,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update`, `delete` or `replace`, `on duplicate key update` included |
 | `Row[]` | `many` | is anything else |
 
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/#values)). Among several columns, such an expression is a type error where MySQL's name for it, its text, isn't an identifier, as with `count(*)`. That text also holds a bound value on a driver that writes values into the statement, so reading the column by that name is unsafe.
+
 MySQL has no `returning`, so a write returns nothing. To read a new row's id, select `last_insert_id()` on the same connection:
 
 ```ts twoslash tab="main.ts"

@@ -10,7 +10,7 @@
 //! [`analyze_ddl`], for a host that holds a live connection and runs [`DDL_QUERY`] and
 //! [`FUNCTIONS_QUERY`] on it itself, with [`Extras`] naming the scalar functions it registers there.
 
-use crate::analysis::{bare, constant_key, diag, KeyClause};
+use crate::analysis::{bare, constant_key, diag, KeyClause, ResultTarget};
 use crate::api::{Analysis, Column, Param, Scope};
 use crate::dialect::Dialect;
 use crate::fresh::Tables;
@@ -192,6 +192,26 @@ fn analyze_ddl_here(sql: &str, ddl: &[String], extras: &Extras) -> SqliteAnalysi
     }
 }
 
+/// How the statement writes its result columns: a write's `RETURNING`, or a query's select list, the
+/// first arm's of a compound, whose names are the result's. SQLite has expanded each `*` by now, into
+/// columns it names. `None` for a write without `RETURNING`.
+fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
+    // `RETURNING`'s names are not resolved yet where the serializer reads them.
+    let target = |c: &tree::Col| if c.named || matches!(c.expr.op.as_str(), "column" | "id" | "dot") { ResultTarget::Named } else { ResultTarget::Unnamed(None) };
+    if let Some(returning) = &t.returning {
+        return Some(returning.iter().map(target).collect());
+    }
+    let mut first = t.statement.as_ref().filter(|_| t.dml.is_none())?;
+    while let Some(prior) = first.prior.as_deref() {
+        first = prior;
+    }
+    // `values (1, 2)`: named column1 and column2 by SQLite, by nothing in the statement.
+    if first.values {
+        return Some(vec![ResultTarget::Unnamed(None); first.columns.len()]);
+    }
+    Some(first.columns.iter().map(target).collect())
+}
+
 /// The statements the SQLite analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "values", "insert", "replace", "update", "delete"];
 
@@ -205,13 +225,14 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
     // dot, so `:auth.user_id` survives only as a number. `?n` is the lexer's n-th parameter, which
     // is how `params` matches them back, and an error offset maps back through the rewrite.
     let numbered = lex::rewrite(sql, lexed, Target::Numbered);
+    let rewritten = lex::rewrite(sql, lexed, Target::Question);
     let functions: Vec<(&str, i32)> = extras.total.iter().map(|f| (f.name.as_str(), f.arity)).collect();
     // Triggers are not replayed (a body may call a function only the application registers);
     // their headers say which statements a trigger can skip a row of.
     let (triggers, replay): (Vec<String>, Vec<String>) = ddl.iter().cloned().partition(|s| trigger_header(s).is_some());
     let skipping = skipping_triggers(&triggers);
     let listed: Option<Vec<tree::Listed>> = extras.host.as_ref().map(|host| host.iter().map(|f| (f.name.as_str(), f.arity, f.kind)).collect());
-    let t = match tree::analyze(&replay, &numbered.sql, &functions, listed.as_deref()) {
+    let t = match tree::analyze(&replay, &numbered.sql, &rewritten.sql, &functions, listed.as_deref()) {
         Ok(t) => t,
         Err(message) => return failed(bare(sql, lexed, Dialect::Sqlite, vec![diag(message, 0, sql.trim_end().len(), 6)])),
     };
@@ -274,7 +295,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             unique: Vec::new(),
             order: Vec::new(),
             ordered: false,
-            rewritten: lex::rewrite(sql, lexed, Target::Question),
+            value: false,
+            rewritten,
             style: lexed.style,
             diagnostics,
             unresolved: Vec::new(),
@@ -325,7 +347,8 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
-        rewritten: lex::rewrite(sql, lexed, Target::Question),
+        value: false,
+        rewritten,
         style: lexed.style,
         diagnostics,
         unresolved: Vec::new(),
@@ -337,7 +360,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
-    crate::analysis::clashes(sql, &mut analysis, &|_| None);
+    crate::analysis::names(sql, Dialect::Sqlite, &mut analysis, result_targets(&t).as_deref(), &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
 }
@@ -3173,7 +3196,7 @@ mod tests {
             (t.read, t.write)
         };
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
+        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) as n from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
         // A WITH query is no table, and a view is named, not what it reads.
         assert_eq!(tables("with recent as (select user_id from posts) select title from titles join recent on true"), (names(&["posts", "titles"]), vec![]));
         assert_eq!(tables("select value from json_each('[1]')"), (vec![], vec![]));
@@ -3191,7 +3214,7 @@ mod tests {
         // before the serializer lists the tables: read then, a recursive one nested in another,
         // whose memory SQLite had reused, ended the analysis in a crash.
         let described = |sql: &str| {
-            let t = tree::analyze(&ddl(), sql, &[], None).expect("the tree parses");
+            let t = tree::analyze(&ddl(), sql, sql, &[], None).expect("the tree parses");
             assert!(t.error.is_none(), "{sql}: {:?}", t.error);
             let mut names = t.tables.into_keys().collect::<Vec<_>>();
             names.sort();
@@ -3994,6 +4017,20 @@ mod tests {
     }
 
     #[test]
+    fn a_double_quoted_word_that_names_no_column_is_refused_as_the_drivers_refuse_it() {
+        // A schema that holds one replays, as SQLite reads it from a file.
+        let schema = vec!["create table t (id integer primary key, v text default \"none\" check (v <> \"bad\"))".to_string()];
+        let a = |sql: &str| analyze_ddl(sql, &schema, &Extras::default()).analysis;
+        for sql in ["select \"hello\"", "select \"hello\" from t", "select id from t where v = \"x\""] {
+            let messages: Vec<String> = a(sql).diagnostics.iter().map(|d| d.message.clone()).collect();
+            assert_eq!(messages, [format!("no such column: \"{}\" - should this be a string literal in single-quotes?", if sql.contains("hello") { "hello" } else { "x" })], "{sql}");
+        }
+        for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
+            assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
+        }
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
@@ -4054,6 +4091,16 @@ mod tests {
         let a = full("select id from users order by :sort::text");
         assert_eq!(a.columns.len(), 1);
         assert_eq!(affinity_of(&a.params[0].ty), Some("text"));
+    }
+
+    #[test]
+    fn names_a_column_as_the_statement_is_sent() {
+        // The tree is read over `?1`; the statement runs with `?`, and a driver's row holds the name that text gives.
+        let names = |sql: &str| analysis(sql).columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("select id + cast(:a as integer), name from users"), ["id + cast(? as integer)", "name"]);
+        assert_eq!(names("select * from (select id + cast(:a as integer) from users)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("update users set name = name returning id + cast(:a as integer)"), ["id + cast(? as integer)"]);
+        assert_eq!(names("select cast(:a as integer) as a"), ["a"]);
     }
 
     #[test]
