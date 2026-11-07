@@ -95,6 +95,7 @@ const KINDS: [string, RegExp][] = [
   ["ARBITERS_QUERY", /NOT i\.indisexclusion/],
   ["COLUMNS_QUERY", /'S'::pg_catalog/],
   ["FUNCTIONS_QUERY", /bool_or\(p\.proretset\)/],
+  ["BODIES_QUERY", /pg_function_is_visible/],
   ["SET_RETURNING_OPERATORS_QUERY", /WHERE p\.proretset/],
   ["TRIGGERS_QUERY", /AS skipping/],
   ["RELATION_TYPES_QUERY", /wanted AS/],
@@ -254,6 +255,13 @@ test("every catalog query answers the same rows under a search path that puts a 
         if (kind === "RELATION_COLUMNS_QUERY") {
           const unread = new Set(again.filter((r) => r[4] === null).map((r) => `${r[0]} ${r[2]}`));
           expected = rows.map((r) => (unread.has(`${r[0]} ${r[2]}`) ? [...r.slice(0, 4), null, ...r.slice(5)] : r));
+        }
+        // The bodies query lists every function of a name, a user's too, and says which the path finds:
+        // pg_catalog's rows hold, but for that.
+        if (kind === "BODIES_QUERY") {
+          const ownRows = (rs: unknown[][]) => rs.filter((r) => r[1] === "pg_catalog").map((r) => [...r.slice(0, 2), ...r.slice(3)]);
+          again = ownRows(again);
+          expected = ownRows(expected);
         }
         const sorted = (rs: unknown[][]) => rs.map((r) => JSON.stringify(plain(r))).sort();
         assert.deepEqual(sorted(again), sorted(expected), `${kind} answers otherwise under the hostile path, for ${JSON.stringify(params)}`);

@@ -179,6 +179,36 @@ test("Postgres: `sql` numbers the parameters and keeps a typed JSON parameter's 
   }
 });
 
+test("Postgres: the hover says where a function's volatile label keeps Postgres from planning it into the query, and only there", { skip: pgLive }, async () => {
+  const own = await postgresDatabase("reylo_volatile_note");
+  const url = new URL(own.url);
+  const sql = own.sql;
+  const root = project(url.href, "postgres");
+  const note = "comments_for(bigint) is volatile, but its body calls nothing volatile, so Postgres can't plan it into this query. Marking it stable lets a filter on its rows use an index.";
+  try {
+    await sql.unsafe(`
+      create table comments (id int8 primary key, post_id int8 not null, body text not null);
+      create function comments_for(p int8) returns table (id int8, body text) language sql as $$ select id, body from comments where post_id = p $$;
+      create function comments_seen(p int8) returns table (id int8, seen_at timestamptz) language sql as $$ select id, clock_timestamp() from comments where post_id = p $$;
+      create function comments_stable(p int8) returns table (id int8, body text) language sql stable as $$ select id, body from comments where post_id = p $$;
+      create function comments_definer(p int8) returns table (id int8, body text) language sql security definer as $$ select id, body from comments where post_id = p $$;
+      create function count_for(p int8) returns int8 language sql as $$ select count(*) from comments where post_id = p $$;
+    `).simple();
+    const declared = await declarations(root, {
+      "reads.sql": "select id, body from comments_for(:p::int8)\n",
+      "seen.sql": "select id, seen_at from comments_seen(:p::int8)\n",
+      "stable.sql": "select id, body from comments_stable(:p::int8)\n",
+      "definer.sql": "select id, body from comments_definer(:p::int8)\n",
+      "scalar.sql": "select count_for(:p::int8) as n\n",
+    });
+    assert.ok(declared["reads.sql"]!.includes(note), declared["reads.sql"]!);
+    for (const file of ["seen.sql", "stable.sql", "definer.sql", "scalar.sql"]) assert.ok(!declared[file]!.includes("is volatile"), file);
+  } finally {
+    await closeSessions();
+    await own.drop();
+  }
+});
+
 test("Postgres: a statement that runs only the server's own code declares its QueryError narrowed to what it writes through, and one a trigger runs on the whole of it", { skip: pgLive }, async () => {
   const own = await postgresDatabase("reylo_query_error");
   const url = new URL(own.url);

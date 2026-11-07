@@ -16,7 +16,7 @@ use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictActi
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 /// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
@@ -118,7 +118,8 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     if let Some(statement) = &parsed {
         nullable.extend(nullable_params(statement, &catalog));
     }
-    let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+    let param_types: HashMap<String, String> = raw.params.iter().enumerate().filter_map(|(i, p)| Some((if p.name.is_empty() { (i + 1).to_string() } else { p.name.clone() }, p.ty.as_ref()?.id.clone()))).collect();
+    let ctx = Ctx::top(&catalog, &nullable, &param_types);
     let shaped = parsed.as_ref().map(write_of);
     let rows = returns_rows(&raw, shaped.as_deref());
     // What the tree proves of each column, where its columns are the describe's: as many, and
@@ -194,6 +195,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         let message = format!("{written} takes a struct whose fields have no names, and a value's fields are read by their names: cast it to a struct that names them, as in {written}::struct(a integer, b varchar)");
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
+    let rewritten_sql = rewritten.sql.clone();
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -213,7 +215,8 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         fresh: None,
         errors: None,
         read_only: false,
-        tables: parsed.as_ref().map(tables),
+        notes: Vec::new(),
+        tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
     reylo_engine_core::analysis::clashes(sql, &mut analysis, &|_| None);
@@ -340,7 +343,7 @@ fn keyed(name: &sqlparser::ast::ObjectName, alias: &Option<sqlparser::ast::Table
     let parts = nulls::parts(name);
     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts.last().cloned());
     match ctx.catalog.table(&parts) {
-        Some(table) if nulls::key_equal(filter, &table.keys, qualifier.as_deref()) => ("maybeOne", None),
+        Some(table) if nulls::key_equal(filter, table, qualifier.as_deref(), ctx) => ("maybeOne", None),
         _ => ("many", Some("nothing bounds its rows to one".into())),
     }
 }
@@ -352,6 +355,31 @@ fn relations(statement: &Statement) -> Vec<Vec<String>> {
         found.push(nulls::parts(name));
         ControlFlow::<()>::Continue(())
     });
+    found
+}
+
+/// [`tables`], with what the table macros the statement calls read: a type their bodies settled
+/// holds only while those and what they read do.
+fn tables_through_macros(statement: &Statement, catalog: &Catalog, sql: &str) -> reylo_engine_core::fresh::Tables {
+    let mut found = tables(statement);
+    let (_, reached) = catalog::through_macros(&relations(statement), &catalog.table_macros);
+    if reached.is_empty() {
+        return found;
+    }
+    found.read.retain(|t| !reached.contains(&t.to_lowercase()));
+    let mut text = sql.to_string();
+    for name in &reached {
+        let Some(read) = catalog.table_macros.get(name) else { continue };
+        text.push('\n');
+        text.push_str(&read.text);
+        for table in tables(&Statement::Query(Box::new(read.body.clone()))).read {
+            if !reached.contains(&table.to_lowercase()) && !found.read.contains(&table) && !found.write.contains(&table) {
+                found.read.push(table);
+            }
+        }
+    }
+    found.functions = reached;
+    found.expanded = Some(text);
     found
 }
 
@@ -398,7 +426,7 @@ fn tables(statement: &Statement) -> reylo_engine_core::fresh::Tables {
         }
         read.push(name);
     }
-    reylo_engine_core::fresh::Tables { read, write }
+    reylo_engine_core::fresh::Tables { read, write, ..Default::default() }
 }
 
 /// The parameters (by the number `$n` binds each at) the statement lets be NULL: one it tests
@@ -562,10 +590,11 @@ mod tests {
     #[test]
     fn a_write_with_queries_feed_is_read_as_the_write() {
         use crate::catalog::{Table, TableColumn};
-        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None }], keys: vec![vec!["id".into()]] };
+        let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None, ty: "BIGINT".into() }], keys: vec![vec!["id".into()]], collated: false };
         let catalog = catalog::of(vec![table]);
         let nullable = HashSet::new();
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable };
+        let types = HashMap::new();
+        let ctx = Ctx::top(&catalog, &nullable, &types);
         let shaped = |sql: &str| write_of(&parse(sql).unwrap()).into_owned();
         // The WITH queries move onto the INSERT's source, whose rows a key of `teams` does not bound.
         let insert = shaped("with teams as (select 1 as id union all select 1) insert into teams select * from teams where id = 1 returning id");
