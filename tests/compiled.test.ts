@@ -69,8 +69,8 @@ test("SQLite: `sql` is the compiled statement and `raw` the file, at run time an
   try {
     const getUser = await built(root, "get_user", GET_USER);
     assert.equal(getUser.default.sql, "select id, name, email from users where id = ?");
-    // The statement Reylo sends ends with the comment naming the file, which `sql` leaves out.
-    assert.equal(getUser.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user.sql'*/");
+    // The statement Reylo sends opens with the comment naming the file on SQLite, which `sql` leaves out.
+    assert.equal(getUser.default["~standard"].query.text, "/*file='get_user.sql'*/ select id, name, email from users where id = ?");
     assert.equal(getUser.default.raw, GET_USER);
     assert.equal(getUser.sql, getUser.default.sql);
     assert.equal(getUser.raw, GET_USER);
@@ -292,11 +292,11 @@ test("the comment naming the file is sent and left out of sql, sqlcommenter: fal
     const declared = await declarations(root, { "get_user.sql": GET_USER });
     assert.ok(texts(declared["get_user.sql"]!).includes(`export declare const sql: "select id, name, email from users where id = ?";`), declared["get_user.sql"]!);
     // The same process, after the project file turns it back on: the session it builds with is a
-    // new one, and the statement it sends ends with the comment, which `sql` leaves out.
+    // new one, and the statement it sends opens with the comment, as on SQLite, which `sql` leaves out.
     writeFileSync(join(root, ".reylo.yaml"), "sqlcommenter: true\n");
     const tagged = await built(root, "get_user_again", GET_USER);
     assert.equal(tagged.sql, "select id, name, email from users where id = ?");
-    assert.equal(tagged.default["~standard"].query.text, "select id, name, email from users where id = ? /*file='get_user_again.sql'*/");
+    assert.equal(tagged.default["~standard"].query.text, "/*file='get_user_again.sql'*/ select id, name, email from users where id = ?");
     assert.deepEqual({ ...((await tagged.default.run(db, { id: 1 })) as object) }, { id: 1, name: "Ada", email: "ada@example.com" });
   } finally {
     db.close();
