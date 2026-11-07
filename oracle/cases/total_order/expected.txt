@@ -1,6 +1,6 @@
 aggregate_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (n desc nulls first, author_id nulls last) ordered
-aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id) sorted (titles nulls last, author_id nulls last)
-aggregate_own_order.sql: many () -> { author_id: int8, titles: text? } key (author_id) sorted (titles nulls last, author_id nulls last)
+aggregate_order_sensitive.sql: many () -> { author_id: int8, titles: text? } key (author_id)
+aggregate_own_order.sql: many () -> { author_id: int8, titles: text? } key (author_id)
 alias_name.sql: many () -> { id: text?, post_id: int8 } key (post_id) sorted (id nulls last)
 by_primary_key.sql: many () -> { id: int8, name: text? } key (id) sorted (id nulls last) ordered
 by_unique_desc.sql: many () -> { email: text, name: text? } key (email) sorted (email desc nulls first) ordered
@@ -12,7 +12,7 @@ expression.sql: many () -> { id: int8, title: text? } key (id)
 group_by.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (author_id nulls last) ordered
 group_by_count.sql: many () -> { author_id: int8, n: int8 } key (author_id) sorted (n nulls last)
 json_array_query.sql: many () -> { id: int8 } key (id)
-json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id) sorted (titles nulls last, author_id nulls last)
+json_arrayagg.sql: many () -> { author_id: int8, titles: jsonb? } key (author_id)
 key_not_selected.sql: many () -> { title: text? } ordered
 lateral_sibling.sql: many () -> { id: int8 } key (id)
 limited.sql: many () -> { id: int8, title: text? } key (id) sorted (id nulls last) ordered

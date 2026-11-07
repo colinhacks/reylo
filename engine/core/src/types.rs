@@ -1219,6 +1219,9 @@ impl Type {
                 if let Some(o) = r.order.iter().find(|o| !r.columns.iter().any(|c| c.name == o.column)) {
                     return fail(format!("order column {:?} is not a column", o.column));
                 }
+                if let Some((at, o)) = r.order.iter().enumerate().find(|(at, o)| r.order[..*at].iter().any(|p| p.column == o.column)) {
+                    return fail(format!("order names column {:?} twice, at {at}", o.column));
+                }
                 for key in &r.unique {
                     if key.is_empty() {
                         return fail("a set of unique columns holds at least one".into());
@@ -1483,6 +1486,7 @@ mod tests {
         serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "unique": [["id"]]})).unwrap().check().unwrap();
         refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "missing", "nulls": "last"}]}));
         refused(json!({"kind": "rows", "cardinality": "at_most_one", "columns": [id], "order": [{"column": "id", "nulls": "last"}]}));
+        refused(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "nulls": "last"}, {"column": "id", "desc": true, "nulls": "first"}]}));
         serde_json::from_value::<Type>(json!({"kind": "rows", "cardinality": "many", "columns": [id], "order": [{"column": "id", "desc": true, "nulls": "first"}]})).unwrap().check().unwrap();
     }
 

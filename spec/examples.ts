@@ -51,7 +51,6 @@ const timestamptz: InstantType = { kind: "instant", tick: "1/1000000", min: "-47
 const point: RecordType = { kind: "record", name: "point", fields: [{ name: "x", type: float8 }, { name: "y", type: float8 }] };
 const sqlite_text: TextType = { kind: "text", ill_formed: "utf8" };
 
-/** Postgres: the sets of columns no two rows agree on, a table's primary key first. A nullable column of a unique index is not one, since NULLs may repeat there. */
 /** Postgres: the columns the rows are sorted on. `id` follows `at`, and NULLs sort first when descending unless the key says otherwise. */
 export const sorted_rows: Example = {
   database: "postgres",
@@ -74,6 +73,7 @@ export const sorted_rows: Example = {
   },
 };
 
+/** Postgres: the sets of columns no two rows agree on, a table's primary key first. A nullable column of a unique index is not one, since NULLs may repeat there. */
 export const unique_columns: Example = {
   database: "postgres",
   setup: "create table accounts (id int8 primary key, email text not null unique, handle text unique)",
