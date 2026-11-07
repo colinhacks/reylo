@@ -980,3 +980,21 @@ a.reylo-compare-name:hover {
   color: var(--color-fd-muted-foreground);
 }
 
+/* Inline code is one piece, never broken across two lines: a command, a path or a name reads whole,
+   in the column and in the table of contents. */
+html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [class~='not-prose'] *)),
+#nd-toc code,
+[data-toc-popover] code {
+  white-space: nowrap;
+}
+
+/* The table of contents wide enough for a command written out in full, as /migrate's headings are
+   (`reylo migration history push`, nested two levels in). The layout grows by as much, so the column
+   keeps its width; the inline width docs-kit's shell sets is overridden for that. */
+@media (min-width: 80rem) {
+  #nd-docs-layout:has([data-toc-popover]) {
+    --fd-toc-width: 320px;
+    --fd-layout-width: calc(var(--dk-column) + 320px + 4rem) !important;
+  }
+}
+

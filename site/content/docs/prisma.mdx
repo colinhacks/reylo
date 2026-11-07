@@ -88,7 +88,11 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 
 ## Before you start
 
-- **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules: `npx skills add colinhacks/reylo --skill using-reylo`.
+- **Install Reylo's agent skill**, so every session that converts a query has Reylo's rules:
+
+  ```sh
+  npx skills add colinhacks/reylo --skill using-reylo
+  ```
 - **Set Reylo up** as [Setup](/#setup) shows.
 - **Count what moves:** every Prisma Client call, `$queryRaw`, `$executeRaw` and `$transaction`, and every folder that holds them. A folder that `tsconfig.json` leaves out is never type-checked, so check its queries with a `tsconfig` of its own.
 - **Keep the branch short.** A long-lived branch pays for `main` at each sync: new Prisma calls to convert, and re-indented code that reads as conflict. Re-apply what `main` changed onto the `.sql`, rather than taking either side.
@@ -170,7 +174,11 @@ create trigger set_updated_at before update on "users"
 - **An update that sets `"updatedAt"` itself** keeps its value.
 - **Every `return` returns `new`**, so an upsert on the table still returns a row. A trigger that may return `null` can skip a row, and the upsert then returns a row or `null`.
 - **A new table needs its trigger** added to its migration by hand, since Prisma's schema has no triggers.
-- **A rewrite that must not move `"updatedAt"`**, such as re-encrypting a column, needs a way past the trigger. Have the trigger return early when a session setting says so, as with `if current_setting('app.keep_updated_at', true) = 'on' then return new; end if;`, and run `set local app.keep_updated_at = 'on'` before the rewrite.
+- **A rewrite that must not move `"updatedAt"`**, such as re-encrypting a column, needs a way past the trigger. Have the trigger return early when a session setting says so, and run `set local app.keep_updated_at = 'on'` before the rewrite:
+
+  ```sql
+  if current_setting('app.keep_updated_at', true) = 'on' then return new; end if;
+  ```
 
 ### `String[]`
 
