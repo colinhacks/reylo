@@ -150,6 +150,10 @@ impl Function {
             (Some(modes), Some(names), Some(types)) if modes.iter().any(|m| !is_input(m) || m == "b") => {
                 let type_names = strings(23)?;
                 let out: Option<Vec<Output>> = modes.iter().enumerate().filter(|(_, m)| matches!(m.as_str(), "o" | "b" | "t")).map(|(i, _)| Some(Output { name: names.get(i).filter(|n| !n.is_empty())?.clone(), oid: *types.get(i)?, ty: type_names.get(i)?.clone() })).collect();
+                // One output of a row type, or of a domain that may be over one, is that row's columns,
+                // not a column of its own: `returns table (r comments)` returns a `comments`, which reads
+                // differently from a derived table.
+                let out = out.filter(|o| !(o.len() == 1 && matches!(kind.as_str(), "c" | "d")));
                 (out.unwrap_or_default(), false)
             }
             _ if kind == "c" => {

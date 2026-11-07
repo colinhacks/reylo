@@ -16,7 +16,7 @@ use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictActi
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
 
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
@@ -102,7 +102,8 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     if let Some(statement) = &parsed {
         nullable.extend(nullable_params(statement, &catalog));
     }
-    let ctx = Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 };
+    let param_types: HashMap<String, String> = raw.params.iter().enumerate().filter_map(|(i, p)| Some((if p.name.is_empty() { (i + 1).to_string() } else { p.name.clone() }, p.ty.as_ref()?.id.clone()))).collect();
+    let ctx = Ctx::top(&catalog, &nullable, &param_types);
     let shaped = parsed.as_ref().map(write_of);
     let rows = returns_rows(&raw, shaped.as_deref());
     // What the tree proves of each column, where its columns are the describe's: as many, and
@@ -325,7 +326,7 @@ fn keyed(name: &sqlparser::ast::ObjectName, alias: &Option<sqlparser::ast::Table
     let parts = nulls::parts(name);
     let qualifier = alias.as_ref().map(|a| a.name.value.clone()).or_else(|| parts.last().cloned());
     match ctx.catalog.table(&parts) {
-        Some(table) if nulls::key_equal(filter, table, qualifier.as_deref(), &[]) => ("maybeOne", None),
+        Some(table) if nulls::key_equal(filter, table, qualifier.as_deref(), ctx) => ("maybeOne", None),
         _ => ("many", Some("nothing bounds its rows to one".into())),
     }
 }
@@ -575,7 +576,8 @@ mod tests {
         let table = Table { database: "app".into(), schema: "main".into(), name: "teams".into(), current: true, current_database: true, columns: vec![TableColumn { name: "id".into(), not_null: true, comment: None, ty: "BIGINT".into() }], keys: vec![vec!["id".into()]], collated: false };
         let catalog = catalog::of(vec![table]);
         let nullable = HashSet::new();
-        let ctx = Ctx { catalog: &catalog, nullable_params: &nullable, macro_params: &[], macro_level: 0 };
+        let types = HashMap::new();
+        let ctx = Ctx::top(&catalog, &nullable, &types);
         let shaped = |sql: &str| write_of(&parse(sql).unwrap()).into_owned();
         // The WITH queries move onto the INSERT's source, whose rows a key of `teams` does not bound.
         let insert = shaped("with teams as (select 1 as id union all select 1) insert into teams select * from teams where id = 1 returning id");

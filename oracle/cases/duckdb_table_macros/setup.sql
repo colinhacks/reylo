@@ -63,3 +63,13 @@ create macro level_3(p) as table select id from level_4(p);
 create macro level_2(p) as table select id from level_3(p);
 create macro level_1(p) as table select id from level_2(p);
 create macro level_0(p) as table select id from level_1(p);
+
+-- A parameter's name is the parameter wherever it stands bare in the body, whatever column has the name.
+create macro pin_by_param_name(code) as table select code as c, n from codes where code = 'x';
+create macro out_by_param_name(body) as table select id, body as body from comments;
+create macro qual_shadow(code) as table select code as k, n from codes c where c.code = '1';
+
+-- A WITH query around the call takes the place of a table that a macro the called one reads reads.
+create macro one_c(x) as table select id, body from comments where id = x;
+create macro outer_c(x) as table select id, body from one_c(x);
+create macro outer_c2(x) as table select s.id, s.body from (select * from one_c(x)) s;

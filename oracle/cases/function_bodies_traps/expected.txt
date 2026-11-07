@@ -13,6 +13,9 @@ nested_from_distinct.sql: many () -> { v: int8? } key (v)
 nested_group.sql: many () -> { n: int8 }
 nested_pin.sql: many () -> { id: int8 } key (id)
 one_field_composite.sql: one () -> { j: jsonb { v: public.one_col{ a: int4? }? } }
+one_output_out.sql: many (p: int8) -> { doc: jsonb? }
+one_output_row.sql: many (p: int8) -> { doc: jsonb? }
+one_output_row_star.sql: many (p: int8) -> { doc: jsonb { id: int8?, post_id: int8?, body: text?, note: text? } }
 order_by_position.sql: many () -> { id: int8 } key (id)
 path_of_a_caller.sql: many () -> { b: text? }
 path_through_atomic.sql: many () -> { b: text? }

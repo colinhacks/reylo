@@ -94,3 +94,7 @@ create function by_two(x text, y text) returns table (id int) language sql stabl
 -- A cast of a cast may turn a value to NULL.
 create function strict_i(x bigint) returns text language sql stable strict as $$ select 'x' $$;
 create function strict_iset(x bigint) returns table (a text) language sql stable strict as $$ select 'x' $$;
+
+-- One output of a row type returns that row, whose whole row is its columns, not a row of one column.
+create function row_col(p bigint) returns table (r comments) language sql stable as $$ select c from comments c where c.post_id = p $$;
+create function out_row(p bigint, out r comments) returns setof comments language sql stable as $$ select c from comments c where c.post_id = p $$;

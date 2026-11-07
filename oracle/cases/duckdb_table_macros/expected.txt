@@ -47,6 +47,7 @@ limited.sql: at_most_one (p: bigint) -> { id: bigint, body: varchar }
 mood_by_number.sql: many () -> { m: enum('1' | '01'), n: integer }
 mood_by_text.sql: at_most_one () -> { m: enum('1' | '01'), n: integer }
 named_argument.sql: many (p: bigint) -> { id: bigint }
+nested_key.sql: at_most_one () -> { id: bigint, body: varchar }
 nullable_stays.sql: many (p: bigint) -> { id: bigint, note: varchar? }
 outer_limit.sql: many (p: bigint) -> { id: bigint, body: varchar }
 overloaded.sql: many (a: bigint) -> { id: bigint? }
@@ -55,6 +56,9 @@ returns_rows.sql: many (p: bigint) -> { id: bigint, body: varchar }
 row_maker_in_body.sql: many (p: bigint) -> { id: bigint, v: integer? }
 scalar_macro.sql: many () -> { v: bigint? }
 setof_like.sql: many (p: bigint) -> { id: bigint, post_id: bigint, body: varchar, note: varchar? }
+shadow_null.sql: many (b: varchar?) -> { id: bigint, body: varchar? }
+shadow_pin.sql: many () -> { c: varchar?, n: integer }
+shadow_qualified.sql: at_most_one () -> { k: sqlnull?, n: integer }
 shadowed.sql: many (id: bigint) -> { found: bigint }
 six_levels.sql: many (p: bigint) -> { id: bigint }
 star.sql: many (p: bigint) -> { id: bigint, body: varchar }
@@ -65,3 +69,5 @@ unnested.sql: many () -> { v: integer? }
 view_body.sql: many () -> { id: bigint?, body: varchar? }
 whole_row.sql: many (p: bigint) -> { c: { id: bigint?, body: varchar? }? }
 with_body.sql: many (p: bigint) -> { id: bigint, body: varchar }
+with_capture_derived.sql: many () -> { id: bigint?, body: varchar? }
+with_capture_nested.sql: many () -> { id: bigint?, body: varchar? }
