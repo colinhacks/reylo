@@ -10,7 +10,8 @@ import { Session } from "../src/analyze.ts";
 import { defineQuery, type Query } from "../src/index.ts";
 import { sqlModule } from "../src/loader.ts";
 import { rowOf, rowSource, type RowBuilder } from "../src/row.ts";
-import { ParameterError } from "../src/values.ts";
+import { columnKind, kindType, ParameterError } from "../src/values.ts";
+import type { EngineType } from "../src/engine-type.ts";
 import type { StandardQueryV1 } from "../src/standard-query.ts";
 import type { Dialect } from "../src/execute.ts";
 import { closeSessions, declarations, DRIVERS, PG, pgLive, INDEX, transform } from "./helpers.ts";
@@ -254,19 +255,23 @@ test("mysql and sqlite: each value as a driver binds it, and decode takes every 
 });
 
 test("mysql: a GEOMETRY is its bytes through decode, as .run() gives it, and a driver's own reading of one is refused", () => {
-  const q = defineQuery({ dialect: "mysql", sql: "select point(1,2) as p", params: [], columns: [["p", "unknown"]], cardinality: "one" })["~standard"].query;
+  // A GEOMETRY's kind is its own on MySQL, and its TypeScript type is still `unknown`.
+  assert.equal(columnKind({ kind: "geometry", name: "point" } as EngineType, "mysql"), "geometry");
+  assert.equal(kindType("geometry"), "unknown");
+  const q = defineQuery({ dialect: "mysql", sql: "select point(1,2) as p", params: [], columns: [["p", "geometry"]], cardinality: "one" })["~standard"].query;
   // The bytes mysql2 and mariadb read: the SRID, then the point's WKB.
   const wkb = Uint8Array.of(0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 240, 63, 0, 0, 0, 0, 0, 0, 0, 64);
   assert.deepEqual(q.decode([[wkb]]), { p: wkb });
   assert.deepEqual(q.columns![0]!.decode(wkb), wkb);
-  // A value of no known type is passed on as it came, a NULL included.
-  assert.deepEqual(q.decode([["x"]]), { p: "x" });
   assert.deepEqual(q.decode([[null]]), { p: null });
   // mysql2's `{ x, y }`, its array of points for a LINESTRING, and mariadb's GeoJSON are no raw MySQL value.
   for (const parsed of [{ x: 1, y: 2 }, [{ x: 1, y: 2 }], { type: "Point", coordinates: [1, 2] }]) {
     assert.throws(() => q.decode([[parsed as never]]), /Column "p" holds an (object|array), which is no raw MySQL value: a GEOMETRY's raw value is its bytes/);
     assert.throws(() => q.columns![0]!.decode(parsed as never), /no raw MySQL value/);
   }
+  // A column of no known type, such as JSON a placeholder reaches, takes whatever the driver gives, a parsed document included.
+  const any = defineQuery({ dialect: "mysql", sql: "select coalesce(doc->'$.a', ?) as a from t", params: [], columns: [["a", "unknown"]] })["~standard"].query;
+  assert.deepEqual(any.decode([[{ b: 1 }], [[1, 2]], ["x"]] as never), [{ a: { b: 1 } }, { a: [1, 2] }, { a: "x" }]);
 });
 
 test("the result key a build step writes is the Standard Query's key", () => {
