@@ -101,7 +101,7 @@ impl Default for Catalog {
 impl Catalog {
     /// The table a name as written resolves to: `t`, `s.t` or `d.s.t`, each part compared without
     /// case. A name that names no database is the session's temporary table where it has one in
-    /// that schema, which DuckDB reads before any other (`main.t` too, since the temporary
+    /// that schema (`main` for an unqualified name), which DuckDB reads before any other (`main.t` too, since the temporary
     /// catalog has a `main`); else an unqualified name is the current schema's table, else the one
     /// table of that name anywhere. A name the catalog has twice otherwise resolves to none.
     pub fn table(&self, parts: &[String]) -> Option<&Table> {
@@ -121,7 +121,10 @@ impl Catalog {
             })
             .collect();
         if qualifiers.len() <= 1 {
-            if let Some(temporary) = found.iter().find(|t| same(&t.database, "temp") && qualifiers.iter().all(|q| same(&t.schema, q))) {
+            // The search path holds the temporary catalog's `main` alone, so an unqualified name
+            // reads no other temporary schema.
+            let schema = qualifiers.first().map_or("main", String::as_str);
+            if let Some(temporary) = found.iter().find(|t| same(&t.database, "temp") && same(&t.schema, schema)) {
                 return Some(temporary);
             }
         }
@@ -253,6 +256,12 @@ mod tests {
         assert_eq!(found(&["main", "comments"]).as_deref(), Some("temp"));
         assert_eq!(found(&["app", "main", "comments"]).as_deref(), Some("app"));
         assert_eq!(found(&["temp", "comments"]).as_deref(), Some("temp"));
+        // A temporary table in another schema is off the search path.
+        let other = Table { schema: "s".into(), ..table("temp", false) };
+        let catalog = of(vec![table("app", true), other]);
+        let found = |parts: &[&str]| catalog.table(&parts.iter().map(|p| p.to_string()).collect::<Vec<_>>()).map(|t| t.database.clone());
+        assert_eq!(found(&["comments"]).as_deref(), Some("app"));
+        assert_eq!(found(&["s", "comments"]).as_deref(), Some("temp"));
     }
 
     #[test]
