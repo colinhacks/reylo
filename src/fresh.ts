@@ -1,15 +1,15 @@
-// The schema freshness check at run time (wiki/structured-params.md §6): a change fails where
-// the query's results could contradict its types, and nothing else does. A module a build step writes carries the catalog facts its
+// The schema freshness check at run time: a change is said where the query's results could
+// contradict its types, and nothing else is. A module a build step writes carries the catalog facts its
 // statement relied on, the columns it names with their types, whether each is not null and whether
 // it has a default, for an insert's table the columns that need a value, and on Postgres and SQLite
 // the text of each default a structured insert copied into its statement, beside the catalog query
 // that read them (engine/core/src/fresh.rs). Before a query runs, the run time runs that query
 // through the caller's own client and compares. A column gone, retyped, or nullable where it was
-// not fails the call, naming the table and the column, rather than letting the query return values
-// its types do not allow; so does a default an insert copied, which it would write as it was. A
-// column made NOT NULL, or given a default or none, passes: the types still hold, and the database
-// refuses a row the column now refuses itself. So a migration that only adds to the schema leaves a
-// running build alone.
+// not warns, naming the table and the column, and the query runs: a phased migration passes through
+// such states with an old build still live, and a statement that no longer runs fails on its own. A
+// default an insert copied fails the call, since the insert would write it as it was. A column made
+// NOT NULL, or given a default or none, says nothing: the types still hold, and the database refuses
+// a row the column now refuses itself.
 //
 // A query is checked on its first run in a process, and again when its last check is a minute old,
 // so a long-running server notices a migration that lands while it runs. A catalog query that
@@ -59,9 +59,13 @@ const table = (name: string) => name.replace(/^"|"$/g, "").replace(/"\."/g, ".")
 /** The catalog query's columns, as engine/core/src/fresh.rs names them; the sixth on Postgres and SQLite. */
 const COLUMNS = ["fresh_table", "fresh_column", "fresh_type", "fresh_not_null", "fresh_default", "fresh_expr"] as const;
 
+/** A change the query survives: what changed, and how, where a column says. */
+export type Drift = { name: string; how?: string };
+
 /**
- * The changes that break the facts the build saw, between them and the rows the catalog query
- * returns now, one line each; none when the query's types still hold, and `undefined` when the
+ * The facts the build saw against the rows the catalog query returns now: `stale`, one line per
+ * change that fails the call, and `drifted`, one per change that may contradict the query's types and
+ * fails nothing. Both are empty when the types still hold, and the whole is `undefined` when the
  * rows are not the catalog query's: each is an object with its five or six columns, as many as
  * the module's facts have, or an array of as many values where a driver hands rows back as arrays.
  * A default the statement copied is compared by its text.
@@ -71,7 +75,7 @@ const COLUMNS = ["fresh_table", "fresh_column", "fresh_type", "fresh_not_null", 
  * engine gives them as declared, so a build on one and a run on the other saw the same schema. A
  * Postgres or MySQL type is compared exactly: a quoted Postgres type name keeps its case.
  */
-export function differences(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "duckdb"): string[] | undefined {
+export function compared(fresh: Fresh, rows: readonly unknown[], dialect?: "postgres" | "mysql" | "sqlite" | "duckdb"): { stale: string[]; drifted: Drift[] } | undefined {
   const now = new Map<string, string[]>();
   const width = fresh.rows[0]?.length === 6 ? 6 : 5;
   const columns = COLUMNS.slice(0, width);
@@ -83,21 +87,46 @@ export function differences(fresh: Fresh, rows: readonly unknown[], dialect?: "p
     now.set(`${values[0]}\u0000${values[1]}`, values);
   }
   const sameType = dialect === "sqlite" ? (a: string, b: string) => a === b || asciiLower(a) === asciiLower(b) : (a: string, b: string) => a === b;
-  const sameDefault = dialect === "sqlite" ? (a: string, b: string) => a === b || sqliteDefault(a) === sqliteDefault(b) : (a: string, b: string) => a === b;
-  const out: string[] = [];
-  const seen = new Set<string>();
+  const sameDefault = dialect === "sqlite" ? (a: string, b: string) => a === b || sqliteDefault(a) === sqliteDefault(b) : (a: string, b: string) => a === b || withoutCast(a) === withoutCast(b);
+  const stale: string[] = [];
+  const drifted: Drift[] = [];
   const copied = new Set((fresh.defaults ?? []).map((d) => `${d[0]}\u0000${d[1]}`));
   for (const was of fresh.rows) {
     const key = `${was[0]}\u0000${was[1]}`;
-    seen.add(key);
     const is = now.get(key);
-    if (!is) out.push(`${table(was[0]!)}.${was[1]} was ${describe(was)} and no longer exists`);
+    const name = `${table(was[0]!)}.${was[1]}`;
+    if (!is) {
+      drifted.push({ name, how: `it was ${describe(was)}, and no longer exists` });
+      continue;
+    }
     // Retyped, or nullable where it was not: a value may contradict the types.
-    else if (!sameType(is[2]!, was[2]!) || (yes(was[3]!) && !yes(is[3]!))) out.push(`${table(was[0]!)}.${was[1]} was ${describe(was)} and is now ${describe(is)}`);
-    // The insert writes the default as the build read it, for a row that leaves the key out.
-    else if (copied.has(key) && !sameDefault(is[5]!, was[5]!)) out.push(`${table(was[0]!)}.${was[1]} had ${was[5] ? `the default ${was[5]}` : "no default"}, which the insert writes for a row that leaves its key out, and now has ${is[5] ? `the default ${is[5]}` : "none"}`);
+    if (!sameType(is[2]!, was[2]!) || (yes(was[3]!) && !yes(is[3]!))) drifted.push({ name, how: `it was ${describe(was)}, and is now ${describe(is)}` });
+    // The insert writes the default as the build read it, for a row that leaves the key out, whatever
+    // else changed in the column.
+    if (copied.has(key) && !sameDefault(is[5]!, was[5]!)) stale.push(`${name} had ${was[5] ? `the default ${was[5]}` : "no default"}, which the insert writes for a row that leaves its key out, and now has ${is[5] ? `the default ${is[5]}` : "none"}`);
   }
-  return out;
+  return { stale, drifted };
+}
+
+/**
+ * A Postgres default's text without the cast it ends in, which Postgres writes again for the
+ * column's type: `'member'::text` is `'member'::character varying` once the column is a `varchar`,
+ * and the insert writes the same value for either.
+ */
+function withoutCast(text: string): string {
+  return text.replace(/::(?:"[^"]+"|[A-Za-z_][\w$]*)(?:\s+[A-Za-z_][\w$]*)*(?:\s*\([\d,\s]*\))?(?:\[\])*$/, "");
+}
+
+const warned = new Set<string>();
+
+/** Says each change a query survives once in a process, since a query is checked again each minute. */
+export function warnDrifted(source: string | undefined, drifted: readonly Drift[]): void {
+  for (const { name, how } of drifted) {
+    const message = `reylo: ${name} has changed since ${source ?? "this query"} was built${how ? ` (${how})` : ""}, so its types may be out of date until the next build.`;
+    if (warned.has(message)) continue;
+    warned.add(message);
+    (globalThis as unknown as { console?: { warn(message: string): void } }).console?.warn(message);
+  }
 }
 
 /**
@@ -151,7 +180,7 @@ const asciiUpper = (s: string) => s.replace(/[a-z]+/g, (m) => m.toUpperCase());
 /** SQLite folds the case of ASCII letters alone. */
 const asciiLower = (s: string) => s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
 
-/** The error a call fails with when the schema changed under its query. */
+/** The error a call fails with when the schema changed so that it would write a wrong value. */
 export function staleError(source: string | undefined, lines: readonly string[]): Error {
   return new Error(`The database changed after ${source ? `${source} was built` : "this query was built"}: ${lines.join("; ")}. Build it again and deploy the new build.`);
 }

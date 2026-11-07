@@ -1,0 +1,17 @@
+arrays_of_keys.sql: one () -> { v: json? }
+columns.sql: many () -> { v: jsonb { k: text } }
+inside_aggregate.sql: one () -> { v: jsonb ({ k: text })[]? }
+json_null_first.sql: one () -> { v: json { a: int4 } }
+json_null_last.sql: one () -> { v: json { a: int4? } }
+jsonb_null_first.sql: one () -> { v: jsonb { a: int4 } }
+jsonb_null_last.sql: one () -> { v: jsonb { a: int4? } }
+one_array.sql: one () -> { v: json? }
+sql_object.sql: one () -> { v: json { a: int4? } }
+sql_object_jsonb.sql: one () -> { v: jsonb { a: int4? } }
+three_times.sql: one () -> { v: jsonb { a: bool } }
+type_changes.sql: one () -> { v: jsonb { a: text, b: int4 } }
+whole_row.sql: one () -> { v: jsonb { a: int4? } }
+whole_row_aggregate.sql: one () -> { v: jsonb ({ a: int4? })[]? }
+whole_row_at_sql_position.sql: one () -> { v: (record{ a: int4, a: int4? })[]? }
+whole_row_json.sql: one () -> { v: json { a: int4? } }
+whole_row_star.sql: one () -> { v: jsonb { a: int4? } }

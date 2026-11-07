@@ -163,7 +163,7 @@ impl Type {
             // The values a CHECK's JSON Schema admits, as the engine reduced it; else any JSON,
             // null included.
             Kind::Json(JsonType { schema: Some(_), .. }) => self.schema().unwrap_or(Value::Bool(true)),
-            Kind::Json(_) | Kind::Unknown | Kind::Any => json!({}),
+            Kind::Json(_) | Kind::Unknown => json!({}),
             // An hstore is an object of its keys inside a document, each value text or null.
             Kind::Map(_) if bare_name(self) == "hstore" && opts.in_json => json!({"type": "object", "additionalProperties": {"type": ["string", "null"]}}),
             Kind::Map(_) if bare_name(self) == "hstore" => text_of(self),
@@ -173,6 +173,8 @@ impl Type {
                 let entry = json!({"type": "object", "properties": {"key": m.key.json_schema(opts), "value": if m.value.nullable { nullable(value) } else { value }}, "required": ["key", "value"]});
                 json!({"type": "array", "items": entry})
             }
+            // A relation nested in a value, as a list of its rows.
+            Kind::Rows(_) => json!({"type": "array", "items": {"type": "object"}}),
             // A tagged union as a client returns one: its tag and its value, `{ tag, value }`.
             Kind::TaggedUnion(t) => json!({"anyOf": t.alternatives.iter().map(|a| {
                 let value = a.ty.json_schema(opts);

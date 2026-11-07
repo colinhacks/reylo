@@ -723,7 +723,11 @@ fn ties(rows: &[&tokio_postgres::SimpleQueryRow], at: &[usize]) -> Option<String
 /// every column of the key, a NULL counting as equal to another NULL. Each row is its columns'
 /// text, in order, `None` for NULL.
 fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
-    let key = analysis["key"].as_array()?;
+    let rows: Vec<Vec<Option<&str>>> = rows.collect();
+    analysis["unique"].as_array()?.iter().find_map(|key| one_key_repeats(key.as_array()?, columns, rows.iter().cloned()))
+}
+
+fn one_key_repeats<'r>(key: &[Value], columns: &[Value], rows: impl Iterator<Item = Vec<Option<&'r str>>>) -> Option<String> {
     let names: Vec<&str> = key.iter().map(|k| k.as_str().unwrap_or("?")).collect();
     let Some(at) = names.iter().map(|name| columns.iter().position(|c| c["name"].as_str() == Some(name))).collect::<Option<Vec<usize>>>() else {
         return Some(format!("key ({}) names a column the statement does not return", names.join(", ")));
@@ -751,6 +755,9 @@ fn key_repeats<'r>(analysis: &Value, columns: &[Value], rows: impl Iterator<Item
 /// the column's null to the run time, so it contradicts a column typed non-null.
 fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Option<String> {
     let ty: Type = serde_json::from_value(ty.clone()).ok()?;
+    if let Some(why) = fact_contradiction(&ty, text) {
+        return Some(why);
+    }
     match &ty.kind {
         // A union of literals, from an enum or a CHECK list: the value is one of them.
         Kind::Text(TextType { values: Some(values), .. }) => (!values.is_empty() && !values.iter().any(|v| v == text)).then(|| format!("typed as one of {values:?} holds {text:?}")),
@@ -803,6 +810,111 @@ fn contradiction(ty: &Value, text: &str, nullable: bool, delimiter: char) -> Opt
         }
         _ => None,
     }
+}
+
+/// Why a value breaks what a CHECK holds it to, if it does: a number's bounds and divisor, and a
+/// `like` or `ilike` pattern. A regular expression's dialect is the server's own, so it is left to
+/// the CHECK itself, which refused any row it does not match.
+fn fact_contradiction(ty: &Type, text: &str) -> Option<String> {
+    let breaks = |bounds: &reylo_engine_core::types::Bounds| -> Option<String> {
+        use std::cmp::Ordering::{Equal, Greater, Less};
+        let cmp = |v: &str| decimal_cmp(text, v);
+        if let Some(v) = bounds.min.as_deref() {
+            if cmp(v) == Some(Less) {
+                return Some(format!("typed at least {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.exclusive_min.as_deref() {
+            if matches!(cmp(v), Some(Less | Equal)) {
+                return Some(format!("typed above {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.max.as_deref() {
+            if cmp(v) == Some(Greater) {
+                return Some(format!("typed at most {v} holds {text}"));
+            }
+        }
+        if let Some(v) = bounds.exclusive_max.as_deref() {
+            if matches!(cmp(v), Some(Greater | Equal)) {
+                return Some(format!("typed below {v} holds {text}"));
+            }
+        }
+        None
+    };
+    let divides = |divisor: &Option<String>| divisor.as_deref().filter(|d| !is_multiple(text, d).unwrap_or(true)).map(|d| format!("typed as a multiple of {d} holds {text}"));
+    match &ty.kind {
+        Kind::Integer(i) => breaks(&i.bounds).or_else(|| divides(&i.multiple_of)),
+        Kind::Float(f) => breaks(&f.bounds),
+        Kind::Decimal(d) => breaks(&d.bounds).or_else(|| divides(&d.multiple_of)),
+        Kind::Text(TextType { pattern: Some(pattern), .. }) => {
+            let insensitive = match pattern.dialect {
+                reylo_engine_core::types::PatternDialect::Like => false,
+                reylo_engine_core::types::PatternDialect::Ilike => true,
+                _ => return None,
+            };
+            (!like_matches(text, &pattern.source, insensitive)).then(|| format!("typed as {:?} holds {text:?}", pattern.source))
+        }
+        _ => None,
+    }
+}
+
+/// Two plain decimals in text compared exactly; `None` where either is not one, as a non-finite
+/// value or a bound an exponent writes.
+fn decimal_cmp(a: &str, b: &str) -> Option<std::cmp::Ordering> {
+    use std::cmp::Ordering::{Greater, Less};
+    // The sign, the whole digits without leading zeros, and the fraction without trailing ones.
+    fn parts(text: &str) -> Option<(bool, &str, &str)> {
+        let (minus, body) = match text.strip_prefix('-') {
+            Some(body) => (true, body),
+            None => (false, text.strip_prefix('+').unwrap_or(text)),
+        };
+        let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+        (!(whole.is_empty() && fraction.is_empty()) && whole.chars().chain(fraction.chars()).all(|c| c.is_ascii_digit())).then(|| (minus, whole.trim_start_matches('0'), fraction.trim_end_matches('0')))
+    }
+    let ((a_minus, a_whole, a_fraction), (b_minus, b_whole, b_fraction)) = (parts(a)?, parts(b)?);
+    let a_zero = a_whole.is_empty() && a_fraction.is_empty();
+    let b_zero = b_whole.is_empty() && b_fraction.is_empty();
+    match (a_minus && !a_zero, b_minus && !b_zero) {
+        (true, false) => return Some(Less),
+        (false, true) => return Some(Greater),
+        _ => {}
+    }
+    let magnitude = a_whole.len().cmp(&b_whole.len()).then_with(|| a_whole.cmp(b_whole)).then_with(|| a_fraction.cmp(b_fraction));
+    Some(if a_minus && !a_zero { magnitude.reverse() } else { magnitude })
+}
+
+/// Whether a plain decimal is a whole multiple of another; `None` where either does not fit.
+fn is_multiple(value: &str, divisor: &str) -> Option<bool> {
+    let scaled = |text: &str, digits: usize| -> Option<i128> {
+        let body = text.trim_start_matches(['-', '+']);
+        let (whole, fraction) = body.split_once('.').unwrap_or((body, ""));
+        if fraction.len() > digits {
+            return None;
+        }
+        format!("{whole}{fraction}{}", "0".repeat(digits - fraction.len())).parse().ok()
+    };
+    let fraction = |text: &str| text.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len());
+    let digits = fraction(value).max(fraction(divisor));
+    let trimmed = |text: &str| if text.contains('.') { text.trim_end_matches('0').trim_end_matches('.').to_string() } else { text.to_string() };
+    let (value, divisor) = (scaled(&trimmed(value), digits)?, scaled(&trimmed(divisor), digits)?);
+    (divisor != 0).then(|| value % divisor == 0)
+}
+
+/// Whether a text matches a `LIKE` pattern, whole: `%` any run, `_` one character, `\\` the next
+/// character as it is. `ILIKE` folds case as far as Unicode's lower case does.
+fn like_matches(text: &str, pattern: &str, insensitive: bool) -> bool {
+    let fold = |s: &str| if insensitive { s.to_lowercase() } else { s.to_string() };
+    let (text, pattern): (Vec<char>, Vec<char>) = (fold(text).chars().collect(), fold(pattern).chars().collect());
+    fn at(text: &[char], pattern: &[char]) -> bool {
+        match pattern.split_first() {
+            None => text.is_empty(),
+            Some(('%', rest)) => (0..=text.len()).any(|i| at(&text[i..], rest)),
+            Some(('_', rest)) => !text.is_empty() && at(&text[1..], rest),
+            Some(('\\', rest)) if !rest.is_empty() => text.first() == rest.first() && at(&text[1..], &rest[1..]),
+            Some((c, rest)) => text.first() == Some(c) && at(&text[1..], rest),
+        }
+    }
+    at(&text, &pattern)
 }
 
 /// Why a length breaks a size, if it does.
@@ -985,7 +1097,9 @@ fn json_contradiction(ty: &Type, json: &Value, path: &str) -> Option<String> {
                     }
                     continue;
                 }
-                if let Some(why) = json_contradiction(&array.element.ty, item, &format!("{path}[{i}]")) {
+                // An `any_depth` array holds arrays of itself, where its element is no array itself.
+                let nested = array.any_depth && item.is_array() && !matches!(array.element.ty.kind, Kind::Array(_) | Kind::Json(_));
+                if let Some(why) = json_contradiction(if nested { ty } else { &array.element.ty }, item, &format!("{path}[{i}]")) {
                     return Some(why);
                 }
             }

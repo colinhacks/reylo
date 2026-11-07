@@ -17,7 +17,7 @@ import type { JsonSchema } from "./engine-type.ts";
 import type { Checks } from "./checks.ts";
 import type { Members, Structured } from "./rows.ts";
 import type { RowBuilder } from "./row.ts";
-import { differences, due, passed, staleError, type Fresh } from "./fresh.ts";
+import { compared, due, passed, staleError, warnDrifted, type Fresh } from "./fresh.ts";
 import { decodeCodecs, encodePlan, type Plan } from "./codecs.ts";
 
 export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
@@ -278,8 +278,9 @@ function executeSyncSqlite(c: AnyClient, query: QueryModule, params: ParamsInput
     try {
       rows = isDurableObjectSql(c) ? c.exec(query.fresh.query).toArray() : c.prepare(query.fresh.query).all();
     } catch {}
-    const lines = (rows && differences(query.fresh, rows, query.dialect)) ?? [];
-    if (lines.length) throw staleError(query.source, lines);
+    const found = rows && compared(query.fresh, rows, query.dialect);
+    if (found?.stale.length) throw staleError(query.source, found.stale);
+    if (found) warnDrifted(query.source, found.drifted);
     passed(query);
   }
   const { text, values, names } = statement(query, params);
@@ -354,8 +355,9 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
     try {
       rows = await executeAsync(c, { dialect: query.dialect, sql: fresh.query, params: [], text: fresh.query, order: [] }, {});
     } catch {}
-    const lines = (rows && differences(fresh, rows, query.dialect)) ?? [];
-    if (lines.length) throw staleError(query.source, lines);
+    const found = rows && compared(fresh, rows, query.dialect);
+    if (found?.stale.length) throw staleError(query.source, found.stale);
+    if (found) warnDrifted(query.source, found.drifted);
     passed(query);
   }
   const { text, values, names } = statement(query, params);

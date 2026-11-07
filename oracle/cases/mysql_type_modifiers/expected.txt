@@ -1,5 +1,6 @@
 aggregates.sql: one () -> { top: varchar?, low: decimal?, latest: datetime?, codes: text? }
 columns.sql: many () -> { id: int, name: varchar(≤20), code: char(≤5)?, legacy: varchar(≤10)?, padded: char(≤4)?, narrow: varchar(≤8)?, wide: varchar(≤6)?, note: text(≤255 bytes UTF-8)?, body: text(≤65535 bytes UTF-8)?, old_body: text(≤65535)?, narrow_note: text(≤255 bytes UTF-8)?, wide_note: text(≤255)?, raw: binary(=3)?, bits: varbinary(≤8)?, small_blob: blob(≤255)?, price: decimal(10,2)?, huge: decimal(65,30)?, positive: decimal(6,3)?, at: datetime?, at_ms: datetime?, at_us: datetime?, stamp: timestamp?, span: time?, span_ms: time? }
+compared_params.sql: many (name: varchar, price: decimal) -> { id: int }
 derived.sql: many () -> { name: varchar(≤20), legacy: varchar(≤10)?, body: text(≤65535)?, raw: binary(=3)?, price: decimal(10,2)?, at_ms: datetime?, span_ms: time? }
 expressions.sql: many () -> { shout: varchar?, short: varchar?, either_one: varchar, loud: text?, doubled: decimal?, coarse: decimal?, tomorrow: datetime?, gap: time? }
 information_schema.sql: many () -> { TABLE_COMMENT: varchar?, CREATE_OPTIONS: varchar?, CREATE_TIME: timestamp }
@@ -10,3 +11,7 @@ parts.sql: many () -> { id: int, part: decimal(5,5) }
 union.sql: many () -> { name: varchar?, price: decimal? }
 view.sql: many () -> { name: varchar, twice: varchar?, price: decimal?, at_ms: datetime? }
 with_query.sql: many () -> { name: varchar(≤20), note: text(≤255)?, bits: varbinary(≤8)?, stamp: timestamp? }
+written.sql: none (id: int, name: varchar(≤20), code: char(≤5)?, price: decimal(10,2)?, body: text(≤65535 bytes UTF-8)?) -> {  }
+written_cast.sql: none (id: int, name: varchar) -> {  }
+written_select.sql: none (id: int, name: varchar(≤20), price: decimal(10,2)?) -> {  }
+written_update.sql: none (name: varchar(≤20), price: decimal(10,2)?, id: int32) -> {  }
