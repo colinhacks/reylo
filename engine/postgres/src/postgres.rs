@@ -1076,7 +1076,7 @@ impl<'a> Engine<'a> {
         // The domains its types name, with the base type each is made from.
         let names: Vec<String> = analysis.params.iter().map(|p| &p.ty).chain(analysis.columns.iter().map(|c| &c.ty)).flat_map(Type::names).collect();
         analysis.domains = registry.domain_bases(&names);
-        crate::analysis::names(sql, &mut analysis, targets.as_deref(), &|i| spans.get(i).copied());
+        crate::analysis::names(sql, Dialect::Postgres, &mut analysis, targets.as_deref(), &|i| spans.get(i).copied());
         Some(analysis)
     }
 

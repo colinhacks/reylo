@@ -22,7 +22,7 @@ use crate::host::{as_str, Host, Lazy};
 use crate::lex::{self, Lexed, MysqlText, Style, Target};
 use crate::types::{Cardinality, Field, Kind as TyKind, Position, StatementKind, Type};
 use serde_json::{json, Value};
-use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Spanned, Statement, TableFactor};
+use sqlparser::ast::{self, Expr, FunctionArg, FunctionArgExpr, GroupByExpr, LimitClause, Query, Select, SelectItem, SetExpr, Statement, TableFactor};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::collections::{HashMap, HashSet};
@@ -540,7 +540,7 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         None if raw.columns.is_empty() && opens_without_result_sets(&rewritten.sql) => (Cardinality::None, None),
         None => (Cardinality::Many, Some(misread.unwrap_or_else(|| "the engine could not parse the statement, so nothing bounds its rows".into()))),
     };
-    let targets = read.as_ref().and_then(|statement| result_targets(statement, &rewritten));
+    let targets = read.as_ref().and_then(result_targets);
     let rewritten = vectors_as_text(rewritten, &raw);
     let mut analysis = Analysis {
         kind,
@@ -569,31 +569,28 @@ pub fn analyze(sql: &str, lexed: &Lexed, text: Option<MysqlText>, host: &Host, m
         tables: read.as_ref().map(crate::mysql_params::tables),
         domains: Default::default(),
     };
-    crate::analysis::names(sql, &mut analysis, targets.as_deref(), &|_| None);
+    crate::analysis::names(sql, Dialect::Mysql, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
 }
 
 /// How a query writes its result columns: its select list, the first arm's of a set operation, whose
 /// names are the result's. `None` for any statement but a query, which has none on MySQL.
-fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
-    fn body(set: &SetExpr, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
+fn result_targets(statement: &Statement) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr) -> Option<Vec<ResultTarget>> {
         match set {
-            SetExpr::Select(s) => Some(s.projection.iter().map(|i| item(i, rewritten)).collect()),
-            SetExpr::Query(q) => body(&q.body, rewritten),
-            SetExpr::SetOperation { left, .. } => body(left, rewritten),
+            SetExpr::Select(s) => Some(s.projection.iter().map(item).collect()),
+            SetExpr::Query(q) => body(&q.body),
+            SetExpr::SetOperation { left, .. } => body(left),
             // `values row(1, 2)`: named column_0 and column_1 by the server.
             SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn item(item: &SelectItem, rewritten: &lex::Rewritten) -> ResultTarget {
+    fn item(item: &SelectItem) -> ResultTarget {
         match item {
             SelectItem::UnnamedExpr(e) if read_as_it_is(e) => ResultTarget::Named,
-            SelectItem::UnnamedExpr(e) => {
-                let span = e.span();
-                ResultTarget::Unnamed(crate::analysis::written_span(rewritten, (span.start.line, span.start.column), (span.end.line, span.end.column)))
-            }
+            SelectItem::UnnamedExpr(_) => ResultTarget::Unnamed(None),
             SelectItem::ExprWithAlias { .. } | SelectItem::ExprWithAliases { .. } => ResultTarget::Named,
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => ResultTarget::Star,
         }
@@ -611,7 +608,7 @@ fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<V
         }
     }
     match statement {
-        Statement::Query(q) => body(&q.body, rewritten),
+        Statement::Query(q) => body(&q.body),
         _ => None,
     }
 }

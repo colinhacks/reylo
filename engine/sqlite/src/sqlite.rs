@@ -360,7 +360,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
-    crate::analysis::names(sql, &mut analysis, result_targets(&t).as_deref(), &|_| None);
+    crate::analysis::names(sql, Dialect::Sqlite, &mut analysis, result_targets(&t).as_deref(), &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
 }

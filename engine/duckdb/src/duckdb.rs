@@ -13,7 +13,7 @@ use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
 use reylo_engine_core::types::{Cardinality, StatementKind, Type};
-use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, OutputClause, Query, SelectItem, SetExpr, SetQuantifier, Spanned, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, OutputClause, Query, SelectItem, SetExpr, SetQuantifier, SqliteOnConflict, Statement, TableFactor, TableObject, Value, Visit, Visitor};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
@@ -183,7 +183,16 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
     let rewritten_sql = rewritten.sql.clone();
     let lowered = rewritten.sql.to_lowercase();
     let column = |word: &str| catalog.has_column(word) || lowered.contains(&format!("\"{}\"", word.to_lowercase()));
-    let targets = shaped.as_deref().and_then(|statement| result_targets(statement, &rewritten, &column));
+    let analysis_columns = columns.len();
+    let targets = shaped.as_deref().and_then(|statement| {
+        let targets = result_targets(statement, &column, false)?;
+        // An `unnest` of a struct makes a column of each field, so a list of more columns than items
+        // is read again with each `unnest` as a `*`.
+        if !targets.contains(&ResultTarget::Star) && targets.len() != analysis_columns {
+            return result_targets(statement, &column, true);
+        }
+        Some(targets)
+    });
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -208,41 +217,41 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
-    reylo_engine_core::analysis::names(sql, &mut analysis, targets.as_deref(), &|_| None);
+    reylo_engine_core::analysis::names(sql, Dialect::Duckdb, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
 }
 
 /// How the statement writes its result columns: a query's select list, the first arm's of a set
 /// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
 /// and for a select list the tree does not say the columns of.
-fn result_targets(statement: &Statement, rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
-    let body = |set: &SetExpr| body(set, rewritten, column);
-    let list = |items: &[SelectItem]| list(items, rewritten, column);
-    fn body(set: &SetExpr, rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
+/// `unnest` and `unpack` stand for as many columns as a struct has fields where `expand`, which the
+/// caller asks for once the list's count is not the columns'.
+fn result_targets(statement: &Statement, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
+    let body = |set: &SetExpr| body(set, column, expand);
+    let list = |items: &[SelectItem]| list(items, column, expand);
+    fn body(set: &SetExpr, column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
         match set {
             // `from t` alone selects every column.
             SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
-            SetExpr::Select(s) => list(&s.projection, rewritten, column),
-            SetExpr::Query(q) => body(&q.body, rewritten, column),
+            SetExpr::Select(s) => list(&s.projection, column, expand),
+            SetExpr::Query(q) => body(&q.body, column, expand),
             // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
             SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
-            SetExpr::SetOperation { left, .. } => body(left, rewritten, column),
+            SetExpr::SetOperation { left, .. } => body(left, column, expand),
             // `values (1, 2)`: named col0 and col1 by DuckDB.
             SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn list(items: &[SelectItem], rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
+    fn list(items: &[SelectItem], column: &dyn Fn(&str) -> bool, expand: bool) -> Option<Vec<ResultTarget>> {
+        let expanding = |e: &Expr| matches!(e, Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)));
         items
             .iter()
             .map(|item| match item {
                 SelectItem::UnnamedExpr(e) if read_as_it_is(e, column) || prefix_alias(e) => Some(ResultTarget::Named),
-                SelectItem::UnnamedExpr(e) if holds_columns(e) => Some(ResultTarget::Star),
-                SelectItem::UnnamedExpr(e) => {
-                    let span = e.span();
-                    Some(ResultTarget::Unnamed(reylo_engine_core::analysis::written_span(rewritten, (span.start.line, span.start.column), (span.end.line, span.end.column))))
-                }
+                SelectItem::UnnamedExpr(e) if holds_columns(e) || (expand && expanding(e)) => Some(ResultTarget::Star),
+                SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed(None)),
                 SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
                 SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => Some(ResultTarget::Star),
                 _ => None,
@@ -260,23 +269,14 @@ fn result_targets(statement: &Statement, rewritten: &lex::Rewritten, column: &dy
             _ => false,
         }
     }
-    // DuckDB's `y: x + 1`, an alias written first, which the parser reads as its JSON access at the
-    // expression's head, since DuckDB has no such operator.
+    // DuckDB's `y: x + 1`, an alias written first, which the parser reads as its JSON access inside
+    // the expression, since DuckDB has no such operator.
     fn prefix_alias(e: &Expr) -> bool {
-        match e {
-            Expr::JsonAccess { .. } => true,
-            Expr::BinaryOp { left, .. } => prefix_alias(left),
-            Expr::Cast { expr, .. } | Expr::Collate { expr, .. } | Expr::Between { expr, .. } | Expr::InList { expr, .. } | Expr::Like { expr, .. } | Expr::ILike { expr, .. } | Expr::IsNull(expr) | Expr::IsNotNull(expr) => prefix_alias(expr),
-            _ => false,
-        }
+        shallow(e, &|e| matches!(e, Expr::JsonAccess { .. }))
     }
     // `columns('a.*')`, alone or inside an expression, stands for as many columns as it matches.
     fn holds_columns(e: &Expr) -> bool {
-        sqlparser::ast::visit_expressions(e, |e| match e {
-            Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns") => ControlFlow::Break(()),
-            _ => ControlFlow::Continue(()),
-        })
-        .is_break()
+        shallow(e, &|e| matches!(e, Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns")))
     }
     match statement {
         Statement::Query(q) => body(&q.body),
@@ -288,6 +288,30 @@ fn result_targets(statement: &Statement, rewritten: &lex::Rewritten, column: &dy
         },
         _ => None,
     }
+}
+
+/// Whether `found` holds of `e` or of an expression inside it, but not inside a subquery, whose
+/// select list is its own.
+fn shallow(e: &Expr, found: &dyn Fn(&Expr) -> bool) -> bool {
+    struct Shallow<'a> {
+        depth: usize,
+        found: &'a dyn Fn(&Expr) -> bool,
+    }
+    impl Visitor for Shallow<'_> {
+        type Break = ();
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if self.depth == 0 && (self.found)(e) { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        }
+    }
+    e.visit(&mut Shallow { depth: 0, found }).is_break()
 }
 
 /// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.

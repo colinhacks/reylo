@@ -139,24 +139,23 @@ fn is_identifier(name: &str) -> bool {
 /// identifier is an error. Two columns of one name are an error too, since a driver builds each row
 /// as an object keyed by name, which keeps the last of them, and nothing a type says of the first
 /// is true of the row.
-pub fn names(sql: &str, analysis: &mut Analysis, targets: Option<&[ResultTarget]>, at: &dyn Fn(usize) -> Option<(usize, usize)>) {
+pub fn names(sql: &str, dialect: Dialect, analysis: &mut Analysis, targets: Option<&[ResultTarget]>, at: &dyn Fn(usize) -> Option<(usize, usize)>) {
     // Only a list of this one expression: a `*` beside it may stand for no column today and for one
     // once the table has one.
     analysis.value = analysis.columns.len() == 1 && matches!(targets, Some([ResultTarget::Unnamed(_)]));
     let placed = placed_columns(analysis.columns.len(), targets);
+    // Each target's text, where the statement's own list has as many items as the parse read.
+    let items = result_items(sql, dialect).filter(|items| targets.is_some_and(|t| t.len() == items.len()));
     let mut found = Vec::new();
     let mut refused = vec![false; analysis.columns.len()];
     if !analysis.value {
         for (i, column) in analysis.columns.iter().enumerate() {
-            let Some(ResultTarget::Unnamed(place)) = placed.get(i) else { continue };
+            let Some((k, ResultTarget::Unnamed(place))) = placed.get(i).copied().flatten() else { continue };
             if is_identifier(&column.name) {
                 continue;
             }
             refused[i] = true;
-            // An expression's text is what MySQL's and SQLite's names are, so a parse that places
-            // nothing can still find it, the second column of one name at its second place.
-            let nth = analysis.columns[..i].iter().enumerate().filter(|(k, c)| refused[*k] && c.name == column.name).count();
-            let (start, length) = place.or_else(|| at(i)).or_else(|| written_at(sql, &column.name, nth)).unwrap_or_else(|| first_word(sql));
+            let (start, length) = items.as_ref().map(|items| items[k]).or(place).or_else(|| at(i)).unwrap_or_else(|| first_word(sql));
             let message = format!("Column {} has no name: the database calls it \"{}\", which is no identifier and may differ on another driver or server. Give it one with `as`.", i + 1, column.name);
             found.push(diag(message, start, length, UNNAMED_COLUMN));
         }
@@ -174,55 +173,70 @@ pub fn names(sql: &str, analysis: &mut Analysis, targets: Option<&[ResultTarget]
     analysis.diagnostics.extend(found);
 }
 
-/// Each result column's target, as far as the targets place it: from the left up to the first `*`,
-/// and from the right back to the last; `Named` for what stands for a `*` or between two of them.
-/// Empty where the targets cannot be the columns' (a list that expands some other way).
-fn placed_columns(columns: usize, targets: Option<&[ResultTarget]>) -> Vec<ResultTarget> {
+/// Each result column's target and its index, as far as the targets place it: from the left up to
+/// the first `*`, and from the right back to the last; none for what stands for a `*` or between
+/// two of them. Empty where the targets cannot be the columns' (a list that expands some other way).
+fn placed_columns(columns: usize, targets: Option<&[ResultTarget]>) -> Vec<Option<(usize, ResultTarget)>> {
     let Some(targets) = targets else { return Vec::new() };
-    let mut placed = vec![ResultTarget::Named; columns];
+    let mut placed = vec![None; columns];
     match targets.iter().position(|t| *t == ResultTarget::Star) {
         None if targets.len() != columns => return Vec::new(),
-        None => placed.copy_from_slice(targets),
+        None => {
+            for (k, t) in targets.iter().enumerate() {
+                placed[k] = Some((k, *t));
+            }
+        }
         Some(_) if targets.len() - 1 > columns => return Vec::new(),
         Some(first) => {
-            placed[..first].copy_from_slice(&targets[..first]);
+            for (k, t) in targets[..first].iter().enumerate() {
+                placed[k] = Some((k, *t));
+            }
             for (from_end, t) in targets.iter().rev().take_while(|t| **t != ResultTarget::Star).enumerate() {
-                placed[columns - 1 - from_end] = *t;
+                placed[columns - 1 - from_end] = Some((targets.len() - 1 - from_end, *t));
             }
         }
     }
     placed
 }
 
-/// Where `name` stands in `sql` as code, the `nth` time: not in a string or a comment, and not
-/// inside a longer word.
-fn written_at(sql: &str, name: &str, nth: usize) -> Option<(usize, usize)> {
+/// Where each item of the statement's result list is written, trimmed: the list after its
+/// `RETURNING`, else after its first `select` outside parentheses, up to the clause that ends it.
+/// `None` where the text has no such list, or an item is empty.
+pub fn result_items(sql: &str, dialect: Dialect) -> Option<Vec<(usize, usize)>> {
+    const MODIFIERS: [&str; 11] = ["distinct", "all", "distinctrow", "high_priority", "straight_join", "sql_small_result", "sql_big_result", "sql_buffer_result", "sql_no_cache", "sql_cache", "sql_calc_found_rows"];
+    const ENDS: [&str; 16] = ["from", "where", "group", "having", "window", "order", "limit", "offset", "fetch", "union", "intersect", "except", "into", "qualify", "for", "returning"];
     let bytes = sql.as_bytes();
-    let wanted = name.as_bytes();
-    let word = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
-    let (first, last) = (*wanted.first()?, *wanted.last()?);
-    let (mut i, mut seen) = (0, 0);
+    // The words and commas outside parentheses, strings and comments, and the statement's end.
+    let mut words: Vec<(usize, usize)> = Vec::new();
+    let mut commas = Vec::new();
+    let mut end = bytes.len();
+    let mut depth = 0usize;
+    let mut i = 0;
+    let ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b == b'$' || b >= 0x80;
     while i < bytes.len() {
-        if bytes[i..].starts_with(wanted) && (!word(first) || i == 0 || !word(bytes[i - 1])) && (!word(last) || !bytes.get(i + wanted.len()).copied().is_some_and(word)) {
-            if seen == nth {
-                return Some((i, wanted.len()));
-            }
-            seen += 1;
-            i += wanted.len();
-            continue;
-        }
-        match bytes[i] {
-            quote @ (b'\'' | b'"' | b'`') => {
+        let b = bytes[i];
+        match b {
+            b'\'' | b'"' | b'`' => {
+                // MySQL reads a backslash in a string as an escape, and so does Postgres in E'…'.
+                let escapes = b == b'\'' && (dialect == Dialect::Mysql || (i > 0 && matches!(bytes[i - 1], b'e' | b'E') && (i < 2 || !ident(bytes[i - 2]))));
                 i += 1;
-                while i < bytes.len() && bytes[i] != quote {
-                    i += 1;
+                while i < bytes.len() && bytes[i] != b {
+                    i += if escapes && bytes[i] == b'\\' { 2 } else { 1 };
                 }
                 i += 1;
+                continue;
             }
             b'-' if bytes.get(i + 1) == Some(&b'-') => {
                 while i < bytes.len() && bytes[i] != b'\n' {
                     i += 1;
                 }
+                continue;
+            }
+            b'#' if dialect == Dialect::Mysql => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
             }
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
                 i += 2;
@@ -230,36 +244,80 @@ fn written_at(sql: &str, name: &str, nth: usize) -> Option<(usize, usize)> {
                     i += 1;
                 }
                 i += 2;
+                continue;
             }
-            _ => i += 1,
+            // A Postgres dollar-quoted string, `$$…$$` or `$tag$…$tag$`; `$1` is a parameter.
+            b'$' if dialect == Dialect::Postgres && (i == 0 || !ident(bytes[i - 1])) && bytes.get(i + 1).is_some_and(|c| *c == b'$' || c.is_ascii_alphabetic() || *c == b'_') => {
+                let tag_end = bytes[i + 1..].iter().position(|c| !(c.is_ascii_alphanumeric() || *c == b'_')).map(|p| i + 1 + p);
+                if let Some(t) = tag_end.filter(|t| bytes[*t] == b'$') {
+                    let tag = &bytes[i..=t];
+                    let close = bytes[t + 1..].windows(tag.len()).position(|w| w == tag);
+                    i = close.map_or(bytes.len(), |c| t + 1 + c + tag.len());
+                    continue;
+                }
+            }
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => commas.push(i),
+            b';' if depth == 0 => {
+                end = i;
+                break;
+            }
+            _ if depth == 0 && (b.is_ascii_alphabetic() || b == b'_') && (i == 0 || !ident(bytes[i - 1])) => {
+                let start = i;
+                while i < bytes.len() && ident(bytes[i]) {
+                    i += 1;
+                }
+                words.push((start, i));
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let is = |(s, e): (usize, usize), word: &str| sql[s..e].eq_ignore_ascii_case(word);
+    let (mut start, from_returning) = match words.iter().position(|w| is(*w, "returning")) {
+        Some(k) => (k, true),
+        None => (words.iter().position(|w| is(*w, "select"))?, false),
+    };
+    let mut list_start = words[start].1;
+    if !from_returning {
+        while let Some(&w) = words.get(start + 1).filter(|w| MODIFIERS.iter().any(|m| is(**w, m)) && sql[list_start..w.0].trim().is_empty()) {
+            start += 1;
+            list_start = w.1;
+        }
+        // `distinct on (…)`: the list starts after its parentheses.
+        if let Some(&w) = words.get(start + 1).filter(|w| is(**w, "on") && sql[list_start..w.0].trim().is_empty()) {
+            let open = w.1 + sql[w.1..].len() - sql[w.1..].trim_start().len();
+            if bytes.get(open) != Some(&b'(') {
+                return None;
+            }
+            let mut d = 0;
+            let close = (open..bytes.len()).find(|&j| {
+                d += match bytes[j] {
+                    b'(' => 1,
+                    b')' => -1,
+                    _ => 0,
+                };
+                d == 0
+            })?;
+            list_start = close + 1;
         }
     }
-    None
-}
-
-/// The bytes of the statement as written that a span of the rewritten statement stands for: lines
-/// and columns from 1, as `sqlparser` counts them, line 0 for a span it does not know.
-pub fn written_span(rewritten: &lex::Rewritten, start: (u64, u64), end: (u64, u64)) -> Option<(usize, usize)> {
-    let at = |(line, column): (u64, u64)| -> Option<usize> {
-        if line == 0 {
+    let list_end = if from_returning { end } else { words.iter().find(|w| w.0 >= list_start && ENDS.iter().any(|e| is(**w, e))).map_or(end, |w| w.0) };
+    let mut bounds = vec![list_start];
+    bounds.extend(commas.iter().filter(|c| **c > list_start && **c < list_end).map(|c| c + 1));
+    let mut items = Vec::with_capacity(bounds.len());
+    for (k, &from) in bounds.iter().enumerate() {
+        let to = bounds.get(k + 1).map_or(list_end, |next| next - 1);
+        let text = &sql[from..to];
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
             return None;
         }
-        let (mut l, mut c) = (1, 1);
-        for (i, ch) in rewritten.sql.char_indices() {
-            if (l, c) == (line, column) {
-                return Some(i);
-            }
-            if ch == '\n' {
-                l += 1;
-                c = 1;
-            } else {
-                c += 1;
-            }
-        }
-        ((l, c) == (line, column)).then_some(rewritten.sql.len())
-    };
-    let (from, to) = (rewritten.to_original(at(start)?), rewritten.to_original(at(end)?));
-    (to > from).then_some((from, to - from))
+        items.push((from + (text.len() - text.trim_start().len()), trimmed.len()));
+    }
+    Some(items)
 }
 
 /// The statement's first word, past any whitespace.
@@ -394,13 +452,13 @@ mod tests {
     fn two_columns_of_one_name_are_an_error_at_the_later() {
         let mut a = bare_of("select a.x, b.x, a.x from a, b", Dialect::Postgres, Vec::new());
         a.columns = ["x", "x", "x"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
-        names("  select a.x, b.x, a.x from a, b", &mut a, None, &|i| (i == 1).then_some((14, 1)));
+        names("  select a.x, b.x, a.x from a, b", Dialect::Postgres, &mut a, None, &|i| (i == 1).then_some((14, 1)));
         assert_eq!(a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>(), [(14, 14, 1), (14, 2, 6)]);
         assert_eq!(a.diagnostics[0].message, "Columns 1 and 2 are both named \"x\", and a row keeps only the last of them. Give one of them another name with `as`.");
         assert!(a.diagnostics[1].message.starts_with("Columns 1 and 3 are both named"));
         let mut b = bare_of("select 1 as x, 2 as y", Dialect::Postgres, Vec::new());
         b.columns = ["x", "y"].iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
-        names("select 1 as x, 2 as y", &mut b, None, &|_| None);
+        names("select 1 as x, 2 as y", Dialect::Postgres, &mut b, None, &|_| None);
         assert!(b.diagnostics.is_empty());
     }
 
@@ -408,7 +466,7 @@ mod tests {
     fn named(sql: &str, columns: &[&str], targets: Option<&[ResultTarget]>) -> Analysis {
         let mut a = bare_of(sql, Dialect::Postgres, Vec::new());
         a.columns = columns.iter().map(|n| Column::new(*n, Type::unknown(), true)).collect();
-        names(sql, &mut a, targets, &|_| None);
+        names(sql, Dialect::Mysql, &mut a, targets, &|_| None);
         a
     }
 
@@ -436,9 +494,9 @@ mod tests {
         use ResultTarget::*;
         const UNNAMED: ResultTarget = Unnamed(None);
         let codes = |a: &Analysis| a.diagnostics.iter().map(|d| (d.code, d.start, d.length)).collect::<Vec<_>>();
-        // Placed where the text holds the name, else on the first word.
+        // Placed at the column's item of the statement's own list.
         assert_eq!(codes(&named("select id, count(*) from t", &["id", "count(*)"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 11, 8)]);
-        assert_eq!(codes(&named("select id, 1 + 1", &["id", "?column?"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 0, 6)]);
+        assert_eq!(codes(&named("select id, 1 + 1", &["id", "?column?"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 11, 5)]);
         assert_eq!(named("select id, 1 + 1", &["id", "?column?"], Some(&[Named, UNNAMED])).diagnostics[0].message, "Column 2 has no name: the database calls it \"?column?\", which is no identifier and may differ on another driver or server. Give it one with `as`.");
         // A name the database derives that reads as one, and a name the statement wrote.
         assert!(named("select id, count(*) from t", &["id", "count"], Some(&[Named, UNNAMED])).diagnostics.is_empty());
@@ -457,13 +515,44 @@ mod tests {
         // Two names that read as names still clash.
         let clash = named("select lower(a), lower(b)", &["lower", "lower"], Some(&[UNNAMED, UNNAMED]));
         assert_eq!(clash.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [14]);
-        // The parse's place comes first, and a name's text is looked for as code.
-        assert_eq!(codes(&named("select id, x", &["id", "a + b"], Some(&[Named, Unnamed(Some((11, 1)))]))), [(UNNAMED_COLUMN, 11, 1)]);
-        assert_eq!(codes(&named("select 11, 1", &["a", "1"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 11, 1)]);
-        assert_eq!(codes(&named("select 'count(*)', count(*) from t", &["count(*)", "b"], Some(&[UNNAMED, Named]))), [(UNNAMED_COLUMN, 19, 8)]);
-        assert_eq!(codes(&named("select /* count(*) */ id, count(*) from t", &["id", "count(*)"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 26, 8)]);
-        assert_eq!(codes(&named("select a + 1, a + 1 from t", &["a + 1", "a + 1"], Some(&[UNNAMED, UNNAMED]))), [(UNNAMED_COLUMN, 7, 5), (UNNAMED_COLUMN, 14, 5)]);
-        // Not inside a longer word.
-        assert_eq!(written_at("select 11, 1", "1", 0), Some((11, 1)));
+        // A column is placed at its item of the statement's own list, whole, else where the parse says.
+        let at = |sql: &str, columns: &[&str], targets: &[ResultTarget]| codes(&named(sql, columns, Some(targets)));
+        assert_eq!(at("select id, x", &["id", "a + b"], &[Named, Unnamed(Some((11, 1)))]), [(UNNAMED_COLUMN, 11, 1)]);
+        assert_eq!(at("select 11, 1", &["a", "1"], &[Named, UNNAMED]), [(UNNAMED_COLUMN, 11, 1)]);
+        assert_eq!(at("select 'count(*)', count(*) from t", &["count(*)", "b"], &[UNNAMED, Named]), [(UNNAMED_COLUMN, 7, 10)]);
+        assert_eq!(at("select x + 1 as a, x + 1 from t", &["a", "x + 1"], &[Named, UNNAMED]), [(UNNAMED_COLUMN, 19, 5)]);
+        assert_eq!(at("with c as (select x + 1 from t) select x, x + 1 from t", &["x", "x + 1"], &[Named, UNNAMED]), [(UNNAMED_COLUMN, 42, 5)]);
+        assert_eq!(at("select id, cast(id as char) from t", &["id", "cast(id as char)"], &[Named, UNNAMED]), [(UNNAMED_COLUMN, 11, 16)]);
+        assert_eq!(at("select id, 'it\\'s', lower(name) from t", &["id", "it's", "lower(name)"], &[Named, UNNAMED, UNNAMED]).last(), Some(&(UNNAMED_COLUMN, 20, 11)));
+    }
+}
+
+#[cfg(test)]
+mod result_items {
+    use super::*;
+
+    fn texts(sql: &str, dialect: Dialect) -> Option<Vec<&str>> {
+        result_items(sql, dialect).map(|items| items.into_iter().map(|(s, l)| &sql[s..s + l]).collect())
+    }
+
+    #[test]
+    fn the_result_list_is_read_outside_parentheses_strings_and_comments() {
+        let pg = |sql| texts(sql, Dialect::Postgres);
+        assert_eq!(pg("select a, f(b, c), 'x, y' from t").unwrap(), ["a", "f(b, c)", "'x, y'"]);
+        assert_eq!(pg("with w as (select 1, 2) select a, b from w").unwrap(), ["a", "b"]);
+        assert_eq!(pg("select distinct on (a, b) a, b from t order by a").unwrap(), ["a", "b"]);
+        assert_eq!(pg("select all a /* , */, b -- , c\n from t").unwrap(), ["a /* , */", "b -- , c"]);
+        assert_eq!(pg("insert into t select 1, 2 returning id, x + 1").unwrap(), ["id", "x + 1"]);
+        assert_eq!(pg("select $$a, b$$, $1 from t").unwrap(), ["$$a, b$$", "$1"]);
+        assert_eq!(pg("select a, b union select c, d").unwrap(), ["a", "b"]);
+        assert_eq!(pg("select a, b;").unwrap(), ["a", "b"]);
+        assert_eq!(texts("select 'it\\'s', b into @x, @y from t", Dialect::Mysql).unwrap(), ["'it\\'s'", "b"]);
+        assert_eq!(texts("select a, [1, 2], {'k': 1} from t", Dialect::Duckdb).unwrap(), ["a", "[1, 2]", "{'k': 1}"]);
+        assert_eq!(texts("from t select a, b where a > 1", Dialect::Duckdb).unwrap(), ["a", "b"]);
+        assert_eq!(texts("select a, # , b\n c from t", Dialect::Mysql).unwrap(), ["a", "# , b\n c"]);
+        // No list, an item cut short by a word that ends it, and an empty item.
+        assert_eq!(pg("values (1, 2)"), None);
+        assert_eq!(pg("select a, offset from t"), None);
+        assert_eq!(pg("select a, , b"), None);
     }
 }
