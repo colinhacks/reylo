@@ -1682,14 +1682,17 @@ fn type_class(ty: &str) -> TypeClass {
 }
 
 impl Alterer for PostgresAlterer {
-    /// A SQL function's body is checked as it's made, against the functions and tables it calls, but
-    /// the server records none of what it calls (a `begin atomic` body aside), so the plan can't put
-    /// them first. Its bodies are checked when they run instead, as pg_dump makes them.
+    /// A SQL function's body is checked as it's made, against the functions, procedures and
+    /// operators it calls, but the server records none of what it calls (a `begin atomic` body
+    /// aside), so where the plan makes those too it can't put them first. Its bodies are checked when
+    /// they run instead, as pg_dump makes them; the replay of schema.sql has already run each one.
     fn finish(&self, statements: &mut Vec<String>) {
-        static SQL_BODY: std::sync::LazyLock<regex::Regex> =
-            std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^create\s+(or\s+replace\s+)?(function|procedure)\b.*\blanguage\s+sql\b").expect("a valid pattern"));
-        let checked = |s: &String| SQL_BODY.is_match(s) && !s.to_ascii_lowercase().contains("begin atomic");
-        if statements.iter().filter(|s| checked(s)).count() < 2 {
+        static ROUTINE: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)^create\s+(or\s+replace\s+)?(function|procedure|operator)\b").expect("a valid pattern"));
+        static SQL_BODY: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r"(?is)\blanguage\s+sql\b").expect("a valid pattern"));
+        let checked = |s: &String| ROUTINE.is_match(s) && SQL_BODY.is_match(s) && !s.to_ascii_lowercase().contains("begin atomic");
+        let routines = statements.iter().filter(|s| ROUTINE.is_match(s)).count();
+        if routines < 2 || !statements.iter().any(checked) {
             return;
         }
         statements.insert(0, "set check_function_bodies = off".into());

@@ -1,3 +1,4 @@
+set check_function_bodies = off;
 create type post_status as enum ('draft', 'published', 'archived');
 alter table posts add column published_at timestamp with time zone;
 alter table posts add column status post_status default 'draft' not null;
@@ -29,3 +30,4 @@ create policy posts_read on posts for select using (status = 'published' or auth
 create policy posts_write on posts for all using (author = (select current_profile())) with check (author = (select current_profile()));
 alter table posts enable row level security;
 comment on table posts is 'What profiles write';
+reset check_function_bodies;
