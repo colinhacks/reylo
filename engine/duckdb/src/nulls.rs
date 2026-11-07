@@ -370,6 +370,9 @@ fn projection(items: &[SelectItem], scope: &Scope, ctx: &Ctx) -> Option<Vec<Out>
     let mut out = Vec::new();
     for item in items {
         match item {
+            // An `unnest` or `unpack` of a struct makes a column of each field, named by the field,
+            // which the tree does not say.
+            SelectItem::UnnamedExpr(Expr::Function(f)) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)) => return None,
             SelectItem::UnnamedExpr(e) => out.push(column_of(e, None, scope, ctx)),
             SelectItem::ExprWithAlias { expr, alias } => out.push(column_of(expr, Some(&alias.value), scope, ctx)),
             SelectItem::Wildcard(options) => {
