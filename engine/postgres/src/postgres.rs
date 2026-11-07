@@ -1398,16 +1398,6 @@ impl<'a> Engine<'a> {
     }
 
     /// The JSON one item's column `column` holds ([`Engine::built`]).
-    /// Whether a LATERAL item described alone is the query it is in place, over the items beside it: a bare name there may be a column of one of them (`c` in `cc, LATERAL (SELECT c FROM t c)` is `cc.c`, not `t`'s row), so its columns' types must agree. An item that reads nothing beside it is the same query.
-    fn same_in_place(&self, query: &infer::ItemQuery, alone: &DescribedStatement, trust: &Trust) -> Lazy<bool> {
-        if !self.names_clear(query, trust)? {
-            return Some(false);
-        }
-        let Some(around) = query.around.as_ref().filter(|a| query.lateral && a.reads_beside()) else { return Some(true) };
-        let Some(placed) = self.probe(&around.with(&query.sql), trust)? else { return Some(false) };
-        Some(placed.columns.len() == alone.columns.len() && placed.columns.iter().zip(&alone.columns).all(|(p, a)| p.type_oid == a.type_oid))
-    }
-
     /// Whether every bare name an item reads as an item's whole row is that row in place: Postgres reads a bare name as a column of any query in scope first, so it is not where a table the statement reads, at any depth, has a column of the name, or, for a LATERAL item, an item beside it does (`c` is `cc.c` in `cc, LATERAL (SELECT to_jsonb(c) FROM t c)`).
     fn names_clear(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<bool> {
         let Some(names) = infer::whole_row_names(&query.sql) else { return Some(false) };
@@ -1437,7 +1427,7 @@ impl<'a> Engine<'a> {
         }
         // A subquery that reads the items before it describes over them.
         let described = match self.probe(&query.sql, trust)? {
-            Some(described) if !self.same_in_place(query, &described, trust)? => return Some(None),
+            Some(_) if !self.names_clear(query, trust)? => return Some(None),
             Some(described) => described,
             // Described in place and built alone: only where no bare name in it can read another value in place.
             None if !self.names_clear(query, trust)? => return Some(None),
@@ -2103,7 +2093,7 @@ impl<'a> Engine<'a> {
                 let outcome = self.probe(&query.sql, trust);
                 let (_, _, read_itself) = self.with_stack.borrow_mut().pop().expect("the entry pushed above");
                 let described = match outcome {
-                    Some(Some(described)) => match self.same_in_place(query, &described, trust) {
+                    Some(Some(described)) => match self.names_clear(query, trust) {
                         Some(true) => described,
                         Some(false) => break,
                         None => {

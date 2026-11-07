@@ -4952,6 +4952,7 @@ mod whole_row_names_tests {
         assert_eq!(names("SELECT (SELECT to_jsonb(c) FROM replies c LIMIT 1) AS j"), ["c"]);
         assert_eq!(names("SELECT to_jsonb(replies) FROM replies UNION ALL SELECT '{}'::jsonb"), ["replies"]);
         assert!(names("SELECT id, body FROM replies r WHERE r.comment_id = 1").is_empty());
+        assert!(names("SELECT array[g.id, g.id] FROM grids g ORDER BY g.id").is_empty());
     }
 }
 
