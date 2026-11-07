@@ -224,6 +224,9 @@ pub struct Analysis {
     /// and a table's primary key first where the result holds it. Empty where none is proven.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unique: Vec<Vec<String>>,
+    /// The columns of the result its ORDER BY sorts on, as far as its keys are such columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub order: Vec<types::OrderColumn>,
     /// Whether the statement's ORDER BY orders its rows totally: no two rows of any result tie on
     /// every sort key, so the order is the same on every run. Only for a result that can hold more
     /// than one row, as `key` is.
@@ -274,7 +277,7 @@ impl Analysis {
             kind: self.kind,
             comment: self.comment.clone(),
             params: self.params.iter().map(Param::descriptor).collect(),
-            result: RowsType { cardinality: self.cardinality, columns: self.columns.iter().map(Column::descriptor).collect(), unique: self.unique.clone() }.into(),
+            result: RowsType { cardinality: self.cardinality, columns: self.columns.iter().map(Column::descriptor).collect(), unique: self.unique.clone(), order: self.order.clone() }.into(),
             diagnostics: self.diagnostics.iter().map(|d| {
                 let start = utf16_offset(sql, d.start);
                 types::Diagnostic { message: d.message.clone(), start, end: utf16_offset(sql, d.start + d.length).max(start), code: d.server_code.clone() }

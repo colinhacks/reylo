@@ -172,6 +172,7 @@ function descriptor(sql: string, dialect: Database, version: string, a: Analysis
       cardinality: a.cardinality,
       columns: a.columns.map((c) => ({ name: c.name, type: c.type, ...(c.nullable && { nullable: true }), ...(c.comment !== undefined && { comment: c.comment }) })),
       ...(a.unique?.length && { unique: a.unique }),
+      ...(a.order?.length && { order: a.order }),
     },
     diagnostics: [...a.diagnostics, ...untyped].map((d) => {
       const start = utf16(sql, d.start);

@@ -539,6 +539,11 @@ fn line(analysis: &Value) -> String {
         let shown: Vec<String> = keys.iter().map(|key| format!("({})", key.as_array().into_iter().flatten().map(|k| k.as_str().unwrap_or("?")).collect::<Vec<_>>().join(", "))).collect();
         out.push_str(&format!(" key {}", shown.join(", ")));
     }
+    // The columns of the result its ORDER BY sorts on.
+    if let Some(order) = analysis["order"].as_array().filter(|o| !o.is_empty()) {
+        let shown: Vec<String> = order.iter().map(|o| format!("{}{} nulls {}", o["column"].as_str().unwrap_or("?"), if o["desc"].as_bool() == Some(true) { " desc" } else { "" }, o["nulls"].as_str().unwrap_or("?"))).collect();
+        out.push_str(&format!(" sorted ({})", shown.join(", ")));
+    }
     // An ORDER BY that orders the rows totally.
     if analysis["ordered"].as_bool() == Some(true) {
         out.push_str(" ordered");
