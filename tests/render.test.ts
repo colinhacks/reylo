@@ -23,6 +23,11 @@ test("a composite is an object of its fields, each as a column of its type is, a
   assert.equal(renderType(pg("record"), false, "postgres"), "string");
 });
 
+test("inside a JSON document Postgres 19's oid8 and regdatabase are their text, as Postgres writes them", () => {
+  assert.equal(renderType(pg("oid8"), true, "postgres"), "string");
+  assert.equal(renderType(pg("regdatabase"), true, "postgres"), "string");
+});
+
 test("inside a JSON document a composite is an object of its JSON-encoded fields", () => {
   assert.equal(renderType(users, true, "postgres"), inJson);
   // The renderer parenthesizes an element whose text holds a `|` anywhere, as it does for an object.

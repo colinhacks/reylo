@@ -34,7 +34,7 @@ const json: Record<string, string> = {
   // Types with no cast to JSON, which Postgres writes inside a document as their text: built-in
   // system types, and the extensions' on Neon and Supabase (PostGIS's others, cube, seg, isn,
   // intarray, h3, hll, ip4r, pgx_ulid, prefix, rdkit, roaringbitmap, semver, unit, VectorChord).
-  pg_lsn: "string", jsonpath: "string", xid: "string", xid8: "string",
+  pg_lsn: "string", jsonpath: "string", xid: "string", xid8: "string", oid8: "string", regdatabase: "string",
   regproc: "string", regprocedure: "string", regoper: "string", regoperator: "string", regnamespace: "string", regrole: "string", regcollation: "string", regconfig: "string", regdictionary: "string",
   geography: "string", box2d: "string", box3d: "string", spheroid: "string", raster: "string",
   cube: "string", seg: "string", ean13: "string", isbn: "string", isbn13: "string", ismn: "string", ismn13: "string", issn: "string", issn13: "string", upc: "string",
