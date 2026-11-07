@@ -40,7 +40,7 @@ Reylo replays your migrations on a throwaway database, so `reylo migrate prod --
 
 ## Basic usage
 
-Install Reylo, and start from your database:
+Install Reylo, and start your migrations from your database:
 
 ```terminal
 $ npm install reylo
@@ -50,7 +50,7 @@ $ npx reylo migration init
 ✓ The history lists the 1 migration this database's schema has
 ```
 
-It writes these files, which you commit, all but the cache:
+Commit the files it writes, all but the cache:
 
 ```terminal
 reylo/
@@ -62,16 +62,7 @@ reylo/
     └── .gitignore          # keeps the cache out of git
 ```
 
-Your schema now lives in one file:
-
-```sql title="schema.sql"
-create table users (
-  id integer primary key,
-  email text not null
-);
-```
-
-To change your schema, change that file:
+To change your schema, edit `schema.sql`, which holds all of it:
 
 ```sql title="schema.sql"
 create table users (
@@ -82,14 +73,14 @@ create table users (
 );
 ```
 
-Reylo writes the migration:
+Generate the migration:
 
 ```terminal
-$ reylo migration create add_bio
+$ npx reylo migration create add_bio
 ✓ Wrote reylo/migrations/20261104140347_add_bio.sql
 ```
 
-It's plain SQL, the change and nothing else:
+Read what it wrote. It's plain SQL, the change and nothing else, and yours to edit:
 
 ```sql title="20261104140347_add_bio.sql"
 alter table users add column bio text;
@@ -98,33 +89,36 @@ alter table users add column bio text;
 Run it on your development database:
 
 ```terminal
-$ reylo migrate dev
+$ npx reylo migrate dev
 Applying to postgres://localhost:5432/app
   ✓ 20261104140347_add_bio.sql  applied · 4 ms
 Wrote reylo/reylo-lock.yaml
 ```
 
-Commit it, and run it on production when you deploy:
+Commit the migration and the lock. When you deploy, run it on production:
 
 ```terminal
-$ reylo migrate prod
+$ npx reylo migrate prod
 Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
 
 ## Configuration
 
-Every setting is optional.
+Each setting is optional. Here they are with their defaults:
 
 ```yaml title=".reylo.yaml"
-# The directory of Reylo's files. Default: reylo.
-dir: db
-# A server to build shadow databases on, where the database's own
-# refuses create database. Default: the database's own server.
-shadow_url: ${SHADOW_URL}
+# The database Reylo migrates
+direct_url: ${DATABASE_URL}
+
+# The directory of schema.sql, the migrations, the lock and the cache
+dir: reylo
+
+# A server for shadow databases; null uses your database's own
+shadow_url: null
 ```
 
-Reylo migrates the database your type check reads: [`direct_url`](/#direct_url), else `DATABASE_URL`. To name another, pass `--url`.
+To migrate another database, pass `--url`.
 
 ## Shadow databases
 
@@ -133,21 +127,26 @@ Reylo reads your SQL with a real database.
 It builds a throwaway database beside yours, runs your migrations on it and reads the schema they make. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. Writing and repairing migrations need one, and a deploy doesn't:
 
 ```text
-Builds one     migration init (on a database with a schema)
+Needs one      migration init (on a database with a schema)
                migration create
                migration history push
                migrate dev
                migrate prod --dry-run
                schema push
 
-Builds none    migrate prod
+Needs none     migrate prod
                migration lint
                migration history pull
                schema pull
                db wipe
 ```
 
-Each is built on your database's own server. Where that refuses `create database`, point [`shadow_url`](#configuration) at another server running the same version.
+Reylo makes its shadow databases on your database's own server, and drops them when it's done. Where that server refuses `create database`, as a hosted database often does, point `shadow_url` at another server running the same version:
+
+```yaml title=".reylo.yaml"
+# A local Postgres 18, for a hosted Postgres 18
+shadow_url: postgres://localhost:5433/postgres
+```
 
 ## The lock
 
