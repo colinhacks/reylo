@@ -352,3 +352,4 @@ What Reylo can't type on DuckDB, and what to do instead:
 | DuckDB in the browser, through `@duckdb/duckdb-wasm`, which `.run()` doesn't take yet | Run queries through `@duckdb/node-api` |
 | `rows(…)` and `row(…)` parameters | Pass each value as a parameter of its own |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| What your app's connection sets for itself, which the type check's connection doesn't share: a temporary table that shadows a table of the same name, and `default_collation`, under which `'a'` can equal `'A'` | Name a temporary table apart from your tables, and write `collate` on the comparisons it should change |

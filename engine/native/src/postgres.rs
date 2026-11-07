@@ -368,7 +368,9 @@ fn parse(url: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Parsed, Stri
 /// What a failed call means to the host: a refused login (class 28), a database that cannot be
 /// reached (no answer from the server, class 08, or a FATAL error such as a database that does not
 /// exist), a TLS handshake that failed (a setting to fix), or the server's error for what it was
-/// asked.
+/// asked, with the character it points at where it points at one, which a host of the engine's own
+/// analysis hands back to it: the engine reads a SQL function's body by where the server says a
+/// name in it is no column.
 fn failure(e: &tokio_postgres::Error) -> Value {
     match e.as_db_error() {
         Some(d) => {
@@ -380,7 +382,11 @@ fn failure(e: &tokio_postgres::Error) -> Value {
             } else {
                 "error"
             };
-            json!({ "status": status, "message": d.message(), "code": code })
+            let mut out = json!({ "status": status, "message": d.message(), "code": code });
+            if let Some(tokio_postgres::error::ErrorPosition::Original(position)) = d.position() {
+                out["position"] = json!(position);
+            }
+            out
         }
         None => {
             // The driver's own words, with the operating system's reason under them.
