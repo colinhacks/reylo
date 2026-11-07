@@ -1159,20 +1159,32 @@ fn replacement(sql: &str, opaque: &[(usize, usize)], call: &Call, f: &Function, 
         }
         Some((alias, lateral, listed)) => {
             // A one-value function's item read as a value is that value, and a derived table's is a
-            // row; only a plain function's column goes by the item's own name.
-            if f.one_value && (!f.scalar || *listed) {
+            // row. Only a plain function's column goes by the item's own name, so there `c` is the
+            // value both ways, and `c.*` as a select list's entry its columns both ways; `c.*` as a
+            // value is a row of the derived table alone.
+            if f.one_value {
                 let item = alias.clone().unwrap_or_else(|| f.name.clone());
-                let mut read_whole = false;
+                let star = |map: &serde_json::Map<String, Value>| {
+                    let names = names_of(map.get("fields"));
+                    names.len() == 1 && names[0] == item && map.get("fields").and_then(Value::as_array).is_some_and(|fields| fields.len() == 2)
+                };
+                let (mut bare, mut stars, mut entries) = (false, 0, 0);
                 if let Some((statement, _)) = tree(sql) {
-                    each_object("", &statement, &mut |key, map| {
-                        if key == "ColumnRef" {
+                    each_object("", &statement, &mut |key, map| match key {
+                        "ColumnRef" => {
                             let names = names_of(map.get("fields"));
-                            // `c` or `c.*`.
-                            read_whole |= names.len() == 1 && names[0] == item;
+                            bare |= names.len() == 1 && names[0] == item && !star(map);
+                            stars += usize::from(star(map));
                         }
+                        "ResTarget" => {
+                            if let Some(("ColumnRef", c)) = map.get("val").and_then(node_of) {
+                                entries += usize::from(star(c));
+                            }
+                        }
+                        _ => {}
                     });
                 }
-                if read_whole {
+                if stars > entries || ((bare || stars > 0) && (!f.scalar || *listed)) {
                     return Some(None);
                 }
             }

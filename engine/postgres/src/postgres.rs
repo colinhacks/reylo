@@ -522,12 +522,18 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         changed = true;
     }
     if analysis.cardinality == Cardinality::Many {
-        changed |= analysis.key.is_none() && read.key.is_some();
+        changed |= read.unique.iter().any(|key| !analysis.unique.contains(key));
         changed |= !analysis.ordered && read.ordered;
-        analysis.key = analysis.key.take().or(read.key);
+        let mut unique = std::mem::take(&mut analysis.unique);
+        unique.extend(read.unique.into_iter().filter(|key| !unique.contains(key)).collect::<Vec<_>>());
+        let inside = |key: &Vec<String>, other: &Vec<String>| key.len() > other.len() && other.iter().all(|c| key.contains(c));
+        let kept: Vec<Vec<String>> = unique.iter().filter(|key| !unique.iter().any(|other| inside(key, other))).cloned().collect();
+        analysis.key = shortest_key(&kept, &analysis.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
+        analysis.unique = kept;
         analysis.ordered |= read.ordered;
     } else {
         analysis.key = None;
+        analysis.unique.clear();
         analysis.ordered = false;
     }
     (analysis, changed)
