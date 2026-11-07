@@ -1222,8 +1222,11 @@ fn replacement(sql: &str, opaque: &[(usize, usize)], call: &Call, f: &Function, 
             // A one-value function's item read as a value is that value, and a derived table's is a
             // row. Only a plain function's column goes by the item's own name, so there `c` is the
             // value both ways, and `c.*` as a select list's entry its columns both ways; `c.*` as a
-            // value is a row of the derived table alone.
-            if f.one_value {
+            // value is a row of the derived table alone. A function's row of a named type keeps its
+            // type's names whatever the alias calls its columns, where a derived table's row takes
+            // the alias's, so an item whose alias renames them is read only where its whole row is
+            // not.
+            if f.one_value || *listed {
                 let item = alias.clone().unwrap_or_else(|| f.name.clone());
                 let star = |map: &serde_json::Map<String, Value>| {
                     let names = names_of(map.get("fields"));
@@ -1245,7 +1248,10 @@ fn replacement(sql: &str, opaque: &[(usize, usize)], call: &Call, f: &Function, 
                         _ => {}
                     });
                 }
-                if stars > entries || ((bare || stars > 0) && (!f.scalar || *listed)) {
+                if f.one_value && (stars > entries || ((bare || stars > 0) && (!f.scalar || *listed))) {
+                    return Some(None);
+                }
+                if !f.one_value && (bare || stars > entries) {
                     return Some(None);
                 }
             }

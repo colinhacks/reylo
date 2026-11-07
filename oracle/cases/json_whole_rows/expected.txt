@@ -6,7 +6,10 @@ derived_row_object.sql: many () -> { doc: jsonb { team: { id: int8, name: text, 
 non_finite.sql: many () -> { j: json { score: float8?, rating: numeric? } }
 object_star.sql: many () -> { j: jsonb { team: { id: int8, name: text, score: float8? } } }
 renamed_aggregate.sql: one () -> { doc: jsonb ({ id: int8, name: text, score: float8? })[]? }
+renamed_function_aggregate.sql: one () -> { doc: jsonb ({ id: int8?, name: text?, score: float8? })[]? }
+renamed_function_bare.sql: many () -> { doc: jsonb? }
 renamed_function_columns.sql: many () -> { doc: jsonb { a: int8?, name: text? } }
+renamed_function_columns_read.sql: many () -> { a: int8, b: text } key (a)
 renamed_function_row.sql: many () -> { doc: jsonb { id: int8?, name: text?, score: float8? } }
 renamed_in_object.sql: many () -> { doc: jsonb { t: { id: int8, name: text, score: float8? } } }
 renamed_joined.sql: many () -> { doc: jsonb { id: int8, name: text, score: float8? }? }
