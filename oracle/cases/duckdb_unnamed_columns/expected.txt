@@ -17,8 +17,9 @@ row_columns_in_call.sql: one () -> { x: integer? }
 row_columns_in_expression.sql: many () -> { x: integer? }
 row_current_date.sql: one () -> { current_date: date }
 row_current_date_column.sql: many () -> { current_date: varchar? }
+row_current_date_null_field.sql: many () -> { current_date: varchar? }
 row_current_date_quoted_elsewhere.sql: many () -> { current_date: date }
-row_current_date_struct_column.sql: many () -> { current_date: integer }
+row_current_date_struct_column.sql: many () -> { current_date: integer? }
 row_current_date_union.sql: many () -> { current_date: varchar? }
 row_delete_star.sql: many () -> { x: integer }
 row_exclude.sql: many () -> { kept: integer }
