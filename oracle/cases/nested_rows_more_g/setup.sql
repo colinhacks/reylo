@@ -1,4 +1,4 @@
--- Attacks on the inference of arrays of whole rows, fifth round: aggregates of the outer query inside the subquery, which the outer query computes over its own rows, and outer joins after a LATERAL item.
+-- Edge cases of the inference of arrays of whole rows: aggregates of the outer query inside the subquery, which the outer query computes over its own rows, and outer joins after a LATERAL item.
 create type addr as (street text, zip int);
 create table users (id bigint primary key, name text not null);
 create table posts (id bigint primary key, author_id bigint not null references users, title text not null);

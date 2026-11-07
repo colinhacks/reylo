@@ -1,4 +1,4 @@
--- Attacks on DuckDB's arrays of whole rows: names that resolve elsewhere, outer joins, set operations, grouping and windows inside the item, correlated expressions.
+-- Edge cases of DuckDB's arrays of whole rows: names that resolve elsewhere, outer joins, set operations, grouping and windows inside the item, correlated expressions.
 create table posts (id bigint primary key, title varchar not null);
 create table comments (id bigint primary key, post_id bigint not null, body varchar, big bigint not null);
 create table replies (id bigint primary key, comment_id bigint not null, note varchar not null);

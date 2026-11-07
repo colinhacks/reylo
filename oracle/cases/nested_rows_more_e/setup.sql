@@ -1,4 +1,4 @@
--- Attacks on the inference of arrays of whole rows, third round: names read through a LATERAL item, arrays of rows under outer joins at the top and nested, and correlated expressions under grouping sets, filters and window frames.
+-- Edge cases of the inference of arrays of whole rows: names read through a LATERAL item, arrays of rows under outer joins at the top and nested, and correlated expressions under grouping sets, filters and window frames.
 create type addr as (street text, zip int);
 create table users (id bigint primary key, name text not null);
 create table posts (id bigint primary key, author_id bigint not null references users, title text not null);

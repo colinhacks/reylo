@@ -1,4 +1,4 @@
--- Attacks on the inference of arrays of whole rows: names that resolve elsewhere, outer joins, aggregates and windows over correlated items, grouping sets, set operations and functions inside the item.
+-- Edge cases of the inference of arrays of whole rows: names that resolve elsewhere, outer joins, aggregates and windows over correlated items, grouping sets, set operations and functions inside the item.
 create type addr as (street text, zip int);
 create domain nn as int not null;
 create table users (id bigint primary key, name text not null);

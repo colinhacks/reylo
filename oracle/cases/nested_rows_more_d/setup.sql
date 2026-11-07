@@ -1,4 +1,4 @@
--- Attacks on the inference of arrays of whole rows, second round: constraints that do not hold for every row, columns of one name, joins under an alias, and arrays of rows that an expression or an outer join makes NULL.
+-- Edge cases of the inference of arrays of whole rows: constraints that do not hold for every row, columns of one name, joins under an alias, and arrays of rows that an expression or an outer join makes NULL.
 create table users (id bigint primary key, name text not null);
 create table posts (id bigint primary key, author_id bigint not null references users, title text not null);
 create table comments (id bigint primary key, post_id bigint not null references posts, body text, big bigint not null);

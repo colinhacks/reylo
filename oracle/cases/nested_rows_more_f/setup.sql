@@ -1,4 +1,4 @@
--- Attacks on the inference of arrays of whole rows, fourth round: the fixes for outer names and padded nested arrays, under two LATERAL levels, columns of one name, and partly padded items.
+-- Edge cases of the inference of arrays of whole rows: the fixes for outer names and padded nested arrays, under two LATERAL levels, columns of one name, and partly padded items.
 create type addr as (street text, zip int);
 create table users (id bigint primary key, name text not null);
 create table posts (id bigint primary key, author_id bigint not null references users, title text not null);

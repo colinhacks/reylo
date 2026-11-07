@@ -1,4 +1,4 @@
--- Attacks on the check that a LATERAL item reads the same in place as alone: an outer column of the very row type, names inside nested subqueries, set operations, joins under an alias, functions, WITH queries, and items that only describe in place.
+-- Edge cases of the check that a LATERAL item reads the same in place as alone: an outer column of the very row type, names inside nested subqueries, set operations, joins under an alias, functions, WITH queries, and items that only describe in place.
 create type addr as (street text, zip int);
 create table users (id bigint primary key, name text not null);
 create table posts (id bigint primary key, author_id bigint not null references users, title text not null);
