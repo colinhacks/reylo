@@ -1179,7 +1179,7 @@ fn classes(ty: &Type) -> Option<Vec<&'static str>> {
             Kind::Date(_) => vec!["date"],
             Kind::Duration(_) => vec!["time"],
             Kind::Json(_) => vec!["json"],
-            Kind::Array(_) if m.name.as_deref() == Some("bit") => vec!["bytea"],
+            Kind::Array(_) if m.label.as_deref() == Some("bit") => vec!["bytea"],
             Kind::Bytes(_) => vec!["bytea"],
             Kind::Text(_) | Kind::Set(_) => vec!["text"],
             _ => return None,
@@ -1338,7 +1338,7 @@ fn document_contradiction(ty: &Type, json: &Value, nullable: bool, path: &str) -
                     Kind::Boolean => "a boolean",
                     Kind::Integer(_) | Kind::Float(_) | Kind::Decimal(_) => "a number",
                     Kind::Text(_) | Kind::Date(_) | Kind::DateTime(_) | Kind::Instant(_) | Kind::Duration(_) | Kind::Bytes(_) | Kind::Set(_) => "a string",
-                    Kind::Array(_) if m.name.as_deref() == Some("bit") => "a string",
+                    Kind::Array(_) if m.label.as_deref() == Some("bit") => "a string",
                     _ => return None,
                 });
             }

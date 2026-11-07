@@ -178,7 +178,7 @@ test("MySQL: a column's definition reaches a query's JSON Schema as a length in 
     }
     // A row past a bound is refused, so the rows above were held to it.
     const [first] = await columns.run(mysql2);
-    assert.equal(validate(columns.outputSchema, [{ ...first, label: "x".repeat(21) }])?.path, "/0/name");
+    assert.equal(validate(columns.outputSchema, [{ ...first, name: "x".repeat(21) }])?.path, "/0/name");
     assert.notEqual(validate(columns.outputSchema, [{ ...first, code: "abcdef" }]), undefined);
     // A session that keeps a CHAR's padding gets it to exactly its length, which is within it.
     await mysql2.query("set session sql_mode = concat(@@session.sql_mode, ',PAD_CHAR_TO_FULL_LENGTH')");

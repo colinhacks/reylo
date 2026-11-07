@@ -248,7 +248,7 @@ pub(crate) fn max_bytes(collation: u32) -> Option<u32> {
 /// known number.
 pub(crate) fn unflagged(ty: Type) -> Type {
     match (&ty.kind, ty.label.as_deref()) {
-        (Kind::Integer(_), Some("tinyint(1)")) => Type { name: Some("tinyint".into()), ..ty },
+        (Kind::Integer(_), Some("tinyint(1)")) => Type { label: Some("tinyint".into()), ..ty },
         (Kind::Array(_), Some("bit")) => bits(None),
         _ => ty,
     }

@@ -149,7 +149,7 @@ impl Type {
             // DuckDB struct).
             Kind::Record(r) => object(&r.fields, |f| {
                 let schema = f.ty.json_schema(opts);
-                match (f.nullable, self.name.is_some()) {
+                match (f.nullable, self.label.is_some()) {
                     (false, _) => schema,
                     (true, true) => json!({"anyOf": [schema, {"type": "null"}]}),
                     (true, false) => nullable(schema),
