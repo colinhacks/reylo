@@ -247,6 +247,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
 | `Row[]` | `many` | is anything else |
 
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/#values)). Among several columns, such an expression is a type error where DuckDB's name for it isn't an identifier, as with `count_star()`. A word DuckDB calls without parentheses, such as `current_date`, keeps its rows, since DuckDB reads it as a column wherever one has that name.
+
 A value of another type doesn't count as matching a key: DuckDB compares a text key with a number as numbers, so `where code = 1` matches both `'1'` and `'01'`, and a number key with a float as floats. Neither does any value of a text key under a collation such as `collate nocase`, which holds both `'a'` and `'A'`.
 
 ## Parameters
