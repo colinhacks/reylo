@@ -511,6 +511,7 @@ static void returningHook(Parse *pParse, Table *pTab, ExprList *pNew){
   for(i=0; pNew && i<pNew->nExpr; i++){
     sqlite3_str_appendchar(gReturning, 1, '{');
     kv_str(gReturning, "name", pNew->a[i].zEName);
+    kv_bool(gReturning, "named", pNew->a[i].fg.eEName==ENAME_NAME);
     key(gReturning, "expr"); expr(gReturning, pNew->a[i].pExpr, 0); sqlite3_str_appendchar(gReturning, 1, ',');
     closeObj(gReturning); sqlite3_str_appendchar(gReturning, 1, ',');
   }

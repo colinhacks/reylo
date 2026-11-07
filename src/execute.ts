@@ -173,6 +173,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly key?: readonly string[] | undefined;
   /** Whether the statement's ORDER BY orders its rows totally, where the analysis proves it. */
   readonly ordered?: boolean | undefined;
+  /** How many rows the statement returns, which a query's Standard Query says beside its `decode`. */
+  readonly cardinality?: "many" | "one" | "maybeOne" | "none" | undefined;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts). */
   readonly codecs?: Readonly<Record<string, Plan>> | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */

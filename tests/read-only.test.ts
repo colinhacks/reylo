@@ -121,7 +121,7 @@ test("on MySQL, only a SELECT with no lock, no INTO, no variable and no stored f
   try {
     const cases: [string, boolean][] = [
       ["select id from t", true],
-      ["select id, length(name) from t where id = 1", true],
+      ["select id, length(name) as n from t where id = 1", true],
       ["insert into t values (1, 'x')", false],
       ["select id from t for update", false],
       ["select id from t lock in share mode", false],

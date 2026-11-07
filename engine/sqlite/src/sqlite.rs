@@ -10,7 +10,7 @@
 //! [`analyze_ddl`], for a host that holds a live connection and runs [`DDL_QUERY`] and
 //! [`FUNCTIONS_QUERY`] on it itself, with [`Extras`] naming the scalar functions it registers there.
 
-use crate::analysis::{bare, constant_key, diag, KeyClause};
+use crate::analysis::{bare, constant_key, diag, KeyClause, ResultTarget};
 use crate::api::{Analysis, Column, Param, Scope};
 use crate::dialect::Dialect;
 use crate::fresh::Tables;
@@ -192,6 +192,26 @@ fn analyze_ddl_here(sql: &str, ddl: &[String], extras: &Extras) -> SqliteAnalysi
     }
 }
 
+/// How the statement writes its result columns: a write's `RETURNING`, or a query's select list, the
+/// first arm's of a compound, whose names are the result's. SQLite has expanded each `*` by now, into
+/// columns it names. `None` for a write without `RETURNING`.
+fn result_targets(t: &Tree) -> Option<Vec<ResultTarget>> {
+    // `RETURNING`'s names are not resolved yet where the serializer reads them.
+    let target = |c: &tree::Col| if c.named || matches!(c.expr.op.as_str(), "column" | "id" | "dot") { ResultTarget::Named } else { ResultTarget::Unnamed(None) };
+    if let Some(returning) = &t.returning {
+        return Some(returning.iter().map(target).collect());
+    }
+    let mut first = t.statement.as_ref().filter(|_| t.dml.is_none())?;
+    while let Some(prior) = first.prior.as_deref() {
+        first = prior;
+    }
+    // `values (1, 2)`: named column1 and column2 by SQLite, by nothing in the statement.
+    if first.values {
+        return Some(vec![ResultTarget::Unnamed(None); first.columns.len()]);
+    }
+    Some(first.columns.iter().map(target).collect())
+}
+
 /// The statements the SQLite analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "values", "insert", "replace", "update", "delete"];
 
@@ -275,6 +295,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
             unique: Vec::new(),
             order: Vec::new(),
             ordered: false,
+            value: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -326,6 +347,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,
@@ -338,7 +360,7 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         tables: Some(tables(&t)),
         domains: Default::default(),
     };
-    crate::analysis::clashes(sql, &mut analysis, &|_| None);
+    crate::analysis::names(sql, Dialect::Sqlite, &mut analysis, result_targets(&t).as_deref(), &|_| None);
     let unique_keys = t.tables.iter().map(|(name, info)| (name.clone(), info.unique_keys.clone())).collect();
     SqliteAnalysis { analysis, declared: t.columns.iter().map(|c| c.declared.clone()).collect(), readonly: t.readonly, unique_keys, booleans }
 }
@@ -3174,7 +3196,7 @@ mod tests {
             (t.read, t.write)
         };
         let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
+        assert_eq!(tables("select u.id, (select count(*) from posts p where p.user_id = u.id) as n from USERS u where exists (select 1 from tags t where t.id = u.id)"), (names(&["posts", "tags", "users"]), vec![]));
         // A WITH query is no table, and a view is named, not what it reads.
         assert_eq!(tables("with recent as (select user_id from posts) select title from titles join recent on true"), (names(&["posts", "titles"]), vec![]));
         assert_eq!(tables("select value from json_each('[1]')"), (vec![], vec![]));

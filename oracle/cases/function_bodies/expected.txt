@@ -69,9 +69,9 @@ limit_one.sql: at_most_one (p: int8) -> { id: int8, body: text }
 named_argument.sql: at_most_one (x: int8) -> { id: int8 }
 named_whole_row.sql: many (p: int8) -> { c: public.comments{ id: int8?, post_id: int8?, body: text?, note: text? }? }
 narrowed_by_filter.sql: many () -> { subtitle: text }
-no_alias_expression.sql: many () -> { joined: text }
+no_alias_expression.sql: many () -> { joined: text } value
 no_alias_in_expression.sql: many () -> { both: text }
-no_alias_scalar.sql: one (p: int8) -> { count_of: int8 }
+no_alias_scalar.sql: one (p: int8) -> { count_of: int8 } value
 no_arguments.sql: many () -> { id: int8 } key (id)
 no_such_syntax.sql: many () -> { id: int8? }
 no_such_table.sql: many () -> { id: int8? }

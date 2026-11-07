@@ -30,6 +30,8 @@ export type Analysis = {
   params: { name: string; type: EngineType; nullable?: boolean; optional?: boolean; comment?: string; schema?: import("./engine-type.ts").JsonSchema; cast?: string; delimiter?: string; members?: { written: string; schema?: import("./engine-type.ts").JsonSchema }[] }[];
   columns: { name: string; type: EngineType; nullable?: boolean; comment?: string; delimiter?: string }[];
   cardinality: "one" | "at_most_one" | "many" | "none";
+  /** The result is the one column's values rather than rows that hold them: the statement gives the column no name, so its only name is one the database makes up. */
+  value?: true;
   /** Each domain a type names, with the base type it is made from, which a client decodes its values by (src/engine-type.ts, `withBases`). */
   domains?: Record<string, string>;
   cardinalityReason?: string;

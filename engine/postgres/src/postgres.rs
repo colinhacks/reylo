@@ -8,7 +8,7 @@
 //! the database goes through [`Host`], which records what it cannot answer yet; `analyze` then
 //! returns `None`, the host answers, and the next call replays with more.
 
-use crate::analysis::{bare, bare_of, constant_key, diag, lexed, KeyClause};
+use crate::analysis::{bare, bare_of, constant_key, diag, lexed, KeyClause, ResultTarget};
 use crate::analyze::{self, Analysis as Parsed};
 use crate::api::{Analysis, Column, DbError, Diagnostic, Param, RawDescribe, Scope};
 use crate::cardinality::{self, Catalog};
@@ -1050,6 +1050,7 @@ impl<'a> Engine<'a> {
         let ordered = total_order(&rewritten.sql, parsed.as_ref(), &cardinality, &columns, &trust, &catalog);
 
         let spans = column_spans(sql, &rewritten);
+        let targets = result_targets(sql, &rewritten);
         let mut analysis = Analysis {
             kind: parsed.as_ref().map(|p| StatementKind::of(p.statement)),
             comment: None,
@@ -1061,6 +1062,7 @@ impl<'a> Engine<'a> {
             unique,
             order,
             ordered,
+            value: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -1076,7 +1078,7 @@ impl<'a> Engine<'a> {
         // The domains its types name, with the base type each is made from.
         let names: Vec<String> = analysis.params.iter().map(|p| &p.ty).chain(analysis.columns.iter().map(|c| &c.ty)).flat_map(Type::names).collect();
         analysis.domains = registry.domain_bases(&names);
-        crate::analysis::clashes(sql, &mut analysis, &|i| spans.get(i).copied());
+        crate::analysis::names(sql, Dialect::Postgres, &mut analysis, targets.as_deref(), &|i| spans.get(i).copied());
         Some(analysis)
     }
 
@@ -1178,6 +1180,7 @@ impl<'a> Engine<'a> {
             unique: Vec::new(),
             order: Vec::new(),
             ordered: false,
+            value: false,
             rewritten,
             style: lexed.style,
             diagnostics,
@@ -4271,6 +4274,54 @@ fn unwritten(target: &InsertTarget, rows: &[Vec<Value>]) -> Option<String> {
     }
 }
 
+/// How the top statement writes its result columns: its target list, the first arm's of a set
+/// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
+/// and for one the parser does not read.
+fn result_targets(sql: &str, rewritten: &Rewritten) -> Option<Vec<ResultTarget>> {
+    let parsed = crate::stack::parse(&rewritten.sql).ok()?;
+    let top = parsed.protobuf.stmts.first()?.stmt.as_deref()?.node.as_ref()?;
+    let items = match top {
+        NodeEnum::SelectStmt(s) => {
+            let mut first = &**s;
+            while let Some(left) = first.larg.as_deref() {
+                first = left;
+            }
+            // `values (1, 2)`: named column1 and column2 by the server, by nothing in the statement.
+            if let Some(row) = first.values_lists.first() {
+                let width = match row.node.as_ref()? {
+                    NodeEnum::List(list) => list.items.len(),
+                    _ => return None,
+                };
+                return Some(vec![ResultTarget::Unnamed(None); width]);
+            }
+            first.target_list.clone()
+        }
+        NodeEnum::InsertStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::UpdateStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::DeleteStmt(s) => jsonshape::returning(&s.returning_clause),
+        NodeEnum::MergeStmt(s) => jsonshape::returning(&s.returning_clause),
+        _ => return None,
+    };
+    items
+        .iter()
+        .map(|item| {
+            let NodeEnum::ResTarget(rt) = item.node.as_ref()? else { return None };
+            if !rt.name.is_empty() {
+                return Some(ResultTarget::Named);
+            }
+            let val = rt.val.as_deref()?;
+            Some(match val.node.as_ref()? {
+                _ if expands(val) => ResultTarget::Star,
+                NodeEnum::ColumnRef(_) => ResultTarget::Named,
+                _ => {
+                    let start = rewritten.to_original(rt.location.max(0) as usize).min(sql.len());
+                    ResultTarget::Unnamed(Some((start, sql[start..].bytes().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'"')).count().max(1))))
+                }
+            })
+        })
+        .collect()
+}
+
 /// Where each result column is written, by its index, as far as the top statement's target list
 /// says: the name an alias gives it (`as x`), else a column's own name (the `id` of `mt.id`), else
 /// the target's first word. Nothing from a `*` on, which stands for columns the list does not name.
@@ -4285,7 +4336,7 @@ fn column_spans(sql: &str, rewritten: &Rewritten) -> Vec<(usize, usize)> {
     let starts: Vec<usize> = targets.iter().map(|rt| rewritten.to_original(rt.location.max(0) as usize).min(sql.len())).collect();
     let mut spans = Vec::new();
     for (k, rt) in targets.iter().enumerate() {
-        if rt.val.as_deref().is_some_and(jsonshape::is_star) {
+        if rt.val.as_deref().is_some_and(expands) {
             break;
         }
         let start = starts[k];

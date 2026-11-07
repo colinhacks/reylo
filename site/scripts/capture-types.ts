@@ -172,11 +172,14 @@ async function render(session: Session, source: string, written: string, sql: st
   const order = names;
   if (dialect === 'postgres' && analysis.kind === undefined) return { error: 'the statement is empty' };
   const columns = analysis.columns.map((c) => `${ident(c.name)}: ${c.nullable ? orNull(renderType(c.type, false, dialect)) : renderType(c.type, false, dialect)}`);
+  // A statement whose one column has no name gives that column's values.
+  const [only] = analysis.columns;
+  const rowType = analysis.value && only ? (only.nullable ? orNull(renderType(only.type, false, dialect)) : renderType(only.type, false, dialect)) : columns.length ? `{ ${columns.join('; ')} }` : 'never';
   const typed = analysis.params.map((q) => [q.name, paramType(q, renderParamType(q.type, dialect, false, q.members))] as const);
   // A parameter that takes null may be left out, and so may a typed JSON one whose schema has a `default`.
   const optional = new Set(analysis.params.filter((q) => q.nullable || q.optional).map((q) => q.name));
   const paramTypes = typed.map(([name, type]) => `${ident(name)}${optional.has(name) ? '?' : ''}: ${type}`);
-  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', columns.length ? `{ ${columns.join('; ')} }` : 'never', inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
+  return { text: emit(analysis.rewritten.sql.trimEnd(), paramTypes.length ? `{ ${paramTypes.join('; ')} }` : 'Record<never, never>', rowType, inferred, order, queryErrorType(dialect, analysis.errors), standardColumnsType(analysis.columns, dialect), analysis.ordered === true), analysis };
 }
 
 // ---- The scratch databases ----
