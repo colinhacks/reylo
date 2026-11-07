@@ -4315,11 +4315,6 @@ fn result_targets(sql: &str, rewritten: &Rewritten) -> Option<Vec<ResultTarget>>
         .collect()
 }
 
-/// Whether a target stands for any number of columns: `*`, `t.*` or `(t).*`.
-fn expands(val: &pg_query::protobuf::Node) -> bool {
-    jsonshape::is_star(val) || matches!(val.node.as_ref(), Some(NodeEnum::AIndirection(a)) if a.indirection.last().is_some_and(|f| matches!(f.node.as_ref(), Some(NodeEnum::AStar(_)))))
-}
-
 /// Where each result column is written, by its index, as far as the top statement's target list
 /// says: the name an alias gives it (`as x`), else a column's own name (the `id` of `mt.id`), else
 /// the target's first word. Nothing from a `*` on, which stands for columns the list does not name.
