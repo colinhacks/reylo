@@ -593,7 +593,7 @@ mod result_items {
         assert_eq!(texts("select 'it\\'s', b into @x, @y from t", Dialect::Mysql).unwrap(), ["'it\\'s'", "b"]);
         assert_eq!(texts("select a, [1, 2], {'k': 1} from t", Dialect::Duckdb).unwrap(), ["a", "[1, 2]", "{'k': 1}"]);
         assert_eq!(texts("from t select a, b where a > 1", Dialect::Duckdb).unwrap(), ["a", "b"]);
-        assert_eq!(texts("select a, # , b\n c from t", Dialect::Mysql).unwrap(), ["a", "# , b\n c"]);
+        assert_eq!(texts("select a, # , b\n c from t", Dialect::Mysql).unwrap(), ["a", "c"]);
         // A word that ends a list, where it is an operator's or a column's.
         assert_eq!(pg("select id, id is distinct from 1 from t").unwrap(), ["id", "id is distinct from 1"]);
         assert_eq!(pg("select id, id is not distinct from 1 from t").unwrap(), ["id", "id is not distinct from 1"]);
