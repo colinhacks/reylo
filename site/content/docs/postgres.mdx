@@ -918,7 +918,7 @@ where o.paid
 
 **Decoding each value once**
 
-A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. A driver never calls a column's `decode` for NULL, which is `null` in the row.
+A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
 
 ```ts twoslash tab="main.ts"
 import paidOrders from "./pg_columns_orders.sql";
