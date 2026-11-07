@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(clash.diagnostics.iter().map(|d| d.code).collect::<Vec<_>>(), [14]);
         // The parse's place comes first, and a name's text is looked for as code.
         assert_eq!(codes(&named("select id, x", &["id", "a + b"], Some(&[Named, Unnamed(Some((11, 1)))]))), [(UNNAMED_COLUMN, 11, 1)]);
-        assert_eq!(codes(&named("select 11, 1", &["a", "1"], Some(&[Named, UNNAMED]))), [] as [(u32, usize, usize); 0]);
+        assert_eq!(codes(&named("select 11, 1", &["a", "1"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 11, 1)]);
         assert_eq!(codes(&named("select 'count(*)', count(*) from t", &["count(*)", "b"], Some(&[UNNAMED, Named]))), [(UNNAMED_COLUMN, 18, 8)]);
         assert_eq!(codes(&named("select /* count(*) */ id, count(*) from t", &["id", "count(*)"], Some(&[Named, UNNAMED]))), [(UNNAMED_COLUMN, 26, 8)]);
         assert_eq!(codes(&named("select a + 1, a + 1 from t", &["a + 1", "a + 1"], Some(&[UNNAMED, UNNAMED]))), [(UNNAMED_COLUMN, 7, 5), (UNNAMED_COLUMN, 14, 5)]);

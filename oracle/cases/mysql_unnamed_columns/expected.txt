@@ -1,15 +1,20 @@
 many_aggregate.sql: many () -> { id: int, count(*): bigint } !! reylo23: Column 2 has no name: the database calls it "count(*)", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_alias.sql: many () -> { id: int, next: bigint }
+many_backticked_variables.sql: many () -> { @x: int?, @@y: int? }
 many_call.sql: many () -> { id: int, lower(name): varchar? } !! reylo23: Column 2 has no name: the database calls it "lower(name)", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_expression.sql: many () -> { id: int, id + 1: bigint } !! reylo23: Column 2 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_expression_then_star.sql: many () -> { x + 1: bigint, x: int } !! reylo23: Column 1 has no name: the database calls it "x + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_expressions.sql: many () -> { id + 1: bigint, id + 2: bigint } !! reylo23: Column 1 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 2 has no name: the database calls it "id + 2", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_literal.sql: many () -> { id: int, x: varchar }
 many_named.sql: many () -> { id: int, n: varchar(≤50) }
+many_qualified_variable.sql: many () -> { id: int, @@session.sql_mode: varchar? } !! reylo23: Column 2 has no name: the database calls it "@@session.sql_mode", which is no identifier and may differ on another driver or server. Give it one with `as`.
+many_same_text.sql: many () -> { id + 1: bigint, id + 1: bigint } !! reylo23: Column 1 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`. !! reylo23: Column 2 has no name: the database calls it "id + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
 many_star_then_alias.sql: many () -> { x: int, next: bigint }
 many_star_then_expression.sql: many () -> { x: int, x + 1: bigint } !! reylo23: Column 2 has no name: the database calls it "x + 1", which is no identifier and may differ on another driver or server. Give it one with `as`.
 row_alias.sql: one () -> { total: bigint }
 row_alias_without_as.sql: one () -> { total: bigint }
+row_backticked_parenthesized.sql: many () -> { @x: int? }
+row_backticked_variable.sql: many () -> { @x: int? }
 row_column.sql: many () -> { id: int }
 row_first_arm.sql: many () -> { id: bigint }
 row_nullable_at_most_one.sql: at_most_one () -> { email: varchar(≤255)? }
@@ -23,14 +28,18 @@ value_aggregate.sql: one () -> { count(*): bigint } value
 value_call.sql: many () -> { lower(name): varchar? } value
 value_case.sql: many () -> { case when id > 1 then 'a' else 'b' end : varchar } value
 value_cast.sql: many () -> { cast(id as signed): bigint } value
+value_current_user.sql: one () -> { current_user: varchar? } value
 value_expression.sql: many () -> { id + 1: bigint } value
 value_first_arm.sql: many () -> { 1: bigint } value
 value_json.sql: at_most_one () -> { json_object('id', id): json? } value
 value_literal.sql: one () -> { 1: bigint | int } value
 value_nested_arm.sql: many () -> { 1: bigint | int } value
 value_nullable_at_most_one.sql: at_most_one () -> { lower(email): varchar? } value
+value_qualified_variable.sql: one () -> { @@session.sql_mode: varchar? } value
 value_string.sql: one () -> { x: varchar } value
 value_subquery.sql: one () -> { (select count(*) from users): bigint? } value
+value_utc_date.sql: one () -> { utc_date: date } value
+value_utc_timestamp.sql: one () -> { utc_timestamp: datetime } value
 value_values.sql: many () -> { column_0: bigint | int } value
 value_variable.sql: one () -> { @@sql_mode: varchar? } value
 value_with_query.sql: at_most_one () -> { c + 1: bigint } value
