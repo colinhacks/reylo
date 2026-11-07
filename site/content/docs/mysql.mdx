@@ -643,7 +643,7 @@ With [`.try()`](/#try), an error MySQL raised comes back as `{ error }`, with th
 
 Reylo names the error from MySQL's own list whichever driver ran it, since each driver keeps an older list, or MariaDB's. MySQL names a key, a constraint or a column only in its message, which Reylo reads in English, so on a server whose `lc_messages` is another language those fields are `undefined`.
 
-When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns.
+When the query fires no trigger and calls no stored function, directly or through a view, its error type is narrowed: a duplicate entry names only the unique keys of the tables it writes, and a foreign key, check, null or value error only their constraints and columns. A value of no column, as a cast that overflows, leaves `column` undefined.
 
 ## Drivers
 
