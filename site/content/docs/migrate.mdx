@@ -124,7 +124,7 @@ To migrate another database, pass `--url`.
 
 Reylo reads your SQL with a real database.
 
-It builds a throwaway database beside yours, runs your migrations on it and reads the schema they make. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. Writing and repairing migrations need one, and a deploy doesn't:
+It makes a throwaway database beside yours, runs your migrations on it and reads the schema they make. That's why hand-written SQL counts, and why there's no snapshot file to keep in step. Writing and repairing migrations need one, and a deploy doesn't:
 
 ```text
 Needs one      migration init (on a database with a schema)
@@ -312,7 +312,7 @@ Applying to postgres://db.example.com/app
   ✓ 20261104140347_add_bio.sql  applied · 12 ms
 ```
 
-It builds no shadow database, so it needs no permission to create one. Each migration it runs stores a fingerprint of the schema, and it refuses a database that no longer has it:
+It needs no shadow database, so it needs no permission to create one. Each migration it runs stores a fingerprint of the schema, and it refuses a database that no longer has it:
 
 ```terminal
 $ reylo migrate prod

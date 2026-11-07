@@ -1028,7 +1028,7 @@ fn may_leave_part(sql: &str, d: Dialect) -> bool {
 }
 
 /// `reylo migrate prod`: runs what is pending on a database that is as Reylo's last run left it, and
-/// refuses one that isn't, running nothing. It builds no shadow database: `--dry-run` is what replays.
+/// refuses one that isn't, running nothing. It needs no shadow database: `--dry-run` is what replays.
 pub async fn prod(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let result = prod_on(&mut db, opts, log).await;
