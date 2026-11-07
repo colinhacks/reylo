@@ -997,7 +997,8 @@ impl Builder<'_> {
         let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none() && s.values_lists.is_empty() && s.op == protobuf::SetOperation::SetopNone as i32 && !has_grouping_sets(s)) else { return false };
         let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
         let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
-        bare_alias(inner).is_some_and(|alias| level.names(&alias) == Some(true) && level.lacks(&alias))
+        // A name that is a column of any FROM in scope is that column, before an item's whole row.
+        bare_alias(inner).is_some_and(|alias| level.names(&alias) == Some(true) && level.lacks(&alias) && !self.ahead && self.no_column(&alias))
     }
 
     /// Whether no FROM in scope shows a column of this name, for certain.
@@ -1587,8 +1588,10 @@ impl ResolveCtx<'_> {
                         .enumerate()
                         .map(|(i, col)| {
                             // A field the item builds, a nested array of rows: what it builds, NULL only where that is.
+                            let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
                             if let Some(built) = outcome.built.get(i).and_then(Option::as_ref).filter(|b| !b.ty.is_json()) {
-                                return Field::new(col.name.clone(), built.ty.clone(), !built.non_null);
+                                // NULL where the item builds it so, or where a join pads the item that holds it.
+                                return Field::new(col.name.clone(), built.ty.clone(), !built.non_null || (col.nullable && present));
                             }
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));

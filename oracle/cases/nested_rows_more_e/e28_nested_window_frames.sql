@@ -1,0 +1,1 @@
+select p.id, array(select c from (select x.id, sum(x.big) over (order by x.id rows between current row and current row exclude current row) as ex, first_value(x.big + 1) over (order by x.id rows between 1 following and 1 following) as fv from comments x where x.post_id = p.id) c) as arr from posts p

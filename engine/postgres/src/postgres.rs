@@ -1297,8 +1297,13 @@ impl<'a> Engine<'a> {
         // take what the probe budget leaves and never a probe the statement's own JSON needs.
         let mut described = Vec::with_capacity(plan.probes.len());
         for probe in &plan.probes {
-            let mut one = (probe.sql.as_str(), self.probe(&probe.sql, trust));
-            if let (Some(None), Some(wider)) = (&one.1, &probe.wider) {
+            // A bare name read as an item's whole row may be a column of a FROM around it, which the narrow probe leaves out: such a probe is read over every FROM around it.
+            let around_first = probe.wider.is_some() && infer::whole_row_names(&probe.sql).is_none_or(|names| !names.is_empty());
+            let mut one = match (&probe.wider, around_first) {
+                (Some(wider), true) => (wider.as_str(), self.probe(wider, trust)),
+                _ => (probe.sql.as_str(), self.probe(&probe.sql, trust)),
+            };
+            if let (Some(None), Some(wider), false) = (&one.1, &probe.wider, around_first) {
                 one = (wider.as_str(), self.probe(wider, trust));
             }
             pending |= one.1.is_none();
@@ -1393,6 +1398,30 @@ impl<'a> Engine<'a> {
     }
 
     /// The JSON one item's column `column` holds ([`Engine::built`]).
+    /// Whether a LATERAL item described alone is the query it is in place, over the items beside it: a bare name there may be a column of one of them (`c` in `cc, LATERAL (SELECT c FROM t c)` is `cc.c`, not `t`'s row), so its columns' types must agree. An item that reads nothing beside it is the same query.
+    fn same_in_place(&self, query: &infer::ItemQuery, alone: &DescribedStatement, trust: &Trust) -> Lazy<bool> {
+        if !self.names_clear(query, trust)? {
+            return Some(false);
+        }
+        let Some(around) = query.around.as_ref().filter(|a| query.lateral && a.reads_beside()) else { return Some(true) };
+        let Some(placed) = self.probe(&around.with(&query.sql), trust)? else { return Some(false) };
+        Some(placed.columns.len() == alone.columns.len() && placed.columns.iter().zip(&alone.columns).all(|(p, a)| p.type_oid == a.type_oid))
+    }
+
+    /// Whether every bare name an item reads as an item's whole row is that row in place: Postgres reads a bare name as a column of any query in scope first, so it is not where a table the statement reads, at any depth, has a column of the name, or, for a LATERAL item, an item beside it does (`c` is `cc.c` in `cc, LATERAL (SELECT to_jsonb(c) FROM t c)`).
+    fn names_clear(&self, query: &infer::ItemQuery, trust: &Trust) -> Lazy<bool> {
+        let Some(names) = infer::whole_row_names(&query.sql) else { return Some(false) };
+        if names.is_empty() {
+            return Some(true);
+        }
+        if names.iter().any(|n| self.columns_by_name.borrow().values().any(|columns| columns.values().any(|(name, _)| name == n))) {
+            return Some(false);
+        }
+        let Some(around) = query.around.as_ref().filter(|a| query.lateral && a.reads_beside()) else { return Some(true) };
+        let Some(beside) = self.probe(&around.beside(), trust)? else { return Some(false) };
+        Some(beside.columns.iter().all(|c| !names.contains(&c.name)))
+    }
+
     /// Whether a type is a row, or an array of rows, as opposed to anything else a probe's column holds.
     fn row_or_rows(&self, type_oid: u32) -> bool {
         if matches!(type_oid, crate::pgtypes::oid::RECORD | crate::pgtypes::oid::RECORD_ARRAY) {
@@ -1408,7 +1437,10 @@ impl<'a> Engine<'a> {
         }
         // A subquery that reads the items before it describes over them.
         let described = match self.probe(&query.sql, trust)? {
+            Some(described) if !self.same_in_place(query, &described, trust)? => return Some(None),
             Some(described) => described,
+            // Described in place and built alone: only where no bare name in it can read another value in place.
+            None if !self.names_clear(query, trust)? => return Some(None),
             None => {
                 let Some(around) = query.around.as_ref().filter(|_| rows) else { return Some(None) };
                 let Some(described) = self.probe(&around.with(&query.sql), trust)? else { return Some(None) };
@@ -2071,7 +2103,14 @@ impl<'a> Engine<'a> {
                 let outcome = self.probe(&query.sql, trust);
                 let (_, _, read_itself) = self.with_stack.borrow_mut().pop().expect("the entry pushed above");
                 let described = match outcome {
-                    Some(Some(described)) => described,
+                    Some(Some(described)) => match self.same_in_place(query, &described, trust) {
+                        Some(true) => described,
+                        Some(false) => break,
+                        None => {
+                            pending = true;
+                            break;
+                        }
+                    },
                     // A LATERAL subquery that reads the items before it is read by the rules alone,
                     // its columns' leaves proving nothing: a column they prove non-null is so, and
                     // any other is left to its provenance, as it was.
@@ -2169,10 +2208,13 @@ impl<'a> Engine<'a> {
                     None => match item.filter(|item| partly.contains(item)).and_then(|item| Some((item, settled.get(&item)?))) {
                         Some((item, columns)) => {
                             let at = out.len();
-                            for name in names[at..].iter().take(width) {
+                            let span: Vec<&str> = names[at..].iter().take(width).copied().collect();
+                            for name in &span {
+                                // A name two columns share says which of them it is no more than the settled columns do.
+                                let shared = span.iter().filter(|n| *n == name).count() > 1;
                                 let mut named = columns.iter().filter(|c| c.name == *name);
-                                out.push(match (named.next(), named.next()) {
-                                    (Some(found), None) => Some(answer(item, found)),
+                                out.push(match (shared, named.next(), named.next()) {
+                                    (false, Some(found), None) => Some(answer(item, found)),
                                     _ => None,
                                 });
                             }

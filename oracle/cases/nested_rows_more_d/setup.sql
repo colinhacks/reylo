@@ -1,0 +1,24 @@
+-- Attacks on the inference of arrays of whole rows, second round: constraints that do not hold for every row, columns of one name, joins under an alias, and arrays of rows that an expression or an outer join makes NULL.
+create table users (id bigint primary key, name text not null);
+create table posts (id bigint primary key, author_id bigint not null references users, title text not null);
+create table comments (id bigint primary key, post_id bigint not null references posts, body text, big bigint not null);
+create table replies (id bigint primary key, comment_id bigint not null references comments, body text not null);
+create table dropped (id int primary key, gone int, kept text not null);
+alter table dropped drop column gone;
+create table nv (id int primary key, n int);
+insert into nv values (1, null);
+alter table nv add constraint nv_n not null n not valid;
+create table par2 (id int, n int not null no inherit);
+create table ch2 () inherits (par2);
+insert into ch2 values (1, null);
+create table ck (id int primary key, n int);
+insert into ck values (1, -5);
+alter table ck add constraint ck_n check (n > 0) not valid;
+create table ckp (id int, n int check (n > 0) no inherit);
+create table ckc () inherits (ckp);
+insert into ckc values (1, -5);
+insert into users values (1, 'ada'), (2, 'bob');
+insert into posts values (1, 1, 'has'), (2, 1, 'none');
+insert into comments values (1, 1, 'x', 5), (2, 1, null, 7);
+insert into replies values (1, 1, 'r');
+insert into dropped values (1, 'k');

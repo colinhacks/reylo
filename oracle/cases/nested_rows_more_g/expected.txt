@@ -1,0 +1,11 @@
+g01_outer_aggregate_empty.sql: many () -> { arr: record?[] }
+g02_outer_aggregate_expr.sql: many () -> { arr: record?[] }
+g03_outer_aggregate_rollup.sql: many () -> { author_id: int8?, arr: record?[]? }
+g04_outer_aggregate_nested.sql: many () -> { arr: record?[] }
+g05_outer_aggregate_scalar.sql: many () -> { one: record? }
+g06_outer_aggregate_array_agg.sql: many () -> { arr: record?[]? }
+g07_outer_grouping_fn.sql: many () -> { author_id: int8?, arr: record?[]? }
+g08_window_one_row.sql: many () -> { id: int8, arr: (record{ l: int8?, n: int8 })[] } key (id)
+g09_lateral_then_right_join.sql: many () -> { arr: record?[]? }
+g10_outer_aggregate_count.sql: many () -> { arr: record?[] }
+g11_outer_aggregate_filter.sql: many () -> { author_id: int8, arr: record?[] } key (author_id)

@@ -1,0 +1,1 @@
+select u.id, array(select p from (select po.id, l.cs from posts po left join lateral (select array(select c from (select x.id, array(select r from (select id from replies where comment_id = x.id) r) as rs from comments x where x.post_id = po.id) c) as cs) l on false where po.author_id = u.id) p) as posts from users u
