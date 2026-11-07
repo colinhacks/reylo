@@ -725,9 +725,39 @@ from (select id, name, email from users) u
 
 A function that returns one value of no row type gives that value for its whole row, so `to_jsonb(f.*)` over it is a string or a number where the value is one, not an object. With several columns, a row type, `with ordinality` or `rows from` of several functions, the whole row is a row.
 
+**SQL functions**
+
+A function in `language sql` is read as the query it is, so its body decides which columns are null and how many rows it returns. Mark it `stable` if it only reads: Postgres then plans its body into your query, so a filter on its rows can use an index.
+
+<Inferred>
+
+```sql schema
+create table comments (
+  id bigint primary key,
+  post_id bigint not null,
+  body text not null
+);
+
+create function comments_for(p bigint)
+returns table (id bigint, body text)
+language sql stable
+as $$
+  select id, body
+  from comments
+  where post_id = p
+$$;
+```
+
+```sql file="pg_null_function.sql"
+select id, body
+from comments_for(:post_id::bigint)
+```
+
+</Inferred>
+
 </Rules>
 
-Your own operators, functions and casts, or an extension's, tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
+Your own operators and casts, an extension's, and a function whose body Reylo can't read tell Reylo nothing: it assumes nothing wherever Postgres could pick one of them over a built-in. Where the operands' types can only pick a built-in, as with text and number columns beside pgvector, PostGIS or citext, the built-in's rules apply. Postgres reads a call of one argument on a whole row, as `length(o)` or `sum(o)`, as the row's column of that name where no function of the name takes the row, so Reylo types such a call as nullable, and counts it as no aggregate where a row may have a column of that name. To tell Reylo a value is never null, say so in the query: `coalesce(x, …)` gives a default, and `where x is not null` filters out the nulls.
 
 ## Cardinality
 
@@ -736,7 +766,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `.run()` returns | `cardinality` | When the query |
 | --- | --- | --- |
 | `Row` | `one` | is an aggregate without a `group by` (or with `group by ()`), or inserts one row, with `values (…)` or a `select` of one row, and has `returning`, an `on conflict do update` included |
-| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query or a view that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `on conflict do nothing` and `returning` |
+| `Row \| null` | `maybeOne` | matches every column of a primary key or unique index with `=`, through joins on the joined table's key, and through a subquery, a `with` query, a view or a `language sql` function that keeps the key; has `limit 1` or `fetch first 1 row only`; has a `where` but no `from`; is a `distinct` or `group by` over values the `where` pins; is an `update` or `delete` by key with `returning`, a `from` or `using` included; or inserts one row with `on conflict do nothing` and `returning` |
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 
@@ -1310,7 +1340,7 @@ What Reylo can't type on Postgres, and what to do instead:
 
 | Limit | Instead |
 | --- | --- |
-| A function's body: a SQL function is typed from its declared `returns`, and a PL/pgSQL body isn't read | Declare the type you return |
+| A function whose body Reylo can't read, such as PL/pgSQL, a body of several statements or a name with several overloads: it's typed from its declared `returns`, every column nullable, and returns `Row[]` | Write it as one statement in `language sql` |
 | An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select its fields as columns |

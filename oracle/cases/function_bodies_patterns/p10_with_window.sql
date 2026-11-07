@@ -1,0 +1,1 @@
+with ranked as (select p.id, p.author_id, p.title, comment_count(p) as comment_count, row_number() over (partition by p.author_id order by p.published_at desc) as rank from post p where is_published(p)) select full_name(a) as author, r.title, r.comment_count, r.rank from ranked r join person a on a.id = r.author_id where r.rank <= 2 order by author, r.rank

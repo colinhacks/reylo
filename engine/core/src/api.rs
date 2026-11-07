@@ -259,10 +259,20 @@ pub struct Analysis {
     /// pgvector's `vector` comes as the vector's text), which the format leaves to the catalog.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub domains: std::collections::BTreeMap<String, String>,
+    /// What is worth saying of the statement but fails nothing, for a hover: the type check has no
+    /// level below an error.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
     /// The tables the statement reads and writes, as its database's own parse names them, which
-    /// the facts are read for ([`Database::tables`]). Not on the wire.
-    #[serde(skip)]
+    /// the facts are read for ([`Database::tables`]). On the wire only where the analysis read a
+    /// function's body, whose facts a parse of the statement as written cannot give: so a server's
+    /// analysis carries them to the client that checks its freshness.
+    #[serde(skip_serializing_if = "reads_no_body")]
     pub tables: Option<crate::fresh::Tables>,
+}
+
+fn reads_no_body(tables: &Option<crate::fresh::Tables>) -> bool {
+    tables.as_ref().is_none_or(|t| t.functions.is_empty())
 }
 
 impl Analysis {
