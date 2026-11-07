@@ -7,8 +7,8 @@ descending.sql: many () -> { id: int4, score: int4? } key (id) sorted (score des
 expression_key.sql: many () -> { id: int4, label: text? } key (id) ordered
 first_not_in_result.sql: many () -> { id: int4 } key (id) ordered
 for_update.sql: many () -> { id: int4, score: int4? } key (id)
-function_number.sql: many () -> { id: int4? } sorted (id nulls last)
-function_text.sql: many () -> { label: text? }
+function_number.sql: many () -> { id: int4 } key (id) sorted (id nulls last) ordered
+function_text.sql: many () -> { label: text? } sorted (label nulls last)
 no_order.sql: many () -> { id: int4 } key (id)
 non_ascii_name.sql: many () -> { é: int4, score: int4? } key (é) ordered
 not_in_result.sql: many () -> { id: int4 } key (id)

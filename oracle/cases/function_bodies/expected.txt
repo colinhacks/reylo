@@ -78,7 +78,7 @@ no_such_table.sql: many () -> { id: int8? }
 null_argument.sql: at_most_one () -> { id: int8, body: text }
 one_row.sql: one (x: int8) -> { id: int8?, post_id: int8?, body: text?, note: text? }
 one_row_first.sql: one (p: int8) -> { id: int8?, post_id: int8?, body: text?, note: text? }
-order_limit.sql: many (p: int8) -> { id: int8, body: text } key (id) ordered
+order_limit.sql: many (p: int8) -> { id: int8, body: text } key (id) sorted (id nulls last) ordered
 ordinality.sql: many (p: int8) -> { id: int8?, body: text?, n: int8? }
 out_aggregate.sql: one (p: int8) -> { n: int8, m: int8? }
 out_row.sql: one (x: int8) -> { a: int8?, b: text? }

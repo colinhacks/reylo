@@ -531,9 +531,15 @@ fn narrowed(mut analysis: Analysis, declared: &[u32], read: Analysis, found: &[u
         analysis.key = shortest_key(&kept, &analysis.columns.iter().map(|c| c.name.as_str()).collect::<Vec<_>>());
         analysis.unique = kept;
         analysis.ordered |= read.ordered;
+        // The same ORDER BY sorts both, and the bodies may say more of how far its columns go.
+        if read.order.len() > analysis.order.len() {
+            analysis.order = read.order;
+            changed = true;
+        }
     } else {
         analysis.key = None;
         analysis.unique.clear();
+        analysis.order.clear();
         analysis.ordered = false;
     }
     (analysis, changed)
