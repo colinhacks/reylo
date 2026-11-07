@@ -181,7 +181,9 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
     let rewritten_sql = rewritten.sql.clone();
-    let targets = shaped.as_deref().and_then(|statement| result_targets(statement, &rewritten));
+    let lowered = rewritten.sql.to_lowercase();
+    let column = |word: &str| catalog.has_column(word) || lowered.contains(&format!("\"{}\"", word.to_lowercase()));
+    let targets = shaped.as_deref().and_then(|statement| result_targets(statement, &rewritten, &column));
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -213,27 +215,29 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
 /// How the statement writes its result columns: a query's select list, the first arm's of a set
 /// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
 /// and for a select list the tree does not say the columns of.
-fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
-    fn body(set: &SetExpr, rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
+fn result_targets(statement: &Statement, rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
+    let body = |set: &SetExpr| body(set, rewritten, column);
+    let list = |items: &[SelectItem]| list(items, rewritten, column);
+    fn body(set: &SetExpr, rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
         match set {
             // `from t` alone selects every column.
             SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
-            SetExpr::Select(s) => list(&s.projection, rewritten),
-            SetExpr::Query(q) => body(&q.body, rewritten),
+            SetExpr::Select(s) => list(&s.projection, rewritten, column),
+            SetExpr::Query(q) => body(&q.body, rewritten, column),
             // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
             SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
-            SetExpr::SetOperation { left, .. } => body(left, rewritten),
+            SetExpr::SetOperation { left, .. } => body(left, rewritten, column),
             // `values (1, 2)`: named col0 and col1 by DuckDB.
             SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
             SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
             _ => None,
         }
     }
-    fn list(items: &[SelectItem], rewritten: &lex::Rewritten) -> Option<Vec<ResultTarget>> {
+    fn list(items: &[SelectItem], rewritten: &lex::Rewritten, column: &dyn Fn(&str) -> bool) -> Option<Vec<ResultTarget>> {
         items
             .iter()
             .map(|item| match item {
-                SelectItem::UnnamedExpr(e) if read_as_it_is(e) || prefix_alias(e) => Some(ResultTarget::Named),
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e, column) || prefix_alias(e) => Some(ResultTarget::Named),
                 SelectItem::UnnamedExpr(e) if holds_columns(e) => Some(ResultTarget::Star),
                 SelectItem::UnnamedExpr(e) => {
                     let span = e.span();
@@ -245,13 +249,14 @@ fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<V
             })
             .collect()
     }
-    // A word: a column, or a function DuckDB calls without parentheses (`current_date`), which it
-    // reads as a column of that name where one exists, and names after itself otherwise.
-    fn read_as_it_is(e: &Expr) -> bool {
+    // A column. A function DuckDB calls without parentheses (`current_date`) is read as a column of
+    // that name where the FROM has one, which only a table the statement names or a quoted name in
+    // the statement itself can make, since the word is reserved.
+    fn read_as_it_is(e: &Expr, column: &dyn Fn(&str) -> bool) -> bool {
         match e {
             Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
-            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None),
-            Expr::Nested(e) => read_as_it_is(e),
+            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None) && column(&f.name.to_string()),
+            Expr::Nested(e) => read_as_it_is(e, column),
             _ => false,
         }
     }
@@ -274,12 +279,12 @@ fn result_targets(statement: &Statement, rewritten: &lex::Rewritten) -> Option<V
         .is_break()
     }
     match statement {
-        Statement::Query(q) => body(&q.body, rewritten),
-        Statement::Insert(i) => list(i.returning.as_deref()?, rewritten),
-        Statement::Update(u) => list(u.returning.as_deref()?, rewritten),
-        Statement::Delete(d) => list(d.returning.as_deref()?, rewritten),
+        Statement::Query(q) => body(&q.body),
+        Statement::Insert(i) => list(i.returning.as_deref()?),
+        Statement::Update(u) => list(u.returning.as_deref()?),
+        Statement::Delete(d) => list(d.returning.as_deref()?),
         Statement::Merge(m) => match m.output.as_ref()? {
-            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, rewritten),
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items),
         },
         _ => None,
     }

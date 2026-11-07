@@ -185,6 +185,11 @@ impl Default for Catalog {
 }
 
 impl Catalog {
+    /// Whether a table the statement names has a column of this name, compared without case.
+    pub fn has_column(&self, name: &str) -> bool {
+        self.tables.iter().any(|t| t.columns.iter().any(|c| c.name.eq_ignore_ascii_case(name)))
+    }
+
     /// The table a name as written resolves to: `t`, `s.t` or `d.s.t`, each part compared without
     /// case. An unqualified name is the current schema's table where it has one, else the one
     /// table of that name anywhere; a name the catalog has twice otherwise resolves to none.
