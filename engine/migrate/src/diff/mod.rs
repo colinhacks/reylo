@@ -579,6 +579,9 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
             left.extend(with_owned(from, &o.id).into_iter().map(String::from));
         }
     }
+    // A default privilege of the live database the target doesn't name is its environment's (a
+    // platform sets its own as it makes a database): left as it is.
+    left.extend(from.objects.values().filter(|o| from.live && o.id.starts_with("default privileges ") && !to.objects.contains_key(&o.id)).map(|o| o.id.clone()));
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();

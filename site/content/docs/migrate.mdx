@@ -227,6 +227,8 @@ Writes a migration from your change to `schema.sql`.
 
 It tries the migration on a shadow database first. The file is yours: read it, and add the data changes a schema can't say.
 
+It also names anything in `schema.sql` that Reylo compares by name only, or not at all, such as a text search configuration or a security label. Write a change to those by hand.
+
 Nothing is dropped until you name it. A change that drops a table or column, or changes a type so that values are lost, is refused:
 
 ```sql title="schema.sql"

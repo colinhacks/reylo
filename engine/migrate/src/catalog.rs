@@ -78,7 +78,7 @@ fn of_table(line: &str, name: &str) -> bool {
     let first = name_at(rest);
     let column = first.strip_prefix(name).is_some_and(|tail| tail.starts_with('.'));
     match kind {
-        "table" | "constraint" | "policy" | "replica" => first == name,
+        "table" | "constraint" | "policy" | "replica" | "owner" => first == name,
         "column" => column,
         "grant" | "comment" => first == name || column,
         "index" | "trigger" => after_word(rest, " ON ").is_some_and(|on| name_at(on.strip_prefix("ONLY ").unwrap_or(on)) == name),
@@ -91,6 +91,11 @@ fn of_table(line: &str, name: &str) -> bool {
 /// `reference` lacks: children made at run time (pg_partman's, TimescaleDB's chunks) are data, not
 /// schema. A child `reference` has is compared as any table, missing or changed.
 pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<String> {
+    // A default privilege the reference doesn't have is the environment's (a platform sets its own
+    // as it makes a database), as Reylo copies it into every shadow: only one a migration made and
+    // the live database lacks is a difference.
+    let live: Vec<String> = live.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) || reference.contains(l)).cloned().collect();
+    let live = &live[..];
     let theirs: BTreeSet<String> = children(reference).into_iter().map(|(name, _)| name).collect();
     let parents: BTreeSet<&str> = reference.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
     let extra: Vec<String> = children(live).into_iter().filter(|(name, parent)| !theirs.contains(name) && parents.contains(parent.as_str()) && !parents.contains(name.as_str())).map(|(name, _)| name).collect();
@@ -101,11 +106,15 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
 }
 
 /// `lines` without any partition or inheriting child, which the fingerprint leaves out: one may have
-/// been made at run time, as data, and only a replay can tell.
+/// been made at run time, as data, and only a replay can tell. Default privileges are left out of
+/// it too: one may be the environment's, which only a replay against the migrations can tell.
 pub fn without_children(lines: &[String]) -> Vec<String> {
     let kids: Vec<String> = children(lines).into_iter().map(|(name, _)| name).collect();
-    lines.iter().filter(|l| !kids.iter().any(|name| of_table(l, name))).cloned().collect()
+    lines.iter().filter(|l| !l.starts_with(DEFAULT_PRIVILEGES) && !kids.iter().any(|name| of_table(l, name))).cloned().collect()
 }
+
+/// How a default privilege's line begins: the statement that makes it, without its `alter`.
+pub(crate) const DEFAULT_PRIVILEGES: &str = "default privileges ";
 
 /// `lines` without comments. A migration writes a comment, and two replays compare theirs, but a
 /// live database's is never compared: one added in a dashboard changes nothing the app runs on, so
@@ -657,7 +666,92 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     {
         lines.push(r.text("line").to_string());
     }
+
+    // Owners: what a view, a security definer function and row-level security are checked as. An
+    // object a migration made is its runner's, so only one owned by another role has a line, and
+    // a database built by one role compares with shadows built by another.
+    for r in db.rows(&format!("select format('owner %s is %I (%s)', o.identity, pg_get_userbyid(k.owner), o.type) as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> (select oid from pg_roles where rolname = current_user)", owned_objects(&history))).await? {
+        lines.push(r.text("line").to_string());
+    }
+
+    // Default privileges, a line per grant, as the statements that make them.
+    for statement in crate::db::default_privileges(db).await? {
+        if let Some(rest) = statement.strip_prefix("alter ") {
+            lines.push(rest.to_string());
+        }
+    }
     Ok(lines)
+}
+
+/// What a Postgres schema holds that Reylo reads by name alone, so that a change to its definition is
+/// never seen, or doesn't read at all, so that nothing of it is: each a line a person reads, the
+/// object and which of the two. None on the other databases, whose every kind is read.
+pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
+    if db.dialect() != Dialect::Postgres {
+        return Ok(vec![]);
+    }
+    let ns = PG_USER_NS;
+    let made_with = |table: &str| format!("not exists (select 1 from pg_depend dep where dep.classid = '{table}'::regclass and dep.objid = x.oid and dep.deptype = 'i')");
+    let in_ns = |table: &str, nsp: &str, owner: &str| format!("select '{table}'::regclass as classid, x.oid as objid from {table} x join pg_namespace n on n.oid = x.{nsp} where {ns} and {} and {}", not_extension(table, "x"), not_platform(&format!("x.{owner}")));
+    let by_name = [
+        in_ns("pg_operator", "oprnamespace", "oprowner"),
+        in_ns("pg_opclass", "opcnamespace", "opcowner"),
+        in_ns("pg_opfamily", "opfnamespace", "opfowner"),
+        in_ns("pg_conversion", "connamespace", "conowner"),
+        in_ns("pg_ts_config", "cfgnamespace", "cfgowner"),
+        in_ns("pg_ts_dict", "dictnamespace", "dictowner"),
+        format!("select 'pg_cast'::regclass as classid, x.oid as objid from pg_cast x where x.oid >= 16384 and {} and {}", not_extension("pg_cast", "x"), made_with("pg_cast")),
+        format!("select 'pg_event_trigger'::regclass, x.oid from pg_event_trigger x where {} and {}", not_extension("pg_event_trigger", "x"), not_platform("x.evtowner")),
+        format!("select 'pg_foreign_data_wrapper'::regclass, x.oid from pg_foreign_data_wrapper x where {} and {}", not_extension("pg_foreign_data_wrapper", "x"), not_platform("x.fdwowner")),
+    ];
+    let not_read = [
+        format!("select 'pg_ts_parser'::regclass as classid, x.oid as objid from pg_ts_parser x join pg_namespace n on n.oid = x.prsnamespace where {ns} and {}", not_extension("pg_ts_parser", "x")),
+        format!("select 'pg_ts_template'::regclass, x.oid from pg_ts_template x join pg_namespace n on n.oid = x.tmplnamespace where {ns} and {}", not_extension("pg_ts_template", "x")),
+        format!("select 'pg_language'::regclass, x.oid from pg_language x where x.oid >= 16384 and {}", not_extension("pg_language", "x")),
+        format!("select 'pg_transform'::regclass, x.oid from pg_transform x where {}", not_extension("pg_transform", "x")),
+        format!("select 'pg_am'::regclass, x.oid from pg_am x where x.oid >= 16384 and {}", not_extension("pg_am", "x")),
+        format!("select 'pg_user_mapping'::regclass, x.oid from pg_user_mapping x join pg_foreign_server s on s.oid = x.umserver where {}", not_platform("s.srvowner")),
+    ];
+    let mut out = Vec::new();
+    for (queries, why) in [(&by_name[..], "read by name only"), (&not_read[..], "not read")] {
+        let sql = format!("select o.type || ' ' || o.identity as what from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o order by 1", queries.join(" union all "));
+        out.extend(db.rows(&sql).await?.iter().map(|r| format!("{}: {why}", r.text("what"))));
+    }
+    // Security labels, and a column's own storage, compression and statistics target.
+    let labels = format!(
+        "select format('security label on %s %s', l.objtype, l.objname) as what from pg_seclabels l join pg_namespace n on n.oid = l.objnamespace where {ns} and {} order by 1",
+        not_platform("n.nspowner")
+    );
+    out.extend(db.rows(&labels).await?.iter().map(|r| format!("{}: not read", r.text("what"))));
+    let columns = format!(
+        "select format('%s of column %I.%I.%I', concat_ws(', ', case when a.attstorage <> t.typstorage then 'storage' end, case when a.attcompression <> '' then 'compression' end,
+            case when coalesce(a.attstattarget, -1) >= 0 then 'statistics target' end), n.nspname, c.relname, a.attname) as what
+          from pg_attribute a join pg_class c on c.oid = a.attrelid join pg_namespace n on n.oid = c.relnamespace join pg_type t on t.oid = a.atttypid
+          where a.attnum > 0 and not a.attisdropped and c.relkind in ('r', 'p', 'm') and {ns} and {} and {}
+            and (a.attstorage <> t.typstorage or a.attcompression <> '' or coalesce(a.attstattarget, -1) >= 0) order by 1",
+        not_extension("pg_class", "c"),
+        not_platform("c.relowner")
+    );
+    out.extend(db.rows(&columns).await?.iter().map(|r| format!("{}: not read", r.text("what"))));
+    Ok(out)
+}
+
+/// The objects whose owner is compared, each `classid, objid, owner`: relations (but indexes, which
+/// take their table's), routines (but those made with a range type), types (but arrays and a
+/// relation's own row type), schemas, collations, publications and foreign servers; none an
+/// extension or a platform owns, and not Reylo's history table.
+pub(crate) fn owned_objects(history: &str) -> String {
+    let ns = PG_USER_NS;
+    [
+        format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {}", not_extension("pg_class", "c"), not_platform("c.relowner")),
+        format!("select 'pg_proc'::regclass, p.oid, p.proowner from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_proc'::regclass and dep.objid = p.oid and dep.deptype = 'i')", not_extension("pg_proc", "p"), not_platform("p.proowner")),
+        format!("select 'pg_type'::regclass, t.oid, t.typowner from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('b', 'd', 'e', 'r') and t.typcategory <> 'A' and {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_type'::regclass and dep.objid = t.oid and dep.deptype = 'i')", not_extension("pg_type", "t"), not_platform("t.typowner")),
+        format!("select 'pg_namespace'::regclass, n.oid, n.nspowner from pg_namespace n where {ns} and {} and {}", not_extension("pg_namespace", "n"), not_platform("n.nspowner")),
+        format!("select 'pg_collation'::regclass, c.oid, c.collowner from pg_collation c join pg_namespace n on n.oid = c.collnamespace where {ns} and {} and {}", not_extension("pg_collation", "c"), not_platform("c.collowner")),
+        format!("select 'pg_publication'::regclass, p.oid, p.pubowner from pg_publication p where {}", not_platform("p.pubowner")),
+        format!("select 'pg_foreign_server'::regclass, s.oid, s.srvowner from pg_foreign_server s where {}", not_platform("s.srvowner")),
+    ]
+    .join(" union all ")
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -819,13 +913,13 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("trigger {} {} {} on {} order={} definer={} {}", r.text("n"), r.text("timing"), r.text("ev"), r.text("t"), r.text("ord"), r.text("definer"), strip(r.text("body"))));
     }
 
-    // Events, without the times the server fills in as each is made (a recurring event's start, a
-    // one-time event's moment written as `current_timestamp + interval …`), which no two databases
-    // share.
+    // Recurring events, without the start the server fills in as each is made, which no two
+    // databases share. A one-time event is left out: once it fires, the server drops it, or
+    // disables it, as it was told to.
     for r in db
         .rows(
             "select event_name as n, event_type as type, interval_value as every, interval_field as unit, on_completion as completion, status, definer, event_definition as body, event_comment as comment
-            from information_schema.events where event_schema = database()",
+            from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'",
         )
         .await?
     {

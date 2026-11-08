@@ -1,7 +1,7 @@
 //! The diff engine's cases, `tests/diff/<database>/<case>/`: `v1.sql` (with `seed.sql`'s rows) is
 //! the database as it is, `v2.sql` the schema it should have. Each case builds both, plans from
 //! one to the other, runs the plan on the first, and requires its catalog to equal the second's
-//! and every table both have to keep its own rows (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
+//! and every table both have to keep its own rows, value for value (a partitioned table's are its partitions'); `server.sql`, where a case has one, makes what it
 //! needs of the server itself (a role). The plan is kept beside the case as `plan.sql`,
 //! compared like the oracle's expected output: `REYLO_BLESS=1` writes it. Postgres's cases run
 //! against the server `REYLO_TEST_PG` names, and are skipped where it is not set.
@@ -19,6 +19,67 @@ fn cases(dialect: &str) -> Vec<PathBuf> {
         out.retain(|p| p.file_name().is_some_and(|n| n.to_string_lossy().contains(&only)));
     }
     out
+}
+
+/// A table's rows, column by column, as text, sorted: `columns` are `(name before the plan, type
+/// before it)`.
+struct Rows {
+    table: String,
+    columns: Vec<(String, String)>,
+    rows: Vec<Vec<String>>,
+}
+
+/// Each table's rows. A generated column is left out, whose values follow its expression, and so is
+/// each `table.column` in `skip`. After the plan (`before` given), `renamed` gives a table's and a
+/// column's name before it for its name after, and each column the table had before and still has
+/// is read as its type was, so that a type the plan changed is held to the values it had.
+async fn values(db: &mut Db, before: Option<&[Rows]>, renamed: &std::collections::BTreeMap<String, String>, skip: &[String]) -> Vec<Rows> {
+    let tables = db.rows("select format('%I.%I', schemaname, tablename) as t from pg_tables where schemaname not in ('pg_catalog', 'information_schema') order by 1").await.unwrap();
+    let mut out = Vec::new();
+    for t in tables {
+        let table = t.text("t").to_string();
+        let here: Vec<(String, String)> = db
+            .rows(&format!("select format('%I', attname) as c, format_type(atttypid, atttypmod) as ty from pg_attribute where attrelid = '{table}'::regclass and attnum > 0 and not attisdropped and attgenerated = '' order by attnum"))
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| (r.text("c").to_string(), r.text("ty").to_string()))
+            .collect();
+        // Each column as (its name and type before the plan, its name now).
+        let columns: Vec<((String, String), String)> = match before {
+            None => here.iter().map(|c| (c.clone(), c.0.clone())).collect(),
+            Some(before) => {
+                let Some(was) = before.iter().find(|b| renamed.get(&b.table).unwrap_or(&b.table) == &table) else { continue };
+                was.columns
+                    .iter()
+                    .filter_map(|(c, ty)| {
+                        let now = renamed.get(&format!("{table}.{c}")).cloned().unwrap_or(c.clone());
+                        here.iter().any(|(n, _)| *n == now).then(|| ((c.clone(), ty.clone()), now))
+                    })
+                    .collect()
+            }
+        };
+        let columns: Vec<((String, String), String)> = columns.into_iter().filter(|((c, _), _)| !skip.contains(&format!("{table}.{c}"))).collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let select = columns.iter().enumerate().map(|(k, ((_, ty), now))| format!("({now}::{ty})::text as v{k}")).collect::<Vec<_>>().join(", ");
+        let mut rows: Vec<Vec<String>> = match db.rows(&format!("select {select} from only {table}")).await {
+            Ok(rows) => rows.iter().map(|r| (0..columns.len()).map(|k| r.get(&format!("v{k}")).map(String::from).unwrap_or_else(|| "NULL".into())).collect()).collect(),
+            Err(e) => vec![vec![format!("unreadable: {e}")]],
+        };
+        rows.sort();
+        out.push(Rows { table, columns: columns.into_iter().map(|(c, _)| c).collect(), rows });
+    }
+    out
+}
+
+/// `before`'s rows read only in the columns `after` has, sorted: what the plan must have kept.
+fn kept(before: &Rows, after: &Rows) -> Vec<Vec<String>> {
+    let at: Vec<usize> = after.columns.iter().filter_map(|c| before.columns.iter().position(|b| b == c)).collect();
+    let mut rows: Vec<Vec<String>> = before.rows.iter().map(|r| at.iter().map(|k| r[*k].clone()).collect()).collect();
+    rows.sort();
+    rows
 }
 
 /// What the comparator does not read: the privileges of schemas and functions, each with its
@@ -78,6 +139,10 @@ async fn postgres() {
             out
         };
         let mut before = counts(&mut from).await;
+        // A column whose values the change itself rewrites (a composite type given an attribute
+        // prints each value with one more field), as `table.column`, one to a line.
+        let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(String::from).collect();
+        let rows_before = values(&mut from, None, &Default::default(), &skip).await;
         // The target's objects are created from the text v2.sql declares them with, as
         // `reylo migration create` creates them from schema.sql's.
         let mut target = diff::postgres::read(&mut to).await.unwrap();
@@ -115,6 +180,33 @@ async fn postgres() {
         only_b.extend(pb.iter().filter(|l| !pa.contains(l)).cloned());
         let after = counts(&mut from).await;
         let lost: Vec<String> = before.iter().filter(|(t, n)| after.iter().any(|(u, m)| u == t && m != n)).map(|(t, n)| format!("{t}: {n} rows before")).collect();
+        // Each table's values, under the names the plan gave it and its columns, as their types were.
+        static TABLE_RENAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)^alter table (\S+) rename to (\S+)$"#).unwrap());
+        static COLUMN_RENAME: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| regex::Regex::new(r#"(?i)^alter table (\S+) rename column (\S+) to (\S+)$"#).unwrap());
+        let mut renamed: std::collections::BTreeMap<String, String> = diff::postgres::moved(&current, &target).into_iter().collect();
+        for statement in plan.statements.iter().map(|s| s.trim().trim_end_matches(';')) {
+            // The plan names a table of the public schema as the search path finds it.
+            let qualified = |name: &str| if name.contains('.') { name.to_string() } else { format!("public.{name}") };
+            if let Some(c) = TABLE_RENAME.captures(statement) {
+                let old = qualified(&c[1]);
+                let schema = old.rsplit_once('.').map(|(s, _)| s.to_string()).unwrap_or_default();
+                renamed.insert(old, format!("{schema}.{}", &c[2]));
+            } else if let Some(c) = COLUMN_RENAME.captures(statement) {
+                let old = qualified(&c[1]);
+                let table = renamed.get(&old).cloned().unwrap_or(old);
+                renamed.insert(format!("{table}.{}", &c[2]), c[3].to_string());
+            }
+        }
+        let rows_after = values(&mut from, Some(&rows_before), &renamed, &skip).await;
+        let changed: Vec<String> = rows_before
+            .iter()
+            .filter_map(|b| {
+                let now = renamed.get(&b.table).unwrap_or(&b.table);
+                let a = rows_after.iter().find(|a| &a.table == now)?;
+                let was = kept(b, a);
+                (was != a.rows).then(|| format!("{now}: {was:?} before, {:?} after", a.rows))
+            })
+            .collect();
         let expected = case.join("plan.sql");
         if bless {
             std::fs::write(&expected, &text).unwrap();
@@ -128,6 +220,9 @@ async fn postgres() {
         }
         if !lost.is_empty() {
             problems.push(format!("rows lost: {}", lost.join(", ")));
+        }
+        if !changed.is_empty() {
+            problems.push(format!("values changed: {}", changed.join("; ")));
         }
         if !bless && read(&expected) != text {
             problems.push(format!("the plan is not plan.sql's (REYLO_BLESS=1 writes it):\n{text}"));

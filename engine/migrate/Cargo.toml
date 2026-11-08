@@ -21,5 +21,9 @@ tokio = { version = "1", features = ["rt", "time"] }
 tokio-postgres = "0.7"
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "default-rustls-ring"] }
 
+[target.'cfg(unix)'.dependencies]
+# The user id, which names the directory of a user's SQLite run locks.
+libc = "0.2"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["rt", "macros", "time"] }

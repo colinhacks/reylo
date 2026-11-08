@@ -556,11 +556,14 @@ pub(crate) async fn pg_close(admin: &tokio_postgres::Client, db: Db, name: &str)
 
 /// The default privileges of the database `target` is connected to, as the statements that make
 /// them: each grant, and on functions and types the revoke from PUBLIC of what Postgres grants by
-/// default, for the roles and in the schemas they name (the whole database where none).
-async fn default_privileges(target: &mut Db) -> Result<Vec<String>, Error> {
+/// default, for the roles and in the schemas they name (the whole database where none). Those of the
+/// role connected name none, so that they are the defaults of whoever runs them: a migration made
+/// by a developer's role runs in production as the deploy's.
+pub(crate) async fn default_privileges(target: &mut Db) -> Result<Vec<String>, Error> {
     let rows = target
         .rows(
-            "select format('%s', d.defaclrole::regrole) as role, case when d.defaclnamespace <> 0 then format('%I', n.nspname) end as schema, d.defaclobjtype as kind,
+            "select format('%s', d.defaclrole::regrole) as role, d.defaclrole = (select oid from pg_roles where rolname = current_user) as mine,
+              case when d.defaclnamespace <> 0 then format('%I', n.nspname) end as schema, d.defaclobjtype as kind,
               format('%s', (select json_agg(json_build_object('grantee', case when x.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(x.grantee)) end, 'privilege', x.privilege_type, 'grantable', x.is_grantable))
                  from aclexplode(d.defaclacl) x where x.grantee <> d.defaclrole)) as acl
             from pg_default_acl d left join pg_namespace n on n.oid = d.defaclnamespace",
@@ -576,7 +579,8 @@ async fn default_privileges(target: &mut Db) -> Result<Vec<String>, Error> {
             "n" => "schemas",
             _ => continue,
         };
-        let head = format!("alter default privileges for role {}{}", r.text("role"), r.get("schema").map(|s| format!(" in schema {s}")).unwrap_or_default());
+        let role = if r.flag("mine") { String::new() } else { format!(" for role {}", r.text("role")) };
+        let head = format!("alter default privileges{role}{}", r.get("schema").map(|s| format!(" in schema {s}")).unwrap_or_default());
         let grants: Vec<serde_json::Value> = serde_json::from_str(r.text("acl")).unwrap_or_default();
         let public = |privilege: &str| grants.iter().any(|g| g["grantee"] == "public" && g["privilege"] == privilege);
         if r.get("schema").is_none() && objects == "functions" && !public("EXECUTE") {

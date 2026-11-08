@@ -373,6 +373,7 @@ for_each_dialect!(
     db_push_rewinds_only_what_the_rewound_migrations_made,
     create_guesses_no_rename_a_table_that_stays_could_explain,
     every_applied_row_holds_the_fingerprint_it_left,
+    a_run_cut_off_before_its_fingerprint_is_refused,
 );
 
 async fn applies_pending_migrations_once(mut p: P) {
@@ -701,6 +702,25 @@ async fn every_applied_row_holds_the_fingerprint_it_left(mut p: P) {
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|r| r.get("fingerprint").is_some()), "{rows:?}");
     assert_ne!(rows[0].get("fingerprint"), rows[1].get("fingerprint"), "each holds the schema it left");
+}
+
+async fn a_run_cut_off_before_its_fingerprint_is_refused(mut p: P) {
+    let int = p.t.int;
+    p.schema(&format!("create table a (id {int});"));
+    p.file("20261027100000_a.sql", &format!("create table a (id {int});"));
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    // As the row reads where a run was cut off after the migration committed, before the
+    // fingerprint was read.
+    p.exec("update __reylo_migrations set fingerprint = 'pending'").await;
+    p.output();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"✗ A run was cut off after 20261027100000_a\.sql applied, before it stored this database's fingerprint[\s\S]*reylo migrate deploy --dry-run[\s\S]*reylo migration history push[\s\S]*Nothing was applied\.");
+    assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "reylo migration history push stores it again");
+    assert_eq!(p.history_push().await, 0, "{}", p.peek());
+    p.output();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_has!(p.output(), "Up to date");
 }
 
 async fn a_failed_migration_leaves_nothing(mut p: P) {

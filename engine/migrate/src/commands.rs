@@ -230,8 +230,8 @@ async fn set_fingerprint(db: &mut Db, name: &str, value: &str) -> Result<(), Err
 /// once (two instances of an app, each migrating as it starts) neither decide alike nor run alike:
 /// a session lock on Postgres and MySQL, held until the connection closes. SQLite's own locks would
 /// stop the app's queries for the length of the check, so a SQLite database is locked through a
-/// file named after its path in this machine's temporary directory, which every checkout and
-/// worktree that opens the database shares, held while the answer lives.
+/// file named after its path in the user's temporary directory, which every checkout and worktree
+/// of theirs that opens the database shares, held while the answer lives.
 async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Error> {
     match db.dialect() {
         Dialect::Postgres => db.exec("select pg_advisory_lock(hashtextextended('reylo_migrate', 0))").await.map(|_| None),
@@ -252,9 +252,10 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
             let canonical = std::fs::canonicalize(&path).map(|p| p.to_string_lossy().into_owned()).unwrap_or(path);
             let mut digest = crate::cache::Sha256::new();
             digest.part(canonical.as_bytes());
-            let dir = std::env::temp_dir().join("reylo-migrate-locks");
-            std::fs::create_dir_all(&dir)?;
-            let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(crate::cache::hex(&digest.finish()[..8])))?;
+            let dir = std::env::temp_dir().join(format!("reylo-migrate-locks{}", user_suffix()));
+            std::fs::create_dir_all(&dir).map_err(|e| Error(format!("cannot make {}: {e}", dir.display())))?;
+            let path = dir.join(crate::cache::hex(&digest.finish()[..8]));
+            let file = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path).map_err(|e| Error(format!("cannot open {}: {e}", path.display())))?;
             file.lock()?;
             Ok(Some(file))
         }
@@ -263,6 +264,26 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
 
 /// The migration's row: applied now, or marked started; with the fingerprint of the schema it left,
 /// where the run that applied it read one.
+/// What names a user's own directory of run locks in a temporary directory every user shares, as
+/// Linux's `/tmp` is: their id. macOS and Windows give each user a temporary directory of their own.
+fn user_suffix() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid has no preconditions and cannot fail.
+        format!("-{}", unsafe { libc::getuid() })
+    }
+    #[cfg(not(unix))]
+    {
+        String::new()
+    }
+}
+
+/// What a row's fingerprint says while its run hasn't read it yet: written in the migration's own
+/// transaction, so that a run cut off before it reads one leaves a row the next deploy refuses
+/// rather than one with nothing to compare. The read follows the commit, so the migration's locks
+/// are not held for it.
+const PENDING: &str = "pending";
+
 async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Option<&str>) -> Result<(), Error> {
     let d = db.dialect();
     let at = if applied { now_sql(d) } else { "null".to_string() };
@@ -276,9 +297,10 @@ async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Opti
 
 // ---------------------------------------------------------------------------------------------
 // Running a migration: in one transaction with its history row, or, for a file that cannot run in
-// one, alone, with a row marked started before it and finished after it. A row is finished with the
-// fingerprint of the schema the migration left, in the same transaction or the same update, so no
-// run cut off between the two leaves an applied row with nothing to compare.
+// one, alone, with a row marked started before it and finished after it. The row then gets the
+// fingerprint of the schema the migration left: after the commit, once its locks are released, over
+// a row marked pending in the same transaction; and for a lone statement in the update that finishes
+// its row. No run cut off between the two leaves an applied row with nothing to compare.
 
 pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), Error> {
     let d = db.dialect();
@@ -328,8 +350,7 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
             }
         }
         if record {
-            let value = fingerprint(db).await?;
-            insert_row(db, m, true, Some(&value)).await?;
+            insert_row(db, m, true, Some(PENDING)).await?;
         }
         db.exec("commit").await
     }
@@ -340,7 +361,12 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
     if d == Dialect::Sqlite {
         db.exec("pragma foreign_keys = on").await?;
     }
-    result
+    result?;
+    if record {
+        let value = fingerprint(db).await?;
+        set_fingerprint(db, &m.name, &value).await?;
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -729,7 +755,17 @@ pub async fn check(db: &mut Db, server: Option<&mut Server>, opts: &Options) -> 
     let leftovers = leftovers(db, &history).await?;
     let live: Vec<String> = catalog(db).await?.into_iter().filter(|l| !leftovers.iter().any(|x| l.starts_with(&x.line))).collect();
     let stored = applied.last().and_then(|r| r.fingerprint.clone());
+    // A run cut off after a migration committed, before it read the schema the migration left.
+    let unread = stored.as_deref() == Some(PENDING);
+    if unread && server.is_none() {
+        let problem = Problem::new(format!("A run was cut off after {} applied, before it stored this database's fingerprint", applied.last().map(|r| r.name.as_str()).unwrap_or_default()))
+            .note("So nothing says whether anything else has changed this database since.")
+            .fix("See whether it is as its migrations make it", &["reylo migrate deploy --dry-run"])
+            .fix("Then store its fingerprint, running nothing", &["reylo migration history push"]);
+        return Ok(Plan { problems: vec![problem], ..Plan::default() });
+    }
     let unchanged = match stored {
+        Some(_) if unread => Some(false),
         Some(stored) => {
             let now = fingerprint_of(db, &live).await?;
             // Only a fingerprint read the same way says anything: the reader and the server's version.
@@ -1035,8 +1071,9 @@ fn edited_problem(name: &str, ran: &str, now: &str) -> Problem {
 
 /// Whether a database's catalog lines hold more than an empty database's do.
 fn holds_a_schema(lines: &[String]) -> bool {
-    const EMPTY: [&str; 4] = ["schema ", "grant schema ", "comment schema ", "extension "];
-    lines.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind)))
+    const EMPTY: [&str; 5] = ["schema ", "grant schema ", "comment schema ", "extension ", crate::catalog::DEFAULT_PRIVILEGES];
+    // A schema's owner too: a new database's `public` is `pg_database_owner`'s.
+    lines.iter().any(|l| !EMPTY.iter().any(|kind| l.starts_with(kind)) && !(l.starts_with("owner ") && l.ends_with(" (schema)")))
 }
 
 /// Whether a migration that fails can leave part of what it did: on MySQL, whose statements commit as
@@ -1052,6 +1089,17 @@ pub async fn deploy(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let result = deploy_on(&mut db, opts, log).await;
     db.close().await;
     result
+}
+
+/// What Reylo reads by name alone or not at all, listed under `heading` where there is any.
+fn unmodeled_note(heading: &str, objects: &[String], log: Log<'_>) {
+    if objects.is_empty() {
+        return;
+    }
+    log(&format!("{} {heading}:", paint("yellow", "!")));
+    for o in objects {
+        log(&format!("    {o}"));
+    }
 }
 
 fn swept_note(swept: usize, log: Log<'_>) {
@@ -1128,10 +1176,12 @@ fn failed_row(sql: &str, d: Dialect) -> &'static str {
 pub async fn dry_run(opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     let (mut db, mut server, swept) = open(opts).await?;
     swept_note(swept, log);
+    let unmodeled = crate::catalog::unmodeled(&mut db).await;
     let result = check(&mut db, Some(&mut server), opts).await;
     db.close().await;
     server.close().await;
     let plan = result?;
+    unmodeled_note("This database has what Reylo doesn't fully compare, so these checks can't see every change to it", &unmodeled?, log);
     if !plan.ok() {
         print_problems(&plan.problems, log);
         return Ok(1);
@@ -1984,6 +2034,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
             return Err(Error(format!("{m} fails when every migration replays: {e}")));
         }
         shadows.taint(c);
+        unmodeled_note("schema.sql has what Reylo doesn't fully compare, so a migration can leave a change to it out: check those by hand", &crate::catalog::unmodeled(shadows.db(a)).await?, log);
         let mut target = match crate::diff::read(shadows.db(a)).await {
             Ok(schema) => schema,
             Err(e) => {
@@ -2187,7 +2238,9 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             let Some(pg_dump) = candidates.iter().find(|p| version_of(p) >= major) else {
                 return Err(Error(format!("reading this schema needs pg_dump {major} or newer (the server is Postgres {major})")));
             };
-            let mut args: Vec<String> = ["--schema-only", "--no-owner", "--no-publications", "--no-subscriptions", "--no-security-labels", "--no-tablespaces"].map(String::from).to_vec();
+            let mut args: Vec<String> = ["--schema-only", "--no-publications", "--no-subscriptions", "--no-security-labels", "--no-tablespaces"].map(String::from).to_vec();
+            // Owners are kept where they aren't the role the file will run as, which owns what it makes.
+            let runner = db.rows("select quote_ident(current_user) as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
             args.push(format!("--exclude-table=*.{HISTORY_TABLE}"));
             let named: Vec<String> = if schemas.is_empty() { vec!["public".into()] } else { schemas.to_vec() };
             for s in named {
@@ -2202,7 +2255,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
             // What pg_dump writes for psql and for a session of its own: meta-commands, its settings
             // (an empty search_path would outlive the file in a shadow's session) and comments.
             let text = String::from_utf8_lossy(&out.stdout);
-            let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('\\') && !l.starts_with("SET ") && !l.starts_with("SELECT pg_catalog.set_config") && !l.starts_with("--")).collect();
+            let own = format!(" OWNER TO {runner};");
+            let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('\\') && !l.starts_with("SET ") && !l.starts_with("SELECT pg_catalog.set_config") && !l.starts_with("--") && !(l.starts_with("ALTER ") && l.ends_with(&own))).collect();
             let joined = kept.join("\n").replace("\nCREATE SCHEMA public;\n", "\nCREATE SCHEMA IF NOT EXISTS public;\n");
             static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").expect("a valid pattern"));
             let sql = BLANKS.replace_all(&joined, "\n\n").trim().to_string();
@@ -2474,6 +2528,9 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     if problems.is_empty() {
         seed_lock(opts, &files, log)?;
         problems.extend(dev_lock_problems(opts, &files, &history));
+        if let Some(note) = no_main_note(opts) {
+            log(&paint("dim", &note));
+        }
     }
     if !problems.is_empty() {
         print_problems(&problems, log);
@@ -2542,6 +2599,17 @@ fn main_lock(opts: &Options) -> Option<lock::Lock> {
         lock::State::Lock(l) => Some(l),
         _ => None,
     }
+}
+
+/// What the readout says where git has remotes and none holds main's lock, so that the check against
+/// it is weaker than it looks: only lines this database never applied are held as main's.
+fn no_main_note(opts: &Options) -> Option<String> {
+    let dir = opts.lock.parent()?;
+    let remotes = std::process::Command::new("git").arg("remote").current_dir(dir).output().ok().filter(|o| o.status.success())?;
+    if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() || !opts.lock.exists() || main_lock(opts).is_some() {
+        return None;
+    }
+    Some(format!("git has no copy of main's {} (on a remote's HEAD, main or master), so only the lines this database never applied are held as main's", shown(&opts.lock)))
 }
 
 /// Main's lock's lines whose files this checkout has, from the first: what this checkout merged of main.

@@ -1222,6 +1222,64 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         });
     }
 
+    // Owners, where an object's isn't the role the plan runs as (a migration's objects are its
+    // runner's): what a view, a security definer function and row-level security are checked as.
+    // Changed in place, and given back to the runner where the target has no other owner.
+    for r in db
+        .rows(&format!(
+            "select format('%s', k.classid::regclass) as cls, k.objid, o.type, o.identity, format('%I', pg_get_userbyid(k.owner)) as owner
+            from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> (select oid from pg_roles where rolname = current_user)",
+            crate::catalog::owned_objects(HISTORY_TABLE)
+        ))
+        .await?
+    {
+        let target = match r.text("cls") {
+            "pg_publication" => Some(format!("publication {}", r.text("identity"))),
+            cls => ids.of(cls, oid(&r, "objid"), 0),
+        };
+        let Some(target) = target else { continue };
+        let word = match r.text("type") {
+            "composite type" => "type",
+            other => other,
+        };
+        let (identity, role) = (r.text("identity"), r.text("owner"));
+        s.add(Object {
+            id: format!("owner {target}"),
+            kind: Some(Kind::Grant),
+            owner: Some(target.clone()),
+            def: role.to_string(),
+            create: vec![format!("alter {word} {identity} owner to {role}")],
+            drop: vec![format!("alter {word} {identity} owner to current_user")],
+            ..Object::default()
+        });
+    }
+
+    // Default privileges, one object per grant, as the statements that make them: what every table,
+    // sequence, function or type a role makes later is granted.
+    for statement in crate::db::default_privileges(db).await? {
+        let Some(rest) = statement.strip_prefix("alter default privileges ") else { continue };
+        // What precedes the grant or the revoke: its role and schema, where it names them.
+        let padded = format!(" {rest}");
+        let undo = if let Some((head, tail)) = padded.split_once(" grant ") {
+            let tail = tail.trim_end_matches(" with grant option");
+            let Some((what, to)) = tail.rsplit_once(" to ") else { continue };
+            format!("alter default privileges{head} revoke {what} from {to}")
+        } else if let Some((head, tail)) = padded.split_once(" revoke ") {
+            let Some((what, from)) = tail.rsplit_once(" from ") else { continue };
+            format!("alter default privileges{head} grant {what} to {from}")
+        } else {
+            continue;
+        };
+        s.add(Object {
+            id: format!("default privileges {}", rest.trim_end_matches(" with grant option")),
+            kind: Some(Kind::Grant),
+            def: rest.ends_with(" with grant option").to_string(),
+            create: vec![statement.clone()],
+            drop: vec![undo],
+            ..Object::default()
+        });
+    }
+
     // Array types stand for their element type.
     for r in db.rows("select t.oid, t.typelem from pg_type t where t.oid >= 16384 and t.typcategory = 'A' and t.typelem <> 0").await? {
         if let Some(id) = ids.types.get(&oid(&r, "typelem")).cloned() {
