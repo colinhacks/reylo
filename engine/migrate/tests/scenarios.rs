@@ -341,7 +341,7 @@ for_each_dialect!(
     deploy_goes_on_where_it_has_no_fingerprint_to_compare,
     deploy_refuses_tables_with_no_history,
     a_lock_whose_order_is_not_the_names_survives_one_run,
-    a_lock_kept_on_this_branchs_side_is_refused_where_git_has_mains,
+    a_fixed_migration_no_database_ran_is_locked_again,
     init_locks_the_baseline_in_a_locked_project,
     history_push_keeps_a_data_migration_that_ran,
     create_guesses_no_rename_of_unrelated_tables,
@@ -1209,7 +1209,8 @@ async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
     assert_has!(&out, r"↺ 20261027120000_mine\.sql +rewound[\s\S]*✓ 20261027110000_theirs\.sql +applied[\s\S]*✓ 20261027120000_mine\.sql +applied[^\n]*\nWrote \S*reylo-lock\.yaml");
     assert_eq!(p.locked(), ["20261027100000_base.sql", "20261027110000_theirs.sql", "20261027120000_mine.sql"]);
     assert_eq!(p.rows("select * from base").await.len(), 1);
-    // Accepting both sides with this branch's line first breaks main's line out of its chain: refused.
+    // Accepting both sides with this branch's line first: dev runs and locks them in that order, and
+    // says so; a database that ran main's order refuses the lock at its deploy.
     let q = P::new(p.d).await.unwrap();
     let mut r = P { url: q.url.clone(), ..P::sibling(&p) };
     r.strict = true;
@@ -1223,8 +1224,21 @@ async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
     let wrong = reylo_migrate::lock::Lock { schema: None, entries: vec![base[0].clone(), after("20261027120000_mine.sql", &format!("create table mine (id {int});")), after("20261027110000_theirs.sql", &format!("create table theirs (id {int});"))] };
     reylo_migrate::lock::write(&r.dir.join(reylo_migrate::lock::LOCK), &wrong).unwrap();
     r.output();
-    assert_eq!(r.dev().await, 1);
-    assert_has!(r.output(), r"lines were merged out of their order: 20261027110000_theirs\.sql was locked right after 20261027100000_base\.sql on another branch");
+    assert_eq!(r.dev().await, 0, "{}", r.peek());
+    assert_has!(r.output(), r"! \S*reylo-lock\.yaml's lines were merged out of their order at 20261027110000_theirs\.sql");
+    assert_eq!(r.locked(), ["20261027100000_base.sql", "20261027120000_mine.sql", "20261027110000_theirs.sql"]);
+    let main = P::new(p.d).await.unwrap();
+    let mut m = P { url: main.url.clone(), ..P::sibling(&p) };
+    m.strict = true;
+    m.file("20261027100000_base.sql", &format!("create table base (id {int});"));
+    m.file("20261027110000_theirs.sql", &format!("create table theirs (id {int});"));
+    m.lock(&["20261027100000_base.sql", "20261027110000_theirs.sql"]);
+    assert_eq!(m.migrate().await, 0, "{}", m.peek());
+    m.output();
+    m.file("20261027120000_mine.sql", &format!("create table mine (id {int});"));
+    std::fs::copy(r.dir.join(reylo_migrate::lock::LOCK), m.dir.join(reylo_migrate::lock::LOCK)).unwrap();
+    assert_eq!(m.migrate().await, 1);
+    assert_has!(m.output(), r"This database applied 20261027110000_theirs\.sql where \S*reylo-lock\.yaml lists 20261027120000_mine\.sql");
 }
 
 async fn create_resolves_the_names_drop_gives(mut p: P) {
@@ -1802,37 +1816,36 @@ async fn a_lock_whose_order_is_not_the_names_survives_one_run(mut p: P) {
     p.url = dev;
 }
 
-async fn a_lock_kept_on_this_branchs_side_is_refused_where_git_has_mains(mut p: P) {
-    let int = p.t.int;
+async fn a_fixed_migration_no_database_ran_is_locked_again(mut p: P) {
+    let (int, text) = (p.t.int, p.t.text);
     p.strict = true;
-    let git = |dir: &std::path::Path, args: &[&str]| {
-        let out = std::process::Command::new("git").args(["-c", "user.name=Reylo", "-c", "user.email=test@reylo.dev", "-c", "init.defaultBranch=main", "-c", "commit.gpgsign=false"]).args(args).current_dir(dir).env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_CONFIG_NOSYSTEM", "1").output().unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    };
-    // Main: base, then theirs, locked and pushed.
+    p.schema(&format!("create table base (id {int}); create table theirs (id {int});"));
     p.file("20261027100000_base.sql", &format!("create table base (id {int});"));
     p.file("20261027120000_theirs.sql", &format!("create table theirs (id {int});"));
-    p.lock(&["20261027100000_base.sql", "20261027120000_theirs.sql"]);
-    let origin = p.dir.with_extension("origin.git");
-    let _ = std::fs::remove_dir_all(&origin);
-    git(&p.dir, &["init", "-q"]);
-    git(&p.dir, &["add", "-A"]);
-    git(&p.dir, &["commit", "-q", "-m", "main"]);
-    git(&p.dir, &["init", "-q", "--bare", origin.to_str().unwrap()]);
-    git(&p.dir, &["remote", "add", "origin", origin.to_str().unwrap()]);
-    git(&p.dir, &["push", "-q", "origin", "main"]);
-    git(&p.dir, &["remote", "set-head", "origin", "main"]);
-    // A branch that kept its own side of the lock: base, then mine, with theirs a file beside it.
-    p.file("20261027110000_mine.sql", &format!("create table mine (id {int});"));
-    p.lock(&["20261027100000_base.sql", "20261027110000_mine.sql"]);
-    assert_eq!(p.dev().await, 1);
-    assert_has!(p.output(), r"reylo-lock\.yaml doesn't start with main's lines: main locks 20261027120000_theirs\.sql after 20261027100000_base\.sql");
-    // Deleted, it starts again from main's, and this branch's runs after.
-    std::fs::remove_file(p.dir.join(reylo_migrate::lock::LOCK)).unwrap();
     assert_eq!(p.dev().await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"Wrote \S*reylo-lock\.yaml from main's");
-    assert_eq!(p.locked(), ["20261027100000_base.sql", "20261027120000_theirs.sql", "20261027110000_mine.sql"]);
-    let _ = std::fs::remove_dir_all(&origin);
+    // Staging runs it as it was.
+    let dev_url = p.url.clone();
+    let staging = P::new(p.d).await.unwrap();
+    p.url = staging.url.clone();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    p.url = dev_url;
+    p.output();
+    // Fixed afterwards, as one that failed on production, which recorded nothing of it: dev locks it
+    // again as it now reads, a database that never ran it runs the fix, and one that ran it as it
+    // was refuses the edit.
+    p.file("20261027120000_theirs.sql", &format!("create table theirs (id {int}, note {text});"));
+    p.schema(&format!("create table base (id {int}); create table theirs (id {int}, note {text});"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    assert_has!(p.output(), r"! 20261027120000_theirs\.sql changed after it was locked, and is locked again as it now reads");
+    assert_eq!(p.run(async |o, log| reylo_migrate::lint(o, log)).await, 0, "{}", p.peek());
+    let production = P::new(p.d).await.unwrap();
+    p.url = production.url.clone();
+    p.output();
+    assert_eq!(p.migrate().await, 0, "{}", p.peek());
+    assert_eq!(p.rows("select note from theirs").await.len(), 0, "the fix ran");
+    p.url = staging.url.clone();
+    assert_eq!(p.migrate().await, 1);
+    assert_has!(p.output(), r"20261027120000_theirs\.sql changed after this database applied it");
 }
 
 async fn init_locks_the_baseline_in_a_locked_project(mut p: P) {

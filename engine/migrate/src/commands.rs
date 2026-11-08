@@ -659,7 +659,12 @@ fn lock_problems(opts: &Options, files: &[Migration]) -> Vec<Problem> {
         match link {
             Link::Ok => {}
             Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database that ran it", &["reylo migration history pull"])),
-            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked", e.name)).note("A database may have run it as it was: write the change as a new migration.").fix("Take back the text a database ran", &["reylo migration history pull"])),
+            Link::Edited => problems.push(
+                Problem::new(format!("{} changed after it was locked", e.name))
+                    .note("A database that ran it as it was refuses it: where one did, write the change as a new migration.")
+                    .fix("To fix one no database ran, as one that failed on production, lock it again as it now reads", &["reylo migrate dev"])
+                    .fix("Or take back the text a database ran", &["reylo migration history pull"]),
+            ),
             Link::Moved { after } => problems.push(
                 Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {}, not where it is", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
                     .note("Keep main's lines in main's order, and leave out this branch's.")
@@ -2502,21 +2507,6 @@ fn file_problems(opts: &Options, files: &[Migration], strays: &[String], schema_
     problems
 }
 
-/// A lock deleted, or never written on this branch, starts again from main's, where git has it, and
-/// not from the files' names.
-fn seed_lock(opts: &Options, files: &[Migration], log: Log<'_>) -> Result<(), Error> {
-    if lock::read(&opts.lock) == lock::State::Missing {
-        if let Some(main) = main_lock(opts) {
-            let here = main_lines_here(&main, files);
-            if !here.is_empty() {
-                lock::write(&opts.lock, &lock::Lock { schema: None, entries: here })?;
-                log(&paint("dim", &format!("Wrote {} from main's", shown(&opts.lock))));
-            }
-        }
-    }
-    Ok(())
-}
-
 async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, log: Log<'_>) -> Result<i32, Error> {
     swept_note(swept, log);
     let _held = lock(db, opts).await?;
@@ -2526,10 +2516,13 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     let history = read_history(db).await?;
     problems.extend(missing_dir(opts, &history));
     if problems.is_empty() {
-        seed_lock(opts, &files, log)?;
-        problems.extend(dev_lock_problems(opts, &files, &history));
-        if let Some(note) = no_main_note(opts) {
-            log(&paint("dim", &note));
+        match dev_lock_notes(opts, &files) {
+            Ok(notes) => {
+                for note in notes {
+                    log(&format!("{} {note}", paint("yellow", "!")));
+                }
+            }
+            Err(problem) => problems.push(problem),
         }
     }
     if !problems.is_empty() {
@@ -2583,88 +2576,28 @@ async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, files: &[M
     Ok(())
 }
 
-/// The lock of the main branch, as git has it, where git can tell: the copy on the remote's default
-/// branch (`origin/HEAD`), else on its `main` or `master`; `origin` first, then any other remote,
-/// since a clone may name its remote otherwise or never have set its HEAD.
-fn main_lock(opts: &Options) -> Option<lock::Lock> {
-    let dir = opts.lock.parent()?;
-    let name = opts.lock.file_name()?.to_string_lossy().into_owned();
-    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(dir).output().ok().filter(|o| o.status.success());
-    let mut remotes = vec!["origin".to_string()];
-    if let Some(out) = git(&["remote"]) {
-        remotes.extend(String::from_utf8_lossy(&out.stdout).lines().map(str::trim).filter(|r| !r.is_empty() && *r != "origin").map(String::from));
-    }
-    let text = remotes.iter().flat_map(|r| ["HEAD", "main", "master"].map(|b| format!("{r}/{b}:./{name}"))).find_map(|spec| git(&["show", &spec]))?;
-    match lock::of_text(&String::from_utf8_lossy(&text.stdout)) {
-        lock::State::Lock(l) => Some(l),
-        _ => None,
-    }
-}
-
-/// What the readout says where git has remotes and none holds main's lock, so that the check against
-/// it is weaker than it looks: only lines this database never applied are held as main's.
-fn no_main_note(opts: &Options) -> Option<String> {
-    let dir = opts.lock.parent()?;
-    let remotes = std::process::Command::new("git").arg("remote").current_dir(dir).output().ok().filter(|o| o.status.success())?;
-    if String::from_utf8_lossy(&remotes.stdout).trim().is_empty() || !opts.lock.exists() || main_lock(opts).is_some() {
-        return None;
-    }
-    Some(format!("git has no copy of main's {} (on a remote's HEAD, main or master), so only the lines this database never applied are held as main's", shown(&opts.lock)))
-}
-
-/// Main's lock's lines whose files this checkout has, from the first: what this checkout merged of main.
-fn main_lines_here(main: &lock::Lock, files: &[Migration]) -> Vec<lock::Entry> {
-    main.entries.iter().take_while(|e| files.iter().any(|f| f.name == e.name)).cloned().collect()
-}
-
-/// What keeps `dev` from taking the lock as it is. It writes the lock again,
-/// chaining this branch's lines after main's; but a line locked elsewhere (on main where git can
-/// say, else one this database never applied) that is out of its chain, or whose file changed,
-/// would be laundered so, and is refused.
-fn dev_lock_problems(opts: &Options, files: &[Migration], history: &[HistoryRow]) -> Vec<Problem> {
-    let path = shown(&opts.lock);
+/// What `dev` says of the lock as it takes it, where the files no longer agree with it: it runs
+/// them in the lock's order and writes the lock again, so a line edited, merged out of its order or
+/// whose file is gone is locked as the files now read. Every database's deploy still refuses a
+/// history that isn't a prefix of the lock's order, or an edit to a migration it ran. A lock it
+/// can't read (git's conflict markers in it) is refused.
+fn dev_lock_notes(opts: &Options, files: &[Migration]) -> Result<Vec<String>, Problem> {
     // A missing lock is written as the migrations apply.
     if lock::read(&opts.lock) == lock::State::Missing {
-        return vec![];
+        return Ok(vec![]);
     }
-    let l = match read_lock(opts, files) {
-        Ok(l) => l,
-        Err(p) => return vec![p],
-    };
-    let main = main_lock(opts);
-    // Main's lines this checkout has come first, as main has them: a lock that leaves one out, or
-    // puts this branch's line before it, was merged keeping this branch's side.
-    if let Some(m) = &main {
-        let here = main_lines_here(m, files);
-        for (k, e) in here.iter().enumerate() {
-            if l.entries.get(k).is_some_and(|x| x.name == e.name && x.sum == e.sum) {
-                continue;
-            }
-            let after = if k == 0 { "first".to_string() } else { format!("after {}", here[k - 1].name) };
-            return vec![Problem::new(format!("{path} doesn't start with main's lines: main locks {} {after}", e.name))
-                .note("Keep main's lines, in main's order, and leave out this branch's: reylo migrate dev then runs this branch's migrations after them, and adds them back.")
-                .fix("Then", &["reylo migrate dev"])];
-        }
-    }
-    let ours = |name: &str, sum: &str| match &main {
-        Some(m) => !m.entries.iter().any(|e| e.name == name && e.sum == sum),
-        None => history.iter().any(|r| r.applied && r.name == name),
-    };
-    let mut problems = Vec::new();
-    for (e, link) in l.entries.iter().zip(links(&l, files)) {
-        match link {
-            Link::Ok => {}
-            Link::Missing => problems.push(Problem::new(format!("{path} lists {}, which isn't in {}", e.name, shown(&opts.dir))).fix("Write it back from a database that ran it", &["reylo migration history pull"])),
-            _ if ours(&e.name, &e.sum) => {}
-            Link::Edited => problems.push(Problem::new(format!("{} changed after it was locked, on another branch", e.name)).note("A database may have run it as it was: write the change as a new migration.").fix("Take back the text a database ran", &["reylo migration history pull"])),
-            Link::Moved { after } => problems.push(
-                Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {} on another branch", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
-                    .note("Keep main's lines in main's order, and leave out this branch's: reylo migrate dev then runs this branch's migrations after them, and adds them back.")
-                    .fix("Then", &["reylo migrate dev"]),
-            ),
-        }
-    }
-    problems
+    let l = read_lock(opts, files)?;
+    let path = shown(&opts.lock);
+    Ok(l.entries
+        .iter()
+        .zip(links(&l, files))
+        .filter_map(|(e, link)| match link {
+            Link::Ok => None,
+            Link::Missing => Some(format!("{path} lists {}, which isn't in {}: it comes out of the lock", e.name, shown(&opts.dir))),
+            Link::Edited => Some(format!("{} changed after it was locked, and is locked again as it now reads: a database that ran it as it was refuses it, so where one did, write the change as a new migration instead", e.name)),
+            Link::Moved { .. } => Some(format!("{path}'s lines were merged out of their order at {}: they run, and are locked again, in the order it now lists", e.name)),
+        })
+        .collect())
 }
 
 /// Writes the lock after `dev`: what the database applied, in the order it

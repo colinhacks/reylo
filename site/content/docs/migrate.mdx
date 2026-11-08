@@ -421,6 +421,8 @@ $ reylo migrate deploy --dry-run
     20261104140347_add_bio.sql
 ```
 
+A migration that fails rolls back, and your database records nothing of it. Fix the file, run `reylo migrate dev`, which locks it again as it now reads, and deploy the fix. A database that already ran the old version refuses the edited one, so where one did, write a new migration instead.
+
 Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard is no drift, and stops no deploy.
 
 After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared: `reylo migrate deploy` runs, stores a new one, and says so. A dry run checks the database then too.
