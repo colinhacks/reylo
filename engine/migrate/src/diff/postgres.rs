@@ -386,7 +386,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_sequence s join pg_class c on c.oid = s.seqrelid join pg_namespace n on n.oid = c.relnamespace
             where {ns} and {} and {}
               and not exists (select 1 from pg_depend d where d.classid = 'pg_class'::regclass and d.objid = c.oid and d.deptype = 'i')",
-            acl("c.relacl", 's', "c.relowner"),
+            acl_in("c.relacl", 's', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
         ))
@@ -454,7 +454,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
             from pg_class c join pg_namespace n on n.oid = c.relnamespace
             where c.relkind in ('r', 'p', 'v', 'm', 'f', 'c') and {ns} and {} and {} and c.relname <> '{history}'
               and not exists (select 1 from pg_depend e where e.classid = 'pg_type'::regclass and e.objid = c.reltype and e.deptype = 'e')",
-            acl("c.relacl", 'r', "c.relowner"),
+            acl_in("c.relacl", 'r', "c.relowner", Some("c.relnamespace")),
             not_extension("pg_class", "c"),
             not_platform("c.relowner")
         ))
@@ -752,7 +752,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
                 from pg_aggregate a where a.aggfnoid = p.oid) end as agg
             from pg_proc p join pg_namespace n on n.oid = p.pronamespace
             where p.prokind in ('f', 'p', 'w', 'a') and {ns} and {} and {} and not {}",
-            acl("p.proacl", 'f', "p.proowner"),
+            acl_in("p.proacl", 'f', "p.proowner", Some("p.pronamespace")),
             not_extension("pg_proc", "p"),
             not_platform("p.proowner"),
             made_with("pg_proc", "p")
@@ -847,7 +847,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         ))
         .await?
     {
-        let Some((table, _)) = relations.get(&oid(&r, "reloid")) else { continue };
+        // A trigger of the project's on a platform's table (Supabase's `auth.users`) is the
+        // project's, with no table of the project's to go with.
+        let table = relations.get(&oid(&r, "reloid")).map(|(t, _)| t.clone());
         let (rel, name) = (r.text("rel"), r.text("name"));
         let id = format!("trigger {rel}.{name}");
         ids.triggers.insert(oid(&r, "oid"), id.clone());
@@ -860,7 +862,7 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
         s.add(Object {
             id,
             kind: Some(Kind::Trigger),
-            owner: Some(table.clone()),
+            owner: table,
             def: format!("{} {}", r.text("def"), r.text("enabled")),
             create: [Some(r.text("def").to_string()), enabled].into_iter().flatten().collect(),
             drop: vec![format!("drop trigger {name} on {rel}")],
@@ -1228,8 +1230,9 @@ async fn read_objects(db: &mut Db) -> Result<Schema, Error> {
     for r in db
         .rows(&format!(
             "select format('%s', k.classid::regclass) as cls, k.objid, o.type, o.identity, format('%I', pg_get_userbyid(k.owner)) as owner
-            from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> (select oid from pg_roles where rolname = current_user)",
-            crate::catalog::owned_objects(HISTORY_TABLE)
+            from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> {}",
+            crate::catalog::owned_objects(HISTORY_TABLE),
+            crate::catalog::runner()
         ))
         .await?
     {
@@ -1510,14 +1513,33 @@ pub fn moves(from: &Schema, to: &Schema) -> Vec<String> {
 
 /// The privileges an object grants others than its owner, beside those it grants by default, as
 /// SQL that gives JSON: `acl` is its ACL column, `kind` its `acldefault` letter, `owner` its owner.
+/// A third list holds what its owner's default privileges grant such an object as it is made
+/// (`alter default privileges`, in `schema` where one is given, else anywhere), which a plan that
+/// makes it doesn't grant again: a platform's (Supabase's grant every new table to its API's roles).
 fn acl(acl: &str, kind: char, owner: &str) -> String {
+    acl_in(acl, kind, owner, None)
+}
+
+fn acl_in(acl: &str, kind: char, owner: &str, schema: Option<&str>) -> String {
     let explode = |of: &str| {
         format!(
             "(select json_agg(json_build_object('grantee', case when x.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(x.grantee)) end, 'privilege', x.privilege_type, 'grantable', x.is_grantable))
                from aclexplode({of}) x where x.grantee <> {owner})"
         )
     };
-    format!("format('%s', json_build_array({}, {}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
+    let object = match kind {
+        'r' => "r",
+        's' => "S",
+        'f' => "f",
+        'n' => "n",
+        _ => "",
+    };
+    let implied = format!(
+        "(select json_agg(json_build_object('grantee', case when x.grantee = 0 then 'public' else quote_ident(pg_get_userbyid(x.grantee)) end, 'privilege', x.privilege_type, 'grantable', x.is_grantable))
+           from pg_default_acl d, aclexplode(d.defaclacl) x where d.defaclrole = {owner} and d.defaclobjtype = '{object}' and d.defaclnamespace in (0, {}) and x.grantee <> {owner})",
+        schema.unwrap_or("0")
+    );
+    format!("format('%s', json_build_array({}, {}, {implied}))", explode(&format!("coalesce({acl}, acldefault('{kind}', {owner}))")), explode(&format!("acldefault('{kind}', {owner})")))
 }
 
 /// One object per privilege the object `name` (`on` says what it is: `table`, `function`, …)
@@ -1528,6 +1550,8 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
     let (have, default) = (lists.first().cloned().flatten().unwrap_or_default(), lists.get(1).cloned().flatten().unwrap_or_default());
     let key = |g: &serde_json::Value| (g["grantee"].as_str().unwrap_or_default().to_string(), g["privilege"].as_str().unwrap_or_default().to_string(), g["grantable"].as_bool().unwrap_or(false));
     let (have, default): (BTreeSet<_>, BTreeSet<_>) = (have.iter().map(key).collect(), default.iter().map(key).collect());
+    // What the owner's default privileges grant it as it is made: made with it, never granted again.
+    let implied: BTreeSet<_> = lists.get(2).cloned().flatten().unwrap_or_default().iter().map(key).collect();
     let grant = |grantee: &str, privilege: &str, grantable: bool| format!("grant {} on {on} {name} to {grantee}{}", privilege.to_lowercase(), if grantable { " with grant option" } else { "" });
     let revoke = |grantee: &str, privilege: &str| format!("revoke {} on {on} {name} from {grantee}", privilege.to_lowercase());
     for (grantee, privilege, grantable) in have.difference(&default) {
@@ -1538,6 +1562,7 @@ fn grants(s: &mut Schema, privileges: &str, name: &str, id: &str, on: &str) {
             def: grantable.to_string(),
             create: vec![grant(grantee, privilege, *grantable)],
             drop: vec![revoke(grantee, privilege)],
+            inline: implied.contains(&(grantee.clone(), privilege.clone(), *grantable)),
             ..Object::default()
         });
     }

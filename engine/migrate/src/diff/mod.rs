@@ -582,6 +582,16 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
     // A default privilege of the live database the target doesn't name is its environment's (a
     // platform sets its own as it makes a database): left as it is.
     left.extend(from.objects.values().filter(|o| from.live && o.id.starts_with("default privileges ") && !to.objects.contains_key(&o.id)).map(|o| o.id.clone()));
+    // So is an extension of the live database the target doesn't have (one a platform installs, as
+    // Supabase's `pgcrypto`), with the schema it is in where the target lacks that too: a plan from a
+    // live database never drops one. A migration that means to says so itself.
+    for o in from.objects.values().filter(|o| from.live && o.kind == Some(Kind::Extension) && !to.objects.contains_key(&o.id)) {
+        left.insert(o.id.clone());
+        let schema = format!("schema {}", o.def);
+        if from.objects.contains_key(&schema) && !to.objects.contains_key(&schema) {
+            left.extend(with_owned(from, &schema).into_iter().map(String::from));
+        }
+    }
     let mut drops: BTreeSet<String> = BTreeSet::new();
     let mut creates: BTreeSet<String> = BTreeSet::new();
     let mut alters: BTreeMap<String, Vec<String>> = BTreeMap::new();

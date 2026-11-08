@@ -669,8 +669,8 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
 
     // Owners: what a view, a security definer function and row-level security are checked as. An
     // object a migration made is its runner's, so only one owned by another role has a line, and
-    // a database built by one role compares with shadows built by another.
-    for r in db.rows(&format!("select format('owner %s is %I (%s)', o.identity, pg_get_userbyid(k.owner), o.type) as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> (select oid from pg_roles where rolname = current_user)", owned_objects(&history))).await? {
+    // a database built by one role compares with shadows built by another, whoever reads it.
+    for r in db.rows(&format!("select format('owner %s is %I (%s)', o.identity, pg_get_userbyid(k.owner), o.type) as line from ({}) k, lateral pg_identify_object(k.classid, k.objid, 0) o where k.owner <> {}", owned_objects(&history), runner())).await? {
         lines.push(r.text("line").to_string());
     }
 
@@ -736,6 +736,13 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
     Ok(out)
 }
 
+/// The role that runs the migrations, which owns what they make: the owner of Reylo's history table,
+/// whoever reads the catalog, so that a deploy by one role and a repair by another read alike; and
+/// on a database with no history yet (a shadow), the role connected.
+pub(crate) fn runner() -> String {
+    format!("coalesce((select h.relowner from pg_class h where h.relname = '{HISTORY_TABLE}' and h.relkind = 'r' order by h.oid limit 1), (select oid from pg_roles where rolname = current_user))")
+}
+
 /// The objects whose owner is compared, each `classid, objid, owner`: relations (but indexes, which
 /// take their table's), routines (but those made with a range type), types (but arrays and a
 /// relation's own row type), schemas, collations, publications and foreign servers; none an
@@ -743,7 +750,8 @@ pub async fn unmodeled(db: &mut Db) -> Result<Vec<String>, Error> {
 pub(crate) fn owned_objects(history: &str) -> String {
     let ns = PG_USER_NS;
     [
-        format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {}", not_extension("pg_class", "c"), not_platform("c.relowner")),
+        // A sequence a column owns (`serial`) has its table's owner, and moves with it.
+        format!("select 'pg_class'::regclass as classid, c.oid as objid, c.relowner as owner from pg_class c join pg_namespace n on n.oid = c.relnamespace where c.relkind in ('r', 'p', 'v', 'm', 'f', 'S', 'c') and c.relname <> '{history}' and {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_class'::regclass and dep.objid = c.oid and dep.refclassid = 'pg_class'::regclass and dep.deptype in ('a', 'i'))", not_extension("pg_class", "c"), not_platform("c.relowner")),
         format!("select 'pg_proc'::regclass, p.oid, p.proowner from pg_proc p join pg_namespace n on n.oid = p.pronamespace where {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_proc'::regclass and dep.objid = p.oid and dep.deptype = 'i')", not_extension("pg_proc", "p"), not_platform("p.proowner")),
         format!("select 'pg_type'::regclass, t.oid, t.typowner from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype in ('b', 'd', 'e', 'r') and t.typcategory <> 'A' and {ns} and {} and {} and not exists (select 1 from pg_depend dep where dep.classid = 'pg_type'::regclass and dep.objid = t.oid and dep.deptype = 'i')", not_extension("pg_type", "t"), not_platform("t.typowner")),
         format!("select 'pg_namespace'::regclass, n.oid, n.nspowner from pg_namespace n where {ns} and {} and {}", not_extension("pg_namespace", "n"), not_platform("n.nspowner")),

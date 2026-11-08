@@ -462,7 +462,7 @@ impl Cache {
 /// Everything about the server a replay's outcome turns on, beside the steps.
 async fn server_state(server: &mut Server) -> Result<String, Error> {
     match server {
-        Server::Postgres { admin, create, settings, privileges, copy_privileges, .. } => {
+        Server::Postgres { admin, create, settings, privileges, copy_privileges, extensions, leave, environment, environment_role, schema_grants, .. } => {
             // The server and its settings as a session sees them, the roles a grant may name, the
             // extensions a migration may create, and template1, which a new shadow is a copy of: a
             // change to it moves its counters of rows written.
@@ -479,6 +479,8 @@ async fn server_state(server: &mut Server) -> Result<String, Error> {
             let r = rows.first().ok_or_else(|| Error("no answer".into()))?;
             let mut out = ["version", "role", "settings", "roles", "members", "extensions", "template"].map(|k| r.text(k).to_string()).join("\n\x1f");
             out.push_str(&format!("\n\x1fcreate {create}\n\x1fsettings {}\n\x1fprivileges {copy_privileges} {}", settings.join("\n"), privileges.join("\n")));
+            let copied: Vec<String> = extensions.iter().filter(|(e, _)| !leave.contains(&e.to_lowercase())).map(|(e, s)| format!("{e} {s}")).collect();
+            out.push_str(&format!("\n\x1fextensions {}\n\x1fschema grants {}\n\x1fenvironment {} {}", copied.join("\n"), schema_grants.join("\n"), environment_role.as_deref().unwrap_or_default(), environment.join("\n")));
             Ok(out)
         }
         Server::Mysql { admin, defaults, .. } => {

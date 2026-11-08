@@ -1209,8 +1209,8 @@ async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
     assert_has!(&out, r"↺ 20261027120000_mine\.sql +rewound[\s\S]*✓ 20261027110000_theirs\.sql +applied[\s\S]*✓ 20261027120000_mine\.sql +applied[^\n]*\nWrote \S*reylo-lock\.yaml");
     assert_eq!(p.locked(), ["20261027100000_base.sql", "20261027110000_theirs.sql", "20261027120000_mine.sql"]);
     assert_eq!(p.rows("select * from base").await.len(), 1);
-    // Accepting both sides with this branch's line first: dev runs and locks them in that order, and
-    // says so; a database that ran main's order refuses the lock at its deploy.
+    // Accepting both sides with this branch's line first puts main's line, which this database never
+    // ran, out of its chain: refused, by dev and, with no database at all, by every deploy.
     let q = P::new(p.d).await.unwrap();
     let mut r = P { url: q.url.clone(), ..P::sibling(&p) };
     r.strict = true;
@@ -1224,9 +1224,8 @@ async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
     let wrong = reylo_migrate::lock::Lock { schema: None, entries: vec![base[0].clone(), after("20261027120000_mine.sql", &format!("create table mine (id {int});")), after("20261027110000_theirs.sql", &format!("create table theirs (id {int});"))] };
     reylo_migrate::lock::write(&r.dir.join(reylo_migrate::lock::LOCK), &wrong).unwrap();
     r.output();
-    assert_eq!(r.dev().await, 0, "{}", r.peek());
-    assert_has!(r.output(), r"! \S*reylo-lock\.yaml's lines were merged out of their order at 20261027110000_theirs\.sql");
-    assert_eq!(r.locked(), ["20261027100000_base.sql", "20261027120000_mine.sql", "20261027110000_theirs.sql"]);
+    assert_eq!(r.dev().await, 1);
+    assert_has!(r.output(), r"lines were merged out of their order: 20261027110000_theirs\.sql was locked right after 20261027100000_base\.sql, and this database never ran it");
     let main = P::new(p.d).await.unwrap();
     let mut m = P { url: main.url.clone(), ..P::sibling(&p) };
     m.strict = true;
@@ -1238,7 +1237,7 @@ async fn a_lock_conflict_is_resolved_by_apply_dev(mut p: P) {
     m.file("20261027120000_mine.sql", &format!("create table mine (id {int});"));
     std::fs::copy(r.dir.join(reylo_migrate::lock::LOCK), m.dir.join(reylo_migrate::lock::LOCK)).unwrap();
     assert_eq!(m.migrate().await, 1);
-    assert_has!(m.output(), r"This database applied 20261027110000_theirs\.sql where \S*reylo-lock\.yaml lists 20261027120000_mine\.sql");
+    assert_has!(m.output(), r"lines were merged out of their order: 20261027110000_theirs\.sql was locked right after 20261027100000_base\.sql, not where it is");
 }
 
 async fn create_resolves_the_names_drop_gives(mut p: P) {
@@ -2106,6 +2105,7 @@ on!(
     a_server_setting_change_misses_the_cache,
     a_migrations_session_setting_is_never_carried_by_the_cache,
     init_reads_a_function_dumped_before_the_table_it_reads,
+    a_platforms_schemas_and_extensions_are_in_every_shadow,
 );
 on!(Mysql, a_migration_that_names_a_database_is_refused);
 mod on_mysql {
@@ -2254,6 +2254,28 @@ mod adversarial {
         p.output();
         assert_eq!(p.dry_run().await, 1);
         assert_has!(p.output(), r"This database has changes no migration made[\s\S]*policy own on auth\.users");
+    }
+
+    pub async fn a_platforms_schemas_and_extensions_are_in_every_shadow(mut p: P) {
+        // As Supabase makes a project: a schema a platform's role owns, with the table a project's
+        // key and trigger name, and an extension in a schema of the project's role.
+        p.exec("do $$ begin if not exists (select 1 from pg_roles where rolname = 'supabase_auth_admin') then create role supabase_auth_admin; end if; end $$").await;
+        p.exec("create schema auth authorization supabase_auth_admin; create table auth.users (id uuid primary key); alter table auth.users owner to supabase_auth_admin").await;
+        p.exec("create schema extensions; create extension pgcrypto with schema extensions").await;
+        p.schema(
+            "create table profiles (id uuid primary key references auth.users on delete cascade, token text default encode(extensions.gen_random_bytes(8), 'hex'));
+            create function handle_new_user() returns trigger language plpgsql as $$ begin insert into public.profiles (id) values (new.id); return new; end $$;
+            create trigger on_auth_user_created after insert on auth.users for each row execute function handle_new_user();",
+        );
+        assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "profiles", &Default::default(), log).await).await, 0, "{}", p.peek());
+        let written = std::fs::read_to_string(p.dir.join("migrations").join(&p.files()[0])).unwrap();
+        assert!(written.contains("references auth.users") && written.contains("on auth.users"), "{written}");
+        assert!(!written.contains("create schema auth") && !written.contains("create table auth.users") && !written.contains("create extension"), "{written}");
+        assert_eq!(p.dev().await, 0, "{}", p.peek());
+        assert_eq!(p.dry_run().await, 0, "{}", p.peek());
+        assert_eq!(p.rows("select 1 from pg_extension where extname = 'pgcrypto'").await.len(), 1, "the platform's extension stays");
+        p.exec("insert into auth.users values ('00000000-0000-0000-0000-000000000001')").await;
+        assert_eq!(p.rows("select token from profiles").await.len(), 1, "the trigger and the default ran");
     }
 
     pub async fn init_reads_a_function_dumped_before_the_table_it_reads(mut p: P) {

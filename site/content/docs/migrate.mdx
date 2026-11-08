@@ -140,9 +140,11 @@ Writing and repairing migrations need one, and a deploy doesn't:
 
 Each database makes them its own way:
 
-- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so does the role Neon gives you. Reylo keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
+- **Postgres:** on your database's server, with `create database`, so your role needs `CREATEDB`. A local superuser has it, and so do the roles Neon and Supabase give you. Reylo keeps up to 32 as a cache, named `reylo_cache_…`, so a run replays only the migrations that are new.
 - **MySQL:** on your database's server, with `create database`, so your user needs the `CREATE` privilege on every database.
 - **SQLite:** in memory. There's nothing to grant.
+
+On Supabase, each shadow also gets what Supabase made in your database: its extensions, and its own schemas such as `auth` and `storage`. A migration that references `auth.users`, or adds a policy on `storage.objects`, replays as it runs.
 
 Where your role can't create a database, point `shadow_url` at a server that can, running the same version:
 

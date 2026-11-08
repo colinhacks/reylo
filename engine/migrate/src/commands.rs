@@ -262,8 +262,6 @@ async fn lock(db: &mut Db, opts: &Options) -> Result<Option<std::fs::File>, Erro
     }
 }
 
-/// The migration's row: applied now, or marked started; with the fingerprint of the schema it left,
-/// where the run that applied it read one.
 /// What names a user's own directory of run locks in a temporary directory every user shares, as
 /// Linux's `/tmp` is: their id. macOS and Windows give each user a temporary directory of their own.
 fn user_suffix() -> String {
@@ -284,6 +282,8 @@ fn user_suffix() -> String {
 /// are not held for it.
 const PENDING: &str = "pending";
 
+/// The migration's row: applied now, or marked started; with the fingerprint of the schema it left,
+/// where the run that applied it read one.
 async fn insert_row(db: &mut Db, m: &Migration, applied: bool, fingerprint: Option<&str>) -> Result<(), Error> {
     let d = db.dialect();
     let at = if applied { now_sql(d) } else { "null".to_string() };
@@ -362,9 +362,14 @@ pub(crate) async fn run(db: &mut Db, m: &Migration, record: bool) -> Result<(), 
         db.exec("pragma foreign_keys = on").await?;
     }
     result?;
+    // The migration has committed: a fingerprint that can't be read now leaves its row pending,
+    // which the next deploy refuses, rather than reading as a migration that failed.
     if record {
-        let value = fingerprint(db).await?;
-        set_fingerprint(db, &m.name, &value).await?;
+        let _ = async {
+            let value = fingerprint(db).await?;
+            set_fingerprint(db, &m.name, &value).await
+        }
+        .await;
     }
     Ok(())
 }
@@ -1002,10 +1007,19 @@ fn sets_default_privileges(opts: &Options) -> bool {
     PRIVILEGES.is_match(&schema) || read_migrations(&opts.dir).map(|(files, _)| files.iter().any(|f| PRIVILEGES.is_match(&f.sql))).unwrap_or(false)
 }
 
+/// The extensions the project's own files create, which its shadows leave to them.
+fn created_extensions(opts: &Options) -> Vec<String> {
+    static EXTENSION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)\bcreate\s+extension\s+(?:if\s+not\s+exists\s+)?"?([A-Za-z0-9_-]+)"?"#).expect("a valid pattern"));
+    let mut texts = vec![std::fs::read_to_string(&opts.schema).unwrap_or_default()];
+    texts.extend(read_migrations(&opts.dir).map(|(files, _)| files.into_iter().map(|f| f.sql).collect::<Vec<_>>()).unwrap_or_default());
+    texts.iter().flat_map(|t| EXTENSION.captures_iter(t).map(|c| c[1].to_lowercase()).collect::<Vec<_>>()).collect()
+}
+
 async fn open(opts: &Options) -> Result<(Db, Server, usize), Error> {
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
+    server.leave_extensions(created_extensions(opts));
     let swept = server.sweep().await?;
     Ok((db, server, swept))
 }
@@ -2021,6 +2035,7 @@ async fn draft(opts: &Options, files: &[Migration], schema_sql: &str, migration:
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let mut server = Server::open(&mut db, &opts.url, opts.shadow_url.as_deref()).await?;
     server.copy_default_privileges(!sets_default_privileges(opts));
+    server.leave_extensions(created_extensions(opts));
     db.close().await;
     let texts: Vec<&str> = files.iter().map(|f| f.sql.as_str()).chain([schema_sql]).collect();
     let mut shadows = Shadows::new(&mut server, &opts.url, &opts.root, &opts.cache, &texts).await;
@@ -2228,41 +2243,50 @@ async fn dump(opts: &Options, schemas: &[String]) -> Result<String, Error> {
 async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<String, Error> {
     match db.dialect() {
         Dialect::Postgres => {
-            // pg_dump refuses a server newer than itself, so the one of the server's own major
-            // version is looked for first (Homebrew's keg, and the directory Debian's and Ubuntu's
-            // packages install it in, whose PATH wrapper picks a local cluster's version), then the
-            // PATH's.
             let version: i64 = db.rows("select current_setting('server_version_num') as v").await?.first().and_then(|r| r.first()?.parse().ok()).unwrap_or(0);
-            let major = version / 10000;
-            let version_of = |p: &str| -> i64 {
-                let out = std::process::Command::new(p).arg("--version").output().ok();
-                let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-                text.split_whitespace().find_map(|w| w.split('.').next()?.parse().ok()).unwrap_or(0)
-            };
-            let candidates = [format!("/opt/homebrew/opt/postgresql@{major}/bin/pg_dump"), format!("/usr/lib/postgresql/{major}/bin/pg_dump"), "pg_dump".to_string()];
-            let Some(pg_dump) = candidates.iter().find(|p| version_of(p) >= major) else {
-                return Err(Error(format!("reading this schema needs pg_dump {major} or newer (the server is Postgres {major})")));
-            };
             let mut args: Vec<String> = ["--schema-only", "--no-publications", "--no-subscriptions", "--no-security-labels", "--no-tablespaces"].map(String::from).to_vec();
             // Owners are kept where they aren't the role the file will run as, which owns what it makes.
             let runner = db.rows("select quote_ident(current_user) as u").await?.first().map(|r| r.text("u").to_string()).unwrap_or_default();
             args.push(format!("--exclude-table=*.{HISTORY_TABLE}"));
-            let named: Vec<String> = if schemas.is_empty() { vec!["public".into()] } else { schemas.to_vec() };
-            for s in named {
+            let named_schemas: Vec<String> = if schemas.is_empty() { vec!["public".into()] } else { schemas.to_vec() };
+            for s in &named_schemas {
                 args.push("--schema".into());
-                args.push(s);
+                args.push(s.clone());
             }
-            args.push(opts.url.clone());
-            let out = std::process::Command::new(pg_dump).args(&args).output()?;
-            if !out.status.success() {
-                return Err(Error(format!("pg_dump failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
-            }
+            let text = crate::db::pg_dump(&opts.url, version / 10000, &args)?;
             // What pg_dump writes for psql and for a session of its own: meta-commands, its settings
             // (an empty search_path would outlive the file in a shadow's session) and comments.
-            let text = String::from_utf8_lossy(&out.stdout);
             let own = format!(" OWNER TO {runner};");
-            let kept: Vec<&str> = text.lines().filter(|l| !l.starts_with('\\') && !l.starts_with("SET ") && !l.starts_with("SELECT pg_catalog.set_config") && !l.starts_with("--") && !(l.starts_with("ALTER ") && l.ends_with(&own))).collect();
-            let joined = kept.join("\n").replace("\nCREATE SCHEMA public;\n", "\nCREATE SCHEMA IF NOT EXISTS public;\n");
+            // A platform's default privileges are its own, which only its roles may set, and which
+            // every shadow is given as they are.
+            let platform_default = |l: &str| crate::catalog::PLATFORM_ROLES.iter().any(|r| l.starts_with(&format!("ALTER DEFAULT PRIVILEGES FOR ROLE {r} ")));
+            let kept: Vec<&str> = text
+                .lines()
+                .filter(|l| !l.starts_with('\\') && !l.starts_with("SET ") && !l.starts_with("SELECT pg_catalog.set_config") && !l.starts_with("--") && !(l.starts_with("ALTER ") && l.ends_with(&own)) && !platform_default(l))
+                .collect();
+            let mut joined = kept.join("\n").replace("\nCREATE SCHEMA public;\n", "\nCREATE SCHEMA IF NOT EXISTS public;\n");
+            // What the project made on tables outside the schemas dumped, a platform's (Supabase's
+            // `auth.users`, `storage.objects`): its triggers, whose function is no platform's, and
+            // its policies, which pg_dump writes only with their table.
+            let list = named_schemas.iter().map(|s| crate::db::literal(s)).collect::<Vec<_>>().join(", ");
+            let extra = db
+                .rows(&format!(
+                    "select pg_get_triggerdef(t.oid) || ';' as s from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace join pg_proc f on f.oid = t.tgfoid
+                    where not t.tgisinternal and t.tgparentid = 0 and n.nspname not in ({list}) and n.nspname not in ('pg_catalog', 'information_schema') and {}
+                    union all
+                    select format('CREATE POLICY %I ON %I.%I AS %s FOR %s TO %s%s%s;', p.polname, n.nspname, c.relname, case when p.polpermissive then 'PERMISSIVE' else 'RESTRICTIVE' end,
+                      case p.polcmd when 'r' then 'SELECT' when 'a' then 'INSERT' when 'w' then 'UPDATE' when 'd' then 'DELETE' else 'ALL' end,
+                      (select string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', ' order by 1) from unnest(p.polroles) r),
+                      coalesce(' USING (' || pg_get_expr(p.polqual, p.polrelid) || ')', ''), coalesce(' WITH CHECK (' || pg_get_expr(p.polwithcheck, p.polrelid) || ')', ''))
+                    from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace
+                    where n.nspname not in ({list}) and n.nspname not in ('pg_catalog', 'information_schema')",
+                    crate::catalog::not_platform("f.proowner")
+                ))
+                .await?;
+            if !extra.is_empty() {
+                joined.push_str("\n\n");
+                joined.push_str(&extra.iter().map(|r| r.text("s").to_string()).collect::<Vec<_>>().join("\n\n"));
+            }
             static BLANKS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\n{3,}").expect("a valid pattern"));
             let sql = BLANKS.replace_all(&joined, "\n\n").trim().to_string();
             // pg_dump makes functions before the tables a SQL function's body may read, which Postgres
@@ -2516,7 +2540,7 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     let history = read_history(db).await?;
     problems.extend(missing_dir(opts, &history));
     if problems.is_empty() {
-        match dev_lock_notes(opts, &files) {
+        match dev_lock_notes(opts, &files, &history) {
             Ok(notes) => {
                 for note in notes {
                     log(&format!("{} {note}", paint("yellow", "!")));
@@ -2577,27 +2601,35 @@ async fn replayed_fingerprint(shadows: &mut Shadows<'_>, db: &mut Db, files: &[M
 }
 
 /// What `dev` says of the lock as it takes it, where the files no longer agree with it: it runs
-/// them in the lock's order and writes the lock again, so a line edited, merged out of its order or
-/// whose file is gone is locked as the files now read. Every database's deploy still refuses a
-/// history that isn't a prefix of the lock's order, or an edit to a migration it ran. A lock it
-/// can't read (git's conflict markers in it) is refused.
-fn dev_lock_notes(opts: &Options, files: &[Migration]) -> Result<Vec<String>, Problem> {
+/// them in the lock's order and writes the lock again, so a line edited or whose file is gone is
+/// locked as the files now read, and so is one merged out of its order that this database ran (this
+/// branch's own, after main's). One merged out of its order that this database never ran came from
+/// another branch, placed after this branch's: refused, before it is locked so. A lock it can't
+/// read (git's conflict markers in it) is refused too. Every database's deploy still refuses a
+/// history that isn't a prefix of the lock's order, or an edit to a migration it ran.
+fn dev_lock_notes(opts: &Options, files: &[Migration], history: &[HistoryRow]) -> Result<Vec<String>, Problem> {
     // A missing lock is written as the migrations apply.
     if lock::read(&opts.lock) == lock::State::Missing {
         return Ok(vec![]);
     }
     let l = read_lock(opts, files)?;
     let path = shown(&opts.lock);
-    Ok(l.entries
-        .iter()
-        .zip(links(&l, files))
-        .filter_map(|(e, link)| match link {
-            Link::Ok => None,
-            Link::Missing => Some(format!("{path} lists {}, which isn't in {}: it comes out of the lock", e.name, shown(&opts.dir))),
-            Link::Edited => Some(format!("{} changed after it was locked, and is locked again as it now reads: a database that ran it as it was refuses it, so where one did, write the change as a new migration instead", e.name)),
-            Link::Moved { .. } => Some(format!("{path}'s lines were merged out of their order at {}: they run, and are locked again, in the order it now lists", e.name)),
-        })
-        .collect())
+    let ran_here = |name: &str| history.iter().any(|r| r.applied && r.name == name);
+    let mut notes = Vec::new();
+    for (e, link) in l.entries.iter().zip(links(&l, files)) {
+        match link {
+            Link::Ok => {}
+            Link::Missing => notes.push(format!("{path} lists {}, which isn't in {}: it comes out of the lock", e.name, shown(&opts.dir))),
+            Link::Edited => notes.push(format!("{} changed after it was locked, and is locked again as it now reads: a database that ran it as it was refuses it, so where one did, write the change as a new migration instead", e.name)),
+            Link::Moved { .. } if ran_here(&e.name) => notes.push(format!("{path}'s lines were merged out of their order at {}: they run, and are locked again, in the order it now lists", e.name)),
+            Link::Moved { after } => {
+                return Err(Problem::new(format!("{path}'s lines were merged out of their order: {} was locked {}, and this database never ran it", e.name, after.map_or("first".to_string(), |a| format!("right after {a}"))))
+                    .note("It came from another branch, which has it before this branch's: keep main's lines in main's order, and leave out this branch's. reylo migrate dev then runs this branch's migrations after them, and adds them back.")
+                    .fix("Then", &["reylo migrate dev"]))
+            }
+        }
+    }
+    Ok(notes)
 }
 
 /// Writes the lock after `dev`: what the database applied, in the order it
