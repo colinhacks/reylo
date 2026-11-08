@@ -2244,7 +2244,7 @@ mod adversarial {
 
     pub async fn a_platforms_objects_are_left_out(mut p: P) {
         // A Supabase-like platform, made by hand: its roles, its schema, its table.
-        p.exec("do $$ begin if not exists (select 1 from pg_roles where rolname = 'supabase_auth_admin') then create role supabase_auth_admin; end if; end $$").await;
+        p.exec("do $$ begin create role supabase_auth_admin; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec("create schema auth authorization supabase_auth_admin; create table auth.users (id int primary key); alter table auth.users owner to supabase_auth_admin; create function auth.uid() returns int language sql as 'select 1'; alter function auth.uid() owner to supabase_auth_admin").await;
         p.schema("create table profiles (id int primary key);");
         p.file("20261029100000_profiles.sql", "create table profiles (id int primary key);");
@@ -2259,7 +2259,7 @@ mod adversarial {
     pub async fn a_platforms_schemas_and_extensions_are_in_every_shadow(mut p: P) {
         // As Supabase makes a project: a schema a platform's role owns, with the table a project's
         // key and trigger name, and an extension in a schema of the project's role.
-        p.exec("do $$ begin if not exists (select 1 from pg_roles where rolname = 'supabase_auth_admin') then create role supabase_auth_admin; end if; end $$").await;
+        p.exec("do $$ begin create role supabase_auth_admin; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec("create schema auth authorization supabase_auth_admin; create table auth.users (id uuid primary key); alter table auth.users owner to supabase_auth_admin").await;
         p.exec("create schema extensions; create extension pgcrypto with schema extensions").await;
         p.schema(
@@ -2311,7 +2311,7 @@ mod adversarial {
 
     pub async fn a_platforms_default_privileges_are_not_drift(mut p: P) {
         // As a platform sets them before any migration: every new table and function its API's role may use.
-        p.exec("do $$ begin if not exists (select 1 from pg_roles where rolname = 'madv_api') then create role madv_api; end if; end $$").await;
+        p.exec("do $$ begin create role madv_api; exception when duplicate_object or unique_violation then null; end $$").await;
         p.exec("alter default privileges in schema public grant select on tables to madv_api; alter default privileges grant execute on functions to madv_api").await;
         p.schema("create table t (id int); create function f() returns int language sql as 'select 1';");
         p.file("20261030100000_t.sql", "create table t (id int); create function f() returns int language sql as 'select 1';");

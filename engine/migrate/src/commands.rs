@@ -2265,22 +2265,24 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 .filter(|l| !l.starts_with('\\') && !l.starts_with("SET ") && !l.starts_with("SELECT pg_catalog.set_config") && !l.starts_with("--") && !(l.starts_with("ALTER ") && l.ends_with(&own)) && !platform_default(l))
                 .collect();
             let mut joined = kept.join("\n").replace("\nCREATE SCHEMA public;\n", "\nCREATE SCHEMA IF NOT EXISTS public;\n");
-            // What the project made on tables outside the schemas dumped, a platform's (Supabase's
-            // `auth.users`, `storage.objects`): its triggers, whose function is no platform's, and
-            // its policies, which pg_dump writes only with their table.
+            // What the project made on a platform's tables (Supabase's `auth.users`, `storage.objects`),
+            // which no schema dumped holds: its triggers, whose function is no platform's, and its
+            // policies, which pg_dump writes only with their table.
             let list = named_schemas.iter().map(|s| crate::db::literal(s)).collect::<Vec<_>>().join(", ");
             let extra = db
                 .rows(&format!(
                     "select pg_get_triggerdef(t.oid) || ';' as s from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace join pg_proc f on f.oid = t.tgfoid
-                    where not t.tgisinternal and t.tgparentid = 0 and n.nspname not in ({list}) and n.nspname not in ('pg_catalog', 'information_schema') and {}
+                    where not t.tgisinternal and t.tgparentid = 0 and n.nspname not in ({list}) and not {} and {}
                     union all
                     select format('CREATE POLICY %I ON %I.%I AS %s FOR %s TO %s%s%s;', p.polname, n.nspname, c.relname, case when p.polpermissive then 'PERMISSIVE' else 'RESTRICTIVE' end,
                       case p.polcmd when 'r' then 'SELECT' when 'a' then 'INSERT' when 'w' then 'UPDATE' when 'd' then 'DELETE' else 'ALL' end,
                       (select string_agg(case when r = 0 then 'public' else quote_ident(pg_get_userbyid(r)) end, ', ' order by 1) from unnest(p.polroles) r),
                       coalesce(' USING (' || pg_get_expr(p.polqual, p.polrelid) || ')', ''), coalesce(' WITH CHECK (' || pg_get_expr(p.polwithcheck, p.polrelid) || ')', ''))
                     from pg_policy p join pg_class c on c.oid = p.polrelid join pg_namespace n on n.oid = c.relnamespace
-                    where n.nspname not in ({list}) and n.nspname not in ('pg_catalog', 'information_schema')",
-                    crate::catalog::not_platform("f.proowner")
+                    where n.nspname not in ({list}) and not {}",
+                    crate::catalog::not_platform("c.relowner"),
+                    crate::catalog::not_platform("f.proowner"),
+                    crate::catalog::not_platform("c.relowner")
                 ))
                 .await?;
             if !extra.is_empty() {

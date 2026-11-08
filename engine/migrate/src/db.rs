@@ -510,7 +510,9 @@ impl Server {
                 let environment_role = if platform.is_empty() {
                     None
                 } else {
-                    target.rows(&format!("select rolname as r from pg_roles where rolname in ({roles}) and pg_has_role(current_user, oid, 'SET') order by rolname limit 1")).await?.first().map(|r| r.text("r").to_string())
+                    // Postgres 16 grants `SET ROLE` apart from membership; before it, membership is it.
+                    let can = if version >= 160000 { "SET" } else { "MEMBER" };
+                    target.rows(&format!("select rolname as r from pg_roles where rolname in ({roles}) and pg_has_role(current_user, oid, '{can}') order by rolname limit 1")).await?.first().map(|r| r.text("r").to_string())
                 };
                 // Made where the shadows may become one of the platform's roles; a dump that fails
                 // leaves them without, as before.
