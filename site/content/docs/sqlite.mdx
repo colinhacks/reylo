@@ -875,6 +875,7 @@ What Reylo can't type on SQLite, and what to do instead:
 | Attached databases and `TEMP` tables, since the type check reads one database file | None: a query on one is an error in the type check |
 | Virtual table modules on a driver the type check doesn't run the query on, such as `bun:sqlite` or a Durable Object: Reylo's SQLite has FTS3, FTS4, FTS5, R-tree, Geopoly and `dbstat` | Check that driver's SQLite yourself |
 | `REAL` arithmetic with no answer, such as `1e999 * 0`, which SQLite returns as `NULL` where Reylo types a number | Write `coalesce(price * qty, 0)` where a `REAL` may hold an infinity |
+| Integer arithmetic past 64 bits, such as `9223372036854775807 + 1`, which SQLite returns as a `REAL` where Reylo types an integer: `node:sqlite` returns that number, and `better-sqlite3` and libSQL throw an error | Cast an operand to `real` where a result may pass 2^63, as `cast(n as real) * 2` |
 | A query past 350 nested expressions, which SQLite rejects with "Expression tree is too large" | Split the query up |
 | A statement other than a query, such as `create index` or `pragma table_info(users)` | None: it returns nothing, or rows whose columns are all `unknown` and nullable |
 | A file of several statements, such as a migration | Put each statement in a file of its own |

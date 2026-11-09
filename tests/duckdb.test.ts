@@ -406,6 +406,29 @@ test("DuckDB: a DuckDB connection is never taken for better-sqlite3", { skip }, 
   }
 });
 
+test("DuckDB: a Standard Query's decode of node-api's getRows() is .run()'s result, for every type and every value nested in another", { skip }, async () => {
+  const root = await project(`${SCHEMA}\ncreate table t as select * from test_all_types();`);
+  const nested = `select [[1, 2], [3]] as grid, [date '2026-10-20', null] as days, [timestamptz '2026-10-20 10:00:00+02'] as instants, {'d': date '2026-10-20', 'n': 1.50::decimal(10, 2), 'at': timestamp '2026-10-20 10:00:00.5', 'zoned': timestamptz '2026-10-20 10:00:00+02', 'big': 9007199254740993::bigint, 'tags': ['a', null], 'blob': '\\x01'::blob} as s, map {'k': interval 1 day} as m, union_value(num := 2)::union(num integer, str varchar) as u, (1, 'x') as tup, 42::variant as v, '{"a": [1]}'::json as j, ['{"b": 2}'::json] as js, timestamp_s '2026-10-20 10:00:00' as secs, timestamp_ms '2026-10-20 10:00:00.123' as millis, timestamp_ns '2026-10-20 10:00:00.123456789' as nanos, time '12:34:56.5' as tm, uuid 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' as id`;
+  const queries = [await built(root, "all", "select * from t"), await built(root, "nested", nested)];
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    for (const q of queries) {
+      const sq = (q as unknown as { "~standard": { query: { text: string; decode(rows: unknown[][]): unknown; columns: { name: string; decode(v: unknown): unknown }[]; output(rows: Record<string, unknown>[]): unknown } } })["~standard"].query;
+      const read = async () => ((await c.runAndReadAll(sq.text)) as { getRows(): unknown[][] }).getRows();
+      const run = await q.run(c);
+      assert.deepStrictEqual(sq.decode(await read()), run);
+      // Each column's decoder gives the same values, which `output` makes the same result.
+      const rows = (await read()).map((r) => Object.fromEntries(sq.columns.map((col, i) => [col.name, r[i] === null ? null : col.decode(r[i])])));
+      assert.deepStrictEqual(sq.output(rows), run);
+    }
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
 test("DuckDB: a column named __proto__ is an own property of the row, never its prototype", { skip }, async () => {
   const db = await api().DuckDBInstance.create(":memory:");
   const c = await db.connect();
