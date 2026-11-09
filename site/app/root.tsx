@@ -4,30 +4,28 @@ import type { ReactNode } from 'react';
 import { isRouteErrorResponse, Outlet } from 'react-router';
 import type { Route } from './+types/root';
 import caveatLatin from '../assets/fonts/caveat-latin.woff2?url';
-import geistLatin from '../assets/fonts/geist-latin.woff2?url';
+import plexLatin from '../assets/fonts/ibm-plex-sans-latin.woff2?url';
 import geistMonoLatin from '../assets/fonts/geist-mono-latin.woff2?url';
 import orbitron from '../assets/fonts/orbitron.woff2?url';
 import fontsCss from './fonts.css?url';
 import { NotFound } from '@/components/not-found';
 import { DIALECTS } from '@/lib/dialects';
 
-// The fonts (app/fonts.css): Geist for text and Geist Mono for code, which the review of
-// 2026-10-20 ("too wide", "the legibility isn't very good anymore") chose over Inter and JetBrains
-// Mono after a comparison of six directions on the live page, and Caveat for the "Leave a star!"
-// note. They are the files next/font served until the site left Next.js, with the same faces:
-// `font-display: optional` for Geist and Geist Mono (a font that arrived after the first paint
+// The fonts (app/fonts.css): IBM Plex Sans for text, Geist Mono for code, and Caveat for the
+// "Leave a star!" note, with the faces next/font gave them while the site was on Next.js:
+// `font-display: optional` for IBM Plex Sans and Geist Mono (a font that arrived after the first paint
 // rewrapped the opening paragraph, a layout shift of 0.057 at 1440 wide and 0.146 at 390, measured
-// 2026-10-20), Geist's size-adjusted fallback, and the system's monospace behind Geist Mono. Their
+// 2026-10-20), IBM Plex Sans's size-adjusted fallback, and the system's monospace behind Geist Mono. Their
 // Latin files are preloaded, so they make the first paint on any ordinary connection; a first view
 // whose fonts take longer keeps the fallbacks, and the next view has them cached. The faces are a
 // stylesheet of their own, linked here rather than imported by global.css: under `vite dev`, React
 // Router serves the imported CSS as a stylesheet that it removes once the page hydrates, when Vite
 // injects its own copy, and the faces declared again then missed `optional`'s window, so the page
-// went from Geist to Arial and Menlo for the rest of the visit (docs-kit's README). A linked
+// went to Arial and Menlo for the rest of the visit (docs-kit's README). A linked
 // stylesheet stays put.
 export const links: Route.LinksFunction = () => [
   { rel: 'stylesheet', href: fontsCss },
-  ...[geistLatin, geistMonoLatin, caveatLatin, orbitron].map((href) => ({ rel: 'preload', href, as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' as const })),
+  ...[plexLatin, geistMonoLatin, caveatLatin, orbitron].map((href) => ({ rel: 'preload', href, as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' as const })),
   { rel: 'manifest', href: '/manifest.webmanifest' },
   { rel: 'apple-touch-icon', href: '/apple-icon.png', sizes: '180x180', type: 'image/png' },
   { rel: 'author', href: 'https://github.com/colinhacks' },
