@@ -111,7 +111,9 @@ for (const i of ids) {
   for (const [row, c] of Object.entries<any>(t.cells)) {
     const wrong = c.results.filter((r: any) => !r.ok && !r.problems.every((p: string) => p === "it does not infer one"));
     // The clearest query the tool got wrong, with every database it is wrong on.
-    const first = [...wrong].sort((x: any, y: any) => rank(row, x.probe) - rank(row, y.probe))[0];
+    // A card marks a line of the answer, so a query whose mistake is on no line of it (a column the tool left out) comes after every other.
+    const drawn = (r: any) => !!r.answer.error || r.at.some((at: any) => (at.cardinality && r.answer.cardinality) || (at.param && r.answer.params?.[at.param - 1]) || (at.column && r.answer.columns?.some((c: any) => c.name.toLowerCase() === at.column.toLowerCase())));
+    const first = [...wrong].sort((x: any, y: any) => Number(drawn(y)) - Number(drawn(x)) || rank(row, x.probe) - rank(row, y.probe))[0];
     let example: any;
     if (first) {
       const same = (r: any) => r.sql === first.sql && r.problems.join() === first.problems.join();

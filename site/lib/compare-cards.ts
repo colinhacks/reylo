@@ -130,7 +130,7 @@ export async function buildCompareCards(results: Results): Promise<Record<string
 
 /** The Vite plugin behind `virtual:compare-cards`. */
 export function compareCards(): Plugin {
-  const file = new URL('./compare-results.json', import.meta.url).pathname;
+  const file = `${import.meta.dirname}/compare-results.json`;
   return {
     name: 'reylo-compare-cards',
     resolveId: (id) => (id === VIRTUAL ? `\0${VIRTUAL}` : undefined),

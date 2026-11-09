@@ -561,12 +561,18 @@
     "expression-nullability": {
      "state": "p",
      "example": {
-      "sql": "select (select count(*) from posts) as v",
+      "sql": "select sum(score) as v from posts",
       "params": [],
-      "columns": [],
+      "columns": [
+       {
+        "name": "v",
+        "type": "number",
+        "wrong": true
+       }
+      ],
       "reylo": {
        "params": "Record<never, never>",
-       "row": "{ v: bigint }",
+       "row": "{ v: bigint | null }",
        "cardinality": "one",
        "rows": "exactly one row"
       }
