@@ -10,7 +10,7 @@ export type InferenceStatement = { title: string; slug: string; sql: string };
  */
 export function inferenceStatements(source: string): InferenceStatement[] {
   const out: InferenceStatement[] = [];
-  for (const part of source.split(/\n### /).slice(1)) {
+  for (const part of source.split(/\n## /).slice(1)) {
     const heading = part.slice(0, part.indexOf('\n'));
     const title = heading.replace(/\s*\[#[^\]]*\]\s*$/, '').replace(/`/g, '').trim();
     const anchor = /\[#([^\]]+)\]/.exec(heading)?.[1];

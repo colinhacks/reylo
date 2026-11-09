@@ -16,54 +16,6 @@
           "message": "column \"nmae\" does not exist (42703)"
         }
       ]
-    },
-    "list_users.sql": {
-      "fa99ecd8273b3ee7": [
-        {
-          "start": {
-            "line": 3,
-            "column": 10
-          },
-          "end": {
-            "line": 3,
-            "column": 15
-          },
-          "source": "reylo(17)",
-          "message": "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end"
-        }
-      ]
-    },
-    "post_ids.sql": {
-      "1cff64606724e47e": [
-        {
-          "start": {
-            "line": 1,
-            "column": 16
-          },
-          "end": {
-            "line": 1,
-            "column": 18
-          },
-          "source": "reylo(14)",
-          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
-        }
-      ]
-    },
-    "record_click.sql": {
-      "57123fa582c9c7a7": [
-        {
-          "start": {
-            "line": 2,
-            "column": 33
-          },
-          "end": {
-            "line": 2,
-            "column": 53
-          },
-          "source": "reylo(20)",
-          "message": "The schema in the cast of :payload is not JSON: expected value at line 1 column 11."
-        }
-      ]
     }
   },
   "mysql": {
@@ -82,54 +34,6 @@
           "message": "Unknown column 'nmae' in 'field list' (ER_BAD_FIELD_ERROR)"
         }
       ]
-    },
-    "list_users.sql": {
-      "fa99ecd8273b3ee7": [
-        {
-          "start": {
-            "line": 3,
-            "column": 10
-          },
-          "end": {
-            "line": 3,
-            "column": 21
-          },
-          "source": "reylo(17)",
-          "message": "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end"
-        }
-      ]
-    },
-    "post_ids.sql": {
-      "1cff64606724e47e": [
-        {
-          "start": {
-            "line": 1,
-            "column": 1
-          },
-          "end": {
-            "line": 1,
-            "column": 7
-          },
-          "source": "reylo(14)",
-          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
-        }
-      ]
-    },
-    "record_click.sql": {
-      "57123fa582c9c7a7": [
-        {
-          "start": {
-            "line": 2,
-            "column": 33
-          },
-          "end": {
-            "line": 2,
-            "column": 53
-          },
-          "source": "reylo(20)",
-          "message": "The schema in the cast of :payload is not JSON: expected value at line 1 column 11."
-        }
-      ]
     }
   },
   "sqlite": {
@@ -146,54 +50,6 @@
           },
           "source": "reylo(6)",
           "message": "no such column: nmae"
-        }
-      ]
-    },
-    "list_users.sql": {
-      "fa99ecd8273b3ee7": [
-        {
-          "start": {
-            "line": 3,
-            "column": 10
-          },
-          "end": {
-            "line": 3,
-            "column": 21
-          },
-          "source": "reylo(17)",
-          "message": "order by :sort sorts every row by the same value, since a parameter is a value and not a column's name; choose the column with case :sort when 'name' then name end"
-        }
-      ]
-    },
-    "post_ids.sql": {
-      "1cff64606724e47e": [
-        {
-          "start": {
-            "line": 1,
-            "column": 1
-          },
-          "end": {
-            "line": 1,
-            "column": 7
-          },
-          "source": "reylo(14)",
-          "message": "Columns 1 and 2 are both named \"id\", and a row keeps only the last of them. Give one of them another name with `as`."
-        }
-      ]
-    },
-    "record_click.sql": {
-      "57123fa582c9c7a7": [
-        {
-          "start": {
-            "line": 2,
-            "column": 33
-          },
-          "end": {
-            "line": 2,
-            "column": 53
-          },
-          "source": "reylo(20)",
-          "message": "The schema in the cast of :payload is not JSON: expected value at line 1 column 11."
         }
       ]
     }

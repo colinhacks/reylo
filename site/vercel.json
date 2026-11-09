@@ -29,7 +29,7 @@
       "headers": { "Content-Type": "text/markdown; charset=utf-8", "Vary": "Accept" }
     },
     {
-      "src": "^/(postgres|mysql|sqlite)$",
+      "src": "^/(usage|inference|configuration|observability|schema-changes|typedefs|compare|faq|postgres|mysql|sqlite|duckdb|prisma)$",
       "has": [{ "type": "header", "key": "accept", "value": "^(?!.*text/html.*text/(?:x-)?markdown).*text/(?:x-)?markdown.*$" }],
       "dest": "/$1.md",
       "headers": { "Content-Type": "text/markdown; charset=utf-8", "Vary": "Accept" }
