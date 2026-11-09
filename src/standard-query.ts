@@ -14,6 +14,7 @@
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
 import { decodePlan } from "./codecs.ts";
+import { decodeDuckdbValue } from "./decode-duckdb.ts";
 import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
@@ -115,7 +116,8 @@ export declare namespace StandardQueryV1 {
   /**
    * A value in its raw form: what a driver of the database reads before converting anything, and
    * binds without converting anything. On Postgres, the value's text as the server sends it in
-   * the text format. NULL is `null`.
+   * the text format; on DuckDB, the value as `@duckdb/node-api`'s `reader.getRows()` reads it,
+   * one of its own classes for a nested or temporal value. NULL is `null`.
    */
   export type RawValue<D extends Dialect = Dialect> =
     | null
@@ -140,6 +142,11 @@ function decoder(name: string, kind: string, delim: string | undefined): (v: unk
       return coerce(kind, v, name, delim);
     };
   return (v) => coerce(kind, v, name, delim);
+}
+
+/** A DuckDB column's value as node-api's `getRows()` reads it, in the form `.run()` gives it (src/decode-duckdb.ts), each plain value as its kind. */
+function duckdbDecoder(name: string, kind: string): (v: unknown) => unknown {
+  return (v) => decodeDuckdbValue(v, kind, name, (k, x) => coerce(k, x, name));
 }
 
 /** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
@@ -168,7 +175,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
   const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
-    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : dialect === "duckdb" ? duckdbDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
     return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);

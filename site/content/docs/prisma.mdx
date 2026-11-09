@@ -81,7 +81,7 @@ In one production app's migration, of about 750 Prisma Client calls, a billing r
 | Concern | In practice |
 | --- | --- |
 | Relations become N+1 queries | A relation is a subquery in the same statement, as above |
-| Queries can't be built at run time | Optional filters are one JSON parameter ([Dynamic filtering](/#dynamic-filtering)), a sort order is a `case` ([Dynamic sorting](/#dynamic-sorting)), and a patch object is one update ([Partial updates](#partial-updates)) |
+| Queries can't be built at run time | Optional filters are one JSON parameter ([Dynamic filtering](/inference#dynamic-filtering)), a sort order is a `case` ([Dynamic sorting](/inference#dynamic-sorting)), and a patch object is one update ([Partial updates](#partial-updates)) |
 | Dates come back as strings | As ISO text in UTC, exact to the microsecond, where a `Date` keeps milliseconds and Prisma's `timestamp(3)` keeps no zone |
 | The build needs a database | Yes: a fresh one, migrated by the build itself ([Build and deploy](#build-and-deploy)) |
 | A migration can break a running deploy | A query warns when a column it reads is retyped or made nullable under it, and keeps running; one the database can no longer run fails with the database's error ([Build and deploy](#build-and-deploy)) |
@@ -184,9 +184,9 @@ Prisma Client reads a `String[]` as never null, and throws on a `NULL` element. 
 
 Reylo types each query against a database with your migrations applied, so every place that type-checks or builds needs one:
 
-- **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/#in-ci)).
-- **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
-- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and warns when a column it names is retyped or nullable where it was not, since its values may then contradict its types. The query still runs, a query naming a dropped or renamed column fails with the database's error, and a new column, a new default or a new `NOT NULL` says nothing. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/#deploying)).
+- **In CI**, start Postgres, run `prisma migrate deploy`, and then the type check ([In CI](/faq#in-ci)).
+- **On a host that migrates during the build**, such as Vercel, build against a fresh database: create it, run `prisma migrate deploy` into it, point [`direct_url`](/configuration#direct_url) at it for the build, and drop it. Then migrate the deployment's own database. The build types against exactly the schema the commit's migrations make, and no migration reaches production without applying cleanly first.
+- **Each query checks the schema it was typed against** on its first run in a process, then once a minute, and warns when a column it names is retyped or nullable where it was not, since its values may then contradict its types. The query still runs, a query naming a dropped or renamed column fails with the database's error, and a new column, a new default or a new `NOT NULL` says nothing. So add before you remove: the new column first, then the code that uses it, then the drop ([Deploying](/configuration#direct_url)).
 
 ```yaml title=".reylo.yaml"
 # the type check's database; a build points it at a fresh, migrated one
@@ -201,24 +201,24 @@ Each Prisma Client call, as SQL:
 | --- | --- |
 | `findUnique`, `findFirst` | `select … where id = :id` |
 | `findUniqueOrThrow`, `findFirstOrThrow` | the same `select`, and a check for `null` |
-| `findMany` with `include` | a `jsonb_agg` subquery per relation, as in [Why move](#why-move) and [Nested fetching](/#nested-fetching) |
+| `findMany` with `include` | a `jsonb_agg` subquery per relation, as in [Why move](#why-move) and [Nested fetching](/inference#nested-fetching) |
 | `count`, `aggregate`, `groupBy` | one `select` of scalar subqueries ([Counts](#counts)); a `Decimal` sum for display is `coalesce(sum(x), 0)::float8` |
 | A follow-up `findFirst` per row | a `left join lateral (… order by … limit 1)`, in the same statement |
 | `contains`, `startsWith` | `strpos(name, :q) > 0` and `starts_with(name, :q)`, since a `like` pattern reads `%` and `_` in the value |
 | `mode: "insensitive"` | `lower(email) = lower(:email)` |
-| `in: ids` | `id = any(:ids::text[])` ([Filtering by a list](/#filtering-by-a-list)) |
-| Optional filters | one JSON parameter ([Dynamic filtering](/#dynamic-filtering)) |
+| `in: ids` | `id = any(:ids::text[])` ([Filtering by a list](/inference#filtering-by-a-list)) |
+| Optional filters | one JSON parameter ([Dynamic filtering](/inference#dynamic-filtering)) |
 | `create` | `insert … returning …` |
-| `createMany`, or `upsert` in a loop | one `insert … select` from a JSON parameter, with `on conflict` for an upsert ([Bulk inserts](/#bulk-inserts)) |
+| `createMany`, or `upsert` in a loop | one `insert … select` from a JSON parameter, with `on conflict` for an upsert ([Bulk inserts](/inference#bulk-inserts)) |
 | `upsert` | `insert … on conflict (id) do update … returning …` |
-| `update` with optional fields | `set name = coalesce(:name::nullable(text), name)` ([Nullable parameters](/#nullable-parameters)) |
+| `update` with optional fields | `set name = coalesce(:name::nullable(text), name)` ([Nullable parameters](/inference#nullable-parameters)) |
 | `update` with a patch object | `jsonb_populate_record` ([Partial updates](#partial-updates)) |
 | An `update` or a `delete` that throws P2025 | `returning`, and a check for `null`, since a missing row is no longer an error |
 | `updateMany` that fills columns still empty | `set c = coalesce(c, :new) where c is null` ([Recipes](/postgres#recipes)) |
 | `deleteMany` with a relation filter | `delete … using` the related table |
 | A filter object kept in a constant, like `{ not: "draft" }` | the same condition in each query, or a view |
-| A catch of P2002 or P2034 | [`.try()`](/#try) and the error's `condition` |
-| `$transaction` | a transaction of your driver ([Transactions](/#transactions)) |
+| A catch of P2002 or P2034 | [`.try()`](/usage#try) and the error's `condition` |
+| `$transaction` | a transaction of your driver ([`.run()`](/usage#run)) |
 | `$transaction` with `timeout` or `maxWait` | no equivalent: `statement_timeout` bounds a statement, not a transaction waiting on your code, so move slow calls outside it |
 | `$Enums.X` and model types | each query's `Row` and `Params`; an enum alone is a query imported for its `Row` ([Recipes](/postgres#recipes)) |
 | `omit` on the client | no equivalent: name a shared read's columns, since `*` picks up a large column as soon as it is added |
@@ -323,5 +323,5 @@ Each of these caught something the type check can't see:
 - **Type-check every folder.** Run `tsc --noEmit --runExternalCode` against a database with the branch's migrations, and give any folder `tsconfig.json` skips a `tsconfig` of its own.
 - **Probe the risky statements.** Run each compare-and-set, partial update and cardinality guard against throwaway rows, and check what it reports.
 - **Compare with production.** Run every read-only report from the old code and the new under one read-only credential, with `TZ=UTC`, and diff the JSON with arrays sorted by key. In one production app, that separated live drift and tie order from one real bug: a sort that had lost its `::text`.
-- **Compare the catalogs.** Dump each column's table, name, type, `NOT NULL` and default from production and from an empty database built by your old migrations. If they match, the [freshness check](/#freshness-check) says nothing after the deploy.
+- **Compare the catalogs.** Dump each column's table, name, type, `NOT NULL` and default from production and from an empty database built by your old migrations. If they match, the [freshness check](/schema-changes) says nothing after the deploy.
 - **Probe the locks.** Run your migrations against a production-sized copy while a client reads, inserts and updates every 50 ms, and record each operation's worst latency and errors. That is how the deadlock behind one table per migration was found.

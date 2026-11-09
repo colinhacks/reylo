@@ -3,9 +3,14 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
-import { defineQuery, type MysqlClient, type MysqlCode, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresQueryError, type Query, type SqliteCode, type SqliteQueryError } from "../src/index.ts";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+import { defineQuery, type MysqlClient, type MysqlCode, type MysqlNarrowing, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresNarrowing, type PostgresQueryError, type Query, type SqliteCode, type SqliteNarrowing, type SqliteQueryError } from "../src/index.ts";
 import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
-import { DRIVERS, MYSQL, pgLive, mysqlLive, postgresDatabase, driver } from "./helpers.ts";
+import { queryErrorType } from "../src/module-types.ts";
+import type { Analysis, Dialect } from "../src/engine.ts";
+import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, languageServer } from "./helpers.ts";
 
 // `.try()` and the database's error it reads from each driver's own (src/query-error.ts). The
 // drivers' errors below are the ones each throws, measured on the real package (lab/driver-matrix
@@ -318,6 +323,75 @@ test("MySQL: try reads each constraint and a signal's own number, on mysql2 and 
   }
 });
 
+test("a hover names each dialect's error type, as the module's QueryError or the dialect's own, and never lists the codes the database defines", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "reylo-query-error-")));
+  writeFileSync(join(root, "package.json"), `{ "type": "module" }`);
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(ROOT, join(root, "node_modules", "reylo"));
+  const compilerOptions = { target: "esnext", module: "nodenext", lib: ["esnext"], types: [], strict: true, noEmit: true, skipLibCheck: true, allowArbitraryExtensions: true };
+  writeFileSync(join(root, "tsconfig.json"), JSON.stringify({ compilerOptions, include: ["main.ts"] }));
+  // Each module declares its query as the content mapper does (src/mapper-server.ts), with the
+  // QueryError the mapper writes: narrowed where the statement runs only the database's own code,
+  // the dialect's whole type where it may run a user's.
+  const modules: [name: string, dialect: Dialect, errors: Analysis["errors"], named: string][] = [
+    ["pg_select", "postgres", {}, "QueryError"],
+    ["pg_insert", "postgres", { "23505": { constraint: ["users_email_key", "users_pkey"], table: ["users"] } }, "QueryError"],
+    ["pg_audited", "postgres", undefined, "PostgresQueryError"],
+    ["my_insert", "mysql", { ER_DUP_ENTRY: { key: ["users.email"] } }, "QueryError"],
+    ["my_audited", "mysql", undefined, "MysqlQueryError"],
+    ["lite_insert", "sqlite", { SQLITE_CONSTRAINT_UNIQUE: { table: ["users"], columns: ["email", "slug, lang"] } }, "QueryError"],
+    ["lite_audited", "sqlite", undefined, "SqliteQueryError"],
+    ["duck_select", "duckdb", undefined, "DuckdbQueryError"],
+  ];
+  for (const [name, dialect, errors] of modules) {
+    const text = `import type { Query } from "reylo";\nexport type QueryError = ${queryErrorType(dialect, errors)};\ndeclare const query: Query<{ id: number }, { id: number }, "many", ${JSON.stringify(dialect)}, QueryError>;\nexport default query;\n`;
+    writeFileSync(join(root, `${name}.d.sql.ts`), text);
+  }
+  const main = [
+    ...modules.map(([name]) => `import ${name} from "./${name}.sql";`),
+    ...modules.map(([name]) => `export const ${name}_error = (await ${name}.try(null!, { id: 1 })).error;`),
+    // Every code but the one the narrowing lists.
+    `export const pg_other = pg_insert_error?.code === "23505" ? undefined : pg_insert_error;`,
+    `export const lite_other = lite_insert_error?.code === "SQLITE_CONSTRAINT_UNIQUE" ? undefined : lite_insert_error;`,
+    // A narrowed field, which a hover names by itself, as the docs show it.
+    `export const pg_named = pg_insert_error?.code === "23505" ? pg_insert_error.constraint : undefined;`,
+    `export const my_named = my_insert_error?.code === "ER_DUP_ENTRY" ? my_insert_error.key : undefined;`,
+    `export const lite_named = lite_insert_error?.code === "SQLITE_CONSTRAINT_UNIQUE" ? lite_insert_error.columns : undefined;`,
+  ].join("\n");
+  writeFileSync(join(root, "main.ts"), main);
+  const at = (needle: string) => {
+    const before = main.slice(0, main.indexOf(needle)).split("\n");
+    return { line: before.length - 1, character: before.at(-1)!.length };
+  };
+  const lsp = languageServer(root);
+  try {
+    await lsp.request("initialize", { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: { textDocument: { hover: { contentFormat: ["markdown"] } } } });
+    lsp.notify("initialized", {});
+    const uri = pathToFileURL(join(root, "main.ts")).href;
+    lsp.notify("textDocument/didOpen", { textDocument: { uri, languageId: "typescript", version: 1, text: main } });
+    const hover = async (needle: string): Promise<string> => (await lsp.request("textDocument/hover", { textDocument: { uri }, position: at(needle) }))?.contents?.value ?? "";
+    // A list TypeScript cuts short reads `... 204 more ...`.
+    const listsNoCodes = (text: string) => assert.ok(text !== "" && !text.includes(" more ...") && text.length < 600, text);
+    for (const [name, dialect, , named] of modules) {
+      const query = await hover(`${name} from`);
+      listsNoCodes(query);
+      assert.ok(query.includes(`"many", ${JSON.stringify(dialect)}, ${named}>`), query);
+      const error = await hover(`${name}_error =`);
+      listsNoCodes(error);
+      assert.ok(error.includes(`${named} | undefined`), error);
+    }
+    const pgOther = await hover("pg_other =");
+    listsNoCodes(pgOther);
+    assert.ok(pgOther.includes("Readonly<PostgresErrorFields> & PostgresOtherCode<"), pgOther);
+    listsNoCodes(await hover("lite_other ="));
+    assert.match(await hover("constraint : undefined"), /^\(property\) constraint: "users_email_key" \| "users_pkey" \| undefined$/m);
+    assert.match(await hover("key : undefined"), /^\(property\) key: "users\.email" \| undefined$/m);
+    assert.match(await hover("columns : undefined"), /^\(property\) columns: readonly \["email"\] \| readonly \["slug", "lang"\] \| undefined$/m);
+  } finally {
+    await lsp.close();
+  }
+});
+
 // The types alone: never run, checked by the type check.
 export async function types(pg: Query<{}, { id: number }, "one", "postgres">, my: Query<{}, never, "none", "mysql">, lite: Query<{}, never, "none", "sqlite">, pgDb: PostgresClient, myDb: MysqlClient, liteDb: DatabaseSync) {
   const a = await pg.try(pgDb);
@@ -367,6 +441,19 @@ export async function types(pg: Query<{}, { id: number }, "one", "postgres">, my
     // @ts-expect-error: no such table
     if (liteNarrowed.table === "users") {}
   }
+  // A narrowing inferred back from a narrowed error, for which TypeScript compares the type's
+  // parameter generically: each narrowing must stay one type there, not one per code the database
+  // defines, which made "a union type that is too complex to represent".
+  const pgNarrowing = <N extends PostgresNarrowing | undefined>(e: PostgresQueryError<N>) => e as unknown as N;
+  pgNarrowing(narrowed) satisfies { "23505": { constraint: "users_email_key" | "users_pkey"; table: "users" } };
+  const myNarrowing = <N extends MysqlNarrowing | undefined>(e: MysqlQueryError<N>) => e as unknown as N;
+  myNarrowing(myNarrowed) satisfies { ER_DUP_ENTRY: { key: "users.PRIMARY" | "users.email" } };
+  const liteNarrowing = <N extends SqliteNarrowing | undefined>(e: SqliteQueryError<N>) => e as unknown as N;
+  liteNarrowing(liteNarrowed) satisfies { SQLITE_CONSTRAINT_UNIQUE: { table: "posts"; columns: readonly ["email"] | readonly ["slug", "lang"] } };
+  // A narrowed error is still the dialect's error.
+  narrowed satisfies PostgresQueryError;
+  myNarrowed satisfies MysqlQueryError;
+  liteNarrowed satisfies SqliteQueryError;
   const c = lite.trySync(liteDb);
   if (c.error) {
     c.error.code satisfies SqliteCode | undefined;

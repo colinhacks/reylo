@@ -10,7 +10,7 @@ description: How Reylo types SQL queries on Postgres. The TypeScript type of eac
 | | |
 | --- | --- |
 | Postgres versions | 14 to 18 |
-| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/#direct_url). Connect directly, not through a pooler such as PgBouncer. |
+| Connection | A `postgres://` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url). Connect directly, not through a pooler such as PgBouncer. |
 | Drivers | postgres.js, `pg`, `pg-promise`, `Bun.sql`, PGlite, Neon and `@vercel/postgres`, and Drizzle over `pg`, postgres.js, Neon, PGlite or `Bun.sql` ([Drivers](#drivers)) |
 | Type checking | Reylo's engine connects to Postgres itself, so your project needs no driver for it |
 
@@ -464,7 +464,7 @@ A `CHECK` that keeps `NULL` out, like `array_position(tags, null) is null` on `u
 
 **Several dimensions**
 
-An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
+An array column is typed with one dimension, as nearly every column holds. Postgres doesn't track an array's dimensions, so an `int[]` column can hold `'{{1,2},{3,4}}'` too, and `.run()` throws on such a value, naming the column: select `to_jsonb(cells)` to read it as JSON instead, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) to type every array column at any depth. Inside JSON your query builds, as with `jsonb_build_object('cells', cells)`, `.run()` returns such a value as it is, and without that setting its type has one dimension. An array your query builds of arrays, like `array_agg(tags)` or `array[tags, tags]`, is typed with each level it adds.
 
 <Pairs>
 
@@ -796,7 +796,7 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update`, `delete` or `merge` without `returning` |
 | `Row[]` | `many` | is anything else |
 
-Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/#values)). Among several columns, such an expression is a type error where Postgres names it `?column?`, as it does `id + 1`; a function's name, like `lower`, passes.
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where Postgres names it `?column?`, as it does `id + 1`; a function's name, like `lower`, passes.
 
 <Rules>
 
@@ -944,7 +944,7 @@ where o.paid
 
 **Decoding each value once**
 
-A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
+A driver that reads a result value by value can decode each value as it reads it, instead of handing the raw rows to `decode`. The query's Standard Query object lists its output columns in order as `columns`, each with its `name` and a `decode` that maps the column's text to its value, typed column by column. Its `output` takes the rows built that way, keyed by the columns' names, and returns what `decode` would: the rows, the row or `null`, as the cardinality says. Where the query's one column is an expression with no alias, both return that column's values instead of rows ([single values](/inference#values)). A driver never calls a column's `decode` for NULL, which is `null` in the row.
 
 ```ts twoslash tab="main.ts"
 import paidOrders from "./pg_columns_orders.sql";
@@ -1168,7 +1168,7 @@ select null::user_role as role
 
 ## Database errors
 
-With [`.try()`](/#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
+With [`.try()`](/usage#try), an error Postgres raised comes back as `{ error }`, with the fields the server sent under the same names on every driver:
 
 | Field | What it holds |
 | --- | --- |
@@ -1373,7 +1373,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | Limit | Instead |
 | --- | --- |
 | A function whose body Reylo can't read, such as PL/pgSQL, a body of several statements or a name with several overloads: it's typed from its declared `returns`, every column nullable, and returns `Row[]` | Write it as one statement in `language sql` |
-| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/#allow_nested_arrays) |
+| An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select it from a subquery that names its columns |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |

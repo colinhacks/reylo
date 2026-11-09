@@ -6,16 +6,16 @@
 @import './typedefs.css';
 
 /* The page's three faces (app/fonts.css, which app/root.tsx links: the files next/font served
-   before the site left Next.js), as the variables docs-kit's stylesheet reads: Geist for text, behind it its size-adjusted Arial;
+   before the site left Next.js), as the variables docs-kit's stylesheet reads: IBM Plex Sans for text, behind it its size-adjusted Arial;
    Geist Mono for code, behind it the system's monospace; Caveat for the "Leave a star!" note. */
 :root {
-  --font-text: 'Geist', 'Geist Fallback';
+  --font-text: 'IBM Plex Sans', 'IBM Plex Sans Fallback';
   --font-code: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --font-hand: 'Caveat', 'Caveat Fallback';
 }
 
 /* ── Reylo: neutral greys and one yellow ──────────────────────────────────────
-   The type is Geist and Geist Mono (app/layout.tsx). Every surface and rule is
+   The type is IBM Plex Sans and Geist Mono (app/fonts.css). Every surface and rule is
    a colourless grey, near-black by night and white by day, so the yellow is
    the page's only colour: it marks links, the active table-of-contents entry
    and inline code. In light mode the yellow darkens to ochre wherever it
@@ -425,6 +425,10 @@
 
 .dark #nd-page .dk-callout-head svg {
   filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.55));
+}
+
+.dark .dk-pages-item[aria-current='page']::before {
+  box-shadow: 0 0 8px rgb(255 184 0 / 0.65);
 }
 
 .dark .dk-star svg {

@@ -2,7 +2,6 @@
 title: "Inference"
 ---
 
-## Inference
 
 Reylo lets you use the full power of SQL provided by your database. Postgres, MySQL and SQLite are all supported.
 
@@ -97,9 +96,9 @@ For every rule and edge case of each database, from 64-bit integers to time zone
 
 </Details>
 
-At run time, the [preload](#setup-node) or a bundler [plugin](#plugins) turns the same file into a module that runs the query through your driver.
+At run time, the [preload](/#setup-node) or a bundler [plugin](/#plugins) turns the same file into a module that runs the query through your driver.
 
-Reylo caches each answer in [`.reylo/`](#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
+Reylo caches each answer in [`.reylo/`](/faq#faq-reylo-directory), keyed by a fingerprint of the schema, so after a migration the next type check sees the new schema: a dropped column fails in the `.sql` file that names it, and in the code that reads it.
 
 <Details summary="Where each type comes from, in each dialect" id="sources">
 
@@ -150,7 +149,7 @@ Reylo reads the schema from the database file and [prepares](https://sqlite.org/
 
 </Details>
 
-### Named parameters [#naming]
+## Named parameters [#naming]
 
 For convenience, there is some Reylo-specific syntax that can be used inside your `.sql` files. This syntax is transpiled into the idiomatic form for your database's dialect.
 
@@ -166,7 +165,7 @@ where id = :id
 
 </Inferred>
 
-### Casts [#casts]
+## Casts [#casts]
 
 Where the query doesn't pin down a parameter's type, cast it. Reylo compiles the cast to each database's own:
 
@@ -182,7 +181,7 @@ where name like concat('%', :q::text, '%')
 
 <Details summary="When a parameter's type cannot be inferred" id="a-parameter-nothing-types">
 
-It's an error that says to [cast it](#casts), unless [`allow_untyped_params: true`](#allow_untyped_params) types it `unknown`.
+It's an error that says to [cast it](#casts), unless [`allow_untyped_params: true`](/configuration#allow_untyped_params) types it `unknown`.
 
 <DialectTabs>
 <Dialect value="Postgres">
@@ -210,7 +209,7 @@ A call to a function your application registers fails the type check, cast or no
 
 </Details>
 
-### Column types
+## Column types
 
 Each column comes back with its type:
 
@@ -224,7 +223,7 @@ where role = :role
 
 </Inferred>
 
-### Left joins
+## Left joins
 
 A left join makes the joined table's columns nullable:
 
@@ -252,7 +251,7 @@ where p.published_at > :since
 
 </Inferred>
 
-### Computed columns
+## Computed columns
 
 Reylo infers which computed columns can never be null:
 
@@ -268,7 +267,7 @@ where u.role = :role
 
 </Inferred>
 
-### Nullable parameters
+## Nullable parameters
 
 To accept null, cast a parameter to `nullable(…)`. Leaving it out passes `null`:
 
@@ -284,7 +283,7 @@ where user_id = coalesce(:user_id::nullable(int), user_id)
 
 A parameter written as it is to a column that may hold null, as in `insert into posts (published_at) values (:published_at)`, takes null too, and may be left out as well. Any other parameter takes no null: if one gets `null`, or is left out, `.run()` throws before the query runs, since the result's types rely on its value. A JSON parameter there takes `null` as JSON's `null`, which a `not null` JSON column holds; cast it to `nullable(…)` to pass SQL's `NULL` instead.
 
-### Dynamic sorting
+## Dynamic sorting
 
 To pick the sort order at run time, order by a `case` on a parameter:
 
@@ -303,7 +302,7 @@ order by
 
 </Inferred>
 
-### Dynamic filtering
+## Dynamic filtering
 
 To filter a list by a form's values, pass them as one [JSON parameter](#typed-json). Its schema says what each filter takes and what it defaults to, and Reylo checks it before the query runs:
 
@@ -419,7 +418,7 @@ import searchPosts from "./search_posts.sql";
 const posts = await searchPosts.run(db, { filters: await request.json() });
 ```
 
-### Unique keys
+## Unique keys
 
 Reylo infers each query's cardinality, how many rows it returns. A query that matches a unique key returns one row or null:
 
@@ -498,7 +497,7 @@ A unique index on an expression or with a `where` gives `many`.
 
 At run time, `.run()` throws rather than return a row count its type rules out.
 
-### Aggregates
+## Aggregates
 
 An aggregate without a group by returns exactly one row:
 
@@ -544,7 +543,7 @@ order by user_id
 
 </Inferred>
 
-### Single values [#values]
+## Single values [#values]
 
 A column with no name returns its values instead of rows:
 
@@ -576,7 +575,7 @@ Where such a value may be null and the query may also match no row, `null` stand
 
 Among several columns, a made-up name that isn't an identifier, like `count(*)` or `?column?`, is a type error. Name the column with `as`.
 
-### Window functions
+## Window functions
 
 Reylo types each window function: a row number is never null, while `lag()` is null on the first row:
 
@@ -594,7 +593,7 @@ from posts
 
 </Inferred>
 
-### Subqueries
+## Subqueries
 
 Run unrelated subqueries side by side, in one query and one round trip. With no `from`, the query returns exactly one row, and `.run()` resolves to it:
 
@@ -677,7 +676,7 @@ left join lateral (
 
 </Inferred>
 
-### Returning rows [#returning-inserts]
+## Returning rows [#returning-inserts]
 
 An insert that returns its row resolves to exactly that row:
 
@@ -732,7 +731,7 @@ returning old.name as old_name, new.name as new_name
 
 </Inferred>
 
-### Enums [#unions]
+## Enums [#unions]
 
 A text column whose check constraint lists its values is a union of them, as a Postgres enum is:
 
@@ -754,7 +753,7 @@ limit :limit::int
 
 </Inferred>
 
-### JSON aggregation [#json]
+## JSON aggregation [#json]
 
 Type information bubbles up through JSON aggregation:
 
@@ -789,7 +788,7 @@ group by u.id
 
 </Inferred>
 
-### Nested fetching
+## Nested fetching
 
 Fetch each row's related rows with a subquery. Postgres collects them into an array of rows, MySQL and SQLite into JSON, and Reylo types every field:
 
@@ -879,7 +878,7 @@ from users u
 
 </Inferred>
 
-### JSON Schema [#json-schema]
+## JSON Schema [#json-schema]
 
 Declare a JSON Schema, and Reylo types the JSON it describes. A JSON column declares one in a check constraint:
 
@@ -931,7 +930,7 @@ where id = :id::int
 
 </Inferred>
 
-### JSON parameters [#typed-json]
+## JSON parameters [#typed-json]
 
 A JSON parameter declares its schema in its cast to `json` or `jsonb`, and Reylo infers the parameter's type from it:
 
@@ -1019,7 +1018,7 @@ values (:payload)
 
 </Inferred>
 
-### Filtering by a list
+## Filtering by a list
 
 Pass the list as one parameter:
 
@@ -1059,7 +1058,7 @@ where id in (select j.value from input, json_each(input.ids) as j)
 
 </Inferred>
 
-### Bulk inserts
+## Bulk inserts
 
 Pass the rows as one [JSON parameter](#typed-json): the schema in its cast types them, and Reylo checks every row before the statement runs:
 
@@ -1132,7 +1131,7 @@ returning id
 
 </Inferred>
 
-### Nested inserts
+## Nested inserts
 
 Users with their posts, in one parameter. The posts find their user by `email`, a unique key.
 
@@ -1345,7 +1344,7 @@ join json_each(u.value -> 'posts') as p
 </Dialect>
 </DialectTabs>
 
-### Discriminated unions with `oneOf` [#oneof]
+## Discriminated unions with `oneOf` [#oneof]
 
 A `oneOf` in a schema is a [union](#unions). Give each member a key with one value, and it is a discriminated union, which TypeScript narrows on that key:
 
