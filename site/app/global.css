@@ -769,13 +769,6 @@ a.reylo-compare-name:hover {
     inset 0 0 40px 0 rgb(255 184 0 / 0.1);
 }
 
-.reylo-compare-foot {
-  margin-block: 0.75rem 0;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--color-fd-muted-foreground);
-}
-
 .reylo-compare-pop {
   width: max-content;
   max-width: min(360px, calc(100vw - 16px));
@@ -792,39 +785,112 @@ a.reylo-compare-name:hover {
   margin-bottom: 0;
 }
 
-.reylo-compare-pop-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
-  white-space: nowrap;
-}
-
-.reylo-compare-pop-head b {
-  font-weight: 600;
-  color: var(--color-fd-foreground);
-}
-
-.reylo-compare-pop-head span,
-.reylo-compare-pop-count,
-.reylo-compare-pop-on {
-  font-size: 13px;
-}
-
-.reylo-compare-pop pre {
-  margin: 0 0 4px;
-  padding: 0;
-  background: none;
-  font: 12.5px/1.45 var(--font-mono, ui-monospace, monospace);
-  color: var(--color-fd-foreground);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
 .reylo-compare-pop code {
   border-radius: 4px;
   padding: 0.1em 0.3em;
   background: color-mix(in oklab, currentColor 12%, transparent);
   font: 0.92em/1 var(--font-mono, ui-monospace, monospace);
   color: var(--color-fd-foreground);
+}
+
+/* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
+.fd-twoslash-popover.reylo-compare-pop-card {
+  width: 480px;
+  max-width: min(480px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: 0;
+  --reylo-compare-wrong: hsl(5, 90%, 58%);
+}
+
+.dark .fd-twoslash-popover.reylo-compare-pop-card {
+  --reylo-compare-wrong: #ff6a5c;
+}
+
+.reylo-compare-card-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reylo-compare-card-on {
+  font-size: 12px;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-schema,
+.reylo-compare-card-query {
+  padding: 0.5rem 0.875rem 0.625rem;
+}
+
+.reylo-compare-card-schema {
+  border-bottom: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card pre {
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-light);
+}
+
+.dark .reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-dark);
+}
+
+.reylo-compare-card-types {
+  display: grid;
+  grid-template-columns: max-content 12px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.125rem 8px;
+  padding: 0.5rem 0.875rem 0.625rem;
+  border-top: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card-types svg {
+  width: 12px;
+  height: 12px;
+  align-self: center;
+}
+
+.reylo-compare-card-types code,
+.reylo-compare-pop .reylo-compare-card-types code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  color: var(--color-fd-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-pop .reylo-compare-card-types .reylo-compare-card-error {
+  font-family: var(--font-text);
+  color: var(--reylo-compare-wrong);
+}
+
+.reylo-compare-card-wrong {
+  text-decoration: wavy underline var(--reylo-compare-wrong);
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }

@@ -89,22 +89,56 @@ for (const [group, probes] of GROUPS) {
 }
 writeFileSync(resolve(here, "RESULTS.md"), `${lines.join("\n")}\n`);
 
-// What the docs' table shows of each mark: the tool's note, or the queries it got wrong and what it answered.
+// What the docs' table shows of each mark: the clearest query the tool got wrong, with what it answered, the lines that are wrong and Reylo's answer to the same query on the same database; or, where no query shows it, the tool's note.
+const ERROR_WORDS = (p: string) => (/invalid SQL/.test(p) ? "It marks this query as invalid SQL." : "It stops with an error on this query.");
+// The queries a reader can judge from the text alone come first, so a popover opens on a mistake that needs no explaining.
+const CLEAREST: Record<string, string[]> = {
+  "outer-joins": ["left", "left-where", "left-sorted", "left-subquery", "right", "full"],
+  "expression-nullability": ["count", "coalesce", "exists", "is-null", "subquery-count", "row-number", "sum", "max", "nullif", "case-no-else", "lag"],
+  "parameter-types": ["limit", "like"],
+  "parameter-nullability": ["eq-key", "eq-nullable", "update", "insert"],
+  cardinality: ["count", "insert-returning", "limit-1", "all", "delete", "primary-key"],
+};
+const rank = (row: string, probe: string) => { const at = CLEAREST[row]?.indexOf(probe) ?? -1; return at < 0 ? CLEAREST[row]?.length ?? 0 : at; };
+// A mistake only the schema shows carries the statements that define what the query names.
+const NEEDS_SCHEMA = new Set(["json-schema:column", "json-schema:parameter", "from-the-database:function", "parameter-types:uuid", "parameter-types:timestamp", "parameter-types:insert"]);
+const schemaStatements = readFileSync(resolve(here, "schema/postgres.sql"), "utf8").split(/;\n/).map((s) => s.trim()).filter((s) => /^create (table|function)/.test(s));
+const schemaFor = (sql: string) => schemaStatements.filter((s) => new RegExp(`\\b${/^create (?:table|function) (\w+)/.exec(s)![1]}\\b`).test(sql)).map((s) => `${s};`).join("\n");
 const site: any = { at: results.at, tools: {} };
 for (const i of ids) {
   const t = results.tools[i];
   const cells: any = {};
   for (const [row, c] of Object.entries<any>(t.cells)) {
     const wrong = c.results.filter((r: any) => !r.ok && !r.problems.every((p: string) => p === "it does not infer one"));
-    const groups = new Map<string, { sql: string; problem: string; dbs: string[] }>();
-    for (const r of wrong) {
-      const problem = r.problems.map((p: string) => (p.startsWith("it reports an error") ? (/invalid SQL/.test(p) ? "It marks this query as invalid SQL." : "It stops with an error on this query.") : `${p[0].toUpperCase()}${p.slice(1)}.`)).join(" ");
-      const g = groups.get(r.sql + problem) ?? { sql: r.sql, problem, dbs: [] };
-      g.dbs.push(DB_NAME[r.db]);
-      groups.set(r.sql + problem, g);
+    // The clearest query the tool got wrong, with every database it is wrong on.
+    const first = [...wrong].sort((x: any, y: any) => rank(row, x.probe) - rank(row, y.probe))[0];
+    let example: any;
+    if (first) {
+      const same = (r: any) => r.sql === first.sql && r.problems.join() === first.problems.join();
+      const dbs = wrong.filter(same).map((r: any) => DB_NAME[r.db]);
+      const dbsRun = new Set(c.results.map((r: any) => r.db)).size;
+      const reylo = results.tools.reylo?.cells[row]?.results.find((x: any) => x.db === first.db && x.probe === first.probe)?.answer;
+      const a = first.answer;
+      // A column is named as the query names it, which is Reylo's name for it; an adapter may name a lone column `v`, or a Go field `ID`.
+      const names = reylo?.columns?.length === a.columns?.length ? reylo.columns.map((x: any) => x.name) : (a.columns ?? []).map((x: any) => x.name);
+      const marked = (f: (at: any) => boolean) => (first.at.some(f) ? { wrong: true } : {});
+      example = {
+        sql: first.sql,
+        ...(NEEDS_SCHEMA.has(`${row}:${first.probe}`) ? { schema: schemaFor(first.sql) } : {}),
+        ...(a.error ? { error: ERROR_WORDS(first.problems[0]) } : {}),
+        // A tool that checks each value instead of typing the parameter is wrong in what it lets through: "A null passes for $1".
+        params: (a.params ?? []).map((v: any, k: number) => {
+          const passes = first.problems.filter((_: string, j: number) => first.at[j].param === k + 1).map((p: string) => /^(an? \w+|any) value (passes|is refused) for parameter/.exec(p)).find(Boolean);
+          const says = passes ? `${passes[1] === "any" ? "Any value" : `${passes[1][0].toUpperCase()}${passes[1].slice(1)}`} ${passes[2]} for $${k + 1}` : undefined;
+          return { type: v.type, ...marked((at: any) => at.param === k + 1), ...(says ? { says } : {}) };
+        }),
+        columns: (a.columns ?? []).map((v: any, k: number) => ({ name: names[k], type: v.type, ...marked((at: any) => at.column?.toLowerCase() === String(names[k]).toLowerCase()) })),
+        ...(first.at.some((at: any) => at.cardinality) && a.cardinality ? { rows: CARD[a.cardinality as "one"] } : {}),
+        reylo: { ...reylo.shown, cardinality: reylo.cardinality, rows: CARD[reylo.cardinality as "one"] },
+        ...(dbs.length < dbsRun ? { on: dbs.join(", ") } : {}),
+      };
     }
-    const dbsRun = new Set(c.results.map((r: any) => r.db)).size;
-    cells[row] = { state: c.state, ...(c.note ? { note: String(c.note).replace(/\n/g, " ").slice(0, 300) } : {}), wrong: wrong.length, examples: [...groups.values()].slice(0, 2).map((g) => ({ sql: g.sql, problem: g.problem, ...(g.dbs.length < dbsRun ? { on: g.dbs.join(" and ") } : {}) })) };
+    cells[row] = { state: c.state, ...(example ? { example } : c.note ? { note: String(c.note).replace(/\n/g, " ").slice(0, 300) } : {}) };
   }
   site.tools[i] = { name: t.name, version: t.version, cells };
 }
