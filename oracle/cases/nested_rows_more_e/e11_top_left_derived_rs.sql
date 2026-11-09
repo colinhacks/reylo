@@ -1,0 +1,1 @@
+select x.id, l.rs from comments x left join (select array(select r from (select id from replies) r) as rs) l on false

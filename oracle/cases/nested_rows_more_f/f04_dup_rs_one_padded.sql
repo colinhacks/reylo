@@ -1,0 +1,1 @@
+select array(select c from (select x.id, l.rs, l2.rs from comments x left join lateral (select array(select r from (select id from replies) r) as rs) l on false cross join lateral (select array(select r from (select id from replies) r) as rs) l2) c) as arr

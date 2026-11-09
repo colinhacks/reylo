@@ -260,9 +260,10 @@ pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeReg
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     let ty = match ty.kind {
         Kind::Record(_) => ty.named("record"),
+        // One dimension: a row is no array, so nothing in it can add another.
         Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
             let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
-            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: true, ..array })).named("_record")
+            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: false, ..array })).named("_record")
         }
         _ => return None,
     };
@@ -630,6 +631,22 @@ impl Builder<'_> {
                 (Some(arg), true) => self.walk(arg),
                 _ => self.leaf(expr),
             },
+            // `array(select c from (…) c)`: `{}` over no rows, never NULL, as `array_to_json` of it reads it.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 && self.array_of_rows(s) => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
+                let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
+                self.next_ctx += 1;
+                self.stack.push((self.next_ctx, select.from_clause.clone(), None));
+                self.withs.push(withs);
+                let rows = self.rows.take();
+                self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                let items = self.walk(&inner);
+                self.rows = rows;
+                self.withs.pop();
+                self.stack.pop();
+                Shape::Array { items: Box::new(items), non_null: true }
+            }
             Some(NodeEnum::SubLink(s)) => {
                 if s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
                     return Shape::Unknown;
@@ -998,6 +1015,8 @@ impl Builder<'_> {
             Some(NodeEnum::ColumnRef(_)) => self.anonymous_row(expr),
             Some(NodeEnum::FuncCall(f)) => is_array_agg(expr) && f.args.first().is_some_and(|a| self.anonymous_row(a)),
             Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| self.reads_anonymous_row(a)),
+            // `array(select c from (…) c)`: an array of the whole rows of its own FROM.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => self.array_of_rows(s),
             Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32 => {
                 let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none()) else { return false };
                 let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
@@ -1011,6 +1030,15 @@ impl Builder<'_> {
             }
             _ => false,
         }
+    }
+
+    /// Whether an `ARRAY(SELECT c FROM … c)` collects the whole rows of an item of its own FROM whose row is of no type the catalog has, where the name is no column of that FROM.
+    fn array_of_rows(&self, s: &protobuf::SubLink) -> bool {
+        let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none() && s.values_lists.is_empty() && s.op == protobuf::SetOperation::SetopNone as i32 && !has_grouping_sets(s)) else { return false };
+        let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
+        let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+        // A name that is a column of any FROM in scope is that column, before an item's whole row.
+        bare_alias(inner).is_some_and(|alias| level.names(&alias) == Some(true) && level.lacks(&alias) && !self.ahead && self.no_column(&alias))
     }
 
     /// Whether no FROM in scope shows a column of this name, for certain.
@@ -1676,6 +1704,12 @@ impl ResolveCtx<'_> {
                         .iter()
                         .enumerate()
                         .map(|(i, col)| {
+                            // A field the item builds, a nested array of rows: what it builds, NULL only where that is.
+                            let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
+                            if let Some(built) = outcome.built.get(i).and_then(Option::as_ref).filter(|b| !b.ty.is_json()) {
+                                // NULL where the item builds it so, or where a join pads the item that holds it.
+                                return Field::new(col.name.clone(), built.ty.clone(), !built.non_null || (col.nullable && present));
+                            }
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));
                                 Type::unknown()

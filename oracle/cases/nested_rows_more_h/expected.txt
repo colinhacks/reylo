@@ -1,0 +1,7 @@
+m01_lateral_bare_name.sql: many () -> { c: public.addr{ street: text?, zip: int4? }? }
+m02_lateral_to_jsonb.sql: many () -> { j: jsonb? }
+m03_lateral_json_object.sql: many () -> { j: json { r: public.addr{ street: text?, zip: int4? }? } }
+m04_scalar_to_jsonb.sql: many () -> { j: jsonb? }
+m05_lateral_row_to_json.sql: many () -> { j: json? }
+m06_lateral_field.sql: many () -> { s: text? }
+m07_lateral_jsonb_build_nested.sql: many () -> { j: jsonb { rows: (public.replies{ id: int8, comment_id: int8, body: text })[]?, c: public.addr{ street: text?, zip: int4? }? } }

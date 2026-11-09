@@ -222,3 +222,50 @@ test("a MySQL ENUM column is the union of its labels, and the '' MySQL stores fo
     await own.drop();
   }
 });
+
+test("an array of a subquery's whole rows is an array of objects, each field as its column is, at every depth, on pg, postgres.js, pg-promise and PGlite", { skip: pgLive, timeout: 60_000 }, async () => {
+  const schema = `create table posts (id int primary key);
+    create table comments (id int primary key, post_id int not null references posts, big int8 not null, body text, at timestamptz, raw bytea, doc jsonb, tags text[]);
+    create table replies (id int primary key, comment_id int not null references comments, body text not null);
+    insert into posts values (1), (2);
+    insert into comments values (1, 1, 9007199254740993, 'he said "hi", (ok) \\ back', '2026-11-05 04:00:00.123456-08', '\\x0102ff', '{"a": [1, null]}', '{a,"b c",NULL,"NULL",""}'), (2, 1, 0, '', null, null, null, '{}');
+    insert into replies values (1, 1, 'r "1", \\ x'), (2, 1, 'NULL');`;
+  const own = await postgresDatabase("reylo_records_rows", schema);
+  const root = project(own.url);
+  const pg = driver("pg");
+  const client = new pg.Client({ connectionString: own.url });
+  await client.connect();
+  const postgres = driver("postgres")(own.url);
+  const pgp = driver("pg-promise")();
+  const promised = pgp(own.url);
+  const { PGlite } = driver("@electric-sql/pglite");
+  const lite = new PGlite();
+  await lite.exec(schema);
+  const COLUMNS = "id, big, body, at, raw, doc, tags";
+  try {
+    const flat = await built(root, "rows_flat", `select ${COLUMNS} from comments order by id`);
+    const rows = await built(root, "rows_array", `select p.id, array(select c from (select ${COLUMNS} from comments where post_id = p.id order by id) c) as comments from posts p order by p.id`);
+    const table = await built(root, "rows_table", "select array(select r from replies r order by r.id) as replies");
+    const deep = await built(root, "rows_deep", "select p.id, array(select c from (select x.id, x.big + 1 as more, array(select r from (select id, body from replies where comment_id = x.id order by id) r) as replies from comments x where x.post_id = p.id order by x.id) c) as comments from posts p order by p.id");
+    const nulled = await built(root, "rows_nulled", "select array(select c from (select 1 as one) x left join (select 1 as n where false) c on true) as elements");
+    for (const db of [client, postgres, promised, lite]) {
+      for (let run = 0; run < 2; run++) {
+        const columns = await flat.run(db);
+        assert.deepEqual(await rows.run(db), [{ id: 1, comments: columns }, { id: 2, comments: [] }]);
+        assert.deepEqual(await table.run(db), { replies: [{ id: 1, comment_id: 1, body: 'r "1", \\ x' }, { id: 2, comment_id: 1, body: "NULL" }] });
+        assert.deepEqual(await deep.run(db), [
+          { id: 1, comments: [{ id: 1, more: 9007199254740994n, replies: [{ id: 1, body: 'r "1", \\ x' }, { id: 2, body: "NULL" }] }, { id: 2, more: 1n, replies: [] }] },
+          { id: 2, comments: [] },
+        ]);
+        assert.deepEqual(await nulled.run(db), { elements: [null] });
+      }
+    }
+  } finally {
+    await client.end();
+    await postgres.end();
+    pgp.end();
+    await lite.close();
+    for (const session of Session.opened()) await session.close();
+    await own.drop();
+  }
+});

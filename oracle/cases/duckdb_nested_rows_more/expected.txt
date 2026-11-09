@@ -1,0 +1,38 @@
+d01_outer_column_alias.sql: many () -> { arr: ({ n: integer? }?)[] }
+d02_outer_column_alias_deeper.sql: many () -> { arr: ({ n: integer? }?)[]? }
+d03_outer_column_derived.sql: many () -> { arr: ({ n: integer? }?)[] }
+d04_outer_column_deeper_derived.sql: many () -> { arr: ({ n: integer? }?)[]? }
+d05_right_join.sql: one () -> { arr: ({ n: integer? }?)[] }
+d06_nested_join.sql: one () -> { arr: ({ n: integer? }?)[] }
+d07_full_join.sql: one () -> { arr: ({ n: integer? }?)[] }
+d08_union_inside.sql: one () -> { arr: ({ n: integer? })[] }
+d09_rollup_inside.sql: one () -> { arr: ({ post_id: bigint?, k: bigint })[] }
+d10_sum_empty_inside.sql: one () -> { arr: ({ s: hugeint?, m: bigint? })[] }
+d11_correlated_expr.sql: many () -> { id: bigint, arr: ({ m: bigint?, b: bigint })[] }
+d12_correlated_outer_padded.sql: many () -> { arr: ({ m: bigint? })[] }
+d13_window_inside.sql: one () -> { arr: ({ id: bigint, prev: bigint? })[] }
+d14_cte_shadows_table.sql: one () -> { arr: ({ id: bigint? })[] }
+d15_grouping_outer.sql: many () -> { a: integer?, arr: ({ x: integer? })[] }
+d16_union_top.sql: many () -> { arr: ({ n: integer? }?)[] }
+d17_values.sql: one () -> { arr: ({ n: integer? })[] }
+d18_unnest.sql: one () -> { arr: ({ x: integer? })[] }
+d19_left_join_inside_derived.sql: one () -> { arr: ({ id: bigint, note: varchar? })[] }
+d20_table_left_joined_derived.sql: one () -> { arr: ({ big: bigint? })[] }
+d21_nested_null_array.sql: one () -> { arr: ({ id: bigint, rs: ({ id: bigint?, comment_id: bigint?, note: varchar? }?)[]? })[] }
+d22_nested_lateral_null.sql: one () -> { arr: ({ id: bigint, rs: ({ id: bigint, comment_id: bigint, note: varchar })[]? })[] }
+d24_alias_colnames.sql: one () -> { arr: ({ a: bigint, b: bigint, body: varchar?, big: bigint })[] }
+d25_star_left_join.sql: one () -> { arr: ({ id: bigint, title: varchar, id_1: bigint?, post_id: bigint?, body: varchar?, big: bigint? })[] }
+d26_distinct_on.sql: one () -> { arr: ({ post_id: bigint, body: varchar? })[] }
+d27_intersect.sql: one () -> { arr: ({ id: bigint, big: bigint })[] }
+d28_qualify_inside.sql: one () -> { arr: ({ id: bigint, nxt: bigint? })[] }
+d29_from_first.sql: one () -> { arr: ({ id: bigint, post_id: bigint, body: varchar?, big: bigint })[] }
+d30_nested_correlated_sum.sql: one () -> { arr: ({ id: bigint, s: hugeint? })[] }
+d31_ifnull_expr.sql: one () -> { arr: ({ nb: bigint?, z: bigint? })[] }
+d32_outer_struct_col_table.sql: many () -> { arr: ({ id: bigint?, post_id: bigint?, body: varchar?, big: bigint? }?)[] }
+d33_semi_join.sql: one () -> { arr: ({ n: integer })[] }
+d34_positional.sql: many () -> { arr: ({ n: integer? }?)[]? }
+d35_unnest_struct.sql: one () -> { arr: ({ a: integer?, k: integer? }?)[] }
+d36_expressions.sql: one () -> { arr: ({ id: bigint, b: bigint, nb: bigint?, dz: double? })[] }
+d37_scalar_max.sql: one () -> { arr: ({ id: bigint, m: bigint? })[] }
+d38_outer_aggregate.sql: many () -> { arr: ({ m: bigint? })[] }
+d39_dup_names.sql: one () -> { arr: ({ v: integer, v_1: varchar? })[] }

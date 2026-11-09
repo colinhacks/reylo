@@ -105,7 +105,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
 
 <Inferred>
 

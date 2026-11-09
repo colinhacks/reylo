@@ -87,7 +87,8 @@ Each Postgres type maps to one TypeScript type, and `.run()` returns the same va
 | An array | an array of its element type | `["math", "poetry"]` |
 | An enum | the union of its labels | `"admin"` |
 | A domain | its base type | its base type's |
-| A row value of a table or composite type | an object of its fields | `{ id: 1, name: "Ada" }` |
+| A row value of a table, a subquery or a composite type | an object of its fields | `{ id: 1, name: "Ada" }` |
+| An array of those rows | an array of objects | `[{ id: 1, name: "Ada" }]` |
 | `point`, `box`, `circle` and the other geometric types | an object of its fields | `{ x: 1.5, y: -2 }` |
 | A range | an object of its bounds | `{ lower: 1, upper: 5, bounds: "[)" }` |
 | A multirange | an array of ranges | `[{ lower: 1, upper: 3, bounds: "[)" }]` |
@@ -514,7 +515,32 @@ from orders o
 join users u on u.id = o.user_id
 ```
 
+An array of whole rows comes back as an array of objects, with each field read as a column is. It reads the fields of a subquery, which Postgres itself types only as `record`, and it nests to any depth:
+
+```ts twoslash tab="main.ts"
+import authors from "./pg_authors.sql";
+
+const rows = await authors.run(db);
+//    ^?
+```
+
+```sql tab="pg_authors.sql"
+select u.id,
+  array(
+    select o from (
+      select id, total, placed_at from orders where user_id = u.id order by id
+    ) o
+  ) as orders
+from users u
+```
+
 <Rules>
+
+**Arrays of rows**
+
+An `array(…)` is `[]` over no rows, never `null`, where an `array_agg` of the same rows is `null`. An element is `null` only where an outer join nulls its whole row. If the row's alias is also the name of a column in scope, Postgres reads the column, and so does the type.
+
+Each level of nesting escapes the quotes and backslashes inside it again, which multiplies a JSON document's text by about four per level. Build rows nested that deep as JSON instead.
 
 **Geometric types**
 
@@ -531,7 +557,7 @@ A `lseg` and a `polygon` are arrays of their points, and a `path` says whether i
 
 **Rows without field names**
 
-A row whose fields Postgres doesn't name, as `row(…)` builds, comes back as its text. Cast it to a composite type to get an object.
+A row whose fields Postgres doesn't name, as `row(…)` builds, comes back as its text, and so does an array of them. Cast it to a composite type, or select it from a subquery that names its columns, to get an object.
 
 <Pairs>
 
@@ -1349,7 +1375,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | A function whose body Reylo can't read, such as PL/pgSQL, a body of several statements or a name with several overloads: it's typed from its declared `returns`, every column nullable, and returns `Row[]` | Write it as one statement in `language sql` |
 | An array column's dimensions, which Postgres doesn't track: Reylo types one, and `.run()` throws on a value of more, or returns it as it is inside JSON your query builds | Select `to_jsonb(column)` to read such a column as JSON, or set [`allow_nested_arrays: true`](/configuration#allow_nested_arrays) |
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
-| A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select its fields as columns |
+| A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select it from a subquery that names its columns |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |
