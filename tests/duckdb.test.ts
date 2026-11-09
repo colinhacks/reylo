@@ -373,6 +373,54 @@ test("DuckDB: every type's least, greatest and NULL value round-trips through .r
   }
 });
 
+test("DuckDB: a JSON parameter is bound as the JSON of its value, a number a number, alone and inside a list, a struct and a map", { skip }, async () => {
+  const root = await project("create table jt (id integer primary key, j json not null, l json[], s struct(j json), m map(varchar, json))");
+  const one = await built(root, "json_one", "insert into jt (id, j) values (:id, :v) returning j::varchar as text, json_type(j) as kind");
+  const nested = await built(root, "json_nested", "insert into jt (id, j, l, s, m) values (:id, '1', :l, :s, :m) returning l, s, m, l::varchar as text");
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    const stored = async (id: number, v: unknown) => ({ ...(await one.run(c, { id, v })) });
+    assert.deepEqual(await stored(1, 5), { text: "5", kind: "UBIGINT" });
+    assert.deepEqual(await stored(2, 1.5), { text: "1.5", kind: "DOUBLE" });
+    assert.deepEqual(await stored(3, "5"), { text: `"5"`, kind: "VARCHAR" });
+    assert.deepEqual(await stored(4, { a: [1, "x"] }), { text: `{"a":[1,"x"]}`, kind: "OBJECT" });
+    // A string inside a list, a struct or a map is a JSON string, not JSON to parse, and an array is one JSON array.
+    const l = ["5", 5, "abc", { a: 1 }, [1, 2]];
+    const row = await nested.run(c, { id: 5, l, s: { j: "5" }, m: [{ key: "k", value: [1] }, { key: "k2", value: "null" }] });
+    assert.deepEqual({ ...row }, { l, s: { j: "5" }, m: [{ key: "k", value: [1] }, { key: "k2", value: "null" }], text: `["5", 5, "abc", {"a":1}, [1,2]]` });
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: the schema's fingerprint moves with a macro's parameters and an enum's labels, which an analysis reads", { skip }, async () => {
+  const root = await project("create macro pick(a, b) as a; create macro typed(a integer) as a; create type mood as enum ('happy', 'sad')");
+  // A session per call, as a process of its own, so that none answers from a fingerprint it took.
+  const fingerprint = async () => {
+    const session = await Session.open(root, { DATABASE_URL: "duckdb:./app.duckdb" });
+    try {
+      return (await session.schema()).value;
+    } finally {
+      await session.close();
+    }
+  };
+  let last = await fingerprint();
+  assert.equal(await fingerprint(), last);
+  for (const change of ["create or replace macro pick(b, a) as a", "create or replace macro typed(a varchar) as a", "drop type mood; create type mood as enum ('happy', 'sad', 'new')"]) {
+    const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+    const c = await db.connect();
+    await c.run(change);
+    c.closeSync();
+    db.closeSync();
+    const next = await fingerprint();
+    assert.notEqual(next, last, change);
+    last = next;
+  }
+});
+
 test("DuckDB: .run() refuses a fraction for an integer, and .try() reads DuckDB's error", { skip }, async () => {
   const root = await project();
   const get = await built(root, "get", "select id, msg from logs where id = :id");

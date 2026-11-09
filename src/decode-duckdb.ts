@@ -182,6 +182,8 @@ export async function runDuckdb(c: DuckdbClient, text: string, values: unknown[]
  * exactly and checking its range, so no integer is narrowed to a type node-api picks.
  */
 function bindType(a: Api, t: EngineType | undefined, v: unknown): unknown {
+  // A JSON value inside a list, a struct or a map is its JSON text, whatever JavaScript value it is.
+  if (t?.kind === "json") return a.VARCHAR;
   if (v instanceof Uint8Array) return a.BLOB;
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.MAP(bindType(a, t.key, firstOf(v, "key")), bindType(a, t.value.type, firstOf(v, "value")));
@@ -211,6 +213,7 @@ function firstOf(entries: unknown[], key: "key" | "value"): unknown {
 /** `v` as node-api builds it for `bindType`'s type: a scalar its text, a JSON value its JSON. */
 function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
   if (v === null || v === undefined) return null;
+  if (t?.kind === "json") return JSON.stringify(v);
   if (v instanceof Uint8Array) return a.blobValue(v);
   if (Array.isArray(v)) {
     if (t?.kind === "map") return a.mapValue(v.map((e) => ({ key: bindValue(a, t.key, (e as { key?: unknown } | null)?.key), value: bindValue(a, t.value.type, (e as { value?: unknown } | null)?.value) })));
@@ -236,6 +239,8 @@ function bindValue(a: Api, t: EngineType | undefined, v: unknown): unknown {
  */
 export function encodeDuckdb(type: EngineType | undefined, v: unknown, name: string): unknown {
   if (type === undefined || v == null) return v;
+  // A JSON value is written as JSON where it is bound: a number here stays a number, not its text.
+  if (type.kind === "json") return v;
   if (type.kind === "array" && Array.isArray(v)) return v.map((e) => encodeDuckdb(type.element.type, e, name));
   if (type.kind === "map" && Array.isArray(v)) return v.map((e) => (e !== null && typeof e === "object" ? { ...e, key: encodeDuckdb(type.key, (e as { key?: unknown }).key, name), value: encodeDuckdb(type.value.type, (e as { value?: unknown }).value, name) } : e));
   if (type.kind === "record" && typeof v === "object" && !Array.isArray(v)) {

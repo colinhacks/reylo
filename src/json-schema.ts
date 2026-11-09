@@ -38,10 +38,11 @@ export function withDefaults(schema: Schema, value: unknown): unknown {
     const o: Record<string, unknown> = { ...(value as Object_) };
     const properties = (s.properties ?? {}) as Record<string, Schema>;
     for (const [key, sub] of Object.entries(properties)) {
-      if (!Object.prototype.hasOwnProperty.call(o, key) && sub !== null && typeof sub === "object" && "default" in sub) o[key] = cloneJson((sub as Object_).default);
+      if (!holds(o, key) && sub !== null && typeof sub === "object" && "default" in sub) o[key] = cloneJson((sub as Object_).default);
     }
     const patterns = Object.entries((s.patternProperties ?? {}) as Record<string, Schema>).map(([p, sub]) => [regex(p), sub] as const);
     for (const key of Object.keys(o)) {
+      if (!written(o[key])) continue;
       let named = false;
       if (Object.prototype.hasOwnProperty.call(properties, key)) {
         named = true;
@@ -56,7 +57,7 @@ export function withDefaults(schema: Schema, value: unknown): unknown {
       if (!named && s.additionalProperties !== undefined) o[key] = withDefaults(s.additionalProperties as Schema, o[key]);
     }
     if (s.dependentSchemas && typeof s.dependentSchemas === "object") {
-      for (const [key, sub] of Object.entries(s.dependentSchemas as Record<string, Schema>)) if (Object.prototype.hasOwnProperty.call(o, key)) Object.assign(o, withDefaults(sub, o) as object);
+      for (const [key, sub] of Object.entries(s.dependentSchemas as Record<string, Schema>)) if (holds(o, key)) Object.assign(o, withDefaults(sub, o) as object);
     }
     out = o;
   } else if (Array.isArray(value)) {
@@ -121,14 +122,14 @@ function check(schema: Schema, value: unknown, path: string, out: Failure[]): Ev
     if (typeof s.maxItems === "number" && value.length > s.maxItems) return fail(out, path, `must have at most ${s.maxItems} items`);
     if (typeof s.minItems === "number" && value.length < s.minItems) return fail(out, path, `must have at least ${s.minItems} items`);
     if (s.uniqueItems === true) {
-      for (let i = 0; i < value.length; i++) for (let j = i + 1; j < value.length; j++) if (equal(value[i], value[j])) return fail(out, path, `must have no two equal items (${i} and ${j})`);
+      for (let i = 0; i < value.length; i++) for (let j = i + 1; j < value.length; j++) if (equal(item(value[i]), item(value[j]))) return fail(out, path, `must have no two equal items (${i} and ${j})`);
     }
     const prefix = Array.isArray(s.prefixItems) ? (s.prefixItems as Schema[]) : [];
-    for (let i = 0; i < Math.min(prefix.length, value.length); i++) if (!check(prefix[i]!, value[i], `${path}/${i}`, out)) return undefined;
-    if (s.items !== undefined) for (let i = prefix.length; i < value.length; i++) if (!check(s.items as Schema, value[i], `${path}/${i}`, out)) return undefined;
+    for (let i = 0; i < Math.min(prefix.length, value.length); i++) if (!check(prefix[i]!, item(value[i]), `${path}/${i}`, out)) return undefined;
+    if (s.items !== undefined) for (let i = prefix.length; i < value.length; i++) if (!check(s.items as Schema, item(value[i]), `${path}/${i}`, out)) return undefined;
     if (s.contains !== undefined) {
       let matched = 0;
-      for (const item of value) if (check(s.contains as Schema, item, path, [])) matched++;
+      for (let i = 0; i < value.length; i++) if (check(s.contains as Schema, item(value[i]), path, [])) matched++;
       const min = typeof s.minContains === "number" ? s.minContains : 1;
       if (matched < min) return fail(out, path, min === 1 ? "must contain an item that matches its `contains` schema" : `must contain at least ${min} items that match its \`contains\` schema`);
       if (typeof s.maxContains === "number" && matched > s.maxContains) return fail(out, path, `must contain at most ${s.maxContains} items that match its \`contains\` schema`);
@@ -136,11 +137,11 @@ function check(schema: Schema, value: unknown, path: string, out: Failure[]): Ev
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
     const o = value as Object_;
-    const keys = Object.keys(o);
+    const keys = Object.keys(o).filter((key) => written(o[key]));
     if (typeof s.maxProperties === "number" && keys.length > s.maxProperties) return fail(out, path, `must have at most ${s.maxProperties} keys`);
     if (typeof s.minProperties === "number" && keys.length < s.minProperties) return fail(out, path, `must have at least ${s.minProperties} keys`);
     // A key is the object's own: `toString` and `__proto__` are keys only where the value has them.
-    const has = (key: string) => Object.prototype.hasOwnProperty.call(o, key);
+    const has = (key: string) => holds(o, key);
     if (Array.isArray(s.required)) for (const key of s.required as string[]) if (!has(key)) return fail(out, path, `must have the key "${key}"`);
     if (s.dependentRequired && typeof s.dependentRequired === "object") {
       for (const [key, needs] of Object.entries(s.dependentRequired as Record<string, string[]>)) {
@@ -262,25 +263,54 @@ function equal(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") return false;
   if (Array.isArray(a) !== Array.isArray(b)) return false;
-  if (Array.isArray(a)) return a.length === (b as unknown[]).length && a.every((x, i) => equal(x, (b as unknown[])[i]));
-  const ka = Object.keys(a as object);
-  const kb = Object.keys(b as object);
-  return ka.length === kb.length && ka.every((k) => Object.prototype.hasOwnProperty.call(b, k) && equal((a as Object_)[k], (b as Object_)[k]));
+  if (Array.isArray(a)) {
+    if (a.length !== (b as unknown[]).length) return false;
+    for (let i = 0; i < a.length; i++) if (!equal(item(a[i]), item((b as unknown[])[i]))) return false;
+    return true;
+  }
+  const ka = Object.keys(a as object).filter((k) => written((a as Object_)[k]));
+  const kb = Object.keys(b as object).filter((k) => written((b as Object_)[k]));
+  return ka.length === kb.length && ka.every((k) => holds(b as Object_, k) && equal((a as Object_)[k], (b as Object_)[k]));
 }
+
+// The value is checked as the JSON it is stored as. JSON.stringify leaves out an object's key
+// whose value is undefined, a function or a symbol, and writes such an item of an array, a hole
+// too, as null: a key left out that way is no key of the object, and such an item is null.
+const written = (v: unknown) => v !== undefined && typeof v !== "function" && typeof v !== "symbol";
+const holds = (o: Object_, key: string) => Object.prototype.hasOwnProperty.call(o, key) && written(o[key]);
+const item = (v: unknown) => (written(v) ? v : null);
 
 function multiple(value: number, of: number): boolean {
   const q = value / of;
-  // Within a rounding error of a whole number, as a decimal multiple like 0.01 needs; past the
-  // largest double, the remainder says it (1e308 is a multiple of 0.5).
-  if (Number.isFinite(q)) return Math.abs(q - Math.round(q)) < 1e-9;
-  return value % of === 0;
+  // Within the division's own rounding error of a whole number, as a decimal multiple like 0.01
+  // needs; past the largest double, the remainder says it (1e308 is a multiple of 0.5).
+  if (!Number.isFinite(q)) return value % of === 0;
+  // Zero is the multiple of everything; no other value is a multiple by rounding to it.
+  const whole = Math.round(q);
+  if (whole === 0) return value === 0;
+  // The error a division of two doubles leaves grows with the quotient, a few units in its last place.
+  return Math.abs(q - whole) <= Number.EPSILON * 8 * Math.abs(q);
 }
 
 const regexes = new Map<string, RegExp>();
-/** A pattern as ECMA-262 reads it, with Unicode on, as JSON Schema says. */
+/**
+ * A pattern as ECMA-262 reads it, with Unicode on, as JSON Schema says. One that Unicode mode
+ * refuses and the plain mode reads (`[\w-\.]`, `\-`, in patterns copied from elsewhere) is read
+ * plainly, as the databases' own validators read it.
+ */
 function regex(pattern: string): RegExp {
   let re = regexes.get(pattern);
-  if (!re) regexes.set(pattern, (re = new RegExp(pattern, "u")));
+  if (re) return re;
+  try {
+    re = new RegExp(pattern, "u");
+  } catch (unicode) {
+    try {
+      re = new RegExp(pattern);
+    } catch {
+      throw unicode;
+    }
+  }
+  regexes.set(pattern, re);
   return re;
 }
 

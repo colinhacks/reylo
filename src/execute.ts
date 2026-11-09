@@ -9,7 +9,7 @@ import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./deco
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
 import { libsqlRows, normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
-import { columnKind, describe, hstoreText, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
+import { columnKind, describe, given, hstoreText, isArrayValued, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
 import { lexPlaceholders } from "./lex.ts";
 import { withSqlcommenter } from "./sqlcommenter.ts";
@@ -430,7 +430,10 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // The driver's rows, each value given its kind (decode-sqlite.ts).
       const columns = query.columns;
       if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
-      if (typeof c.execute === "function") return normalize(libsqlRows((await c.execute({ sql: text, args: values })).rows, columns), columns);
+      if (typeof c.execute === "function") {
+        const result = await c.execute({ sql: text, args: values });
+        return normalize(libsqlRows(result.rows, columns, Array.isArray(result.columns) ? result.columns : undefined), columns);
+      }
       if (isTurso(c)) return await runTurso(c, text, values, columns);
       // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
       if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
@@ -443,7 +446,8 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       }
       if (typeof c.prepare === "function") {
         const prepared = c.prepare(text);
-        if (typeof prepared.first === "function") return normalize((await prepared.bind(...values).all()).results, columns, { d1: true });
+        // D1 refuses a BigInt, which `.run()` returns for a BIGINT column.
+        if (typeof prepared.first === "function") return normalize((await prepared.bind(...values.map((v, i) => numberOrDigits(v, type(i), "d1"))).all()).results, columns, { d1: true });
         return normalize(await prepared.all(...values), columns);
       }
       break;
@@ -479,7 +483,7 @@ function statement(query: QueryModule, params: ParamsInput) {
     // out there is refused.
     const schema = input?.schema;
     if (schema !== undefined) {
-      let v = params[name];
+      let v = given(params, name);
       const { cloneJson, validate, withDefaults } = checksFor(query, name);
       if (v === undefined && schema !== null && typeof schema === "object" && "default" in schema) v = cloneJson(schema.default);
       if (v !== undefined && v !== null) {
@@ -517,8 +521,8 @@ function statement(query: QueryModule, params: ParamsInput) {
     // refused only when left out.
     let jsonNull = false;
     if (input?.nullable === false && bound.values[i] === null) {
-      if (type?.kind === "json" && params[name] !== undefined && !refusesNull(query, type)) jsonNull = true;
-      else if (type?.kind === "json" || refusesNull(query, type)) refuseNull(name, params[name]);
+      if (type?.kind === "json" && given(params, name) !== undefined && !refusesNull(query, type)) jsonNull = true;
+      else if (type?.kind === "json" || refusesNull(query, type)) refuseNull(name, given(params, name));
     }
     // An array parameter takes no NULL element, as its type says (`:ids::int[]` is `number[]`):
     // a NULL in `= any(:ids)` matches nothing. An array inside a
@@ -608,7 +612,7 @@ function refuseNull(name: string, v: unknown): never {
 }
 
 function value(params: Record<string, unknown>, name: string) {
-  const v = params[name];
+  const v = given(params, name);
   return v === undefined ? null : v;
 }
 
@@ -728,7 +732,7 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
   if (!kind.endsWith("[]") && (isRowKind(kind) || GEOMETRIC_KINDS.has(kind) || isRangeKind(kind) || isMultirangeKind(kind))) return postgresLiteral(type, v, (message) => {
     throw new ParameterError(`Parameter "${name}" is ${message}`);
   });
-  if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !ARRAY_VALUED.has(columnKind(type.element.type, dialect)) ? type : type.element.type, e, dialect, name)) : v;
+  if (type.kind === "array" && kind.endsWith("[]")) return Array.isArray(v) ? v.map((e) => encode(Array.isArray(e) && !isArrayValued(columnKind(type.element.type, dialect)) ? type : type.element.type, e, dialect, name)) : v;
   if (kind === "vector" && Array.isArray(v)) {
     if (!v.length) throw new ParameterError(`Parameter "${name}" is a pgvector ${bareName(type)}, which has one dimension at least; got an empty array.`);
     return vectorText(v, name, `a pgvector ${bareName(type)}`);
@@ -743,8 +747,6 @@ function encode(type: EngineType | undefined, v: unknown, dialect: Dialect, name
 
 /** Postgres's geometric types' kinds (src/values.ts). */
 const GEOMETRIC_KINDS: ReadonlySet<string> = new Set(["point", "line", "lseg", "box", "path", "polygon", "circle"]);
-/** The kinds whose one value is a JavaScript array, so an array of them is no deeper dimension. */
-const ARRAY_VALUED: ReadonlySet<string> = new Set(["vector", "lseg", "polygon"]);
 
 /** A vector's floats as the text a VECTOR's `to_vector` and pgvector's input read; JSON's, which would write NaN and ±Infinity as null, so those are refused. */
 function vectorText(v: readonly unknown[], name: string, what: string): string {
@@ -762,12 +764,13 @@ function vectorText(v: readonly unknown[], name: string, what: string): string {
 // one goes as its digits to a parameter of a BIGINT column (the engine's int8), whose INTEGER
 // affinity reads the text as that integer in an insert and a comparison alike, and is refused
 // anywhere else, where the text would stay text.
-function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object"): unknown {
+function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object" | "d1"): unknown {
   if (typeof v !== "bigint") return v;
   if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
   if (type !== undefined && columnKind(type, "sqlite") === "int8") return String(v);
   const digits = "pass it as a string of digits, which SQLite stores as that integer in an INTEGER column";
   if (driver === "durable-object") throw new ParameterError(`A Durable Object's SQL storage binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  if (driver === "d1") throw new ParameterError(`Cloudflare D1 binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
   throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
 }
 
