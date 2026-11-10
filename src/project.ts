@@ -46,7 +46,7 @@ export type ResolvedProject = {
   strictParams: boolean;
   /** Whether a Postgres array column may hold nested arrays, typed at any depth and with nothing refused: false unless the file says `allow_nested_arrays: true`. */
   allowNestedArrays: boolean;
-  /** Whether each statement ends with a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
+  /** Whether each statement carries a sqlcommenter comment naming its file (src/sqlcommenter.ts): true unless the file says `sqlcommenter: false`. */
   sqlcommenter: boolean;
   /** The type `.run()` gives each family of values where the file's `js.codecs` names one (src/codecs.ts). */
   codecs: Codecs;

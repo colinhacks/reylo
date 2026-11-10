@@ -30,6 +30,7 @@
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
 //   without safeIntegers) is refused in an INTEGER or BIGINT column, where a number past 2^53 can
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
+import { rowOf } from "./row.ts";
 import { bigInteger, coerce, DecodeError, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
@@ -46,16 +47,20 @@ const KEPT = 500;
  * compat Database (maxWriteReplicationIndex()) gets a new statement per call, closed after it: on
  * 0.4 a statement with a subquery run a second time returned no rows.
  */
-function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
+function statementFor(db: AnyClient, text: string, typed: boolean, proto: boolean): Kept {
   const keep = typeof db.maxWriteReplicationIndex !== "function";
   let kept = statements.get(db);
   if (!kept && keep) statements.set(db, (kept = new Map()));
-  const key = `${typed ? "n" : "b"}${text}`;
+  const key = `${typed ? "n" : "b"}${proto ? "p" : ""}:${text}`;
   const found = kept?.get(key);
   if (found) return found;
   const st = db.prepare(text) as Statement;
   let exact = false;
   // node:sqlite's StatementSync; better-sqlite3's and bun:sqlite's Statement.
+  // Turso's engine names a column with no alias its own way (`select a + 1 from t` is `t.a + 1` on 0.4, `select (a) from t` is `(a)` on 0.8), and only the embedded SQLite's analysis says what the row's type declares: its rows are read as arrays, by position.
+  if (!keep && typeof st.raw === "function") st.raw(true);
+  // better-sqlite3 (its pluck() tells it from bun:sqlite, whose raw() runs the statement) builds a row by assigning each name, and a column named `__proto__` sets the object's prototype instead. Such a statement is read by position.
+  else if (proto && typeof st.pluck === "function" && typeof st.raw === "function") st.raw(true);
   if (typeof st.setReadBigInts === "function") {
     st.setReadBigInts(true);
     if (typeof st.setReturnArrays === "function") st.setReturnArrays(false);
@@ -77,13 +82,29 @@ function statementFor(db: AnyClient, text: string, typed: boolean): Kept {
  * such database) gives the promise, which `runSync` refuses.
  */
 export function runSyncSqlite(db: AnyClient, text: string, values: unknown[], columns: Columns | undefined): unknown[] | Promise<unknown[]> {
-  const entry = statementFor(db, text, everyColumnTyped(columns));
+  const entry = statementFor(db, text, everyColumnTyped(columns), hasProto(columns));
   if (entry.kept) return runStatement(entry, values, columns);
   try {
     return runStatement(entry, values, columns);
   } finally {
     entry.st.close?.();
   }
+}
+
+/** Rows read as arrays, as objects: under the names the module declares where it has them for every value, else under the driver's. */
+function byPosition(rows: unknown[][], columns: Columns | undefined, driver: () => string[]): unknown[] {
+  const build = rowOf(columns?.length === rows[0]!.length ? columns.map(([name]) => name) : driver());
+  return rows.map(build);
+}
+
+/**
+ * libSQL's rows by position, where the module declares their columns. A libSQL row holds each value under its index as well as its name, and the index comes first: `select 1, 2 + 3` has a column named `1`, and `row["1"]` is the second column's 5.
+ */
+export function libsqlRows(rows: unknown[], columns: Columns | undefined): unknown[] {
+  const n = columns?.length;
+  if (!n || !rows.length || (rows[0] as { length?: unknown }).length !== n) return rows;
+  const build = rowOf(columns!.map(([name]) => name));
+  return rows.map((row) => build(row as ArrayLike<unknown> as readonly unknown[]));
 }
 
 function runStatement({ st, exact }: Kept, values: unknown[], columns: Columns | undefined): unknown[] | Promise<unknown[]> {
@@ -95,11 +116,8 @@ function runStatement({ st, exact }: Kept, values: unknown[], columns: Columns |
   const all = st.all(...values) as unknown[] | Promise<unknown[]>;
   if (!Array.isArray(all)) return Promise.resolve(all).then((rows) => normalize(rows, columns));
   let rows = all;
-  // A database opened with returnArrays, on a Node whose statements cannot turn it off.
-  if (rows.length && Array.isArray(rows[0]) && typeof st.columns === "function") {
-    const names = (st.columns() as { name: string }[]).map((c) => c.name);
-    rows = (rows as unknown[][]).map((r) => Object.fromEntries(names.map((n, i) => [n, r[i]])));
-  }
+  // Turso's rows, or a database opened with returnArrays, on a Node whose statements cannot turn it off.
+  if (rows.length && Array.isArray(rows[0])) rows = byPosition(rows as unknown[][], columns, () => (st.columns() as { name: string }[]).map((c) => c.name));
   return normalize(rows, columns, { exact });
 }
 
@@ -111,6 +129,11 @@ function reader(st: Statement): boolean | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Whether a column is named `__proto__`, which only an own property of a row can hold (src/row.ts). */
+function hasProto(columns: Columns | undefined): boolean {
+  return columns?.some(([name]) => name === "__proto__") ?? false;
 }
 
 // Every column typed: a number past 2^53 in one can be told as rounded (src/values.ts). A column
@@ -130,7 +153,11 @@ export async function runTurso(db: AnyClient, text: string, values: unknown[], c
   const st = (await db.prepare(text)) as Statement;
   try {
     if (typeof st.safeIntegers === "function") st.safeIntegers(!typed);
-    return normalize(await st.all(...values), columns, { exact: !typed });
+    // By position, as on the compat Database (`statementFor`). A statement that returns no rows gives none under either.
+    if (typeof st.raw === "function") st.raw(true);
+    const rows = (await st.all(...values)) as unknown[];
+    const objects = rows.length && Array.isArray(rows[0]) ? byPosition(rows as unknown[][], columns, () => (st.columns() as { name: string }[]).map((c) => c.name)) : rows;
+    return normalize(objects, columns, { exact: !typed });
   } finally {
     if (typeof st.close === "function") st.close();
   }
@@ -242,6 +269,8 @@ function numericOnly(kinds: string[]): boolean {
  */
 export function normalize(rows: unknown[], columns: Columns | undefined, { exact = false, d1 = false } = {}): unknown[] {
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
+  // sqlite3 and the sqlite wrapper assign each name to the row they build, with no way to read by position, so the value of this column is gone. `row.__proto__` would read Object.prototype.
+  if (hasProto(columns) && !Object.hasOwn(rows[0] as object, "__proto__")) throw new DecodeError(`This client cannot return a column named __proto__: it builds each row by assigning each name, which sets the object's prototype and loses the value. Give the column an alias in the statement.`);
   const plans = (columns ? [...columns] : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
   const n = plans.length;
   for (const row of rows as Record<string, unknown>[]) {

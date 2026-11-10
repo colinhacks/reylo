@@ -1322,6 +1322,17 @@ pub fn check_sqlite(db: &rusqlite::Connection, statements: &[(String, String, Va
     let mut notes = Vec::new();
     let mut tallies: Vec<Tally> = statements.iter().map(|_| Tally::default()).collect();
     let tables = sqlite_tables(db)?;
+    // A driver's row holds each value under the name the statement it ran gives it, which is the key the type must declare.
+    for (file, sql, analysis) in statements {
+        if let Ok(stmt) = db.prepare(analysis["rewritten"]["sql"].as_str().unwrap_or(sql)) {
+            let named: Vec<&str> = stmt.column_names();
+            let declared: Vec<&str> = analysis["columns"].as_array().into_iter().flatten().map(|c| c["name"].as_str().unwrap_or("?")).collect();
+            // A statement the analysis refused declares none.
+            if !declared.is_empty() && named != declared {
+                problems.push(format!("{file}: columns are declared {declared:?} and run as {named:?}"));
+            }
+        }
+    }
     for scenario in SCENARIOS {
         let mut refused = HashSet::new();
         let seeded = begin_seeded(db, &tables, scenario, timeout_ms, &mut refused)?;

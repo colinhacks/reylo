@@ -232,6 +232,11 @@ pub struct Analysis {
     /// than one row, as `key` is.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub ordered: bool,
+    /// Whether the result is its one column's values, not rows that hold them: the statement's one
+    /// column is an expression it gives no name, so the only name it has is one the database makes
+    /// up ([`crate::analysis::names`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub value: bool,
     pub rewritten: lex::Rewritten,
     pub style: lex::Style,
     pub diagnostics: Vec<Diagnostic>,

@@ -351,6 +351,59 @@ function decimal(value: bigint, scale: number): string {
   return `${negative ? "-" : ""}${digits.slice(0, -scale)}.${digits.slice(-scale)}`;
 }
 
+/**
+ * A value as node-api's `getRows()` reads it, in the form `.run()` gives it, where no result's
+ * types are at hand (a Standard Query's `decode`): a nested or temporal value by its own class,
+ * and where its class leaves its type open (a TIMESTAMP's and a TIMESTAMPTZ's are both a count of
+ * microseconds, and a bundler may rename the classes) by `kind`, the column's kind or its
+ * element's. A plain value takes `scalar` of its kind, the column's own decoder. A STRUCT's
+ * fields, a MAP's keys and values and a UNION's value have no kind in the module, so a JSON
+ * value inside one stays its text.
+ */
+export function decodeDuckdbValue(v: unknown, kind: string, column: string, scalar: (kind: string, v: unknown) => unknown): unknown {
+  if (v === null || v === undefined) return null;
+  if (typeof v !== "object" || v instanceof Uint8Array) return scalar(kind, v);
+  // A value already in JavaScript's own form: an array of values, and a plain object as it is.
+  if (Array.isArray(v)) {
+    const element = kind.endsWith("[]") ? kind.slice(0, -2) : "unknown";
+    return v.map((e: unknown) => decodeDuckdbValue(e, element, column, scalar));
+  }
+  const proto = Object.getPrototypeOf(v);
+  if (proto === Object.prototype || proto === null) return scalar(kind, v);
+  const o = v as Record<string, any>;
+  const cls = (v as { constructor?: { name?: string } }).constructor?.name ?? "";
+  const inner = (e: unknown) => decodeDuckdbValue(e, "unknown", column, scalar);
+  // A LIST, an ARRAY, and a STRUCT whose fields have no names: their items in order.
+  if (Array.isArray(o.items)) {
+    const element = kind.endsWith("[]") ? kind.slice(0, -2) : "unknown";
+    return o.items.map((e: unknown) => decodeDuckdbValue(e, element, column, scalar));
+  }
+  if (Array.isArray(o.entries)) return o.entries.map((e: { key: unknown; value: unknown }) => ({ key: inner(e.key), value: inner(e.value) }));
+  if (o.entries !== null && typeof o.entries === "object") {
+    const out: Record<string, unknown> = {};
+    for (const name of Object.keys(o.entries)) out[name] = inner(o.entries[name]);
+    return out;
+  }
+  if (typeof o.tag === "string" && "value" in o) return { tag: o.tag, value: inner(o.value) };
+  // A VARIANT is the value it holds.
+  if (cls === "DuckDBVariantValue" || ("value" in o && "type" in o && !("scale" in o))) return decodeDuckdbValue(o.value, kind, column, scalar);
+  if (typeof o.value === "bigint" && typeof o.scale === "number") return decimal(o.value, o.scale);
+  if (typeof o.months === "number" && typeof o.days === "number") return interval(o.months, o.days, o.micros);
+  if (typeof o.days === "number") return o.days === DATE_INFINITY ? "infinity" : o.days === -DATE_INFINITY ? "-infinity" : civil(o.days);
+  // A BLOB is its bytes, and a GEOMETRY its text, as `.run()` gives a type an extension adds.
+  if (o.bytes instanceof Uint8Array) return cls === "DuckDBGeometryValue" || (cls !== "DuckDBBlobValue" && kind !== "bytes" && kind !== "unknown") ? String(v) : o.bytes;
+  const time = cls.startsWith("DuckDBTime") && !cls.startsWith("DuckDBTimestamp");
+  if (!time && (cls.startsWith("DuckDBTimestamp") || kind === "timestamp" || kind === "timestamptz")) {
+    const zone = cls.startsWith("DuckDBTimestampTZ") || (!cls.startsWith("DuckDBTimestamp") && kind === "timestamptz") ? "Z" : "";
+    if (typeof o.micros === "bigint") return timestamp(o.micros, 1000000n, 6, zone);
+    if (typeof o.nanos === "bigint") return timestamp(o.nanos, 1000000000n, 9, zone);
+    if (typeof o.millis === "bigint") return timestamp(o.millis, 1000n, 3, "");
+    if (typeof o.seconds === "bigint") return timestamp(o.seconds, 1n, 0, "");
+  }
+  // A TIME, a UUID, a BIT and a type an extension adds: its text.
+  return String(v);
+}
+
 /** A value of DuckDB's type `t`, as node-api reads it, in its kind's form; `column` names it in an error. */
 function decode(v: unknown, t: DuckType, column: string): unknown {
   if (v === null || v === undefined) return null;

@@ -34,7 +34,7 @@ const duck = (name: string): EngineType => (({
 }) as Record<string, EngineType>)[name]!;
 /** DuckDB's UNION, as the engine writes it: a tagged union of its alternatives, each value of which may be null. */
 const tagged = (...alternatives: [string, EngineType][]): EngineType => ({ kind: "tagged_union", label: "union", alternatives: alternatives.map(([tag, type]) => ({ tag, type, nullable: true })) });
-const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "array" };
+const every: Codecs = { decimal: "number", bytes: "string", date: "Temporal.PlainDate", time: "Temporal.PlainTime", datetime: "Temporal.PlainDateTime", instant: "Temporal.Instant", duration: "Temporal.Duration", set: "Array" };
 
 test("each family reaches the values that hold its kind, on every database, and nothing else", () => {
   const onPg = (t: EngineType) => leafCodec(t, "postgres", every);
@@ -181,15 +181,16 @@ test("a codec gives each value its type exactly, or refuses it naming the column
 
 test("a plan gives a codec's type inside a struct, a map and a tagged union, and leaves the rest", () => {
   const value = { s: { at: "2026-10-20T08:00:00Z", name: "a" }, m: [{ key: "2026-10-20", value: "x" }], u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } };
-  decodePlan({ fields: { at: "instant" } }, value.s, "s");
-  assert.ok(value.s.at as unknown instanceof Temporal.Instant);
-  assert.equal(value.s.name, "a");
-  decodePlan({ entries: { key: "date" } }, value.m, "m");
-  assert.ok(value.m[0]!.key as unknown instanceof Temporal.PlainDate);
-  decodePlan({ tags: { at: "instant" } }, value.u, "u");
-  assert.ok(value.u.value as unknown instanceof Temporal.Instant);
-  decodePlan({ tags: { at: "instant" } }, value.v, "v");
-  assert.equal(value.v.value, "y");
+  const s = decodePlan({ fields: { at: "instant" } }, value.s, "s") as { at: unknown; name: string };
+  assert.ok(s.at instanceof Temporal.Instant);
+  assert.equal(s.name, "a");
+  const m = decodePlan({ entries: { key: "date" } }, value.m, "m") as { key: unknown; value: string }[];
+  assert.ok(m[0]!.key instanceof Temporal.PlainDate);
+  assert.equal(m[0]!.value, "x");
+  assert.ok((decodePlan({ tags: { at: "instant" } }, value.u, "u") as { value: unknown }).value instanceof Temporal.Instant);
+  assert.equal(decodePlan({ tags: { at: "instant" } }, value.v, "v"), value.v);
+  // The value itself is untouched: what the plan reaches into is copied.
+  assert.deepEqual(value, { s: { at: "2026-10-20T08:00:00Z", name: "a" }, m: [{ key: "2026-10-20", value: "x" }], u: { tag: "at", value: "2026-10-20T08:00:00Z" }, v: { tag: "s", value: "y" } });
   // A Postgres array of any depth: the plan of its elements reaches every level.
   assert.deepEqual(decodePlan({ array: "decimal:number" }, [["1.5", "2"], ["3", null]], "grid"), [[1.5, 2], [3, null]]);
   // A parameter's: the codec's type written as the driver binds it, the value itself untouched.
@@ -284,6 +285,26 @@ test("a Standard Query gives a codec's columns the same type as run, by decode a
   assert.ok(q.columns![0]!.decode("2026-10-20 10:00:00+02") instanceof Temporal.Instant);
   assert.equal(q.columns![1]!.decode("19.50"), 19.5);
   assert.equal(standardColumnsType([{ name: "at", type: pg("timestamptz"), nullable: false }] as any, "postgres", every), `readonly [{ readonly name: "at"; decode(value: string): Temporal.Instant }]`);
+});
+
+test("a Standard Query's decode gives a driver's rows back as they came, where a codec stands inside a struct, a map or a union", () => {
+  const q = defineQuery({
+    dialect: "duckdb",
+    sql: "select s, m, u from t",
+    params: [],
+    cardinality: "many",
+    columns: [["s", "unknown"], ["m", "unknown"], ["u", "unknown"]],
+    codecs: { s: { fields: { n: "decimal:number" } }, m: { entries: { key: "decimal:number", value: "decimal:number" } }, u: { tags: { num: "decimal:number" } } },
+  })["~standard"].query;
+  const raw = () => [[{ n: "1.50", x: "y" }, [{ key: "2.5", value: "3.5" }], { tag: "num", value: "4.5" }]];
+  const rows = raw();
+  assert.deepEqual(q.decode(rows), [{ s: { n: 1.5, x: "y" }, m: [{ key: 2.5, value: 3.5 }], u: { tag: "num", value: 4.5 } }]);
+  assert.deepEqual(rows, raw());
+  // Each column's decoder leaves its value as it came too, and `output` of what it gives is `decode`'s.
+  const values = raw()[0]!;
+  const decoded = Object.fromEntries(q.columns!.map((c, i) => [c.name, c.decode(values[i] as never)]));
+  assert.deepEqual(values, raw()[0]);
+  assert.deepEqual(q.output!([decoded]), q.decode(raw()));
 });
 
 test("decodeCodecs leaves the columns it names no plan for as they are", () => {

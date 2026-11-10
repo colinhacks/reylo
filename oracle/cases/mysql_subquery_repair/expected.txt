@@ -25,7 +25,7 @@ subquery_in_expression.sql: many () -> { id: int, n: bigint?, last: bigint }
 subquery_in_where.sql: many () -> { id: int, name: varchar(≤20) }
 subquery_inside_cte.sql: many () -> { id: int, n: bigint }
 subquery_min_string.sql: many () -> { id: int, first: varchar? }
-subquery_no_alias.sql: many () -> { id: int, (select count(*) from posts p where p.user_id = u.id): bigint? }
+subquery_no_alias.sql: many () -> { id: int, (select count(*) from posts p where p.user_id = u.id): bigint? } !! reylo23: Column 2 has no name: the database calls it "(select count(*) from posts p where p.user_id = u.id)", which is no identifier and may differ on another driver or server. Give it one with `as`.
 subquery_no_from.sql: many () -> { id: int, one: bigint | int, same: varchar(≤20), c: bigint }
 subquery_reads_joined.sql: many () -> { id: int, post: int?, n: bigint }
 subquery_same_alias_twice.sql: many () -> { n: int, n: bigint? } !! reylo14: Columns 1 and 2 are both named "n", and a row keeps only the last of them. Give one of them another name with `as`.

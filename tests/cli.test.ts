@@ -55,7 +55,7 @@ test("the migration commands and reylo run are the binary's, with their output a
   assert.match(migrate.out, /^Usage: reylo <group> <command> \[flags\]\n/);
   for (const group of ["migration", "db"]) assert.equal(reylo(root, [group, "--help"]).out, migrate.out, group);
   // The docs show the help as it is.
-  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrate.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
+  assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrations.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
   assert.equal(run.status, 0, run.err);
   const db = new DatabaseSync(join(root, "app.db"));

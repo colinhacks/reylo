@@ -29,8 +29,8 @@ Each setup has a complete, working example project to copy, whose README's "How 
    If the project runs on anything else, Reylo has no plugin for it yet: say so, and do not write one.
 4. Point Reylo at the development database with DATABASE_URL, or with direct_url in .reylo.yaml: https://reylo.dev/#database
 5. Set up the editor the project uses, or VS Code's settings when nothing in the project names an editor: https://reylo.dev/#editors
-6. Write a first query and run it with the project's own driver: https://reylo.dev/#usage and https://reylo.dev/#run
-   For more queries, from nested JSON to bulk inserts, see https://reylo.dev/#inference
+6. Write a first query and run it with the project's own driver: https://reylo.dev/usage and https://reylo.dev/usage#run
+   For more queries, from nested JSON to bulk inserts, see https://reylo.dev/inference
 7. Run the typecheck script. The query's types come from the database; an error in a .sql file shows at its line and column.
 8. Install Reylo's agent skill, which gives later sessions its rules for writing queries: npx skills add colinhacks/reylo --skill using-reylo
 9. If the project queries its database through Prisma Client, move each call to a .sql file as https://reylo.dev/prisma describes, starting with its schema changes.
@@ -251,7 +251,7 @@ export default defineConfig({
 });
 ```
 
-Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](#direct_url) in `.reylo.yaml` to the local D1 file that `wrangler d1 migrations apply --local` creates. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
+Pass the D1 binding as the client, as in `getUser.run(env.DB, { id: 1 })`; you don't need `nodejs_compat`. For the type check, set [`direct_url`](/configuration#direct_url) in `.reylo.yaml` to the local D1 file that `wrangler d1 migrations apply --local` creates. Don't set it in `.env`, which Wrangler loads into the Worker as secrets.
 
 </Tab>
 <Tab value="Jest" id="setup-jest">
@@ -412,6 +412,43 @@ Zed doesn't send `.sql` files to the language server, so an error inside one sho
 
 </Tab>
 </Tabs>
+
+Your editor then shows each error as you type, in a `.sql` file and in the TypeScript that imports it, and the type check reports the same:
+
+```sql tab="get_user.sql" dialect="all" errors
+select id, nmae, email
+from users
+where id = :id::int
+```
+
+```ts twoslash tab="main.ts"
+// @errors: 2322 2339
+import getUser from "./get_user.sql";
+import listPosts from "./list_posts.sql";
+
+const user = await getUser.run(db, { id: "1" });
+
+const posts = await listPosts.run(db);
+for (const post of posts) console.log(post.body);
+```
+
+```sql tab="list_posts.sql" dialect="all"
+select id, title
+from posts
+order by id
+```
+
+```ansi tab="Terminal"
+$ tsc --noEmit --runExternalCode
+[96mget_user.sql[0m:[93m1[0m:[93m12[0m - [91merror[0m[90m reylo6: [0mcolumn "nmae" does not exist (42703)
+
+[7m1[0m select id, nmae, email
+[7m [0m [91m           ~~~~[0m
+
+Found 1 error in get_user.sql[90m:1[0m
+```
+
+While a `.sql` file has an error, `tsc` holds back the TypeScript errors, so fix the SQL first.
 
 ### Skill
 

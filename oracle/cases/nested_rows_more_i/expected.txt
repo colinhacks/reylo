@@ -1,0 +1,22 @@
+i01_same_type_array.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[]? }
+i02_same_type_jsonb.sql: many () -> { j: jsonb? }
+i03_same_type_bare.sql: many () -> { c: public.replies{ id: int8?, comment_id: int8?, body: text? }? }
+i04_same_type_scalar.sql: many () -> { one: public.replies{ id: int8?, comment_id: int8?, body: text? }? }
+i05_nested_sublink_jsonb.sql: many () -> { j: jsonb? }
+i06_nested_sublink_row_to_json.sql: many () -> { j: json? }
+i07_derived_inside_jsonb.sql: many () -> { j: jsonb? }
+i08_derived_inside_array.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+i09_union_jsonb.sql: many () -> { j: jsonb? }
+i10_union_array.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+i11_join_alias.sql: many () -> { j: jsonb { id: int8, comment_id: int8, body: text, k: int4? } }
+i13_alias_equals_table.sql: many () -> { j: jsonb { id: int4 } }
+i14_with_inside.sql: many () -> { j: jsonb? }
+i15_with_named_c.sql: many () -> { j: jsonb? }
+i16_correlated_array.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+i17_correlated_jsonb.sql: many () -> { j: jsonb? }
+i18_correlated_same_type.sql: many () -> { arr: (public.replies{ id: int8?, comment_id: int8?, body: text? }?)[] }
+i19_correlated_nested.sql: one () -> { arr: (record{ id: int4, arr: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+i20_function_alias_outer_col.sql: many () -> { j: jsonb? }
+i21_values_item.sql: many () -> { j: jsonb? }
+i22_left_join_inside.sql: many () -> { j: jsonb? }
+i24_json_build_nested.sql: many () -> { j: json { r: public.addr{ street: text?, zip: int4? }? } }

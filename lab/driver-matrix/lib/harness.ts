@@ -383,6 +383,8 @@ export function queries(d: Dialect, typed = true) {
     typedBig: q(`select id, big from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["big", d === "sqlite" ? "int" : "int8"]] }),
     // A row of no type the catalog has, and an array of them, whose oids say nothing of their fields.
     anonymousRows: q(`select s, array[s] as many from (select id, big from ${t("typed")} where id = 1) s`, [], "one", { columns: [["s", ANONYMOUS_ROW], ["many", `${ANONYMOUS_ROW}[]`]] }),
+    // The same rows as a subquery's array, which is empty over no rows.
+    arrayOfRows: q(`select array(select s from (select id, big from ${t("typed")} where id = 1) s) as many, array(select s from (select id, big from ${t("typed")} where id = 0) s) as none`, [], "one", { columns: [["many", `${ANONYMOUS_ROW}[]`], ["none", `${ANONYMOUS_ROW}[]`]] }),
     // SQLite's column declared BIGINT, which the engine types int8.
     typedWide: q(`select id, wide from ${t("typed")} where id = 1`, [], "one", { columns: [["id", "int"], ["wide", "int8"]] }),
     // SQLite: JSON the statement builds, with the kinds the loader writes from the engine's types
@@ -1007,6 +1009,7 @@ export const SCENARIOS: Scenario[] = [
           const row = { id: 1, big: TYPED[d].big };
           // Twice: PGlite names a statement's oids from its earlier runs.
           for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.anonymousRows, client), { s: row, many: [row] }, "a row of no catalog type");
+          for (let run = 0; run < 2; run++) typedEq(await call(ctx, q.arrayOfRows, client), { many: [row], none: [] }, "an array of a subquery's rows");
         }
         return;
       }

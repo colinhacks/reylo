@@ -98,7 +98,7 @@ export async function anyEngine(): Promise<Engine | MissingEngine> {
   return engine("postgres").catch((e: unknown) => (e instanceof MissingEngine ? e : new MissingEngine((e as Error).message)));
 }
 
-type Answer = { status: string; id?: number; message?: string; code?: string; conn?: number; version?: string; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
+type Answer = { status: string; id?: number; message?: string; code?: string; position?: number; conn?: number; version?: string; analysis?: Analysis; rows?: unknown[][]; server?: string; params?: number[]; columns?: Described["columns"] };
 
 /** What a session asks of a connection the engine holds. */
 export interface Connection {
@@ -219,12 +219,13 @@ export class Engine extends EngineCore {
  * An answer as the session reads it. A refused login and a database that cannot be reached are an
  * Unreachable, its cause carrying the server's code, so that `refusedLogin` reads it
  * (src/connection.ts); a MariaDB server, which the type check refuses, is a NotMysql; any other
- * failure is an Error.
+ * failure is an Error, with the server's code and the character its message points at, where it
+ * gives them.
  */
 function settled(answer: Answer): Answer {
   if (answer.status === "notMysql") throw new NotMysql(answer.server!);
   if (answer.status === "unreachable" || answer.status === "refused") throw new Unreachable(Object.assign(new Error(answer.message), answer.code && { code: answer.code }));
-  if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code });
+  if (answer.status === "error") throw Object.assign(new Error(answer.message), answer.code && { code: answer.code }, answer.position !== undefined && { position: answer.position });
   return answer;
 }
 

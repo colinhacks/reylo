@@ -7,7 +7,7 @@
 
 import { bunRows, neonCallable, postgresJs, queryPostgres, slonik } from "./decode.ts";
 import { mariadb, mysql2, planetscale } from "./decode-mysql.ts";
-import { normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
+import { libsqlRows, normalize, runDurableObject, runSyncSqlite, runTurso } from "./decode-sqlite.ts";
 import { encodeDuckdb, isDuckdb, runDuckdb, type DuckdbClient } from "./decode-duckdb.ts";
 import { columnKind, describe, hstoreText, isMultirangeKind, isRangeKind, isRowKind, numbersInJson, ParameterError, postgresInterval, postgresLiteral, postgresYear, rowMasks, withinDimensions, zoned, type Columns, type JsonNumbers } from "./values.ts";
 import { bareName, schemaOf, type EngineType } from "./engine-type.ts";
@@ -173,6 +173,8 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly key?: readonly string[] | undefined;
   /** Whether the statement's ORDER BY orders its rows totally, where the analysis proves it. */
   readonly ordered?: boolean | undefined;
+  /** How many rows the statement returns, which a query's Standard Query says beside its `decode`. */
+  readonly cardinality?: "many" | "one" | "maybeOne" | "none" | undefined;
   /** The columns that hold a family the project file's `js.codecs` gives another type, by name, each with where in its value the codecs stand (src/codecs.ts). */
   readonly codecs?: Readonly<Record<string, Plan>> | undefined;
   /** Each structured parameter in insert position, with the lists of `text` the run time writes again for the keys a call carries. */
@@ -183,7 +185,7 @@ export type QueryModule<D extends Dialect = Dialect> = {
   readonly source?: string | undefined;
   /** Whether a Postgres array column may hold nested arrays, as `allow_nested_arrays: true` says: none is refused. */
   readonly nestedArrays?: boolean | undefined;
-  /** Whether the statement Reylo sends ends with a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
+  /** Whether the statement Reylo sends carries a sqlcommenter comment naming `source` (src/sqlcommenter.ts); `text`, the query's `sql`, leaves it out. */
   readonly sqlcommenter?: boolean | undefined;
   /** The checks of a typed JSON, structured or cast parameter (src/checks.ts), which a build step passes where the statement has one. */
   readonly checks?: Checks | undefined;
@@ -428,7 +430,7 @@ async function executeAsync(c: AnyClient | null | undefined, query: QueryModule,
       // The driver's rows, each value given its kind (decode-sqlite.ts).
       const columns = query.columns;
       if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
-      if (typeof c.execute === "function") return normalize((await c.execute({ sql: text, args: values })).rows, columns);
+      if (typeof c.execute === "function") return normalize(libsqlRows((await c.execute({ sql: text, args: values })).rows, columns), columns);
       if (isTurso(c)) return await runTurso(c, text, values, columns);
       // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
       if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
@@ -543,7 +545,7 @@ function statement(query: QueryModule, params: ParamsInput) {
 
 /** `text` as Reylo sends it: with the comment naming the query's file, where the module asks for one (src/sqlcommenter.ts). */
 export function sentText(query: QueryModule, text: string): string {
-  return query.sqlcommenter && query.source ? withSqlcommenter(text, query.source) : text;
+  return query.sqlcommenter && query.source ? withSqlcommenter(text, query.source, query.dialect) : text;
 }
 
 /**

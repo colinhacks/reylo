@@ -2,8 +2,6 @@
 title: "Configuration"
 ---
 
-## Configuration
-
 Configure Reylo in a `.reylo.yaml` (or `.reylo.yml`) file beside `package.json`. Every key is optional:
 
 ```yaml title=".reylo.yaml"
@@ -21,7 +19,7 @@ sqlcommenter: true
 dir: reylo
 ```
 
-### `direct_url`
+## `direct_url`
 
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:
 
@@ -60,7 +58,15 @@ To keep a password out of every file, `$(…)` runs a command, such as a passwor
 direct_url: postgres://app:$(op read op://dev/db/password)@db:5432/app
 ```
 
-### `env`
+A type check or a build reads this database, so in CI and on your host it needs your migrations applied. The database a query runs on is the client you pass to `.run()`, so the two can differ.
+
+A script that runs against production is typed on your dev database, and its queries warn when the two differ in a way that breaks their types ([Schema changes](/schema-changes)). To type it on the database it runs on:
+
+```sh
+DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts
+```
+
+## `env`
 
 The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that sets a variable wins, and the environment wins over every file.
 
@@ -69,18 +75,18 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
-### `allow_untyped_params`
+## `allow_untyped_params`
 
-Whether a [parameter whose type cannot be inferred](#a-parameter-nothing-types) may stay `unknown`.
+Whether a [parameter whose type cannot be inferred](/inference#a-parameter-nothing-types) may stay `unknown`.
 
-By default it's an error that says to [cast it](#casts).
+By default it's an error that says to [cast it](/inference#casts).
 
 ```yaml title=".reylo.yaml"
 # the default is false
 allow_untyped_params: true
 ```
 
-### `allow_nested_arrays`
+## `allow_nested_arrays`
 
 Whether a Postgres array column may hold nested arrays.
 
@@ -91,9 +97,9 @@ Postgres doesn't track an array's dimensions, so by default Reylo types an array
 allow_nested_arrays: true
 ```
 
-### `sqlcommenter`
+## `sqlcommenter`
 
-Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. The query's [`.sql`](#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
+Each query Reylo sends ends with a comment that names its file, in [sqlcommenter](https://google.github.io/sqlcommenter/)'s format, so database monitoring that reads it, such as Datadog's and PlanetScale's, groups your queries by file. On SQLite the comment opens the query instead, since SQLite would write it into the name of a last column with no alias. The query's [`.sql`](/usage#sql) leaves it out. Set `sqlcommenter: false` to leave it off what Reylo sends too.
 
 ```yaml title=".reylo.yaml"
 # the default is true
@@ -104,18 +110,18 @@ sqlcommenter: false
 select id, name, email from users where id = $1::int /*file='queries%2Fget_user.sql'*/
 ```
 
-### `dir`
+## `dir`
 
-The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrate), which you commit, and its cache in `.cache/`, which keeps itself out of git.
+The directory beside `.reylo.yaml` that holds Reylo's files: the `schema.sql`, `migrations/` and `reylo-lock.yaml` of [migrations](/migrations), which you commit, and its cache in `.cache/`, which keeps itself out of git.
 
 ```yaml title=".reylo.yaml"
 # the default is reylo
 dir: db
 ```
 
-### `shadow_url`
+## `shadow_url`
 
-The server where [migrations](/migrate) build their shadow databases, for a database whose own server refuses `create database`:
+The server where [migrations](/migrations) build their shadow databases, for a database whose own server refuses `create database`:
 
 ```yaml title=".reylo.yaml"
 # the default is the database's own server

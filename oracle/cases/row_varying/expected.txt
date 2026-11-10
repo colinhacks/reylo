@@ -2,7 +2,7 @@ distinct_ctid.sql: many () -> { c: text } key (c)
 distinct_on_whole_row_field.sql: many () -> { title: text? }
 distinct_pinned.sql: at_most_one () -> { author_id: int8 }
 distinct_row_number.sql: many () -> { n: int8 } key (n)
-distinct_whole_row_field.sql: many () -> { id: int8 } key (id)
+distinct_whole_row_field.sql: many () -> { id: int8 } key (id) value
 join_whole_row_distinct.sql: many () -> { email: text? } key (email)
 join_whole_row_group.sql: many () -> { id: int4, n: int8 } key (id)
 join_whole_row_pinned.sql: many (id: int4) -> { email: text?, title: text? }

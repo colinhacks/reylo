@@ -7,28 +7,32 @@ import type { Route } from './+types/page';
 import { Brand } from '@/components/brand';
 import { HeroTitle } from '@/components/hero';
 import { getMDXComponents } from '@/components/mdx';
+import { HeroActions } from '@/components/hero';
 import { loadPage } from '@/lib/content';
-import { compareTitle, githubUrl, markdownPath, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
+import { compareTitle, docsTitle, githubUrl, markdownPath, pageGroups, pageLinks, pageTitle, siteTitle, siteUrl } from '@/lib/layout.shared';
+import { movedAnchorsScript } from '@/lib/moved-anchors';
 import { ogAlt, ogSize } from '@/lib/og';
 import { source } from '@/lib/source';
 
 /**
  * The h2s whose h3s stay out of each page's table of contents, so that the whole table fits
  * on one screen (a window 900px tall, at Fumadocs' spacing); the headings stay on the page,
- * with their anchors. On the main page, every h3 shows: the query's members
- * under Usage and the keys of `.reylo.yaml`. On each dialect page (content/docs/<dialect>.mdx, one skeleton
+ * with their anchors. On each dialect page (content/docs/<dialect>.mdx, one skeleton
  * for all four): the h3s of Parameters and of Drivers, one per driver, which leaves Data types'
  * h3s, the reason a reader lands there, in the table.
  */
 const FOLD: Record<string, readonly string[]> = {
-  '': [],
+  // Usage: `.run()`'s one example per database, a level under it.
+  usage: ['#run'],
   postgres: ['#parameters', '#drivers'],
   mysql: ['#parameters', '#drivers'],
   sqlite: ['#parameters', '#drivers'],
   duckdb: ['#parameters', '#drivers'],
 };
 
-/** The pages with no table of contents, by slug, each with the width of its one centered column: a page whose whole point is one wide table. */
+const DIALECT_PAGES = new Set(['postgres', 'mysql', 'sqlite', 'duckdb']);
+
+/** The pages with no table of contents, by slug, each with the width of its column, which takes the right column's room: a page whose whole point is one wide table. */
 const CENTERED: Record<string, string> = {
   compare: '56rem',
 };
@@ -44,6 +48,9 @@ export async function loader({ params }: Route.LoaderArgs) {
   const page = source.getPage(slug ? [slug] : []);
   if (!page) throw new Response('Not found', { status: 404 });
   const card = await readFile('app/routes/opengraph-image.tsx');
+  // Setup's agent card holds the prompt; the main page's button copies the same text, from another page.
+  const setup = slug ? '' : await readFile('content/sections/01-setup.mdx', 'utf8');
+  const agentPrompt = setup.match(/<AgentPrompt>\s*```text\n([\s\S]*?)\n```\s*<\/AgentPrompt>/)?.[1];
   return {
     slug,
     path: page.path,
@@ -52,6 +59,7 @@ export async function loader({ params }: Route.LoaderArgs) {
     description: page.data.description ?? '',
     tree: source.getPageTree(),
     og: createHash('sha256').update(card).digest('hex').slice(0, 16),
+    agentPrompt: agentPrompt === undefined ? undefined : `${agentPrompt}\n`,
   };
 }
 
@@ -63,7 +71,7 @@ export async function loader({ params }: Route.LoaderArgs) {
 export function meta({ loaderData }: Route.MetaArgs): Route.MetaDescriptors {
   if (!loaderData) return [];
   const main = loaderData.slug === '';
-  const title = main ? siteTitle : loaderData.slug === 'compare' ? compareTitle : pageTitle(loaderData.title);
+  const title = main ? siteTitle : loaderData.slug === 'compare' ? compareTitle : DIALECT_PAGES.has(loaderData.slug) ? pageTitle(loaderData.title) : docsTitle(loaderData.title);
   const { description } = loaderData;
   const url = main ? siteUrl : `${siteUrl}${loaderData.url}`;
   const image = `${siteUrl}/opengraph-image.png?${loaderData.og}`;
@@ -112,20 +120,20 @@ export default function Page({ loaderData }: Route.ComponentProps) {
 }
 
 function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
-  const { slug, path, title, description, tree } = loaderData;
+  const { slug, path, title, description, tree, url, agentPrompt } = loaderData;
   const files = use(loadPage(path));
-  const components = getMDXComponents();
+  const components = getMDXComponents(slug === '' ? { HeroActions: () => <HeroActions agentPrompt={agentPrompt} /> } : undefined);
   const main = slug === '';
 
-  // docs-kit's page (docs-kit/src/components/shell.tsx): the table of contents on the left, with
-  // the brand at its top (a link to the main page) and the GitHub link, the "Leave a star!" note
-  // and the theme switch at its foot. The main page is content/docs/index.mdx and then each section
-  // of content/sections/, each a module of its own, and its table of contents is theirs in order.
-  // The subheader under the title is the page's first element (`.dk-subheader`), since it may set
-  // code; the frontmatter's description, in plain text, is the page's metadata (above). On the main
-  // page only, the title is centred, the mark over the name (components/hero.tsx), and "Copy agent
-  // prompt" sits under the subheader with the badges (content/docs/index.mdx), copying the agent
-  // card at the top of Setup; and the structured data describes the site and the project. Every page's column ends on the licence.
+  // docs-kit's page (docs-kit/src/components/shell.tsx): the pages on the left, under the brand (a
+  // link to the main page), with the links away from the docs, the repository and the theme switch
+  // at their foot, and the table of contents on the right. A page is its own file, then the
+  // sections it holds (lib/page-sections.ts). The subheader under the title is the page's first
+  // element (`.dk-subheader`), since it may set code; the frontmatter's description, in plain text,
+  // is the page's metadata (above). On the main page only, the title is centred, the mark over the
+  // name (components/hero.tsx), and "Copy agent prompt" sits under the subheader with the badges;
+  // an old link to a section that moved finds its page (lib/moved-anchors.ts); and the structured
+  // data describes the site and the project. Every page's column ends on the licence.
   return (
     <DocsShell
       // The tree's names are the pages' titles, plain strings, so it reaches the browser as it is
@@ -136,9 +144,18 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       toc={files.flatMap((file) => file.toc).filter((item) => item.depth <= 3)}
       fold={FOLD[slug] ?? []}
       centered={CENTERED[slug]}
+      pages={{ groups: pageGroups, links: pageLinks, linksLabel: 'Links', current: url }}
+      pageTitle={pageName(slug, title)}
       brand={<Brand />}
       github={githubUrl}
-      before={main ? <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData(description) }} /> : undefined}
+      before={
+        main ? (
+          <>
+            <script dangerouslySetInnerHTML={{ __html: movedAnchorsScript }} />
+            <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: structuredData(description) }} />
+          </>
+        ) : undefined
+      }
       footer={<>Released under the MIT License. Copyright © 2026 Colin McDonnell.</>}
     >
       {files.map((file, i) => (
@@ -146,6 +163,11 @@ function PageContent({ loaderData }: Pick<Route.ComponentProps, 'loaderData'>) {
       ))}
     </DocsShell>
   );
+}
+
+/** The current page's name on the phone's strip, as the list names it. */
+function pageName(slug: string, title: string): string {
+  return slug === '' ? 'Intro' : title;
 }
 
 /**

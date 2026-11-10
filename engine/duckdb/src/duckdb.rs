@@ -9,15 +9,32 @@ use crate::api::{Analysis, Column, DbError, Diagnostic, DuckdbDescribe, Param};
 use crate::catalog::{self, Catalog};
 use crate::host::{Host, Lazy};
 use crate::nulls::{self, Ctx, Out};
+use reylo_engine_core::analysis::ResultTarget;
 use reylo_engine_core::dialect::Dialect;
 use reylo_engine_core::lex::{self, Lexed, Target};
-use reylo_engine_core::types::{Cardinality, StatementKind, Type};
-use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, Query, SetExpr, SqliteOnConflict, Statement, TableFactor, TableObject, Value};
+use reylo_engine_core::types::{Cardinality, Kind, StatementKind, Type};
+use sqlparser::ast::{AssignmentTarget, DoUpdate, Expr, FromTable, OnConflictAction, OnInsert, OutputClause, Query, SelectItem, SetExpr, SetQuantifier, SqliteOnConflict, Statement, TableFactor, TableObject, Value, Visit, Visitor};
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::ControlFlow;
+
+/// A type under what the statement shows of an array of rows ([`Out::rows`]): its elements are structs, and each field is NULL only where its column may be.
+fn with_rows(mut ty: Type, out: &Out) -> Type {
+    if let (Some(rows), Kind::Array(array)) = (&out.rows, &mut ty.kind) {
+        if let Kind::Record(record) = &mut array.element.ty.kind {
+            if record.fields.len() == rows.len() {
+                array.element.nullable = false;
+                for (field, row) in record.fields.iter_mut().zip(rows) {
+                    field.nullable = !row.not_null;
+                    field.ty = with_rows(field.ty.clone(), row);
+                }
+            }
+        }
+    }
+    ty
+}
 
 /// The statements the DuckDB analysis reads; any other is a command ([`lex::Statement`]).
 const KINDS: &[&str] = &["select", "with", "from", "values", "table", "insert", "update", "delete", "pivot", "unpivot", "summarize"];
@@ -117,7 +134,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
             .enumerate()
             .map(|(i, c)| {
                 let out = proven.as_ref().map(|p| &p[i]);
-                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), crate::types::of(&c.ty), !out.is_some_and(|o| o.not_null)) }
+                Column { comment: out.and_then(|o| o.comment.clone()), ..Column::new(c.name.clone(), out.map_or_else(|| crate::types::of(&c.ty), |o| with_rows(crate::types::of(&c.ty), o)), !out.is_some_and(|o| o.not_null)) }
             })
             .collect()
     } else {
@@ -180,6 +197,16 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         diagnostics.push(Diagnostic { message, start: p.start, length: p.end - p.start, code: UNNAMED_FIELDS, server_code: None });
     }
     let rewritten_sql = rewritten.sql.clone();
+    let analysis_columns = columns.len();
+    let targets = shaped.as_deref().and_then(|statement| {
+        let targets = result_targets(statement, false)?;
+        // An `unnest` of a struct makes a column of each field, so a list of more columns than items
+        // is read again with each `unnest` as a `*`.
+        if !targets.contains(&ResultTarget::Star) && targets.len() != analysis_columns {
+            return result_targets(statement, true);
+        }
+        Some(targets)
+    });
     let mut analysis = Analysis {
         kind: (!kind.is_empty()).then(|| StatementKind::of(&kind)),
         comment: None,
@@ -191,6 +218,7 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         unique: Vec::new(),
         order: Vec::new(),
         ordered: false,
+        value: false,
         rewritten,
         style: lexed.style,
         diagnostics,
@@ -203,8 +231,98 @@ fn analyze(sql: &str, host: &Host, marked: &[String]) -> Lazy<Analysis> {
         tables: parsed.as_ref().map(|p| tables_through_macros(p, &catalog, &rewritten_sql)),
         domains: Default::default(),
     };
-    reylo_engine_core::analysis::clashes(sql, &mut analysis, &|_| None);
+    reylo_engine_core::analysis::names(sql, Dialect::Duckdb, &mut analysis, targets.as_deref(), &|_| None);
     Some(analysis)
+}
+
+/// How the statement writes its result columns: a query's select list, the first arm's of a set
+/// operation, whose names are the result's, or a write's `RETURNING`. `None` for any other statement,
+/// and for a select list the tree does not say the columns of.
+/// `unnest` and `unpack` stand for as many columns as a struct has fields where `expand`, which the
+/// caller asks for once the list's count is not the columns'.
+fn result_targets(statement: &Statement, expand: bool) -> Option<Vec<ResultTarget>> {
+    fn body(set: &SetExpr, expand: bool) -> Option<Vec<ResultTarget>> {
+        match set {
+            // `from t` alone selects every column.
+            SetExpr::Select(s) if s.projection.is_empty() => Some(vec![ResultTarget::Star]),
+            SetExpr::Select(s) => list(&s.projection, expand),
+            SetExpr::Query(q) => body(&q.body, expand),
+            // `union by name` matches columns across its arms by name, so neither arm's list is the result's.
+            SetExpr::SetOperation { set_quantifier: SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName, .. } => None,
+            SetExpr::SetOperation { left, .. } => body(left, expand),
+            // `values (1, 2)`: named col0 and col1 by DuckDB.
+            SetExpr::Values(values) => Some(vec![ResultTarget::Unnamed(None); values.rows.first()?.len()]),
+            SetExpr::Table(_) => Some(vec![ResultTarget::Star]),
+            _ => None,
+        }
+    }
+    fn list(items: &[SelectItem], expand: bool) -> Option<Vec<ResultTarget>> {
+        let expanding = |e: &Expr| matches!(e, Expr::Function(f) if ["unnest", "unpack"].iter().any(|n| f.name.to_string().eq_ignore_ascii_case(n)));
+        items
+            .iter()
+            .map(|item| match item {
+                SelectItem::UnnamedExpr(e) if read_as_it_is(e) || prefix_alias(e) => Some(ResultTarget::Named),
+                SelectItem::UnnamedExpr(e) if holds_columns(e) || (expand && expanding(e)) => Some(ResultTarget::Star),
+                SelectItem::UnnamedExpr(_) => Some(ResultTarget::Unnamed(None)),
+                SelectItem::ExprWithAlias { .. } => Some(ResultTarget::Named),
+                SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(..) => Some(ResultTarget::Star),
+                _ => None,
+            })
+            .collect()
+    }
+    // A word: a column, or a function DuckDB calls without parentheses (`current_date`), which it
+    // reads as a column of that name wherever one is in scope, and names after itself either way.
+    fn read_as_it_is(e: &Expr) -> bool {
+        match e {
+            Expr::Identifier(_) | Expr::CompoundIdentifier(_) => true,
+            Expr::Function(f) => matches!(f.args, sqlparser::ast::FunctionArguments::None),
+            Expr::Nested(e) => read_as_it_is(e),
+            _ => false,
+        }
+    }
+    // DuckDB's `y: x + 1`, an alias written first, which the parser reads as its JSON access inside
+    // the expression, since DuckDB has no such operator.
+    fn prefix_alias(e: &Expr) -> bool {
+        shallow(e, &|e| matches!(e, Expr::JsonAccess { .. }))
+    }
+    // `columns('a.*')`, alone or inside an expression, stands for as many columns as it matches.
+    fn holds_columns(e: &Expr) -> bool {
+        shallow(e, &|e| matches!(e, Expr::Function(f) if f.name.to_string().eq_ignore_ascii_case("columns")))
+    }
+    match statement {
+        Statement::Query(q) => body(&q.body, expand),
+        Statement::Insert(i) => list(i.returning.as_deref()?, expand),
+        Statement::Update(u) => list(u.returning.as_deref()?, expand),
+        Statement::Delete(d) => list(d.returning.as_deref()?, expand),
+        Statement::Merge(m) => match m.output.as_ref()? {
+            OutputClause::Returning { select_items, .. } | OutputClause::Output { select_items, .. } => list(select_items, expand),
+        },
+        _ => None,
+    }
+}
+
+/// Whether `found` holds of `e` or of an expression inside it, but not inside a subquery, whose
+/// select list is its own.
+fn shallow(e: &Expr, found: &dyn Fn(&Expr) -> bool) -> bool {
+    struct Shallow<'a> {
+        depth: usize,
+        found: &'a dyn Fn(&Expr) -> bool,
+    }
+    impl Visitor for Shallow<'_> {
+        type Break = ();
+        fn pre_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth += 1;
+            ControlFlow::Continue(())
+        }
+        fn post_visit_query(&mut self, _: &Query) -> ControlFlow<()> {
+            self.depth -= 1;
+            ControlFlow::Continue(())
+        }
+        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<()> {
+            if self.depth == 0 && (self.found)(e) { ControlFlow::Break(()) } else { ControlFlow::Continue(()) }
+        }
+    }
+    e.visit(&mut Shallow { depth: 0, found }).is_break()
 }
 
 /// The one statement of the text as `sqlparser`'s DuckDB dialect reads it, if it reads it.

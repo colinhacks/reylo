@@ -59,7 +59,9 @@ impl Tally {
     pub fn judge(&mut self, at: &str, sql: &str, analysis: &Value, returned: &Returned) {
         self.ran += 1;
         let shown = || format!("{at}: {}", one_line(sql));
-        if let Some(d) = analysis["diagnostics"].as_array().and_then(|d| d.first()) {
+        // A column with no name of its own is an error that leaves the statement typed, which is
+        // checked as any other.
+        if let Some(d) = analysis["diagnostics"].as_array().and_then(|d| d.iter().find(|d| d["code"].as_u64() != Some(u64::from(reylo_engine_core::analysis::UNNAMED_COLUMN)))) {
             if d["code"].as_u64() == Some(14) {
                 self.by_rule += 1;
             } else {

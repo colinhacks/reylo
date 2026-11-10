@@ -102,6 +102,31 @@ test("DuckDB: each column is typed by the prepared statement, and may be NULL un
   assert.match((await analyze(root, "pivot logs on level using count(*)")).diagnostics[0]!.message, /^DuckDB does not describe the columns of this statement before it runs/);
 });
 
+test("DuckDB: an array of a subquery's whole rows is never NULL, nor is its element, and each field is as its column is", { skip }, async () => {
+  const root = await project("create table posts (id integer primary key); create table comments (id integer primary key, post_id integer not null, body varchar); create table replies (id integer primary key, comment_id integer not null, note varchar not null)");
+  const fields = (t: EngineType): unknown => (t.kind === "array" && t.element.type.kind === "record" ? { element_nullable: t.element.nullable ?? false, fields: t.element.type.fields.map((f) => [f.name, f.nullable ?? false, fields(f.type)]) } : undefined);
+  const column = async (sql: string) => {
+    const [, c] = (await analyze(root, sql)).columns;
+    return { nullable: c!.nullable ?? false, ...(fields(c!.type) as object) };
+  };
+  assert.deepEqual(await column("select p.id, array(select c from (select id, body from comments where post_id = p.id) c) as comments from posts p"), {
+    nullable: false,
+    element_nullable: false,
+    fields: [["id", false, undefined], ["body", true, undefined]],
+  });
+  assert.deepEqual(await column("select p.id, array(select x from (select c.id, array(select r from (select note from replies where comment_id = c.id) r) as rs from comments c where c.post_id = p.id) x) as cs from posts p"), {
+    nullable: false,
+    element_nullable: false,
+    fields: [["id", false, undefined], ["rs", false, { element_nullable: false, fields: [["note", false, undefined]] }]],
+  });
+  // An item an outer join pads may leave its row NULL, and its fields say nothing then.
+  assert.deepEqual(await column("select 1 as one, array(select r from (select 1 as x) x left join replies r on r.id = x.x) as rs"), {
+    nullable: false,
+    element_nullable: true,
+    fields: [["id", true, undefined], ["comment_id", true, undefined], ["note", true, undefined]],
+  });
+});
+
 test("DuckDB: how many rows a statement returns", { skip }, async () => {
   const root = await project();
   const card = async (sql: string) => (await analyze(root, sql)).cardinality;
@@ -400,6 +425,29 @@ test("DuckDB: a DuckDB connection is never taken for better-sqlite3", { skip }, 
   try {
     const sqlite = defineQuery({ dialect: "sqlite", sql: "select 1 as one", params: [], cardinality: "one" });
     await assert.rejects(sqlite.run(c as never), /It is a DuckDB connection, and the statement is typed for sqlite: set the project's URL to the DuckDB database/);
+  } finally {
+    c.closeSync();
+    db.closeSync();
+  }
+});
+
+test("DuckDB: a Standard Query's decode of node-api's getRows() is .run()'s result, for every type and every value nested in another", { skip }, async () => {
+  const root = await project(`${SCHEMA}\ncreate table t as select * from test_all_types();`);
+  const nested = `select [[1, 2], [3]] as grid, [date '2026-10-20', null] as days, [timestamptz '2026-10-20 10:00:00+02'] as instants, {'d': date '2026-10-20', 'n': 1.50::decimal(10, 2), 'at': timestamp '2026-10-20 10:00:00.5', 'zoned': timestamptz '2026-10-20 10:00:00+02', 'big': 9007199254740993::bigint, 'tags': ['a', null], 'blob': '\\x01'::blob} as s, map {'k': interval 1 day} as m, union_value(num := 2)::union(num integer, str varchar) as u, (1, 'x') as tup, 42::variant as v, '{"a": [1]}'::json as j, ['{"b": 2}'::json] as js, timestamp_s '2026-10-20 10:00:00' as secs, timestamp_ms '2026-10-20 10:00:00.123' as millis, timestamp_ns '2026-10-20 10:00:00.123456789' as nanos, time '12:34:56.5' as tm, uuid 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11' as id`;
+  const queries = [await built(root, "all", "select * from t"), await built(root, "nested", nested)];
+  await closeSessions();
+  const db = await api().DuckDBInstance.create(join(root, "app.duckdb"));
+  const c = await db.connect();
+  try {
+    for (const q of queries) {
+      const sq = (q as unknown as { "~standard": { query: { text: string; decode(rows: unknown[][]): unknown; columns: { name: string; decode(v: unknown): unknown }[]; output(rows: Record<string, unknown>[]): unknown } } })["~standard"].query;
+      const read = async () => ((await c.runAndReadAll(sq.text)) as { getRows(): unknown[][] }).getRows();
+      const run = await q.run(c);
+      assert.deepStrictEqual(sq.decode(await read()), run);
+      // Each column's decoder gives the same values, which `output` makes the same result.
+      const rows = (await read()).map((r) => Object.fromEntries(sq.columns.map((col, i) => [col.name, r[i] === null ? null : col.decode(r[i])])));
+      assert.deepStrictEqual(sq.output(rows), run);
+    }
   } finally {
     c.closeSync();
     db.closeSync();

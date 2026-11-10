@@ -1,0 +1,1 @@
+select u.id, array(select p from (select po.id, array(select c from (select x.id, array(select r from (select id, body from replies where comment_id = x.id) r) as replies, array(select r from (select id from replies where comment_id = x.id) r) as ids from comments x where x.post_id = po.id) c) as comments from posts po where po.author_id = u.id) p) as posts from users u

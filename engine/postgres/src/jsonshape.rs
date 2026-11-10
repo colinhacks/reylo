@@ -260,9 +260,10 @@ pub fn resolve_row(shape: &Shape, probes: &[Option<Outcome>], registry: &TypeReg
     let (ty, non_null) = ctx.node(shape, "", &mut unresolved);
     let ty = match ty.kind {
         Kind::Record(_) => ty.named("record"),
+        // One dimension: a row is no array, so nothing in it can add another.
         Kind::Array(array) if matches!(array.element.ty.kind, Kind::Record(_)) => {
             let element = Position { ty: array.element.ty.named("record"), nullable: array.element.nullable };
-            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: true, ..array })).named("_record")
+            Type::new(Kind::Array(crate::types::ArrayType { element: Box::new(element), any_depth: false, ..array })).named("_record")
         }
         _ => return None,
     };
@@ -630,6 +631,22 @@ impl Builder<'_> {
                 (Some(arg), true) => self.walk(arg),
                 _ => self.leaf(expr),
             },
+            // `array(select c from (…) c)`: `{}` over no rows, never NULL, as `array_to_json` of it reads it.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 && self.array_of_rows(s) => {
+                let Some(select) = s.subselect.as_deref().and_then(as_select) else { return Shape::Unknown };
+                let Some(inner) = single_target(select).and_then(|rt| rt.val.clone()) else { return Shape::Unknown };
+                let withs = self.withs.last().cloned().unwrap_or_default().with(select.with_clause.as_ref(), self.columns);
+                self.next_ctx += 1;
+                self.stack.push((self.next_ctx, select.from_clause.clone(), None));
+                self.withs.push(withs);
+                let rows = self.rows.take();
+                self.rows = rows.as_ref().map(|r| r.under(&select.from_clause));
+                let items = self.walk(&inner);
+                self.rows = rows;
+                self.withs.pop();
+                self.stack.pop();
+                Shape::Array { items: Box::new(items), non_null: true }
+            }
             Some(NodeEnum::SubLink(s)) => {
                 if s.sub_link_type != protobuf::SubLinkType::ExprSublink as i32 {
                     return Shape::Unknown;
@@ -870,9 +887,12 @@ impl Builder<'_> {
     /// row type gives that value for it (`makeWholeRowVar`), which its row's describe does not
     /// tell from a row of one column. So the same reference read as a value says which it is:
     /// `coalesce` of one argument is that argument, and reads `alias.*` as an expression does.
+    /// Its type also names the row's fields where an alias renames the item's columns: a row of a
+    /// named type (a table's, a view's, a function's that returns one) keeps the type's own names,
+    /// which `alias.*` in a select list does not show.
     fn row_or_value(&mut self, alias: &str) -> Shape {
         let row = self.row(alias);
-        let (Shape::Row { probe }, true) = (&row, self.one_function(alias)) else { return row };
+        let (Shape::Row { probe }, true) = (&row, self.one_function(alias) || self.renamed(alias)) else { return row };
         let probe = *probe;
         let star = star_of(alias);
         let whole = Node { node: Some(NodeEnum::CoalesceExpr(Box::new(protobuf::CoalesceExpr { args: vec![star], location: -1, ..Default::default() }))) };
@@ -885,6 +905,12 @@ impl Builder<'_> {
     /// ordinality column: any other item's whole row is a row, whatever it holds.
     fn one_function(&self, alias: &str) -> bool {
         self.stack.iter().rev().find_map(|(_, from, _)| from.iter().find_map(|item| function_item(item, alias))).unwrap_or(false)
+    }
+
+    /// Whether the innermost FROM with an item of this name gives a table or a function its own
+    /// names for their columns (`comments c (a, b)`).
+    fn renamed(&self, alias: &str) -> bool {
+        self.stack.iter().rev().find_map(|(_, from, _)| from.iter().find_map(|item| renamed_item(item, alias))).unwrap_or(false)
     }
 
     /// One value expression, as a column of the probe for the constructor's own `FROM` context.
@@ -989,6 +1015,8 @@ impl Builder<'_> {
             Some(NodeEnum::ColumnRef(_)) => self.anonymous_row(expr),
             Some(NodeEnum::FuncCall(f)) => is_array_agg(expr) && f.args.first().is_some_and(|a| self.anonymous_row(a)),
             Some(NodeEnum::CoalesceExpr(c)) => c.args.first().is_some_and(|a| self.reads_anonymous_row(a)),
+            // `array(select c from (…) c)`: an array of the whole rows of its own FROM.
+            Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ArraySublink as i32 => self.array_of_rows(s),
             Some(NodeEnum::SubLink(s)) if s.sub_link_type == protobuf::SubLinkType::ExprSublink as i32 => {
                 let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none()) else { return false };
                 let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
@@ -1002,6 +1030,15 @@ impl Builder<'_> {
             }
             _ => false,
         }
+    }
+
+    /// Whether an `ARRAY(SELECT c FROM … c)` collects the whole rows of an item of its own FROM whose row is of no type the catalog has, where the name is no column of that FROM.
+    fn array_of_rows(&self, s: &protobuf::SubLink) -> bool {
+        let Some(select) = s.subselect.as_deref().and_then(as_select).filter(|s| s.with_clause.is_none() && s.values_lists.is_empty() && s.op == protobuf::SetOperation::SetopNone as i32 && !has_grouping_sets(s)) else { return false };
+        let Some(inner) = single_target(select).and_then(|rt| rt.val.as_deref()) else { return false };
+        let level = Level::of(&select.from_clause, self.withs.last().unwrap_or(&Withs::default()), self.columns);
+        // A name that is a column of any FROM in scope is that column, before an item's whole row.
+        bare_alias(inner).is_some_and(|alias| level.names(&alias) == Some(true) && level.lacks(&alias) && !self.ahead && self.no_column(&alias))
     }
 
     /// Whether no FROM in scope shows a column of this name, for certain.
@@ -1290,6 +1327,23 @@ fn function_item(node: &Node, alias: &str) -> Option<bool> {
     }
 }
 
+/// Of the item of a FROM that goes by `alias`, as [`function_item`] finds it, whether its alias
+/// names columns of a table or a function, whose row may keep its type's names for them.
+fn renamed_item(node: &Node, alias: &str) -> Option<bool> {
+    let named = |a: Option<&protobuf::Alias>| a.is_some_and(|a| a.aliasname == alias);
+    let renames = |a: Option<&protobuf::Alias>| a.is_some_and(|a| !a.colnames.is_empty());
+    match node.node.as_ref()? {
+        NodeEnum::RangeVar(rv) => (item_alias(node).as_deref() == Some(alias)).then(|| renames(rv.alias.as_ref())),
+        NodeEnum::RangeFunction(f) => match &f.alias {
+            Some(a) => (a.aliasname == alias).then(|| renames(Some(a))),
+            None => (crate::infer::function_item_name(f).as_deref() == Some(alias)).then_some(false),
+        },
+        NodeEnum::JoinExpr(j) if j.alias.is_some() => named(j.alias.as_ref()).then_some(false),
+        NodeEnum::JoinExpr(j) => j.larg.as_deref().and_then(|n| renamed_item(n, alias)).or_else(|| j.rarg.as_deref().and_then(|n| renamed_item(n, alias))),
+        _ => (item_alias(node).as_deref() == Some(alias)).then_some(false),
+    }
+}
+
 /// The name a FROM item goes by: its alias, or a table's own name.
 fn item_alias(node: &Node) -> Option<String> {
     match node.node.as_ref()? {
@@ -1549,6 +1603,13 @@ impl ResolveCtx<'_> {
         }
     }
 
+    /// The field names of the composite type a column is of, through a domain; `None` for a
+    /// `record`, or a type the registry does not hold.
+    fn field_names(&self, col: &DescribedColumn) -> Option<Vec<String>> {
+        let t = self.registry.get(self.registry.resolve_domain(col.type_oid))?;
+        (t.kind == crate::pgtypes::TypeKind::Composite && col.type_oid != oid::RECORD && !t.fields.is_empty()).then(|| t.fields.iter().map(|f| f.name.clone()).collect())
+    }
+
     /// Whether a value of this column is a row: `record`, a composite type, or a domain over one.
     fn is_row(&self, col: &DescribedColumn) -> bool {
         col.type_oid == oid::RECORD || self.registry.get(self.registry.resolve_domain(col.type_oid)).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Composite)
@@ -1606,6 +1667,9 @@ impl ResolveCtx<'_> {
                     }
                     let one = if members.len() == 1 { members.remove(0) } else { serde_json::json!({ "anyOf": members }) };
                     serde_json::json!({ "type": "array", "items": one, "maxItems": items.len() })
+                } else if items.is_empty() {
+                    // JSON Schema 2020-12 refuses an empty `prefixItems`, so no items is `items: false` alone.
+                    serde_json::json!({ "type": "array", "items": false })
                 } else {
                     let prefix: Vec<Value> = items.iter().map(|(ty, non_null)| {
                         let schema = ty.json_schema(SchemaOptions::IN_JSON);
@@ -1640,6 +1704,12 @@ impl ResolveCtx<'_> {
                         .iter()
                         .enumerate()
                         .map(|(i, col)| {
+                            // A field the item builds, a nested array of rows: what it builds, NULL only where that is.
+                            let present = outcome.present.as_ref().and_then(|p| p.get(i)).is_none_or(|nullable| *nullable);
+                            if let Some(built) = outcome.built.get(i).and_then(Option::as_ref).filter(|b| !b.ty.is_json()) {
+                                // NULL where the item builds it so, or where a join pads the item that holds it.
+                                return Field::new(col.name.clone(), built.ty.clone(), !built.non_null || (col.nullable && present));
+                            }
                             let ty = if col.type_oid == oid::UNKNOWN {
                                 unresolved.push(display_path(&join(path, &col.name)));
                                 Type::unknown()
@@ -1662,9 +1732,28 @@ impl ResolveCtx<'_> {
                     (Type::unknown(), false)
                 }
             },
-            Shape::RowOrValue { row, value } => match self.whole_value(value).map(|col| self.is_row(col)) {
-                Some(true) => self.node(&Shape::Row { probe: *row }, path, unresolved),
-                Some(false) => self.node(value, path, unresolved),
+            Shape::RowOrValue { row, value } => match self.whole_value(value).map(|col| (self.is_row(col), self.field_names(col))) {
+                // A row of a named type keeps its type's names, whatever an alias calls its columns;
+                // a `record`'s are the ones its columns go by.
+                Some((true, Some(names))) => match self.node(&Shape::Row { probe: *row }, path, unresolved) {
+                    (Type { kind: Kind::Record(record), .. }, non_null) if record.fields.len() == names.len() => {
+                        let fields = record.fields.into_iter().zip(names).map(|(field, name)| Field { name, ..field }).collect();
+                        (Type::record(if self.document { last_of_each_name(fields) } else { fields }), non_null)
+                    }
+                    (Type { kind: Kind::Record(_), .. }, _) => {
+                        unresolved.push(display_path(path));
+                        (Type::unknown(), false)
+                    }
+                    other => other,
+                },
+                // Only a `record` takes the names its columns go by; a named type whose fields the
+                // registry cannot give has names the build does not know.
+                Some((true, None)) if self.whole_value(value).is_some_and(|col| col.type_oid == oid::RECORD) => self.node(&Shape::Row { probe: *row }, path, unresolved),
+                Some((true, None)) => {
+                    unresolved.push(display_path(path));
+                    (Type::unknown(), false)
+                }
+                Some((false, _)) => self.node(value, path, unresolved),
                 None => {
                     unresolved.push(display_path(path));
                     (Type::unknown(), false)
@@ -2196,6 +2285,12 @@ mod tests {
         for sql in ["SELECT to_jsonb(f.*) AS o FROM many_bodies(1) WITH ORDINALITY f", "SELECT to_jsonb(f.*) AS o FROM rows from (many_bodies(1), many_bodies(2)) f", "SELECT to_jsonb(u.*) AS o FROM users u"] {
             assert_eq!(shapes(sql).columns[0].1, Shape::Row { probe: 0 }, "{sql}");
         }
+        // An alias that renames a table's or a function's columns reads the row's type for its
+        // names; a subquery's renamed columns are its row's own.
+        for sql in ["SELECT to_jsonb(c) AS o FROM users c (a, b)", "SELECT to_jsonb(c.*) AS o FROM users c (a)", "SELECT to_jsonb(c.*) AS o FROM many_bodies(1) c (a)"] {
+            assert!(matches!(shapes(sql).columns[0].1, Shape::RowOrValue { .. }), "{sql}");
+        }
+        assert_eq!(shapes("SELECT to_jsonb(s) AS o FROM (SELECT 1 AS x) s (y)").columns[0].1, Shape::Row { probe: 0 });
         // A subquery's item of that name hides a function around it.
         assert!(!format!("{:?}", shapes("SELECT (SELECT to_jsonb(f.*) FROM users f) AS o FROM many_bodies(1) f").columns[0].1).contains("RowOrValue"));
     }
@@ -2557,6 +2652,23 @@ mod tests {
         assert_eq!(r.ty.short(), "json { id: unknown?, title: unknown? }");
         // The keys are still the SQL's own, and the object is still never null.
         assert!(r.non_null);
+    }
+
+    #[test]
+    fn a_renamed_row_takes_its_types_names_or_none() {
+        let registry = TypeRegistry::with_builtins();
+        let outcome = |columns: Vec<DescribedColumn>| Some(Outcome { columns, outer_join: false, present: None, built: Vec::new() });
+        let shape = Shape::RowOrValue { row: 0, value: Box::new(Shape::Nullable(Box::new(Shape::Column { probe: 1, index: 0 }))) };
+        let row = || outcome(vec![column("a", oid::INT8, "int8", false), column("name", oid::TEXT, "text", false)]);
+        // A `record` takes the names its columns go by.
+        let record = resolve(&shape, &[row(), outcome(vec![column("coalesce", oid::RECORD, "record", true)])], &registry, &[]);
+        assert_eq!(record.ty.short(), "json { a: int8, name: text }");
+        // A named row type whose fields the registry cannot give is no row whose names the build
+        // knows: the alias's names are never a named type's.
+        let mut registry = registry;
+        registry.insert_rows(&[vec![serde_json::json!(987_654), serde_json::json!("teams"), serde_json::json!("c")]]);
+        let named = resolve(&shape, &[row(), outcome(vec![column("coalesce", 987_654, "teams", true)])], &registry, &[]);
+        assert!(!named.unresolved.is_empty() && !named.ty.short().contains("a: int8"), "{}", named.ty.short());
     }
 
     #[test]

@@ -1,0 +1,18 @@
+f01_two_laterals.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+f02_lateral_in_lateral.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+f03_lateral_in_derived_nested.sql: one () -> { arr: (record{ arr: (public.addr{ street: text?, zip: int4? }?)[]? })[] }
+f04_dup_rs_one_padded.sql: one () -> { arr: (record{ id: int8, rs: record?[]?, rs: record?[] })[] }
+f05_dup_rs_other_padded.sql: one () -> { arr: (record{ id: int8, rs: record?[], rs: record?[]? })[] }
+f06_partly_padded.sql: many () -> { id: int8, arr: (record{ id: int8, rs: (public.replies{ id: int8, comment_id: int8, body: text })[]? })[] } key (id)
+f07_full_join_rs.sql: one () -> { arr: (record{ id: int8?, rs: (record{ id: int8 })[]? }?)[] }
+f08_three_levels_middle_padded.sql: many () -> { id: int8, posts: (record{ id: int8, cs: record?[]? })[] } key (id)
+f09_cte_padded_rs.sql: one () -> { arr: (record{ id: int8, rs: (record{ id: int8 })[]? })[] }
+f10_derived_dup_names.sql: many () -> { v: int4, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+f11_derived_dup_lateral_union.sql: many () -> { v: int8?, w: text? }
+f12_dup_names_left.sql: many () -> { v: int4?, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+f13_dup_names_three.sql: many () -> { v: text?, v: int4?, v: text? } !! reylo14: Columns 1 and 2 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 1 and 3 are both named "v", and a row keeps only the last of them. Give one of them another name with `as`.
+f14_dup_names_star_nested.sql: many () -> { id: int8, arr: (record{ v: int8?, v: text? })[] } key (id)
+f15_dup_names_with_other_star.sql: many () -> { id: int8, author_id: int8, title: text, title: int4?, title: text? } !! reylo14: Columns 3 and 4 are both named "title", and a row keeps only the last of them. Give one of them another name with `as`. !! reylo14: Columns 3 and 5 are both named "title", and a row keeps only the last of them. Give one of them another name with `as`.
+f16_outer_col_in_where_only.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+f17_outer_col_case_differs.sql: many () -> { arr: (record{ street: text })[] }
+f18_lateral_alias_list_names_c.sql: one () -> { arr: int4?[]? }

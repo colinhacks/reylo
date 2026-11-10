@@ -1,15 +1,15 @@
-count_limit_0.sql: at_most_one () -> { count: int8 }
-count_limit_1.sql: one () -> { count: int8 }
-count_limit_5.sql: one () -> { count: int8 }
-count_limit_all.sql: one () -> { count: int8 }
-count_limit_coalesce.sql: at_most_one (n: int4?) -> { count: int8 }
-count_limit_expr.sql: at_most_one () -> { count: int8 }
-count_limit_null.sql: one () -> { count: int8 }
-count_limit_param.sql: at_most_one (n: int8) -> { count: int8 }
-count_offset_0.sql: one () -> { count: int8 }
-count_offset_1.sql: at_most_one () -> { count: int8 }
-count_offset_param.sql: at_most_one (skip: int8) -> { count: int8 }
-count_ties.sql: one () -> { count: int8 }
+count_limit_0.sql: at_most_one () -> { count: int8 } value
+count_limit_1.sql: one () -> { count: int8 } value
+count_limit_5.sql: one () -> { count: int8 } value
+count_limit_all.sql: one () -> { count: int8 } value
+count_limit_coalesce.sql: at_most_one (n: int4?) -> { count: int8 } value
+count_limit_expr.sql: at_most_one () -> { count: int8 } value
+count_limit_null.sql: one () -> { count: int8 } value
+count_limit_param.sql: at_most_one (n: int8) -> { count: int8 } value
+count_offset_0.sql: one () -> { count: int8 } value
+count_offset_1.sql: at_most_one () -> { count: int8 } value
+count_offset_param.sql: at_most_one (skip: int8) -> { count: int8 } value
+count_ties.sql: one () -> { count: int8 } value
 derived_limit.sql: at_most_one (id: int8) -> { name: text? }
 intersect_limit.sql: at_most_one (id: int8) -> { id: int8 }
 key_limit_5.sql: at_most_one (id: int8) -> { id: int8, name: text? }

@@ -14,11 +14,12 @@
 // protocol, while mysql2's binary protocol drops trailing zeros (`.000`) that `.run()` writes back
 // from the column's metadata.
 import { decodePlan } from "./codecs.ts";
+import { decodeDuckdbValue } from "./decode-duckdb.ts";
 import { sqliteDecoder } from "./decode-sqlite.ts";
 import { compile, rawStatement, sentText, type Dialect, type QueryModule } from "./execute.ts";
 import type { StandardTypedV1 } from "./standard.ts";
 import { rowOf, type RowBuilder } from "./row.ts";
-import { coerce, DecodeError, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
+import { coerce, DecodeError, describe, numbersInJson, textDecoder, withinDimensions, type JsonNumbers } from "./values.ts";
 
 /** The Standard Query interface: a statement a driver can execute, as a typed function from an input to an output. */
 export interface StandardQueryV1<Input = unknown, Output = Input, D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect>
@@ -54,11 +55,17 @@ export declare namespace StandardQueryV1 {
      */
     decode(rows: readonly (readonly RawValue<D>[])[]): Output;
     /**
-     * The result key: output columns, by name, that identify each row of the result, since no two
-     * rows the statement returns agree on all of them (a null counting as equal to another null).
-     * A driver comparing two results of the query tells by it that a row changed in place rather
-     * than one row going and another coming. Never empty: absent where the statement returns one
-     * row at most, which its cardinality says, and where no key is known.
+     * How many rows the statement returns: any number, exactly one, at most one, or none. A driver
+     * that treats a list of rows otherwise than one value reads it here, since an output that is an
+     * array may be one row's value (`select array_agg(id) from t`). Absent where it is not known.
+     */
+    readonly cardinality?: StandardQueryV1.Cardinality;
+    /**
+     * The result key: columns of `columns`, by name, that identify each row of the result, since no
+     * two rows the statement returns agree on all of them (a null counting as equal to another
+     * null). A driver comparing two results of the query tells by it that a row changed in place
+     * rather than one row going and another coming. Never empty: absent where the statement returns
+     * one row at most, which its cardinality says, and where no key is known.
      */
     readonly key?: readonly string[];
     /**
@@ -89,11 +96,14 @@ export declare namespace StandardQueryV1 {
 
   /** One output column of a query: its name, and the decoder of its raw values. */
   export interface Column<D extends StandardQueryV1.Dialect = StandardQueryV1.Dialect> {
-    /** The column's name, as the output's rows are keyed by it. */
+    /** The column's name, as the rows `output` takes are keyed by it, and as the database names it. A driver keys a row by this name, by position, since the name it reads from the database can differ. */
     readonly name: string;
     /** Maps one raw value of the column, never NULL, to its value in the output's rows. */
     decode(value: Exclude<RawValue<D>, null>): unknown;
   }
+
+  /** How many rows a statement returns: any number, exactly one, at most one, or none. */
+  export type Cardinality = "many" | "one" | "maybeOne" | "none";
 
   /** The database a statement is written for. */
   export type Dialect =
@@ -106,7 +116,8 @@ export declare namespace StandardQueryV1 {
   /**
    * A value in its raw form: what a driver of the database reads before converting anything, and
    * binds without converting anything. On Postgres, the value's text as the server sends it in
-   * the text format. NULL is `null`.
+   * the text format; on DuckDB, the value as `@duckdb/node-api`'s `reader.getRows()` reads it,
+   * one of its own classes for a nested or temporal value. NULL is `null`.
    */
   export type RawValue<D extends Dialect = Dialect> =
     | null
@@ -123,7 +134,19 @@ function decoder(name: string, kind: string, delim: string | undefined): (v: unk
   // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
   // column that may be one included (src/decode-mysql.ts, `mariadb`).
   if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  // A MySQL GEOMETRY's raw value is its bytes, as `.run()` gives it. An object is a driver's own
+  // reading of one (mysql2's `{ x, y }`, mariadb's GeoJSON), which the bytes cannot be had back from.
+  if (kind.split("|").includes("geometry"))
+    return (v) => {
+      if (typeof v === "object" && v !== null && !(v instanceof Uint8Array)) throw new DecodeError(`Column "${name}" holds ${describe(v)}, which is no raw MySQL value: a GEOMETRY's raw value is its bytes, which a driver parses into an object unless its conversions are off (mysql2's typeCast returning \`field.buffer()\`).`);
+      return coerce(kind, v, name, delim);
+    };
   return (v) => coerce(kind, v, name, delim);
+}
+
+/** A DuckDB column's value as node-api's `getRows()` reads it, in the form `.run()` gives it (src/decode-duckdb.ts), each plain value as its kind. */
+function duckdbDecoder(name: string, kind: string): (v: unknown) => unknown {
+  return (v) => decodeDuckdbValue(v, kind, name, (k, x) => coerce(k, x, name));
 }
 
 /** A Postgres column's text as its kind, with the non-finite numbers inside its JSON as numbers and an array held to its dimensions, as `.run()` gives them (src/execute.ts). */
@@ -152,7 +175,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   // included. Its default suits a driver whose integer mode is unknown: a BigInt is read exact, and
   // a number past 2^53 in an INTEGER column is refused as a rounded one.
   const decoders = module.columns?.map(([name, kind, delim], i): ((v: never) => unknown) => {
-    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
+    const decode = (dialect === "postgres" ? postgresDecoder(name, kind, delim, module.nonFinite?.[i] ?? undefined, module.nestedArrays) : dialect === "sqlite" ? sqliteDecoder(name, kind) : dialect === "duckdb" ? duckdbDecoder(name, kind) : decoder(name, kind, delim)) as (v: never) => unknown;
     // A family the project file's `js.codecs` gives another type takes it here too, as in `.run()` (src/codecs.ts).
     const plan = module.codecs?.[name];
     return plan === undefined ? decode : (v) => decodePlan(plan, decode(v), name);
@@ -163,6 +186,7 @@ export function standardQuery<D extends Dialect, Output>(module: QueryModule<D>,
   const statementText = () => (text ??= sentText(module, compile(module).text));
   return {
     dialect: module.dialect,
+    ...(module.cardinality === undefined ? {} : { cardinality: module.cardinality }),
     ...(module.key === undefined ? {} : { key: module.key }),
     ...(columns === undefined ? {} : { columns: Object.freeze(columns) }),
     output: (rows) => materialize(rows as Record<string, unknown>[]),

@@ -16,7 +16,7 @@ DuckDB support is a preview: the types Reylo infers on DuckDB, and the values `.
 | | |
 | --- | --- |
 | DuckDB versions | 2.0, through `@duckdb/node-api` |
-| Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
+| Connection | A `duckdb:` URL in `DATABASE_URL` or [`direct_url`](/configuration#direct_url), as `duckdb:./app.duckdb`; a relative path starts at your `package.json`, and `duckdb::memory:` is an empty database, for queries that only read files |
 | Drivers | `@duckdb/node-api` ([Drivers](#drivers)) |
 | Type checking | DuckDB runs inside your app, so the type check prepares each query on your project's own `@duckdb/node-api`, which you install. It opens the database file read-only for each query and closes it right after, and while your app has the file open, it reads a copy of it. On Windows no other process can read a file DuckDB has open for writing, so the type check needs your app stopped |
 
@@ -105,7 +105,7 @@ A `TIMESTAMP` is its wall-clock text with a `T` between the date and the time, a
 
 **Nested types**
 
-A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
+A `STRUCT`, a `LIST`, a `MAP` and a `UNION` hold their values as a row does, a `BIGINT` inside one a `bigint` too. DuckDB lets any field and any element be `NULL`, so each is typed `| null`, except in an `array(select c from (…) c)` of a subquery's or a table's whole rows, whose elements are structs and whose fields are as their columns are. A `STRUCT` whose fields have no names, as `(1, 'a')` and `row(…)` build, is an error: name its fields, as in `{'a': 1, 'b': 'x'}` or `struct_pack(a := 1, b := 'x')`.
 
 <Inferred>
 
@@ -118,7 +118,7 @@ from events
 
 **JSON**
 
-A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
+A `JSON` column is the parsed value, typed `Json`, the type Reylo exports for any JSON value. A parameter cast to `json`, or to a JSON Schema with [`::json('…')`](/inference#typed-json), takes any value `JSON.stringify` writes, or the values its schema admits; where the query takes no null for it, `null` is JSON's `null`.
 
 </Rules>
 
@@ -132,7 +132,7 @@ from read_parquet('logs/*.parquet')
 group by all
 ```
 
-Reylo keeps each query's analysis in [`reylo/.cache/`](/#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
+Reylo keeps each query's analysis in [`reylo/.cache/`](/faq#faq-reylo-directory) until your database's schema changes, and a file's columns aren't part of the schema: after changing them, delete `reylo/.cache/` so that the next type check reads the files again. Every column of a file may be `NULL`, since nothing declares one `NOT NULL`.
 
 ## Nullability
 
@@ -247,6 +247,8 @@ Reylo infers how many rows a query returns, and types `.run()`'s result to match
 | `void` | `none` | is an `insert`, `update` or `delete` without `returning`, or another statement that returns no rows, such as `create table` |
 | `Row[]` | `many` | is anything else |
 
+Each `Row` is an object of the query's columns, or the value itself where the query's one column is an expression with no alias ([single values](/inference#values)). Among several columns, such an expression is a type error where DuckDB's name for it isn't an identifier, as with `count_star()`. A word DuckDB calls without parentheses, such as `current_date`, keeps its rows, since DuckDB reads it as a column wherever one has that name.
+
 A value of another type doesn't count as matching a key: DuckDB compares a text key with a number as numbers, so `where code = 1` matches both `'1'` and `'01'`, and a number key with a float as floats. Neither does any value of a text key under a collation such as `collate nocase`, which holds both `'a'` and `'A'`.
 
 ## Parameters
@@ -310,7 +312,7 @@ values (:id, :name, :email)
 
 ## Database errors
 
-With [`.try()`](/#try), an error DuckDB raised comes back as `{ error }`:
+With [`.try()`](/usage#try), an error DuckDB raised comes back as `{ error }`:
 
 | Field | What it holds |
 | --- | --- |
@@ -350,3 +352,4 @@ What Reylo can't type on DuckDB, and what to do instead:
 | DuckDB in the browser, through `@duckdb/duckdb-wasm`, which `.run()` doesn't take yet | Run queries through `@duckdb/node-api` |
 | `rows(…)` and `row(…)` parameters | Pass each value as a parameter of its own |
 | A file of several statements, such as a migration | Put each statement in a file of its own |
+| What your app's connection sets for itself, which the type check's connection doesn't share: a temporary table that shadows a table of the same name, and `default_collation`, under which `'a'` can equal `'A'` | Name a temporary table apart from your tables, and write `collate` on the comparisons it should change |

@@ -37,10 +37,10 @@ export function getMDXComponents(components?: MDXComponents) {
     Inferred,
     InferredRow,
     InferredTypes,
-    // The cards under /migrate's title (components/feature-cards.tsx).
+    // The cards under /migrations' title (components/feature-cards.tsx).
     Features,
     Feature,
-    // The vertical stepper on /migrate (components/steps.tsx).
+    // The vertical stepper on /migrations (components/steps.tsx).
     Steps,
     Step,
     // The marks on /compare (components/compare-table.tsx).

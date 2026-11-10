@@ -1,10 +1,12 @@
-// Reylo: `reylo generate` analyzes each .sql file into .reylo/, whose entries hold the analysis the type check reads.
+// Reylo: `reylo generate` analyzes each .sql file into reylo/.cache/, whose entries hold the analysis the type check reads.
 import { mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Kind } from "../probes.ts";
 import { failed, gitDelta, gitInit, rewrite, sh, workdir, type Answer, type Tool, type TypedValue } from "./lib.ts";
 
 const bin = resolve(import.meta.dirname, "../node_modules/.bin/reylo");
+// The declaration the type check shows for a statement, from the installed release's own renderer, which its package exports no path to.
+const { moduleTypes } = await import(resolve(import.meta.dirname, "../node_modules/reylo/src/module-types.js"));
 const version: string = JSON.parse(readFileSync(resolve(import.meta.dirname, "../node_modules/reylo/package.json"), "utf8")).version;
 
 function kindOf(t: any): Kind {
@@ -68,7 +70,7 @@ export const reylo: Tool = {
     const answers: Record<string, Answer> = {};
     for (const s of statements) {
       const a = entries.get(normal(s.sql));
-      answers[s.key] = a ? { ok: true, params: a.params.map(value), columns: a.columns.map((c: any) => ({ name: c.name, ...value(c) })), cardinality: a.cardinality } : failed(run.all.split("\n").filter((l) => l.includes(`s${statements.indexOf(s)}.sql`)).join(" ") || run.all);
+      answers[s.key] = a ? { ok: true, params: a.params.map(value), columns: a.columns.map((c: any) => ({ name: c.name, ...value(c) })), cardinality: a.cardinality, shown: (({ params, row }) => ({ params, row }))(moduleTypes(s.sql, a, db)) } : failed(run.all.split("\n").filter((l) => l.includes(`s${statements.indexOf(s)}.sql`)).join(" ") || run.all);
     }
     return { answers, wrote: gitDelta(dir) };
   },

@@ -1,0 +1,20 @@
+a01_outer_column_alias.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+a02_outer_column_alias_deeper.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[] }
+a03_outer_column_record.sql: one () -> { arr: record?[] }
+a04_outer_column_lateral.sql: many () -> { arr: (public.addr{ street: text?, zip: int4? }?)[]? }
+a05_outer_column_scalar.sql: many () -> { one: public.addr{ street: text?, zip: int4? }? }
+a06_rollup_outer.sql: many () -> { author_id: int8?, arr: record?[]? }
+a07_aggregates_correlated.sql: many () -> { id: int8, arr: (record{ s: numeric?, m: int8?, mi: int8?, av: numeric?, s1: numeric? })[] } key (id)
+a08_windows_correlated.sql: many () -> { id: int8, arr: (record{ id: int8, prev: int8?, nxt: numeric?, second: int8? })[] } key (id)
+a09_functions_correlated.sql: many () -> { id: int8, arr: (record{ sub: text?, nul: int8?, rm: text?, sub2: int8?, j: jsonb?, anynull: bool?, cs: int8?, dv: int8?, rs: text?, ap: int4? })[] } key (id)
+a10_scalar_subquery_correlated.sql: many () -> { id: int8, arr: (record{ id: int8, rid: int8?, more: int8? })[] } key (id)
+a11_outer_padded_expression.sql: many () -> { id: int8, arr: (record{ n: int8?, t: text?, up: text? })[] }
+a12_lateral_aggregates.sql: many () -> { id: int8, s: numeric?, more: int8? } key (id)
+a13_lateral_left.sql: many () -> { more: int8?, id: int8? }
+a14_lateral_window.sql: many () -> { prev: int8?, nxt: int8? }
+a15_lateral_padded_outer.sql: many () -> { n: int8?, t: text? }
+a16_lateral_functions.sql: many () -> { sub: text?, nul: int8?, sub2: int8?, rs: text? }
+a17_array_agg_filter.sql: many () -> { post_id: int8, arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? })[]? } key (post_id)
+a18_array_agg_no_group.sql: one () -> { arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? })[]? }
+a19_array_agg_grouping_sets.sql: many () -> { arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? }?)[]? }
+a20_array_agg_left_join.sql: many () -> { id: int8, arr: (public.comments{ id: int8, post_id: int8, body: text?, big: int8, d: public.nn? }?)[] } key (id)

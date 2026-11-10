@@ -16,7 +16,8 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 /// How many rounds a statement may take before the replay is given up as unsettled. A statement
-/// settles in a handful: each round collects every need that does not wait on another's answer.
+/// settles in a handful: each round collects every need that does not wait on another's answer. An
+/// array of rows nested in another waits a few rounds per level, so three levels take about twenty.
 /// It equals the loader's limit, the bound of the replay loop in `src/engine-core.ts`, so a native
 /// host never settles a statement the loader gives up on.
 pub const ROUNDS: usize = 32;

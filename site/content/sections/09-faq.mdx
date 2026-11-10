@@ -2,12 +2,10 @@
 title: "FAQ"
 ---
 
-## FAQ
-
 <Accordions>
 <Accordion title="How does Reylo compare with sqlc, PgTyped and other tools?" id="faq-compare">
 
-[Comparison](/compare) runs Reylo and seven other tools that type SQL on the same queries against real databases, and shows what each one infers.
+[Comparison](/compare) shows what Reylo and seven other tools that type SQL infer: nullability, parameters, cardinality and nested JSON.
 
 </Accordion>
 <Accordion title="Does the type check run my queries?" id="faq-run-queries">
@@ -17,12 +15,12 @@ No. Reylo has your database prepare each query, which checks it and describes it
 </Accordion>
 <Accordion title="Does Reylo run migrations?" id="faq-migrations">
 
-Yes: [`reylo migrate`](/migrate) writes each migration from your `schema.sql`, and checks and runs it. Your own tool works just as well, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files, since Reylo types your queries against whatever schema your dev database has. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
+Yes: [`reylo migrate`](/migrations) writes each migration from your `schema.sql`, and checks and runs it. Your own tool works just as well, such as Prisma Migrate, Drizzle Kit, Atlas, dbmate or plain SQL files, since Reylo types your queries against whatever schema your dev database has. After a migration, the next type check sees the new schema: a dropped column is an error in the `.sql` file that names it, and in the code that reads it.
 
 </Accordion>
 <Accordion title="How do I type-check in CI?" id="in-ci">
 
-Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [Deploying](#deploying) covers the build's database. To skip analyzing what hasn't changed, keep `reylo/.cache/` in your CI's cache: a database built by the same migrations reads its entries. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL.
+Start the database, apply the migrations, and run `tsc --noEmit --runExternalCode` with `DATABASE_URL` set. Your tests need the database too. [`direct_url`](/configuration#direct_url) names the database it reads. To skip analyzing what hasn't changed, keep `reylo/.cache/` in your CI's cache: a database built by the same migrations reads its entries. Before Reylo 0.8.0, a Postgres built with JIT, as most Docker images are, can make the type check take minutes: add `?options=-c%20jit%3Doff` to its URL.
 
 </Accordion>
 <Accordion title="How do I move a project from Prisma?" id="faq-prisma">
@@ -32,27 +30,33 @@ Keep Prisma Migrate for your schema, and turn each Prisma Client call into a `.s
 </Accordion>
 <Accordion title="Can another tool read the types Reylo infers?" id="faq-rtd">
 
-Yes: [`analyze()`](#analyze) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo analyze` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
+Yes: [`analyze()`](/typedefs#usage) returns each statement's parameters, columns, types and cardinality as JSON, in Reylo Type Defs, and `reylo analyze` prints the same from a shell. The format is in preview, and may change in any release until 1.0.0.
 
 </Accordion>
 <Accordion title="What is the reylo directory, and should I commit it?" id="faq-reylo-directory">
 
-It holds your [migrations](/migrate), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
+It holds your [migrations](/migrations), which you commit, and Reylo's cache of each query's analysis in `reylo/.cache/`. The cache has its own `.gitignore`, so git skips it: don't commit it.
 
 </Accordion>
 <Accordion title="Can I build without a database?" id="faq-no-database">
 
-No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. [The build](#deploy-build) shows how to give one to a host that migrates after it builds.
+No, not yet: Reylo reads your types from a live database, so a type check or a build needs one. A host that builds before it migrates, such as Vercel, can build against a database of its own:
+
+1. Create an empty database.
+2. Run your migrations into it, which also tries each one before it reaches production.
+3. Run the build with [`direct_url`](/configuration#direct_url) pointed at that database.
+4. Drop it.
+5. Migrate your deployment's own database.
 
 </Accordion>
 <Accordion title="Why are dates strings, and 64-bit integers bigints?" id="faq-value-types">
 
-Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](#data-types).
+Reylo decodes its own queries' values itself, so every driver gives the same types. A 64-bit integer is a `bigint`, since a `number` loses precision past 2^53; a decimal is its exact text; and an instant is its ISO 8601 text in UTC. No value is a `Date`, which a driver reads in a time zone nobody chose. Every SQL type's TypeScript type is in [Inference](/inference#data-types).
 
 </Accordion>
 <Accordion title="How do I add observability to my queries?" id="faq-observability">
 
-Reylo publishes every query it runs on Node's tracing channel `reylo:query`, so your tracer, logger or other o11y tool can wrap each one in a span. [Tracing](#tracing) shows how.
+Reylo publishes every query it runs on Node's tracing channel `reylo:query`, so your tracer, logger or other o11y tool can wrap each one in a span. [Tracing](/observability) shows how.
 
 </Accordion>
 </Accordions>

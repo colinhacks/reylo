@@ -6,16 +6,16 @@
 @import './typedefs.css';
 
 /* The page's three faces (app/fonts.css, which app/root.tsx links: the files next/font served
-   before the site left Next.js), as the variables docs-kit's stylesheet reads: Geist for text, behind it its size-adjusted Arial;
+   before the site left Next.js), as the variables docs-kit's stylesheet reads: IBM Plex Sans for text, behind it its size-adjusted Arial;
    Geist Mono for code, behind it the system's monospace; Caveat for the "Leave a star!" note. */
 :root {
-  --font-text: 'Geist', 'Geist Fallback';
+  --font-text: 'IBM Plex Sans', 'IBM Plex Sans Fallback';
   --font-code: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
   --font-hand: 'Caveat', 'Caveat Fallback';
 }
 
 /* ── Reylo: neutral greys and one yellow ──────────────────────────────────────
-   The type is Geist and Geist Mono (app/layout.tsx). Every surface and rule is
+   The type is IBM Plex Sans and Geist Mono (app/fonts.css). Every surface and rule is
    a colourless grey, near-black by night and white by day, so the yellow is
    the page's only colour: it marks links, the active table-of-contents entry
    and inline code. In light mode the yellow darkens to ochre wherever it
@@ -427,6 +427,10 @@
   filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.55));
 }
 
+.dark .dk-pages-item[aria-current='page']::before {
+  box-shadow: 0 0 8px rgb(255 184 0 / 0.65);
+}
+
 .dark .dk-star svg {
   filter: drop-shadow(0 0 4px rgb(255 200 31 / 0.6));
 }
@@ -769,13 +773,6 @@ a.reylo-compare-name:hover {
     inset 0 0 40px 0 rgb(255 184 0 / 0.1);
 }
 
-.reylo-compare-foot {
-  margin-block: 0.75rem 0;
-  font-size: 14px;
-  line-height: 22px;
-  color: var(--color-fd-muted-foreground);
-}
-
 .reylo-compare-pop {
   width: max-content;
   max-width: min(360px, calc(100vw - 16px));
@@ -790,35 +787,6 @@ a.reylo-compare-name:hover {
 
 .reylo-compare-pop p:last-child {
   margin-bottom: 0;
-}
-
-.reylo-compare-pop-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 6px;
-  white-space: nowrap;
-}
-
-.reylo-compare-pop-head b {
-  font-weight: 600;
-  color: var(--color-fd-foreground);
-}
-
-.reylo-compare-pop-head span,
-.reylo-compare-pop-count,
-.reylo-compare-pop-on {
-  font-size: 13px;
-}
-
-.reylo-compare-pop pre {
-  margin: 0 0 4px;
-  padding: 0;
-  background: none;
-  font: 12.5px/1.45 var(--font-mono, ui-monospace, monospace);
-  color: var(--color-fd-foreground);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .reylo-compare-pop code {
@@ -989,7 +957,7 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   white-space: nowrap;
 }
 
-/* The table of contents wide enough for a command written out in full, as /migrate's headings are
+/* The table of contents wide enough for a command written out in full, as /migrations' headings are
    (`reylo migration history push`, nested two levels in). The layout grows by as much, so the column
    keeps its width; the inline width docs-kit's shell sets is overridden for that. */
 @media (min-width: 80rem) {
@@ -999,3 +967,104 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   }
 }
 
+/* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
+.fd-twoslash-popover.reylo-compare-pop-card {
+  width: 480px;
+  max-width: min(480px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  padding: 0;
+  --reylo-compare-wrong: hsl(5, 90%, 58%);
+}
+
+.dark .fd-twoslash-popover.reylo-compare-pop-card {
+  --reylo-compare-wrong: #ff6a5c;
+}
+
+.reylo-compare-card-label {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reylo-compare-card-on {
+  font-size: 12px;
+  line-height: 1.25rem;
+  color: var(--color-fd-muted-foreground);
+}
+
+.reylo-compare-card-schema,
+.reylo-compare-card-query {
+  padding: 0.5rem 0.875rem 0.625rem;
+}
+
+.reylo-compare-card-schema {
+  border-bottom: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card pre {
+  margin: 2px 0 0;
+  padding: 0;
+  background: none;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-light);
+}
+
+.dark .reylo-compare-card [style*='--shiki'] {
+  color: var(--shiki-dark);
+}
+
+.reylo-compare-card-types {
+  display: grid;
+  grid-template-columns: max-content 12px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.125rem 8px;
+  padding: 0.5rem 0.875rem 0.625rem;
+  border-top: 1px solid var(--color-fd-border);
+  background: var(--color-fd-muted);
+}
+
+.reylo-compare-card-types svg {
+  width: 12px;
+  height: 12px;
+  align-self: center;
+}
+
+.reylo-compare-card-types code,
+.reylo-compare-pop .reylo-compare-card-types code {
+  padding: 0;
+  background: none;
+  border-radius: 0;
+  font: 12.5px/1.6 var(--font-mono, ui-monospace, monospace);
+  color: var(--color-fd-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.reylo-compare-pop .reylo-compare-card-types .reylo-compare-card-error {
+  font-family: var(--font-text);
+  color: var(--reylo-compare-wrong);
+}
+
+.reylo-compare-card-wrong {
+  text-decoration: wavy underline var(--reylo-compare-wrong);
+  text-decoration-skip-ink: none;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}

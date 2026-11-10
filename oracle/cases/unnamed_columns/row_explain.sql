@@ -1,0 +1,1 @@
+explain select 1

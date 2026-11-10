@@ -28,6 +28,13 @@ on:
       - .github/scripts/install-check.ts
       - .github/workflows/binaries.yml
       - .github/workflows/release.yml
+  # One platform's binary from any branch, to run on that platform with no build of its own: `gh workflow run binaries.yml --ref <branch> -f platform=darwin-arm64`, then `gh run download <run> -n engine-darwin-arm64`. Nothing is packed or installed.
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "A platform of npm/platforms.json"
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -50,8 +57,12 @@ jobs:
         with:
           persist-credentials: false
       - id: matrix
+        env:
+          PLATFORM: ${{ inputs.platform }}
         run: |
-          echo "matrix=$(jq -c '{include: .}' npm/platforms.json)" >> "$GITHUB_OUTPUT"
+          platforms=$(jq -c --arg platform "$PLATFORM" 'map(select($platform == "" or .platform == $platform))' npm/platforms.json)
+          [ "$platforms" != '[]' ] || { echo "::error::npm/platforms.json names no platform $PLATFORM"; exit 1; }
+          echo "matrix=$(jq -c '{include: .}' <<< "$platforms")" >> "$GITHUB_OUTPUT"
 
   # The binary of each platform, built on a runner of its own architecture, Linux on glibc in the platform's manylinux container (.github/scripts/build-binary.sh says how each is made), from the commit and with no cache, so that nothing an earlier run left reaches what ships. Each is an artifact of the run, `engine-<platform>`, which the release packages and attaches to the GitHub release.
   build:
@@ -88,6 +99,7 @@ jobs:
   # The nine packages, reylo and the eight engines, packed as npm would publish them, from the binaries above.
   package:
     needs: build
+    if: ${{ !inputs.platform }}
     name: Pack the packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
