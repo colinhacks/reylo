@@ -1,0 +1,5 @@
+join_beside_xor.sql: many () -> { id: int, note: varchar(≤10)? }
+key_beside_xor.sql: many (id: int32) -> { id: int }
+null_test_beside_xor.sql: many () -> { id: int, y: int? }
+xor_in_list.sql: at_most_one (id: int32) -> { id: int, v: boolean?, w: boolean? }
+xor_in_parentheses.sql: at_most_one (id: int32) -> { id: int, y: int? }

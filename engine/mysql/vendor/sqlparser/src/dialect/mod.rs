@@ -992,7 +992,6 @@ pub trait Dialect: Debug + Any {
             Precedence::AtTz => 41,
             Precedence::MulDivModOp => 40,
             Precedence::PlusMinus => 30,
-            Precedence::Xor => 24,
             Precedence::Ampersand => 23,
             Precedence::Caret => 22,
             Precedence::Pipe => 21,
@@ -1009,6 +1008,9 @@ pub trait Dialect: Debug + Any {
             Precedence::Is => 17,
             Precedence::UnaryNot => 15,
             Precedence::And => 10,
+            // MySQL ranks XOR between AND and OR: `a = 1 AND b = 2 XOR c = 3` is
+            // `(a = 1 AND b = 2) XOR (c = 3)`. Upstream ranks it above a comparison.
+            Precedence::Xor => 7,
             Precedence::Or => 5,
         }
     }
