@@ -923,6 +923,13 @@ struct Level {
     reduced: HashSet<i64>,
     /// A plain GROUP BY: no group is empty.
     grouped: bool,
+    /// The cursors of the arm's own FROM items where it aggregates with no GROUP BY: over no rows
+    /// it still returns one row, in which a column outside an aggregate's arguments is NULL,
+    /// whatever its table declares and its WHERE tests.
+    lone: HashSet<i64>,
+    /// How many aggregate calls the expression being typed stands inside: their arguments are
+    /// read from the rows aggregated, each a row that is there.
+    aggregating: u32,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -949,7 +956,8 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
         narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor) && !(term.inner_on && extended.contains(cursor))));
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty() }
+    let lone = if sel.aggregate && sel.group_by.is_empty() { own } else { HashSet::new() };
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0 }
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -969,7 +977,9 @@ fn strict_in(n: &Node, extras: &Extras) -> HashSet<(i64, String)> {
         "=" | "!=" | "<" | "<=" | ">" | ">=" => n.left.iter().chain(n.right.iter()).flat_map(|x| nulls(x)).collect(),
         "not" => match n.left.as_deref() {
             Some(inner) if inner.op == "isnull" => inner.left.as_deref().map(nulls).unwrap_or_default(),
-            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "between")).collect(),
+            // `x NOT IN (SELECT …)` is true of a NULL `x` where the subquery returns no row; a
+            // list is never empty.
+            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "between") || (inner.op == "in" && inner.select.is_none())).collect(),
             None => HashSet::new(),
         },
         "function" if !n.agg && !n.window && matches!(n.name.as_deref(), Some("like" | "glob")) && extras.function(n.name.as_deref().unwrap_or(""), n.args.len()).is_none() => {
@@ -1381,9 +1391,9 @@ impl Analyzer<'_> {
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // A strict WHERE test on the column, or on any column of its outer-joined item, keeps
         // its NULL (or the item's null extension) out of every returned row.
-        let (narrowed, reduced) = {
+        let (narrowed, reduced, lone) = {
             let level = self.level.borrow();
-            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor))
+            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), level.aggregating == 0 && level.lone.contains(&n.cursor))
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
@@ -1396,7 +1406,7 @@ impl Analyzer<'_> {
                     _ => None,
                 };
                 if let Some(inner) = inner {
-                    return Fact { ty: inner.ty, non_null: narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced)) };
+                    return Fact { ty: inner.ty, non_null: !lone && (narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced))) };
                 }
                 break;
             }
@@ -1406,10 +1416,27 @@ impl Analyzer<'_> {
             Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
             _ => affinity_type(aff),
         };
-        Fact { ty, non_null: narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced)) }
+        Fact { ty, non_null: !lone && (narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced))) }
     }
 
     // ---- expressions -------------------------------------------------------------------------
+
+    /// A function call's type: the JSON a constructor builds, or what the function returns for
+    /// its arguments' types.
+    fn call(&self, n: &Node, scope: &ScopeStack) -> Fact {
+        // The JSON a `json_*` constructor builds, which SQLite returns as its text.
+        if let Some(ty) = self.built_text(n, scope) {
+            // `json()` of a scalar subquery is NULL where the subquery finds no row; every
+            // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
+            let non_null = match n.args.first() {
+                Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
+                _ => true,
+            };
+            return Fact { ty, non_null };
+        }
+        let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
+        self.function(n, &args)
+    }
 
     fn type_of(&self, n: &Node, scope: &ScopeStack) -> Fact {
         let arg = |x: &Option<Box<Node>>| x.as_deref().map(|x| self.type_of(x, scope)).unwrap_or_else(Fact::unknown);
@@ -1423,18 +1450,17 @@ impl Analyzer<'_> {
             // A parameter is a non-null value unless the statement means to take NULL for it.
             "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
-                // The JSON a `json_*` constructor builds, which SQLite returns as its text.
-                if let Some(ty) = self.built_text(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row; every
-                    // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
-                    let non_null = match n.args.first() {
-                        Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
-                        _ => true,
-                    };
-                    return Fact { ty, non_null };
+                // An aggregate's arguments, its FILTER and its ORDER BY are read from the rows it
+                // aggregates; a window call's are read from the statement's own rows.
+                let aggregate = n.agg && !n.over;
+                if aggregate {
+                    self.level.borrow_mut().aggregating += 1;
                 }
-                let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
-                self.function(n, &args)
+                let fact = self.call(n, scope);
+                if aggregate {
+                    self.level.borrow_mut().aggregating -= 1;
+                }
+                fact
             }
             "+" | "-" | "*" => {
                 let (l, r) = (arg(&n.left), arg(&n.right));
@@ -1698,7 +1724,15 @@ impl Analyzer<'_> {
         if let Some(found) = self.shapes.borrow().get(&key) {
             return found.clone();
         }
+        // An aggregate constructor's arguments are read from the rows it aggregates ([`Level`]).
+        let aggregate = n.op == "function" && n.agg && !n.over;
+        if aggregate {
+            self.level.borrow_mut().aggregating += 1;
+        }
         let shape = self.shape_here(n, scope);
+        if aggregate {
+            self.level.borrow_mut().aggregating -= 1;
+        }
         self.shapes.borrow_mut().insert(key, shape.clone());
         shape
     }
@@ -3589,7 +3623,7 @@ mod tests {
 
     #[test]
     fn columns_from_provenance_and_rules() {
-        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h, count(*) as n from users");
+        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h from users");
         assert_eq!(col(&a, "id"), ("integer".into(), false));
         assert_eq!(col(&a, "name"), ("text".into(), false));
         assert_eq!(col(&a, "email"), ("text".into(), true));
@@ -3598,8 +3632,24 @@ mod tests {
         assert_eq!(col(&a, "e"), ("text".into(), false));
         assert_eq!(col(&a, "d"), ("integer".into(), false));
         assert_eq!(col(&a, "h"), ("integer".into(), false));
+        assert_eq!(a.cardinality, "many");
+    }
+
+    #[test]
+    fn a_column_beside_an_aggregate_with_no_group_by_is_null_over_no_rows() {
+        // The one row an aggregate with no GROUP BY returns over no rows holds NULL in every
+        // column outside an aggregate's arguments, whatever the table declares or the WHERE tests.
+        let a = analysis("select id, name, coalesce(email, 'x') as e, id * 2 as d, count(*) as n, count(name) as c, max(id) as m from users where name = 'ada'");
+        assert_eq!(col(&a, "id"), ("integer".into(), true));
+        assert_eq!(col(&a, "name"), ("text".into(), true));
+        assert_eq!(col(&a, "e"), ("text".into(), false));
+        assert_eq!(col(&a, "d"), ("integer".into(), true));
         assert_eq!(col(&a, "n"), ("integer".into(), false));
+        assert_eq!(col(&a, "c"), ("integer".into(), false));
         assert_eq!(a.cardinality, "one");
+        // A group has a row, and an aggregate reads rows that are there.
+        let a = analysis("select name, count(*) as n from users group by name");
+        assert_eq!(col(&a, "name"), ("text".into(), false));
     }
 
     #[test]
@@ -4414,7 +4464,9 @@ mod tests {
         assert_eq!(json_typed("select json_object('k', id, 'k', name) as o from users"), "o: { k: string }");
         // The aggregates are `[]` and `{}` over no rows, never NULL, with a FILTER or as a window.
         assert_eq!(json_typed("select json_group_array(email) as e, json_group_object(name, id) as g from users where id < 0"), "e: (string | null)[]; g: { [key: string]: number }");
-        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: number[]");
+        // Beside an aggregate, a window call runs over the aggregate's one row, where a bare
+        // column is NULL over no rows: `[null]`.
+        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: (number | null)[]");
         assert_eq!(
             json_typed("select json_object('f', json_group_array(id) filter (where id > 1)) as f, json_object('w', json_group_array(id) over ()) as w from users"),
             "f: { f: number[] }; w: { w: unknown }"
