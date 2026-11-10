@@ -24,6 +24,21 @@ test("postgres: query(text, values) → { rows }, as on pg, PGlite and Neon's Po
   assert.deepEqual(calls, [{ method: "query", args: ["select $1::int as id, $2 as name, $1 as again", [1, "ada"]] }]);
 });
 
+test("a parameter left out binds NULL whatever its name: what every object answers for constructor, toString or __proto__ is no value, and a class's getter is one", async () => {
+  const calls: unknown[][] = [];
+  const client = { query: async (_text: string, values: unknown[]) => (calls.push(values), { rows: [], rowCount: 0 }) };
+  const q: QueryModule<"postgres"> = { dialect: "postgres", sql: "select :driver, :constructor, :toString, :__proto__", params: ["driver", "constructor", "toString", "__proto__"] };
+  await execute(client, q, { driver: "Senna" });
+  class Entry {
+    get driver() {
+      return "Prost";
+    }
+  }
+  await execute(client, q, new Entry() as never);
+  await execute(client, q, { driver: "Senna", constructor: "McLaren", toString: "s", ["__proto__"]: "p" } as never);
+  assert.deepEqual(calls, [["Senna", null, null, null], ["Prost", null, null, null], ["Senna", "McLaren", "s", "p"]]);
+});
+
 test("postgres: a query() that resolves to the rows, as Neon's neon() from 1.0 and pg-promise do", async () => {
   const neon = Object.assign(() => Promise.reject(new Error("not a template")), {
     query: async () => [row],
@@ -607,6 +622,16 @@ test("sqlite: @libsql/client and its transactions take execute({ sql, args }) �
   const tx = { execute: async (stmt: { sql: string; args: unknown[] }) => (calls.push(stmt), { rows: [row], columns: ["id"], rowsAffected: 0 }), executeMultiple: async () => {}, commit: async () => {} };
   assert.deepEqual(await execute(tx, lite, { id: 1, name: "ada" }), [row]);
   assert.deepEqual(calls, [{ sql: "select ? as id, ? as name, ? as again", args: [1, "ada", 1] }]);
+});
+
+test("sqlite: Cloudflare D1 refuses a BigInt, so one goes as a number, or as its digits for a BIGINT column past 2^53", async () => {
+  const bound: unknown[][] = [];
+  const d1 = { batch: async () => [], prepare: () => ({ first: async () => null, bind: (...values: unknown[]) => (bound.push(values), { all: async () => ({ results: [] }) }) }) };
+  const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select :id as id, :big as big", params: ["id", "big"], inputs: { id: { type: liteType("integer"), nullable: false }, big: { type: { kind: "integer", bits: 64, label: "BIGINT" }, nullable: false } } };
+  // What `.run()` returns for a BIGINT column goes back in.
+  await execute(d1, q, { id: 41n, big: 9007199254740993n });
+  assert.deepEqual(bound, [[41, "9007199254740993"]]);
+  await assert.rejects(execute(d1, q, { id: 9007199254740993n, big: 1n }) as Promise<unknown>, /Cloudflare D1 binds no BigInt, and 9007199254740993 is past 2\^53 - 1/);
 });
 
 test("sqlite: Turso's @tursodatabase/database, its Database in every release and its Transaction, takes prepare(sql).all(...values) → a promise of rows; its compat Database answers at once", async () => {

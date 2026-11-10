@@ -23,7 +23,7 @@
 // MySQL has no boolean type: a TINYINT(1), a BIT(1) and a comparison are integers to every driver,
 // and a column whose kind is `bool` (src/values.ts) is made a boolean after the driver, a value
 // other than 0 or 1 refused (`truth`).
-import { rowOf } from "./row.ts";
+import { lastOfEach, namesInResult, rowOf } from "./row.ts";
 import { bigInteger, coerce, truth, utf8, type Columns, type Kind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
@@ -141,22 +141,24 @@ export async function mysql2(m: AnyClient, text: string, values: unknown[], colu
   const proto = columns?.some(([name]) => name === "__proto__") ? { disableEval: true } : {};
   const [result, fields] = await m.execute({ sql: text, ...MYSQL2_OPTIONS, ...proto, typeCast: needsCast(m, columns) ? mysql2Cast : true }, values);
   if (!Array.isArray(result)) return [];
+  if (!result.length) return result;
   const described = (fields ?? []) as Mysql2Column[];
-  const rows = declared(result, columns, () => described.map((f) => f.name));
-  // The module's kinds where its columns are the result's; a BIGINT by the result's own type, which
-  // says it of an either too (`:n + 1`, a BIGINT or a DOUBLE by what is bound).
-  const kinds = columns && columns.length === described.length ? columns : undefined;
-  const nameOf = (i: number): string => kinds?.[i]![0] ?? described[i]!.name;
+  const cols = resultColumns(columns, described.map((f) => f.name), result[0]);
+  const rows = asObjects(result, cols);
+  // A row keeps the last value of each name, so that column's fixes alone apply to it.
+  const kept = new Set(lastOfEach(cols.map(([name], i) => [name, i] as const)).map(([, i]) => i));
   const fixes: (readonly [string, Fix])[] = [];
+  // The module's kind; a BIGINT by the result's own type, which says it of an either too (`:n + 1`,
+  // a BIGINT or a DOUBLE by what is bound).
   described.forEach((f, i) => {
-    const fix = byKind(kinds?.[i]![1]) ?? (f.columnType === LONGLONG ? toBigInt : undefined);
-    if (fix) fixes.push([nameOf(i), fix]);
+    const fix = byKind(cols[i]![1]) ?? (f.columnType === LONGLONG ? toBigInt : undefined);
+    if (fix && kept.has(i)) fixes.push([cols[i]![0], fix]);
   });
   // A DATETIME's, TIMESTAMP's and TIME's text, padded to the column's own fraction digits.
   described.forEach((f, i) => {
-    if (f.columnType === DATETIME || f.columnType === TIMESTAMP || (f.columnType === TIME && f.decimals > 0)) {
+    if (kept.has(i) && (f.columnType === DATETIME || f.columnType === TIMESTAMP || (f.columnType === TIME && f.decimals > 0))) {
       const decimals = f.decimals > 6 ? 0 : f.decimals, type = f.columnType;
-      fixes.push([nameOf(i), (v) => (typeof v === "string" ? wallClock(v, decimals, type) : v)]);
+      fixes.push([cols[i]![0], (v) => (typeof v === "string" ? wallClock(v, decimals, type) : v)]);
     }
   });
   fixRows(rows, fixes);
@@ -207,18 +209,22 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
     if (typeof returned?.then === "function") returned.then(resolve, reject);
   });
   if (!Array.isArray(result)) return [];
+  if (!result.length) return result;
   const meta = () => ((result as { meta?: MariadbColumn[] }).meta ?? callbackMeta ?? []) as MariadbColumn[];
-  const rows = declared(result, columns, () => meta().map((m) => (typeof m.name === "function" ? m.name() : m.name) as string));
+  // The module's columns as the result holds them, the last of each name: a row keeps that one's value.
+  const cols = columns && Array.isArray(result[0]) ? resultColumns(columns, meta().map((m) => (typeof m.name === "function" ? m.name() : m.name) as string), result[0]) : (columns ?? []).map(([name, kind]) => [name, kind] as const);
+  const rows = asObjects(result, cols);
+  const own = lastOfEach(cols);
   // A DATETIME and a TIMESTAMP with `T`, and a SET's members joined as MySQL writes them: by the
   // module's kinds, else by the columns' metadata (mariadb 2 has no isSet()).
   const work: { name: string; date: boolean }[] = columns
-    ? columns.filter(([, kind]) => kind === "text" || kind.split("|").includes("timestamp")).map(([name, kind]) => ({ name, date: kind !== "text" }))
+    ? own.filter(([, kind]) => kind === "text" || kind?.split("|").includes("timestamp")).map(([name, kind]) => ({ name, date: kind !== "text" }))
     : meta()
         .map((m) => ({ name: typeof m.name === "function" ? m.name() : m.name, type: m.type, set: (typeof m.isSet === "function" && m.isSet()) || m.type === "SET" }))
         .filter((m): m is { name: string; type: string | undefined; set: boolean } => m.name !== undefined && (m.set || m.type === "DATETIME" || m.type === "TIMESTAMP"))
         .map((m) => ({ name: m.name, date: !m.set }));
   // A truth value a boolean; an INT a temporary table may widen to a BIGINT a BigInt, as the BIGINT is.
-  fixRows(rows, columnFixes(columns));
+  fixRows(rows, kindFixes(own));
   if (!work.length) return rows;
   for (const row of rows) {
     for (const { name, date } of work) {
@@ -231,16 +237,35 @@ export async function mariadb(c: AnyClient, text: string, values: unknown[], col
   return rows;
 }
 
-/** Rows a driver gave as arrays, as objects under the names the module declares, or the driver's where the row's width is not the module's, as after a migration that adds a column under `select *`; a client that took no such option gives objects already, kept as they are. */
-function declared(rows: unknown[], columns: Columns | undefined, driver: () => string[]): Record<string, unknown>[] {
-  if (!Array.isArray(rows[0])) return rows as Record<string, unknown>[];
-  return (rows as unknown[][]).map(rowOf(columns?.length === rows[0].length ? columns.map(([name]) => name) : driver()));
+/** A result's column as the module declares it: its name, and its kind where the module has one of that column. */
+type Declared = readonly [name: string, kind: Kind | undefined];
+
+/**
+ * A result's columns as the module declares them, in the result's order (`namesInResult`): the
+ * module's own by position where the result is still theirs, else each of the result's by its
+ * name, with the kind of the module's last column of that name, which is the one a row keeps.
+ * `first` is the result's first row: where it is an array the result's names do not account for
+ * (mariadb's callback API hands some rows over with no metadata), the module's stand by position.
+ */
+function resultColumns(columns: Columns | undefined, result: string[], first: unknown): Declared[] {
+  if (!columns) return result.map((name) => [name, undefined] as const);
+  const declared = columns.map(([name]) => name);
+  const width = Array.isArray(first) ? first.length : result.length;
+  if (columns.length === width && (result.length !== width || namesInResult(declared, result) === declared)) return columns.map(([name, kind]) => [name, kind] as const);
+  const kinds = new Map(columns.map(([name, kind]) => [name, kind] as const));
+  return result.map((name) => [name, kinds.get(name)] as const);
 }
 
-/** The fixes the module's kinds call for, for a driver that tells each type by its value. */
-function columnFixes(columns: Columns | undefined): (readonly [string, Fix])[] {
+/** Rows a driver gave as arrays, as objects under the columns' names; a client that took no such option gives objects already, kept as they are. */
+function asObjects(rows: unknown[], cols: readonly Declared[]): Record<string, unknown>[] {
+  if (!Array.isArray(rows[0])) return rows as Record<string, unknown>[];
+  return (rows as unknown[][]).map(rowOf(cols.map(([name]) => name)));
+}
+
+/** The fixes the columns' kinds call for, for a driver that tells each type by its value. */
+function kindFixes(cols: readonly Declared[]): (readonly [string, Fix])[] {
   const fixes: (readonly [string, Fix])[] = [];
-  for (const [name, kind] of columns ?? []) {
+  for (const [name, kind] of cols) {
     const fix = byKind(kind);
     if (fix) fixes.push([name, fix]);
   }
@@ -308,7 +333,9 @@ export async function planetscale(m: AnyClient, text: string, values: unknown[],
   // none. Another driver's execute() (TiDB Cloud's answers with the rows themselves) would read
   // as no rows at all.
   if (!Array.isArray(result?.rows)) throw new TypeError(`reylo ran this statement through execute(), as on PlanetScale's @planetscale/database, and the client answered with ${Array.isArray(result) ? "an array" : result === null || typeof result !== "object" ? String(result) : "an object"} rather than a result with rows. It takes execute(text, values) as on mysql2 and PlanetScale, or a Drizzle database over one of them.`);
-  const rows = declared(result.rows, columns, () => (result.fields as { name: string }[]).map((f) => f.name));
-  fixRows(rows, columnFixes(columns));
+  if (!columns?.length || !result.rows.length) return result.rows;
+  const cols = Array.isArray(result.rows[0]) ? resultColumns(columns, ((result.fields ?? []) as { name: string }[]).map((f) => f.name), result.rows[0]) : columns.map(([name, kind]) => [name, kind] as const);
+  const rows = asObjects(result.rows, cols);
+  fixRows(rows, kindFixes(lastOfEach(cols)));
   return rows;
 }

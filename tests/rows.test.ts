@@ -61,6 +61,30 @@ test("a value is checked against its column list, and written as the JSON the st
   assert.throws(() => prepareRows("user", { ...events, one: true }, [], "postgres", true), /each row is an object/);
 });
 
+test("a member is read from the row's own keys: a column named after a member of every object is left out when the row leaves it out, and a JSON member is written as JSON.stringify writes it", () => {
+  const named = structured(false, [
+    ["name", pg("text"), "text", false, false],
+    ["constructor", pg("text"), "text", true, true],
+    ["__proto__", pg("text"), "text", true, true],
+    ["meta", pg("jsonb"), "jsonb", true, true],
+  ]).rows;
+  for (const dialect of ["postgres", "mysql", "sqlite"] as const) {
+    const out = prepareRows("items", named, [{ name: "a" }], dialect, true);
+    assert.deepEqual([...out.present], ["name"], dialect);
+    assert.deepEqual(dialect === "postgres" ? out.value : JSON.parse(out.value as string), [{ name: "a" }], dialect);
+  }
+  // Given, each is a key like any other.
+  const given = [{ name: "a", constructor: "c", ["__proto__"]: "p" }];
+  assert.equal(prepareRows("items", named, given, "mysql", true).value, `[{"name":"a","constructor":"c","__proto__":"p"}]`);
+  assert.equal(JSON.stringify(prepareRows("items", named, given, "postgres", true).value), `[{"name":"a","constructor":"c","__proto__":"p"}]`);
+  // A value with a toJSON(), as a Date, is its JSON, and a key whose value is undefined is left out, on every database.
+  const meta = [{ name: "a", meta: { at: new Date(0), gone: undefined, list: [new Date(1), undefined] } }];
+  const json = `[{"name":"a","meta":{"at":"1970-01-01T00:00:00.000Z","list":["1970-01-01T00:00:00.001Z",null]}}]`;
+  assert.equal(prepareRows("items", named, meta, "mysql", true).value, json);
+  assert.equal(prepareRows("items", named, meta, "sqlite", true).value, json);
+  assert.equal(JSON.stringify(prepareRows("items", named, meta, "postgres", true).value), json);
+});
+
 test("the rows an insert writes carry the same keys, and its lists name only those", () => {
   const a = { id: 1, ts: "2026-10-20T10:00:00Z" };
   assert.throws(() => prepareRows("events", events, [a, { ...a, status: "x" }], "postgres", true), /row 2 gives "status", which row 1 leaves out/);
