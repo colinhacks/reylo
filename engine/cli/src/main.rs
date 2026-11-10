@@ -43,20 +43,20 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
-  migrate lint             Check the migrations, the lock and schema.sql, with no database
-  migrate status           Show what this database ran, what's pending and what changed
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
+  migrate status           Show what this database ran, what's pending and what changed
+  migrate lint             Check the migrations, the lock and schema.sql, with no database
   migrate lock             Write the lock from this database's history
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
   db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
-  db introspect            Print this database's schema as SQL
-    --schema <name>        A schema to read (Postgres; public by default)
   db reset                 Rebuild this database from the migrations
   db wipe                  Delete every row, keeping the schema
+  db introspect            Print this database's schema as SQL
+    --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:
   --url <url>              The database, in place of direct_url
@@ -64,7 +64,7 @@ Flags:
   -h, --help               Print this help";
 
 /// Every command of those groups, as it's typed.
-const COMMANDS: [&str; 13] = ["migrate init", "migrate new", "migrate lint", "migrate status", "migrate dev", "migrate deploy", "migrate lock", "migrate history push", "migrate history pull", "db push", "db introspect", "db reset", "db wipe"];
+const COMMANDS: [&str; 13] = ["migrate init", "migrate new", "migrate dev", "migrate deploy", "migrate status", "migrate lint", "migrate lock", "migrate history push", "migrate history pull", "db push", "db reset", "db wipe", "db introspect"];
 
 /// Names another tool gives these commands, and the one each is here.
 const ALSO_KNOWN_AS: [(&str, &str); 3] = [("create", "migrate new"), ("generate", "migrate new"), ("pull", "db introspect")];
@@ -305,6 +305,10 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
 fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut Option<String>) -> Result<i32, String> {
     let has = |s: &str| parsed.switches.iter().any(|x| x == s);
     let opts = settings(parsed, command != "migrate lint")?;
+    // The home directory is no project's (project.rs), so nothing makes one there.
+    if matches!(command, "migrate init" | "migrate history pull") && project::is_home(&opts.root, &std::env::vars().collect()) {
+        return Err(format!("{} won't write into your home directory: run it in your project's directory", command.trim_start_matches("migrate ")));
+    }
     // These start from the database; the rest need a project to work on.
     if !matches!(command, "migrate init" | "migrate history pull" | "db introspect" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
         let home = opts.schema.parent().unwrap_or(&opts.root);

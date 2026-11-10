@@ -12,7 +12,7 @@
 // its own, since TypeScript makes every content mapper diagnostic one. With no URL, the dialect
 // is the one the entries of the project's cache (`reylo/.cache/`) record.
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type Engine, MissingEngine } from "./engine.ts";
@@ -76,11 +76,23 @@ export const PROJECT_FILE = ".reylo.yaml";
 export const PROJECT_FILES = [PROJECT_FILE, ".reylo.yml"] as const;
 const DEFAULT_ENV_FILES = [".env.local", ".env"];
 
-/** The package directory: the nearest one at or above `from` that holds a `package.json`, else `from`. */
-export function packageDir(from: string): string {
-  for (let dir = resolve(from); ; dir = dirname(dir)) {
+/** The package directory: the nearest one at or above `from`, below the home directory (`HOME`, or `USERPROFILE` on Windows, in `env`), that holds a `package.json`, else `from`. A home directory is no project's, though a stray `package.json` can sit there, and taking it would make every directory below it one project (engine/cli/src/project.rs). */
+export function packageDir(from: string, env: Record<string, string | undefined> = process.env): string {
+  const home = process.platform === "win32" ? env.USERPROFILE : env.HOME;
+  // As written, or with its links resolved, as a working directory has them.
+  const stops = home ? [resolve(home), realOr(home)] : [];
+  for (let dir = resolve(from); !stops.includes(dir); dir = dirname(dir)) {
     if (existsSync(join(dir, "package.json"))) return dir;
-    if (dirname(dir) === dir) return resolve(from);
+    if (dirname(dir) === dir) break;
+  }
+  return resolve(from);
+}
+
+function realOr(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return resolve(path);
   }
 }
 
@@ -91,13 +103,13 @@ export function packageDir(from: string): string {
 export function sourceName(path: string, env: Record<string, string | undefined> = process.env): string {
   const dir = dirname(path);
   const file = findProjectFile(dir, env);
-  return relative(file ? dirname(file) : packageDir(dir), path).split(sep).join("/");
+  return relative(file ? dirname(file) : packageDir(dir, env), path).split(sep).join("/");
 }
 
 /** The project file for a project directory: `REYLO_CONFIG`, or `.reylo.yaml` (else `.reylo.yml`) beside the package's `package.json`. */
 export function findProjectFile(from: string, env: Record<string, string | undefined> = process.env): string | undefined {
   if (env.REYLO_CONFIG) return resolve(env.REYLO_CONFIG);
-  const dir = packageDir(from);
+  const dir = packageDir(from, env);
   return PROJECT_FILES.map((name) => join(dir, name)).find((path) => existsSync(path));
 }
 
@@ -305,7 +317,7 @@ function commandOutput(command: string, cwd: string, env: Record<string, string>
  */
 export function resolveProject(engine: Engine | MissingEngine, projectDir: string, env: Record<string, string | undefined> = process.env, options: { urlGiven?: boolean } = {}): ResolvedProject {
   const file = findProjectFile(projectDir, env);
-  const root = file ? dirname(file) : packageDir(projectDir);
+  const root = file ? dirname(file) : packageDir(projectDir, env);
   const shown = (path: string) => (isAbsolute(path) ? relative(projectDir, path).split(sep).join("/") || path : path);
   let config: ProjectFile = {};
   let error: string | undefined;

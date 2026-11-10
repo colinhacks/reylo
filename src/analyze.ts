@@ -114,7 +114,7 @@ export class Session {
   /** The build steps' session for the project a file or directory belongs to: one per project (and connection) and process. */
   static async for(from: string, env: Record<string, string | undefined> = process.env): Promise<Session> {
     // From the package's directory, so that a message names a file as the project sees it.
-    const dir = packageDir(from);
+    const dir = packageDir(from, env);
     const { project, engine } = await openProject(dir, env);
     // A setting the build step reads (`sqlcommenter`, `allow_nested_arrays`, and `dir`, which places the cache) is part of
     // the key, so a change to it in the project file reaches a running watch process.

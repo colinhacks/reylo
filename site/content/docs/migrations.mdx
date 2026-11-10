@@ -8,14 +8,14 @@ description: Put your schema in schema.sql, and Reylo writes, checks and runs ea
 Reylo's migrations are separate from its `.sql` imports: each works without the other, and your own migration tool works just as well.
 
 <Features>
-<Feature icon="file" title="One schema file">
+<Feature icon="file" title="SQL first">
 
-Your schema lives in `schema.sql`, and Reylo writes each migration from your changes to it.
+Keep the schema you want in `schema.sql`, as plain SQL, and Reylo writes each migration from your changes to it.
 
 </Feature>
-<Feature icon="branch" title="Linear history">
+<Feature icon="branch" title="Linear or loose history">
 
-A lockfile lists your migrations in order, so two branches that each add one conflict in git, before anything deploys.
+A lockfile keeps your migrations in one linear order. Teams that merge fast can delete it, and Reylo then refuses a migration merged out of order where the order changes the schema.
 
 </Feature>
 <Feature icon="database" title="Postgres, MySQL and SQLite">
@@ -23,9 +23,9 @@ A lockfile lists your migrations in order, so two branches that each add one con
 One set of commands for all three.
 
 </Feature>
-<Feature icon="shield" title="No silent data loss">
+<Feature icon="split" title="Elegant disambiguation">
 
-A migration drops nothing until you say so with `--drop`, and `--rename` settles what Reylo can't tell apart.
+Where Reylo can't tell a rename from a drop, `--rename` and `--drop` settle it. A migration drops nothing until `--drop` names it.
 
 </Feature>
 <Feature icon="hash" title="Integrity checks">
@@ -33,9 +33,9 @@ A migration drops nothing until you say so with `--drop`, and `--rename` settles
 Chained hashes in the lock catch a migration edited, deleted or reordered, with no database. A fingerprint on each database catches a change made by hand, and shows it.
 
 </Feature>
-<Feature icon="layers" title="Real dry runs">
+<Feature icon="layers" title="Dry runs in shadow databases">
 
-Reylo replays your migrations on a throwaway database, so `reylo migrate deploy --dry-run` shows what a deploy would do, running nothing on yours.
+Reylo replays your migrations on a throwaway database, so `--dry-run` shows what a deploy would do, running nothing on yours.
 
 </Feature>
 </Features>
@@ -241,20 +241,20 @@ Commands:
   migrate new <name>       Write the next migration, from schema.sql or this database
     --drop <names>         Accept what it drops: tables and columns
     --rename <old>=<new>   Say a table or column was renamed
-  migrate lint             Check the migrations, the lock and schema.sql, with no database
-  migrate status           Show what this database ran, what's pending and what changed
   migrate dev              Take this database to the migrations, and lock them
   migrate deploy           Run what the lock lists, with no shadow database
     --dry-run              Try it on a shadow database, running nothing here
+  migrate status           Show what this database ran, what's pending and what changed
+  migrate lint             Check the migrations, the lock and schema.sql, with no database
   migrate lock             Write the lock from this database's history
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
   db push                  Take this database to schema.sql, unrecorded
     --watch                Again on each change
-  db introspect            Print this database's schema as SQL
-    --schema <name>        A schema to read (Postgres; public by default)
   db reset                 Rebuild this database from the migrations
   db wipe                  Delete every row, keeping the schema
+  db introspect            Print this database's schema as SQL
+    --schema <name>        A schema to read (Postgres; public by default)
 
 Flags:
   --url <url>              The database, in place of direct_url
@@ -274,7 +274,7 @@ Writes, checks and runs your migrations.
 
 Your migration files and your database's history table are two copies of one list, and your tables say which is right. The two `history` commands copy the right one over the other.
 
-### `reylo migrate init`
+### `init`
 
 Starts your migrations from a database you already have.
 
@@ -294,7 +294,7 @@ $ reylo migrate init
 ✓ Wrote reylo/schema.sql and reylo/reylo-lock.yaml: this database is empty, so declare your schema in reylo/schema.sql
 ```
 
-### `reylo migrate new`
+### `new`
 
 Writes the next migration, from your change to `schema.sql`.
 
@@ -370,53 +370,7 @@ The migrations already make reylo/schema.sql, so the migration is empty, for a c
 ✓ Wrote reylo/migrations/20261104160000_backfill.sql
 ```
 
-### `reylo migrate lint`
-
-Checks your migrations, the lock and `schema.sql`, with no database.
-
-It reads the files alone: their names, whether each runs atomically, git's conflict markers, the lock's chain, and `schema.sql` against the checksum the lock holds. Run it in a pre-commit hook:
-
-```terminal
-$ reylo migrate lint
-✓ reylo/reylo-lock.yaml lists every migration, in order, as written
-✓ The migrations reach reylo/schema.sql
-```
-
-It refuses a `schema.sql` that no migration has been shown to reach yet:
-
-```terminal
-$ reylo migrate lint
-✗ reylo/schema.sql changed since the migrations were last shown to reach it
-  reylo/reylo-lock.yaml holds the checksum of the reylo/schema.sql its migrations make.
-
-  A change to the schema: write its migration, then run it in development:
-    reylo migrate new <name>
-    reylo migrate dev
-  Formatting or comments alone: check it again, which writes no migration:
-    reylo migrate dev
-```
-
-A lock that holds no checksum of `schema.sql` at all, as one written while your migrations fell short of it, is refused too, until `reylo migrate dev` writes one.
-
-### `reylo migrate status`
-
-Shows what your database ran, what's pending and what changed.
-
-It reads, changes nothing and needs no shadow database. A `!` marks a migration that was cut off, edited since it ran, or deleted:
-
-```terminal
-$ reylo migrate status --url $PROD_URL
-Migrations on postgres://db.example.com/app
-  ✓ init.sql                    applied 2026-11-04 12:00 UTC
-  ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
-  · 20261105090000_tags.sql     pending
-✗ This database changed since Reylo last ran on it
-  + now: column public.users.hotfix bigint
-✓ reylo/reylo-lock.yaml lists every migration, in order, as written
-✓ The migrations reach reylo/schema.sql
-```
-
-### `reylo migrate dev`
+### `dev`
 
 Takes your development database to your migrations, and writes the lock.
 
@@ -481,7 +435,7 @@ Nothing was changed.
 
 Where nothing changed since its last run, in `schema.sql`, the migrations or your database, it skips the shadow databases and runs what's pending as a deploy does.
 
-### `reylo migrate deploy`
+### `deploy`
 
 Runs what the lock lists and your database hasn't run, when you deploy.
 
@@ -531,7 +485,53 @@ Two things the fingerprint leaves out:
 - **Comments.** Your database's `COMMENT ON` comments aren't compared. A migration writes them, but one added in a dashboard stops no deploy.
 - **An upgrade.** After a new version of Reylo, or a new major version of your database, the fingerprint it stored can't be compared. A deploy runs, stores a new one and says so, and a dry run checks the database then too.
 
-### `reylo migrate lock`
+### `status`
+
+Shows what your database ran, what's pending and what changed.
+
+It reads, changes nothing and needs no shadow database. A `!` marks a migration that was cut off, edited since it ran, or deleted:
+
+```terminal
+$ reylo migrate status --url $PROD_URL
+Migrations on postgres://db.example.com/app
+  ✓ init.sql                    applied 2026-11-04 12:00 UTC
+  ✓ 20261104140347_add_bio.sql  applied 2026-11-04 15:12 UTC
+  · 20261105090000_tags.sql     pending
+✗ This database changed since Reylo last ran on it
+  + now: column public.users.hotfix bigint
+✓ reylo/reylo-lock.yaml lists every migration, in order, as written
+✓ The migrations reach reylo/schema.sql
+```
+
+### `lint`
+
+Checks your migrations, the lock and `schema.sql`, with no database.
+
+It reads the files alone: their names, whether each runs atomically, git's conflict markers, the lock's chain, and `schema.sql` against the checksum the lock holds. Run it in a pre-commit hook:
+
+```terminal
+$ reylo migrate lint
+✓ reylo/reylo-lock.yaml lists every migration, in order, as written
+✓ The migrations reach reylo/schema.sql
+```
+
+It refuses a `schema.sql` that no migration has been shown to reach yet:
+
+```terminal
+$ reylo migrate lint
+✗ reylo/schema.sql changed since the migrations were last shown to reach it
+  reylo/reylo-lock.yaml holds the checksum of the reylo/schema.sql its migrations make.
+
+  A change to the schema: write its migration, then run it in development:
+    reylo migrate new <name>
+    reylo migrate dev
+  Formatting or comments alone: check it again, which writes no migration:
+    reylo migrate dev
+```
+
+A lock that holds no checksum of `schema.sql` at all, as one written while your migrations fell short of it, is refused too, until `reylo migrate dev` writes one.
+
+### `lock`
 
 Writes the lock from your database's history.
 
@@ -543,7 +543,7 @@ $ reylo migrate lock
 ✓ The migrations reach reylo/schema.sql
 ```
 
-### `reylo migrate history push`
+### `history push`
 
 Writes your database's history from your migration files, running nothing.
 
@@ -566,7 +566,7 @@ $ reylo migrate dev
 $ reylo migrate history push --url $PROD_URL
 ```
 
-### `reylo migrate history pull`
+### `history pull`
 
 Writes your migration files from your database's history.
 
@@ -585,7 +585,7 @@ It first replays your database's history in a shadow database. One whose tables 
 
 Changes your database directly, recording nothing.
 
-### `reylo db push`
+### `push`
 
 Takes your development database to `schema.sql`, with no migration.
 
@@ -619,7 +619,33 @@ $ reylo migrate dev
 
 Once you write it, `reylo migrate dev` records it without running it again. A `schema.sql` that declares nothing is refused, since it would drop every table, with its rows: to start your database again from the migrations, use `reylo db reset`.
 
-### `reylo db introspect`
+### `reset`
+
+Rebuilds your development database from your migrations.
+
+It drops everything on the database, with its rows, empties the history, and runs every migration as `reylo migrate dev` runs them. A platform's own objects stay, such as Supabase's `auth.users`, and so do the extensions your migrations don't create:
+
+```terminal
+$ reylo db reset
+Resetting postgres://localhost:5432/app
+    Dropped users, 2 rows
+Applying to postgres://localhost:5432/app
+  ✓ init.sql                    applied · 5 ms
+  ✓ 20261104140347_add_bio.sql  applied · 4 ms
+```
+
+### `wipe`
+
+Deletes every row, keeping the schema and the history.
+
+It leaves a platform's own tables alone, such as Supabase's `auth.users`:
+
+```terminal
+$ reylo db wipe
+✓ Deleted every row of 2 tables; the schema and the history stay
+```
+
+### `introspect`
 
 Prints your database's schema as SQL, as `reylo migrate init` writes it.
 
@@ -640,32 +666,6 @@ To save it over `schema.sql`, write it to another file first. A redirect empties
 
 ```terminal
 $ reylo db introspect > schema.new.sql && mv schema.new.sql reylo/schema.sql
-```
-
-### `reylo db reset`
-
-Rebuilds your development database from your migrations.
-
-It drops everything on the database, with its rows, empties the history, and runs every migration as `reylo migrate dev` runs them. A platform's own objects stay, such as Supabase's `auth.users`, and so do the extensions your migrations don't create:
-
-```terminal
-$ reylo db reset
-Resetting postgres://localhost:5432/app
-    Dropped users, 2 rows
-Applying to postgres://localhost:5432/app
-  ✓ init.sql                    applied · 5 ms
-  ✓ 20261104140347_add_bio.sql  applied · 4 ms
-```
-
-### `reylo db wipe`
-
-Deletes every row, keeping the schema and the history.
-
-It leaves a platform's own tables alone, such as Supabase's `auth.users`:
-
-```terminal
-$ reylo db wipe
-✓ Deleted every row of 2 tables; the schema and the history stay
 ```
 
 ## JSON output

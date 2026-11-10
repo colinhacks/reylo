@@ -19,6 +19,8 @@ sqlcommenter: true
 dir: reylo
 ```
 
+The `package.json` it sits beside is the nearest one at or above the directory Reylo runs in, short of your home directory: one in the home directory itself is passed over, and `reylo migrate init` starts no project there.
+
 ## `direct_url`
 
 The dev database Reylo reads your schema from. It defaults to `DATABASE_URL`, and its scheme names the dialect:

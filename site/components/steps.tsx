@@ -8,7 +8,7 @@ export function Steps({ children }: { children: ReactNode }) {
 /** One step: its name, where it acts, and a sentence or two. lib/markdown.ts writes it as a numbered list item. */
 export function Step({ title, where, children }: { title: string; where?: string; children: ReactNode }) {
   return (
-    <li className="reylo-step" data-shadow={where?.includes('shadow') ? '' : undefined}>
+    <li className="reylo-step">
       <div className="reylo-step-head">
         <span className="reylo-step-title">{title}</span>
         {where ? <span className="reylo-step-where">{where}</span> : null}

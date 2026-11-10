@@ -24,13 +24,15 @@ const icons: Record<string, ReactNode> = {
       <path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3" />
     </>
   ),
-  shield: (
+  hash: <path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />,
+  split: (
     <>
-      <path d="M12 22s8-3.5 8-10V5l-8-3-8 3v7c0 6.5 8 10 8 10z" />
-      <path d="m9 12 2 2 4-4" />
+      <path d="M16 3h5v5" />
+      <path d="M8 3H3v5" />
+      <path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3" />
+      <path d="m15 9 6-6" />
     </>
   ),
-  hash: <path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18" />,
   layers: (
     <>
       <path d="m12 2 9 5-9 5-9-5z" />

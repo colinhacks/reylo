@@ -902,11 +902,6 @@ a.reylo-compare-name:hover {
   text-align: center;
 }
 
-#nd-page .prose li.reylo-step[data-shadow]::before {
-  border-color: var(--color-fd-primary);
-  color: var(--color-fd-primary);
-}
-
 #nd-page .prose li.reylo-step:not(:last-child)::after {
   content: '';
   position: absolute;
@@ -937,11 +932,6 @@ a.reylo-compare-name:hover {
   border-radius: 999px;
   border: 1px solid var(--color-fd-border);
   color: var(--color-fd-muted-foreground);
-}
-
-#nd-page .prose li.reylo-step[data-shadow] .reylo-step-where {
-  border-color: color-mix(in srgb, var(--color-fd-primary) 60%, transparent);
-  color: var(--color-fd-primary);
 }
 
 #nd-page .prose .reylo-step-body p {

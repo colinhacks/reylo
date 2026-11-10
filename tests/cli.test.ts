@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,6 +126,21 @@ test("reylo migrate init starts a project, and needs nothing in the project file
   const again = reylo(root, ["migrate", "init"]);
   assert.equal(again.status, 1);
   assert.match(again.err, /schema\.sql exists already/);
+});
+
+test("reylo migrate init starts no project in the home directory, and passes over a package.json there", () => {
+  const home = project();
+  const refused = reylo(home, ["migrate", "init"], { env: { HOME: home, USERPROFILE: home } });
+  assert.equal(refused.status, 1);
+  assert.match(refused.err, /^reylo migrate: init won't write into your home directory: run it in your project's directory\n/);
+  assert.equal(existsSync(join(home, "reylo")), false);
+  // Below it, with no package.json of its own, a directory is its own project.
+  const scratch = join(home, "scratch");
+  mkdirSync(scratch);
+  const init = reylo(scratch, ["migrate", "init", `--url=sqlite:${join(scratch, "dev.db")}`], { env: { HOME: home, USERPROFILE: home } });
+  assert.equal(init.status, 0, init.err + init.out);
+  assert.equal(existsSync(join(scratch, "reylo", "schema.sql")), true);
+  assert.equal(existsSync(join(home, "reylo")), false);
 });
 
 test("reylo generate is gone, and says what fills reylo/.cache/ instead", () => {
