@@ -1052,8 +1052,9 @@ fn uncorrelated(q: &Query, columns: &crate::mysql_shape::Columns) -> bool {
 /// bytes in it; where every result is a BIT it prepares a BIT and may send a number. Either way
 /// the prepare's type is not the value's, and the column is of no known type.
 /// Each result is prepared as a column of a statement over the same rows, which names its type:
-/// the results that call an aggregate in one statement, the others in another, neither grouped.
-/// Where the server does not prepare one, none of its results is known not to be a BIT.
+/// the results that call an aggregate in one statement, grouped as the query is or not at all,
+/// the others in another, not grouped. Where the server does not prepare one, none of its results
+/// is known not to be a BIT.
 fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> {
     const BIT: u32 = 16;
     /// The results of an IF or a CASE, through the ones that are an IF or a CASE themselves;
@@ -1107,11 +1108,20 @@ fn bit_results(q: &Query, raw: &MysqlDescribe, host: &Host) -> Lazy<Vec<usize>> 
         }
         let mut probe = (**select).clone();
         probe.projection = part.iter().map(|(_, e)| SelectItem::UnnamedExpr((*e).clone())).collect();
-        probe.group_by = GroupByExpr::Expressions(Vec::new(), Vec::new());
         probe.having = None;
         probe.distinct = None;
         let with = q.with.as_ref().map(|w| format!("{w} ")).unwrap_or_default();
-        match host.describe(&format!("{with}{probe}"))? {
+        // A result that reads a key beside an aggregate (`sum(v) * k`) prepares only under the
+        // query's own GROUP BY, and one whose key is an alias or a position of the select list
+        // only without it: under it first, for the results that aggregate.
+        let grouped = format!("{with}{probe}");
+        probe.group_by = GroupByExpr::Expressions(Vec::new(), Vec::new());
+        let ungrouped = format!("{with}{probe}");
+        let mut outcome = host.describe(if aggregated { &grouped } else { &ungrouped })?;
+        if aggregated && outcome.is_err() && ungrouped != grouped {
+            outcome = host.describe(&ungrouped)?;
+        }
+        match outcome {
             Ok(d) if d.columns.len() == part.len() => bits.extend(part.iter().zip(&d.columns).filter(|(_, c)| c.r#type == BIT).map(|((i, _), _)| *i)),
             // Another statement's columns, as a host that answers every prepare alike gives, say nothing.
             Ok(_) => {}
