@@ -1,0 +1,7 @@
+aggregated.sql: one () -> { g: jsonb jsonb?[]?, c: jsonb jsonb?[] }
+array_of_jsonb.sql: one () -> { o: jsonb { xs: jsonb[] } }
+built_kept.sql: at_most_one (id: int4) -> { o: jsonb { inner: { id: int4, label: text }, list: int4[]? } }
+column_recast.sql: at_most_one (id: int4) -> { o: json { k: json?, n: jsonb? } }
+literal.sql: one () -> { o: jsonb { tags: jsonb?, meta: jsonb?, none: jsonb? }, a: jsonb {"type":"array","prefixItems":[{},{"type":"integer","format":"int32"}],"items":false,"minItems":2}, c: json { k: json? } }
+param_one_cast.sql: one (p: int4, q: text) -> { o: json { p: int4?, q: text? } }
+param_two_casts.sql: one (p: int4, q: date, b: int4) -> { o: json { p: unknown?, q: unknown?, b: unknown? } }

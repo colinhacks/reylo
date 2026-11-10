@@ -627,8 +627,22 @@ impl Builder<'_> {
                 Some(built) => force_nullable(self.walk(built)),
                 None => self.leaf(expr),
             },
+            // A cast to JSON of what the statement builds is that value, in its shape. Of anything
+            // else (a text column, a literal, a parameter) it is JSON the build knows nothing of:
+            // the cast is then the value to read, of type `json` or `jsonb`, never its operand's,
+            // and it may be JSON's null (`'null'::jsonb`), which a document holds as a null.
             Some(NodeEnum::TypeCast(t)) => match (t.arg.as_deref(), casts_to_json(t)) {
-                (Some(arg), true) => self.walk(arg),
+                (Some(arg), true) => {
+                    // What the walk drafts for the operand goes unread where the cast is the value.
+                    let drafted = self.drafts.clone();
+                    match self.walk(arg) {
+                        shape @ (Shape::Object { .. } | Shape::Array { .. } | Shape::Tuple { .. } | Shape::Nullable(_)) => shape,
+                        _ => {
+                            self.drafts = drafted;
+                            Shape::Nullable(Box::new(self.leaf(expr)))
+                        }
+                    }
+                }
                 _ => self.leaf(expr),
             },
             // `array(select c from (…) c)`: `{}` over no rows, never NULL, as `array_to_json` of it reads it.
@@ -1969,9 +1983,11 @@ fn returns_json(output: Option<&protobuf::JsonOutput>) -> bool {
     output.and_then(|o| o.type_name.as_ref()).is_none_or(|t| t.array_bounds.is_empty() && crate::infer::builtin_name(&t.names).is_some_and(|n| n == "json" || n == "jsonb"))
 }
 
+/// Whether a cast is to `json` or `jsonb` itself: `x::jsonb[]` is an array of them.
 fn casts_to_json(t: &protobuf::TypeCast) -> bool {
     t.type_name
         .as_ref()
+        .filter(|tn| tn.array_bounds.is_empty())
         .and_then(|tn| last_string(&tn.names))
         .is_some_and(|n| n == "json" || n == "jsonb")
 }
@@ -2022,11 +2038,16 @@ fn bare_alias(node: &Node) -> Option<String> {
     }
 }
 
-/// The placeholder this expression is, through any casts.
+/// The placeholder this expression is, alone or under the one cast that types it: its type is then
+/// the value's. Under a second cast the value is of that cast's type (`$1::int::text` is a text),
+/// which no describe of the statement reports for the placeholder.
 fn param_number(node: &Node) -> Option<i32> {
     match node.node.as_ref()? {
         NodeEnum::ParamRef(p) => Some(p.number),
-        NodeEnum::TypeCast(t) => param_number(t.arg.as_deref()?),
+        NodeEnum::TypeCast(t) => match t.arg.as_deref()?.node.as_ref()? {
+            NodeEnum::ParamRef(p) => Some(p.number),
+            _ => None,
+        },
         _ => None,
     }
 }
