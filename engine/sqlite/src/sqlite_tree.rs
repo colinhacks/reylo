@@ -252,6 +252,14 @@ pub struct Node {
 extern "C" {
     fn reylo_sqlite_analyze(ddl: *const *const c_char, n: c_int, sql: *const c_char, sent: *const c_char, functions: *const *const c_char, arities: *const c_int, n_functions: c_int, host: *const *const c_char, host_arities: *const c_int, host_kinds: *const c_char, n_host: c_int) -> *mut c_char;
     fn reylo_sqlite_free(p: *mut c_char);
+    fn reylo_sqlite_version() -> *const c_char;
+}
+
+/// The version of the embedded SQLite, as `3.53.4`: the one that prepares every statement the
+/// engine types, whichever SQLite reads the database file or runs the statement.
+pub fn version() -> &'static str {
+    // A string constant of the library.
+    unsafe { CStr::from_ptr(reylo_sqlite_version()) }.to_str().unwrap_or_default()
 }
 
 /// A function the host's SQLite lists (`pragma_function_list`): its name, its argument count as

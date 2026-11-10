@@ -267,6 +267,17 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         }
         return failed(bare(sql, lexed, Dialect::Sqlite, diagnostics));
     }
+    // SQLite prepared the `?n` rewrite, so each of its parameters is one the lexer numbered. Any
+    // other is one SQLite reads and the lexer does not (`:été`, whose name the lexer ends before):
+    // it stayed in the text, takes no value and would run as NULL. An error where it stands.
+    for p in t.params.iter().filter(|p| !lexed_parameter(p, lexed)) {
+        // Where it stands: the first place its name is written outside a string, a quoted name or a comment.
+        let text = |start: &usize| lexed.opaque.iter().any(|(from, to)| (*from..*to).contains(start));
+        let at = p.name.as_deref().and_then(|name| sql.match_indices(name).map(|(start, _)| start).find(|start| !text(start)).map(|start| (start, name.len())));
+        let written = p.name.as_deref().unwrap_or("a ? in this statement");
+        let (start, length) = at.unwrap_or((0, sql.trim_end().len()));
+        diagnostics.push(diag(format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"), start, length, 1));
+    }
     // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs;
     // only the built-in constructors, which a function the host registers under the name overrides
     // (`Extras::function`). The host's list names the built-ins with any argument count (-1).
@@ -448,6 +459,12 @@ fn tables(t: &Tree) -> Tables {
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
     Tables { read, write, ..Default::default() }
+}
+
+/// Whether SQLite's parameter is one the lexer read: the statement is prepared as its `?n` rewrite,
+/// which names the lexer's parameters `?1` to `?N`.
+fn lexed_parameter(p: &tree::PublicParam, lexed: &Lexed) -> bool {
+    p.name.as_deref().and_then(|name| name.strip_prefix('?')).and_then(|k| k.parse::<usize>().ok()).is_some_and(|k| (1..=lexed.params.len()).contains(&k))
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -4118,6 +4135,34 @@ mod tests {
         for sql in ["select \"id\", \"v\" from t", "select 'hello'", "insert into t (id) values (1) returning v"] {
             assert!(a(sql).diagnostics.is_empty(), "{sql}: {:?}", a(sql).diagnostics);
         }
+    }
+
+    #[test]
+    fn the_version_reported_is_the_embedded_sqlites() {
+        // The release the docs name (site/content/docs/sqlite.mdx): a newer amalgamation changes both.
+        assert!(tree::version().starts_with("3.53."), "{}", tree::version());
+    }
+
+    #[test]
+    fn a_parameter_sqlite_reads_and_the_lexer_does_not_is_an_error_at_its_place() {
+        let unbound = |sql: &str| analysis(sql).diagnostics.iter().filter(|d| d.code == 1).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        // SQLite's parameter is `:`, `@` or `$` and any run of name characters, digits and bytes
+        // past ASCII among them; the lexer's name is ASCII and starts with no digit.
+        for written in [":été", ":1st", "@2x"] {
+            let sql = format!("select id from users where name = :n and email = {written}");
+            let found = unbound(&sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(sql.find(written).unwrap(), written.len())], "{sql}");
+            assert_eq!(found[0].2, format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"));
+        }
+        // The place is the parameter's, not the same text in a string before it.
+        let sql = "select ':été' from users where name = :été";
+        assert_eq!(unbound(sql).iter().map(|(s, _, _)| *s).collect::<Vec<_>>(), [sql.rfind(":été").unwrap()]);
+        // Every parameter the lexer read is one SQLite numbers, in each form, and a bracketed
+        // name hides nothing after it.
+        for sql in ["select id from users where name = :n and email = :e", "select id from users where name = ?2 and email = ?", "select id as [it's], :n as n from users", "pragma table_info(users)"] {
+            assert!(unbound(sql).is_empty(), "{sql}");
+        }
+        assert_eq!(analysis("select id as [it's], :n as n from users").params.len(), 1);
     }
 
     #[test]

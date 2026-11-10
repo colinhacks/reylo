@@ -37,6 +37,8 @@ export function lexPlaceholders(sql: string, dialect: "postgres" | "mysql" | "sq
     const next = sql[i + 1];
     if (ch === "'" || (ch === '"' && mysql)) { i = skipQuoted(sql, i, ch, mysql); last = "other"; continue; }
     if (ch === '"' || ch === "`") { i = skipQuoted(sql, i, ch, false); last = "operand"; continue; }
+    // SQLite's `[name]` is a quoted identifier, which ends at the first `]`.
+    if (ch === "[" && dialect === "sqlite") { const end = sql.indexOf("]", i); i = end === -1 ? sql.length : end + 1; last = "operand"; continue; }
     // MySQL's `--` is two minus signs before anything but a space or a control character.
     const comment = ch === "#" ? mysql : ch === "-" && next === "-" && !(mysql && i + 2 < sql.length && sql.charCodeAt(i + 2) > 32 && sql.charCodeAt(i + 2) !== 127);
     if (comment) { i = sql.indexOf("\n", i); if (i === -1) break; continue; }
