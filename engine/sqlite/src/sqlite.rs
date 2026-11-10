@@ -937,7 +937,7 @@ struct Level {
     /// row that arm returns over no rows.
     around: HashSet<i64>,
     /// How many of the aggregate calls the expression stands inside read none of this arm's own
-    /// items. SQLite gives an aggregate to the innermost query whose items its arguments read,
+    /// items for certain. SQLite gives an aggregate to the innermost query whose items it reads,
     /// so such a call is an arm's around this one (`(select json_group_array(name) from posts)`
     /// over `users` aggregates the users), and reads that arm's rows, each one there.
     foreign: u32,
@@ -971,17 +971,15 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
     Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0 }
 }
 
-/// Whether an expression reads a column of one of `cursors`, in itself or in a subquery's select
-/// list or WHERE.
+/// Whether an expression reads a column of one of `cursors`, or may: a subquery in it may read
+/// one in any of its clauses.
 fn reads_cursor(n: &Node, cursors: &HashSet<i64>) -> bool {
-    if n.op == "column" && cursors.contains(&n.cursor) {
+    if (n.op == "column" && cursors.contains(&n.cursor)) || n.select.is_some() {
         return true;
     }
-    let inside = |sel: &Sel| sel.columns.iter().any(|c| reads_cursor(&c.expr, cursors)) || sel.where_.as_ref().is_some_and(|w| reads_cursor(w, cursors));
     n.left.as_deref().is_some_and(|x| reads_cursor(x, cursors))
         || n.right.as_deref().is_some_and(|x| reads_cursor(x, cursors))
         || n.list.iter().chain(&n.args).chain(&n.order_by).chain(&n.partition_by).any(|x| reads_cursor(x, cursors))
-        || n.select.as_deref().is_some_and(inside)
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -1986,9 +1984,11 @@ impl Analyzer<'_> {
         if !(n.op == "function" && n.agg && !n.over) {
             return f();
         }
+        // A FILTER, which the tree does not carry (`window`, on a call with no OVER), may read
+        // the arm's own items too: only a call seen to read none of them is an arm's around it.
         let foreign = {
             let level = self.level.borrow();
-            !reads_cursor(n, &level.own)
+            !n.window && !reads_cursor(n, &level.own)
         };
         {
             let mut level = self.level.borrow_mut();

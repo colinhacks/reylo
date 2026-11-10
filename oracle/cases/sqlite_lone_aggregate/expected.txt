@@ -1,7 +1,9 @@
 bare.sql: one () -> { c: int64, name: TEXT(text(utf8) | bytes)? }
 built.sql: one () -> { j: json {"type":"array","items":false,"minItems":3,"prefixItems":[{"type":"integer","format":"int64"},{"anyOf":[{"type":"integer","format":"int64"},{"type":"null"}]},{"type":["string","null"]}]} }
 correlated.sql: one () -> { c: int64, s: TEXT(text(utf8) | bytes)? }
+correlated_filter.sql: one () -> { c: int64, j: json text(utf8)?[]? }
 correlated_inside.sql: one () -> { names: json text(utf8)[], c: int64 }
+correlated_nested.sql: one () -> { c: int64, j: json text(utf8)?[] }
 correlated_own_aggregate.sql: one () -> { c: int64, j: json text(utf8)?[], k: json text(utf8)[]? }
 grouped.sql: many () -> { name: TEXT(text(utf8) | bytes), c: int64 }
 in_subquery.sql: many () -> { x: INTEGER }
