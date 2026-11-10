@@ -144,7 +144,7 @@ async fn postgres() {
         let skip: Vec<String> = read(&case.join("changes.txt")).lines().filter_map(|l| l.split_whitespace().next()).map(String::from).collect();
         let rows_before = values(&mut from, None, &Default::default(), &skip).await;
         // The target's objects are created from the text v2.sql declares them with, as
-        // `reylo migration create` creates them from schema.sql's.
+        // `reylo migrate new` creates them from schema.sql's.
         let mut target = diff::postgres::read(&mut to).await.unwrap();
         diff::postgres::declare(&mut to, &mut target, &read(&case.join("v2.sql"))).await.unwrap();
         // A table moved to another schema is moved first, and the plan read from there: a moved

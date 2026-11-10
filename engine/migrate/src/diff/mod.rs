@@ -4,7 +4,7 @@
 //! from the server's own dependency records. The plan is then the same for every database: drop
 //! what the target lacks, create what the source lacks, change what differs (in place, or by
 //! dropping and creating it again, with everything that depends on it), in an order the
-//! dependencies allow. Nothing here trusts the plan: `reylo migration create` runs it on a shadow
+//! dependencies allow. Nothing here trusts the plan: `reylo migrate new` runs it on a shadow
 //! of the migrations and compares the result with `schema.sql` before it writes the file.
 
 pub mod mysql;
@@ -358,6 +358,11 @@ fn family(def: &str) -> String {
 }
 
 /// The table a partition, or a table that inherits another, belongs to, by id.
+/// Whether the object is a partition, or an inheriting child, of a table.
+pub fn is_child(o: &Object) -> bool {
+    parent_of(o).is_some()
+}
+
 fn parent_of(o: &Object) -> Option<String> {
     o.extra.iter().find_map(|l| l.strip_prefix("partition of ").or_else(|| l.strip_prefix("inherits ")).map(|p| format!("table {}", p.split(' ').next().unwrap_or_default())))
 }
@@ -365,7 +370,15 @@ fn parent_of(o: &Object) -> Option<String> {
 /// `schema` without its partitions (and inheriting children) of a table `reference` has that
 /// `reference` lacks, and what they own: children made at run time, which are data.
 pub fn without_extra_children(schema: &mut Schema, reference: &Schema) {
-    let extra: Vec<String> = schema.objects.values().filter(|o| o.kind == Some(Kind::Table) && !reference.objects.contains_key(&o.id) && parent_of(o).is_some_and(|p| reference.objects.contains_key(&p))).map(|o| o.id.clone()).collect();
+    // A partition of a partition made at run time is made at run time too, as far down as they go.
+    let mut extra: Vec<String> = Vec::new();
+    loop {
+        let more: Vec<String> = schema.objects.values().filter(|o| o.kind == Some(Kind::Table) && !reference.objects.contains_key(&o.id) && !extra.contains(&o.id) && parent_of(o).is_some_and(|p| reference.objects.contains_key(&p) || extra.contains(&p))).map(|o| o.id.clone()).collect();
+        if more.is_empty() {
+            break;
+        }
+        extra.extend(more);
+    }
     for id in extra {
         let owned: Vec<String> = with_owned(schema, &id).into_iter().map(String::from).collect();
         for o in owned {
@@ -573,9 +586,14 @@ pub fn plan_with(from: &Schema, to: &Schema, alterer: &dyn Alterer, renames_stat
 
     // A partition, or a table inheriting another, of a table the target keeps, which the target
     // doesn't name, was made at run time (pg_partman's, TimescaleDB's chunks): data, left as it is.
+    // So is a partition of one of those, as far down as they go.
     let mut left: BTreeSet<String> = BTreeSet::new();
-    for o in from.objects.values().filter(|o| from.live && o.kind == Some(Kind::Table) && !to.objects.contains_key(&o.id)) {
-        if parent_of(o).is_some_and(|p| to.objects.contains_key(&p)) {
+    loop {
+        let more: Vec<&Object> = from.objects.values().filter(|o| from.live && o.kind == Some(Kind::Table) && !to.objects.contains_key(&o.id) && !left.contains(&o.id) && parent_of(o).is_some_and(|p| to.objects.contains_key(&p) || left.contains(&p))).collect();
+        if more.is_empty() {
+            break;
+        }
+        for o in more {
             left.extend(with_owned(from, &o.id).into_iter().map(String::from));
         }
     }

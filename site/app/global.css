@@ -957,16 +957,6 @@ html #nd-page .prose :where(code):not(:where(pre code, [class~='not-prose'], [cl
   white-space: nowrap;
 }
 
-/* The table of contents wide enough for a command written out in full, as /migrations' headings are
-   (`reylo migration history push`, nested two levels in). The layout grows by as much, so the column
-   keeps its width; the inline width docs-kit's shell sets is overridden for that. */
-@media (min-width: 80rem) {
-  #nd-docs-layout:has([data-toc-popover]) {
-    --fd-toc-width: 320px;
-    --fd-layout-width: calc(var(--dk-column) + 320px + 4rem) !important;
-  }
-}
-
 /* A query a tool got wrong: the docs' Inference card (.reylo-inferred), which is scoped to #nd-page, where a popup, rendered at the end of the body, is not. The popup is the card's one frame. */
 .fd-twoslash-popover.reylo-compare-pop-card {
   width: 480px;

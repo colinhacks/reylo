@@ -16,7 +16,7 @@ use std::sync::LazyLock;
 
 pub const LOCK: &str = "reylo-lock.yaml";
 
-const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate dev and reylo migration history pull.
+const HEADER: &str = "# The order this project's migrations run in, written by reylo migrate dev and reylo migrate lock.
 # A merge conflict here means another branch added migrations too: keep main's lines, then
 # run reylo migrate dev, which runs this branch's after them and adds them back.
 ";
