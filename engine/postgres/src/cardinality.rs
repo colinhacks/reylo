@@ -3264,7 +3264,19 @@ fn dml_node(node: &NodeEnum, trust: &Trust, catalog: &Catalog) -> Option<Result<
     Some(match node {
         NodeEnum::InsertStmt(i) => {
             let rows = match i.select_stmt.as_deref().and_then(|n| n.node.as_ref()) {
-                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => Cardinality::One,
+                // The server plans a one-row VALUES of an INSERT as a select list: a set-returning
+                // call in it makes a row per value it returns, and none for an empty set, and a
+                // LIMIT or an OFFSET on it may leave no row.
+                Some(NodeEnum::SelectStmt(s)) if s.values_lists.len() == 1 && s.from_clause.is_empty() => {
+                    if let Some(why) = calls_at_this_level(s.values_lists.iter()).set_returning(catalog) {
+                        return Some(Err(why));
+                    }
+                    if limit_keeps_a_row(s) {
+                        Cardinality::One
+                    } else {
+                        Cardinality::AtMostOne
+                    }
+                }
                 Some(NodeEnum::SelectStmt(s)) if !s.values_lists.is_empty() => return Some(Err("a VALUES list returns a row per row it lists".into())),
                 Some(NodeEnum::SelectStmt(s)) => match inserted_rows(i, s, trust, catalog) {
                     Ok(rows) => rows,
