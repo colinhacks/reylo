@@ -49,11 +49,11 @@ test("the migration commands and reylo run are the binary's, with their output a
   const root = project();
   const help = reylo(root, ["--help"]);
   assert.equal(help.status, 0, help.err);
-  for (const usage of ["  migration <command>", "  migrate <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
+  for (const usage of ["  migrate <command>", "  db <command>", "  run \"<sql>\""]) assert.ok(help.out.includes(usage), usage);
   const migrate = reylo(root, ["migrate", "--help"]);
   assert.equal(migrate.status, 0, migrate.err);
   assert.match(migrate.out, /^Usage: reylo <group> <command> \[flags\]\n/);
-  for (const group of ["migration", "db"]) assert.equal(reylo(root, [group, "--help"]).out, migrate.out, group);
+  assert.equal(reylo(root, ["db", "--help"]).out, migrate.out);
   // The docs show the help as it is.
   assert.ok(readFileSync(join(import.meta.dirname, "..", "site", "content", "docs", "migrations.mdx"), "utf8").includes(`\`\`\`terminal\n${migrate.out}\`\`\``));
   const run = reylo(root, ["run", "insert into users (name) values ('ada')", "insert into users (name) values ('grace')"]);
@@ -78,9 +78,14 @@ test("the migration commands and reylo run are the binary's, with their output a
   // A command of another group is named, the words being so near each other.
   const slip = reylo(root, ["migrate", "create", "add_bio"]);
   assert.equal(slip.status, 2);
-  assert.match(slip.err, /^reylo migrate has no create: it's reylo migration create\n/);
-  assert.match(reylo(root, ["migration", "push"]).err, /^reylo migration has no push: it's reylo migration history push, or reylo db push\n/);
-  for (const [args, said] of [[["db", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "deploy", "--schema", "x"], /deploy doesn't take --schema/], [["migrate", "deploy", "-f", "x.sql"], /deploy doesn't take --file/], [["migrate", "deploy", "dev"], /deploy doesn't take dev/], [["migration", "create", "a", "b"], /create doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migration", "lint", "--offline"], /lint doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migration", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
+  assert.match(slip.err, /^reylo migrate has no create: it's reylo migrate new\n/);
+  assert.match(reylo(root, ["migrate", "push"]).err, /^reylo migrate has no push: it's reylo migrate history push, or reylo db push\n/);
+  assert.match(reylo(root, ["db", "dev"]).err, /^reylo db has no dev: it's reylo migrate dev\n/);
+  // The group these commands had before is named for what it is now.
+  const old = reylo(root, ["migration", "create", "add_bio"]);
+  assert.equal(old.status, 2);
+  assert.match(old.err, /^reylo migration is reylo migrate: reylo migrate new\n/);
+  for (const [args, said] of [[["db", "push", "--rename", "users.a=b"], /push doesn't take --rename/], [["migrate", "dev", "--drop", "users.a"], /dev doesn't take --drop/], [["migrate", "deploy", "--schema", "x"], /deploy doesn't take --schema/], [["migrate", "deploy", "-f", "x.sql"], /deploy doesn't take --file/], [["migrate", "deploy", "dev"], /deploy doesn't take dev/], [["migrate", "new", "a", "b"], /new doesn't take b/], [["run", "--bogus", "select 1"], /run doesn't take --bogus/], [["migrate", "dev", "--dir", "db"], /dev doesn't take --dir/], [["migrate", "lint", "--offline"], /lint doesn't take --offline/], [["migrate", "dev", "--dry-run"], /dev doesn't take --dry-run/], [["migrate", "history", "push", "--watch"], /history push doesn't take --watch/]] as const) {
     const r = reylo(root, [...args]);
     assert.equal(r.status, 1, args.join(" "));
     assert.match(r.err, said);
@@ -88,17 +93,17 @@ test("the migration commands and reylo run are the binary's, with their output a
   assert.match(reylo(root, ["migrate", "deploy", "--help"]).out, /^Usage: reylo <group> <command> \[flags\]\n/);
 });
 
-test("reylo migration init starts a project, and needs nothing in the project file", () => {
+test("reylo migrate init starts a project, and needs nothing in the project file", () => {
   const root = project();
   const refused = reylo(root, ["migrate", "deploy"]);
   assert.equal(refused.status, 1);
-  assert.match(refused.err, /no reylo here: check dir in \.reylo\.yaml, or start with reylo migration init/);
-  const init = reylo(root, ["migration", "init"]);
+  assert.match(refused.err, /no reylo here: check dir in \.reylo\.yaml, or start with reylo migrate init/);
+  const init = reylo(root, ["migrate", "init"]);
   assert.equal(init.status, 0, init.err + init.out);
   assert.match(init.out, /^✓ Wrote reylo\/schema\.sql, reylo\/migrations\/init\.sql and reylo\/reylo-lock\.yaml\n/);
   assert.equal(existsSync(join(root, ".reylo.yaml")), false);
   // With no more than that, every command runs on it.
-  for (const args of [["migration", "lint"], ["migrate", "deploy", "--dry-run"], ["migrate", "deploy"], ["migration", "history", "push"], ["migration", "history", "pull"], ["db", "introspect"]]) {
+  for (const args of [["migrate", "lint"], ["migrate", "status"], ["migrate", "deploy", "--dry-run"], ["migrate", "deploy"], ["migrate", "history", "push"], ["migrate", "history", "pull"], ["db", "introspect"]]) {
     const r = reylo(root, args);
     assert.equal(r.status, 0, `${args.join(" ")}: ${r.err}${r.out}`);
   }
@@ -106,10 +111,10 @@ test("reylo migration init starts a project, and needs nothing in the project fi
   assert.equal(reylo(root, ["db", "introspect"]).out, readFileSync(join(root, "reylo", "schema.sql"), "utf8"));
   // A key that has gone is refused, as any key the file can't have.
   writeFileSync(join(root, ".reylo.yaml"), "migrate:\n  lock: true\n");
-  assert.notEqual(reylo(root, ["migration", "lint"]).status, 0);
+  assert.notEqual(reylo(root, ["migrate", "lint"]).status, 0);
   // Started once, it isn't started again.
   rmSync(join(root, ".reylo.yaml"));
-  const again = reylo(root, ["migration", "init"]);
+  const again = reylo(root, ["migrate", "init"]);
   assert.equal(again.status, 1);
   assert.match(again.err, /schema\.sql exists already/);
 });
