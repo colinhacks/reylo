@@ -329,24 +329,24 @@ pub fn atomicity_problem(sql: &str, dialect: Dialect) -> Option<String> {
     let kinds: Vec<Kind> = statements.iter().map(|s| kind_of(s, dialect)).collect();
     if let Some(k) = kinds.iter().position(|k| *k == Kind::TransactionControl) {
         return Some(format!(
-            "it holds its own transaction statement ({}): Reylo runs every migration in one transaction with its history row, so leave them out",
+            "It has its own {}: Reylo runs each migration in a transaction of its own, so take it out.",
             head(&statements[k], 2).to_lowercase()
         ));
     }
     if let Some(k) = kinds.iter().position(|k| *k == Kind::Alone) {
         if statements.len() > 1 {
-            return Some(format!("{} cannot run inside a transaction, so it must be the only statement of its file", head(&statements[k], 4).to_lowercase()));
+            return Some(format!("Its {} can't run in a transaction, so it needs a file of its own.", head(&statements[k], 4).to_lowercase()));
         }
     }
     let commits: Vec<&Statement> = statements.iter().zip(&kinds).filter(|(_, k)| **k == Kind::Commits).map(|(s, _)| s).collect();
     if dialect == Dialect::Mysql && !commits.is_empty() && statements.len() > 1 {
         return Some(if commits.len() > 1 {
             format!(
-                "it holds {} DDL statements, and MySQL commits each one on its own, so the file cannot be atomic: give each its own file, or combine changes to one table into one alter table",
+                "It has {} DDL statements, and MySQL commits each on its own: give each a file, or merge changes to one table into one alter table.",
                 commits.len()
             )
         } else {
-            format!("MySQL commits a DDL statement on its own, so it cannot share a file with other statements: give {} a file of its own", head(commits[0], 3).to_lowercase())
+            format!("MySQL commits a DDL statement on its own, so its {} needs a file of its own.", head(commits[0], 3).to_lowercase())
         });
     }
     None
@@ -477,8 +477,8 @@ mod tests {
     #[test]
     fn knows_what_cannot_run_in_a_transaction() {
         assert_eq!(atomicity_problem("create index concurrently i on a (x)", Dialect::Postgres), None);
-        assert!(atomicity_problem("create index concurrently i on a (x); select 1", Dialect::Postgres).unwrap().contains("only statement"));
-        assert!(atomicity_problem("begin; create table a (x int); commit", Dialect::Postgres).unwrap().contains("own transaction"));
+        assert!(atomicity_problem("create index concurrently i on a (x); select 1", Dialect::Postgres).unwrap().contains("needs a file of its own"));
+        assert!(atomicity_problem("begin; create table a (x int); commit", Dialect::Postgres).unwrap().contains("It has its own begin"));
         assert!(atomicity_problem("create table a (x int); create table b (x int)", Dialect::Mysql).unwrap().contains("2 DDL statements"));
         assert!(atomicity_problem("create table a (x int); insert into a values (1)", Dialect::Mysql).unwrap().contains("a file of its own"));
         assert_eq!(atomicity_problem("insert into a values (1); update a set x = 2", Dialect::Mysql), None);

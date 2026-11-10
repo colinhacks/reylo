@@ -320,7 +320,13 @@ pub(crate) fn pg_dump(url: &str, major: i64, args: &[String]) -> Result<String, 
     }
     let out = command.output()?;
     if !out.status.success() {
-        return Err(Error(format!("pg_dump failed: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        let said = String::from_utf8_lossy(&out.stderr);
+        // Its message, without the prefix it puts on every line.
+        let said = said.trim().trim_start_matches("pg_dump: error: ").trim_start_matches("pg_dump: ");
+        if said.starts_with("no matching schemas were found") {
+            return Err(Error("this database has no schema of the name --schema gives".into()));
+        }
+        return Err(Error(format!("pg_dump couldn't read this schema: {said}")));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

@@ -57,7 +57,7 @@ impl Dialect {
             "postgres" | "postgresql" => Ok(Dialect::Postgres),
             "mysql" | "mariadb" => Ok(Dialect::Mysql),
             "sqlite" | "file" => Ok(Dialect::Sqlite),
-            "duckdb" => Err(Error("reylo migrate does not support DuckDB yet".into())),
+            "duckdb" => Err(Error("DuckDB has no migrations yet: they run on Postgres, MySQL and SQLite".into())),
             _ if lower == ":memory:" || [".db", ".sqlite", ".sqlite3"].iter().any(|e| lower.ends_with(e)) => Ok(Dialect::Sqlite),
             _ => Err(Error(format!("no database for the URL's scheme: {}", redact(url)))),
         }

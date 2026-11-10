@@ -18,7 +18,7 @@ const USAGE: &str = "Usage: reylo <command>
   analyze <paths> [--url]   Print each statement's type descriptor, one line of JSON per
                             statement, read from the project's database
   migrate <command>         Write, check and run migrations, and repair their history
-  db <command>              Change a database directly, recording nothing
+  db <command>              Push schema.sql to a development database, reset, wipe or read it
                             (reylo migrate --help lists both groups' commands)
   run \"<sql>\"… [--file <path>]…
                             Run SQL on the database as written; records nothing
@@ -52,7 +52,7 @@ Commands:
   migrate history push     Record the migrations this database's schema has
   migrate history pull     Write the migrations this database ran into files
   db push                  Take this database to schema.sql, unrecorded
-    --watch                Again on each change
+    --watch                Push again on each save
   db reset                 Rebuild this database from the migrations
   db wipe                  Delete every row, keeping the schema
   db introspect            Print this database's schema as SQL
@@ -128,7 +128,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--drop" => out.drops.extend(value()?.split(',').map(str::trim).filter(|n| !n.is_empty()).map(String::from)),
             "--rename" => {
                 let v = value()?;
-                let (old, new) = v.split_once('=').ok_or_else(|| format!("--rename takes <table>.<column>=<new name>, not {v}"))?;
+                let (old, new) = v.split_once('=').ok_or_else(|| format!("--rename takes <old name>=<new name>, a table as users=accounts or a column as users.bio=about, not {v}"))?;
                 out.renames.push((old.trim().to_string(), new.trim().to_string()));
             }
             s if s.starts_with("--") => out.switches.push(args[k][2..].to_string()),
@@ -212,6 +212,13 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     // The words that name the command: `migrate history` takes one more.
     let words = if group == "migrate" && args[0] == "history" { args.len().min(2) } else { 1 };
     let command = format!("{group} {}", args[..words].join(" "));
+    if group == "migrate" && args[0] == "history" && !COMMANDS.contains(&command.as_str()) {
+        let message = match args.get(1).filter(|a| !a.starts_with('-')) {
+            Some(word) => format!("reylo migrate history has no {word}: it takes push or pull"),
+            None => "reylo migrate history takes push or pull".to_string(),
+        };
+        return Ok(usage_error(group, args, &message, ""));
+    }
     if !COMMANDS.contains(&command.as_str()) {
         // A command of another group, whose names are near each other's, is named.
         let word = args[words - 1].as_str();
@@ -222,7 +229,7 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
         if !theirs.is_empty() {
             return Ok(usage_error(group, args, &format!("reylo {group} has no {word}: it's {}", theirs.join(", or ")), ""));
         }
-        return Ok(usage_error(group, args, &format!("reylo {group}: unknown command {word}"), &format!("\n\n{MIGRATE_USAGE}")));
+        return Ok(usage_error(group, args, &format!("reylo {group} has no command {word} (reylo {group} --help lists them)"), ""));
     }
     let command = command.as_str();
     let parsed = parse(&args[words..])?;
@@ -235,14 +242,14 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
         _ => &[],
     };
     let short = args[..words].join(" ");
-    let refused = |flag: &str| Err(format!("{short} doesn't take {flag} (reylo {group} --help)"));
+    let refused = |flag: &str| Ok(usage_error(group, args, &format!("reylo {group} {short} doesn't take {flag} (reylo {group} --help)"), ""));
     // Every command takes --json, but for one that runs until it's stopped.
     if let Some(flag) = parsed.switches.iter().find(|s| *s != "json" && !takes.contains(&s.as_str())) {
         return refused(&format!("--{flag}"));
     }
     let json = has("json");
     if json && has("watch") {
-        return refused("--json with --watch, which runs until it's stopped");
+        return Ok(usage_error(group, args, "reylo db push --watch runs until it's stopped, so it can't print one JSON object", ""));
     }
     if command != "migrate new" && !parsed.drops.is_empty() {
         return refused("--drop");
@@ -275,16 +282,17 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
     let mut lines: Vec<String> = Vec::new();
     let mut sql = None;
     let outcome = run_group(command, &parsed, &mut |l: &str| lines.push(l.to_string()), &mut sql);
-    let mut out = serde_json::json!({ "command": format!("reylo {command}") });
-    let code = match outcome {
-        Ok(code) => code,
-        Err(e) => {
-            out["error"] = e.into();
-            1
-        }
+    let named = if command == "migrate deploy" && has("dry-run") { "migrate deploy --dry-run".to_string() } else { command.to_string() };
+    let mut out = serde_json::json!({ "command": format!("reylo {named}") });
+    let (code, error) = match outcome {
+        Ok(code) => (code, None),
+        Err(e) => (1, Some(e)),
     };
     out["ok"] = (code == 0).into();
     out["exit"] = code.into();
+    if let Some(e) = error {
+        out["error"] = e.into();
+    }
     let problems = reylo_migrate::commands::reported();
     if !problems.is_empty() {
         out["problems"] = problems.into();
@@ -312,7 +320,7 @@ fn run_group(command: &str, parsed: &Args, log: &mut dyn FnMut(&str), sql: &mut 
     // These start from the database; the rest need a project to work on.
     if !matches!(command, "migrate init" | "migrate history pull" | "db introspect" | "db wipe") && !opts.schema.exists() && !opts.dir.exists() {
         let home = opts.schema.parent().unwrap_or(&opts.root);
-        return Err(format!("no {} here: check dir in .reylo.yaml, or start with reylo migrate init", home.strip_prefix(&opts.root).unwrap_or(home).display()));
+        return Err(format!("no {}/ directory here: start one with reylo migrate init, or set dir in .reylo.yaml", home.strip_prefix(&opts.root).unwrap_or(home).display()));
     }
     if command == "migrate lint" {
         return reylo_migrate::lint(&opts, log).map_err(|e| e.0);
@@ -356,7 +364,8 @@ fn run_command(args: &[String]) -> Result<i32, String> {
     }
     let parsed = parse(args)?;
     if let Some(flag) = parsed.switches.first() {
-        return Err(format!("run doesn't take --{flag}"));
+        eprintln!("reylo run doesn't take --{flag} (reylo run --help)");
+        return Ok(2);
     }
     if !parsed.drops.is_empty() || !parsed.renames.is_empty() || !parsed.schemas.is_empty() {
         return Err("run takes SQL, --file and --url".into());
@@ -364,7 +373,7 @@ fn run_command(args: &[String]) -> Result<i32, String> {
     let opts = settings(&parsed, true)?;
     let mut items: Vec<(String, String)> = parsed.rest.iter().map(|sql| (if sql.chars().count() > 60 { format!("{}…", sql.chars().take(57).collect::<String>()) } else { sql.clone() }, sql.clone())).collect();
     for f in &parsed.files {
-        let sql = std::fs::read_to_string(Path::new(f)).map_err(|e| format!("cannot read {f}: {e}"))?;
+        let sql = std::fs::read_to_string(Path::new(f)).map_err(|e| if e.kind() == std::io::ErrorKind::NotFound { format!("no file {f}") } else { format!("can't read {f}: {}", e.kind()) })?;
         items.push((f.clone(), sql));
     }
     if items.is_empty() {
