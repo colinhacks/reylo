@@ -209,7 +209,10 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
 /// relation names as the statement writes them, schema-qualified or resolved through the search
-/// path, `$2` how many. The fourth column is the `NOT NULL` a write meets, which checks every new row
+/// path, `$2` how many. The fifth column is a view's defining SELECT, on its first column; a
+/// materialized view has none here, since its rows are those of its last REFRESH, which the
+/// tables' constraints of today say nothing of: it is a stored relation, its columns nullable and
+/// its keys its own unique indexes. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
 /// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
 /// generated column does not; the ninth, the relation's name as `$1` gives it; the tenth and the
@@ -217,7 +220,7 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// written whole to it takes.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
-    CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
+    CASE WHEN c.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
     ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name, a.atttypid::pg_catalog.int8, a.atttypmod FROM (SELECT DISTINCT n.name FROM ",
@@ -776,8 +779,9 @@ struct Engine<'a> {
     column_types: RefCell<HashMap<(u32, i32), (u32, i32)>>,
     /// Each prefetched relation's oid, by its name as the statement writes it.
     oids_by_name: RefCell<HashMap<String, u32>>,
-    /// The defining SELECT of each of those that is a view or a materialized view. The catalog
-    /// holds no NOT NULL for a view's columns, so they are settled from this statement instead.
+    /// The defining SELECT of each of those that is a view. The catalog holds no NOT NULL for a
+    /// view's columns, so they are settled from this statement instead. Not a materialized
+    /// view's: its rows are those the statement returned at its last REFRESH.
     views: RefCell<HashMap<u32, String>>,
     /// The WITH queries being settled, outermost first: the statement text of each, the columns
     /// taken as nullable for a read of the query from inside itself, and whether such a read
@@ -1832,6 +1836,7 @@ impl<'a> Engine<'a> {
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed, &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed, &raw, &mut described);
+        self.written_through(parsed, &raw, &mut described)?;
         Some(Ok((raw, described)))
     }
 
@@ -1851,6 +1856,34 @@ impl<'a> Engine<'a> {
                 col.nullable = true;
             }
         }
+    }
+
+    /// The RETURNING of an INSERT, an UPDATE or a MERGE gives the row as it was written, which a
+    /// view's statement says nothing of, and under a rewrite rule nor do the table's constraints:
+    /// a row written through a view need not pass the view's WHERE, an INSTEAD OF trigger returns
+    /// a row of its own making, and a rule's own RETURNING list gives the row in the statement's
+    /// place. A column read from such a target is nullable, and takes nothing the view's statement
+    /// or a CHECK says of its values. A DELETE returns a row the relation held, and keeps its
+    /// types. A probe is settled this way too, as a data-modifying WITH query is; the statement
+    /// that reads one writes the target as well, so a column it reads from it steps back with it.
+    fn written_through(&self, parsed: Option<&Parsed>, raw: &RawDescribe, described: &mut DescribedStatement) -> Lazy<()> {
+        let Some(parsed) = parsed.filter(|p| p.kind == analyze::StatementKind::Mutation && p.statement != "delete" && !p.write_set.is_empty()) else { return Some(()) };
+        let rules = by_relation(self.host, cardinality::TRIGGERS_QUERY, &parsed.write_set)?;
+        const WRITES: u32 = (cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE) as u32;
+        // A host that answers without the rules' column reports none: every write is then taken
+        // as one a rule may rewrite, and so is every write where the catalog did not answer.
+        let ruled = |name: &str| match &rules {
+            Ok(rows) => rows.iter().any(|row| row.first().and_then(as_str) == Some(name) && row.get(2).map_or(Some(WRITES), as_u32).unwrap_or(0) & WRITES != 0),
+            Err(_) => true,
+        };
+        let (oids, views) = (self.oids_by_name.borrow(), self.views.borrow());
+        let targets: HashSet<u32> = parsed.write_set.iter().filter_map(|name| Some((name, *oids.get(name)?))).filter(|(name, oid)| views.contains_key(oid) || ruled(name.as_str())).map(|(_, oid)| oid).collect();
+        for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
+            if raw.attnum > 0 && targets.contains(&raw.table) {
+                *col = DescribedColumn { nullable: true, nullable_items: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), ..col.clone() };
+            }
+        }
+        Some(())
     }
 
     /// Per result column that reads a table's column as it is, and per column of `written`, what
@@ -2737,6 +2770,7 @@ impl<'a> Engine<'a> {
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed.as_ref(), &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed.as_ref(), &raw, &mut described);
+        self.written_through(parsed.as_ref(), &raw, &mut described)?;
         Some(Some(described))
     }
 
