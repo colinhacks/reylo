@@ -566,6 +566,53 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     })
 }
 
+/// One column's type where what the statement builds settles it, as [`analyze`] settles it
+/// ([`shaped`]): the type, whether the column may be NULL, and the paths inside it whose type the
+/// engine could not read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shaped {
+    pub ty: Type,
+    pub nullable: bool,
+    pub unresolved: Vec<String>,
+}
+
+/// What [`shaped`] reads of a statement.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShapedStatement {
+    /// Per result column, its type where what the statement builds settles it: the JSON its
+    /// constructors build, the fields of a row or an array of rows, the JSON or the rows it reads
+    /// straight from a WITH query or a derived table. `None` where the describe's type stands.
+    pub columns: Vec<Option<Shaped>>,
+    /// The domains those types name, with the base type each is made from ([`Analysis::domains`]).
+    pub domains: BTreeMap<String, String>,
+}
+
+/// The types [`analyze`] gives the columns of `sql` from what it builds, for a host that renders
+/// every other column from [`describe`] itself: the same rules, read by the same code. `sql` is in
+/// the server's `$n` form and is described as it is, and a parameter may be null, as [`describe`]
+/// takes them. `Some(Err)` is the server's refusal of the statement itself.
+pub fn shaped(sql: &str, host: &Host) -> Lazy<Result<ShapedStatement, DbError>> {
+    host.on_engine_stack(|host| {
+        let engine = Engine::new(host);
+        let parsed = analyze::analyze(sql).ok();
+        let trust = trust(host);
+        let relations = relations_of(parsed.as_ref());
+        let described = engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]);
+        let columns = columns_where(true, sql, host);
+        engine.prewarm_shapes(sql, trust.as_ref(), columns.as_ref());
+        let (Some(described), Some(trust), Some(columns)) = (described, trust, columns) else { return None };
+        let (raw, described) = match described {
+            Ok(d) => d,
+            Err(e) => return Some(Err(e)),
+        };
+        let trust = Trust { param_types: raw.params.clone(), ..trust };
+        let columns = engine.shaped_columns(sql, &described.columns, &trust, &columns, &raw.params)?;
+        let names: Vec<String> = columns.iter().flatten().flat_map(|c| c.ty.names()).collect();
+        let domains = engine.registry.borrow().domain_bases(&names);
+        Some(Ok(ShapedStatement { columns, domains }))
+    })
+}
+
 /// Which of the names the expression rules read are the built-ins, as the catalog says, and what
 /// it says of the overloads of the others: one session-scoped query. A server that refuses it
 /// leaves every name shadowed.
@@ -855,18 +902,7 @@ impl<'a> Engine<'a> {
             Some((_, relations, functions)) => view_rows_of(functions, relations).map(Some),
             None => None,
         };
-        for probe in &jsonshape::probes_ahead(&rewritten.sql) {
-            self.prewarm(&probe.sql);
-        }
-        // The JSON shapes' probes, and every probe that settles them, pinned, once the describe
-        // has said what they are pinned with: the shapes are read only after the columns are
-        // settled, rounds later.
-        if let (true, Some(trust), Some(rows)) = (self.pinned.get(), &trust, &catalog_rows) {
-            self.prewarmed.borrow_mut().insert(rewritten.sql.clone());
-            for probe in jsonshape::plan(&rewritten.sql, Dialect::Postgres, trust, &crate::levels::Columns::from_rows(&rows.columns)).statements() {
-                self.prewarm_probe(&probe.sql, trust);
-            }
-        }
+        self.prewarm_shapes(&rewritten.sql, trust.as_ref(), catalog_rows.as_ref().map(|rows| Columns::from_rows(&rows.columns)).as_ref());
         // The unique indexes of every table an `ON CONFLICT (…)` names its arbiter's columns for.
         let conflicts = conflict_targets(&rewritten.sql);
         let arbiters = if conflicts.is_empty() {
@@ -929,57 +965,20 @@ impl<'a> Engine<'a> {
             }
         }
 
-        // JSON shapes: what the statement's own constructors build, and for a JSON column it reads
-        // straight from a WITH query or a derived table, what that item's statement builds.
-        let (plan, outcomes) = self.shapes(&rewritten.sql, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)?;
-        let open = described.columns.iter().any(|c| !plan.columns.iter().any(|(n, _)| *n == c.name));
-        let built = if open { self.built(&rewritten.sql, &described.columns, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)? } else { vec![None; described.columns.len()] };
-        let mut shape_oids = Vec::new();
-        for (_, shape) in &plan.columns {
-            jsonshape::oids(shape, &outcomes, &raw.params, &mut shape_oids);
-        }
-        self.types(&shape_oids)?;
-        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(&described.columns), &trust)?;
-
-        let record = |c: &DescribedColumn| c.type_oid == crate::pgtypes::oid::RECORD || c.type_oid == crate::pgtypes::oid::RECORD_ARRAY;
-        let generated = if described.columns.iter().any(record) { self.generated_rows(&rewritten.sql, described.columns.len(), &trust)? } else { vec![None; described.columns.len()] };
+        // What the statement builds: the JSON its constructors build, the JSON it reads straight from
+        // a WITH query or a derived table, and the fields of the rows it reads whole.
+        let shaped = self.shaped_columns(&rewritten.sql, &described.columns, &trust, &catalog.columns, &raw.params)?;
         let registry = self.registry.borrow();
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
-        let mut shapes_used: HashSet<usize> = HashSet::new();
         let comments = self.comments.borrow();
-        for (position, (col, built)) in described.columns.iter().zip(&built).enumerate() {
-            let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
-            // A whole row of no type the catalog has, or an array of them, whose shape reads to
-            // the row's fields; else the describe's type stands.
-            let rows_of_table = |c: &DescribedColumn| registry.get(c.type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite));
-            let row = shape.filter(|_| record(col) || rows_of_table(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params)).map(|r| jsonshape::Resolved { ty: named_as(r.ty, col.type_oid, &registry), ..r });
-            let (ty, nullable) = match (shape, built) {
-                (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
-                    shapes_used.insert(i);
-                    let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
-                    unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    // The document under the column's own type's name, `json` or `jsonb`.
-                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
-                    (ty, !resolved.non_null)
+        for (position, (col, shaped)) in described.columns.iter().zip(shaped).enumerate() {
+            let (ty, nullable) = match shaped {
+                Some(shaped) => {
+                    unresolved.extend(shaped.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
+                    (shaped.ty, shaped.nullable)
                 }
-                // A whole row of no type the catalog has, or an array of them: the row's fields,
-                // as a probe of its columns reads them.
-                (Some((i, _)), _) if row.is_some() => {
-                    shapes_used.insert(i);
-                    let resolved = row.expect("a row's fields");
-                    unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (resolved.ty, col.nullable && !resolved.non_null)
-                }
-                // The item's own result settled whether the column is NULL, an outer join here
-                // included; what it builds is its document.
-                (None, Some(built)) => {
-                    unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, col.nullable || !built.non_null)
-                }
-                // A WITH query's SEARCH or CYCLE column of rows.
-                _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
-                _ => {
+                None => {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
@@ -1407,6 +1406,75 @@ impl<'a> Engine<'a> {
             }
         }
         Some(out)
+    }
+
+    /// Per column of `sql`, described as `described`, its type where what the statement builds
+    /// settles it ([`Shaped`]): the JSON its own constructors build, the fields of a whole row of no
+    /// type the catalog has or of an array of rows, the JSON or the rows it reads straight from a
+    /// WITH query or a derived table, and a WITH query's SEARCH or CYCLE column of rows. `None`
+    /// where the describe's type stands.
+    fn shaped_columns(&self, sql: &str, described: &[DescribedColumn], trust: &Trust, columns: &Columns, params: &[u32]) -> Lazy<Vec<Option<Shaped>>> {
+        let (plan, outcomes) = self.shapes(sql, trust, columns, params, MAX_ITEM_DEPTH)?;
+        let open = described.iter().any(|c| !plan.columns.iter().any(|(n, _)| *n == c.name));
+        let built = if open { self.built(sql, described, trust, columns, params, MAX_ITEM_DEPTH)? } else { vec![None; described.len()] };
+        let mut shape_oids = Vec::new();
+        for (_, shape) in &plan.columns {
+            jsonshape::oids(shape, &outcomes, params, &mut shape_oids);
+        }
+        self.types(&shape_oids)?;
+        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(described), trust)?;
+
+        let record = |c: &DescribedColumn| c.type_oid == crate::pgtypes::oid::RECORD || c.type_oid == crate::pgtypes::oid::RECORD_ARRAY;
+        let generated = if described.iter().any(record) { self.generated_rows(sql, described.len(), trust)? } else { vec![None; described.len()] };
+        let registry = self.registry.borrow();
+        let mut shapes_used: HashSet<usize> = HashSet::new();
+        let mut out = Vec::with_capacity(described.len());
+        for (position, (col, built)) in described.iter().zip(&built).enumerate() {
+            let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
+            // A whole row of no type the catalog has, or an array of them, whose shape reads to
+            // the row's fields; else the describe's type stands.
+            let rows_of_table = |c: &DescribedColumn| registry.get(c.type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite));
+            let row = shape.filter(|_| record(col) || rows_of_table(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, params)).map(|r| jsonshape::Resolved { ty: named_as(r.ty, col.type_oid, &registry), ..r });
+            out.push(match (shape, built) {
+                (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
+                    shapes_used.insert(i);
+                    let resolved = jsonshape::resolve(shape, &outcomes, &registry, params);
+                    // The document under the column's own type's name, `json` or `jsonb`.
+                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
+                    Some(Shaped { ty, nullable: !resolved.non_null, unresolved: resolved.unresolved })
+                }
+                // A whole row of no type the catalog has, or an array of them: the row's fields,
+                // as a probe of its columns reads them.
+                (Some((i, _)), _) if row.is_some() => {
+                    shapes_used.insert(i);
+                    let resolved = row.expect("a row's fields");
+                    Some(Shaped { ty: resolved.ty, nullable: col.nullable && !resolved.non_null, unresolved: resolved.unresolved })
+                }
+                // The item's own result settled whether the column is NULL, an outer join here
+                // included; what it builds is its document.
+                (None, Some(built)) => Some(Shaped { ty: Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, nullable: col.nullable || !built.non_null, unresolved: built.unresolved.clone() }),
+                // A WITH query's SEARCH or CYCLE column of rows.
+                _ if record(col) && generated[position].is_some() => Some(Shaped { ty: generated[position].clone().expect("a generated column's type"), nullable: col.nullable, unresolved: Vec::new() }),
+                _ => None,
+            });
+        }
+        Some(out)
+    }
+
+    /// Ask for the describes the JSON shapes of `sql` read ahead of the rounds that read them: the
+    /// probes that carry no placeholder at once, and once the describe has said what they are pinned
+    /// with, every probe and every probe that settles them, pinned. The shapes are read only after
+    /// the columns are settled, rounds later.
+    fn prewarm_shapes(&self, sql: &str, trust: Option<&Trust>, columns: Option<&Columns>) {
+        for probe in &jsonshape::probes_ahead(sql) {
+            self.prewarm(&probe.sql);
+        }
+        if let (true, Some(trust), Some(columns)) = (self.pinned.get(), trust, columns) {
+            self.prewarmed.borrow_mut().insert(sql.to_string());
+            for probe in jsonshape::plan(sql, Dialect::Postgres, trust, columns).statements() {
+                self.prewarm_probe(&probe.sql, trust);
+            }
+        }
     }
 
     /// The JSON shapes `sql`'s own constructors build, with the describes of the probes they read
@@ -5456,6 +5524,12 @@ mod tests {
     /// text not null check (kind in ('click', 'key')), note text)`, that describes a statement by
     /// its text: `describe` gives each result column's name, type and provenance.
     fn replay_docs(sql: &str, describe: &dyn Fn(&str) -> Vec<RawColumn>) -> Analysis {
+        let analysis = replay_docs_with(describe, &|host| analyze(sql, host));
+        assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
+        analysis
+    }
+
+    fn replay_docs_with<T>(describe: &dyn Fn(&str) -> Vec<RawColumn>, run: &dyn Fn(&Host) -> Lazy<T>) -> T {
         let mut answers: HashMap<String, Answer> = HashMap::new();
         let composite = |oid: u32, name: &str, rel: u32, fields: &[(&str, u32, bool)]| {
             vec![
@@ -5471,9 +5545,8 @@ mod tests {
         ];
         for _ in 0..64 {
             let host = Host::new(&answers);
-            if let Some(analysis) = analyze(sql, &host) {
-                assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
-                return analysis;
+            if let Some(done) = run(&host) {
+                return done;
             }
             for need in host.needs() {
                 match need {
@@ -5570,23 +5643,26 @@ mod tests {
         assert!(aliased_columns("select a.name, (b.addr).* from users a left join users b on true", 3, &width).is_empty());
     }
 
+    /// The describe of the statements [`replay_docs`]'s tables answer for whole rows: the probes
+    /// select the whole row as `a0`, and every other statement has one JSON column.
+    fn whole_rows_describe(sql: &str) -> Vec<RawColumn> {
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
+        if sql.contains(" e AS a0") {
+            vec![column("a0", 90003, 16420, 0)]
+        } else if sql.contains(" p AS a0") {
+            vec![column("a0", 90002, 16410, 0)]
+        } else if sql.contains(" u AS a0") {
+            vec![column("a0", 90001, 16400, 0)]
+        } else if sql.starts_with("SELECT e,") || sql == "SELECT e FROM events e" {
+            vec![column("e", 90003, 16420, 0)]
+        } else {
+            vec![column("rows", 3802, 0, 0)]
+        }
+    }
+
     #[test]
     fn a_tables_whole_row_is_a_row_unless_an_outer_join_nulls_it() {
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
-        // The probes select the whole row as `a0`; the statement itself has one JSON column.
-        let describe = |sql: &str| -> Vec<RawColumn> {
-            if sql.contains(" e AS a0") {
-                vec![column("a0", 90003, 16420, 0)]
-            } else if sql.contains(" p AS a0") {
-                vec![column("a0", 90002, 16410, 0)]
-            } else if sql.contains(" u AS a0") {
-                vec![column("a0", 90001, 16400, 0)]
-            } else if sql.starts_with("SELECT e,") || sql == "SELECT e FROM events e" {
-                vec![column("e", 90003, 16420, 0)]
-            } else {
-                vec![column("rows", 3802, 0, 0)]
-            }
-        };
+        let describe = whole_rows_describe;
         let items = |sql: &str| -> (Type, bool) {
             let a = replay_docs(sql, &describe);
             match jsonshape::content(a.columns[0].ty.clone()).kind {
@@ -5612,6 +5688,26 @@ mod tests {
         assert!(!a.columns[0].nullable);
         let TyKind::Record(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
         assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+    }
+
+    #[test]
+    fn a_host_that_renders_its_own_columns_reads_what_the_statement_builds_as_analyze_does() {
+        for (sql, built) in [
+            ("SELECT jsonb_agg(e ORDER BY e.id) AS rows FROM events e", true),
+            ("SELECT jsonb_agg(p) AS rows FROM users u LEFT JOIN posts p ON p.user_id = u.id", true),
+            ("SELECT e FROM events e", false),
+        ] {
+            let analysis = replay_docs(sql, &whole_rows_describe);
+            let shaped = replay_docs_with(&whole_rows_describe, &|host| shaped(sql, host)).expect("a statement the server describes");
+            assert_eq!(shaped.columns.len(), analysis.columns.len(), "{sql}");
+            for (shaped, column) in shaped.columns.iter().zip(&analysis.columns) {
+                match shaped {
+                    Some(shaped) => assert_eq!((&shaped.ty, shaped.nullable), (&column.ty, column.nullable), "{sql}"),
+                    None => assert!(!built, "{sql}: the statement builds {}", column.name),
+                }
+            }
+            assert_eq!(shaped.columns.iter().any(Option::is_some), built, "{sql}");
+        }
     }
 
     #[test]
