@@ -47,12 +47,18 @@ pub const MAX_MACRO_LEVELS: usize = 6;
 /// The functions that move a sequence, or run SQL they are given as text, which may.
 const MOVES_A_SEQUENCE: [&str; 4] = ["nextval", "setval", "query", "query_table"];
 
-/// Whether the statement is certain to write nothing: a SELECT that moves no sequence, itself or
-/// through a view or a macro, however deep. A view counts wherever its name stands as a word, a
+/// Whether the statement is certain to write nothing: a SELECT with no WITH query that writes,
+/// that moves no sequence, itself or through a view or a macro, however deep. A view counts wherever its name stands as a word, a
 /// column or an alias of that name too, which can only say a read may write.
 pub fn read_only(analysis: &Analysis, host: &Host) -> Lazy<bool> {
     let sql = &analysis.rewritten.sql;
     if analysis.kind != Some(reylo_engine_core::types::StatementKind::Select) {
+        return Some(false);
+    }
+    // A SELECT whose WITH query inserts, updates, deletes or merges writes as that query does. By
+    // the keyword wherever it stands as a word, a column of that name too, which can only say a
+    // read may write, and holds for a statement the engine's parser does not read.
+    if reylo_engine_core::errors::has_word(sql, Dialect::Duckdb, &["insert", "update", "delete", "merge"]) {
         return Some(false);
     }
     let Ok(rows) = host.query(DEFINITIONS_QUERY, Vec::new(), Scope::Session)? else { return Some(false) };

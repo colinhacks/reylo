@@ -505,21 +505,30 @@ fn tables(statement: &Statement) -> reylo_engine_core::fresh::Tables {
         }
         ControlFlow::<()>::Continue(())
     });
-    let write: Vec<String> = match write_of(statement).as_ref() {
-        Statement::Insert(i) => match &i.table {
-            TableObject::TableName(name) => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        Statement::Update(u) => match &u.table.relation {
-            TableFactor::Table { name, .. } => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        Statement::Delete(d) => match delete_table(d).map(|t| &t.relation) {
-            Some(TableFactor::Table { name, .. }) => vec![nulls::parts(name).join(".")],
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    };
+    // The statement's own write, and that of each WITH query, however deep: a write there runs
+    // with the SELECT that reads it.
+    let mut write: Vec<String> = Vec::new();
+    let _ = sqlparser::ast::visit_statements(statement, |s| {
+        let target = match s {
+            Statement::Insert(i) => match &i.table {
+                TableObject::TableName(name) => Some(name),
+                _ => None,
+            },
+            Statement::Update(u) => match &u.table.relation {
+                TableFactor::Table { name, .. } => Some(name),
+                _ => None,
+            },
+            Statement::Delete(d) => match delete_table(d).map(|t| &t.relation) {
+                Some(TableFactor::Table { name, .. }) => Some(name),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(name) = target.map(|name| nulls::parts(name).join(".")).filter(|name| !write.contains(name)) {
+            write.push(name);
+        }
+        ControlFlow::<()>::Continue(())
+    });
     let mut read: Vec<String> = Vec::new();
     for parts in relations(statement) {
         let name = parts.join(".");
@@ -705,6 +714,9 @@ mod tests {
         assert_eq!(cardinality(&insert, &ctx).0, "many");
         assert_eq!(outputs(&insert, &ctx).unwrap().iter().map(|o| o.not_null).collect::<Vec<_>>(), [true]);
         assert_eq!(tables(&parse("with x as (select 1 as id) insert into teams select id from x").unwrap()).write, ["teams"]);
+        // A WITH query's write is the statement's, and its target no table the statement reads.
+        let through = tables(&parse("with gone as (delete from teams where id = 1 returning id), made as (insert into logs values (1) returning id) select count(*) from gone, made, users").unwrap());
+        assert_eq!((through.write, through.read), (vec!["teams".to_string(), "logs".to_string()], vec!["users".to_string()]));
         let update = shaped("with x as (select 1 as id) update teams set id = 2 from x where teams.id = 1 returning id");
         assert!(matches!(update, Statement::Update(_)));
         assert_eq!(cardinality(&update, &ctx).0, "many");
