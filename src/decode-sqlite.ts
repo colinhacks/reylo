@@ -30,7 +30,7 @@
 //   fail with SQLITE_BUSY. An INTEGER the driver already rounded (sqlite3, sqlite, D1, Bun.SQL
 //   without safeIntegers) is refused in an INTEGER or BIGINT column, where a number past 2^53 can
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
-import { rowOf } from "./row.ts";
+import { lastOfEach, namesInResult, rowOf } from "./row.ts";
 import { bigInteger, coerce, DecodeError, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
 
 type AnyClient = Record<string, any>;
@@ -91,19 +91,20 @@ export function runSyncSqlite(db: AnyClient, text: string, values: unknown[], co
   }
 }
 
-/** Rows read as arrays, as objects: under the names the module declares where it has them for every value, else under the driver's. */
+/** Rows read as arrays, as objects: under the names the module declares where the result is still its columns (`namesInResult`), else under the driver's. */
 function byPosition(rows: unknown[][], columns: Columns | undefined, driver: () => string[]): unknown[] {
-  const build = rowOf(columns?.length === rows[0]!.length ? columns.map(([name]) => name) : driver());
+  const build = rowOf(columns?.length === rows[0]!.length ? namesInResult(columns.map(([name]) => name), driver()) : driver());
   return rows.map(build);
 }
 
 /**
- * libSQL's rows by position, where the module declares their columns. A libSQL row holds each value under its index as well as its name, and the index comes first: `select 1, 2 + 3` has a column named `1`, and `row["1"]` is the second column's 5.
+ * libSQL's rows by position, where the module declares their columns and the result is still theirs (`namesInResult`, by the `driver`'s names). A libSQL row holds each value under its index as well as its name, and the index comes first: `select 1, 2 + 3` has a column named `1`, and `row["1"]` is the second column's 5.
  */
-export function libsqlRows(rows: unknown[], columns: Columns | undefined): unknown[] {
+export function libsqlRows(rows: unknown[], columns: Columns | undefined, driver?: readonly string[]): unknown[] {
   const n = columns?.length;
   if (!n || !rows.length || (rows[0] as { length?: unknown }).length !== n) return rows;
-  const build = rowOf(columns!.map(([name]) => name));
+  const declared = columns!.map(([name]) => name);
+  const build = rowOf(driver ? namesInResult(declared, driver) : declared);
   return rows.map((row) => build(row as ArrayLike<unknown> as readonly unknown[]));
 }
 
@@ -271,7 +272,8 @@ export function normalize(rows: unknown[], columns: Columns | undefined, { exact
   if (!Array.isArray(rows) || !rows.length) return Array.isArray(rows) ? rows : [];
   // sqlite3 and the sqlite wrapper assign each name to the row they build, with no way to read by position, so the value of this column is gone. `row.__proto__` would read Object.prototype.
   if (hasProto(columns) && !Object.hasOwn(rows[0] as object, "__proto__")) throw new DecodeError(`This client cannot return a column named __proto__: it builds each row by assigning each name, which sets the object's prototype and loses the value. Give the column an alias in the statement.`);
-  const plans = (columns ? [...columns] : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
+  // The last column of each name, whose value a row keeps.
+  const plans = (columns ? lastOfEach(columns) : Object.keys(rows[0] as object).map((name) => [name, "unknown"] as const)).map(([name, kind]) => plan(name, kind, exact));
   const n = plans.length;
   for (const row of rows as Record<string, unknown>[]) {
     if (Object.getPrototypeOf(row) === null) Object.setPrototypeOf(row, Object.prototype);

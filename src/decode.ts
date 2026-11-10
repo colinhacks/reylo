@@ -27,7 +27,7 @@
 // row, and a built-in catalog table's row type is below 10000 too.
 import { coerce, DecodeError, elementKind, isRowKind, scalarKind, textDecoder, utf8, type Columns, type Decoder, type Kind } from "./values.ts";
 import { lexPlaceholders } from "./lex.ts";
-import { rowOf, type RowBuilder } from "./row.ts";
+import { lastOfEach, rowOf, type RowBuilder } from "./row.ts";
 
 type AnyClient = Record<string, any>;
 type Field = { name: string; oid: number };
@@ -558,8 +558,10 @@ function slonikRows(rows: Record<string, unknown>[], fields: { name: string; dat
       const b = builtin(f.dataTypeId);
       return b ? ([f.name, b.kind, b.delim] as const) : ([f.name, "text"] as const);
     });
+  // The last column of each name, whose value the row holds: decoded once, by that column's kind.
+  const kept = lastOfEach(work);
   for (const row of rows) {
-    for (const [name, kind, delim] of work) row[name] = slonikValue(kind, row[name], name, delim);
+    for (const [name, kind, delim] of kept) row[name] = slonikValue(kind, row[name], name, delim);
   }
   return rows;
 }

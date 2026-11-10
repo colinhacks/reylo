@@ -22,20 +22,28 @@
 # its submodule names (tag 18.1.0, the grammar of Postgres 18.6), each fetched from GitHub by commit
 # and checked against a SHA-256, and the patch from `postgres/vendor/` applied into
 # `postgres/.patched/pg_query`. SQLite is the 3.53.4 amalgamation fetched into `sqlite/.sqlite/`
-# with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
+# and checked against a SHA-256, with the hooks of `sqlite/csrc/patch-sqlite.py` applied. tokio-postgres 0.7.18 is fetched from
 # crates.io into `wasip2/.patched/` with the patch beside it, which builds its runtime for wasip2.
 # `./build.sh --prepare` stops after that, which is what a native build of the binary needs, and
 # what any cargo command in the workspace needs first (the workspace `[patch]` points at the copy).
 set -euo pipefail
 cd "$(dirname "$0")"
 
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
 SQLITE_ZIP="sqlite-amalgamation-3530400.zip"
 SQLITE_URL="https://sqlite.org/2026/$SQLITE_ZIP"
+SQLITE_SHA256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d
 SQLITE=sqlite/.sqlite
 if [ ! -f "$SQLITE/sqlite-amalgamation-3530400/sqlite3.c" ]; then
   mkdir -p "$SQLITE"
   echo "fetching $SQLITE_URL"
   curl -fsSL -o "$SQLITE/$SQLITE_ZIP" "$SQLITE_URL"
+  if [ "$(sha256 "$SQLITE/$SQLITE_ZIP")" != "$SQLITE_SHA256" ]; then
+    echo "$SQLITE_ZIP: the archive's SHA-256 is $(sha256 "$SQLITE/$SQLITE_ZIP"), expected $SQLITE_SHA256" >&2
+    exit 1
+  fi
   (cd "$SQLITE" && unzip -q -o "$SQLITE_ZIP")
 fi
 if [ ! -f "$SQLITE/sqlite3-patched.c" ] || [ sqlite/csrc/patch-sqlite.py -nt "$SQLITE/sqlite3-patched.c" ]; then
@@ -44,9 +52,6 @@ fi
 . postgres/vendor/pg_query-source.sh
 PG_QUERY_PATCH="postgres/vendor/pg_query-18.0.0.patch"
 PATCHED=postgres/.patched
-sha256() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
-}
 # What the copy was made from: a change of either commit or of the patch makes it again.
 PG_QUERY_SOURCE="$PG_QUERY_COMMIT $LIBPG_QUERY_COMMIT $(sha256 "$PG_QUERY_PATCH")"
 # tokio-postgres reads wasm32 as a browser, which has no sockets, and resolves host names on a

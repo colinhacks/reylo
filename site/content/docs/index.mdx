@@ -78,9 +78,9 @@ create table users (
   id int auto_increment primary key,          -- at most one row per id
   name text not null,                         -- name: string
   email varchar(255) unique,                  -- email: string | null
-  role enum('admin', 'member')                -- role: string
+  role enum('admin', 'member')                -- role: "admin" | "member"
     not null default 'member',
-  tags json not null default (json_array()),  -- tags: unknown
+  tags json not null default (json_array()),  -- tags: Json
   created_at datetime                         -- created_at: string, UTC
     not null default (utc_timestamp())
 );

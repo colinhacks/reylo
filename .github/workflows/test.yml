@@ -149,7 +149,7 @@ jobs:
         run: sccache --show-stats
 
   test:
-    # This file lives in the private working repository too, which `scripts/publish/publish.ts` copies it from; CI runs in the public one only.
+    # A private copy of this repository runs none of these jobs.
     if: ${{ !github.event.repository.private }}
     name: Typecheck, test and build on Node 24
     needs: binary
