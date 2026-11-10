@@ -319,6 +319,8 @@ macro_rules! for_each_dialect {
 }
 
 for_each_dialect!(
+    dev_that_fails_on_a_locked_migration_keeps_the_lock,
+    dev_that_fails_on_a_draft_locks_the_drafts_that_ran,
     the_undo_of_a_change_by_hand_leaves_what_db_push_made,
     migrate_lock_refuses_a_lock_that_exists,
     lint_refuses_a_lock_with_no_checksum_of_schema_sql,
@@ -453,6 +455,42 @@ async fn lint_refuses_a_lock_with_no_checksum_of_schema_sql(mut p: P) {
     p.output();
     assert_eq!(p.lint().await, 1);
     assert_has!(p.output(), r"✗ \S*reylo-lock\.yaml holds no checksum of \S*schema\.sql");
+}
+
+async fn dev_that_fails_on_a_locked_migration_keeps_the_lock(mut p: P) {
+    let int = p.t.int;
+    p.linear();
+    p.file("20261027100000_a.sql", &format!("create table a (id {int} primary key);"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec("insert into a (id) values (1)").await;
+    // Main's lines, merged in: a2 runs, b then fails on this database's rows, and c comes after it.
+    p.file("20261027105000_a2.sql", &format!("create table a2 (id {int});"));
+    p.file("20261027110000_b.sql", "insert into a (id) values (1);");
+    p.file("20261027120000_c.sql", &format!("create table c (id {int});"));
+    p.lock(&["20261027100000_a.sql", "20261027105000_a2.sql", "20261027110000_b.sql", "20261027120000_c.sql"]);
+    // And a draft of this branch's own, so that the run goes through the shadows.
+    p.file("20261027130000_d.sql", &format!("create table d (id {int});"));
+    let lock = std::fs::read_to_string(p.dir.join(reylo_migrate::lock::LOCK)).unwrap();
+    p.output();
+    assert_eq!(p.dev().await, 1);
+    assert_has!(p.output(), r"✓ 20261027105000_a2\.sql +applied[\s\S]*✗ 20261027110000_b\.sql +failed");
+    assert_eq!(std::fs::read_to_string(p.dir.join(reylo_migrate::lock::LOCK)).unwrap(), lock, "the lock keeps the lines every database runs");
+}
+
+async fn dev_that_fails_on_a_draft_locks_the_drafts_that_ran(mut p: P) {
+    let int = p.t.int;
+    p.linear();
+    p.file("20261027100000_a.sql", &format!("create table a (id {int} primary key);"));
+    assert_eq!(p.dev().await, 0, "{}", p.peek());
+    p.exec("insert into a (id) values (1)").await;
+    // This branch's two: x runs, then y fails on this database's rows.
+    p.file("20261027110000_x.sql", &format!("create table x (id {int});"));
+    p.file("20261027120000_y.sql", "insert into a (id) values (1);");
+    p.output();
+    assert_eq!(p.dev().await, 1);
+    let out = p.output();
+    assert_has!(&out, r"✓ 20261027110000_x\.sql +applied[\s\S]*✗ 20261027120000_y\.sql +failed[\s\S]*✓ Wrote \S*reylo-lock\.yaml, through 20261027110000_x\.sql");
+    assert_eq!(p.locked(), ["20261027100000_a.sql", "20261027110000_x.sql"]);
 }
 
 async fn dev_relocks_an_edited_locked_migration_where_every_pair_agreed(mut p: P) {

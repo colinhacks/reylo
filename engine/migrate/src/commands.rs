@@ -3522,9 +3522,20 @@ async fn dev_on(db: &mut Db, server: &mut Server, swept: usize, opts: &Options, 
     let result = dev_in_shadows(&mut shadows, db, opts, &files, &applied, agree, &live, heading, log).await;
     let result = match result {
         Ok(code) => async {
-            // A run that failed part of the way still locks what ran before it failed.
-            let ran = |h: &[HistoryRow]| h.iter().filter(|r| r.applied).map(|r| (r.name.clone(), r.sql.clone())).collect::<Vec<_>>();
-            if code == 0 || ran(&read_history(db).await?) != ran(&history) {
+            // A run that failed part of the way locks what ran before it failed, where that only adds
+            // to the lock: every line it had ran here, and this branch's own migrations after them.
+            // Where it failed before a line the lock already had, the lock stays as it was, since its
+            // lines are what every database runs.
+            let adds = code != 0
+                && match lock::read(&opts.lock) {
+                    lock::State::Lock(l) => {
+                        let ran: Vec<String> = read_history(db).await?.into_iter().filter(|r| r.applied).map(|r| r.name).collect();
+                        let had = l.names();
+                        ran.len() > had.len() && ran.starts_with(&had)
+                    }
+                    _ => false,
+                };
+            if code == 0 || adds {
                 relock(&mut shadows, db, opts, &files, schema_sql.as_deref(), &notes, code == 0, log).await?;
             }
             if code == 0 {
