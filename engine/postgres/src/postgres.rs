@@ -2286,6 +2286,11 @@ impl<'a> Engine<'a> {
             return None;
         }
         let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone().filter(|_| queries[item].nulled), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
+        // A column the item did not settle, of an item an outer join nulls by its place: NULL
+        // wherever the join finds no row, whatever it reads. By its provenance it may be a column
+        // of a relation the join does not null, as a LATERAL subquery's that selects a column of
+        // the table before it (`left join lateral (select o.customer …) x`).
+        let unsettled = |item: usize, name: &str| (queries[item].nulled && queries[item].with.is_none()).then(|| (None, ItemColumn { name: name.to_string(), nullable: true, document: None, values: None }));
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
@@ -2294,7 +2299,7 @@ impl<'a> Engine<'a> {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (named.next(), named.next()) {
                         (Some(found), None) => Some(answer(item, found)),
-                        _ => None,
+                        _ => unsettled(item, column.as_str()),
                     });
                 }
                 // A bare name is the item's where no table beside it has a column of the name,
@@ -2306,7 +2311,7 @@ impl<'a> Engine<'a> {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (resolved, named.next(), named.next()) {
                         (true, Some(found), None) => Some(answer(item, found)),
-                        _ => None,
+                        _ => unsettled(item, column.as_str()),
                     });
                 }
                 // A WITH query's SEARCH and CYCLE columns follow its statement's, and say nothing.
@@ -2326,11 +2331,19 @@ impl<'a> Engine<'a> {
                                 let mut named = columns.iter().filter(|c| c.name == *name);
                                 out.push(match (shared, named.next(), named.next()) {
                                     (false, Some(found), None) => Some(answer(item, found)),
-                                    _ => None,
+                                    _ => unsettled(item, *name),
                                 });
                             }
                         }
-                        None => out.extend(std::iter::repeat_n(None, width)),
+                        None => match item {
+                            Some(item) => {
+                                let at = out.len();
+                                let span: Vec<&str> = names[at..].iter().take(width).copied().collect();
+                                out.extend(span.iter().map(|name| unsettled(item, *name)));
+                                out.extend(std::iter::repeat_n(None, width - span.len()));
+                            }
+                            None => out.extend(std::iter::repeat_n(None, width)),
+                        },
                     },
                 },
                 ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
