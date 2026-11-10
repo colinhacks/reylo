@@ -922,6 +922,9 @@ char *reylo_sqlite_analyze(
 
 void reylo_sqlite_free(char *p){ sqlite3_free(p); }
 
+/* The version of this SQLite, as "3.53.4": the one that prepares every statement the engine types. */
+const char *reylo_sqlite_version(void){ return sqlite3_libversion(); }
+
 #ifdef REYLO_SQLITE_MAIN
 /* reylo_sqlite_check <database file> <statements file>: the DDL of the file, one JSON line per statement. */
 int main(int argc, char **argv){

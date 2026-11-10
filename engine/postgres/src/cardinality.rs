@@ -306,8 +306,9 @@ pub const TRIGGER_ROW_UPDATE: i32 = 16;
 
 /// `$1` is `text[]` of relation names as the statement writes them, `$2` how many: one row per relation a write
 /// to which may return no row or many, `(the name, the events that may skip the row, the events a
-/// rule rewrites, and per BEFORE row trigger written in PL/pgSQL the events it fires on and its
-/// function's body, in two arrays)`, each event as tgtype bits. An event may skip the row where the
+/// rule rewrites, per BEFORE row trigger written in PL/pgSQL the events it fires on and its
+/// function's body, in two arrays, and the events a rule runs its actions INSTEAD of the
+/// statement for, whose RETURNING is then the rule's own)`, each event as tgtype bits. An event may skip the row where the
 /// relation, or a partition or an inheritance child a row is routed to, has an enabled row-level
 /// trigger that runs BEFORE the change or INSTEAD of it (internal triggers, the foreign keys', run
 /// AFTER and skip nothing), or is a foreign table, whose wrapper may write nothing; a PL/pgSQL
@@ -343,10 +344,14 @@ pub const TRIGGERS_QUERY: &str = concat!(
             WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
           WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
             AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\"), 0)) AS rewritten, \
+      coalesce((SELECT pg_catalog.bit_or(CASE WHEN w.ev_type OPERATOR(pg_catalog.=) '2'::pg_catalog.\"char\" THEN 16 \
+            WHEN w.ev_type OPERATOR(pg_catalog.=) '3'::pg_catalog.\"char\" THEN 4 ELSE 8 END) FROM pg_catalog.pg_rewrite w \
+          WHERE w.ev_class OPERATOR(pg_catalog.=) r.root AND w.ev_type OPERATOR(pg_catalog.=) ANY ('{2,3,4}'::pg_catalog.\"char\"[]) \
+            AND w.ev_enabled OPERATOR(pg_catalog.<>) 'D'::pg_catalog.\"char\" AND w.is_instead), 0) AS instead, \
       ARRAY(SELECT x.events::pg_catalog.int8 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS events, \
       ARRAY(SELECT x.prosrc FROM readable x WHERE x.root OPERATOR(pg_catalog.=) r.root ORDER BY x.id) AS bodies \
       FROM rels r) \
-    SELECT f.name, f.skipping, f.rewritten, f.events, f.bodies FROM found f \
+    SELECT f.name, f.skipping, f.rewritten, f.events, f.bodies, f.instead FROM found f \
     WHERE f.skipping OPERATOR(pg_catalog.<>) 0 OR f.rewritten OPERATOR(pg_catalog.<>) 0 OR EXISTS (SELECT 1 FROM readable x WHERE x.root OPERATOR(pg_catalog.=) f.root)"
 );
 

@@ -172,6 +172,9 @@ pub struct Out {
     pub comment: Option<String>,
     /// For `array(select c from … c)`, an array of the whole rows of an item no outer join pads: the rows' columns, its fields.
     pub rows: Option<Vec<Out>>,
+    /// Whether its type is certainly no JSON and no VARIANT ([`plain`]): a JSON `null` is a value
+    /// until a cast to another type makes NULL of it.
+    pub plain: bool,
 }
 
 /// The WITH queries in scope, innermost last: each one's name, lowercased, and its columns.
@@ -194,6 +197,9 @@ struct Scope {
     rejected: HashSet<(usize, usize)>,
     /// Grouped by ROLLUP, CUBE or GROUPING SETS, which make a key NULL in the rows that total it.
     grouping_sets: bool,
+    /// One of those keys is no column of the FROM: an expression, a literal, a position or an
+    /// item's alias, so any select item may be the key, whatever it is built of.
+    expression_keys: bool,
     /// Grouped by keys (GROUP BY with any key, or ALL), so that each group has a row.
     grouped: bool,
     /// The WITH queries in scope.
@@ -262,7 +268,7 @@ impl Scope {
 
     fn column(&self, (i, j): (usize, usize)) -> Out {
         let rel = &self.rels[i];
-        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None });
+        let c = rel.columns.as_ref().map(|cs| cs[j].clone()).unwrap_or(Out { name: None, not_null: false, comment: None, rows: None, plain: false });
         let not_null = !self.grouping_sets && (self.rejected.contains(&(i, j)) || (!rel.padded && c.not_null));
         Out { not_null, ..c }
     }
@@ -326,6 +332,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                         comment: None,
                         name: a.name,
                         rows: None,
+                        plain: a.plain && b.plain,
                     })
                     .collect(),
             )
@@ -337,7 +344,7 @@ fn set_expr(body: &SetExpr, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
                 return None;
             }
             // DuckDB names a VALUES list's columns col0, col1, …
-            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None }).collect())
+            Some((0..width).map(|k| Out { name: Some(format!("col{k}")), not_null: values.rows.iter().all(|row| not_null(&row[k], &scope, ctx)), comment: None, rows: None, plain: values.rows.iter().all(|row| plain(&row[k], &scope, ctx)) }).collect())
         }
         _ => None,
     }
@@ -356,6 +363,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
     });
     scope.grouped = g.keyed;
     scope.grouping_sets = g.sets;
+    scope.expression_keys = g.expressions;
     // `FROM t` alone selects every column.
     let star = [SelectItem::Wildcard(Default::default())];
     let items = if s.projection.is_empty() { &star[..] } else { &s.projection[..] };
@@ -366,7 +374,7 @@ fn select(s: &Select, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Out>> {
 /// called `alias` in the statement: its NOT NULL columns are not NULL.
 pub fn returning(items: &[SelectItem], name: &[String], alias: Option<String>, ctx: &Ctx) -> Option<Vec<Out>> {
     let table = ctx.catalog.table(name)?;
-    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None }).collect();
+    let columns = table.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty) }).collect();
     let scope = Scope { rels: vec![Rel { name: alias.or_else(|| name.last().cloned()), columns: Some(columns), padded: false }], ..Scope::default() };
     projection(items, &scope, ctx)
 }
@@ -421,7 +429,7 @@ fn expand(scope: &Scope, i: usize, options: &sqlparser::ast::WildcardAdditionalO
         }
         let replaced = options.opt_replace.as_ref().and_then(|r| r.items.iter().find(|item| item.column_name.value.eq_ignore_ascii_case(&name)));
         match replaced {
-            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None }),
+            Some(item) => out.push(Out { name: Some(name), not_null: not_null(&item.expr, scope, ctx), comment: None, rows: None, plain: plain(&item.expr, scope, ctx) }),
             None => out.push(Out { name: Some(name), ..scope.column((i, j)) }),
         }
     }
@@ -444,7 +452,20 @@ fn column_of(e: &Expr, alias: Option<&str>, scope: &Scope, ctx: &Ctx) -> Out {
     let name = alias.map(String::from).or(own_name);
     match read {
         Some(at) => Out { name, ..scope.column(at) },
-        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx) },
+        // Under grouping sets with a key that is no column, the item may be that key, NULL in
+        // the rows that total it: `case … end as bucket … group by rollup (bucket)`. A count
+        // is no key, and neither is `grouping`.
+        None if scope.expression_keys => Out { name, not_null: counts(e), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx) },
+        None => Out { name, not_null: not_null(e, scope, ctx), comment: None, rows: array_of_rows(e, scope, ctx), plain: plain(e, scope, ctx) },
+    }
+}
+
+/// Whether the expression is, whole, a count or a `grouping` call: never NULL, and no key of a GROUP BY.
+fn counts(e: &Expr) -> bool {
+    match e {
+        Expr::Nested(inner) => counts(inner),
+        Expr::Function(f) => builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || matches!(name.as_str(), "grouping" | "grouping_id")),
+        _ => false,
     }
 }
 
@@ -471,6 +492,8 @@ struct Grouping {
     keyed: bool,
     /// Grouped by ROLLUP, CUBE or GROUPING SETS.
     sets: bool,
+    /// One of those sets has a key `column` does not say is a column.
+    expressions: bool,
     /// Not grouped at all: an aggregate over every row, which returns one row even over none.
     ungrouped: bool,
 }
@@ -499,13 +522,25 @@ fn grouping(s: &Select, column: &dyn Fn(&Expr) -> bool) -> Grouping {
                     }
                 }
             }
-            Grouping { keyed, sets: !modifiers.is_empty(), ungrouped: ungrouped && modifiers.is_empty() }
+            // Under ALL, each item without an aggregate is a key.
+            Grouping { keyed, sets: !modifiers.is_empty(), expressions: !modifiers.is_empty(), ungrouped: ungrouped && modifiers.is_empty() }
         }
         GroupByExpr::Expressions(exprs, modifiers) => {
             let sets = !modifiers.is_empty() || exprs.iter().any(|e| matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_)));
             // `GROUP BY ()` is the one empty grouping set: no grouping at all.
             let keys = exprs.iter().any(|e| !matches!(e, Expr::Tuple(t) if t.is_empty()));
-            Grouping { keyed: keys, sets, ungrouped: !keys && !sets }
+            // Whether every key under `e` is a column. A key beside the sets (`group by a,
+            // rollup (b)`) is in every set, and never NULL for it.
+            fn columns(e: &Expr, column: &dyn Fn(&Expr) -> bool) -> bool {
+                match e {
+                    Expr::Rollup(sets) | Expr::Cube(sets) | Expr::GroupingSets(sets) => sets.iter().flatten().all(|k| columns(k, column)),
+                    Expr::Tuple(items) => items.iter().all(|k| columns(k, column)),
+                    Expr::Nested(inner) => columns(inner, column),
+                    _ => column(e),
+                }
+            }
+            let expressions = exprs.iter().any(|e| (!modifiers.is_empty() || matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_))) && !columns(e, column));
+            Grouping { keyed: keys, sets, expressions, ungrouped: !keys && !sets }
         }
     }
 }
@@ -650,7 +685,7 @@ fn factor(f: &TableFactor, ctx: &Ctx, ctes: &Ctes) -> Option<Vec<Rel>> {
             };
             let columns = match cte {
                 Some(columns) => Some(columns),
-                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None }).collect()),
+                None => ctx.catalog.table(&parts).map(|t| t.columns.iter().map(|c| Out { name: Some(c.name.clone()), not_null: c.not_null, comment: c.comment.clone(), rows: None, plain: plain_type(&c.ty) }).collect()),
             };
             let columns = match (columns, alias) {
                 (Some(cs), Some(alias)) => Some(renamed(cs, alias)),
@@ -826,7 +861,8 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
         },
         Expr::TypedString(_) | Expr::Interval(_) => true,
         Expr::Nested(inner) | Expr::Collate { expr: inner, .. } => nn(inner),
-        Expr::Cast { kind, expr, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && nn(expr),
+        // A JSON `null` is a value, and its cast to any type but text or JSON is NULL.
+        Expr::Cast { kind, expr, data_type, .. } => matches!(kind, CastKind::Cast | CastKind::DoubleColon) && nn(expr) && (plain(expr, scope, ctx) || keeps_json_null(&data_type.to_string())),
         Expr::UnaryOp { expr, .. } => nn(expr),
         Expr::BinaryOp { left, op, right } => match op {
             // A division by zero is NULL where the session says so (`error_on_division_by_zero`).
@@ -866,6 +902,60 @@ fn not_null(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
             scope.resolve(&[Ident::new(f.name.to_string())]).is_some_and(|at| scope.column(at).not_null)
         }
         Expr::Function(f) => function(f, scope, ctx),
+        _ => false,
+    }
+}
+
+/// The built-in types that are no JSON and no VARIANT, by the first word DuckDB or a statement
+/// writes each with. A name that is none of them may stand for JSON (`create type doc as json`).
+const PLAIN_TYPES: &[&str] = &[
+    "BOOLEAN", "BOOL", "LOGICAL", "TINYINT", "INT1", "SMALLINT", "INT2", "SHORT", "INTEGER", "INT", "INT4", "SIGNED", "BIGINT", "INT8", "LONG", "HUGEINT", "UTINYINT", "USMALLINT", "UINTEGER", "UBIGINT",
+    "UHUGEINT", "FLOAT", "FLOAT4", "REAL", "DOUBLE", "FLOAT8", "DECIMAL", "NUMERIC", "DEC", "VARCHAR", "CHAR", "BPCHAR", "CHARACTER", "NVARCHAR", "TEXT", "STRING", "BLOB", "BYTEA", "BINARY", "VARBINARY", "BIT",
+    "BITSTRING", "DATE", "TIME", "TIMETZ", "TIMESTAMP", "TIMESTAMPTZ", "DATETIME", "TIMESTAMP_S", "TIMESTAMP_MS", "TIMESTAMP_NS", "TIMESTAMP_US", "INTERVAL", "UUID", "BIGNUM", "VARINT",
+];
+
+/// The types a JSON `null` stays a value under a cast to: text, where it is the word `null`, and JSON.
+const KEEP_JSON_NULL: &[&str] = &["VARCHAR", "CHAR", "BPCHAR", "CHARACTER", "NVARCHAR", "TEXT", "STRING", "JSON"];
+
+fn first_word(ty: &str) -> String {
+    ty.trim().split(['(', ' ', '<']).next().unwrap_or_default().to_ascii_uppercase()
+}
+
+fn keeps_json_null(ty: &str) -> bool {
+    !ty.trim_end().ends_with(']') && KEEP_JSON_NULL.contains(&first_word(ty).as_str())
+}
+
+/// Whether a type, as DuckDB or the statement writes it, is certainly no JSON and no VARIANT: a
+/// built-in scalar type, an enum, or a list, a struct or a map, whose cast reads its elements one
+/// by one and stays a value itself.
+fn plain_type(ty: &str) -> bool {
+    let word = first_word(ty);
+    ty.trim_end().ends_with(']') || ["STRUCT", "MAP", "ENUM"].contains(&word.as_str()) || PLAIN_TYPES.contains(&word.as_str())
+}
+
+/// Whether an expression's value is certainly no JSON and no VARIANT, by what the statement says
+/// of its type: anything unsure is not. Read only of an expression [`not_null`] can hold not NULL.
+fn plain(e: &Expr, scope: &Scope, ctx: &Ctx) -> bool {
+    let p = |e: &Expr| plain(e, scope, ctx);
+    match e {
+        Expr::Identifier(id) => scope.resolve(std::slice::from_ref(id)).is_some_and(|at| scope.column(at).plain),
+        Expr::CompoundIdentifier(ids) => scope.resolve(ids).is_some_and(|at| scope.column(at).plain),
+        // A parameter under a cast is given as the cast's type.
+        Expr::Value(_) | Expr::TypedString(_) | Expr::Interval(_) => true,
+        Expr::Nested(inner) | Expr::Collate { expr: inner, .. } => p(inner),
+        Expr::Cast { data_type, .. } => plain_type(&data_type.to_string()),
+        // An operator [`not_null`] reads makes a number, a truth value, text or a list, and takes no JSON but `||`, which makes text of it.
+        Expr::UnaryOp { .. } | Expr::BinaryOp { .. } => true,
+        Expr::IsNull(_) | Expr::IsNotNull(_) | Expr::IsTrue(_) | Expr::IsNotTrue(_) | Expr::IsFalse(_) | Expr::IsNotFalse(_) | Expr::IsUnknown(_) | Expr::IsNotUnknown(_) | Expr::IsDistinctFrom(..) | Expr::IsNotDistinctFrom(..) => true,
+        Expr::InList { .. } | Expr::Between { .. } | Expr::Like { .. } | Expr::ILike { .. } | Expr::SimilarTo { .. } | Expr::Exists { .. } => true,
+        Expr::Case { conditions, else_result, .. } => else_result.as_deref().is_none_or(p) && conditions.iter().all(|w| p(&w.result)),
+        Expr::Array(_) | Expr::Struct { .. } | Expr::Dictionary(_) | Expr::Map(_) | Expr::Tuple(_) => true,
+        Expr::Ceil { .. } | Expr::Floor { .. } | Expr::Trim { .. } | Expr::Position { .. } | Expr::Substring { .. } | Expr::AtTimeZone { .. } => true,
+        Expr::Function(f) if matches!(f.args, FunctionArguments::None) && scope.may_name(&f.name.to_string()) => scope.resolve(&[Ident::new(f.name.to_string())]).is_some_and(|at| scope.column(at).plain),
+        // A count and a rank are numbers. Any other function may hand on its argument's type, as
+        // `coalesce`, `min` and `greatest` do, and one that makes JSON (`to_json`) makes JSON's
+        // `null` only of one.
+        Expr::Function(f) => builtin(f).is_some_and(|name| COUNTS.contains(&name.as_str()) || RANKS.contains(&name.as_str()) || name == "ntile" || args(f).is_some_and(|args| args.iter().all(|a| p(a)))),
         _ => false,
     }
 }

@@ -1,0 +1,8 @@
+grouped.sql: many () -> { n: integer, low: integer?, least: bigint, total: integer }
+handed_on.sql: many () -> { a: integer?, b: integer?, c: integer? }
+plain.sql: many (p: integer) -> { a: bigint, b: varchar, c: double, d: bigint, e: varchar, f: bigint, g: varchar, p: integer }
+subquery.sql: many () -> { a: integer?, k: bigint }
+to_scalars.sql: many () -> { a: integer?, b: double?, c: bigint? }
+to_text.sql: many () -> { a: varchar, b: varchar, c: json, d: varchar }
+union.sql: many () -> { a: integer? }
+with_query.sql: many () -> { a: integer?, k: bigint }
