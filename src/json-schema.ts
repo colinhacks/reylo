@@ -222,11 +222,12 @@ function check(schema: Schema, value: unknown, path: string, out: Failure[]): Ev
     }
   }
   if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const o = value as Object_;
     if (s.unevaluatedProperties === false) {
-      for (const key of Object.keys(value)) if (!evaluated.has(key)) return fail(out, `${path}/${pointer(key)}`, "is a key the schema does not allow");
+      for (const key of Object.keys(o)) if (written(o[key]) && !evaluated.has(key)) return fail(out, `${path}/${pointer(key)}`, "is a key the schema does not allow");
     }
     // `true` evaluates every key left, for an enclosing `unevaluatedProperties: false`.
-    if (s.unevaluatedProperties === true) for (const key of Object.keys(value)) evaluated.add(key);
+    if (s.unevaluatedProperties === true) for (const key of Object.keys(o)) if (written(o[key])) evaluated.add(key);
   }
   return evaluated;
 }

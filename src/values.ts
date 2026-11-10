@@ -36,7 +36,6 @@ export type Dialect = "postgres" | "mysql" | "sqlite" | "duckdb";
 export type ScalarKind = "bool" | "int" | "float" | "int8" | "decimal" | "text" | "date" | "timestamp" | "timestamptz" | "interval" | "json" | "bytes" | "vector" | "hstore" | Geometric | "enum" | "set" | "geometry" | "unknown";
 /** Postgres's built-in geometric types, each an object of its fields (`point` is `{ x, y }`). */
 export type Geometric = "point" | "line" | "lseg" | "box" | "path" | "polygon" | "circle";
-/** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 /**
  * What an object holds under a name, for a parameter or a row's member read by its name: its own
  * value, or one it inherits as data, as an instance of a class with getters gives. An inherited
@@ -48,6 +47,7 @@ export function given(from: Record<string, unknown>, name: string): unknown {
   return v !== undefined && (typeof v === "function" || name === "__proto__") && !Object.hasOwn(from, name) ? undefined : v;
 }
 
+/** A column's kind as a module carries it: a scalar kind, `k[]` for an array of `k`, `a|b` for either, `(…)` for a Postgres row value of the fields it lists, `range:k` and `multirange:k` for a range of `k` and a multirange. */
 export type Kind = string;
 /** The output columns a module carries, in the statement's order; an array's `delimiter` where it is not a comma. */
 export type Columns = readonly (readonly [name: string, kind: Kind, delimiter?: string])[];

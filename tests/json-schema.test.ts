@@ -47,6 +47,8 @@ test("a value is checked as the JSON it is stored as: a key whose value is undef
   // The declared type admits `button?: …`, which a caller may spell as undefined.
   assert.equal(validate(click, { x: 1, button: undefined }), undefined);
   assert.equal(validate(click, { x: 1, extra: undefined }), undefined);
+  assert.equal(validate({ type: "object", properties: { x: { type: "integer" } }, unevaluatedProperties: false }, { x: 1, extra: undefined }), undefined);
+  assert.match(validate({ type: "object", properties: { x: { type: "integer" } }, unevaluatedProperties: false }, { x: 1, extra: null })!.message, /is a key the schema does not allow/);
   assert.deepEqual(withDefaults(click, { x: 1, button: undefined }), { x: 1, button: "left" });
   // What JSON leaves out is not there for `required`, `minProperties` or `dependentRequired` either.
   assert.match(validate(click, { x: undefined })!.message, /must have the key "x"/);
