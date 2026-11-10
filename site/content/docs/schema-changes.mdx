@@ -1,28 +1,9 @@
 ---
-title: "Deploying"
+title: Schema changes
+description: "What a query does at run time when your schema has changed since its build, and how to change a column without breaking the build that is live."
 ---
 
-## Deploying
-
-Reylo reads your schema twice: when your app builds, and when each query runs.
-
-### The build [#deploy-build]
-
-A type check or a build needs a database with your migrations applied, since Reylo types each query against it. Name the build's database in [`direct_url`](#direct_url), so that it can differ from the one your app runs on:
-
-```yaml title=".reylo.yaml"
-direct_url: ${DATABASE_URL_UNPOOLED}
-```
-
-A host that builds before it migrates, such as Vercel, can build against a database of its own:
-
-1. Create an empty database.
-2. Run your migrations into it, which also tries each one before it reaches production.
-3. Run the build with [`direct_url`](#direct_url) pointed at that database.
-4. Drop it.
-5. Migrate your deployment's own database.
-
-### The freshness check [#freshness-check]
+<p className="dk-subheader">What a query does when your schema changes after its build</p>
 
 Each query carries the schema it was typed against. Before it runs, `.run()` reads that schema again through your client, and warns if its values could now contradict its types:
 
@@ -36,7 +17,7 @@ reylo: users.email has changed since get_user.sql was built (it was text not nul
 - **When it runs:** on a query's first run in a process, and again once its last check is a minute old. Each check is one catalog query on your client.
 - **Where it can't run:** a role that can't read the catalog checks nothing, and the query runs.
 
-### Changing a column [#deploy-migrations]
+## Changing a column [#deploy-migrations]
 
 Your migration and your new build don't go live at the same moment, so add before you remove: the new column, then the code that uses it, and only then the drop. A migration that only adds leaves a running build alone.
 
@@ -50,13 +31,3 @@ While the old build is live:
 The same holds when you roll back to a build from before such a migration, and when someone makes such a change by hand, until you build again.
 
 To roll back across a migration, redeploy the older commit, so that it builds against the schema you have now.
-
-### Running on another database [#deploy-other-database]
-
-The database that types a query and the database it runs on are separate: the type check reads [`direct_url`](#direct_url), and `.run()` uses the client you pass it. Reylo reads your `.env` files itself, and the environment wins over them.
-
-A script that runs against production is typed on your dev database by default, and its queries warn in the freshness check where the two differ in a way that breaks their types. To run one against a database that is behind your branch, type it on that database too:
-
-```sh
-DATABASE_URL_UNPOOLED="$PRODUCTION_URL" node --import reylo/register report.ts
-```

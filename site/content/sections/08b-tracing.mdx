@@ -2,8 +2,6 @@
 title: "Tracing"
 ---
 
-## Tracing
-
 To add observability (o11y) to your queries, subscribe to Node's [tracing channel](https://nodejs.org/api/diagnostics_channel.html#class-tracingchannel) `reylo:query`, where Reylo publishes every query it runs, and wrap each one in a span:
 
 ```ts twoslash
