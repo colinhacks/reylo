@@ -930,12 +930,17 @@ struct Level {
     /// How many aggregate calls the expression being typed stands inside: their arguments are
     /// read from the rows aggregated, each a row that is there.
     aggregating: u32,
+    /// The cursors of the arm's own FROM items.
+    own: HashSet<i64>,
     /// The same cursors of the arms around this one, each read here outside its arm's
     /// aggregates: a subquery's read of such an arm's column (`(select e.name)`) is NULL in the
-    /// row that arm returns over no rows. Inside an aggregate call here the column may be that
-    /// arm's own aggregate's argument (`(select json_group_array(name) from posts)` over `users`
-    /// aggregates the users), read from rows that are there.
+    /// row that arm returns over no rows.
     around: HashSet<i64>,
+    /// How many of the aggregate calls the expression stands inside read none of this arm's own
+    /// items. SQLite gives an aggregate to the innermost query whose items its arguments read,
+    /// so such a call is an arm's around this one (`(select json_group_array(name) from posts)`
+    /// over `users` aggregates the users), and reads that arm's rows, each one there.
+    foreign: u32,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -962,8 +967,21 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
         narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor) && !(term.inner_on && extended.contains(cursor))));
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
-    let lone = if sel.aggregate && sel.group_by.is_empty() { own } else { HashSet::new() };
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, around: HashSet::new() }
+    let lone = if sel.aggregate && sel.group_by.is_empty() { own.clone() } else { HashSet::new() };
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0 }
+}
+
+/// Whether an expression reads a column of one of `cursors`, in itself or in a subquery's select
+/// list or WHERE.
+fn reads_cursor(n: &Node, cursors: &HashSet<i64>) -> bool {
+    if n.op == "column" && cursors.contains(&n.cursor) {
+        return true;
+    }
+    let inside = |sel: &Sel| sel.columns.iter().any(|c| reads_cursor(&c.expr, cursors)) || sel.where_.as_ref().is_some_and(|w| reads_cursor(w, cursors));
+    n.left.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.right.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.list.iter().chain(&n.args).chain(&n.order_by).chain(&n.partition_by).any(|x| reads_cursor(x, cursors))
+        || n.select.as_deref().is_some_and(inside)
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -1399,7 +1417,7 @@ impl Analyzer<'_> {
         // its NULL (or the item's null extension) out of every returned row.
         let (narrowed, reduced, lone) = {
             let level = self.level.borrow();
-            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), level.aggregating == 0 && (level.lone.contains(&n.cursor) || level.around.contains(&n.cursor)))
+            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), (level.aggregating == 0 && level.lone.contains(&n.cursor)) || (level.foreign == 0 && level.around.contains(&n.cursor)))
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
@@ -1456,17 +1474,7 @@ impl Analyzer<'_> {
             // A parameter is a non-null value unless the statement means to take NULL for it.
             "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
-                // An aggregate's arguments, its FILTER and its ORDER BY are read from the rows it
-                // aggregates; a window call's are read from the statement's own rows.
-                let aggregate = n.agg && !n.over;
-                if aggregate {
-                    self.level.borrow_mut().aggregating += 1;
-                }
-                let fact = self.call(n, scope);
-                if aggregate {
-                    self.level.borrow_mut().aggregating -= 1;
-                }
-                fact
+                self.aggregated(n, || self.call(n, scope))
             }
             "+" | "-" | "*" => {
                 let (l, r) = (arg(&n.left), arg(&n.right));
@@ -1730,15 +1738,7 @@ impl Analyzer<'_> {
         if let Some(found) = self.shapes.borrow().get(&key) {
             return found.clone();
         }
-        // An aggregate constructor's arguments are read from the rows it aggregates ([`Level`]).
-        let aggregate = n.op == "function" && n.agg && !n.over;
-        if aggregate {
-            self.level.borrow_mut().aggregating += 1;
-        }
-        let shape = self.shape_here(n, scope);
-        if aggregate {
-            self.level.borrow_mut().aggregating -= 1;
-        }
+        let shape = self.aggregated(n, || self.shape_here(n, scope));
         self.shapes.borrow_mut().insert(key, shape.clone());
         shape
     }
@@ -1978,6 +1978,28 @@ impl Analyzer<'_> {
     fn carries<'n>(&self, arms: impl Iterator<Item = &'n Node>, scope: &ScopeStack) -> Carry {
         let carries: Vec<Carry> = arms.filter(|a| a.op != "null").map(|a| self.carry(a, scope)).collect();
         combine(&carries)
+    }
+
+    /// `f` inside the arguments of `n` where it is an aggregate call: they are read from the rows
+    /// it aggregates ([`Level`]), where a window call's are read from the statement's own rows.
+    fn aggregated<T>(&self, n: &Node, f: impl FnOnce() -> T) -> T {
+        if !(n.op == "function" && n.agg && !n.over) {
+            return f();
+        }
+        let foreign = {
+            let level = self.level.borrow();
+            !reads_cursor(n, &level.own)
+        };
+        {
+            let mut level = self.level.borrow_mut();
+            level.aggregating += 1;
+            level.foreign += u32::from(foreign);
+        }
+        let out = f();
+        let mut level = self.level.borrow_mut();
+        level.aggregating -= 1;
+        level.foreign -= u32::from(foreign);
+        out
     }
 
     /// A select arm's level, read from where the analysis stands: what the arm proves of its own
