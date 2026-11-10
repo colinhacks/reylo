@@ -839,7 +839,7 @@
       "$schema": "https://reylo.dev/typedefs/0.1.0.json",
       "dialect": {
         "name": "sqlite",
-        "version": "3.51.3"
+        "version": "3.53.4"
       },
       "sql": "select price from items where id = ?",
       "kind": "select",
@@ -1064,7 +1064,7 @@
       "$schema": "https://reylo.dev/typedefs/0.1.0.json",
       "dialect": {
         "name": "sqlite",
-        "version": "3.51.3"
+        "version": "3.53.4"
       },
       "sql": "select ? as x",
       "kind": "select",
