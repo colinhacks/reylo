@@ -1865,15 +1865,17 @@ impl<'a> Engine<'a> {
     /// statement's place. A column read from such a target is nullable, and takes nothing the
     /// view's statement or a CHECK says of its values. A rule that runs ALSO, or for another
     /// event, leaves the statement's own row. A DELETE returns a row the relation held, and keeps
-    /// its types. A probe is settled this way too, as a data-modifying WITH query is; the statement
+    /// its types, where no WITH query of it writes. A probe is settled this way too, as a data-modifying WITH query is; the statement
     /// that reads one writes the target as well, so a column it reads from it steps back with it.
     fn written_through(&self, parsed: Option<&Parsed>, raw: &RawDescribe, described: &mut DescribedStatement) -> Lazy<()> {
-        let Some(parsed) = parsed.filter(|p| p.kind == analyze::StatementKind::Mutation && p.statement != "delete" && !p.write_set.is_empty()) else { return Some(()) };
+        let Some(parsed) = parsed.filter(|p| p.kind == analyze::StatementKind::Mutation && (p.statement != "delete" || p.nested_writes) && !p.write_set.is_empty()) else { return Some(()) };
         let rules = by_relation(self.host, cardinality::TRIGGERS_QUERY, &parsed.write_set)?;
-        // The statement's own event: a MERGE's, and a statement's that writes in a WITH query, is either.
+        // The statement's own event, where it is the statement's one write: a MERGE's is either,
+        // and so is that of a statement with a write in a WITH query, whose own event is not
+        // that write's.
         let events = match parsed.statement {
-            "insert" => cardinality::TRIGGER_ROW_INSERT,
-            "update" => cardinality::TRIGGER_ROW_UPDATE,
+            "insert" if !parsed.nested_writes => cardinality::TRIGGER_ROW_INSERT,
+            "update" if !parsed.nested_writes => cardinality::TRIGGER_ROW_UPDATE,
             _ => cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE,
         } as u32;
         // A host that answers without the INSTEAD rules' column is read by the rules' one, and

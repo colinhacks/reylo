@@ -12,3 +12,6 @@ update_old_new.sql: many (id: int4) -> { was: timestamptz?, now: timestamptz? }
 update_ruled_for_insert.sql: at_most_one (name: text, id: int4) -> { id: int4, name: text }
 update_through_filter.sql: many (id: int4) -> { id: int4?, published_at: timestamptz? }
 with_insert.sql: many (id: int4, title: text) -> { published_at: timestamptz?, status: text? }
+with_insert_ruled.sql: many (id: int4, name: text) -> { name: text? }
+with_insert_ruled_delete.sql: many (id: int4, name: text) -> { name: text?, body: text }
+with_insert_view_delete.sql: many (id: int4, title: text) -> { published_at: timestamptz? }
