@@ -1,0 +1,4 @@
+grouped.sql: many () -> { n: tinyint, most: bigint | int?, least: bigint?, flag: unknown? }
+mixed.sql: many () -> { a: unknown, b: unknown, d: unknown, l: unknown }
+nested.sql: many () -> { a: unknown, b: unknown }
+unmixed.sql: many () -> { a: decimal, b: decimal, c: bigint | int, d: varchar, e: decimal, enabled: bit(boolean[1]), same: unknown }
