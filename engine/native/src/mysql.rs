@@ -225,6 +225,9 @@ fn mariadb(version: &str) -> Option<String> {
 /// URL gives.
 fn parse(url: &str) -> Result<Opts, String> {
     let (base, query) = url.split_once('?').unwrap_or((url, ""));
+    // A `mariadb://` URL, the one spelling the mariadb driver takes, names a MySQL server like any other.
+    let respelled = base.strip_prefix("mariadb:").map(|rest| format!("mysql:{rest}"));
+    let base = respelled.as_deref().unwrap_or(base);
     // None: no TLS. Some((chain, name)): TLS, checking the certificate chain and the host name or not.
     let mut tls: Option<(bool, bool)> = None;
     let mut socket = None;
@@ -316,6 +319,13 @@ mod tests {
         assert_eq!(mariadb("8.4.6").as_deref(), None);
         assert_eq!(mariadb("5.5.5-10.11.6-MariaDB-0+deb12u1").as_deref(), Some("MariaDB 10.11.6"));
         assert_eq!(mariadb("11.4.2-MariaDB").as_deref(), Some("MariaDB 11.4.2"));
+    }
+
+    #[test]
+    fn a_mariadb_url_is_read_as_a_mysql_one() {
+        let opts = parse("mariadb://app:secret@db.example:3307/shop").expect("a mariadb:// URL");
+        assert_eq!((opts.ip_or_hostname(), opts.tcp_port(), opts.user(), opts.db_name()), ("db.example", 3307, Some("app"), Some("shop")));
+        assert!(parse("mariadbs://db.example/shop").is_err());
     }
 
     #[test]
