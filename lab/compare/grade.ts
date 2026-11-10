@@ -3,46 +3,51 @@ import { DBS, CARDINALITY, EXPRESSIONS, FROM_THE_DATABASE, FROM_THE_DATABASE_KIN
 import type { Answer, TypedValue } from "./tools/lib.ts";
 
 export type State = "y" | "p" | "n";
-export interface ProbeResult { db: Db; probe: string; sql: string; ok: boolean; problems: string[] }
+// `at`: what each problem is about, a column by name, a parameter by its position, or the row count, so the docs can mark that line of the answer. `answer`: everything the tool answered, right or wrong.
+export interface Problem { text: string; column?: string; param?: number; cardinality?: true }
+export interface ProbeResult { db: Db; probe: string; sql: string; ok: boolean; problems: string[]; at: Omit<Problem, "text">[]; answer: Omit<Answer, "ok"> }
 export interface Cell { state: State; right: number; total: number; note?: string; results: ProbeResult[] }
 type Answers = Record<string, Answer>; // keyed `${db}:${group}:${probe}`
 
 const CARD_WORDS = { one: "exactly one row", maybeOne: "at most one row", many: "many rows", none: "no rows" };
 const key = (db: Db, group: string, p: Probe) => `${db}:${group}:${p.id}`;
 
-function checkColumns(p: Probe, a: Answer, checkNull: boolean, db: Db): string[] {
-  const out: string[] = [];
+function checkColumns(p: Probe, a: Answer, checkNull: boolean, db: Db): Problem[] {
+  const out: Problem[] = [];
   (p.columns ?? []).forEach((want, i) => {
     const got = a.columns?.find((c) => c.name.toLowerCase() === want.name.toLowerCase()) ?? a.columns?.[i];
-    if (!got) return void out.push(`\`${want.name}\` is missing`);
-    if (checkNull && want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push(`\`${want.name}\` is typed \`${got.type}\`, but ${want.nullable ? "it can be null" : "it is never null"}`);
-    if (want.shape && !want.shape.every((f) => got.fields?.includes(f))) out.push(`\`${want.name}\` is typed \`${got.type}\`, without its fields`);
+    const column = want.name;
+    if (!got) return void out.push({ text: `\`${want.name}\` is missing`, column });
+    if (checkNull && want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push({ text: `\`${want.name}\` is typed \`${got.type}\`, but ${want.nullable ? "it can be null" : "it is never null"}`, column });
+    if (want.shape && !want.shape.every((f) => got.fields?.includes(f))) out.push({ text: `\`${want.name}\` is typed \`${got.type}\`, without its fields`, column });
   });
   return out;
 }
-function checkParams(p: Probe, a: Answer, db: Db): string[] {
-  const out: string[] = [];
+function checkParams(p: Probe, a: Answer, db: Db): Problem[] {
+  const out: Problem[] = [];
   (p.params ?? []).forEach((want, i) => {
     if (!want.kinds && want.nullable === undefined && !want.shape) return;
     const got: TypedValue | undefined = a.params?.[i];
-    if (!got) return void out.push(`parameter ${i + 1} has no type`);
+    const param = i + 1;
+    if (!got) return void out.push({ text: `parameter ${i + 1} has no type`, param });
     const takes = want.kinds?.[0] === "num" ? "a number" : want.kinds?.[0] === "time" ? "a timestamp" : "text";
-    if (want.kinds && !want.kinds.includes(got.kind)) out.push(got.wrongValuePasses ? `a ${got.wrongValuePasses} value passes for parameter ${i + 1}, which takes ${takes}` : `parameter ${i + 1} is typed \`${got.type}\`, but it takes ${takes}`);
-    if (want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push(got.checksValues ? (want.nullable ? `a null value is refused for parameter ${i + 1}, which takes null` : `a null value passes for parameter ${i + 1}, which takes no null`) : `parameter ${i + 1} is typed \`${got.type}\`, but it ${want.nullable ? "takes null" : "takes no null"}`);
-    if (want.shape && !want.shape.every((f) => got.fields?.includes(f))) out.push(`parameter ${i + 1} is typed \`${got.type}\`, without its fields`);
+    if (want.kinds && !want.kinds.includes(got.kind)) out.push({ text: got.wrongValuePasses ? `${got.wrongValuePasses === "any" ? "any" : `a ${got.wrongValuePasses}`} value passes for parameter ${i + 1}, which takes ${takes}` : `parameter ${i + 1} is typed \`${got.type}\`, but it takes ${takes}`, param });
+    if (want.nullable !== undefined && !want.anyNullOn?.includes(db) && got.nullable !== want.nullable) out.push({ text: got.checksValues ? (want.nullable ? `a null value is refused for parameter ${i + 1}, which takes null` : `a null value passes for parameter ${i + 1}, which takes no null`) : `parameter ${i + 1} is typed \`${got.type}\`, but it ${want.nullable ? "takes null" : "takes no null"}`, param });
+    if (want.shape && !want.shape.every((f) => got.fields?.includes(f))) out.push({ text: `parameter ${i + 1} is typed \`${got.type}\`, without its fields`, param });
   });
   return out;
 }
 // Answers for one group of probes on one database: right when `check` finds no problem.
-function run(answers: Answers, dbs: Db[], group: string, probes: Probe[], check: (p: Probe, a: Answer, db: Db) => string[]): ProbeResult[] {
+function run(answers: Answers, dbs: Db[], group: string, probes: Probe[], check: (p: Probe, a: Answer, db: Db) => Problem[]): ProbeResult[] {
   const out: ProbeResult[] = [];
   for (const db of dbs) for (const p of probes) {
     const sql = sqlFor(p, db);
     if (!sql) continue;
     const a = answers[key(db, group, p)];
     if (!a) continue;
-    const problems = a.ok ? check(p, a, db) : [`it reports an error: ${a.error ?? "unknown"}`];
-    out.push({ db, probe: p.id, sql, ok: problems.length === 0, problems });
+    const found: Problem[] = a.ok ? check(p, a, db) : [{ text: `it reports an error: ${a.error ?? "unknown"}` }];
+    const { ok: _, ...answer } = a;
+    out.push({ db, probe: p.id, sql, ok: found.length === 0, problems: found.map((f) => f.text), at: found.map(({ text: _, ...at }) => at), answer });
   }
   return out;
 }
@@ -63,8 +68,8 @@ export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[];
 
   const live = run(answers, dbs.includes("postgres") ? ["postgres"] : [], "from-the-database", FROM_THE_DATABASE, (p, a) => {
     const c = a.columns?.[0];
-    if (!c) return ["it gives no type"];
-    return FROM_THE_DATABASE_KINDS[p.id].includes(c.kind) ? [] : [`it types the result \`${c.type}\``];
+    if (!c) return [{ text: "it gives no type", column: "v" }];
+    return FROM_THE_DATABASE_KINDS[p.id].includes(c.kind) ? [] : [{ text: `it types the result \`${c.type}\``, column: "v" }];
   });
   const liveRight = live.filter((r) => r.ok).length;
   if (!none && facts.withoutGenerating) cells["no-codegen"] = { state: "p", right: 0, total: 1, note: facts.withoutGenerating, results: [] };
@@ -84,8 +89,8 @@ export function gradeTool(answers: Answers, dbs: Db[], facts: { wrote: string[];
   cells["parameter-nullability"] = cell(nullResults, nullConstant, nullConstant ? "It gives every parameter the same answer." : undefined);
 
   const cardResults = run(answers, dbs, "cardinality", CARDINALITY, (p, a) => {
-    if (a.cardinality === null) return ["it does not infer one"];
-    return a.cardinality === p.cardinality ? [] : [`it says ${CARD_WORDS[a.cardinality]}, but this returns ${CARD_WORDS[p.cardinality!]}`];
+    if (a.cardinality === null) return [{ text: "it does not infer one", cardinality: true }];
+    return a.cardinality === p.cardinality ? [] : [{ text: `it says ${CARD_WORDS[a.cardinality]}, but this returns ${CARD_WORDS[p.cardinality!]}`, cardinality: true }];
   });
   const noCard = CARDINALITY.every((p) => dbs.every((db) => { const a = answers[key(db, "cardinality", p)]; return !a || a.cardinality === null; }));
   cells["cardinality"] = cell(cardResults, noCard, noCard ? facts.cardinalityNote : undefined);

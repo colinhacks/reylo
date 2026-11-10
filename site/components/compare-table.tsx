@@ -1,7 +1,9 @@
 'use client';
 import { Popup, PopupContent, PopupTrigger } from 'fumadocs-twoslash/ui';
 import { type CSSProperties, Fragment, type ReactNode } from 'react';
-import { compareCell, compareDate, compareLabUrl, compareResults, compareRows, compareTools, type CompareCell } from '@/lib/compare';
+import { compareCell, compareResults, compareRows, compareTools, type CompareCell } from '@/lib/compare';
+import cards from 'virtual:compare-cards';
+import type { CompareCard } from '@/lib/compare-cards';
 import { wordmark } from './wordmark';
 
 /** A note's `code` as code. */
@@ -16,22 +18,48 @@ const ICONS: Record<CompareCell['state'], ReactNode> = {
 };
 const WORDS = { y: 'Yes', p: 'Partly', n: 'No' };
 
-/** A cross or half circle: hovered, or tapped on a phone, the docs' popup shows what the tool answered. */
-function Mark({ tool, label, cell }: { tool: string; label: string; cell: CompareCell }) {
-  if (cell.state === 'y') return <span className="reylo-compare-mark" role="img" aria-label={WORDS.y}>{ICONS.y}</span>;
+const html = (text: string) => ({ __html: text });
+
+/** A query a tool got wrong, in the labelled rows of the docs' Inference cards, with what it infers and what the type should be. Its code is highlighted at build time (lib/compare-cards.ts). */
+function Card({ card }: { card: CompareCard }) {
   return (
-    <Popup delay={60}>
-      <PopupTrigger className="reylo-compare-mark" aria-label={`${tool}, ${label}: ${WORDS[cell.state]}`}>{ICONS[cell.state]}</PopupTrigger>
-      <PopupContent side="top" sideOffset={6} className="reylo-compare-pop">
-        <div className="reylo-compare-pop-head"><b>{tool}</b><span>{label}</span></div>
-        {cell.note ? <p><Text>{cell.note}</Text></p> : null}
-        {cell.wrong > 0 ? <p className="reylo-compare-pop-count">{cell.wrong === 1 ? 'Wrong on this query:' : cell.wrong > cell.examples.length ? `Wrong on ${cell.wrong} queries, among them:` : 'Wrong on these queries:'}</p> : null}
-        {cell.examples.map((e) => (
-          <Fragment key={e.sql}>
-            <pre>{e.sql}</pre>
-            <p><Text>{e.problem}</Text>{e.on ? <span className="reylo-compare-pop-on"> On {e.on}.</span> : null}</p>
+    <div className="reylo-compare-card">
+      {card.schema ? (
+        <div className="reylo-compare-card-schema">
+          <div className="reylo-compare-card-label">Schema</div>
+          <pre dangerouslySetInnerHTML={html(card.schema)} />
+        </div>
+      ) : null}
+      <div className="reylo-compare-card-query">
+        <div className="reylo-compare-card-head">
+          <div className="reylo-compare-card-label">Query</div>
+          {card.on ? <span className="reylo-compare-card-on">{card.on}</span> : null}
+        </div>
+        <pre dangerouslySetInnerHTML={html(card.query)} />
+      </div>
+      <div className="reylo-compare-card-types">
+        {card.lines.map((line, i) => (
+          <Fragment key={i}>
+            <div className="reylo-compare-card-label">{line.label}</div>
+            {line.right ? ICONS.y : ICONS.n}
+            <code className={line.text ? 'reylo-compare-card-error' : undefined} dangerouslySetInnerHTML={html(line.html)} />
           </Fragment>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** A cross or half circle: hovered, or tapped on a phone, the docs' popup shows a query the tool got wrong, or why it has the mark. */
+function Mark({ tool, row, label, cell }: { tool: string; row: string; label: string; cell: CompareCell }) {
+  if (cell.state === 'y') return <span className="reylo-compare-mark" role="img" aria-label={WORDS.y}>{ICONS.y}</span>;
+  const card = cards[`${tool}:${row}`];
+  const name = tool === 'reylo' ? 'Reylo' : tool === 'postgrestypedsql' ? 'Postgres Typed SQL' : compareResults.tools[tool]?.name ?? tool;
+  return (
+    <Popup delay={60}>
+      <PopupTrigger className="reylo-compare-mark" aria-label={`${name}, ${label}: ${WORDS[cell.state]}`}>{ICONS[cell.state]}</PopupTrigger>
+      <PopupContent side="top" sideOffset={6} className={card ? 'reylo-compare-pop reylo-compare-pop-card' : 'reylo-compare-pop'}>
+        {card ? <Card card={card} /> : <p><Text>{cell.note ?? ''}</Text></p>}
       </PopupContent>
     </Popup>
   );
@@ -83,10 +111,10 @@ export function CompareTable() {
                     <Fragment key={r.id}>
                       <div className="reylo-compare-rule" style={{ gridRow: at }} />
                       <div className="reylo-compare-row-label" style={{ gridRow: at, gridColumn: 1 }}><Label label={r.label} asks={r.asks} /></div>
-                      <div className="reylo-compare-cell" style={{ gridRow: at, gridColumn: 3 }}><Mark tool="Reylo" label={r.label} cell={compareCell('reylo', r.id)} /></div>
+                      <div className="reylo-compare-cell" style={{ gridRow: at, gridColumn: 3 }}><Mark tool="reylo" row={r.id} label={r.label} cell={compareCell('reylo', r.id)} /></div>
                       {compareTools.map((t, i) => (
                         <div key={t.id} className="reylo-compare-cell" style={{ gridRow: at, gridColumn: column(i) }}>
-                          <Mark tool={t.id === 'postgrestypedsql' ? 'Postgres Typed SQL' : compareResults.tools[t.id]?.name ?? t.name} label={r.label} cell={compareCell(t.id, r.id)} />
+                          <Mark tool={t.id} row={r.id} label={r.label} cell={compareCell(t.id, r.id)} />
                         </div>
                       ))}
                     </Fragment>
@@ -99,7 +127,6 @@ export function CompareTable() {
           <div className="reylo-compare-stick" style={{ gridRow: `1 / ${row}`, gridColumn: 1 }} />
         </div>
       </div>
-      <p className="reylo-compare-foot">Run on {compareDate}, on each tool's latest release. <a href={compareLabUrl}>The queries, the answers and the code that runs them</a> are in the repository.</p>
     </div>
   );
 }
