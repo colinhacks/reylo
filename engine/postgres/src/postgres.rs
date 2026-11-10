@@ -566,9 +566,8 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     })
 }
 
-/// One column's type where what the statement builds settles it, as [`analyze`] settles it
-/// ([`shaped`]): the type, whether the column may be NULL, and the paths inside it whose type the
-/// engine could not read.
+/// One column's type where what the statement builds settles it ([`shaped`]): the type, whether the
+/// column may be NULL, and the paths inside it whose type the engine could not read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shaped {
     pub ty: Type,
@@ -587,10 +586,13 @@ pub struct ShapedStatement {
     pub domains: BTreeMap<String, String>,
 }
 
-/// The types [`analyze`] gives the columns of `sql` from what it builds, for a host that renders
-/// every other column from [`describe`] itself: the same rules, read by the same code. `sql` is in
-/// the server's `$n` form and is described as it is, and a parameter may be null, as [`describe`]
-/// takes them. `Some(Err)` is the server's refusal of the statement itself.
+/// The types the columns of `sql` take from what it builds, for a host that renders every other
+/// column from [`describe`] itself: the rules [`analyze`] types them by, read by the same code. `sql`
+/// is in the server's `$n` form and is described as it is, and a parameter may be null, as
+/// [`describe`] takes them, so a column built from a parameter may be nullable here where
+/// [`analyze`], whose parameters are non-null unless the statement says otherwise, reads it non-null.
+/// Neither the bodies of the SQL functions the statement calls nor what it writes narrow these
+/// types, as they narrow [`analyze`]'s. `Some(Err)` is the server's refusal of the statement itself.
 pub fn shaped(sql: &str, host: &Host) -> Lazy<Result<ShapedStatement, DbError>> {
     host.on_engine_stack(|host| {
         let engine = Engine::new(host);
