@@ -636,7 +636,7 @@ impl Builder<'_> {
                     // What the walk drafts for the operand goes unread where the cast is the value.
                     let drafted = self.drafts.clone();
                     match self.walk(arg) {
-                        shape @ (Shape::Object { .. } | Shape::Array { .. } | Shape::Tuple { .. } | Shape::Nullable(_)) => shape,
+                        shape if builds(&shape) => shape,
                         _ => {
                             self.drafts = drafted;
                             Shape::Nullable(Box::new(self.leaf(expr)))
@@ -1981,6 +1981,17 @@ fn keeps_param_type(node: &Node) -> bool {
 /// Whether `JSON_OBJECT` or `JSON_ARRAY` returns JSON: by default, or `RETURNING json` or `jsonb`.
 fn returns_json(output: Option<&protobuf::JsonOutput>) -> bool {
     output.and_then(|o| o.type_name.as_ref()).is_none_or(|t| t.array_bounds.is_empty() && crate::infer::builtin_name(&t.names).is_some_and(|n| n == "json" || n == "jsonb"))
+}
+
+/// Whether a shape is JSON the statement builds, alone or where it may be NULL (a scalar
+/// subquery's). A value read as it is (a column, a placeholder), nullable or not, is none: a leaf
+/// is nullable under grouping sets, in a RETURNING's old or new row and beside a set-returning call.
+fn builds(shape: &Shape) -> bool {
+    match shape {
+        Shape::Object { .. } | Shape::Array { .. } | Shape::Tuple { .. } => true,
+        Shape::Nullable(inner) => builds(inner),
+        _ => false,
+    }
 }
 
 /// Whether a cast is to `json` or `jsonb` itself: `x::jsonb[]` is an array of them.

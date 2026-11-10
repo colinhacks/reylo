@@ -226,7 +226,7 @@ fn mariadb(version: &str) -> Option<String> {
 fn parse(url: &str) -> Result<Opts, String> {
     let (base, query) = url.split_once('?').unwrap_or((url, ""));
     // A `mariadb://` URL, the one spelling the mariadb driver takes, names a MySQL server like any other.
-    let respelled = base.strip_prefix("mariadb:").map(|rest| format!("mysql:{rest}"));
+    let respelled = base.get(..8).filter(|scheme| scheme.eq_ignore_ascii_case("mariadb:")).map(|_| format!("mysql:{}", &base[8..]));
     let base = respelled.as_deref().unwrap_or(base);
     // None: no TLS. Some((chain, name)): TLS, checking the certificate chain and the host name or not.
     let mut tls: Option<(bool, bool)> = None;
@@ -325,6 +325,7 @@ mod tests {
     fn a_mariadb_url_is_read_as_a_mysql_one() {
         let opts = parse("mariadb://app:secret@db.example:3307/shop").expect("a mariadb:// URL");
         assert_eq!((opts.ip_or_hostname(), opts.tcp_port(), opts.user(), opts.db_name()), ("db.example", 3307, Some("app"), Some("shop")));
+        assert_eq!(parse("MariaDB://app@db.example/shop").expect("a scheme in any case").ip_or_hostname(), "db.example");
         assert!(parse("mariadbs://db.example/shop").is_err());
     }
 

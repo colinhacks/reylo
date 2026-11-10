@@ -930,6 +930,12 @@ struct Level {
     /// How many aggregate calls the expression being typed stands inside: their arguments are
     /// read from the rows aggregated, each a row that is there.
     aggregating: u32,
+    /// The same cursors of the arms around this one, each read here outside its arm's
+    /// aggregates: a subquery's read of such an arm's column (`(select e.name)`) is NULL in the
+    /// row that arm returns over no rows. Inside an aggregate call here the column may be that
+    /// arm's own aggregate's argument (`(select json_group_array(name) from posts)` over `users`
+    /// aggregates the users), read from rows that are there.
+    around: HashSet<i64>,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -957,7 +963,7 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
     let lone = if sel.aggregate && sel.group_by.is_empty() { own } else { HashSet::new() };
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0 }
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, around: HashSet::new() }
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -1319,7 +1325,7 @@ impl Analyzer<'_> {
             .flat_map(|arm| {
                 let mut inner = scope.clone();
                 inner.push(&arm.from);
-                let outer = self.level.replace(level_of(arm, self.extras));
+                let outer = self.level.replace(self.level_within(arm));
                 let rows = std::iter::once(arm.columns.get(i).map(|c| &c.expr)).chain(arm.rows.iter().map(|row| row.get(i)));
                 let facts: Vec<(Option<&Node>, Fact)> = rows.map(|e| (e, e.map(|e| self.type_of(e, &inner)).unwrap_or_else(Fact::unknown))).collect();
                 self.level.replace(outer);
@@ -1356,7 +1362,7 @@ impl Analyzer<'_> {
         let width = first.columns.len();
         let mut inner = scope.clone();
         inner.push(&first.from);
-        let outer = self.level.replace(level_of(first, self.extras));
+        let outer = self.level.replace(self.level_within(first));
         let mut assumed: Vec<Fact> = first.columns.iter().map(|c| Fact { ty: self.type_of(&c.expr, &inner).ty, non_null: true }).collect();
         self.level.replace(outer);
         // What a round works out under its assumption, a JSON constructor's shape or a recursive
@@ -1393,7 +1399,7 @@ impl Analyzer<'_> {
         // its NULL (or the item's null extension) out of every returned row.
         let (narrowed, reduced, lone) = {
             let level = self.level.borrow();
-            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), level.aggregating == 0 && level.lone.contains(&n.cursor))
+            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), level.aggregating == 0 && (level.lone.contains(&n.cursor) || level.around.contains(&n.cursor)))
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
@@ -1974,11 +1980,23 @@ impl Analyzer<'_> {
         combine(&carries)
     }
 
+    /// A select arm's level, read from where the analysis stands: what the arm proves of its own
+    /// FROM items, and the cursors of the arms around it that are NULL where it reads them.
+    fn level_within(&self, sel: &Sel) -> Level {
+        let mut level = level_of(sel, self.extras);
+        let outer = self.level.borrow();
+        level.around = outer.around.clone();
+        if outer.aggregating == 0 {
+            level.around.extend(outer.lone.iter().copied());
+        }
+        level
+    }
+
     /// `f` over a select arm's own scope and level, as [`Analyzer::select_column`] reads its columns.
     fn within<T>(&self, sel: &Sel, scope: &ScopeStack, f: impl FnOnce(&ScopeStack) -> T) -> T {
         let mut inner = scope.clone();
         inner.push(&sel.from);
-        let outer = self.level.replace(level_of(sel, self.extras));
+        let outer = self.level.replace(self.level_within(sel));
         let out = f(&inner);
         self.level.replace(outer);
         out
