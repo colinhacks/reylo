@@ -6,7 +6,7 @@
 //! current value, MySQL's next AUTO_INCREMENT, `sqlite_sequence`) is left out, and so is Reylo's own
 //! history table.
 
-use crate::db::{Db, Row};
+use crate::db::{literal, Db, Row};
 use crate::sql::{tokenize, Token, TokenKind};
 use crate::{Dialect, Error};
 use std::collections::{BTreeMap, BTreeSet};
@@ -98,7 +98,16 @@ pub fn without_extra_children(live: &[String], reference: &[String]) -> Vec<Stri
     let live = &live[..];
     let theirs: BTreeSet<String> = children(reference).into_iter().map(|(name, _)| name).collect();
     let parents: BTreeSet<&str> = reference.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
-    let extra: Vec<String> = children(live).into_iter().filter(|(name, parent)| !theirs.contains(name) && parents.contains(parent.as_str()) && !parents.contains(name.as_str())).map(|(name, _)| name).collect();
+    // A partition of a partition made at run time is made at run time too, as far down as they go.
+    let mine = children(live);
+    let mut extra: Vec<String> = Vec::new();
+    loop {
+        let more: Vec<String> = mine.iter().filter(|(name, parent)| !theirs.contains(name) && !parents.contains(name.as_str()) && !extra.contains(name) && (parents.contains(parent.as_str()) || extra.contains(parent))).map(|(name, _)| name.clone()).collect();
+        if more.is_empty() {
+            break;
+        }
+        extra.extend(more);
+    }
     if extra.is_empty() {
         return live.to_vec();
     }
@@ -123,9 +132,19 @@ pub fn without_comments(lines: &[String]) -> Vec<String> {
     lines.iter().filter(|l| !l.starts_with("comment ")).cloned().collect()
 }
 
-/// Whether the live database has what `reference` lists: comments, and children made at run time, aside.
+/// `reference` without the partitions (and inheriting children) `live` lacks: one dropped at run
+/// time, as a retention job drops the oldest, is data, as one made at run time is.
+pub fn without_missing_children(reference: &[String], live: &[String]) -> Vec<String> {
+    let tables: BTreeSet<&str> = live.iter().filter_map(|l| l.strip_prefix("table ")).map(name_at).collect();
+    let gone: Vec<String> = children(reference).into_iter().filter(|(name, _)| !tables.contains(name.as_str())).map(|(name, _)| name).collect();
+    reference.iter().filter(|l| !gone.iter().any(|name| of_table(l, name))).cloned().collect()
+}
+
+/// Whether the live database has what `reference` lists: comments, and children made or dropped at
+/// run time, aside.
 pub fn same_schema(live: &[String], reference: &[String]) -> bool {
-    without_comments(&without_extra_children(live, reference)) == without_comments(reference)
+    let reference = without_missing_children(reference, live);
+    without_comments(&without_extra_children(live, &reference)) == without_comments(&reference)
 }
 
 /// The lines only in `a`, and those only in `b`.
@@ -145,6 +164,13 @@ fn json(text: &str) -> String {
 
 // ---------------------------------------------------------------------------------------------
 // Postgres. Every query runs with an empty search_path, so every rendering names its schema.
+
+/// The schemas of a Postgres database that no platform owns, by name.
+pub async fn user_schemas(db: &mut Db) -> Result<Vec<String>, Error> {
+    let ns = PG_USER_NS;
+    let rows = db.rows(&format!("select n.nspname as name from pg_namespace n where {ns} and {} order by 1", not_platform("n.nspowner"))).await?;
+    Ok(rows.iter().map(|r| r.text("name").to_string()).collect())
+}
 
 pub(crate) const PG_USER_NS: &str = r"n.nspname not in ('pg_catalog', 'information_schema') and n.nspname not like 'pg\_toast%' and n.nspname not like 'pg\_temp%'";
 
@@ -197,10 +223,30 @@ fn acl(column: &str, owner: &str, kind: char) -> String {
     )
 }
 
+/// The settings that change how a name or a value renders, pinned for the read: a role's or a
+/// database's own DateStyle, say, would otherwise read as a change to every default it renders.
+const PINNED: [(&str, &str); 7] = [
+    ("search_path", ""),
+    ("DateStyle", "ISO, MDY"),
+    ("IntervalStyle", "postgres"),
+    ("TimeZone", "UTC"),
+    ("bytea_output", "hex"),
+    ("quote_all_identifiers", "off"),
+    ("standard_conforming_strings", "on"),
+];
+
 async fn postgres(db: &mut Db) -> Result<Vec<String>, Error> {
-    db.exec("set search_path = ''").await?;
+    // Each put back as it was, since the session goes on to run migrations.
+    let mut was = Vec::new();
+    for (name, value) in PINNED {
+        let before = db.rows(&format!("select current_setting({}) as v", literal(name))).await?.first().map(|r| r.text("v").to_string()).unwrap_or_default();
+        db.exec(&format!("select set_config({}, {}, false)", literal(name), literal(value))).await?;
+        was.push((name, before));
+    }
     let result = postgres_lines(db).await;
-    db.exec("reset search_path").await?;
+    for (name, before) in was {
+        db.exec(&format!("select set_config({}, {}, false)", literal(name), literal(&before))).await?;
+    }
     result
 }
 
@@ -315,6 +361,22 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
         if let Some(comment) = r.get("comment") {
             lines.push(format!("comment {name} {}", json(comment)));
         }
+    }
+
+    // A composite type's attributes in their order, which every use of the type is positional in
+    // (`row(1, 2)::pair`), where a table's columns are compared as a set.
+    for r in db
+        .rows(&format!(
+            "select format('%I.%I', n.nspname, c.relname) as rel, string_agg(format('%I', a.attname), ', ' order by a.attnum) as attrs
+            from pg_class c join pg_namespace n on n.oid = c.relnamespace join pg_attribute a on a.attrelid = c.oid
+            where c.relkind = 'c' and a.attnum > 0 and not a.attisdropped and {ns} and {} and {}
+            group by 1",
+            not_extension("pg_class", "c"),
+            not_platform("c.relowner")
+        ))
+        .await?
+    {
+        lines.push(format!("attributes {} ({})", r.text("rel"), r.text("attrs")));
     }
 
     for r in db
@@ -584,8 +646,7 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
     for r in db
         .rows(&format!(
             "select format('publication %I%s%s operations=%s%s', p.pubname, case when p.puballtables then ' all tables' else '' end,
-              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname) || coalesce(' where (' || pg_get_expr(pr.prqual, pr.prrelid) || ')', '')
-                  || coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = pr.prrelid and a.attnum = any (pr.prattrs)) || ')', ''), ', ' order by 1)
+              coalesce(' tables=' || (select string_agg(format('%I.%I', n.nspname, c.relname){}, ', ' order by 1)
                 from pg_publication_rel pr join pg_class c on c.oid = pr.prrelid join pg_namespace n on n.oid = c.relnamespace where pr.prpubid = p.oid), ''),
               concat_ws(',', case when p.pubinsert then 'insert' end, case when p.pubupdate then 'update' end, case when p.pubdelete then 'delete' end, case when p.pubtruncate then 'truncate' end),
               case when p.pubviaroot then ' via root' else '' end) || {} as line
@@ -593,6 +654,13 @@ async fn postgres_lines(db: &mut Db) -> Result<Vec<String>, Error> {
             union all select format('base type %I.%I input=%s output=%s receive=%s send=%s typmod_in=%s typmod_out=%s analyze=%s length=%s byval=%s align=%s storage=%s category=%s preferred=%s delimiter=%s collatable=%s default=%s',
               n.nspname, t.typname, t.typinput, t.typoutput, t.typreceive, t.typsend, t.typmodin, t.typmodout, t.typanalyze, t.typlen, t.typbyval, t.typalign, t.typstorage, t.typcategory, t.typispreferred, t.typdelim, t.typcollation <> 0, coalesce(t.typdefault, ''))
             from pg_type t join pg_namespace n on n.oid = t.typnamespace where t.typtype = 'b' and t.typelem = 0 and t.typarray <> 0 and {ns} and {} and {}",
+            // A table's row filter and column list, and a publication's schemas, are Postgres 15's.
+            if version >= 150000 {
+                " || coalesce(' where (' || pg_get_expr(pr.prqual, pr.prrelid) || ')', '')
+                  || coalesce(' (' || (select string_agg(format('%I', a.attname), ', ' order by a.attnum) from pg_attribute a where a.attrelid = pr.prrelid and a.attnum = any (pr.prattrs)) || ')', '')"
+            } else {
+                ""
+            },
             if version >= 150000 {
                 "coalesce(' schemas=' || (select string_agg(format('%I', pn.nspname), ', ' order by 1) from pg_publication_namespace pp join pg_namespace pn on pn.oid = pp.pnnspid where pp.pnpubid = p.oid), '')"
             } else {
@@ -774,7 +842,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(&format!(
-            "select table_name as name, table_type as type, engine, table_collation as collation, create_options as options, table_comment as comment
+            "select table_name as name, table_type as type, engine as engine, table_collation as collation, create_options as options, table_comment as comment
             from information_schema.tables where table_schema = database() and table_name <> '{history}'"
         ))
         .await?
@@ -795,7 +863,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(&format!(
-            "select table_name as t, column_name as c, column_type as type, is_nullable as nullable, column_default as def, extra,
+            "select table_name as t, column_name as c, column_type as type, is_nullable as nullable, column_default as def, extra as extra,
               character_set_name as charset, collation_name as collation, generation_expression as gen, column_comment as comment, srs_id as srs
             from information_schema.columns where table_schema = database() and table_name <> '{history}'"
         ))
@@ -873,7 +941,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
 
     for r in db
         .rows(
-            "select tc.table_name as t, tc.constraint_name as n, cc.check_clause as clause, tc.enforced
+            "select tc.table_name as t, tc.constraint_name as n, cc.check_clause as clause, tc.enforced as enforced
             from information_schema.table_constraints tc join information_schema.check_constraints cc
               on cc.constraint_schema = tc.constraint_schema and cc.constraint_name = tc.constraint_name
             where tc.table_schema = database() and tc.constraint_type = 'CHECK'",
@@ -883,14 +951,18 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         lines.push(format!("check {} {} {}{}", r.text("t"), r.text("n"), strip(r.text("clause")), if r.text("enforced") == "NO" { " not enforced" } else { "" }));
     }
 
-    for r in db.rows("select table_name as n, view_definition as def, check_option as opt, security_type as sec, definer from information_schema.views where table_schema = database()").await? {
-        lines.push(format!("view {} as {} check={} security={} definer={}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec"), r.text("definer")));
+    // No definer is read: it is the account that made the object, which differs between the
+    // databases the same migrations build (a deploy's account, a developer's) where nothing else does,
+    // and MySQL has no owner to read it against, as Postgres's owners are read against the history
+    // table's. Whether an object runs as its definer or its invoker is read.
+    for r in db.rows("select table_name as n, view_definition as def, check_option as opt, security_type as sec from information_schema.views where table_schema = database()").await? {
+        lines.push(format!("view {} as {} check={} security={}", r.text("n"), strip(r.text("def")), r.text("opt"), r.text("sec")));
     }
 
     for r in db
         .rows(
             "select r.routine_name as n, r.routine_type as type, r.dtd_identifier as ret, r.routine_definition as def, r.is_deterministic as det,
-              r.sql_data_access as access, r.security_type as sec, r.definer,
+              r.sql_data_access as access, r.security_type as sec,
               (select group_concat(concat_ws(' ', p.parameter_mode, p.parameter_name, p.dtd_identifier) order by p.ordinal_position separator ', ')
                  from information_schema.parameters p where p.specific_schema = r.routine_schema and p.specific_name = r.specific_name and p.ordinal_position > 0) as params
             from information_schema.routines r where r.routine_schema = database()",
@@ -898,7 +970,7 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
         .await?
     {
         lines.push(format!(
-            "{} {}({}){} {} {} security={} definer={} as {}",
+            "{} {}({}){} {} {} security={} as {}",
             r.text("type").to_lowercase(),
             r.text("n"),
             r.text("params"),
@@ -906,19 +978,18 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
             if r.text("det") == "YES" { "deterministic" } else { "not deterministic" },
             r.text("access"),
             r.text("sec"),
-            r.text("definer"),
             strip(r.text("def"))
         ));
     }
 
     for r in db
         .rows(
-            "select trigger_name as n, event_manipulation as ev, event_object_table as t, action_statement as body, action_timing as timing, action_order as ord, definer
+            "select trigger_name as n, event_manipulation as ev, event_object_table as t, action_statement as body, action_timing as timing, action_order as ord
             from information_schema.triggers where trigger_schema = database()",
         )
         .await?
     {
-        lines.push(format!("trigger {} {} {} on {} order={} definer={} {}", r.text("n"), r.text("timing"), r.text("ev"), r.text("t"), r.text("ord"), r.text("definer"), strip(r.text("body"))));
+        lines.push(format!("trigger {} {} {} on {} order={} {}", r.text("n"), r.text("timing"), r.text("ev"), r.text("t"), r.text("ord"), strip(r.text("body"))));
     }
 
     // Recurring events, without the start the server fills in as each is made, which no two
@@ -926,13 +997,13 @@ async fn mysql(db: &mut Db) -> Result<Vec<String>, Error> {
     // disables it, as it was told to.
     for r in db
         .rows(
-            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, on_completion as completion, status, definer, event_definition as body, event_comment as comment
+            "select event_name as n, event_type as type, interval_value as every, interval_field as unit, on_completion as completion, status as status, event_definition as body, event_comment as comment
             from information_schema.events where event_schema = database() and event_type <> 'ONE TIME'",
         )
         .await?
     {
         let every = r.get("every").map(|v| format!(" every {v} {}", r.text("unit"))).unwrap_or_default();
-        lines.push(format!("event {} {}{every} on completion {} {} definer={} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), r.text("definer"), strip(r.text("body"))));
+        lines.push(format!("event {} {}{every} on completion {} {} do {}", r.text("n"), r.text("type").to_lowercase(), r.text("completion").to_lowercase(), r.text("status").to_lowercase(), strip(r.text("body"))));
         if !r.text("comment").is_empty() {
             lines.push(format!("comment event {} {}", r.text("n"), json(r.text("comment"))));
         }
