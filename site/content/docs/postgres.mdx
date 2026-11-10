@@ -1377,7 +1377,7 @@ What Reylo can't type on Postgres, and what to do instead:
 | Whether an array's elements are `null` | Give an array column `check (array_position(tags, null) is null)`, and remove `null` elements from any other array before passing it back in |
 | A row whose fields Postgres doesn't name, as `row(…)` builds, which comes back as text | Cast it to a composite type, or select it from a subquery that names its columns |
 | A materialized view, which holds the rows of its last `refresh`: every column is nullable, and only its own unique indexes are keys | Create a unique index on it, and wrap a column that is never null in `coalesce` |
-| The row an `insert`, `update` or `merge` writes through a view, or to a table with a rule, which need not pass the view's `where`: its `returning` columns are nullable | Write to the table itself |
+| The row an `insert`, `update` or `merge` writes through a view, or to a table with an `instead` rule, which need not pass the view's `where`: its `returning` columns are nullable | Write to the table itself |
 | A query nested past 1,000 levels, about 164 subqueries deep | None: Reylo falls back to Postgres's own types, any number of rows and every column nullable |
 | A statement other than a query, such as `create index` or `explain` | None: it returns nothing, or rows whose columns are all nullable, as Postgres reports |
 | `copy … from stdin` and `copy … to stdout`, whose rows go through the connection | Run them through your driver |

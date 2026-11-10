@@ -1,4 +1,5 @@
 delete_through_filter.sql: many (id: int4) -> { id: int4, title: text, published_at: timestamptz, status: text }
+insert_also_ruled.sql: many (id: int4, note: text) -> { id: int4, note: text, state: text('new' | 'paid') }
 insert_instead_of.sql: at_most_one (id: int4) -> { id: int4?, body: text?, kind: text?, n: int4? }
 insert_ruled.sql: many (id: int4, name: text) -> { id: int4?, name: text? }
 insert_star.sql: many (id: int4, title: text) -> { id: int4?, title: text?, published_at: timestamptz?, status: text? }
@@ -8,5 +9,6 @@ read.sql: at_most_one (id: int4) -> { id: int4, title: text, published_at: times
 table_itself.sql: one (id: int4, title: text) -> { id: int4, title: text, published_at: timestamptz?, status: text('draft' | 'live') }
 update_instead_of.sql: at_most_one (body: text, id: int4) -> { body: text?, kind: text? }
 update_old_new.sql: many (id: int4) -> { was: timestamptz?, now: timestamptz? }
+update_ruled_for_insert.sql: at_most_one (name: text, id: int4) -> { id: int4, name: text }
 update_through_filter.sql: many (id: int4) -> { id: int4?, published_at: timestamptz? }
 with_insert.sql: many (id: int4, title: text) -> { published_at: timestamptz?, status: text? }

@@ -1859,21 +1859,28 @@ impl<'a> Engine<'a> {
     }
 
     /// The RETURNING of an INSERT, an UPDATE or a MERGE gives the row as it was written, which a
-    /// view's statement says nothing of, and under a rewrite rule nor do the table's constraints:
+    /// view's statement says nothing of, and under an INSTEAD rule nor do the table's constraints:
     /// a row written through a view need not pass the view's WHERE, an INSTEAD OF trigger returns
-    /// a row of its own making, and a rule's own RETURNING list gives the row in the statement's
-    /// place. A column read from such a target is nullable, and takes nothing the view's statement
-    /// or a CHECK says of its values. A DELETE returns a row the relation held, and keeps its
-    /// types. A probe is settled this way too, as a data-modifying WITH query is; the statement
+    /// a row of its own making, and an INSTEAD rule's own RETURNING list gives the row in the
+    /// statement's place. A column read from such a target is nullable, and takes nothing the
+    /// view's statement or a CHECK says of its values. A rule that runs ALSO, or for another
+    /// event, leaves the statement's own row. A DELETE returns a row the relation held, and keeps
+    /// its types. A probe is settled this way too, as a data-modifying WITH query is; the statement
     /// that reads one writes the target as well, so a column it reads from it steps back with it.
     fn written_through(&self, parsed: Option<&Parsed>, raw: &RawDescribe, described: &mut DescribedStatement) -> Lazy<()> {
         let Some(parsed) = parsed.filter(|p| p.kind == analyze::StatementKind::Mutation && p.statement != "delete" && !p.write_set.is_empty()) else { return Some(()) };
         let rules = by_relation(self.host, cardinality::TRIGGERS_QUERY, &parsed.write_set)?;
-        const WRITES: u32 = (cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE) as u32;
-        // A host that answers without the rules' column reports none: every write is then taken
-        // as one a rule may rewrite, and so is every write where the catalog did not answer.
+        // The statement's own event: a MERGE's, and a statement's that writes in a WITH query, is either.
+        let events = match parsed.statement {
+            "insert" => cardinality::TRIGGER_ROW_INSERT,
+            "update" => cardinality::TRIGGER_ROW_UPDATE,
+            _ => cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE,
+        } as u32;
+        // A host that answers without the INSTEAD rules' column is read by the rules' one, and
+        // one without that reports none: every write is then taken as one a rule may take over,
+        // and so is every write where the catalog did not answer.
         let ruled = |name: &str| match &rules {
-            Ok(rows) => rows.iter().any(|row| row.first().and_then(as_str) == Some(name) && row.get(2).map_or(Some(WRITES), as_u32).unwrap_or(0) & WRITES != 0),
+            Ok(rows) => rows.iter().any(|row| row.first().and_then(as_str) == Some(name) && row.get(5).or(row.get(2)).map_or(Some(events), as_u32).unwrap_or(0) & events != 0),
             Err(_) => true,
         };
         let (oids, views) = (self.oids_by_name.borrow(), self.views.borrow());
