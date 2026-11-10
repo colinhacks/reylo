@@ -176,6 +176,19 @@ fn print(line: &str) {
     println!("{line}");
 }
 
+/// A command that isn't one, said on stderr with exit 2; with `--json`, as the one JSON object every
+/// command prints, `extra` (the usage) left out.
+fn usage_error(group: &str, args: &[String], message: &str, extra: &str) -> i32 {
+    if args.iter().any(|a| a == "--json") {
+        let named: Vec<&str> = args.iter().take_while(|a| !a.starts_with('-')).map(String::as_str).collect();
+        let out = serde_json::json!({ "command": format!("reylo {group} {}", named.join(" ")).trim_end(), "ok": false, "exit": 2, "error": message, "log": [] });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        eprintln!("{message}{extra}");
+    }
+    2
+}
+
 /// The commands of `reylo migrate` and `reylo db`; with `--json`, a command refused before it starts
 /// is one JSON object too.
 fn group_command(group: &str, args: &[String]) -> Result<i32, String> {
@@ -207,11 +220,9 @@ fn group_command_checked(group: &str, args: &[String]) -> Result<i32, String> {
             theirs = ALSO_KNOWN_AS.iter().filter(|(name, _)| *name == word).map(|(_, c)| format!("reylo {c}")).collect();
         }
         if !theirs.is_empty() {
-            eprintln!("reylo {group} has no {word}: it's {}", theirs.join(", or "));
-            return Ok(2);
+            return Ok(usage_error(group, args, &format!("reylo {group} has no {word}: it's {}", theirs.join(", or ")), ""));
         }
-        eprintln!("reylo {group}: unknown command {word}\n\n{MIGRATE_USAGE}");
-        return Ok(2);
+        return Ok(usage_error(group, args, &format!("reylo {group}: unknown command {word}"), &format!("\n\n{MIGRATE_USAGE}")));
     }
     let command = command.as_str();
     let parsed = parse(&args[words..])?;
@@ -408,12 +419,8 @@ fn main() {
             } else {
                 COMMANDS.iter().filter(|c| words.last().is_some_and(|w| c.ends_with(&format!(" {w}")))).map(|c| format!("reylo {c}")).collect()
             };
-            if found.is_empty() {
-                eprintln!("reylo migration is reylo migrate (reylo migrate --help)");
-            } else {
-                eprintln!("reylo migration is reylo migrate: {}", found.join(", or "));
-            }
-            2
+            let message = if found.is_empty() { "reylo migration is reylo migrate (reylo migrate --help)".to_string() } else { format!("reylo migration is reylo migrate: {}", found.join(", or ")) };
+            usage_error("migration", &args[1..], &message, "")
         }
         Some(group @ ("migrate" | "db")) => group_command(group, &args[1..]).unwrap_or_else(|e| {
             eprintln!("reylo {group}: {e}");

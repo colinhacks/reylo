@@ -287,6 +287,13 @@ $ reylo migrate init
 ✓ The history lists the 1 migration this database's schema has
 ```
 
+On an empty database it writes an empty `schema.sql` and an empty lock, and your first migration is `reylo migrate new`'s:
+
+```terminal
+$ reylo migrate init
+✓ Wrote reylo/schema.sql and reylo/reylo-lock.yaml: this database is empty, so declare your schema in reylo/schema.sql
+```
+
 ### `reylo migrate new`
 
 Writes the next migration, from your change to `schema.sql`.

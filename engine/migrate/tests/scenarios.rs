@@ -387,7 +387,7 @@ for_each_dialect!(
     commands_create_prints_for_names_with_spaces_run_as_printed,
     deploy_compares_with_what_dev_replayed,
     deploy_refuses_any_schema_with_no_history,
-    init_on_an_empty_database_writes_only_the_schema_file,
+    init_on_an_empty_database_writes_an_empty_schema_and_lock,
     a_broken_draft_keeps_what_sync_made,
     a_migrations_directory_that_isnt_there_is_refused,
     a_run_cut_off_between_migrations_is_still_compared,
@@ -1762,11 +1762,15 @@ async fn a_run_cut_off_between_migrations_is_still_compared(mut p: P) {
     assert_has!(p.output(), "changed since Reylo last ran on it");
 }
 
-async fn init_on_an_empty_database_writes_only_the_schema_file(mut p: P) {
+async fn init_on_an_empty_database_writes_an_empty_schema_and_lock(mut p: P) {
     assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
-    assert_has!(p.output(), r"✓ Wrote \S*schema\.sql: this database is empty, so declare your schema there");
+    assert_has!(p.output(), r"✓ Wrote \S*schema\.sql and \S*reylo-lock\.yaml: this database is empty, so declare your schema in \S*schema\.sql");
     assert!(p.files().is_empty(), "{:?}", p.files());
     assert_eq!(p.history().await, Vec::<String>::new());
+    // Linear from the first migration: the lock is there, empty, and lint passes.
+    p.strict = true;
+    assert!(p.locked().is_empty());
+    assert_eq!(p.lint().await, 0, "{}", p.peek());
     // The first migration is create's.
     p.schema(&format!("create table t (id {});", p.t.int));
     assert_eq!(p.run(async |o, log| reylo_migrate::create(o, "t", &Default::default(), log).await).await, 0, "{}", p.peek());
@@ -2419,6 +2423,7 @@ on!(Mysql, a_migration_that_names_a_database_is_refused);
 on!(
     Postgres,
     a_partition_of_a_run_time_partition_is_data,
+    an_extension_in_a_schema_of_its_own_is_dumped_after_it,
     a_partition_dropped_at_run_time_is_data,
     init_creates_the_extensions_its_schema_uses,
     a_dump_keeps_a_function_body_as_written,
@@ -3220,6 +3225,15 @@ create trigger kids_note after insert on kids begin update parents set name = na
         p.exec("create extension citext; create table u (id int primary key, email citext);").await;
         assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &[], log).await).await, 0, "{}", p.peek());
         assert_has!(std::fs::read_to_string(p.dir.join("migrations/init.sql")).unwrap(), r"CREATE EXTENSION IF NOT EXISTS citext");
+        let q = P::new(p.d).await.unwrap();
+        p.url = q.url.clone();
+        assert_eq!(p.migrate().await, 0, "{}", p.peek());
+        assert_eq!(q.history().await, ["init.sql"]);
+    }
+
+    pub async fn an_extension_in_a_schema_of_its_own_is_dumped_after_it(mut p: P) {
+        p.exec("create schema app; create extension citext with schema app; create table app.u (id int primary key, email app.citext);").await;
+        assert_eq!(p.run(async |o, log| reylo_migrate::init(o, &["app".to_string()], log).await).await, 0, "{}", p.peek());
         let q = P::new(p.d).await.unwrap();
         p.url = q.url.clone();
         assert_eq!(p.migrate().await, 0, "{}", p.peek());

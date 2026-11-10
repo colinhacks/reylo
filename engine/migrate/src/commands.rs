@@ -2879,7 +2879,8 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 ))
                 .await?
             {
-                if !named_schemas.iter().any(|s| s == r.text("raw")) && r.text("raw") != "public" {
+                // Its schema first, dumped or not: pg_dump's own `create schema`, later, then finds it there.
+                if r.text("raw") != "public" {
                     kept.push(format!("CREATE SCHEMA IF NOT EXISTS {}", r.text("schema")));
                 }
                 kept.push(format!("CREATE EXTENSION IF NOT EXISTS {} WITH SCHEMA {}", r.text("name"), r.text("schema")));
@@ -2889,7 +2890,10 @@ async fn dump_from(db: &mut Db, opts: &Options, schemas: &[String]) -> Result<St
                 if s.starts_with("SET ") || s.starts_with("SELECT pg_catalog.set_config") || (s.starts_with("ALTER ") && s.ends_with(&own)) || platform_default(s) || s.starts_with("CREATE EXTENSION ") {
                     continue;
                 }
-                kept.push(if s == "CREATE SCHEMA public" { "CREATE SCHEMA IF NOT EXISTS public".to_string() } else { s.to_string() });
+                kept.push(match s.strip_prefix("CREATE SCHEMA ") {
+                    Some(rest) if !rest.starts_with("IF NOT EXISTS ") => format!("CREATE SCHEMA IF NOT EXISTS {rest}"),
+                    _ => s.to_string(),
+                });
             }
             let mut joined = kept.iter().map(|s| format!("{s};")).collect::<Vec<_>>().join("\n\n");
             // What the project made on a platform's tables (Supabase's `auth.users`, `storage.objects`),
@@ -2988,16 +2992,17 @@ pub async fn init(opts: &Options, schemas: &[String], log: Log<'_>) -> Result<i3
     if !read_migrations(&opts.dir)?.0.is_empty() {
         return Err(Error(format!("{} holds migrations already: init starts a project's history", shown(&opts.dir))));
     }
-    // An empty database has no history to start: the first migration is `create`'s.
+    // An empty database has no history to start: the first migration is `new`'s. The lock starts
+    // empty, holding the checksum of the empty schema.sql the no migrations reach, so the project
+    // keeps linear history from its first migration.
     let mut db = Db::connect(&opts.url, &opts.root).await?;
     let lines = catalog(&mut db).await;
     db.close().await;
     if !holds_a_schema(&lines?) {
-        if let Some(home) = opts.schema.parent() {
-            std::fs::create_dir_all(home)?;
-        }
+        std::fs::create_dir_all(&opts.dir)?;
         std::fs::write(&opts.schema, "")?;
-        log(&format!("{} Wrote {}: this database is empty, so declare your schema there", paint("green", "✓"), shown(&opts.schema)));
+        lock::write(&opts.lock, &lock::Lock { schema: Some(lock::schema_sum("", "")), entries: vec![] })?;
+        log(&format!("{} Wrote {} and {}: this database is empty, so declare your schema in {}", paint("green", "✓"), shown(&opts.schema), shown(&opts.lock), shown(&opts.schema)));
         return Ok(0);
     }
     let sql = dump(opts, schemas).await?;
