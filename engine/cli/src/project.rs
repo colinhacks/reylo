@@ -150,13 +150,13 @@ pub fn read_env_file(path: &Path) -> HashMap<String, String> {
     std::fs::read(path).map(|bytes| parse_env(&String::from_utf8_lossy(&bytes))).unwrap_or_default()
 }
 
-/// An env file's variables, read as dotenv and Node's `--env-file` read a well-formed file, so that
-/// Reylo reads the value the app does. A line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`,
-/// `export ` before it or not; a line
-/// whose first character is `#`, or that has no `=`, sets nothing. A value in double, single or back
-/// quotes is what lies between them, lines included, with `\n` a newline in double quotes, and the
-/// rest of the line after the closing quote is left out; any other value is its line up to the first
-/// `#`, spaces and tabs trimmed. The type check reads env files the same way (`readEnvFile` in
+/// An env file's variables, read as dotenv reads them, so that Reylo reads the value the app does. A
+/// line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`, `export ` before it or not; a line whose
+/// first character is `#`, or that has no `=`, sets nothing. A value in double, single or back quotes
+/// is what lies between them, lines included, when nothing but blanks and a comment follows the
+/// closing quote on its line; any other value is its line up to the first `#`, spaces and tabs
+/// trimmed, less a quote at each end. In a value that starts with a double quote, `\n` and `\r` are a
+/// newline and a carriage return. The type check reads env files the same way (`readEnvFile` in
 /// src/project.ts), and both are held to env-file-cases.json.
 fn parse_env(text: &str) -> HashMap<String, String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text).replace("\r\n", "\n").replace('\r', "\n");
@@ -174,15 +174,31 @@ fn parse_env(text: &str) -> HashMap<String, String> {
         let name = line[..eq].trim_matches(blank);
         let name = name.strip_prefix("export").filter(|rest| rest.starts_with(blank)).map_or(name, |rest| rest.trim_start_matches(blank));
         let start = at + eq + 1 + line[eq + 1..].find(|c| !blank(c)).unwrap_or(line.len() - eq - 1);
-        let quote = text[start..].chars().next().filter(|c| matches!(c, '"' | '\'' | '`'));
-        let value = match quote.and_then(|q| text[start + 1..].find(q).map(|n| (q, start + 1 + n))) {
-            Some((q, close)) => {
-                end = line_end(close);
-                let inner = &text[start + 1..close];
-                if q == '"' { inner.replace("\\n", "\n") } else { inner.to_string() }
+        let mut raw = text[start..end].split('#').next().unwrap_or_default().trim_end_matches(blank);
+        if let Some(quote) = text[start..].chars().next().filter(|c| matches!(c, '"' | '\'' | '`')) {
+            // The quote closes, as in dotenv, at the first quote of its kind that no backslash
+            // escapes, or else at an escaped one before it, the last first: at the first of these
+            // that nothing but blanks and a comment follows on its line.
+            let next = |from: usize| text[from..].find(quote).map(|n| from + n);
+            let mut escaped = Vec::new();
+            let mut close = next(start + 1);
+            while let Some(p) = close.filter(|&p| text.as_bytes()[p - 1] == b'\\') {
+                escaped.push(p);
+                close = next(p + 1);
             }
-            None => text[start..end].split('#').next().unwrap_or_default().trim_end_matches(blank).to_string(),
+            let clean = |p: usize| text[p + 1..line_end(p)].trim_start_matches(blank).chars().next().is_none_or(|c| c == '#');
+            if let Some(closes) = close.into_iter().chain(escaped.into_iter().rev()).find(|&p| clean(p)) {
+                raw = &text[start..=closes];
+                end = line_end(closes);
+            }
+        }
+        let mut value = match raw.chars().next() {
+            Some(q @ ('"' | '\'' | '`')) if raw.len() > 1 && raw.ends_with(q) => raw[1..raw.len() - 1].to_string(),
+            _ => raw.to_string(),
         };
+        if raw.starts_with('"') {
+            value = value.replace("\\n", "\n").replace("\\r", "\r");
+        }
         if !name.is_empty() && name.chars().enumerate().all(|(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())) {
             vars.insert(name.to_string(), value);
         }

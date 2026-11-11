@@ -135,15 +135,15 @@ export function dialectOf(url: string): Dialect | undefined {
 }
 
 /**
- * An env file's variables, none when it is missing or cannot be read, read as dotenv and Node's
- * `--env-file` read a well-formed file, so that Reylo reads the value the app does. A line ends at
- * `\n`, `\r\n` or `\r`, and is `NAME=value`, `export `
- * before it or not; a line whose first character is `#`, or that has no `=`, sets nothing. A value
- * in double, single or back quotes is what lies between them, lines included, with `\n` a newline in
- * double quotes, and the rest of the line after the closing quote is left out; any other value is
- * its line up to the first `#`, spaces and tabs trimmed. Node's own `parseEnv` is not used: a line
- * whose empty value ends in a space takes the next line as its value there. The binary reads env
- * files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
+ * An env file's variables, none when it is missing or cannot be read, read as dotenv reads them, so
+ * that Reylo reads the value the app does. A line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`,
+ * `export ` before it or not; a line whose first character is `#`, or that has no `=`, sets nothing.
+ * A value in double, single or back quotes is what lies between them, lines included, when nothing
+ * but blanks and a comment follows the closing quote on its line; any other value is its line up to
+ * the first `#`, spaces and tabs trimmed, less a quote at each end. In a value that starts with a
+ * double quote, `\n` and `\r` are a newline and a carriage return. Node's own `parseEnv` is not used:
+ * a line whose empty value ends in a space takes the next line as its value there. The binary reads
+ * env files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
  * engine/cli/src/env-file-cases.json.
  */
 export function readEnvFile(path: string): Record<string, string> {
@@ -168,14 +168,23 @@ export function readEnvFile(path: string): Record<string, string> {
     }
     const name = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*$/.exec(line.slice(0, eq))?.[1];
     const start = at + eq + 1 + /^[ \t]*/.exec(line.slice(eq + 1))![0].length;
-    const quote = /["'`]/.test(text[start] ?? "") ? text[start]! : undefined;
-    const close = quote ? text.indexOf(quote, start + 1) : -1;
-    let value: string;
-    if (close >= 0) {
-      end = lineEnd(close);
-      value = text.slice(start + 1, close);
-      if (quote === '"') value = value.replaceAll("\\n", "\n");
-    } else value = text.slice(start, end).split("#")[0]!.replace(/[ \t]+$/, "");
+    let raw = text.slice(start, end).split("#")[0]!.replace(/[ \t]+$/, "");
+    const quote = text[start];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      // The quote closes, as in dotenv, at the first quote of its kind that no backslash escapes, or
+      // else at an escaped one before it, the last first: at the first of these that nothing but
+      // blanks and a comment follows on its line.
+      const escaped: number[] = [];
+      let close = text.indexOf(quote, start + 1);
+      for (; close >= 0 && text[close - 1] === "\\"; close = text.indexOf(quote, close + 1)) escaped.push(close);
+      const closes = [...(close >= 0 ? [close] : []), ...escaped.reverse()].find((p) => /^[ \t]*(?:#.*)?$/.test(text.slice(p + 1, lineEnd(p))));
+      if (closes !== undefined) {
+        raw = text.slice(start, closes + 1);
+        end = lineEnd(closes);
+      }
+    }
+    let value = raw.length > 1 && /^["'`]/.test(raw) && raw.endsWith(raw[0]!) ? raw.slice(1, -1) : raw;
+    if (raw.startsWith('"')) value = value.replaceAll("\\n", "\n").replaceAll("\\r", "\r");
     if (name) vars[name] = value;
     at = end + 1;
   }
