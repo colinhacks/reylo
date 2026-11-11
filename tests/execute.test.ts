@@ -866,6 +866,24 @@ test("Knex: an instance over a driver Reylo does not read is refused before it l
   }
 });
 
+test("pg's native client, a pool of them and pg-promise over them are refused, since they ignore a query's types", async () => {
+  // pg 8.23's lib/native/client.js: a function constructor whose instance keeps the binding on native, with
+  // getTypeParser and _hasActiveQuery on its prototype; pg-pool keeps the constructor on the pool's Client.
+  let queried = 0;
+  function NativeClient(this: { native: object }) {
+    this.native = {};
+  }
+  NativeClient.prototype.query = async () => (queried++, { rows: [row], fields: [] });
+  NativeClient.prototype.getTypeParser = () => (x: string) => x;
+  NativeClient.prototype._hasActiveQuery = () => false;
+  const client = new (NativeClient as unknown as new () => object)();
+  const pool = { Client: NativeClient, connect: async () => client, query: async () => (queried++, { rows: [row], fields: [] }) };
+  // pg-promise's database, initialized with pgNative: true (pg-promise 12's lib/main.js), which runs on pg.native.
+  const pgp = { manyOrNone: async () => [], query: async () => (queried++, [row]), result: async () => (queried++, { rows: [row], fields: [] }), $config: { options: { pgNative: true } } };
+  for (const c of [client, pool, pgp]) await assert.rejects(() => execute(c as never, pg, { id: 1, name: "ada" }) as Promise<unknown>, /^TypeError: Reylo cannot read this pg client's results: it is pg's native client/);
+  assert.equal(queried, 0);
+});
+
 const knexLive = !existsSync(join(DRIVERS, "knex")) ? "lab/drivers is not installed" : false;
 
 test("Knex: an instance or transaction over better-sqlite3 or sqlite3 runs on its connection; runSync refuses it", { skip: knexLive }, async () => {
