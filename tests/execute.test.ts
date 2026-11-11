@@ -856,6 +856,16 @@ async function knexRuns(db: any, dialect: "postgres" | "mysql" | "sqlite") {
   assert.equal(db.client.pool.numUsed(), 0);
 }
 
+test("Knex: an instance over a driver Reylo does not read is refused before it lends a connection", async () => {
+  // Knex's instance: a function with raw() and transaction(), whose client names its driver (knex 3.3.0's lib/dialects/mysql/index.js).
+  for (const driverName of ["mysql", "pgnative", "cockroachdb", "mssql"]) {
+    let acquired = 0;
+    const knex = Object.assign(() => {}, { raw() {}, transaction() {}, client: { driverName, acquireConnection: async () => void acquired++, releaseConnection: async () => {} } });
+    await assert.rejects(() => execute(knex as never, my, { id: 1, name: "ada" }) as Promise<unknown>, new RegExp(`^TypeError: reylo cannot run on a Knex instance over ${driverName}: it reads the connections of pg, mysql2, mariadb, better-sqlite3, sqlite3\\.`));
+    assert.equal(acquired, 0);
+  }
+});
+
 const knexLive = !existsSync(join(DRIVERS, "knex")) ? "lab/drivers is not installed" : false;
 
 test("Knex: an instance or transaction over better-sqlite3 or sqlite3 runs on its connection; runSync refuses it", { skip: knexLive }, async () => {

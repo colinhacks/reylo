@@ -315,8 +315,9 @@ function isKnex(c: AnyClient | null | undefined): boolean {
   return typeof client?.acquireConnection === "function" && typeof client.releaseConnection === "function";
 }
 
-// The database of each driver Knex names on its client, `client.driverName`, whose connections Reylo reads.
-const knexDrivers: Readonly<Record<string, Dialect>> = { pg: "postgres", pgnative: "postgres", mysql: "mysql", mysql2: "mysql", mariadb: "mysql", sqlite3: "sqlite", "better-sqlite3": "sqlite" };
+// The drivers Knex names on its client, `client.driverName`, whose connections Reylo reads, each with
+// its database. Any other (pgnative, mysql, cockroachdb, pg-redshift, mssql, oracledb) is refused.
+const knexDrivers: Readonly<Record<string, Dialect>> = { pg: "postgres", mysql2: "mysql", mariadb: "mysql", "better-sqlite3": "sqlite", sqlite3: "sqlite" };
 
 /**
  * Runs on a connection a Knex instance or transaction hands out: one its pool lends, given back
@@ -327,6 +328,7 @@ const knexDrivers: Readonly<Record<string, Dialect>> = { pg: "postgres", pgnativ
 async function onKnexConnection(knex: AnyClient, dialect: Dialect, run: (connection: AnyClient) => unknown[] | Promise<unknown[]>): Promise<unknown[]> {
   const driver: unknown = knex.client.driverName;
   const database = typeof driver === "string" && Object.hasOwn(knexDrivers, driver) ? knexDrivers[driver] : undefined;
+  if (typeof driver === "string" && database === undefined) throw new TypeError(`reylo cannot run on a Knex instance over ${driver}: it reads the connections of ${Object.keys(knexDrivers).join(", ")}.`);
   if (database !== undefined && database !== dialect) throw new TypeError(`reylo cannot run a ${dialect} statement on a Knex instance for ${driver}, a ${database} driver: pass a Knex instance for ${dialect}.`);
   if (typeof knex.isCompleted === "function" && knex.isCompleted()) throw new Error("reylo cannot run a statement on a Knex transaction that has already committed or rolled back: its connection is back in the pool.");
   const connection = await knex.client.acquireConnection();
