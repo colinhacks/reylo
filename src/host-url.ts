@@ -67,7 +67,8 @@ function postgresSocket(base: string, pairs: string[], env: Record<string, strin
   const host = params.host ?? (encodedHost ? decodeURIComponent(encodedHost) : params.hostaddr ? undefined : env.PGHOST);
   if (!host?.startsWith("/") || host.includes(",")) return undefined;
   const port = params.port || authorityPort || env.PGPORT || "5432";
-  return { path: `${host.replace(/\/$/, "")}/.s.PGSQL.${port}`, params: ["host", "port", "sslmode"] };
+  // Its TLS settings too: a Unix socket carries none, and the bridge offers none.
+  return { path: `${host.replace(/\/$/, "")}/.s.PGSQL.${port}`, params: ["host", "port", "sslmode", "ssl"] };
 }
 
 /** The socket file a mysql2 URL names: `socketPath`, or `socket`. */

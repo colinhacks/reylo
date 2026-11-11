@@ -7,7 +7,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { defineQuery, type MysqlClient, type MysqlCode, type MysqlNarrowing, type MysqlQueryError, type PostgresClient, type PostgresCondition, type PostgresNarrowing, type PostgresQueryError, type Query, type SqliteCode, type SqliteNarrowing, type SqliteQueryError } from "../src/index.ts";
-import { readQueryError, readQueryErrorSync } from "../src/query-error.ts";
+import { readMysqlError, readPostgresError, readSqliteError } from "../src/query-error.ts";
 import { queryErrorType } from "../src/module-types.ts";
 import type { Analysis, Dialect } from "../src/engine.ts";
 import { DRIVERS, MYSQL, ROOT, pgLive, mysqlLive, postgresDatabase, driver, languageServer } from "./helpers.ts";
@@ -72,7 +72,7 @@ test("Postgres: the error each driver throws reads as one, with the server's fie
     ["postgres.js's closed connection", thrown("write CONNECTION_CLOSED 127.0.0.1:5432", { code: "CONNECTION_CLOSED", errno: "CONNECTION_CLOSED" }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = await readQueryError("postgres", error);
+    const read = await readPostgresError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;
@@ -139,7 +139,7 @@ test("MySQL: the error each driver throws reads as one, named from MySQL's own l
     ["mysql2's lost connection", thrown("Connection lost: The server closed the connection.", { code: "PROTOCOL_CONNECTION_LOST", fatal: true }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = await readQueryError("mysql", error);
+    const read = await readMysqlError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;
@@ -181,7 +181,7 @@ test("SQLite: the error each driver throws reads as one, its most specific code 
     ["Turso's own error", thrown("database is closed", { code: "GenericFailure" }), undefined],
   ];
   for (const [label, error, expected] of cases) {
-    const read = readQueryErrorSync("sqlite", error);
+    const read = readSqliteError(error);
     if (expected === undefined) {
       assert.equal(read, undefined, label);
       continue;

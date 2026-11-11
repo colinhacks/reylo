@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
-import { execute, type QueryModule } from "../src/execute.ts";
+import { execute, type QueryModule } from "./run.ts";
 import { renderParamType, renderType } from "../src/render.ts";
 import { typeSchema } from "../src/schema.ts";
 import { coerce, columnKind, DecodeError, duration, hstore, hstoreText, instant, kindType, numbersInJson, parseRow, postgresInterval, postgresLiteral, postgresYear, rowMasks, scalarKind, textDecoder, withinDimensions } from "../src/values.ts";
@@ -663,7 +663,7 @@ test("runSync refuses a client whose prepared statement answers through a promis
   const db = { prepare: () => ({ all: async () => [{ n: 1 }] }) };
   const q: QueryModule<"sqlite"> = { dialect: "sqlite", sql: "select 1 as n", params: [], columns: [["n", "int"]] };
   assert.deepEqual(await execute(db as never, q), [{ n: 1 }]);
-  const { executeSync } = await import("../src/execute.ts");
+  const { executeSync } = await import("./run.ts");
   assert.throws(() => executeSync(db as never, { ...q, sql: "select 2 as n" }), /answered with a promise/);
 });
 

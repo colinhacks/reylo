@@ -267,6 +267,17 @@ fn run(sql: &str, lexed: &Lexed, ddl: &[String], extras: &Extras, marked: &[Stri
         }
         return failed(bare(sql, lexed, Dialect::Sqlite, diagnostics));
     }
+    // SQLite prepared the `?n` rewrite, so each of its parameters is one the lexer numbered. Any
+    // other is one SQLite reads and the lexer does not (`:été`, whose name the lexer ends before):
+    // it stayed in the text, takes no value and would run as NULL. An error where it stands.
+    for p in t.params.iter().filter(|p| !lexed_parameter(p, lexed)) {
+        // Where it stands: the first place its name is written outside a string, a quoted name or a comment.
+        let text = |start: &usize| lexed.opaque.iter().any(|(from, to)| (*from..*to).contains(start));
+        let at = p.name.as_deref().and_then(|name| sql.match_indices(name).map(|(start, _)| start).find(|start| !text(start)).map(|start| (start, name.len())));
+        let written = p.name.as_deref().unwrap_or("a ? in this statement");
+        let (start, length) = at.unwrap_or((0, sql.trim_end().len()));
+        diagnostics.push(diag(format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"), start, length, 1));
+    }
     // A JSON object of an odd count of arguments, which SQLite prepares and refuses when it runs;
     // only the built-in constructors, which a function the host registers under the name overrides
     // (`Extras::function`). The host's list names the built-ins with any argument count (-1).
@@ -448,6 +459,12 @@ fn tables(t: &Tree) -> Tables {
     let Walk { mut read, ctes } = walk;
     read.retain(|table| !ctes.iter().any(|cte| cte.eq_ignore_ascii_case(table)));
     Tables { read, write, ..Default::default() }
+}
+
+/// Whether SQLite's parameter is one the lexer read: the statement is prepared as its `?n` rewrite,
+/// which names the lexer's parameters `?1` to `?N`.
+fn lexed_parameter(p: &tree::PublicParam, lexed: &Lexed) -> bool {
+    p.name.as_deref().and_then(|name| name.strip_prefix('?')).and_then(|k| k.parse::<usize>().ok()).is_some_and(|k| (1..=lexed.params.len()).contains(&k))
 }
 
 /// The error of each parameter that is, bare or under casts and collations, a whole key of an
@@ -923,6 +940,24 @@ struct Level {
     reduced: HashSet<i64>,
     /// A plain GROUP BY: no group is empty.
     grouped: bool,
+    /// The cursors of the arm's own FROM items where it aggregates with no GROUP BY: over no rows
+    /// it still returns one row, in which a column outside an aggregate's arguments is NULL,
+    /// whatever its table declares and its WHERE tests.
+    lone: HashSet<i64>,
+    /// How many aggregate calls the expression being typed stands inside: their arguments are
+    /// read from the rows aggregated, each a row that is there.
+    aggregating: u32,
+    /// The cursors of the arm's own FROM items.
+    own: HashSet<i64>,
+    /// The same cursors of the arms around this one, each read here outside its arm's
+    /// aggregates: a subquery's read of such an arm's column (`(select e.name)`) is NULL in the
+    /// row that arm returns over no rows.
+    around: HashSet<i64>,
+    /// How many of the aggregate calls the expression stands inside read none of this arm's own
+    /// items for certain. SQLite gives an aggregate to the innermost query whose items it reads,
+    /// so such a call is an arm's around this one (`(select json_group_array(name) from posts)`
+    /// over `users` aggregates the users), and reads that arm's rows, each one there.
+    foreign: u32,
 }
 
 /// The parameter a value is under the conversion a `::type` cast compiles to: `CAST(?n AS type)`,
@@ -949,7 +984,19 @@ fn level_of(sel: &Sel, extras: &Extras) -> Level {
         narrowed.extend(strict_in(term, extras).into_iter().filter(|(cursor, _)| own.contains(cursor) && !(term.inner_on && extended.contains(cursor))));
     }
     let reduced = narrowed.iter().map(|(cursor, _)| *cursor).filter(|c| outer.contains(c)).collect();
-    Level { narrowed, reduced, grouped: !sel.group_by.is_empty() }
+    let lone = if sel.aggregate && sel.group_by.is_empty() { own.clone() } else { HashSet::new() };
+    Level { narrowed, reduced, grouped: !sel.group_by.is_empty(), lone, aggregating: 0, own, around: HashSet::new(), foreign: 0 }
+}
+
+/// Whether an expression reads a column of one of `cursors`, or may: a subquery in it may read
+/// one in any of its clauses.
+fn reads_cursor(n: &Node, cursors: &HashSet<i64>) -> bool {
+    if (n.op == "column" && cursors.contains(&n.cursor)) || n.select.is_some() {
+        return true;
+    }
+    n.left.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.right.as_deref().is_some_and(|x| reads_cursor(x, cursors))
+        || n.list.iter().chain(&n.args).chain(&n.order_by).chain(&n.partition_by).any(|x| reads_cursor(x, cursors))
 }
 
 /// The columns a WHERE test at the top level rejects NULL in: under OR the ones every arm does; a
@@ -969,7 +1016,9 @@ fn strict_in(n: &Node, extras: &Extras) -> HashSet<(i64, String)> {
         "=" | "!=" | "<" | "<=" | ">" | ">=" => n.left.iter().chain(n.right.iter()).flat_map(|x| nulls(x)).collect(),
         "not" => match n.left.as_deref() {
             Some(inner) if inner.op == "isnull" => inner.left.as_deref().map(nulls).unwrap_or_default(),
-            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "between")).collect(),
+            // `x NOT IN (SELECT …)` is true of a NULL `x` where the subquery returns no row; a
+            // list is never empty.
+            Some(inner) => strict_in(inner, extras).into_iter().filter(|_| matches!(inner.op.as_str(), "=" | "!=" | "<" | "<=" | ">" | ">=" | "between") || (inner.op == "in" && inner.select.is_none())).collect(),
             None => HashSet::new(),
         },
         "function" if !n.agg && !n.window && matches!(n.name.as_deref(), Some("like" | "glob")) && extras.function(n.name.as_deref().unwrap_or(""), n.args.len()).is_none() => {
@@ -1309,7 +1358,7 @@ impl Analyzer<'_> {
             .flat_map(|arm| {
                 let mut inner = scope.clone();
                 inner.push(&arm.from);
-                let outer = self.level.replace(level_of(arm, self.extras));
+                let outer = self.level.replace(self.level_within(arm));
                 let rows = std::iter::once(arm.columns.get(i).map(|c| &c.expr)).chain(arm.rows.iter().map(|row| row.get(i)));
                 let facts: Vec<(Option<&Node>, Fact)> = rows.map(|e| (e, e.map(|e| self.type_of(e, &inner)).unwrap_or_else(Fact::unknown))).collect();
                 self.level.replace(outer);
@@ -1346,7 +1395,7 @@ impl Analyzer<'_> {
         let width = first.columns.len();
         let mut inner = scope.clone();
         inner.push(&first.from);
-        let outer = self.level.replace(level_of(first, self.extras));
+        let outer = self.level.replace(self.level_within(first));
         let mut assumed: Vec<Fact> = first.columns.iter().map(|c| Fact { ty: self.type_of(&c.expr, &inner).ty, non_null: true }).collect();
         self.level.replace(outer);
         // What a round works out under its assumption, a JSON constructor's shape or a recursive
@@ -1381,9 +1430,9 @@ impl Analyzer<'_> {
     fn column_ref(&self, n: &Node, scope: &ScopeStack) -> Fact {
         // A strict WHERE test on the column, or on any column of its outer-joined item, keeps
         // its NULL (or the item's null extension) out of every returned row.
-        let (narrowed, reduced) = {
+        let (narrowed, reduced, lone) = {
             let level = self.level.borrow();
-            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor))
+            (n.column.as_ref().is_some_and(|c| level.narrowed.contains(&(n.cursor, c.clone()))), level.reduced.contains(&n.cursor), (level.aggregating == 0 && level.lone.contains(&n.cursor)) || (level.foreign == 0 && level.around.contains(&n.cursor)))
         };
         for froms in scope.iter().rev() {
             if let Some(f) = froms.iter().find(|f| f.cursor == n.cursor) {
@@ -1396,7 +1445,7 @@ impl Analyzer<'_> {
                     _ => None,
                 };
                 if let Some(inner) = inner {
-                    return Fact { ty: inner.ty, non_null: narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced)) };
+                    return Fact { ty: inner.ty, non_null: !lone && (narrowed || (inner.non_null && ((!f.outer && !n.outer) || reduced))) };
                 }
                 break;
             }
@@ -1406,10 +1455,27 @@ impl Analyzer<'_> {
             Some(declared) if !n.rowid => column_type(declared, aff, n.strict),
             _ => affinity_type(aff),
         };
-        Fact { ty, non_null: narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced)) }
+        Fact { ty, non_null: !lone && (narrowed || ((n.not_null || n.rowid) && (!n.outer || reduced))) }
     }
 
     // ---- expressions -------------------------------------------------------------------------
+
+    /// A function call's type: the JSON a constructor builds, or what the function returns for
+    /// its arguments' types.
+    fn call(&self, n: &Node, scope: &ScopeStack) -> Fact {
+        // The JSON a `json_*` constructor builds, which SQLite returns as its text.
+        if let Some(ty) = self.built_text(n, scope) {
+            // `json()` of a scalar subquery is NULL where the subquery finds no row; every
+            // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
+            let non_null = match n.args.first() {
+                Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
+                _ => true,
+            };
+            return Fact { ty, non_null };
+        }
+        let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
+        self.function(n, &args)
+    }
 
     fn type_of(&self, n: &Node, scope: &ScopeStack) -> Fact {
         let arg = |x: &Option<Box<Node>>| x.as_deref().map(|x| self.type_of(x, scope)).unwrap_or_else(Fact::unknown);
@@ -1423,27 +1489,19 @@ impl Analyzer<'_> {
             // A parameter is a non-null value unless the statement means to take NULL for it.
             "variable" => Fact { ty: Ty::Unknown, non_null: n.name.as_ref().is_some_and(|name| !self.nullable_params.contains(name)) },
             "function" => {
-                // The JSON a `json_*` constructor builds, which SQLite returns as its text.
-                if let Some(ty) = self.built_text(n, scope) {
-                    // `json()` of a scalar subquery is NULL where the subquery finds no row; every
-                    // other constructor reads that NULL as a null (`[null]`, `{}`) and is never NULL.
-                    let non_null = match n.args.first() {
-                        Some(a) if a.op == "select" && self.builtin_name(n) == Some("json") => self.type_of(a, scope).non_null,
-                        _ => true,
-                    };
-                    return Fact { ty, non_null };
-                }
-                let args: Vec<Fact> = n.args.iter().map(|a| self.type_of(a, scope)).collect();
-                self.function(n, &args)
+                self.aggregated(n, || self.call(n, scope))
             }
             "+" | "-" | "*" => {
                 let (l, r) = (arg(&n.left), arg(&n.right));
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null }
             }
             "/" | "%" => {
-                // A zero divisor gives NULL; a literal divisor is one the statement rules out.
+                // A zero divisor gives NULL; a literal divisor is one the statement rules out. `%`
+                // divides by its divisor cast to INTEGER, which truncates toward zero and
+                // saturates as `as i64` does, so `x % 0.5` is NULL on every row.
                 let (l, r) = (arg(&n.left), arg(&n.right));
-                let literal_divisor = n.right.as_deref().is_some_and(|d| matches!(d.op.as_str(), "integer" | "float") && d.value.as_deref().and_then(|v| v.parse::<f64>().ok()).is_some_and(|v| v != 0.0));
+                let divisor = n.right.as_deref().filter(|d| matches!(d.op.as_str(), "integer" | "float")).and_then(|d| d.value.as_deref()?.parse::<f64>().ok());
+                let literal_divisor = divisor.is_some_and(|v| if n.op == "%" { v as i64 != 0 } else { v != 0.0 });
                 Fact { ty: arithmetic(&l.ty, &r.ty), non_null: l.non_null && r.non_null && literal_divisor }
             }
             "||" => {
@@ -1698,7 +1756,7 @@ impl Analyzer<'_> {
         if let Some(found) = self.shapes.borrow().get(&key) {
             return found.clone();
         }
-        let shape = self.shape_here(n, scope);
+        let shape = self.aggregated(n, || self.shape_here(n, scope));
         self.shapes.borrow_mut().insert(key, shape.clone());
         shape
     }
@@ -1940,11 +1998,47 @@ impl Analyzer<'_> {
         combine(&carries)
     }
 
+    /// `f` inside the arguments of `n` where it is an aggregate call: they are read from the rows
+    /// it aggregates ([`Level`]), where a window call's are read from the statement's own rows.
+    fn aggregated<T>(&self, n: &Node, f: impl FnOnce() -> T) -> T {
+        if !(n.op == "function" && n.agg && !n.over) {
+            return f();
+        }
+        // A FILTER, which the tree does not carry (`window`, on a call with no OVER), may read
+        // the arm's own items too: only a call seen to read none of them is an arm's around it.
+        let foreign = {
+            let level = self.level.borrow();
+            !n.window && !reads_cursor(n, &level.own)
+        };
+        {
+            let mut level = self.level.borrow_mut();
+            level.aggregating += 1;
+            level.foreign += u32::from(foreign);
+        }
+        let out = f();
+        let mut level = self.level.borrow_mut();
+        level.aggregating -= 1;
+        level.foreign -= u32::from(foreign);
+        out
+    }
+
+    /// A select arm's level, read from where the analysis stands: what the arm proves of its own
+    /// FROM items, and the cursors of the arms around it that are NULL where it reads them.
+    fn level_within(&self, sel: &Sel) -> Level {
+        let mut level = level_of(sel, self.extras);
+        let outer = self.level.borrow();
+        level.around = outer.around.clone();
+        if outer.aggregating == 0 {
+            level.around.extend(outer.lone.iter().copied());
+        }
+        level
+    }
+
     /// `f` over a select arm's own scope and level, as [`Analyzer::select_column`] reads its columns.
     fn within<T>(&self, sel: &Sel, scope: &ScopeStack, f: impl FnOnce(&ScopeStack) -> T) -> T {
         let mut inner = scope.clone();
         inner.push(&sel.from);
-        let outer = self.level.replace(level_of(sel, self.extras));
+        let outer = self.level.replace(self.level_within(sel));
         let out = f(&inner);
         self.level.replace(outer);
         out
@@ -3589,7 +3683,7 @@ mod tests {
 
     #[test]
     fn columns_from_provenance_and_rules() {
-        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h, count(*) as n from users");
+        let a = analysis("select id, name, email, score, length(email) as l, coalesce(email, 'x') as e, id * 2 as d, id / 2 as h from users");
         assert_eq!(col(&a, "id"), ("integer".into(), false));
         assert_eq!(col(&a, "name"), ("text".into(), false));
         assert_eq!(col(&a, "email"), ("text".into(), true));
@@ -3598,8 +3692,24 @@ mod tests {
         assert_eq!(col(&a, "e"), ("text".into(), false));
         assert_eq!(col(&a, "d"), ("integer".into(), false));
         assert_eq!(col(&a, "h"), ("integer".into(), false));
+        assert_eq!(a.cardinality, "many");
+    }
+
+    #[test]
+    fn a_column_beside_an_aggregate_with_no_group_by_is_null_over_no_rows() {
+        // The one row an aggregate with no GROUP BY returns over no rows holds NULL in every
+        // column outside an aggregate's arguments, whatever the table declares or the WHERE tests.
+        let a = analysis("select id, name, coalesce(email, 'x') as e, id * 2 as d, count(*) as n, count(name) as c, max(id) as m from users where name = 'ada'");
+        assert_eq!(col(&a, "id"), ("integer".into(), true));
+        assert_eq!(col(&a, "name"), ("text".into(), true));
+        assert_eq!(col(&a, "e"), ("text".into(), false));
+        assert_eq!(col(&a, "d"), ("integer".into(), true));
         assert_eq!(col(&a, "n"), ("integer".into(), false));
+        assert_eq!(col(&a, "c"), ("integer".into(), false));
         assert_eq!(a.cardinality, "one");
+        // A group has a row, and an aggregate reads rows that are there.
+        let a = analysis("select name, count(*) as n from users group by name");
+        assert_eq!(col(&a, "name"), ("text".into(), false));
     }
 
     #[test]
@@ -4031,6 +4141,34 @@ mod tests {
     }
 
     #[test]
+    fn the_version_reported_is_the_embedded_sqlites() {
+        // The release the docs name (site/content/docs/sqlite.mdx): a newer amalgamation changes both.
+        assert!(tree::version().starts_with("3.53."), "{}", tree::version());
+    }
+
+    #[test]
+    fn a_parameter_sqlite_reads_and_the_lexer_does_not_is_an_error_at_its_place() {
+        let unbound = |sql: &str| analysis(sql).diagnostics.iter().filter(|d| d.code == 1).map(|d| (d.start, d.length, d.message.clone())).collect::<Vec<_>>();
+        // SQLite's parameter is `:`, `@` or `$` and any run of name characters, digits and bytes
+        // past ASCII among them; the lexer's name is ASCII and starts with no digit.
+        for written in [":été", ":1st", "@2x"] {
+            let sql = format!("select id from users where name = :n and email = {written}");
+            let found = unbound(&sql);
+            assert_eq!(found.iter().map(|(s, l, _)| (*s, *l)).collect::<Vec<_>>(), [(sql.find(written).unwrap(), written.len())], "{sql}");
+            assert_eq!(found[0].2, format!("SQLite reads {written} as a parameter that Reylo does not bind; name a parameter with the letters a to z, digits and underscores, starting with a letter or an underscore"));
+        }
+        // The place is the parameter's, not the same text in a string before it.
+        let sql = "select ':été' from users where name = :été";
+        assert_eq!(unbound(sql).iter().map(|(s, _, _)| *s).collect::<Vec<_>>(), [sql.rfind(":été").unwrap()]);
+        // Every parameter the lexer read is one SQLite numbers, in each form, and a bracketed
+        // name hides nothing after it.
+        for sql in ["select id from users where name = :n and email = :e", "select id from users where name = ?2 and email = ?", "select id as [it's], :n as n from users", "pragma table_info(users)"] {
+            assert!(unbound(sql).is_empty(), "{sql}");
+        }
+        assert_eq!(analysis("select id as [it's], :n as n from users").params.len(), 1);
+    }
+
+    #[test]
     fn a_parameter_as_a_whole_sort_or_group_key_is_an_error_at_its_place() {
         // Through the protocol's whole path, which compiles a `::type` cast to SQLite's own.
         let full = |sql: &str| {
@@ -4414,7 +4552,9 @@ mod tests {
         assert_eq!(json_typed("select json_object('k', id, 'k', name) as o from users"), "o: { k: string }");
         // The aggregates are `[]` and `{}` over no rows, never NULL, with a FILTER or as a window.
         assert_eq!(json_typed("select json_group_array(email) as e, json_group_object(name, id) as g from users where id < 0"), "e: (string | null)[]; g: { [key: string]: number }");
-        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: number[]");
+        // Beside an aggregate, a window call runs over the aggregate's one row, where a bare
+        // column is NULL over no rows: `[null]`.
+        assert_eq!(json_typed("select json_group_array(id) filter (where id > 1) as f, json_group_array(id) over (order by id) as w from users"), "f: number[]; w: (number | null)[]");
         assert_eq!(
             json_typed("select json_object('f', json_group_array(id) filter (where id > 1)) as f, json_object('w', json_group_array(id) over ()) as w from users"),
             "f: { f: number[] }; w: { w: unknown }"
@@ -4540,6 +4680,27 @@ mod tests {
         // A function of the name the host registers is called in the built-in's place.
         assert_eq!(odd(&listed(&[-1, 3])), 0);
         assert_eq!(odd(&Extras { total: vec![TotalFunction { name: "JSON_OBJECT".into(), arity: 3, returns: Affinity::Text }], host: None }), 0);
+    }
+
+    #[test]
+    fn a_modulo_by_a_fractional_literal_under_one_is_nullable() {
+        // SQLite casts both `%` operands to INTEGER, so 0.5 truncates to 0 and the remainder is
+        // NULL on every row. `/ 0.5` stays non-null: division keeps the float.
+        let schema = vec!["create table items (id integer primary key, qty integer not null)".to_string()];
+        let typed = |sql: &str| {
+            let a = analyze_ddl(sql, &schema, &Extras::default()).analysis;
+            assert!(a.diagnostics.is_empty(), "{sql}: {:?}", a.diagnostics);
+            col(&a, "r")
+        };
+        assert_eq!(typed("select qty % 0.5 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 0.99 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 1e-3 as r from items"), ("real".into(), true));
+        assert_eq!(typed("select qty % 2.5 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty % 2 as r from items"), ("integer".into(), false));
+        // The cast saturates: an infinite divisor is the largest INTEGER.
+        assert_eq!(typed("select qty % 1e999 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty / 0.5 as r from items"), ("real".into(), false));
+        assert_eq!(typed("select qty / 0 as r from items"), ("integer".into(), true));
     }
 
     #[test]

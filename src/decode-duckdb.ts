@@ -13,10 +13,12 @@
 // a value of its own classes with its type said, so the run time builds those with node-api's own
 // constructors, loaded from the app beside the connection: each element a type node-api takes
 // from JavaScript (an integer a HUGEINT, a decimal or a date its text), which DuckDB casts in turn.
-import { DecodeError, duration, ParameterError } from "./values.ts";
+import { coerce, DecodeError, duration, ParameterError } from "./values.ts";
 import type { EngineType } from "./engine-type.ts";
-import type { Columns } from "./values.ts";
+import type { Columns, Kind } from "./values.ts";
 import { rowOf } from "./row.ts";
+import { isDuckdb, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { readDuckdbError } from "./query-error.ts";
 
 /** @duckdb/node-api's DuckDBConnection, a connection of a DuckDBInstance: `run` takes it. */
 export type DuckdbClient = {
@@ -133,11 +135,6 @@ async function loadNodeApi(c: DuckdbClient): Promise<Api> {
     throw new TypeError(`A list, a struct, a map or binary data is bound with @duckdb/node-api's own values, which must come from the copy of the package the connection came from, and ${why}: install a single @duckdb/node-api.`);
   }
   return imported;
-}
-
-/** Whether a client is @duckdb/node-api's DuckDBConnection. */
-export function isDuckdb(c: { [key: string]: unknown } | null | undefined): boolean {
-  return c != null && typeof c.runAndReadAll === "function" && typeof c.prepare === "function" && typeof c.run === "function";
 }
 
 // DuckDB's type ids (duckdb_type), which node-api's types carry.
@@ -468,3 +465,17 @@ function decode(v: unknown, t: DuckType, column: string): unknown {
       return typeof v === "object" ? String(v) : v;
   }
 }
+
+/** A DuckDB statement's rows on @duckdb/node-api's DuckDBConnection, each value given its kind by the result's own types, or undefined on any other client. */
+async function runDuckdbStatement(c: Client, query: QueryModule<"duckdb">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  if (!isDuckdb(c)) return undefined;
+  return await runDuckdb(c as unknown as DuckdbClient, text, values, names.map((name) => query.inputs?.[name]?.type), query.columns);
+}
+
+/** A DuckDB column's value as node-api's `getRows()` reads it, in the form `.run()` gives it, each plain value as its kind. */
+function duckdbDecoder(name: string, kind: Kind): (v: unknown) => unknown {
+  return (v) => decodeDuckdbValue(v, kind, name, (k, x) => coerce(k, x, name));
+}
+
+/** DuckDB's half of the run time (src/execute.ts, `Runtime`), which `defineDuckdbQuery` passes. */
+export const duckdb: Runtime<"duckdb"> = { dialect: "duckdb", run: runDuckdbStatement, encode: encodeDuckdb, readError: readDuckdbError, decoder: duckdbDecoder };

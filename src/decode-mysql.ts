@@ -24,7 +24,10 @@
 // and a column whose kind is `bool` (src/values.ts) is made a boolean after the driver, a value
 // other than 0 or 1 refused (`truth`).
 import { lastOfEach, namesInResult, rowOf } from "./row.ts";
-import { bigInteger, coerce, truth, utf8, type Columns, type Kind } from "./values.ts";
+import { bigInteger, coerce, DecodeError, describe, truth, utf8, type Columns, type Kind } from "./values.ts";
+import { bunRows } from "./decode.ts";
+import { readMysqlError } from "./query-error.ts";
+import type { AnyClient as Client, Bound, QueryModule, Runtime } from "./execute.ts";
 
 type AnyClient = Record<string, any>;
 
@@ -339,3 +342,48 @@ export async function planetscale(m: AnyClient, text: string, values: unknown[],
   fixRows(rows, kindFixes(lastOfEach(cols)));
   return rows;
 }
+
+// A binary parameter is typed Uint8Array, and every driver binds one as it is (pg-promise too,
+// since it gets { text, values }) but two (lab/driver-matrix, S1c). mariadb writes any value
+// that is not a Buffer as JSON, so a plain Uint8Array (TextEncoder's, getRandomValues') arrived
+// as the text {"0":1,"1":2,"2":255}: it gets a Buffer over the same memory, where a Buffer
+// exists (not in every Worker). Neon's neon() before 0.10 is the other (src/execute.ts, `asByteaHex`).
+function asBuffer(v: unknown) {
+  // Named structurally, so that a project without Node's types can type-check the module.
+  const NodeBuffer = (globalThis as { Buffer?: { isBuffer(v: unknown): boolean; from(buffer: ArrayBufferLike, offset: number, length: number): Uint8Array } }).Buffer;
+  return v instanceof Uint8Array && NodeBuffer !== undefined && !NodeBuffer.isBuffer(v) ? NodeBuffer.from(v.buffer, v.byteOffset, v.byteLength) : v;
+}
+
+/** A MySQL statement's rows on each MySQL driver's client, or undefined on any other client. */
+async function runMysql(c: Client, query: QueryModule<"mysql">, { text, values }: Bound): Promise<unknown[] | undefined> {
+  if (typeof c.unsafe === "function") return bunRows(await c.unsafe(text, values), query.columns);
+  // mariadb, checked before execute() because it has one too (returning rows, not a pair).
+  // Its callback API (mariadb/callback) answers through the callback and returns a command
+  // object; its promise API returns a promise and ignores the callback.
+  if (typeof c.batch === "function" && typeof c.query === "function") return await mariadb(c, text, values.map(asBuffer), query.columns);
+  // mysql2's callback API: the promise() wrapper runs on the same connection.
+  const m = typeof c.promise === "function" ? c.promise() : c;
+  if (typeof m.execute === "function") {
+    // mysql2 has query() beside execute(); PlanetScale's Connection, Client and transaction do not.
+    return typeof m.query === "function" ? await mysql2(m, text, values, query.columns) : await planetscale(m, text, values, query.columns);
+  }
+  return undefined;
+}
+
+/** A column's raw value as its kind, from whatever form the driver read, as a Standard Query's `decode` takes it (src/standard-query.ts). */
+function mysqlDecoder(name: string, kind: Kind, delim: string | undefined): (v: unknown) => unknown {
+  // A MySQL DATETIME's text takes a T between the date and the time, as `.run()` writes it, a
+  // column that may be one included (`mariadb`).
+  if (kind.split("|").includes("timestamp")) return (v) => (typeof v === "string" ? v.replace(" ", "T") : coerce(kind, v, name, delim));
+  // A MySQL GEOMETRY's raw value is its bytes, as `.run()` gives it. An object is a driver's own
+  // reading of one (mysql2's `{ x, y }`, mariadb's GeoJSON), which the bytes cannot be had back from.
+  if (kind.split("|").includes("geometry"))
+    return (v) => {
+      if (typeof v === "object" && v !== null && !(v instanceof Uint8Array)) throw new DecodeError(`Column "${name}" holds ${describe(v)}, which is no raw MySQL value: a GEOMETRY's raw value is its bytes, which a driver parses into an object unless its conversions are off (mysql2's typeCast returning \`field.buffer()\`).`);
+      return coerce(kind, v, name, delim);
+    };
+  return (v) => coerce(kind, v, name, delim);
+}
+
+/** MySQL's half of the run time (src/execute.ts, `Runtime`), which `defineMysqlQuery` passes. */
+export const mysql: Runtime<"mysql"> = { dialect: "mysql", run: runMysql, readError: readMysqlError, decoder: mysqlDecoder };

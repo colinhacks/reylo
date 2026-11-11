@@ -6,7 +6,7 @@
 //!
 //! It is linked by the facade, `reylo-engine`, and the program built on it, `engine/native`, which the
 //! `reylo` binary serves and the docs site's playground runs as a WebAssembly component; by a server-side extension, which calls
-//! [`postgres::analyze`] inside the server; and by a host that replays [`postgres::describe`], [`postgres::trust`] and [`postgres::catalog`]
+//! [`postgres::analyze`] inside the server; and by a host that replays [`postgres::describe`], [`postgres::shaped`], [`postgres::trust`] and [`postgres::catalog`]
 //! through its own driver and reads the parse-tree modules directly.
 
 pub mod analyze;

@@ -204,7 +204,7 @@ test("DuckDB: an error DuckDB raises is placed where its caret points", { skip }
   assert.equal(sql.slice(d!.start, d!.start + d!.length), "nope");
 });
 
-test("DuckDB: a SELECT is read-only unless it may move a sequence, itself or through a view or a macro", { skip }, async () => {
+test("DuckDB: a SELECT is read-only unless a WITH query writes or it may move a sequence, itself or through a view or a macro", { skip }, async () => {
   const root = await project(`create sequence s;
     create table t (id integer);
     create view plain_view as select id from t;
@@ -218,6 +218,10 @@ test("DuckDB: a SELECT is read-only unless it may move a sequence, itself or thr
     ["select id from plain_view", true],
     ["select plain_macro(id) from t", true],
     ["insert into t values (1)", false],
+    // A WITH query that writes runs with the SELECT that reads it.
+    ["with gone as (delete from t where id = 1 returning id) select count(*) as n from gone", false],
+    ["with made as (insert into t values (9) returning id) select id from made", false],
+    ["with moved as (update t set id = id + 1 returning id), kept as (select id from t) select kept.id from kept, moved", false],
     ["select nextval('s')", false],
     ["select id from moving_view", false],
     ["select id from moving_again", false],

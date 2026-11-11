@@ -14,6 +14,7 @@ import { columnKind } from "./values.ts";
 import { jsonNumbers } from "./render.ts";
 import { analysisWithBases, analysisWithNestedArrays } from "./engine-type.ts";
 import { planOf } from "./codecs.ts";
+import type { Dialect } from "./execute.ts";
 
 export type SqlModule = {
   code: string;
@@ -101,19 +102,25 @@ export async function sqlModule(path: string, sql: string): Promise<SqlModule> {
   // (src/checks.ts). A non-null JSON parameter whose type alone carries a schema needs them too,
   // to learn whether that schema allows null.
   const checked = analysis.params.some((p) => p.schema !== undefined || p.cast !== undefined || p.members !== undefined || (p.type.kind === "json" && p.type.schema !== undefined && !p.nullable));
+  // Each dialect's own define function names that dialect's half of the run time alone (src/execute.ts,
+  // `Runtime`), so an app bundles no other dialect's drivers and error codes.
+  const define = DEFINE[session.project.dialect];
   const code = [
-    `import { defineQuery${checked ? ", checks" : ""} } from "reylo";`,
+    `import { ${define}${checked ? ", checks" : ""} } from "reylo";`,
     // `sql` is the compiled statement and `raw` the file as written; the definition's own `sql` is
     // the statement as written and its `text` the compiled one. The comment naming the file
     // (src/sqlcommenter.ts) is added where the statement is sent, so `sql` leaves it out.
     `export const sql = ${JSON.stringify(text)};`,
     `export const raw = ${JSON.stringify(sql)};`,
     `export const params = ${JSON.stringify(params)};`,
-    `export default defineQuery({ dialect: ${JSON.stringify(session.project.dialect)}, sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
+    `export default ${define}({ sql: raw, params, cardinality: ${JSON.stringify(analysis.cardinality === "at_most_one" ? "maybeOne" : analysis.cardinality)}, ${analysis.readOnly ? "readOnly: true, " : ""}${analysis.value ? "value: true, " : ""}text: sql, order: ${JSON.stringify(analysis.rewritten.order)}, inputs: ${JSON.stringify(inputs)}, columns: ${JSON.stringify(columns)}${Object.keys(codecs).length ? `, codecs: ${JSON.stringify(codecs)}` : ""}${columns.length ? `, row: ${rowSource(columns.map(([name]) => name as string))}` : ""}${nonFinite.some((at) => at !== null) ? `, nonFinite: ${JSON.stringify(nonFinite)}` : ""}${analysis.key ? `, key: ${JSON.stringify(analysis.key)}` : ""}${analysis.ordered ? ", ordered: true" : ""}${structured.length ? `, structured: ${JSON.stringify(structured)}` : ""}${analysis.fresh ? `, fresh: ${JSON.stringify(analysis.fresh)}` : ""}, source: ${JSON.stringify(source)}${session.project.sqlcommenter ? ", sqlcommenter: true" : ""}${session.project.allowNestedArrays && session.project.dialect === "postgres" ? ", nestedArrays: true" : ""}, jsonSchema: ${JSON.stringify(querySchemas(session.project.allowNestedArrays ? analysisWithNestedArrays(analysis) : analysis, dialect, session.project.codecs))}${checked ? ", checks" : ""} });`,
     ``,
   ].join("\n");
   return { code, entry: outcome.entry, watched: session.project.watched.filter((f) => existsSync(f)) };
 }
+
+/** The define function from "reylo" a module of each dialect calls (src/index.ts). */
+export const DEFINE: Record<Dialect, string> = { postgres: "definePostgresQuery", mysql: "defineMysqlQuery", sqlite: "defineSqliteQuery", duckdb: "defineDuckdbQuery" };
 
 /** The line and column, from 1, of a UTF-8 byte offset into `text`. */
 function place(text: string, bytes: number): string {

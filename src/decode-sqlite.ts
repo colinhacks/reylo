@@ -31,7 +31,10 @@
 //   without safeIntegers) is refused in an INTEGER or BIGINT column, where a number past 2^53 can
 //   only be one; a BIGINT's number within 2^53, or libSQL's BigInt or digits, is its BigInt.
 import { lastOfEach, namesInResult, rowOf } from "./row.ts";
-import { bigInteger, coerce, DecodeError, exactInteger, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
+import { bigInteger, coerce, columnKind, DecodeError, exactInteger, ParameterError, refuseTruth, truth, type Columns, type Kind } from "./values.ts";
+import { isDurableObjectSql, isTurso, type AnyClient as Client, type Bound, type QueryModule, type Runtime } from "./execute.ts";
+import { readSqliteError } from "./query-error.ts";
+import type { EngineType } from "./engine-type.ts";
 
 type AnyClient = Record<string, any>;
 type Statement = AnyClient;
@@ -312,3 +315,56 @@ export function sqliteDecoder(name: string, kind: Kind): (v: unknown) => unknown
   const p = plan(name, kind, false);
   return (v) => normalized(p, v, false);
 }
+
+// sqlite3 6.0.1 binds a BigInt as NULL, with no error (`select cast(? as text)` with
+// 9007199254740993n gave null), and a Durable Object's exec() refuses one, where every other
+// SQLite driver binds it exactly. A BigInt a number holds exactly goes as that number. A larger
+// one goes as its digits to a parameter of a BIGINT column (the engine's int8), whose INTEGER
+// affinity reads the text as that integer in an insert and a comparison alike, and is refused
+// anywhere else, where the text would stay text.
+function numberOrDigits(v: unknown, type: EngineType | undefined, driver: "sqlite3" | "durable-object" | "d1"): unknown {
+  if (typeof v !== "bigint") return v;
+  if (v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(v);
+  if (type !== undefined && columnKind(type, "sqlite") === "int8") return String(v);
+  const digits = "pass it as a string of digits, which SQLite stores as that integer in an INTEGER column";
+  if (driver === "durable-object") throw new ParameterError(`A Durable Object's SQL storage binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  if (driver === "d1") throw new ParameterError(`Cloudflare D1 binds no BigInt, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}.`);
+  throw new ParameterError(`sqlite3 binds a BigInt as NULL, and ${v} is past 2^53 - 1, where a number stops being exact: ${digits}, or run the statement on better-sqlite3, node:sqlite or libSQL, which bind a BigInt.`);
+}
+
+/** A SQLite statement's rows on each SQLite driver's client that answers through a promise, each value given its kind, or undefined on any other client. */
+async function runSqlite(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): Promise<unknown[] | undefined> {
+  const type = (i: number) => query.inputs?.[names[i]!]?.type;
+  const columns = query.columns;
+  if (typeof c.unsafe === "function") return normalize(await c.unsafe(text, values), columns);
+  if (typeof c.execute === "function") {
+    const result = await c.execute({ sql: text, args: values });
+    return normalize(libsqlRows(result.rows, columns, Array.isArray(result.columns) ? result.columns : undefined), columns);
+  }
+  if (isTurso(c)) return await runTurso(c, text, values, columns);
+  // The sqlite package wraps sqlite3, and sqlite3 binds a BigInt as NULL.
+  if (typeof c.getDatabaseInstance === "function") return normalize(await c.all(text, values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"))), columns);
+  if (typeof c.all === "function" && typeof c.exec === "function") {
+    const bound = values.map((v, i) => numberOrDigits(v, type(i), "sqlite3"));
+    return normalize(
+      await new Promise<unknown[]>((resolve, reject) => c.all(text, bound, (error: Error | null, rows: unknown[]) => (error ? reject(error) : resolve(rows)))),
+      columns,
+    );
+  }
+  if (typeof c.prepare === "function") {
+    const prepared = c.prepare(text);
+    // D1 refuses a BigInt, which `.run()` returns for a BIGINT column.
+    if (typeof prepared.first === "function") return normalize((await prepared.bind(...values.map((v, i) => numberOrDigits(v, type(i), "d1"))).all()).results, columns, { d1: true });
+    return normalize(await prepared.all(...values), columns);
+  }
+  return undefined;
+}
+
+/** The rows of a synchronous client: a Durable Object's SQL storage, whose exec() refuses a BigInt ("Cannot convert a BigInt value to a number"), or a database with prepare() (`runSyncSqlite`). */
+function runSqliteSync(c: Client, query: QueryModule<"sqlite">, { text, values, names }: Bound): unknown[] | Promise<unknown[]> {
+  if (isDurableObjectSql(c)) return runDurableObject(c, text, values.map((v, i) => numberOrDigits(v, query.inputs?.[names[i]!]?.type, "durable-object")), query.columns);
+  return runSyncSqlite(c, text, values, query.columns);
+}
+
+/** SQLite's half of the run time (src/execute.ts, `Runtime`), which `defineSqliteQuery` passes. */
+export const sqlite: Runtime<"sqlite"> = { dialect: "sqlite", run: runSqlite, runSync: runSqliteSync, readError: readSqliteError, readErrorSync: readSqliteError, decoder: sqliteDecoder };

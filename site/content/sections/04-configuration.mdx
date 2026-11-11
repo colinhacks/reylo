@@ -77,6 +77,12 @@ The `.env` files Reylo reads, relative to `.reylo.yaml`. The first file that set
 env: [.env.development, .env]
 ```
 
+Reylo reads them as `dotenv` does. A `#` outside quotes starts a comment, so quote a value that holds one:
+
+```sh title=".env"
+DATABASE_URL="postgres://app:pa#ss@localhost:5432/app" # the dev database
+```
+
 ## `allow_untyped_params`
 
 Whether a [parameter whose type cannot be inferred](/inference#a-parameter-nothing-types) may stay `unknown`.

@@ -9,7 +9,7 @@ limit_count_subquery.sql: many () -> { id: int, n: bigint? }
 limit_subquery.sql: many () -> { id: int, first: varchar? }
 max_subquery.sql: many () -> { id: int, last: int | bigint? }
 plain.sql: many () -> { id: int, name: varchar(≤20), email: varchar(≤40)? }
-subquery_aggregate_outer.sql: one () -> { top: int | bigint?, n: bigint }
+subquery_aggregate_outer.sql: one () -> { top: int | bigint?, n: bigint? }
 subquery_any_value.sql: many () -> { id: int, some: varchar? }
 subquery_any_value_grouped.sql: many () -> { id: int, some: varchar? }
 subquery_any_value_limit.sql: many () -> { id: int, some: varchar? }

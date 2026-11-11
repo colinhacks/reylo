@@ -942,7 +942,7 @@ fn is_boolean_literal(e: &Expr) -> bool {
 
 /// How many aggregate calls a text has, a name inside a string among them, and whether it may
 /// have a window function.
-fn aggregates_in(text: &str) -> (usize, bool) {
+pub(crate) fn aggregates_in(text: &str) -> (usize, bool) {
     let text = text.to_ascii_lowercase();
     let calls = |name: &&str| text.match_indices(&format!("{name}(")).filter(|(at, _)| !text[..*at].ends_with(|c: char| c.is_ascii_alphanumeric() || c == '_')).count();
     (crate::mysql::AGGREGATES.iter().map(calls).sum(), text.contains(" over ") || text.contains(" over("))

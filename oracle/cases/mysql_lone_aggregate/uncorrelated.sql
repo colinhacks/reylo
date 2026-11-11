@@ -1,0 +1,1 @@
+select count(*) as c, (select count(*) from o) as n, (select count(*) from o where t_id > 0) as bare, (select count(*) from o x where x.t_id > 0) as named, exists (select 1 from o) as e, (select count(*) from o where o.t_id = a) as outer_bare from t where id = 99

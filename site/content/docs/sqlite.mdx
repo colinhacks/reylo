@@ -455,7 +455,7 @@ where o.ships_on is not null
 
 **Expressions**
 
-Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
+Reylo's table of SQLite's functions says which are non-null over non-null inputs: `length`, `coalesce`, `||` and arithmetic are; division by a column is not, since dividing by zero returns `NULL`. Nor is a remainder by a fraction under 1, such as `x % 0.5`: SQLite casts both operands of `%` to `INTEGER`, which makes the divisor `0`. Arithmetic on a `REAL` with no answer is the one exception ([Limits](#limits)).
 
 <Inferred>
 
@@ -471,7 +471,7 @@ from users
 
 **Aggregates**
 
-An aggregate other than `count` returns `NULL` over no rows.
+An aggregate other than `count` returns `NULL` over no rows. So does a column selected beside it with no `group by`.
 
 <Inferred>
 
@@ -529,7 +529,7 @@ These don't count as a key match, so the query returns `Row[]`:
 
 ### Placeholders
 
-Write parameters as `:name`, `@name` or `$name`, one style per query, and pass `.run()` an object with those names, without the prefix. You can use SQLite's `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
+Write parameters as `:name`, `@name` or `$name`, one style per query, and pass `.run()` an object with those names, without the prefix. A name is letters from a to z, digits and underscores, and starts with no digit. You can use SQLite's `?` or `?1` instead, but not beside names; then `.run()` takes an object keyed by number, `{ 1: 42 }`.
 
 ### What a parameter takes
 

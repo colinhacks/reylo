@@ -209,7 +209,10 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// Every column of the relations the parse names, by name, so provenance and `NOT NULL` are
 /// settled without a second round for the tables the statement itself reads. `$1` is `text[]` of
 /// relation names as the statement writes them, schema-qualified or resolved through the search
-/// path, `$2` how many. The fourth column is the `NOT NULL` a write meets, which checks every new row
+/// path, `$2` how many. The fifth column is a view's defining SELECT, on its first column; a
+/// materialized view has none here, since its rows are those of its last REFRESH, which the
+/// tables' constraints of today say nothing of: it is a stored relation, its columns nullable and
+/// its keys its own unique indexes. The fourth column is the `NOT NULL` a write meets, which checks every new row
 /// whether or not the constraint is valid; the seventh is the one a read may trust (see
 /// `not_null_rows`); the eighth, whether the column holds what is written to it, which a
 /// generated column does not; the ninth, the relation's name as `$1` gives it; the tenth and the
@@ -217,7 +220,7 @@ pub const REQUIRED_COLUMNS_QUERY: &str = concat!(
 /// written whole to it takes.
 pub const RELATION_COLUMNS_QUERY: &str = concat!(
     "SELECT c.oid::pg_catalog.int8, c.relname::pg_catalog.text, a.attnum::pg_catalog.int4, a.attnotnull, \
-    CASE WHEN c.relkind OPERATOR(pg_catalog.=) ANY ('{v,m}'::pg_catalog.\"char\"[]) AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
+    CASE WHEN c.relkind OPERATOR(pg_catalog.=) 'v'::pg_catalog.\"char\" AND a.attnum OPERATOR(pg_catalog.=) 1 THEN pg_catalog.pg_get_viewdef(c.oid) END, \
     a.attname::pg_catalog.text, a.attnotnull AND ",
     not_null_rows!("c.oid", "a.attname"),
     ", a.attgenerated OPERATOR(pg_catalog.=) ''::pg_catalog.\"char\", x.name, a.atttypid::pg_catalog.int8, a.atttypmod FROM (SELECT DISTINCT n.name FROM ",
@@ -566,6 +569,55 @@ pub fn describe(sql: &str, host: &Host) -> Lazy<Result<DescribedStatement, DbErr
     })
 }
 
+/// One column's type where what the statement builds settles it ([`shaped`]): the type, whether the
+/// column may be NULL, and the paths inside it whose type the engine could not read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Shaped {
+    pub ty: Type,
+    pub nullable: bool,
+    pub unresolved: Vec<String>,
+}
+
+/// What [`shaped`] reads of a statement.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ShapedStatement {
+    /// Per result column, its type where what the statement builds settles it: the JSON its
+    /// constructors build, the fields of a row or an array of rows, the JSON or the rows it reads
+    /// straight from a WITH query or a derived table. `None` where the describe's type stands.
+    pub columns: Vec<Option<Shaped>>,
+    /// The domains those types name, with the base type each is made from ([`Analysis::domains`]).
+    pub domains: BTreeMap<String, String>,
+}
+
+/// The types the columns of `sql` take from what it builds, for a host that renders every other
+/// column from [`describe`] itself: the rules [`analyze`] types them by, read by the same code. `sql`
+/// is in the server's `$n` form and is described as it is, and a parameter may be null, as
+/// [`describe`] takes them, so a column built from a parameter may be nullable here where
+/// [`analyze`], whose parameters are non-null unless the statement says otherwise, reads it non-null.
+/// Neither the bodies of the SQL functions the statement calls nor what it writes narrow these
+/// types, as they narrow [`analyze`]'s. `Some(Err)` is the server's refusal of the statement itself.
+pub fn shaped(sql: &str, host: &Host) -> Lazy<Result<ShapedStatement, DbError>> {
+    host.on_engine_stack(|host| {
+        let engine = Engine::new(host);
+        let parsed = analyze::analyze(sql).ok();
+        let trust = trust(host);
+        let relations = relations_of(parsed.as_ref());
+        let described = engine.described(sql, parsed.as_ref(), &relations, trust.as_ref(), &[]);
+        let columns = columns_where(true, sql, host);
+        engine.prewarm_shapes(sql, trust.as_ref(), columns.as_ref());
+        let (Some(described), Some(trust), Some(columns)) = (described, trust, columns) else { return None };
+        let (raw, described) = match described {
+            Ok(d) => d,
+            Err(e) => return Some(Err(e)),
+        };
+        let trust = Trust { param_types: raw.params.clone(), ..trust };
+        let columns = engine.shaped_columns(sql, &described.columns, &trust, &columns, &raw.params)?;
+        let names: Vec<String> = columns.iter().flatten().flat_map(|c| c.ty.names()).collect();
+        let domains = engine.registry.borrow().domain_bases(&names);
+        Some(Ok(ShapedStatement { columns, domains }))
+    })
+}
+
 /// Which of the names the expression rules read are the built-ins, as the catalog says, and what
 /// it says of the overloads of the others: one session-scoped query. A server that refuses it
 /// leaves every name shadowed.
@@ -727,8 +779,9 @@ struct Engine<'a> {
     column_types: RefCell<HashMap<(u32, i32), (u32, i32)>>,
     /// Each prefetched relation's oid, by its name as the statement writes it.
     oids_by_name: RefCell<HashMap<String, u32>>,
-    /// The defining SELECT of each of those that is a view or a materialized view. The catalog
-    /// holds no NOT NULL for a view's columns, so they are settled from this statement instead.
+    /// The defining SELECT of each of those that is a view. The catalog holds no NOT NULL for a
+    /// view's columns, so they are settled from this statement instead. Not a materialized
+    /// view's: its rows are those the statement returned at its last REFRESH.
     views: RefCell<HashMap<u32, String>>,
     /// The WITH queries being settled, outermost first: the statement text of each, the columns
     /// taken as nullable for a read of the query from inside itself, and whether such a read
@@ -855,18 +908,7 @@ impl<'a> Engine<'a> {
             Some((_, relations, functions)) => view_rows_of(functions, relations).map(Some),
             None => None,
         };
-        for probe in &jsonshape::probes_ahead(&rewritten.sql) {
-            self.prewarm(&probe.sql);
-        }
-        // The JSON shapes' probes, and every probe that settles them, pinned, once the describe
-        // has said what they are pinned with: the shapes are read only after the columns are
-        // settled, rounds later.
-        if let (true, Some(trust), Some(rows)) = (self.pinned.get(), &trust, &catalog_rows) {
-            self.prewarmed.borrow_mut().insert(rewritten.sql.clone());
-            for probe in jsonshape::plan(&rewritten.sql, Dialect::Postgres, trust, &crate::levels::Columns::from_rows(&rows.columns)).statements() {
-                self.prewarm_probe(&probe.sql, trust);
-            }
-        }
+        self.prewarm_shapes(&rewritten.sql, trust.as_ref(), catalog_rows.as_ref().map(|rows| Columns::from_rows(&rows.columns)).as_ref());
         // The unique indexes of every table an `ON CONFLICT (…)` names its arbiter's columns for.
         let conflicts = conflict_targets(&rewritten.sql);
         let arbiters = if conflicts.is_empty() {
@@ -929,57 +971,20 @@ impl<'a> Engine<'a> {
             }
         }
 
-        // JSON shapes: what the statement's own constructors build, and for a JSON column it reads
-        // straight from a WITH query or a derived table, what that item's statement builds.
-        let (plan, outcomes) = self.shapes(&rewritten.sql, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)?;
-        let open = described.columns.iter().any(|c| !plan.columns.iter().any(|(n, _)| *n == c.name));
-        let built = if open { self.built(&rewritten.sql, &described.columns, &trust, &catalog.columns, &raw.params, MAX_ITEM_DEPTH)? } else { vec![None; described.columns.len()] };
-        let mut shape_oids = Vec::new();
-        for (_, shape) in &plan.columns {
-            jsonshape::oids(shape, &outcomes, &raw.params, &mut shape_oids);
-        }
-        self.types(&shape_oids)?;
-        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(&described.columns), &trust)?;
-
-        let record = |c: &DescribedColumn| c.type_oid == crate::pgtypes::oid::RECORD || c.type_oid == crate::pgtypes::oid::RECORD_ARRAY;
-        let generated = if described.columns.iter().any(record) { self.generated_rows(&rewritten.sql, described.columns.len(), &trust)? } else { vec![None; described.columns.len()] };
+        // What the statement builds: the JSON its constructors build, the JSON it reads straight from
+        // a WITH query or a derived table, and the fields of the rows it reads whole.
+        let shaped = self.shaped_columns(&rewritten.sql, &described.columns, &trust, &catalog.columns, &raw.params)?;
         let registry = self.registry.borrow();
         let mut unresolved = Vec::new();
         let mut columns = Vec::with_capacity(described.columns.len());
-        let mut shapes_used: HashSet<usize> = HashSet::new();
         let comments = self.comments.borrow();
-        for (position, (col, built)) in described.columns.iter().zip(&built).enumerate() {
-            let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
-            // A whole row of no type the catalog has, or an array of them, whose shape reads to
-            // the row's fields; else the describe's type stands.
-            let rows_of_table = |c: &DescribedColumn| registry.get(c.type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite));
-            let row = shape.filter(|_| record(col) || rows_of_table(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, &raw.params)).map(|r| jsonshape::Resolved { ty: named_as(r.ty, col.type_oid, &registry), ..r });
-            let (ty, nullable) = match (shape, built) {
-                (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
-                    shapes_used.insert(i);
-                    let resolved = jsonshape::resolve(shape, &outcomes, &registry, &raw.params);
-                    unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    // The document under the column's own type's name, `json` or `jsonb`.
-                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
-                    (ty, !resolved.non_null)
+        for (position, (col, shaped)) in described.columns.iter().zip(shaped).enumerate() {
+            let (ty, nullable) = match shaped {
+                Some(shaped) => {
+                    unresolved.extend(shaped.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
+                    (shaped.ty, shaped.nullable)
                 }
-                // A whole row of no type the catalog has, or an array of them: the row's fields,
-                // as a probe of its columns reads them.
-                (Some((i, _)), _) if row.is_some() => {
-                    shapes_used.insert(i);
-                    let resolved = row.expect("a row's fields");
-                    unresolved.extend(resolved.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (resolved.ty, col.nullable && !resolved.non_null)
-                }
-                // The item's own result settled whether the column is NULL, an outer join here
-                // included; what it builds is its document.
-                (None, Some(built)) => {
-                    unresolved.extend(built.unresolved.iter().map(|p| format!("{}: {p}", col.name)));
-                    (Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, col.nullable || !built.non_null)
-                }
-                // A WITH query's SEARCH or CYCLE column of rows.
-                _ if record(col) && generated[position].is_some() => (generated[position].clone().expect("a generated column's type"), col.nullable),
-                _ => {
+                None => {
                     let ty = if col.whole_row { registry.render_row(col.type_oid) } else { nest(col, &registry) };
                     // A built array of arrays carries its elements' nullability at its innermost level ([`nest`]).
                     let items = if col.nested.is_some() { None } else { col.nullable_items };
@@ -1409,6 +1414,75 @@ impl<'a> Engine<'a> {
         Some(out)
     }
 
+    /// Per column of `sql`, described as `described`, its type where what the statement builds
+    /// settles it ([`Shaped`]): the JSON its own constructors build, the fields of a whole row of no
+    /// type the catalog has or of an array of rows, the JSON or the rows it reads straight from a
+    /// WITH query or a derived table, and a WITH query's SEARCH or CYCLE column of rows. `None`
+    /// where the describe's type stands.
+    fn shaped_columns(&self, sql: &str, described: &[DescribedColumn], trust: &Trust, columns: &Columns, params: &[u32]) -> Lazy<Vec<Option<Shaped>>> {
+        let (plan, outcomes) = self.shapes(sql, trust, columns, params, MAX_ITEM_DEPTH)?;
+        let open = described.iter().any(|c| !plan.columns.iter().any(|(n, _)| *n == c.name));
+        let built = if open { self.built(sql, described, trust, columns, params, MAX_ITEM_DEPTH)? } else { vec![None; described.len()] };
+        let mut shape_oids = Vec::new();
+        for (_, shape) in &plan.columns {
+            jsonshape::oids(shape, &outcomes, params, &mut shape_oids);
+        }
+        self.types(&shape_oids)?;
+        self.stored_checks(outcomes.iter().flatten().flat_map(|o| o.columns.iter()).chain(described), trust)?;
+
+        let record = |c: &DescribedColumn| c.type_oid == crate::pgtypes::oid::RECORD || c.type_oid == crate::pgtypes::oid::RECORD_ARRAY;
+        let generated = if described.iter().any(record) { self.generated_rows(sql, described.len(), trust)? } else { vec![None; described.len()] };
+        let registry = self.registry.borrow();
+        let mut shapes_used: HashSet<usize> = HashSet::new();
+        let mut out = Vec::with_capacity(described.len());
+        for (position, (col, built)) in described.iter().zip(&built).enumerate() {
+            let shape = plan.columns.iter().enumerate().find(|(i, (n, _))| n == &col.name && !shapes_used.contains(i));
+            // A whole row of no type the catalog has, or an array of them, whose shape reads to
+            // the row's fields; else the describe's type stands.
+            let rows_of_table = |c: &DescribedColumn| registry.get(c.type_oid).is_some_and(|t| t.kind == crate::pgtypes::TypeKind::Array && t.elem.and_then(|e| registry.get(e)).is_some_and(|e| e.kind == crate::pgtypes::TypeKind::Composite));
+            let row = shape.filter(|_| record(col) || rows_of_table(col)).and_then(|(_, (_, shape))| jsonshape::resolve_row(shape, &outcomes, &registry, params)).map(|r| jsonshape::Resolved { ty: named_as(r.ty, col.type_oid, &registry), ..r });
+            out.push(match (shape, built) {
+                (Some((i, (_, shape))), _) if jsonshape::is_json(&registry, col.type_oid) => {
+                    shapes_used.insert(i);
+                    let resolved = jsonshape::resolve(shape, &outcomes, &registry, params);
+                    // The document under the column's own type's name, `json` or `jsonb`.
+                    let ty = Type { label: registry.render(col.type_oid).label, ..resolved.ty };
+                    Some(Shaped { ty, nullable: !resolved.non_null, unresolved: resolved.unresolved })
+                }
+                // A whole row of no type the catalog has, or an array of them: the row's fields,
+                // as a probe of its columns reads them.
+                (Some((i, _)), _) if row.is_some() => {
+                    shapes_used.insert(i);
+                    let resolved = row.expect("a row's fields");
+                    Some(Shaped { ty: resolved.ty, nullable: col.nullable && !resolved.non_null, unresolved: resolved.unresolved })
+                }
+                // The item's own result settled whether the column is NULL, an outer join here
+                // included; what it builds is its document.
+                (None, Some(built)) => Some(Shaped { ty: Type { label: registry.render(col.type_oid).label, ..built.ty.clone() }, nullable: col.nullable || !built.non_null, unresolved: built.unresolved.clone() }),
+                // A WITH query's SEARCH or CYCLE column of rows.
+                _ if record(col) && generated[position].is_some() => Some(Shaped { ty: generated[position].clone().expect("a generated column's type"), nullable: col.nullable, unresolved: Vec::new() }),
+                _ => None,
+            });
+        }
+        Some(out)
+    }
+
+    /// Ask for the describes the JSON shapes of `sql` read ahead of the rounds that read them: the
+    /// probes that carry no placeholder at once, and once the describe has said what they are pinned
+    /// with, every probe and every probe that settles them, pinned. The shapes are read only after
+    /// the columns are settled, rounds later.
+    fn prewarm_shapes(&self, sql: &str, trust: Option<&Trust>, columns: Option<&Columns>) {
+        for probe in &jsonshape::probes_ahead(sql) {
+            self.prewarm(&probe.sql);
+        }
+        if let (true, Some(trust), Some(columns)) = (self.pinned.get(), trust, columns) {
+            self.prewarmed.borrow_mut().insert(sql.to_string());
+            for probe in jsonshape::plan(sql, Dialect::Postgres, trust, columns).statements() {
+                self.prewarm_probe(&probe.sql, trust);
+            }
+        }
+    }
+
     /// The JSON shapes `sql`'s own constructors build, with the describes of the probes they read
     /// and the JSON each probe column reads from a WITH query or a derived table ([`Engine::built`]).
     fn shapes(&self, sql: &str, trust: &Trust, columns: &Columns, params: &[u32], depth: usize) -> Lazy<(jsonshape::Plan, Vec<Option<jsonshape::Outcome>>)> {
@@ -1762,6 +1836,7 @@ impl<'a> Engine<'a> {
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed, &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed, &raw, &mut described);
+        self.written_through(parsed, &raw, &mut described)?;
         Some(Ok((raw, described)))
     }
 
@@ -1781,6 +1856,43 @@ impl<'a> Engine<'a> {
                 col.nullable = true;
             }
         }
+    }
+
+    /// The RETURNING of an INSERT, an UPDATE or a MERGE gives the row as it was written, which a
+    /// view's statement says nothing of, and under an INSTEAD rule nor do the table's constraints:
+    /// a row written through a view need not pass the view's WHERE, an INSTEAD OF trigger returns
+    /// a row of its own making, and an INSTEAD rule's own RETURNING list gives the row in the
+    /// statement's place. A column read from such a target is nullable, and takes nothing the
+    /// view's statement or a CHECK says of its values. A rule that runs ALSO, or for another
+    /// event, leaves the statement's own row. A DELETE returns a row the relation held, and keeps
+    /// its types, where no WITH query of it writes. A probe is settled this way too, as a data-modifying WITH query is; the statement
+    /// that reads one writes the target as well, so a column it reads from it steps back with it.
+    fn written_through(&self, parsed: Option<&Parsed>, raw: &RawDescribe, described: &mut DescribedStatement) -> Lazy<()> {
+        let Some(parsed) = parsed.filter(|p| p.kind == analyze::StatementKind::Mutation && (p.statement != "delete" || p.nested_writes) && !p.write_set.is_empty()) else { return Some(()) };
+        let rules = by_relation(self.host, cardinality::TRIGGERS_QUERY, &parsed.write_set)?;
+        // The statement's own event, where it is the statement's one write: a MERGE's is either,
+        // and so is that of a statement with a write in a WITH query, whose own event is not
+        // that write's.
+        let events = match parsed.statement {
+            "insert" if !parsed.nested_writes => cardinality::TRIGGER_ROW_INSERT,
+            "update" if !parsed.nested_writes => cardinality::TRIGGER_ROW_UPDATE,
+            _ => cardinality::TRIGGER_ROW_INSERT | cardinality::TRIGGER_ROW_UPDATE,
+        } as u32;
+        // A host that answers without the INSTEAD rules' column is read by the rules' one, and
+        // one without that reports none: every write is then taken as one a rule may take over,
+        // and so is every write where the catalog did not answer.
+        let ruled = |name: &str| match &rules {
+            Ok(rows) => rows.iter().any(|row| row.first().and_then(as_str) == Some(name) && row.get(5).or(row.get(2)).map_or(Some(events), as_u32).unwrap_or(0) & events != 0),
+            Err(_) => true,
+        };
+        let (oids, views) = (self.oids_by_name.borrow(), self.views.borrow());
+        let targets: HashSet<u32> = parsed.write_set.iter().filter_map(|name| Some((name, *oids.get(name)?))).filter(|(name, oid)| views.contains_key(oid) || ruled(name.as_str())).map(|(_, oid)| oid).collect();
+        for (col, raw) in described.columns.iter_mut().zip(&raw.columns) {
+            if raw.attnum > 0 && targets.contains(&raw.table) {
+                *col = DescribedColumn { nullable: true, nullable_items: None, values: None, document: None, non_finite: Default::default(), facts: Default::default(), ..col.clone() };
+            }
+        }
+        Some(())
     }
 
     /// Per result column that reads a table's column as it is, and per column of `written`, what
@@ -2286,6 +2398,11 @@ impl<'a> Engine<'a> {
             return None;
         }
         let answer = |item: usize, column: &ItemColumn| (queries[item].with.clone().filter(|_| queries[item].nulled), ItemColumn { nullable: column.nullable || (queries[item].with.is_none() && queries[item].nulled), ..column.clone() });
+        // A column the item did not settle, of an item an outer join nulls by its place: NULL
+        // wherever the join finds no row, whatever it reads. By its provenance it may be a column
+        // of a relation the join does not null, as a LATERAL subquery's that selects a column of
+        // the table before it (`left join lateral (select o.customer …) x`).
+        let unsettled = |item: usize, name: &str| (queries[item].nulled && queries[item].with.is_none()).then(|| (None, ItemColumn { name: name.to_string(), nullable: true, document: None, values: None }));
         let mut out = Vec::with_capacity(count);
         for read in reads {
             match read {
@@ -2294,7 +2411,7 @@ impl<'a> Engine<'a> {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (named.next(), named.next()) {
                         (Some(found), None) => Some(answer(item, found)),
-                        _ => None,
+                        _ => unsettled(item, column.as_str()),
                     });
                 }
                 // A bare name is the item's where no table beside it has a column of the name,
@@ -2306,7 +2423,7 @@ impl<'a> Engine<'a> {
                     let mut named = settled.get(&item).into_iter().flatten().filter(|c| c.name == column);
                     out.push(match (resolved, named.next(), named.next()) {
                         (true, Some(found), None) => Some(answer(item, found)),
-                        _ => None,
+                        _ => unsettled(item, column.as_str()),
                     });
                 }
                 // A WITH query's SEARCH and CYCLE columns follow its statement's, and say nothing.
@@ -2326,11 +2443,19 @@ impl<'a> Engine<'a> {
                                 let mut named = columns.iter().filter(|c| c.name == *name);
                                 out.push(match (shared, named.next(), named.next()) {
                                     (false, Some(found), None) => Some(answer(item, found)),
-                                    _ => None,
+                                    _ => unsettled(item, *name),
                                 });
                             }
                         }
-                        None => out.extend(std::iter::repeat_n(None, width)),
+                        None => match item {
+                            Some(item) => {
+                                let at = out.len();
+                                let span: Vec<&str> = names[at..].iter().take(width).copied().collect();
+                                out.extend(span.iter().map(|name| unsettled(item, *name)));
+                                out.extend(std::iter::repeat_n(None, width - span.len()));
+                            }
+                            None => out.extend(std::iter::repeat_n(None, width)),
+                        },
                     },
                 },
                 ItemRead::TableStar => out.extend(std::iter::repeat_n(None, width)),
@@ -2654,6 +2779,7 @@ impl<'a> Engine<'a> {
         self.refine(sql, &mut described, trust)?;
         with_check_items(sql, parsed.as_ref(), &raw, &checks, &mut described);
         self.without_missing_rows(sql, parsed.as_ref(), &raw, &mut described);
+        self.written_through(parsed.as_ref(), &raw, &mut described)?;
         Some(Some(described))
     }
 
@@ -5456,6 +5582,12 @@ mod tests {
     /// text not null check (kind in ('click', 'key')), note text)`, that describes a statement by
     /// its text: `describe` gives each result column's name, type and provenance.
     fn replay_docs(sql: &str, describe: &dyn Fn(&str) -> Vec<RawColumn>) -> Analysis {
+        let analysis = replay_docs_with(describe, &|host| analyze(sql, host));
+        assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
+        analysis
+    }
+
+    fn replay_docs_with<T>(describe: &dyn Fn(&str) -> Vec<RawColumn>, run: &dyn Fn(&Host) -> Lazy<T>) -> T {
         let mut answers: HashMap<String, Answer> = HashMap::new();
         let composite = |oid: u32, name: &str, rel: u32, fields: &[(&str, u32, bool)]| {
             vec![
@@ -5471,9 +5603,8 @@ mod tests {
         ];
         for _ in 0..64 {
             let host = Host::new(&answers);
-            if let Some(analysis) = analyze(sql, &host) {
-                assert!(analysis.diagnostics.is_empty(), "{sql}: {:?}", analysis.diagnostics);
-                return analysis;
+            if let Some(done) = run(&host) {
+                return done;
             }
             for need in host.needs() {
                 match need {
@@ -5570,23 +5701,26 @@ mod tests {
         assert!(aliased_columns("select a.name, (b.addr).* from users a left join users b on true", 3, &width).is_empty());
     }
 
+    /// The describe of the statements [`replay_docs`]'s tables answer for whole rows: the probes
+    /// select the whole row as `a0`, and every other statement has one JSON column.
+    fn whole_rows_describe(sql: &str) -> Vec<RawColumn> {
+        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
+        if sql.contains(" e AS a0") {
+            vec![column("a0", 90003, 16420, 0)]
+        } else if sql.contains(" p AS a0") {
+            vec![column("a0", 90002, 16410, 0)]
+        } else if sql.contains(" u AS a0") {
+            vec![column("a0", 90001, 16400, 0)]
+        } else if sql.starts_with("SELECT e,") || sql == "SELECT e FROM events e" {
+            vec![column("e", 90003, 16420, 0)]
+        } else {
+            vec![column("rows", 3802, 0, 0)]
+        }
+    }
+
     #[test]
     fn a_tables_whole_row_is_a_row_unless_an_outer_join_nulls_it() {
-        let column = |name: &str, oid: u32, table: u32, attnum: i32| RawColumn { name: name.into(), oid, table, attnum, typmod: -1 };
-        // The probes select the whole row as `a0`; the statement itself has one JSON column.
-        let describe = |sql: &str| -> Vec<RawColumn> {
-            if sql.contains(" e AS a0") {
-                vec![column("a0", 90003, 16420, 0)]
-            } else if sql.contains(" p AS a0") {
-                vec![column("a0", 90002, 16410, 0)]
-            } else if sql.contains(" u AS a0") {
-                vec![column("a0", 90001, 16400, 0)]
-            } else if sql.starts_with("SELECT e,") || sql == "SELECT e FROM events e" {
-                vec![column("e", 90003, 16420, 0)]
-            } else {
-                vec![column("rows", 3802, 0, 0)]
-            }
-        };
+        let describe = whole_rows_describe;
         let items = |sql: &str| -> (Type, bool) {
             let a = replay_docs(sql, &describe);
             match jsonshape::content(a.columns[0].ty.clone()).kind {
@@ -5612,6 +5746,26 @@ mod tests {
         assert!(!a.columns[0].nullable);
         let TyKind::Record(record) = &a.columns[0].ty.kind else { panic!("{:?}", a.columns[0].ty) };
         assert_eq!(record.fields[1].ty, Type::text_of(vec!["click".into(), "key".into()]).named("text"));
+    }
+
+    #[test]
+    fn a_host_that_renders_its_own_columns_reads_what_the_statement_builds_as_analyze_does() {
+        for (sql, built) in [
+            ("SELECT jsonb_agg(e ORDER BY e.id) AS rows FROM events e", true),
+            ("SELECT jsonb_agg(p) AS rows FROM users u LEFT JOIN posts p ON p.user_id = u.id", true),
+            ("SELECT e FROM events e", false),
+        ] {
+            let analysis = replay_docs(sql, &whole_rows_describe);
+            let shaped = replay_docs_with(&whole_rows_describe, &|host| shaped(sql, host)).expect("a statement the server describes");
+            assert_eq!(shaped.columns.len(), analysis.columns.len(), "{sql}");
+            for (shaped, column) in shaped.columns.iter().zip(&analysis.columns) {
+                match shaped {
+                    Some(shaped) => assert_eq!((&shaped.ty, shaped.nullable), (&column.ty, column.nullable), "{sql}"),
+                    None => assert!(!built, "{sql}: the statement builds {}", column.name),
+                }
+            }
+            assert_eq!(shaped.columns.iter().any(Option::is_some), built, "{sql}");
+        }
     }
 
     #[test]

@@ -150,14 +150,61 @@ export function dialectOf(url: string): Dialect | undefined {
   return undefined;
 }
 
+/**
+ * An env file's variables, none when it is missing or cannot be read, read as dotenv reads them, so
+ * that Reylo reads the value the app does. A line ends at `\n`, `\r\n` or `\r`, and is `NAME=value`,
+ * `export ` before it or not; a line whose first character is `#`, or that has no `=`, sets nothing.
+ * A value in double, single or back quotes is what lies between them, lines included, when nothing
+ * but blanks and a comment follows the closing quote on its line; any other value is its line up to
+ * the first `#`, spaces and tabs trimmed, less a quote at each end. In a value that starts with a
+ * double quote, `\n` and `\r` are a newline and a carriage return. Node's own `parseEnv` is not used:
+ * a line whose empty value ends in a space takes the next line as its value there. The binary reads
+ * env files the same way (`parse_env` in engine/cli/src/project.rs), and both are held to
+ * engine/cli/src/env-file-cases.json.
+ */
 export function readEnvFile(path: string): Record<string, string> {
-  if (!existsSync(path)) return {};
-  const out: Record<string, string> = {};
-  for (const line of readFileSync(path, "utf8").split("\n")) {
-    const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line);
-    if (m) out[m[1]!] = m[2]!.replace(/^(["'])(.*)\1$/, "$2");
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
+  } catch {
+    return {};
   }
-  return out;
+  const lineEnd = (from: number) => {
+    const n = text.indexOf("\n", from);
+    return n < 0 ? text.length : n;
+  };
+  const vars: Record<string, string> = Object.create(null);
+  for (let at = 0; at < text.length; ) {
+    let end = lineEnd(at);
+    const line = text.slice(at, end);
+    const eq = /^[ \t]*#/.test(line) ? -1 : line.indexOf("=");
+    if (eq < 0) {
+      at = end + 1;
+      continue;
+    }
+    const name = /^[ \t]*(?:export[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*$/.exec(line.slice(0, eq))?.[1];
+    const start = at + eq + 1 + /^[ \t]*/.exec(line.slice(eq + 1))![0].length;
+    let raw = text.slice(start, end).split("#")[0]!.replace(/[ \t]+$/, "");
+    const quote = text[start];
+    if (quote === '"' || quote === "'" || quote === "`") {
+      // The quote closes, as in dotenv, at the first quote of its kind that no backslash escapes, or
+      // else at an escaped one before it, the last first: at the first of these that nothing but
+      // blanks and a comment follows on its line.
+      const escaped: number[] = [];
+      let close = text.indexOf(quote, start + 1);
+      for (; close >= 0 && text[close - 1] === "\\"; close = text.indexOf(quote, close + 1)) escaped.push(close);
+      const closes = [...(close >= 0 ? [close] : []), ...escaped.reverse()].find((p) => /^[ \t]*(?:#.*)?$/.test(text.slice(p + 1, lineEnd(p))));
+      if (closes !== undefined) {
+        raw = text.slice(start, closes + 1);
+        end = lineEnd(closes);
+      }
+    }
+    let value = raw.length > 1 && /^["'`]/.test(raw) && raw.endsWith(raw[0]!) ? raw.slice(1, -1) : raw;
+    if (raw.startsWith('"')) value = value.replaceAll("\\n", "\n").replaceAll("\\r", "\r");
+    if (name) vars[name] = value;
+    at = end + 1;
+  }
+  return vars;
 }
 
 /** 1-based line and column of a byte offset, for a message that names the place in the file. */

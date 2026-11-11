@@ -395,7 +395,7 @@ from users
 
 **Aggregates**
 
-Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
+Without a `group by`, an aggregate other than `count`, `bit_and`, `bit_or` and `bit_xor` returns `NULL` over no rows. Such a query returns its one row even then, so beside the aggregate a column is nullable, and so is a subquery that reads the row. With one, every group has rows: `json_arrayagg` and `json_objectagg` are non-null, and `sum`, `avg`, `min` and `max` are non-null when their argument is.
 
 <Inferred>
 
@@ -766,6 +766,7 @@ What Reylo can't type on MySQL, and what to do instead:
 | --- | --- |
 | The labels of an `ENUM` or a `SET` a query reads through a `WITH` query, a `UNION` or an expression: it is typed `string`, or `Set<string>` | Select the column itself where you need the union |
 | Where in a query an error is, which MySQL doesn't say | None: the type check marks the whole query |
+| An `if` or a `case` that returns a `BIT` column, which MySQL sends as the column's bytes under a `DECIMAL` type, or as a number under a `BIT` one: it is typed `unknown` | Make the column a number first: `if(n > 0, enabled + 0, 0)` |
 | A loadable function (`create function … soname`), which `information_schema` doesn't list, so `.readOnly` can't see one | Don't retry a query that calls one |
 | A query Reylo's parser can't read | None: it keeps MySQL's types and nullability, returns `Row[]`, and its JSON is `Json` |
 | A `sql_mode` that changes how MySQL reads a query (`NO_BACKSLASH_ESCAPES`, `ANSI_QUOTES`, `PIPES_AS_CONCAT`) | None: Reylo keeps MySQL's types, with no row counts or JSON shapes |

@@ -91,6 +91,9 @@ test("a URL that names a Unix socket is opened through a bridge, on Postgres and
     for (const [dialect, url] of [
       ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}`],
       ["postgres", `postgres://${username}@${encodeURIComponent(pg.dir)}/${database.slice(1)}`],
+      // A socket carries no TLS, whichever way the URL asks for it.
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&ssl=true`],
+      ["postgres", `postgres://${username}@/${database.slice(1)}?host=${pg.dir}&sslmode=verify-full`],
       ["mysql", `mysql://root@localhost/?socketPath=${encodeURIComponent(my.path)}`],
     ] as const) {
       const c = await (await engine(dialect)).open(url);

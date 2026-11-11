@@ -11,7 +11,7 @@ The docs are https://reylo.dev, with a page per database, https://reylo.dev/post
 
 ## Before changing anything
 
-- Find the project file, `.reylo.yaml` or `.reylo.yml`, beside `package.json`. Its `direct_url`, or `DATABASE_URL` without one, is the dev database the type check reads the schema from, and its scheme names the database: `postgres://`, `mysql://`, `file:` for SQLite, `duckdb:` for DuckDB. A DuckDB project's statements are typed on its own `@duckdb/node-api`, which it installs.
+- Find the project file, `.reylo.yaml` or `.reylo.yml`, beside `package.json`. Its `direct_url`, or `DATABASE_URL` without one, is the dev database the type check reads the schema from, and its scheme names the database: `postgres://`, `mysql://`, `file:` for SQLite, `duckdb:` for DuckDB. A DuckDB project's statements are typed on its own `@duckdb/node-api`, which it installs. Reylo reads `.env.local` and `.env` as `dotenv` does, so a value there that holds a `#` is quoted.
 - The type check is `tsc --noEmit --runExternalCode` on TypeScript 7.1, usually a `typecheck` script. Run it before and after a change.
 
 ## Writing a query
