@@ -72,9 +72,14 @@ sub_jsonb_agg_of_object.sql: one () -> { j: jsonb ({ t: text, m: int4 })[]? }
 sub_nested_object.sql: one () -> { j: jsonb { o: { a: int8[], m: int4, t: text? } }? }
 sub_row_to_json.sql: one () -> { j: jsonb { a: (public.posts{ id: int8, user_id: int8, title: text, score: int4?, tag: text?, n: int4 })[], r: (public.posts{ id: int8, user_id: int8, title: text, score: int4?, tag: text?, n: int4 })[] }? }
 sub_window_frame.sql: one () -> { j: jsonb { w: int8[]? }? }
+top_cube_filter.sql: many () -> { id: int8?, j: jsonb { a: text[]?, k: int8? }? }
 top_cube_outer.sql: many () -> { id: int8?, j: jsonb { k: unknown?, c: unknown? }? }
 top_empty_set_outer.sql: many () -> { j: jsonb { c: int8?, m: int4? }? }
+top_rollup_lateral.sql: many () -> { id: int8?, j: jsonb { k: unknown?, c: unknown? }? }
 top_rollup_outer.sql: many () -> { id: int8?, j: jsonb { k: int8?, c: int8?, a: int8?[]? }? }
+top_rollup_sub_agg_arg.sql: many () -> { id: int8?, j: jsonb { a: ({ k: int8?, p: int8? }?)[]? }? }
+top_rollup_top_agg_sub.sql: many () -> { id: int8?, j: jsonb ({ k: int8 }?)[]? }
+top_rollup_window_agg.sql: many () -> { id: int8?, j: jsonb { w: int8?[]?, k: int8? }? }
 two_level_grouped.sql: one () -> { j: jsonb { a: int8[], in: { b: int8[], m: int4 }? }? }
 union_outer.sql: many () -> { j: jsonb { k: unknown?, c: unknown? }? }
 where_false.sql: one () -> { j: jsonb { c: int8, m: int4?, a: int8[]? } }

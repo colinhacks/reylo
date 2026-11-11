@@ -61,7 +61,7 @@ pub fn plan(q: &Query, columns: &Columns) -> Plan {
     // aggregate's arguments valid under its GROUP BY, which a probe of them carries ([`group_of`]).
     let groups = group_of(select).into_iter().map(|g| (0, g)).collect();
     let rolled = usize::from(crate::mysql_nulls::rolls_up(&select.group_by));
-    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, rolled, rowless: HashSet::new(), windows: select.named_window.clone() };
+    let mut b = Builder { stack: vec![top], columns, ctes: with_names(q), wanted: Vec::new(), next_ctx: 0, drafts: Vec::new(), overflowed: false, booleans: Vec::new(), either: Vec::new(), reads: Reads::Itself, grouped, groups, in_aggregate: 0, rolled, rollups: (rolled > 0).then_some(0).into_iter().collect(), rowless: HashSet::new(), windows: select.named_window.clone() };
     if b.may_be_rowless(select) {
         b.rowless.insert(0);
     }
@@ -411,6 +411,10 @@ struct Builder<'a> {
     /// in every column they group by, which a subquery reading the row reads too: a value read
     /// outside an aggregate's arguments may be NULL there, whatever its probe says.
     rolled: usize,
+    /// The context ids of the queries that group WITH ROLLUP. An aggregate of such a query reads
+    /// its rows before they are grouped, which its super-aggregate rows null nothing of; a column
+    /// of a query around it that rolls up is NULL in that query's super-aggregate row all the same.
+    rollups: HashSet<usize>,
     /// The context ids of the queries that may aggregate with no GROUP BY ([`Builder::may_be_rowless`]),
     /// which return their one row over no rows too: a value that reads the row outside every
     /// aggregate's call ([`crate::mysql::reads_row`]) is NULL there, which its probe, with no
@@ -633,6 +637,7 @@ impl Builder<'_> {
             Expr::Subquery(q) => {
                 let SetExpr::Select(select) = q.body.as_ref() else { return Shape::Unknown };
                 let Some(inner) = single_projection(q) else { return Shape::Unknown };
+                let around = self.stack[self.stack.len() - 1].ctx;
                 let group = self.subquery_group(q, select);
                 let outer_ctes = self.ctes.len();
                 self.ctes.extend(with_names(q));
@@ -645,6 +650,9 @@ impl Builder<'_> {
                 }
                 let rolls_up = usize::from(crate::mysql_nulls::rolls_up(&select.group_by));
                 self.rolled += rolls_up;
+                if rolls_up > 0 {
+                    self.rollups.insert(self.next_ctx);
+                }
                 self.stack.push(Level { ctx: self.next_ctx, from: select.from.clone(), with: q.with.clone() });
                 // The subquery's select list is outside its own aggregates, wherever it stands.
                 let in_aggregate = std::mem::take(&mut self.in_aggregate);
@@ -659,13 +667,25 @@ impl Builder<'_> {
                 // the row.
                 let one_row = q.limit_clause.is_none() && crate::mysql::exactly_one(q).is_ok() && crate::mysql::aggregate_where(inner, &mut |f| self.owns(f, &select.from));
                 self.ctes.truncate(outer_ctes);
-                if one_row {
+                let shape = if one_row {
                     shape
                 } else {
                     match shape {
                         Shape::Column { .. } | Shape::Nullable(_) => Shape::Unknown,
                         other => force_nullable(other),
                     }
+                };
+                // Over no rows, a query that aggregates with no GROUP BY hands back NULL for a
+                // subquery of its one row that reads that row, whatever the subquery returns. The
+                // statement's own such columns are read whole, with the catalog's columns
+                // (`rowless` in `crate::mysql`); a query inside it is read here.
+                if around != 0 && self.in_aggregate == 0 && self.rowless.contains(&around) && crate::mysql::reads_row(e, self.columns) {
+                    match shape {
+                        Shape::Column { .. } => Shape::Nullable(Box::new(shape)),
+                        other => force_nullable(other),
+                    }
+                } else {
+                    shape
                 }
             }
             _ => self.leaf(e),
@@ -805,9 +825,12 @@ impl Builder<'_> {
             Written::Number => {}
             _ => self.either.push((probe, index)),
         }
-        // An aggregate's argument is read from the rows before they are grouped, which no
-        // super-aggregate row nulls and which exist wherever it is read.
-        let nulled = self.in_aggregate == 0 && (self.rolled > 0 || (self.rowless.contains(&ctx) && crate::mysql::reads_row(e, self.columns)));
+        // An aggregate's argument is read from its query's rows before they are grouped, which its
+        // super-aggregate rows null nothing of and which exist wherever it is read. A query around
+        // it that rolls up nulls its columns all the same.
+        let own = usize::from(self.rollups.contains(&ctx));
+        let rolled = self.rolled > own || (own > 0 && self.in_aggregate == 0);
+        let nulled = rolled || (self.in_aggregate == 0 && self.rowless.contains(&ctx) && crate::mysql::reads_row(e, self.columns));
         if nulled {
             Shape::Nullable(Box::new(Shape::Column { probe, index }))
         } else {
@@ -1187,6 +1210,14 @@ mod tests {
         let sub = plan(&query("select (select json_object('k', u.id, 'c', count(*)) from posts p group by p.user_id limit 1) as o from users u group by u.id with rollup"), &Columns::new());
         let Some((_, Shape::Object { fields, .. })) = sub.columns.first() else { panic!("{:?}", sub.columns) };
         assert!(matches!(fields[0].1, Shape::Nullable(_)), "{fields:?}");
+        // An aggregate's argument in a subquery reads the rolled-up row of the query around it.
+        let sub = plan(&query("select (select json_object('a', json_arrayagg(u.id)) from posts p limit 1) as o from users u group by u.id with rollup"), &Columns::new());
+        let Some((_, Shape::Object { fields, .. })) = sub.columns.first() else { panic!("{:?}", sub.columns) };
+        assert!(matches!(&fields[0].1, Shape::Array { items, .. } if matches!(items.as_ref(), Shape::Nullable(_))), "{fields:?}");
+        // Over no rows, a subquery that reads the row of a query aggregating with no GROUP BY is NULL.
+        let sub = plan(&query("select (select json_object('n', count(*), 's', (select json_object('c', count(*), 'k', any_value(x.name)) from posts p)) from users x) as o"), &Columns::new());
+        let Some((_, Shape::Object { fields, .. })) = sub.columns.first() else { panic!("{:?}", sub.columns) };
+        assert!(matches!(fields[1].1, Shape::Object { non_null: false, .. }), "{fields:?}");
     }
 
     #[test]
