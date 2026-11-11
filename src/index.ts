@@ -1,6 +1,6 @@
 // The runtime query object behind `import query from "./file.sql"`.
 // Types come from the content mapper; values come from the runtime loader.
-import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type SyncClientFor } from "./execute.ts";
+import { compile, execute, executeSync, type ClientFor, type Dialect, type Inputs, type QueryModule, type Runtime, type SyncClientFor } from "./execute.ts";
 import type { Plan } from "./codecs.ts";
 import type { StandardJSONSchemaV1, StandardTypedV1 } from "./standard.ts";
 import { standardQuery, type StandardQueryV1 } from "./standard-query.ts";
@@ -9,7 +9,11 @@ import type { RowBuilder } from "./row.ts";
 import type { Checks } from "./checks.ts";
 import type { Fresh } from "./fresh.ts";
 import { DecodeError, ParameterError, type Columns, type JsonNumbers } from "./values.ts";
-import { readQueryError, readQueryErrorSync, type QueryError } from "./query-error.ts";
+import type { QueryError } from "./query-error.ts";
+import { postgres } from "./decode.ts";
+import { mysql } from "./decode-mysql.ts";
+import { sqlite } from "./decode-sqlite.ts";
+import { duckdb } from "./decode-duckdb.ts";
 import { listening, type QueryTrace } from "./trace.ts";
 import { buildTime, type AnalyzeInput, type StatementDescriptor } from "./build-time.ts";
 
@@ -207,9 +211,41 @@ function onlyValue(row: unknown): unknown {
   return undefined;
 }
 
-export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(
-  def: QueryDefinition & { dialect: D; cardinality?: C },
-): Query<Params, Row, C, D> {
+/** Each dialect's half of the run time, for a query defined by hand, which names its dialect. */
+const RUNTIMES: { readonly [D in Dialect]: Runtime<D> } = { postgres, mysql, sqlite, duckdb };
+
+/**
+ * A query, from its definition: a query defined by hand names its dialect. A module a build step
+ * writes calls its dialect's own define function instead (`definePostgresQuery`, `defineMysqlQuery`,
+ * `defineSqliteQuery`, `defineDuckdbQuery`), which alone names that dialect's half of the run time,
+ * so that a bundle holds no other dialect's drivers and error codes.
+ */
+export function defineQuery<Params, Row, C extends Cardinality, D extends Dialect>(def: QueryDefinition & { dialect: D; cardinality?: C }): Query<Params, Row, C, D> {
+  return define(RUNTIMES[def.dialect] as Runtime<D>, def);
+}
+
+/** A Postgres query, as a module a build step writes defines one (`defineQuery`). */
+export function definePostgresQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "postgres"> {
+  return define(postgres, def);
+}
+
+/** A MySQL query, as a module a build step writes defines one (`defineQuery`). */
+export function defineMysqlQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "mysql"> {
+  return define(mysql, def);
+}
+
+/** A SQLite query, as a module a build step writes defines one (`defineQuery`). */
+export function defineSqliteQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "sqlite"> {
+  return define(sqlite, def);
+}
+
+/** A DuckDB query, as a module a build step writes defines one (`defineQuery`). */
+export function defineDuckdbQuery<Params, Row, C extends Cardinality>(def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, "duckdb"> {
+  return define(duckdb, def);
+}
+
+function define<Params, Row, C extends Cardinality, D extends Dialect>(runtime: Runtime<D>, def: Omit<QueryDefinition, "dialect"> & { cardinality?: C }): Query<Params, Row, C, D> {
+  const dialect = runtime.dialect;
   const cardinality = (def.cardinality ?? "many") as C;
   const missingSchema = () => {
     throw new Error(`No JSON Schema is available for this query: a module a build step writes carries it, and a query defined by hand has none.`);
@@ -218,7 +254,8 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   const where = def.source ? `${def.source}: ` : "";
   // What the run time reads, kept off the query object, whose `sql` is the compiled statement.
   const module: QueryModule<D> = {
-    dialect: def.dialect,
+    dialect,
+    runtime,
     sql: def.sql,
     params: def.params,
     text: def.text,
@@ -240,7 +277,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
   };
   let compiled: string | undefined;
   const query: Query<Params, Row, C, D> = {
-    dialect: def.dialect,
+    dialect,
     // A query defined by hand is compiled when its `sql` is first read, so a placeholder its
     // `params` misses fails there and in `run`, not where it is defined.
     get sql() {
@@ -284,7 +321,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
       run(client, params ?? ({} as Params)).then(
         (value) => ({ value }),
         async (error) => {
-          const read = await readQueryError(def.dialect, error);
+          const read = await runtime.readError(error);
           if (read) return { error: read };
           throw error;
         },
@@ -293,7 +330,7 @@ export function defineQuery<Params, Row, C extends Cardinality, D extends Dialec
       try {
         return { value: query.runSync(client, ...([params] as ParamsArg<Params>)) };
       } catch (error) {
-        const read = readQueryErrorSync(def.dialect, error);
+        const read = runtime.readErrorSync?.(error);
         if (read) return { error: read };
         throw error;
       }

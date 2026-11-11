@@ -10,7 +10,7 @@ import { analysisWithBases } from "../src/engine-type.ts";
 import { DRIVERS, pgLive, postgresDatabase } from "./helpers.ts";
 import { array, field, lite, my, pg, record } from "./descriptors.ts";
 import { decodeCodec, decodeCodecs, decodePlan, encodeCodec, encodePlan, leafCodec, planOf, type Codecs } from "../src/codecs.ts";
-import { execute, executeSync, type QueryModule } from "../src/execute.ts";
+import { execute, executeSync, type QueryModule } from "./run.ts";
 import { defineQuery } from "../src/index.ts";
 import { moduleTypes, standardColumnsType } from "../src/module-types.ts";
 import { renderParamType, renderType } from "../src/render.ts";
