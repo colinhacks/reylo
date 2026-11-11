@@ -1726,7 +1726,7 @@ impl Flow<'_> {
 /// under WITH ROLLUP names no table.
 ///
 /// Except beside a GROUP BY that rolls up inside parentheses ([`rolls_up_within`]), where a table's
-/// own column is as wide as an expression's. Measured on 8.4.13, through SQL_BUFFER_RESULT, `u.id`
+/// own integer column may also be of the other width, though still of its type whatever is bound. Measured on 8.4.13, through SQL_BUFFER_RESULT, `u.id`
 /// (an INT) answers as a BIGINT in `select u.id, (select json_object('t', p.title, 'k', u.id, 'c',
 /// count(*)) from posts p where p.user_id = u.id group by p.title with rollup limit 1) from users u
 /// group by u.id`, and so does the subquery `(select u.id from posts p where p.user_id = u.id group
@@ -1777,16 +1777,17 @@ fn settle(sql: &str, lexed: &Lexed, rewritten: &lex::Rewritten, parsed: Option<&
         _ => vec![all; width],
     };
     let rolled = rolls_up_within(&code);
-    let own = |c: &crate::api::MysqlColumn| !rolled && c.org_table.as_ref().is_some_and(|table| !table.is_empty() && views.is_some_and(|views| !views.contains(&table.to_ascii_lowercase())));
+    let own = |c: &crate::api::MysqlColumn| c.org_table.as_ref().is_some_and(|table| !table.is_empty() && views.is_some_and(|views| !views.contains(&table.to_ascii_lowercase())));
     raw.columns
         .iter()
         .zip(&reached)
         .map(|(c, reached)| {
-            // A table's own column is of its type whatever is bound and whatever the plan.
-            if own(c) {
-                return None;
-            }
+            // A table's own column is of its type whatever is bound and whatever the plan, but
+            // for the other integer width beside a nested rollup.
             let ty = column_type(c);
+            if own(c) {
+                return other_width(c).filter(|other| rolled && *other != ty).map(|other| Type::union(vec![ty, other]));
+            }
             match (widened(&ty, *reached), other_width(c)) {
                 (Some(either), Some(other)) if !either.members().contains(&other) && !either.is_unknown() => Some(Type::union(vec![either, other])),
                 (None, Some(other)) if ty != other => Some(Type::union(vec![ty, other])),
@@ -3480,6 +3481,13 @@ mod tests {
         assert_eq!(types("select id, count(*) from users group by id with rollup"), "None None None");
         assert_eq!(types("select id, (select 'with rollup'), (select `rollup` from t), (select 1 /* rollup */) from users"), "None None None");
         assert_eq!(types("select id, (select rollups from t) from users"), "None None None");
+        // A placeholder that may reach every column widens no table's column beyond the width.
+        let sql = "select u.id, u.big, u.name from users u join (select user_id, count(*) + ? as n from posts group by user_id with rollup) s on s.user_id = u.id";
+        let lexed = lex::lex(sql, Dialect::Mysql).unwrap();
+        let column = |ty: u32, length: u32| json!({ "name": "c", "type": ty, "flags": 0, "length": length, "org_table": "users" });
+        let raw: MysqlDescribe = serde_json::from_value(json!({ "columns": [column(3, 11), column(8, 20), column(253, 80)], "params": [{ "type": 5 }] })).unwrap();
+        let settled = settle(sql, &lexed, &lex::rewrite(sql, &lexed, Target::Question), None, &raw, Some(&HashSet::new()));
+        assert_eq!(settled.iter().map(|ty| ty.as_ref().map_or("None".to_string(), Type::short)).collect::<Vec<_>>().join(" "), "int | bigint None None");
     }
 
     /// Analyzes with a host that describes each statement as `describe` says, answers the mode
