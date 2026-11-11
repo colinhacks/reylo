@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
-import { execute, type QueryModule } from "../src/execute.ts";
+import { execute, type QueryModule } from "./run.ts";
 import { bunRows, parseArray } from "../src/decode.ts";
 import type { Columns } from "../src/values.ts";
 
